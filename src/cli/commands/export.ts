@@ -8,7 +8,14 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
-import { hasReadableResources } from '../../state/malformed-resources-bag.js';
+import {
+  hasReadableResources,
+  isReadableResourceEntry,
+  malformedResourcesWarning,
+  displayLogicalId,
+  safeRegion,
+  safeStackName,
+} from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
@@ -2842,7 +2849,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         // are visible to sibling stacks (children are accessed via the
         // parent's `Outputs.<ChildLogicalId>` propagation, not directly),
         // so scanning the root is sufficient.
-        reportDriftBaselineGaps(state, logger);
+        reportDriftBaselineGaps(state, logger, {
+          stackName: resolvedStackName,
+          // A LEGACY record (`migrationPending`) was loaded from a key with no
+          // region: `pickStackRegion` hands back the synth region only so the
+          // legacy probe can run, and a command carrying it matches no record.
+          region: migrationPending ? undefined : targetRegion,
+        });
         if (allSynthStacks.length > 0) {
           const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
           if (crossRefs.length > 0) {
@@ -3068,7 +3081,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // AWS reality before the migration. Surface that as a warning so
       // they can re-run `cdkd state refresh-observed` first if drift
       // matters.
-      reportDriftBaselineGaps(state, logger);
+      reportDriftBaselineGaps(state, logger, {
+        stackName: resolvedStackName,
+        // See the nested-tree call above: a legacy record's key has no region.
+        region: migrationPending ? undefined : targetRegion,
+      });
 
       // Cross-stack consumer scan. After this stack moves to CFn, its
       // outputs live in CFn (not cdkd state). Since issue #1697 cdkd's
@@ -5311,17 +5328,62 @@ function classifyOverlayCurrentValue(
 }
 
 /**
+ * How much of an overlay value's JSON this function is willing to quote back.
+ *
+ * CODE POINTS, not UTF-16 code units — see {@link boundedOverlayPreview}. The
+ * number is the pre-go-to-k/cdkd#3018 one, kept so no in-range message moves.
+ */
+const OVERLAY_PREVIEW_MAX_CODE_POINTS = 120;
+
+/**
+ * `JSON.stringify(value)`, cut to {@link OVERLAY_PREVIEW_MAX_CODE_POINTS} code
+ * points through the shared helper rather than by `slice` (go-to-k/cdkd#3018).
+ *
+ * `String.prototype.slice` counts UTF-16 code units, so a cut landing between
+ * the halves of an astral character leaves a LONE HIGH SURROGATE at the end of
+ * the preview — `JSON.stringify` emits an astral character as the raw pair
+ * rather than as two `\u` escapes, so the pair really is what gets cut.
+ * `truncateCodePoints` in `src/utils/display-safe.ts` owns that rule, and this
+ * is the site go-to-k/cdkd#3018 was opened over. Other `slice`-based display
+ * truncations remain elsewhere (`src/local/websocket-server.ts`,
+ * `src/local/rest-v1-integrations.ts` among them); closing this one is not a
+ * claim about them.
+ *
+ * Deliberately NOT applied to the SCALAR branch below, which is the arm that
+ * cannot exceed the cap: tracing the two call sites, it is reachable only with
+ * a NUMBER or a BOOLEAN. A string `current` never reaches the rewrite warning
+ * (`typeof current !== 'string'` gates it) and never reaches the refusal (only
+ * a list classifies `unrepresentable`), and a number arriving from a parsed
+ * template is a double, so its JSON is a couple of dozen characters. Capping it
+ * anyway would be behaviour no test can distinguish from not capping it, which
+ * is worse than the asymmetry: it reads as a guard while pinning nothing.
+ */
+function boundedOverlayPreview(value: unknown): string {
+  // SANITIZED as well as cut. `JSON.stringify` escapes C0, which is why this
+  // looked safe, but it leaves `U+0085`, the C1 range, `U+2028` / `U+2029` and
+  // the Trojan-Source bidi overrides verbatim — every mechanism that forges a
+  // line or reorders one in a terminal or a JSON log viewer. The value is a
+  // TEMPLATE's rather than a state record's, so it is less exposed than an
+  // identifier, but the text lands in an error a failed export persists and
+  // sanitizing costs nothing. The DENYLIST rather than `asciiOnly`: this is
+  // JSON of arbitrary user content, not an identifier with a known charset.
+  const { text, truncated } = truncateCodePoints(
+    displaySafe(JSON.stringify(value)),
+    OVERLAY_PREVIEW_MAX_CODE_POINTS
+  );
+  return truncated ? `${text}…` : text;
+}
+
+/**
  * Human-readable shape of an overlay value, for the refusal error and the
  * rewrite warning. Bounded: the value is user-supplied and lands in an error
- * message that a failed export persists, so a large list is summarized rather
+ * message that a failed export persists, so a large value is summarized rather
  * than serialized whole.
  */
 function describeOverlayValueShape(current: unknown): string {
   if (Array.isArray(current)) {
     if (current.length === 0) return 'an empty list';
-    const preview = JSON.stringify(current);
-    const shown = preview.length > 120 ? `${preview.slice(0, 120)}…` : preview;
-    return `a ${current.length}-element list (${shown})`;
+    return `a ${current.length}-element list (${boundedOverlayPreview(current)})`;
   }
   if (current === null) return 'an explicit null';
   return `a ${typeof current} (${JSON.stringify(current)})`;
@@ -5375,10 +5437,19 @@ export function applyImportOverlayForPhase2(
 }
 
 /**
- * Returns true if every `Ref` / `Fn::GetAtt` inside `node` points at a
- * logical ID in `allow`. Used to keep Outputs entries that only reference
- * imported resources and drop the ones that referenced excluded ones.
+ * How many logical ids each of this advice's three lists names before it stops
+ * and counts the rest.
+ *
+ * ONE constant for all three because they are one decision — how long a warning
+ * block may get before it stops being read — and three hand-spelled `10`s are
+ * how two of them end up disagreeing after a later edit. Its siblings are
+ * `UNREADABLE_PREVIEW_NAMES` in `diff-recursive.ts` (the `cdkd diff` preview)
+ * and `NAMED_UNREADABLE_ENTRIES` in the shared module (the refusal texts);
+ * deliberately not shared with either, since a list inside one warning line and
+ * a block of indented rows do not have the same budget.
  */
+const NAMED_BASELINE_IDS = 10;
+
 /**
  * Pre-flight check for missing drift baselines (`observedProperties`)
  * in the exporting stack's state. cdkd state schema v3 captures
@@ -5399,19 +5470,193 @@ export function applyImportOverlayForPhase2(
  */
 export function reportDriftBaselineGaps(
   state: StackState,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  /**
+   * The stack and region export actually LOADED — the S3 key, not the record
+   * body. Every command this report suggests is built from it: `stackName` and
+   * `region` inside the body are hand-editable fields of a record this report
+   * may already be calling broken, and `cdkd state refresh-observed` WRITES,
+   * so a body saying `"stackName": "OtherStack"` must not send the user to
+   * rewrite a different record. The REGION half is belt-and-braces on the
+   * region-scoped read since go-to-k/cdkd#3369, whose `adoptKeyRegion` replaces
+   * a divergent body region with the key's before any caller sees it — the
+   * stack NAME is not normalised there, and a legacy record bypasses it
+   * entirely. Optional only so the unit cases can omit it; both command call
+   * sites pass it, and without it the body is the fallback.
+   */
+  loaded?: { stackName: string; region: string | undefined }
 ): void {
-  const entries = Object.entries(state.resources ?? {});
+  const stackName = loaded?.stackName ?? state.stackName;
+  // A region is only a region if it is a NON-EMPTY string, and the guard is
+  // kept although no read path delivers either shape today: `adoptKeyRegion`
+  // (go-to-k/cdkd#3369) replaces a divergent body region with the key's and
+  // `tryGetLegacy` drops a non-string one, while both call sites pass
+  // `undefined` rather than `''` for a legacy record (`migrationPending`). What
+  // it costs is one comparison; what it buys is that a caller passing the body,
+  // or a fourth call site forgetting the legacy arm, renders no
+  // `--stack-region` that selects no record — `''` sanitizes to the
+  // `<unrenderable>` stand-in.
+  const rawRegion: unknown = loaded ? loaded.region : state.region;
+  const region = typeof rawRegion === 'string' && rawRegion !== '' ? rawRegion : undefined;
+  // The BAG first, and ahead of the empty-record return below. `Object.entries`
+  // of a string yields one pair per CHARACTER, so enumerating entries without
+  // asking whether the bag IS one would report rows named `0`, `1`, `2` — the
+  // fabrication class go-to-k/cdkd#3172 and go-to-k/cdkd#3187 closed elsewhere,
+  // re-opened inside a message whose whole job is to name real rows. And it has
+  // to precede that return rather than follow it: `null`, a number, a boolean,
+  // an empty string and an empty list all enumerate to NO entries, so a guard
+  // placed after `entries.length === 0` is reached only by a non-empty string or
+  // a populated list, and every other unreadable bag passes in silence.
+  // `unreadableResourceEntries` refuses a non-object bag for the same reason;
+  // this site partitions rather than delegating, so it makes the same test
+  // itself.
+  if (!hasReadableResources(state)) {
+    logger.warn(malformedResourcesWarning(stackName, region));
+    return;
+  }
+  const entries = Object.entries(state.resources);
   if (entries.length === 0) return;
-  const missing = entries.filter(([, r]) => r.observedProperties === undefined);
+
+  // Every command BUILT HERE names the stack AND its region, and is emitted
+  // LAST and UNWRAPPED — the shape `src/state/lock-contention-message.ts`
+  // requires of anything a user is meant to paste: `shellQuote` does its own
+  // quoting, so an outer `'...'` composes into something unpastable for exactly
+  // the names that need quoting. The region is what makes the command address
+  // THIS record when the same stack name holds state in several regions. With
+  // no region to name (a pre-v2 record, or a body whose `region` is not a
+  // string) the flag is left out rather than filled with a placeholder, which
+  // every one of these commands would reject. The BAG
+  // warning above is the exception to "last": its text comes from the shared
+  // module, which appends a sentence after the command, and follows the same
+  // no-region rule there.
+  const stackRef =
+    shellQuote(safeStackName(stackName)) +
+    (region !== undefined ? ` --stack-region ${shellQuote(safeRegion(region))}` : '');
+
+  // The EXACTNESS GATE, for the one command here that WRITES. `cdkd state
+  // show` is printed with a sanitized name because it only reads: a near-miss
+  // either finds no state or DISPLAYS another stack's record, neither of which
+  // changes anything, and the reader can see which record came back. `cdkd state
+  // refresh-observed` locks a record and rewrites its `observedProperties`, so
+  // a name that sanitizing CHANGED — a non-breaking space where the real stack
+  // has an ordinary one, a control byte, a cut at the cap — can resolve to a
+  // DIFFERENT stack that exists and rewrite that stack's baseline. The same
+  // reasoning `buildForceUnlockCommand` applies to a lock it would delete: when
+  // rendering altered either value, the command is withheld and the advice
+  // names the command in prose instead.
+  //
+  // A record with NO region is withheld too, for a different reason:
+  // `cdkd state refresh-observed` refuses a legacy region-less record outright,
+  // so a command for one could only fail. The advice says to migrate first.
+  const rendersExactly =
+    region !== undefined && safeStackName(stackName) === stackName && safeRegion(region) === region;
+  // Exact is not enough on its own, the second half of the rule the legacy
+  // refusal in `state.ts` states: shell quoting does not stop Commander from
+  // parsing `'--all'` as the `--all` FLAG, and on this command that flag targets
+  // every record in the region — so a stack named `--all` would print a command
+  // that rewrites every baseline instead of the one the sentence names. A name
+  // a prebuilt cloud assembly supplies is unvalidated (`extractStackInfo` takes
+  // `props?.stackName || artifactId`), so this is reachable, not theoretical.
+  //
+  // Only the LEADING `-` half of that sibling's test applies here, and the
+  // difference is the command, not the caution: `cdkd deploy` reads its
+  // argument as a PATTERN, while `cdkd state refresh-observed` resolves it by
+  // exact name equality (`r.stackName === stackName`), so a `*` or `/` selects
+  // at most the one record literally named that — it cannot widen the target
+  // the way a pattern does.
+  const readsAsAnOption = /^-/.test(stackName);
+  const refreshCommand =
+    rendersExactly && !readsAsAnOption ? `cdkd state refresh-observed ${stackRef}` : undefined;
+  const refreshWithheld =
+    region === undefined
+      ? `'cdkd state refresh-observed' for this stack once it is migrated: this record has ` +
+        `no region, the legacy layout that command refuses, so migrate it first with any cdkd ` +
+        `write, such as a deploy.`
+      : rendersExactly
+        ? `'cdkd state refresh-observed' for this stack. The command is not printed: this ` +
+          `stack's name starts with '-', which the CLI reads as an option however it is ` +
+          `quoted, and '--all' would rewrite every record in the region rather than this one.`
+        : `'cdkd state refresh-observed' for this stack. The command is not printed: the ` +
+          `stack name or region cdkd loaded cannot be rendered exactly, and a near-match could ` +
+          `rewrite a different stack's baseline.`;
+
+  // go-to-k/cdkd#3018. An ENTRY that is not a readable object is a different
+  // shape from the unreadable BAG tested above, and `r.observedProperties` on
+  // one threw a bare `TypeError` naming no stack, no key and no remedy.
+  //
+  // Several shapes reach here, and none is the obvious one. `buildImportPlan`
+  // runs first and blocks a TEMPLATE row whose `state.resources[logicalId]` is
+  // falsy or carries no physical id, so an ordinary templated resource with a
+  // `null` entry aborts the export earlier with that far better message. What
+  // survives is a templated OBJECT row that has a physical id but no resource
+  // type (planned from the template's type, and still named here — except an
+  // `AWS::CloudFormation::Stack` row, whose branch requires the recorded type
+  // and blocks it), plus every row that
+  // loop `continue`s BEFORE it reads the state entry, plus every row it never
+  // visits: an entry the template does not declare at all (a stale row from a
+  // rename or a hand edit), an `AWS::CDK::Metadata` row (short-circuited at the
+  // top of the loop), and a `Custom::*` or `AWS::CloudFormation::CustomResource`
+  // row (routed to `phase2Creates`). The list is derived from that loop's own
+  // `continue`s rather than enumerated by hand — a type added to it later joins
+  // this set silently.
+  //
+  // TOLERATED rather than refused, the opposite call from `cdkd state
+  // refresh-observed`'s on the same shape, decided by what refusing would COST
+  // here: this function is a non-blocking pre-flight WARNING (its own doc says
+  // exit is the user's call), and a throw would replace the export flow's own,
+  // better-worded refusals with a message about a baseline report. It does NOT
+  // follow that something else refuses these shapes — nothing does for an entry
+  // the template never declares, since `walkCdkdStateStackTree` skips a
+  // non-nested entry with `entry?.` and its bag guard returns rather than throws.
+  // Naming them is therefore the only signal the record is broken, which is why
+  // the warning names ids rather than counting them.
+  const readable = entries.filter((entry): entry is [string, ResourceState] =>
+    isReadableResourceEntry(entry[1])
+  );
+  const unreadableCount = entries.length - readable.length;
+  if (unreadableCount > 0) {
+    const unreadable = entries
+      .filter(([, r]) => !isReadableResourceEntry(r))
+      .map(([logicalId]) => logicalId);
+    logger.warn(
+      `${unreadable.length} of ${entries.length} resource(s) in cdkd state have a record that is ` +
+        `not readable as a resource — not an object, or carrying no resource type — so their ` +
+        `drift baseline cannot be reported on. The state record is malformed or truncated. ` +
+        // Not "cannot be migrated": a TEMPLATED row that is an object with a
+        // physical id but no resource type clears `buildImportPlan`'s
+        // `!stateEntry.physicalId` block and is planned from the template's own
+        // type, so that claim would contradict the plan printed beside it.
+        `Inspect it with: ` +
+        `cdkd state show ${stackRef} --json`
+    );
+    for (const logicalId of unreadable.slice(0, NAMED_BASELINE_IDS)) {
+      logger.warn(`  ${displayLogicalId(logicalId)}`);
+    }
+    if (unreadable.length > NAMED_BASELINE_IDS) {
+      logger.warn(`  ... and ${unreadable.length - NAMED_BASELINE_IDS} more`);
+    }
+  }
+
+  const missing = readable.filter(([, r]) => r.observedProperties === undefined);
   if (missing.length === 0) return;
   if (state.version !== undefined && state.version < 3) {
     logger.warn(
       `cdkd state schema is v${state.version} (pre-observedProperties). cdkd drift ` +
-        `cannot reliably compare against AWS for this stack; the next \`cdk deploy\` ` +
+        `cannot reliably compare against AWS for this stack; the next 'cdk deploy' ` +
         `after migration may surface spurious changes if AWS has drifted from the ` +
-        `template. Run \`cdkd state refresh-observed ${safeSegment(state.stackName)}\` (or any ` +
-        `redeploy) before export to capture an AWS-current baseline.`
+        // Same conditional as the v3+ branch below, and for the same reason: a
+        // pre-v3 record can hold an unreadable entry too, and
+        // `cdkd state refresh-observed` refuses the WHOLE record over one. An
+        // earlier cut applied the condition to one branch only, so the legacy
+        // half kept recommending a command that declines.
+        (unreadableCount > 0
+          ? `template. Repair the ${unreadableCount} unreadable record(s) named above first — ` +
+            `'cdkd state refresh-observed' refuses a record that holds one — then capture an ` +
+            `AWS-current baseline before export.`
+          : `template. Capture an AWS-current baseline before export — any redeploy does ` +
+            (refreshCommand !== undefined
+              ? `it, or run: ${refreshCommand}`
+              : `it, or run ${refreshWithheld}`))
     );
     return;
   }
@@ -5427,15 +5672,34 @@ export function reportDriftBaselineGaps(
     logger.warn(
       `${refreshable.length} of ${entries.length} resource(s) in cdkd state lack an ` +
         `AWS-current baseline (observedProperties). cdkd drift may produce false positives ` +
-        `for them; the next \`cdk deploy\` after migration may surface unexpected changes. ` +
-        `Run \`cdkd state refresh-observed ${safeSegment(state.stackName)}\` to capture a baseline before ` +
-        `export, then \`cdkd drift\` to verify the stack matches AWS.`
+        `for them; the next 'cdk deploy' after migration may surface unexpected changes. ` +
+        // The advice is CONDITIONAL on the record being readable, because since
+        // go-to-k/cdkd#3018 `cdkd state refresh-observed` REFUSES a record that
+        // holds an unreadable entry — the whole record, not just that row. Sending
+        // the user to a command that will decline is the defect this issue opened
+        // with, one command over, so when the warning above fired the remedy is
+        // repair first.
+        (unreadableCount > 0
+          ? `Repair the ${unreadableCount} unreadable record(s) named above first — ` +
+            `'cdkd state refresh-observed' refuses a record that holds one. Then capture a ` +
+            `baseline and run 'cdkd drift' to verify the stack matches AWS.`
+          : refreshCommand !== undefined
+            ? `Capture a baseline before export, then run 'cdkd drift' to verify the stack ` +
+              `matches AWS, with: ${refreshCommand}`
+            : `Capture a baseline before export with ${refreshWithheld} Then run ` +
+              `'cdkd drift' to verify the stack matches AWS.`)
     );
-    for (const [logicalId] of refreshable.slice(0, 10)) {
-      logger.warn(`  ${logicalId}`);
+    for (const [logicalId] of refreshable.slice(0, NAMED_BASELINE_IDS)) {
+      // Sanitized like the unreadable-entry list above, and for the same
+      // reason: these ids come from the same hand-editable record. The two
+      // pre-existing loops here were unsanitized before go-to-k/cdkd#3018 —
+      // adding a third in that shape beside them would have been the
+      // "converging on mechanism, not on coverage" defect `display-safe.ts`
+      // was created over, so all three take the helper.
+      logger.warn(`  ${displayLogicalId(logicalId)}`);
     }
-    if (refreshable.length > 10) {
-      logger.warn(`  ... and ${refreshable.length - 10} more`);
+    if (refreshable.length > NAMED_BASELINE_IDS) {
+      logger.warn(`  ... and ${refreshable.length - NAMED_BASELINE_IDS} more`);
     }
   }
 
@@ -5447,11 +5711,11 @@ export function reportDriftBaselineGaps(
         `a readback against those properties could persist a resolved secret into state.json ` +
         `in plaintext. Deploy a change to each one to restore its baseline.`
     );
-    for (const [logicalId] of refused.slice(0, 10)) {
-      logger.warn(`  ${logicalId}`);
+    for (const [logicalId] of refused.slice(0, NAMED_BASELINE_IDS)) {
+      logger.warn(`  ${displayLogicalId(logicalId)}`);
     }
-    if (refused.length > 10) {
-      logger.warn(`  ... and ${refused.length - 10} more`);
+    if (refused.length > NAMED_BASELINE_IDS) {
+      logger.warn(`  ... and ${refused.length - NAMED_BASELINE_IDS} more`);
     }
   }
 }

@@ -461,4 +461,138 @@ describe('the LIST -> scalar rewrite warns once per export (issue #1787)', () =>
       warn.mockRestore();
     }
   });
+
+  /**
+   * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) item 3: the
+   * preview inside that warning was cut with `String.prototype.slice`, which
+   * counts UTF-16 CODE UNITS.
+   *
+   * `tests/unit/utils/display-safe.test.ts` already fences `truncateCodePoints`
+   * itself; what no case covered was whether this CALL SITE goes through it,
+   * which is the whole content of the fix — the helper has been correct and
+   * unused here since issue #2947.
+   */
+  it('cuts the list preview by CODE POINT, so it cannot end on a lone surrogate', () => {
+    // `JSON.stringify(["…"])` opens with `["`, so payload index 117 lands at
+    // JSON index 119 — the first unit of the cut's LAST kept position. An
+    // astral character there is exactly straddling a 120-code-unit cut: its
+    // high surrogate is kept and its low surrogate is dropped.
+    const ASTRAL = String.fromCodePoint(0x1d518);
+    const straddling = `${'a'.repeat(117)}${ASTRAL}${'b'.repeat(40)}`;
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+
+    // NON-VACUITY, computed from an expression independent of the subject: the
+    // old cut really does produce a lone surrogate on this input. Without this
+    // the case would pass on any input at all, including one that never reaches
+    // the truncation.
+    const json = JSON.stringify([straddling]);
+    expect(json.length).toBeGreaterThan(120);
+    expect(
+      LONE_SURROGATE.test(json.slice(0, 120)),
+      'the probe input no longer straddles the cut; this case has stopped testing anything'
+    ).toBe(true);
+
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      filterTemplateForImport(
+        {
+          Resources: {
+            Ns: { Type: 'AWS::S3Tables::Namespace', Properties: { Namespace: [straddling] } },
+          },
+        },
+        [namespaceEntry]
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]![0]);
+      expect(message).toMatch(/rewriting the identifier property 'Namespace'/);
+      // The point of the case.
+      expect(LONE_SURROGATE.test(message)).toBe(false);
+      // ...and it is still a bounded PREVIEW, not the whole value — a fix that
+      // stopped truncating would also clear the assertion above.
+      expect(message).toContain('…');
+      expect(message).not.toContain('b'.repeat(40));
+      // The astral character survives WHOLE rather than being dropped with its
+      // partner: cutting one unit earlier would also pass the two assertions
+      // above while losing a character the reader is meant to see.
+      expect(message).toContain(ASTRAL);
+
+      // The BOUND itself, in code points. Without it the case also accepts a
+      // 121-code-point preview — the pair stays whole, the ellipsis is there
+      // and the trailing `b`s are still absent — so it would credit a cap it
+      // never measured. `Array.from` counts code points, which is the unit the
+      // helper cuts in; `.length` would count the pair as two.
+      // Anchored on the `-element list (` prefix, not on the first `(` in the
+      // message: that one belongs to the `(AWS::S3Tables::Namespace)` type
+      // annotation, and slicing from it measured 216 code points of prose.
+      const previewMatch = /-element list \(([\s\S]*?)…\)/.exec(message);
+      expect(previewMatch, 'the warning no longer carries a truncated list preview').not.toBeNull();
+      expect(Array.from(previewMatch![1]!)).toHaveLength(120);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('SANITIZES the preview, not only truncates it', () => {
+    // `JSON.stringify` escapes C0, which is why this looked safe, and leaves
+    // `U+0085`, the C1 range, `U+2028` / `U+2029` and the bidi overrides
+    // verbatim — every mechanism that forges a line or reorders one in a
+    // terminal or a JSON log viewer. The text lands in a warning and, on the
+    // refusal path, in an Error a failed export persists.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e'];
+    const hostile = `analytics${FORGERIES.join('')}tail`;
+    for (const forge of FORGERIES) {
+      expect(hostile.includes(forge), `probe input lost ${JSON.stringify(forge)}`).toBe(true);
+    }
+
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      filterTemplateForImport(
+        {
+          Resources: {
+            Ns: { Type: 'AWS::S3Tables::Namespace', Properties: { Namespace: [hostile] } },
+          },
+        },
+        [namespaceEntry]
+      );
+      const message = String(warn.mock.calls[0]![0]);
+      for (const forge of FORGERIES) expect(message).not.toContain(forge);
+      // ...and the readable part of the value still reaches the reader, so the
+      // sanitizing is not a blanket redaction.
+      expect(message).toContain('analytics');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT mark a preview it did not cut, at or below the bound', () => {
+    // The other arm of `truncated`. Appending the marker unconditionally
+    // survives every assertion in the case above — the cut one is marked either
+    // way — so a value that fits would read as having been summarized.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      // The JSON wrapper is four characters (`["` and `"]`), so a 116-character
+      // payload is EXACTLY the 120-code-point bound — the position where
+      // `truncated` must still be false — and a short one is well under it.
+      for (const payload of ['short', 'a'.repeat(116)]) {
+        warn.mockClear();
+        filterTemplateForImport(
+          {
+            Resources: {
+              Ns: { Type: 'AWS::S3Tables::Namespace', Properties: { Namespace: [payload] } },
+            },
+          },
+          [namespaceEntry]
+        );
+        const message = String(warn.mock.calls[0]![0]);
+        const shown = /-element list \(([\s\S]*?)\) to the scalar/.exec(message);
+        expect(shown, `no preview was rendered for a ${payload.length}-character payload`).not.toBeNull();
+        expect(shown![1], 'a preview that was not cut carries the truncation marker').not.toContain(
+          '…'
+        );
+        expect(shown![1]).toContain(payload);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

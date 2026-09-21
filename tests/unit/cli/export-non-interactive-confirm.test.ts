@@ -316,3 +316,122 @@ describe('cdkd export prompts REFUSE a non-interactive stdin (issue #2275)', () 
     });
   });
 });
+
+describe('the drift-baseline report receives the LOADED identity (go-to-k/cdkd#3018)', () => {
+  // The single-stack call site of `reportDriftBaselineGaps`. Its helper tests
+  // hand the identity in directly, so they cannot see this argument; driving
+  // the real command does. A record loaded from a LEGACY key comes back with
+  // `migrationPending`, and its key carries no region even though
+  // `pickStackRegion` resolved one to load it — so the report must advise
+  // migrating rather than print a `refresh-observed` command that refuses a
+  // legacy record. The nested-tree call site is driven separately below.
+  it('advises migrating for a record loaded from a legacy key', async () => {
+    mockGetState.mockResolvedValue({ ...stateRecord(), migrationPending: true });
+
+    await runExport([...baseArgs(), '--yes']);
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('this record has no region');
+    expect(warned).not.toMatch(/cdkd state refresh-observed \S/);
+  });
+
+  it('prints the refresh command, with its region, for a region-scoped record', async () => {
+    // The other direction: without it, a call site that always passed no region
+    // would satisfy the case above. The record BODY names a different stack and
+    // region, so a call site passing the body's values instead of the loaded
+    // ones cannot satisfy it either. The divergent REGION is a fabricated shape
+    // since go-to-k/cdkd#3369 — `adoptKeyRegion` replaces it with the key's on a
+    // region-scoped read, and this case reaches the report through a mocked
+    // `getState` — while the divergent stack NAME is still producible.
+    const record = stateRecord();
+    record.state['stackName'] = 'OtherStack';
+    record.state['region'] = 'eu-west-1';
+    mockGetState.mockResolvedValue(record);
+
+    await runExport([...baseArgs(), '--yes']);
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain(`cdkd state refresh-observed ${STACK} --stack-region ${REGION}`);
+    expect(warned).not.toContain('OtherStack');
+    expect(warned).not.toContain('eu-west-1');
+  });
+
+  // The NESTED-tree call site, a separate line from the single-stack one: a
+  // template with an `AWS::CloudFormation::Stack` row routes the export
+  // through `buildCdkdStateStackTree` and reports the baseline from there.
+  // What follows the report (the per-stack IMPORT loop) is not this case's
+  // subject, so the run's own outcome is not asserted.
+  function nestedTree(root: { stackName: string; region: string }, migrationPending: boolean): string[] {
+    const nestedTemplatePath = join(tmp, 'nested-template.json');
+    writeFileSync(
+      nestedTemplatePath,
+      JSON.stringify({
+        AWSTemplateFormatVersion: '2010-09-09',
+        Resources: {
+          MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://example.com/child.json' },
+          },
+        },
+      }),
+      'utf-8'
+    );
+    const rootRecord = stateRecord();
+    rootRecord.state['stackName'] = root.stackName;
+    rootRecord.state['region'] = root.region;
+    (rootRecord.state['resources'] as Record<string, unknown>)['Child'] = {
+      physicalId: `arn:aws:cloudformation:${REGION}:123456789012:stack/${STACK}-Child/x`,
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes: {},
+      dependencies: [],
+    };
+    const childRecord = {
+      state: {
+        version: 9,
+        stackName: `${STACK}~Child`,
+        region: REGION,
+        parentStack: STACK,
+        parentLogicalId: 'Child',
+        parentRegion: REGION,
+        resources: {},
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'c0',
+    };
+    mockGetState.mockImplementation((async (name: string) =>
+      name === STACK
+        ? { ...rootRecord, ...(migrationPending && { migrationPending: true }) }
+        : childRecord) as never);
+    return [
+      STACK,
+      '--template',
+      nestedTemplatePath,
+      '--state-bucket',
+      'test-bucket',
+      '--stack-region',
+      REGION,
+      '--skip-import-support-preflight',
+      '--yes',
+    ];
+  }
+
+  it('NESTED tree: advises migrating for a record loaded from a legacy key', async () => {
+    await runExport(nestedTree({ stackName: STACK, region: REGION }, true));
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('this record has no region');
+    expect(warned).not.toMatch(/cdkd state refresh-observed \S/);
+  });
+
+  it('NESTED tree: prints the refresh command from the LOADED identity, not the body', async () => {
+    await runExport(nestedTree({ stackName: 'OtherStack', region: 'eu-west-1' }, false));
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain(`cdkd state refresh-observed ${STACK} --stack-region ${REGION}`);
+    expect(warned).not.toContain('OtherStack');
+    expect(warned).not.toContain('eu-west-1');
+  });
+});

