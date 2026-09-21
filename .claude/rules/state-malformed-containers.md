@@ -1,5 +1,5 @@
 ---
-description: The per-container REFUSE / REPAIR guards over a state record whose resources or outputs bag a hand edit left unreadable
+description: The per-container REFUSE / REPAIR guards over a state record whose resources or outputs bag, or orphans list, a hand edit left unreadable
 paths:
   - 'src/state/malformed-resources-bag.ts'
 ---
@@ -107,15 +107,15 @@ the one module the whole codebase depends on. Do not spell the plain-object test
 a second time at a call site; enumerate consumers with
 `grep -rn "isReadableBag" src/`.
 
-## The two containers are separate calls, deliberately
+## Each container is its own call, deliberately
 
-A record can be malformed in either alone, so a command that reads both makes two
-calls and the message names the one that is broken. Collapsing them is wrong in
-both directions — a `resources` refusal printed over an intact resource map tells
-the operator their stack would be re-created on the next deploy, which does not
-hold.
+A record can be malformed in ONE container alone, so a command that reads several
+makes one call each and the message names the one that is broken. Collapsing them
+is wrong in both directions — a `resources` refusal printed over an intact
+resource map tells the operator their stack would be re-created on the next
+deploy, which does not hold.
 
-**The ABSENCE rule differs between them.** An absent `resources` bag is a defect.
+**The ABSENCE rule differs per container.** An absent `resources` bag is a defect.
 An absent `outputs` bag is an ORDINARY record cdkd writes on purpose: the
 deploy's failure-path saves emit `outputs: currentState.outputs`, which
 `JSON.stringify` drops when undefined, and `cdkd scrub` round-trips such a record

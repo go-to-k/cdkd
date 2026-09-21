@@ -437,7 +437,7 @@ resources that do not exist, and in `outputs` it produces one `REMOVE` row per
 character, each printing a character of the record as its previous value — rows
 `--fail` would exit `1` on.
 
-Both warnings point at
+Every one of these warnings points at
 `cdkd state show <stack> --stack-region <region> --json`, which emits the record
 as stored, so the evidence survives the repair. The `resources` warning
 additionally says that `cdkd deploy` and `cdkd destroy` **refuse** such a
@@ -452,10 +452,19 @@ refuse a record whose `outputs` map is unreadable rather than deciding from it,
 so a diff that previews cleanly is followed by a refusal. See
 [when `outputs` is not an object](state-management.md#when-outputs-is-not-an-object).
 
-The `properties` warning is the third, and it names the individual resource
+The `orphans` warning costs this preview's rollback-orphan adoption, and it
+costs the same thing beyond the preview: `cdkd deploy`, `cdkd destroy`,
+`cdkd rollback`, `cdkd import` and a real `cdkd scrub` all refuse a record whose
+`orphans` field is present and not a list, because such a field either counts as
+no orphans — leaving the resources an earlier failed deploy left live in AWS
+unreported, or rewritten into character-shaped records by a rollback — or aborts
+the command outright with no cause named. See
+[when `orphans` is not a list](state-management.md#when-orphans-is-not-a-list).
+
+The `properties` warning names the individual resource
 records it emptied — up to five of them, then a count. It costs more than the
-section the other two cost: the rows for those resources are still printed, and
-they are wrong. Where the template still declares the resource, its every
+section or the preview each container-level warning costs: the rows for those
+resources are still printed, and they are wrong. Where the template still declares the resource, its every
 declared property reads as an addition against the empty map and a create-only
 one renders as a replacement; where the template no longer declares it — a
 removed nested child under `--recursive` is diffed against an empty template —

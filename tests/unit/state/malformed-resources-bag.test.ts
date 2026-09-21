@@ -60,6 +60,9 @@ import {
   displaySafe,
   truncateCodePoints,
 } from '../../../src/utils/display-safe.js';
+// For the "offers no destructive command" invariant below: the command names are
+// DERIVED from the real Commander tree, never hand-listed.
+import { buildProgram } from '../../../src/cli/program.js';
 
 /**
  * What the module's private `safeIdentifier` would render a name as, before
@@ -538,6 +541,62 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
         expect(message.split('\n')).toHaveLength(1);
       }
       expect(malformedOrphansWarning(String.fromCharCode(0x00), 'r')).toContain(UNRENDERABLE);
+    });
+
+    it('the WRITER text names the hand-edit hazard and invokes only the READ command', () => {
+      // Security review of the go-to-k/cdkd#3379 maintainer round: the first cut
+      // of this clause said the record "stays damaged until you rewrite or
+      // remove it yourself", which reads as "cdkd offers nothing" and steers an
+      // operator to edit the object in S3 — where rewriting the container to
+      // `[]` erases the evidence this refusal exists to protect, bypassing the
+      // lock and the If-Match on every supported write. So the clause names
+      // that hazard rather than leaving the reader to find it.
+      const m = malformedOrphansRefusalMessage('MyStack', 'us-east-1');
+      expect(m).toContain('no cdkd command repairs this container');
+      // The WARNING, not just the notation: keying on `[]` alone left the
+      // consequence clause deletable with every assertion green (maintainer
+      // proxy pass, round 2).
+      expect(m, 'the hand-edit hazard is not named').toContain('[]');
+      expect(m).toContain('discards the very evidence this refusal is protecting');
+      // And it offers NO command that deletes — asserted as the INVARIANT
+      // rather than as one spelling, because excluding `cdkd state orphan`
+      // alone left an inserted `aws s3 rm` green. Exactly one command-shaped
+      // token, and it is the read below. A removal route belongs to the DESTROY
+      // sibling, which owes it because it is refusing a cleanup; here a
+      // deleting command would need this message to gain that sibling's
+      // exactness split, since a sanitized name can match a HEALTHY record.
+      // DERIVED from the CLI's own command inventory, whitespace-normalised, and
+      // asserted as the WHOLE list rather than per spelling. Three weaker cuts
+      // were each green under a mutation (maintainer proxy pass): excluding only
+      // `cdkd state orphan` admitted `aws s3 rm`; a hand list of subcommands
+      // admitted `cdkd gc`; and a `toContain` check admitted `cdkd  state
+      // orphan` with two spaces, as well as a SECOND copy of the allowed read.
+      // The floors are what stop a broken import from making this vacuous.
+      const program = buildProgram();
+      const topLevel = program.commands.map((c) => c.name());
+      const stateSubs = (program.commands.find((c) => c.name() === 'state')?.commands ?? []).map(
+        (c) => c.name()
+      );
+      expect(topLevel.length).toBeGreaterThan(10);
+      expect(stateSubs.length).toBeGreaterThan(5);
+      // Quotes stripped as well as whitespace collapsed: `cdkd 'state' orphan` executes as
+      // `state orphan`, and a bare-token regex misses it. What this pins is the message's
+      // command inventory under that normalisation — not every conceivable shell spelling,
+      // which no string assertion can reach.
+      const flat = m.replace(/['"]/g, '').replace(/\s+/g, ' ');
+      const invoked = [...flat.matchAll(/cdkd\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/g)]
+        .filter((hit) => topLevel.includes(hit[1]!))
+        .map((hit) => (hit[1] === 'state' ? `state ${hit[2]}` : hit[1]!));
+      expect(invoked, 'the refusal invokes a command other than the one READ').toEqual([
+        'state show',
+      ]);
+      // ...and no foreign tool either, which is the other half of "offers no
+      // destructive command" (an inserted `aws s3 rm` was green before this).
+      expect(flat).not.toMatch(/\b(?:aws|rm|curl|kubectl|sh)\s+\S/);
+      // The one PASTEABLE command still ends the message, unwrapped, so the
+      // added sentence did not move it off the tail.
+      expect(m.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+      expect(m.split('\n')).toHaveLength(1);
     });
 
     it('the DESTROY text says what a destroy does, and names the way out', () => {

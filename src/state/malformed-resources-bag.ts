@@ -1275,8 +1275,8 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
     `list of character-shaped orphan records, and every other unreadable shape reads as no ` +
     `orphans at all — so a run would delete or adopt against a record whose evidence of ` +
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
-    `record first: no cdkd command repairs the STORED container, so the record stays damaged ` +
-    `until you rewrite or remove it yourself. Inspect it with: ` +
+    `record first, and no cdkd command repairs this container: rewriting it to [] by hand ` +
+    `discards the very evidence this refusal is protecting. Inspect the record with: ` +
     `cdkd state show ${shellQuote(stack)} ` +
     `--stack-region ${shellQuote(reg)} --json`
   );
@@ -1289,11 +1289,12 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
  * reason every text in this module is its own: that one says the container
  * would be RESHAPED and written back, which is the rollback mechanism, and a
  * destroy never reshapes it — `buildDestroySnapshot` carries the container
- * verbatim through `...rest` into each incremental save, and the run then
- * REMOVES the record. What a destroy does with the container instead is
- * DECIDE: the count feeds `stillEmpty`, and the orphan warning above it is the
- * operator's only notice that resources from an earlier failed deploy are
- * still live in AWS.
+ * verbatim through `...rest` into every save it makes, and then either REMOVES
+ * the record (the clean path) or writes that snapshot as the final state, with
+ * the container intact, on the error / interrupt / skip arm. What a destroy
+ * does with the container instead is DECIDE: the count feeds `stillEmpty`, and
+ * the orphan warning above it is the operator's only notice that resources from
+ * an earlier failed deploy are still live in AWS.
  *
  * It also owes the remedy the sibling destroy refusal owes, and for the same
  * reason go-to-k/cdkd#3161 raised against refusing a cleanup command at all: an

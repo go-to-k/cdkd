@@ -420,6 +420,32 @@ Inspect the record with `cdkd state show <stack> --stack-region <region>
 a defect and is never refused: cdkd writes such records on purpose. The full
 per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
 
+## A malformed `orphans` list refuses the deploy
+
+A rollback that leaves a `DeletionPolicy: Retain` resource standing records it
+under `orphans`, so the next deploy can adopt that resource back instead of
+colliding with the name it still holds. The field is a LIST, and the same
+absence of a shape check lets a hand-edited or truncated record hold a string, a
+number, an object or `null` there instead.
+
+`cdkd deploy` refuses such a record after taking the lock and before any
+resource operation (`STATE_RESOURCES_MALFORMED`, exit `1`). What it refuses
+depends on the shape, and neither outcome is one you can act on:
+
+Unguarded, every such shape is wrong in one of two ways, and which one you get
+depends on the shape. Either the deploy reads the record as having **no orphans
+at all** — and provisions against retained resources that are already in AWS,
+unadopted — or it dies on the field, in the adoption walk or in the save that
+follows the provisioning, with a `TypeError` that names neither the field nor the
+stack. A string is the worst of the first kind and the clearest of the second: it
+is walked one **character** per orphan record.
+
+Inspect the record with `cdkd state show <stack> --stack-region <region>
+--json`, repair or remove it, then re-run. An **absent** `orphans` field is not a
+defect and is never refused — it is the ordinary shape for a stack that has
+never had a failed deploy. The full per-command table is in
+[State Management](state-management.md#when-orphans-is-not-a-list).
+
 ## A malformed resource `properties` map refuses the deploy
 
 Each resource record carries its own `properties` map — the resolved template
