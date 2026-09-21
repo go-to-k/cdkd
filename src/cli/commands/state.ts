@@ -29,6 +29,7 @@ import {
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import {
   UNRENDERABLE,
   buildForceUnlockCommand,
@@ -2894,11 +2895,15 @@ async function listStateFileKeys(s3: S3Client, bucket: string, prefix: string): 
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: searchPrefix,
+        // go-to-k/cdkd#3313: without this the XML round-trip turns a CARRIAGE
+        // RETURN in a key into a LINE FEED, and the key collected here is the
+        // one every later `getState` / `GetObject` addresses.
+        EncodingType: LISTING_ENCODING_TYPE,
         ...(continuationToken && { ContinuationToken: continuationToken }),
       })
     );
     for (const obj of resp.Contents ?? []) {
-      const key = obj.Key;
+      const key = decodeListingKey(obj.Key);
       if (typeof key === 'string' && key.endsWith('/state.json')) {
         keys.push(key);
       }
@@ -2950,9 +2955,18 @@ interface AssetStorageInfo {
 
 /**
  * List every region's bootstrap marker under `cdkd-bootstrap/` in the state
- * bucket. Malformed markers are skipped with a warning — `state info` is a
- * cosmetic command and should not crash on an unexpected payload (deploy
+ * bucket. A malformed marker PAYLOAD is skipped with a warning — `state info`
+ * is a cosmetic command and should not crash on an unexpected body (deploy
  * hard-errors on the same marker instead).
+ *
+ * A malformed KEY is the one exception, and the distinction is deliberate
+ * (go-to-k/cdkd#3313): `decodeListingKey` throws on a value that is not valid
+ * URL encoding, and that call sits outside the per-marker `try`, so it aborts
+ * the command rather than skipping the entry. A key cdkd cannot decode is one
+ * it cannot address, and continuing would mean reporting on a marker while
+ * unable to say which object it came from. Unreachable against S3, whose own
+ * encoding is well-formed by construction; it is a refusal for the case where
+ * that assumption stops holding.
  */
 async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<AssetStorageInfo[]> {
   const logger = getLogger();
@@ -2964,18 +2978,25 @@ async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<As
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: BOOTSTRAP_MARKER_PREFIX,
+        // go-to-k/cdkd#3313. This key is both SLICED into a region name and
+        // handed back to `GetObject` below, so a raw one names the wrong region
+        // and reads the wrong object.
+        EncodingType: LISTING_ENCODING_TYPE,
         ...(continuationToken && { ContinuationToken: continuationToken }),
       })
     );
     for (const obj of resp.Contents ?? []) {
+      // Decoded BEFORE the prefix re-check, or the guard tests a different
+      // string from the one that gets used.
+      const markerKey = decodeListingKey(obj.Key);
       // Defensive startsWith re-check on top of the ListObjectsV2 Prefix —
       // a key outside the marker prefix must never be parsed as a marker.
       if (
-        typeof obj.Key === 'string' &&
-        obj.Key.startsWith(BOOTSTRAP_MARKER_PREFIX) &&
-        obj.Key.endsWith('.json')
+        typeof markerKey === 'string' &&
+        markerKey.startsWith(BOOTSTRAP_MARKER_PREFIX) &&
+        markerKey.endsWith('.json')
       ) {
-        keys.push(obj.Key);
+        keys.push(markerKey);
       }
     }
     continuationToken = resp.NextContinuationToken;

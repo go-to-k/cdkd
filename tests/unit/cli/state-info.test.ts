@@ -510,4 +510,85 @@ describe('cdkd state info', () => {
       expect(mockS3Destroy).not.toHaveBeenCalled();
     });
   });
+
+  describe('the listing round-trip (go-to-k/cdkd#3313)', () => {
+    // The source-text fence in `tests/unit/utils/s3-listing-keys.test.ts` proves
+    // the SHAPE — that the request and the decode are both present. These two
+    // pin the BEHAVIOUR, with a mock that encodes the way real S3 does rather
+    // than echoing whatever the test handed it. Without that, decode and
+    // no-decode are indistinguishable here, which is why the whole class was
+    // invisible to 24,000 passing tests before go-to-k/cdkd#3331.
+    const CR = String.fromCharCode(13);
+
+    function scriptEncodingAwareS3(realKey: string): void {
+      mockResolveWithSource.mockResolvedValue({
+        bucket: 'cdkd-state-enc',
+        source: 'cli-flag',
+      });
+      mockRebuildClientForBucketRegion.mockResolvedValue(null);
+      mockS3Send.mockImplementation(async (command) => {
+        if (command instanceof GetBucketLocationCommand) return { LocationConstraint: undefined };
+        if (command instanceof ListObjectsV2Command) {
+          const prefix = (command.input.Prefix as string | undefined) ?? '';
+          if (!realKey.startsWith(prefix)) {
+            return { Contents: [], NextContinuationToken: undefined };
+          }
+          // What real S3 does under `EncodingType: 'url'`, and what it does
+          // WITHOUT it: the XML round trip turns the CR into an LF.
+          const asS3WouldReturn =
+            command.input.EncodingType === 'url'
+              ? realKey.replaceAll(CR, '%0D')
+              : realKey.replaceAll(CR, '\n');
+          return { Contents: [{ Key: asS3WouldReturn }], NextContinuationToken: undefined };
+        }
+        if (command instanceof GetObjectCommand) {
+          const key = command.input.Key as string;
+          // The point of the whole change: the object is only found when the
+          // key cdkd asks for is the one it was stored under.
+          if (key !== realKey) {
+            throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
+          }
+          return {
+            Body: {
+              transformToString: async () =>
+                JSON.stringify({ assetBucket: 'b', containerRepo: 'r' }),
+            },
+          };
+        }
+        return {};
+      });
+    }
+
+    it('asks for URL encoding on every listing it issues', () => {
+      // A precondition for the case below, stated separately so a failure says
+      // WHICH half broke.
+      scriptEncodingAwareS3(`cdkd-bootstrap/us-east-1${CR}x.json`);
+      return runStateInfo(['info']).then(() => {
+        const listings = mockS3Send.mock.calls
+          .map((c) => c[0] as { input?: Record<string, unknown> })
+          .filter((c) => c instanceof ListObjectsV2Command);
+        expect(listings.length, 'state info issued no listing at all').toBeGreaterThan(0);
+        for (const l of listings) {
+          expect(l.input?.['EncodingType'], 'a listing was taken without EncodingType').toBe('url');
+        }
+      });
+    });
+
+    it('addresses the marker object by the key it was actually stored under', () => {
+      // The behavioural assertion: the mock REFUSES any GetObject whose key is
+      // not the stored one, so this passes only if the CR survived the round
+      // trip. Pre-fix it would be an LF and the read would 404.
+      const realKey = `cdkd-bootstrap/us-east-1${CR}x.json`;
+      scriptEncodingAwareS3(realKey);
+      return runStateInfo(['info']).then((out) => {
+        const gets = mockS3Send.mock.calls
+          .map((c) => c[0] as { input?: Record<string, unknown> })
+          .filter((c) => c instanceof GetObjectCommand);
+        expect(gets.some((g) => g.input?.['Key'] === realKey), 'no GetObject used the stored key').toBe(
+          true
+        );
+        expect(out).toContain('Asset storage');
+      });
+    });
+  });
 });
