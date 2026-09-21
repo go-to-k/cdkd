@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 
 // Logger / config-loader / aws-clients mocks: same pattern as the
 // other state-* tests so the command boot path runs cleanly without
@@ -1581,8 +1582,101 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).not.toContain('Stack ProdStack has only');
       expect(message).toContain('does NOT render exactly');
-      expect(message).toContain("list them as stored with 'cdkd state list --long'");
+      expect(message).toContain("list the records as stored with 'cdkd state list --long'");
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    });
+
+    it('gives an EXACT legacy name no withheld-name clause (go-to-k/cdkd#3499 M11)', async () => {
+      // The first of the two directions M11 exists for. `Old;Stack` renders
+      // exactly — `displaySafe` alters nothing in it, and quoting is what makes
+      // the `;` safe — so the command NAMES it, and a sentence saying the name
+      // "does NOT render exactly" would be false ABOVE a command that spells it
+      // out. The clause comes from the same gate that decided the hole, so
+      // there is no second predicate that could disagree with the command.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'Old;Stack' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toMatch(/^Migrate with: cdkd deploy 'Old;Stack'$/m);
+      expect(message).not.toContain('does NOT render exactly');
+      expect(message).not.toContain('is not named in the command below');
+    });
+
+    it('explains the HOLE for an option-shaped legacy name (go-to-k/cdkd#3499 M11)', async () => {
+      // The other direction, and the one a site-local `displayIdent(n) === n`
+      // predicate gets WRONG: `--all` survives sanitizing untouched, so that
+      // predicate calls it exact and prints no clause at all — leaving a bare,
+      // authoritative name above an unexplained hole, which invites the
+      // operator to type the name they were shown into `cdkd deploy`. That
+      // deploys every stack in the app. The gate withheld it for a REASON, and
+      // the reason is what the sentence is rendered from.
+      mockListStacks.mockResolvedValueOnce([{ stackName: '--all' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      expect(message).toContain(
+        `This record's name would be read as an OPTION by 'cdkd deploy', not as a stack name`
+      );
+      expect(message).toContain('it is not named in the command below');
+      // NOT the exactness sentence: `--all` renders exactly. Keying the clause
+      // on rendering alone would print the wrong reason here, or none.
+      expect(message).not.toContain('does NOT render exactly');
+    });
+
+    for (const [label, name] of [
+      ['a wildcard', '*'],
+      ['a wildcard after a prefix', 'Prod-*'],
+      ['a display path', 'Stage/Stack'],
+    ] as const) {
+      it(`explains the HOLE as a PATTERN for a legacy name with ${label} (go-to-k/cdkd#3499 M11)`, async () => {
+        // The third reachable reason, and the one whose sentence differs most
+        // from the other two: these names render exactly AND are not options,
+        // so neither of the sibling sentences is true of them. `cdkd deploy`
+        // reads its argument through `src/cli/stack-matcher.ts`, so `'*'` is
+        // every stack in the app. Asserting only the hole (which the sibling
+        // loop above does) leaves the sentence free to say anything.
+        mockListStacks.mockResolvedValueOnce([{ stackName: name }]);
+        mockGetState.mockResolvedValue(null);
+
+        const { error } = await runRefresh(['--all', '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(
+          `This record's name would be read as a PATTERN by 'cdkd deploy', which can match ` +
+            `other stacks`
+        );
+        expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+        expect(message).not.toContain('does NOT render exactly');
+        expect(message).not.toContain('would be read as an OPTION');
+      });
+    }
+
+    it('explains the HOLE as OVER-LONG for a legacy name past the cap (go-to-k/cdkd#3499 M11)', async () => {
+      // The fourth reachable reason. An S3 key segment carries far more than
+      // `STACK_REF_MAX_CODE_POINTS`, so a planted key can reach this arm, and
+      // the name is neither altered by sanitizing nor option- or
+      // pattern-shaped — only its LENGTH withholds it. Printing the exactness
+      // sentence here would be false, and printing none would leave the hole
+      // unexplained.
+      const overLong = 'A'.repeat(STACK_REF_MAX_CODE_POINTS + 1);
+      mockListStacks.mockResolvedValueOnce([{ stackName: overLong }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain(`This record's name is too long to print`);
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      expect(message).not.toContain('does NOT render exactly');
     });
 
     it('prints the `cdkd deploy` example for an ordinary HYPHENATED legacy name', async () => {

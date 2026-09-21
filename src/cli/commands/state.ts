@@ -1,5 +1,6 @@
 import * as readline from 'node:readline/promises';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
+import type { PasteableCommand } from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -3250,6 +3251,50 @@ function createStateInfoCommand(): Command {
  *  - `-y` / `--yes` — skip the confirmation prompt.
  *  - Standard state options + `--profile` / `--role-arn` / `--verbose`.
  */
+/**
+ * The sentence that explains a `cdkd deploy` hole, built from the GATE's reason.
+ *
+ * One predicate for the hole and for the sentence: a site that derives "is this
+ * name safe to print" a second time derives a different set, and then the
+ * message contradicts the command beside it (M11 of the go-to-k/cdkd#3499
+ * review).
+ */
+/**
+ * The sentence for a name `pasteableCommand` would not print, rendered from the
+ * REASON it gave rather than from a predicate of this site's own — M11 of the
+ * go-to-k/cdkd#3499 review. Keying it on a second predicate got both directions
+ * wrong at once: `Old;Stack` renders exactly, so a rendering-based clause called
+ * a command that names it "not exact", and `--all` also renders exactly, so the
+ * same clause said nothing above a hole the operator was then invited to fill
+ * with the name printed beside it.
+ *
+ * Four of the five reasons are reachable from this call site. `empty` is not:
+ * `listStacks` drops a key whose stack segment is empty
+ * (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
+ * is non-empty by the time the refusal is built. The arm stays because the
+ * REASON is the gate's, not this site's — a later caller with a different
+ * source must not fall through to the pattern sentence.
+ */
+function withheldNameClause(built: PasteableCommand): string {
+  const reason = built.withheld.find((w) => w.hole === 'stack')?.reason;
+  if (reason === undefined) return '';
+  const why =
+    reason === 'altered'
+      ? `does NOT render exactly, so another record may render identically`
+      : reason === 'empty'
+        ? `is empty`
+        : reason === 'too-long'
+          ? `is too long to print`
+          : reason === 'option-shaped'
+            ? `would be read as an OPTION by 'cdkd deploy', not as a stack name`
+            : `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
+  return (
+    ` This record's name ${why} — so it is not named in the command below; ` +
+    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
+    `matches.`
+  );
+}
+
 async function stateRefreshObservedCommand(
   stackArgs: string[],
   options: {
@@ -3397,9 +3442,13 @@ async function stateRefreshObservedCommand(
         // the COMMAND — its label, its placement, hole-vs-withhold. Prose
         // rendering is a different axis and the sites differ on it for a
         // reason.
-        const exactName =
-          displayIdent(target.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) ===
-          target.stackName;
+        // ONE `displayIdent` read, not two — `displayIdent`'s own header asks
+        // for that, since each call re-reads `value.toString()` and a hostile
+        // object can answer differently each time (m18 of the
+        // go-to-k/cdkd#3499 review). There is nothing to compare it against
+        // here any more: since M11 the decision about whether the name is
+        // safe to NAME belongs to `pasteableCommand`, which reads the RAW
+        // value, and this rendering is only what the PROSE shows.
         const stack = displayIdent(target.stackName, {
           maxCodePoints: STACK_REF_MAX_CODE_POINTS,
         });
@@ -3426,14 +3475,15 @@ async function stateRefreshObservedCommand(
         throw new Error(
           `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
-            // `orphanCommandFor`'s clause, for its reason: an altered rendering
-            // may read identically to a healthy record, so the operator has to
-            // be told to work from the KEY rather than from what is printed.
-            (exactName
-              ? ''
-              : ` This record's name does NOT render exactly, so another record may render ` +
-                `identically; list them as stored with 'cdkd state list --long' and act on the ` +
-                `one whose key matches.`) +
+            // The clause comes from the GATE's own reason, not from a second
+            // predicate here (M11 of the go-to-k/cdkd#3499 review). Keyed on
+            // `displayIdent(name) === name` it disagreed with the command in
+            // both directions: `Old;Stack` got "does not render exactly" above
+            // a command naming it exactly, and `--all` — which `PLAIN_IDENT`
+            // admits — rendered bare and authoritative above an unexplained
+            // hole, inviting the operator to type the name that deploys every
+            // stack in the app.
+            withheldNameClause(migrate) +
             `\nMigrate with: ${migrate.command}`
         );
       }

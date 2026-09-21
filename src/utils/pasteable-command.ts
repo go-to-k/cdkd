@@ -146,6 +146,39 @@ export interface ValueGateOptions {
   readonly patternMatched?: boolean;
 }
 
+/**
+ * Why {@link pasteableCommand} would not name a value.
+ *
+ * Returned rather than kept private because the SENTENCE around a command has
+ * to say why the command names a hole, and a site that derives that from its
+ * own predicate derives a DIFFERENT set. Measured on go-to-k/cdkd#3499's round
+ * 4, where a site compared `displayIdent(name) === name` while the command
+ * gated on this one: `Old;Stack` got a "does not render exactly" clause above a
+ * command that named it exactly, and `--all` — which `PLAIN_IDENT` admits —
+ * rendered bare and authoritative above an unexplained hole, inviting the
+ * operator to type the name that deploys every stack in the app.
+ *
+ * One predicate, one reason, one sentence.
+ */
+export type WithholdReason =
+  /** Sanitizing would change it: the altered spelling addresses a DIFFERENT record. */
+  | 'altered'
+  /** Empty: an empty argument is not "not supplied" to every reader. */
+  | 'empty'
+  /** Past `STACK_REF_MAX_CODE_POINTS`. */
+  | 'too-long'
+  /** A leading `-`: Commander parses it as a flag whatever the shell quoting. */
+  | 'option-shaped'
+  /** `*` or `/` where the command matches PATTERNS rather than names. */
+  | 'pattern-shaped';
+
+/** One value the command could not name, and why. */
+export interface WithheldValue {
+  /** The hole printed in its place. */
+  readonly hole: string;
+  readonly reason: WithholdReason;
+}
+
 /** What {@link pasteableCommand} returns. */
 export interface PasteableCommand {
   /**
@@ -154,8 +187,20 @@ export interface PasteableCommand {
    */
   readonly command: string;
   /**
+   * Every value this command REFUSED, with the reason — the input a caller's
+   * sentence is built from, so the sentence cannot be keyed on a different
+   * predicate than the hole (M11 of the go-to-k/cdkd#3499 review).
+   *
+   * Only refusals. An argument the caller supplied as a bare `hole` carries no
+   * value to judge, so it prints a hole and sets `exact` false while adding
+   * nothing here — an empty `withheld` under `exact: false` means "the caller
+   * asked for a placeholder", not "nothing was withheld".
+   */
+  readonly withheld: readonly WithheldValue[];
+  /**
    * False when any user-controlled value printed as a HOLE rather than as
-   * itself.
+   * itself, and also when the caller asked for one — see `withheld` for the
+   * narrower question of what the GATE refused.
    *
    * **Every caller in `src/` prints the hole.** The field exists for the
    * SENTENCE around it — a message that wants to say why it could not name the
@@ -181,22 +226,28 @@ export interface PasteableCommand {
  * would be satisfied by every input and the gate would pass vacuously.
  */
 export function rendersExactly(value: string): boolean {
-  if (value === '') return false;
-  const safe = displaySafe(value, { asciiOnly: true });
-  if (safe !== value) return false;
-  return !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
+  const reason = withholdReason(value, undefined);
+  return reason === undefined || reason === 'option-shaped';
 }
 
 /** Whether a value may be NAMED in a command, or must become a hole. */
-function printable(value: string, opts: ValueGateOptions | undefined): boolean {
-  if (!rendersExactly(value)) return false;
+function withholdReason(
+  value: string,
+  opts: ValueGateOptions | undefined
+): WithholdReason | undefined {
+  if (value === '') return 'empty';
+  const safe = displaySafe(value, { asciiOnly: true });
+  if (safe !== value) return 'altered';
+  if (truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated) return 'too-long';
   // A leading `-` is an OPTION to every cdkd command: a state key named
   // `--all` survives sanitizing, the cap and quoting, and then addresses every
   // stack. Quoting does not save it — the shell passes `'--all'` through as
   // the same argv entry Commander then parses as a flag.
-  if (value.startsWith('-')) return false;
-  if (opts?.patternMatched === true && (value.includes('*') || value.includes('/'))) return false;
-  return true;
+  if (value.startsWith('-')) return 'option-shaped';
+  if (opts?.patternMatched === true && (value.includes('*') || value.includes('/'))) {
+    return 'pattern-shaped';
+  }
+  return undefined;
 }
 
 /**
@@ -214,6 +265,7 @@ export function pasteableCommand(
   extraFlags: readonly string[] = []
 ): PasteableCommand {
   let exact = true;
+  const withheld: WithheldValue[] = [];
   const parts: string[] = [verb];
   for (const arg of args) {
     if ('literal' in arg) {
@@ -226,16 +278,18 @@ export function pasteableCommand(
       exact = false;
       continue;
     }
+    const reason = withholdReason(arg.value, arg.opts);
     let rendered: string;
-    if (printable(arg.value, arg.opts)) {
+    if (reason === undefined) {
       rendered = shellQuote(arg.value);
     } else {
       rendered = commandHole(arg.hole);
       exact = false;
+      withheld.push({ hole: arg.hole, reason });
     }
     if ('flag' in arg) parts.push(arg.flag);
     parts.push(rendered);
   }
   parts.push(...extraFlags);
-  return { command: parts.join(' '), exact };
+  return { command: parts.join(' '), exact, withheld };
 }

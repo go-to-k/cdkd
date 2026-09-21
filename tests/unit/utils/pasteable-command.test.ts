@@ -24,6 +24,14 @@ import {
 import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
 
 
+/** What the gate must say about each hostile value the loop below drives. */
+const expectedReason = (value: string): string =>
+  value === ''
+    ? 'empty'
+    : value.length > STACK_REF_MAX_CODE_POINTS
+      ? 'too-long'
+      : 'altered';
+
 describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
   it('names a value that renders exactly, shell-quoted as ONE argument', () => {
     // The control: without it every withholding case below is satisfied by a
@@ -32,10 +40,12 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(pasteableCommand('cdkd deploy', [{ value: 'My-App-Stack', hole: 'stack' }])).toEqual({
       command: 'cdkd deploy My-App-Stack',
       exact: true,
+      withheld: [],
     });
     expect(pasteableCommand('cdkd deploy', [{ value: 'a; printf X; #', hole: 'stack' }])).toEqual({
       command: "cdkd deploy 'a; printf X; #'",
       exact: true,
+      withheld: [],
     });
     expect(
       pasteableCommand('cdkd drift', [
@@ -46,6 +56,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     ).toEqual({
       command: "cdkd drift 'it'\\''s' --revert --stack-region us-east-1",
       exact: true,
+      withheld: [],
     });
     // A legitimate multi-level nested child is long, and the cap must not cut
     // it. AT the cap, not merely past 128: with only a short name here, a
@@ -58,6 +69,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(pasteableCommand('cdkd deploy', [{ value: atCap, hole: 'stack' }])).toEqual({
       command: `cdkd deploy ${atCap}`,
       exact: true,
+      withheld: [],
     });
   });
 
@@ -69,11 +81,13 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(pasteableCommand('cdkd deploy', [{ value: '', hole: 'stack' }])).toEqual({
       command: "cdkd deploy '<stack>'",
       exact: false,
+      withheld: [{ hole: 'stack', reason: 'empty' }],
     });
     const pastCap = 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1);
     expect(pasteableCommand('cdkd deploy', [{ value: pastCap, hole: 'stack' }])).toEqual({
       command: "cdkd deploy '<stack>'",
       exact: false,
+      withheld: [{ hole: 'stack', reason: 'too-long' }],
     });
   });
 
@@ -94,10 +108,15 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1),
     ]) {
       const built = pasteableCommand('cdkd deploy', [{ value: hostile, hole: 'stack' }]);
-      expect(built, JSON.stringify(hostile)).toEqual({
+      expect({ command: built.command, exact: built.exact }, JSON.stringify(hostile)).toEqual({
         command: "cdkd deploy '<stack>'",
         exact: false,
       });
+      // ...and the gate says WHY, which is what the sentence beside the hole
+      // is built from (M11 of the go-to-k/cdkd#3499 review).
+      expect(built.withheld, JSON.stringify(hostile)).toEqual([
+        { hole: 'stack', reason: expectedReason(hostile) },
+      ]);
     }
   });
 
@@ -110,7 +129,11 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
         { value: 'S', hole: 'stack' },
         { flag: '--stack-region', value: 'us-east-1\u001b', hole: 'region' },
       ])
-    ).toEqual({ command: "cdkd state orphan S --stack-region '<region>'", exact: false });
+    ).toEqual({
+      command: "cdkd state orphan S --stack-region '<region>'",
+      exact: false,
+      withheld: [{ hole: 'region', reason: 'altered' }],
+    });
   });
 
   it('holds a value the COMMAND itself would read as an option or a pattern', () => {
@@ -121,7 +144,11 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       expect(
         pasteableCommand('cdkd deploy', [{ value: optionShaped, hole: 'stack' }]),
         optionShaped
-      ).toEqual({ command: "cdkd deploy '<stack>'", exact: false });
+      ).toEqual({
+        command: "cdkd deploy '<stack>'",
+        exact: false,
+        withheld: [{ hole: 'stack', reason: 'option-shaped' }],
+      });
     }
     // `*` and `/` are `stack-matcher.ts` patterns, so they are held only where
     // the command matches patterns.
@@ -129,18 +156,18 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       expect(
         pasteableCommand('cdkd deploy', [
           { value: patterned, hole: 'stack', opts: { patternMatched: true } },
-        ]).exact,
+        ]).withheld,
         patterned
-      ).toBe(false);
+      ).toEqual([{ hole: 'stack', reason: 'pattern-shaped' }]);
     }
     // The same two names are fine for a command that matches EXACTLY — both,
     // or a mutant refusing `/` whatever `patternMatched` says survives.
     expect(pasteableCommand('cdkd state refresh-observed', [{ value: 'Prod*', hole: 'stack' }])).toEqual(
-      { command: "cdkd state refresh-observed 'Prod*'", exact: true }
+      { command: "cdkd state refresh-observed 'Prod*'", exact: true, withheld: [] }
     );
     expect(
       pasteableCommand('cdkd state refresh-observed', [{ value: 'Stage/Prod', hole: 'stack' }])
-    ).toEqual({ command: 'cdkd state refresh-observed Stage/Prod', exact: true });
+    ).toEqual({ command: 'cdkd state refresh-observed Stage/Prod', exact: true, withheld: [] });
   });
 
   it('quotes a hole the caller asks for, and appends extra flags LAST', () => {
@@ -153,6 +180,9 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     ).toEqual({
       command: "cdkd state orphan '<stack>' --stack-region us-east-1 --profile prod --state-bucket 'b b'",
       exact: false,
+      // A caller-supplied hole carries no REASON: nothing was withheld, the
+      // caller never had the value.
+      withheld: [],
     });
   });
 
@@ -167,6 +197,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     ).toEqual({
       command: "cdkd bootstrap --region us-east-1 --asset-bucket '<name>'",
       exact: false,
+      withheld: [],
     });
   });
 
@@ -299,4 +330,28 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       ).toEqual(contentsBefore);
     }
   });
+  describe('rendersExactly', () => {
+    it('is about RENDERING only, so an option-shaped name is still exact', () => {
+      // The compatibility exception M11 had to make explicit. `rendersExactly`
+      // answers "does sanitizing leave this value alone", and `--all` survives
+      // sanitizing untouched — so `true` is the honest answer and was the
+      // answer before the rewrite. Expressing the predicate through
+      // `withholdReason` would have silently changed it to `false`, because
+      // that function ALSO refuses an option; the `option-shaped` exception is
+      // what preserves the original meaning, and this case is what pins it.
+      // Nothing else can: the command builder applies both rules at once, so a
+      // mutant deleting the exception is invisible through `pasteableCommand`.
+      expect(rendersExactly('--all')).toBe(true);
+      expect(rendersExactly('-x')).toBe(true);
+      // ...and the rendering half still refuses, so the exception did not
+      // widen the predicate to "anything goes".
+      expect(rendersExactly('')).toBe(false);
+      expect(rendersExactly('Prod\u00a0Stack')).toBe(false);
+      expect(rendersExactly('A'.repeat(STACK_REF_MAX_CODE_POINTS + 1))).toBe(false);
+      // A pattern is a COMMAND-level judgement, not a rendering one, so this
+      // predicate must not take it either.
+      expect(rendersExactly('*')).toBe(true);
+    });
+  });
+
 });
