@@ -477,8 +477,10 @@ meaning is "non-zero result", not "the command crashed":
 - **`cdkd diff --fail` exits `1` when any change is detected.**
 
 `cdkd diff` also exits **`3`** when it finds a condition that would make
-`cdkd deploy` refuse to start — today, a rollback-orphaned resource whose
-physical name another cdkd stack already records (see
+`cdkd deploy` refuse to start — a rollback-orphaned resource whose physical
+name another cdkd stack already records, or a resource `properties` map or
+`outputs` bag this preview repaired and the deploy refuses — the second of
+those only on the stack you named, not on a nested child (see
 [docs/cli-diff.md](cli-diff.md#exit-3-the-deploy-would-refuse)). The full preview is printed
 first, with the reasons under a `Blocking (cdkd deploy will refuse):` heading;
 the exit code is separate from `--fail` on purpose, so a CI job that gates on

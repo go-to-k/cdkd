@@ -213,6 +213,44 @@ export interface DiffTreeNode {
   children: DiffTreeNode[];
 }
 
+/**
+ * The reason a repaired `properties` map puts on the node's `blocking`
+ * (go-to-k/cdkd#3335).
+ *
+ * `cdkd diff` REPAIRS this container and previews the record; `cdkd deploy`
+ * REFUSES it inside `DiffCalculator.calculateDiff`, which both deploy paths
+ * reach. So the preview is honest about the rows and wrong about what happens
+ * next, and this is the sentence that says so.
+ *
+ * The ids are NOT re-rendered here: they have already been through
+ * `malformedResourcePropertiesWarning`'s sanitizer in the warning printed
+ * beside this, and the renderer strips control characters from every blocking
+ * reason on the way out. The count is what this line adds — and the line does
+ * not send the reader to that warning for the names, because the warning caps
+ * at five before `and N more`, and under `--json` this reason ships in the
+ * payload, where "above" has no referent.
+ */
+function deployRefusesPropertiesReason(logicalIds: readonly string[]): string {
+  return (
+    `${logicalIds.length} resource record(s) hold a 'properties' map that cannot be read. ` +
+    `This preview repaired them to empty; 'cdkd deploy' refuses the record instead, so the ` +
+    `deploy this previews will not start.`
+  );
+}
+
+/**
+ * The `outputs` twin of {@link deployRefusesPropertiesReason}, a constant
+ * because the bag is refused as a whole and there is nothing to count.
+ *
+ * `refuseMalformedOutputs` in `DeployEngine` is what refuses it. This arm is
+ * the one the issue could not drive end to end — a record whose template
+ * declares no Outputs produces no delta at all, so before this the node had
+ * nothing to report and `--fail` exited 0.
+ */
+const DEPLOY_REFUSES_OUTPUTS_REASON =
+  `The 'outputs' bag cannot be read. This preview repaired it to empty; 'cdkd deploy' ` +
+  `refuses the record instead, so the deploy this previews will not start.`;
+
 /** How many unreadable row names the human preview lists before summarizing. */
 const UNREADABLE_PREVIEW_NAMES = 10;
 
@@ -322,14 +360,34 @@ async function loadStateOrEmpty(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend
-): Promise<{ state: StackState; unreadable: string[] }> {
+): Promise<{ state: StackState; unreadable: string[]; deployRefusals: string[] }> {
   const result = await stateBackend.getState(stackName, region);
   if (result) {
     // What the repairs below take OUT of the record, returned beside it so the
     // node can report it (see `DiffTreeNode.unreadable`).
     const unreadable: string[] = [];
+    // REPAIRED containers whose damage `cdkd deploy` REFUSES (go-to-k/cdkd#3335).
+    // Separate from `unreadable`, which means "dropped from the diff": these
+    // rows are still previewed, and the reader's question is different — not
+    // "did the diff read everything" but "will the deploy this previews start
+    // at all". They reach the node's `blocking`, so `countBlocking` raises the
+    // exit-3 `DeployRefusalPreviewError` that `cdkd diff` already spends on a
+    // refused adoption, ahead of `--fail`.
+    //
+    // Without this a record whose template declares nothing in the damaged
+    // container has no delta, so `--fail` exited 0 and a CI step gating on it
+    // passed over a record the next deploy stops on.
+    const deployRefusals: string[] = [];
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
+      // This bag pushes to `unreadable` and NOT to `deployRefusals`, which is
+      // go-to-k/cdkd#3018's answer rather than an omission of
+      // go-to-k/cdkd#3335's: a row here is DROPPED from the diff, so `--fail`
+      // already counts it and the reader is told. `cdkd deploy` refuses this
+      // container too (`refuseMalformedResourcesForDeploy`), so exit 3 is
+      // arguably owed here as well — filed rather than folded in, since it
+      // changes what `unreadable` means for a container the issue treats as
+      // already covered — go-to-k/cdkd#3512.
       unreadable.push(UNREADABLE_RESOURCES_MAP_ROW);
     }
     // go-to-k/cdkd#3018. The bag repair above is not the whole rule, and the
@@ -371,6 +429,7 @@ async function loadStateOrEmpty(
     const unreadableProps = repairMalformedResourcePropertiesForReadOnly(result.state);
     if (unreadableProps.length > 0) {
       logger.warn(malformedResourcePropertiesWarning(stackName, region, unreadableProps));
+      deployRefusals.push(deployRefusesPropertiesReason(unreadableProps));
     }
     // The SAME treatment for the `outputs` BAG (go-to-k/cdkd#3189). Every
     // consumer of that bag below this line takes it from
@@ -394,6 +453,7 @@ async function loadStateOrEmpty(
     // different consequences, and a record can be malformed in any one alone.
     if (repairMalformedOutputsForReadOnly(result.state)) {
       logger.warn(malformedOutputsWarning(stackName, region));
+      deployRefusals.push(DEPLOY_REFUSES_OUTPUTS_REASON);
     }
     // The `orphans` CONTAINER, decided the same way and reported separately
     // (go-to-k/cdkd#3379). AT THE LOAD rather than at the adoption preview: the
@@ -427,7 +487,7 @@ async function loadStateOrEmpty(
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region));
     }
-    return { state: result.state, unreadable };
+    return { state: result.state, unreadable, deployRefusals };
   }
   return {
     state: {
@@ -439,6 +499,7 @@ async function loadStateOrEmpty(
       lastModified: Date.now(),
     },
     unreadable: [],
+    deployRefusals: [],
   };
 }
 
@@ -482,6 +543,13 @@ export interface StackDiffResult {
    * it learned and reports these at the end.
    */
   blocking: string[];
+  /**
+   * Deploy refusals this node's ADOPTED records carry (go-to-k/cdkd#3335): a
+   * spliced rollback-orphan record whose `properties` map this diff repaired
+   * and `cdkd deploy` refuses. Separate from `blocking` because it is
+   * TOP-LEVEL only — see `buildDiffTree`, which is where the gate lives.
+   */
+  deployRefusals: string[];
   /**
    * Rollback-orphan records (`orphans[]`) the adoption preview could not read
    * as a resource, dropped BEFORE the preview because it throws on one, and
@@ -863,6 +931,9 @@ export async function computeStackDiff(
   let adoptedOrphans: string[] = [];
   let adoptedRecords: Record<string, ResourceState> = {};
   let blocking: string[] = [];
+  // go-to-k/cdkd#3335's reasons from the splice below, kept apart from
+  // `blocking` so the caller can apply the top-level gate to them.
+  const deployRefusals: string[] = [];
   let stateForDiff = currentState;
   // Joins the node's `unreadable` beside the load's dropped rows, for the
   // reason `DiffTreeNode.unreadable` gives: a torn orphan record used to ABORT
@@ -926,6 +997,20 @@ export async function computeStackDiff(
       const tornAdopted = repairMalformedResourcePropertiesForReadOnly(stateForDiff);
       if (tornAdopted.length > 0) {
         logger.warn(malformedResourcePropertiesWarning(stackName, region, tornAdopted));
+        // The same deploy refusal the load's arm reports (go-to-k/cdkd#3335),
+        // and it belongs here rather than beside the load because these
+        // records never passed through it.
+        //
+        // Returned SEPARATELY from `blocking` rather than appended to it: this
+        // function runs for every node, and the refusal is TOP-LEVEL only for
+        // the reason `buildDiffTree` gives — appending here would exit 3 over a
+        // nested child the deploy never diffs, which is the guarantee this
+        // scope decision makes. `plan.refusals` is left where it is rather
+        // than moved under the same gate — not because a refused adoption
+        // reaches the deploy on an unchanged child (it does not; that child is
+        // skipped there too), but because it predates this issue and narrowing
+        // it is a change to go-to-k/cdkd#2943's contract, not to this one.
+        deployRefusals.push(deployRefusesPropertiesReason(tornAdopted));
       }
     }
   }
@@ -1156,7 +1241,15 @@ export async function computeStackDiff(
     }
   }
 
-  return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking, unreadableOrphans };
+  return {
+    changes,
+    outputChanges,
+    adoptedOrphans,
+    adoptedRecords,
+    blocking,
+    unreadableOrphans,
+    deployRefusals,
+  };
 }
 
 /**
@@ -1350,6 +1443,32 @@ export async function buildDiffTree(args: {
    * a path this set already holds, so the cycle is refused one level later.
    */
   ancestorTemplatePaths?: ReadonlySet<string>;
+  /**
+   * True when this call is a nested CHILD rather than the stack the user
+   * named (go-to-k/cdkd#3335).
+   *
+   * Explicit rather than inferred from `ancestorTemplatePaths` being
+   * non-empty, which is what the first cut did: that set exists for CYCLE
+   * detection, and reading "am I root" off it couples this decision to a
+   * parameter nothing stops a future caller from seeding. The coupling is now
+   * fenced — one case in
+   * `tests/unit/cli/diff-recursive-deploy-refusal-blocking.test.ts` diffs a
+   * damaged ROOT with that set already populated — so restoring the inference
+   * reds rather than passing silently.
+   *
+   * REQUIRED, not optional-with-a-default, for the same reason: an optional
+   * flag defaulting to `false` lets a future RECURSIVE call site forget it and
+   * have its child treated as a root, promising exit 3 over a stack the deploy
+   * skips. A required member makes that a compile error — the shape
+   * `renderNoStackMatch` uses, per `.claude/rules/layout-cli.md`.
+   *
+   * Deriving the same answer from `stackName` containing `~` looks equivalent
+   * and is NOT: a PREBUILT assembly supplies its own stack names, unvalidated,
+   * so a TOP-LEVEL stack really can be called `A~B` and would lose its
+   * repaired-container reasons under that reading. One case in the test file
+   * above diffs a damaged root with such a name.
+   */
+  isNestedChild: boolean;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -1367,22 +1486,48 @@ export async function buildDiffTree(args: {
     cfnFallback,
     previewOrphanAdoption,
     ancestorTemplatePaths,
+    isNestedChild,
   } = args;
 
-  const { state, unreadable } = await loadStateOrEmpty(stackName, region, stateBackend);
+  const { state, unreadable, deployRefusals } = await loadStateOrEmpty(
+    stackName,
+    region,
+    stateBackend
+  );
+  // TOP-LEVEL only (go-to-k/cdkd#3335), and the scope is a CONSERVATIVE
+  // decision rather than a claim that the answer is unknowable. Some change
+  // types do say the deploy reaches the child — a `CREATE` row provisions it,
+  // a `DELETE` row removes it, and a property-changing `UPDATE` diffs it — but
+  // the two commonest shapes say the opposite: the deploy skips a `NO_CHANGE`
+  // nested-stack row, and an `UPDATE` moving only `DeletionPolicy` /
+  // `UpdateReplacePolicy` refreshes the recorded attributes with no provider
+  // call. Deriving reachability per shape is a bigger change than this issue,
+  // and the cost of getting it wrong is exit 3 over a deploy that succeeds, so
+  // every nested node keeps its warning and adds no reason. A lane narrowing
+  // this later edits TWO sites, not one: a CREATE row and a property-changing
+  // UPDATE reach this gate, while a DELETE child goes through
+  // `buildDeletedSubtree`, which hard-codes `blocking: []` and never arrives
+  // here at all.
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
-  const { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking, unreadableOrphans } =
-    await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
-      ...(parameters && { parameters }),
-      ...(canonicalizeProperties && { canonicalizeProperties }),
-      ...(cfnFallback !== undefined && { cfnFallback }),
-      ...(previewOrphanAdoption && { previewOrphanAdoption }),
-      // A live template of its own, so this node decides for itself; the
-      // inherited flag only matters for the DELETED children below.
-      inheritSecretBearingTemplate: false,
-    });
+  const {
+    changes,
+    outputChanges,
+    adoptedOrphans,
+    adoptedRecords,
+    blocking,
+    unreadableOrphans,
+    deployRefusals: adoptedDeployRefusals,
+  } = await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
+    ...(parameters && { parameters }),
+    ...(canonicalizeProperties && { canonicalizeProperties }),
+    ...(cfnFallback !== undefined && { cfnFallback }),
+    ...(previewOrphanAdoption && { previewOrphanAdoption }),
+    // A live template of its own, so this node decides for itself; the
+    // inherited flag only matters for the DELETED children below.
+    inheritSecretBearingTemplate: false,
+  });
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
   // `cc-api` record is invisible in the un-spliced bag — the row would print
@@ -1401,7 +1546,7 @@ export async function buildDiffTree(args: {
     ccApiRoutes,
     outputChanges,
     adoptedOrphans,
-    blocking,
+    blocking: isNestedChild ? blocking : [...deployRefusals, ...adoptedDeployRefusals, ...blocking],
     // The load's dropped rows first, then the orphan records the adoption
     // preview could not read — one list, because the reader of `--json` and
     // `--fail` asks one question of it: did the diff read everything?
@@ -1516,6 +1661,7 @@ export async function buildDiffTree(args: {
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ancestorTemplatePaths: childAncestorTemplatePaths,
+        isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
       })
     );
@@ -1578,8 +1724,10 @@ async function buildDeletedSubtree(
     ccApiRoutes: new Map(),
     // Adoption needs a template that still DECLARES the logical id, and this
     // branch exists precisely because no template does. A record here is
-    // carried, never adopted, so there is nothing to annotate and nothing
-    // that could refuse.
+    // carried, never adopted, so there is nothing to annotate and no ADOPTION
+    // that could refuse. The load's repaired-container refusals are dropped
+    // here too, as at every non-root node (go-to-k/cdkd#3335) — so `[]` is two
+    // decisions, not an invariant.
     adoptedOrphans: [],
     blocking: [],
     unreadable,

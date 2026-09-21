@@ -68,9 +68,18 @@ class DiffDetectedError extends CdkdError {
 }
 
 /**
- * Signals that the preview completed and `cdkd deploy` would REFUSE to start
- * (issue go-to-k/cdkd#2943) — today, a rollback-orphan record whose physical
- * id another cdkd stack already manages.
+ * Signals that the preview completed and `cdkd deploy` would REFUSE to start.
+ * Two conditions reach it, and the message must fit BOTH:
+ *
+ *  - a rollback-orphan record whose physical id another cdkd stack already
+ *    manages (issue go-to-k/cdkd#2943), where the remedy is resolving the
+ *    ownership conflict between two stacks;
+ *  - a container this preview REPAIRED and the deploy refuses — a resource's
+ *    unreadable `properties` map or an unreadable `outputs` bag (issue
+ *    go-to-k/cdkd#3335), where there is no second stack at all and the remedy
+ *    is repairing the one record.
+ *
+ * So the message names no remedy at all and closes on the count.
  *
  * Exit **3**, and neither 1 nor 2, for reasons that are about what a caller
  * can conclude:
@@ -80,21 +89,21 @@ class DiffDetectedError extends CdkdError {
  *    code for "there is work to do" and "the work cannot begin".
  *  - **2** is this CLI's partial-failure family, documented as "work
  *    completed, re-running typically resolves it" (`docs/cli-reference.md`).
- *    A refusal is the opposite: re-running changes nothing until a human
- *    resolves the ownership conflict.
+ *    A refusal is the opposite: re-running changes nothing until a human acts
+ *    — repairing the record, or resolving the ownership conflict, depending on
+ *    which condition fired.
  *
  * It is NOT silent: unlike `--fail`, this is not a flag the user opted into,
  * so the reason has to be visible even when the diff report scrolled away.
- * The `Blocking` section already printed the per-record detail; this adds the
- * one line that says the run cannot proceed.
+ * The `Blocking` section already printed the per-condition detail; this adds
+ * the one line that says the run cannot proceed.
  */
 class DeployRefusalPreviewError extends CdkdError {
   readonly exitCode: number = 3;
 
   constructor(count: number) {
     super(
-      `cdkd deploy would refuse to start: ${count} blocking condition(s) reported above. ` +
-        `Resolve them, or run \`cdkd state\` to inspect the conflicting stack.`,
+      `cdkd deploy would refuse to start: ${count} blocking condition(s) reported above.`,
       'DEPLOY_REFUSAL_PREVIEW'
     );
     this.name = 'DeployRefusalPreviewError';
@@ -358,6 +367,9 @@ async function diffCommand(
           // resolve cross-stack references identically.
           ...(options.cfnFallback === false && { cfnFallback: false }),
           previewOrphanAdoption,
+          // This IS the stack the user named, so it is the one node that
+          // carries the repaired-container refusals (go-to-k/cdkd#3335).
+          isNestedChild: false,
         })
       );
     }

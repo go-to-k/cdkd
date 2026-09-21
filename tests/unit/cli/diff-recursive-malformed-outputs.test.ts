@@ -91,6 +91,7 @@ async function diff(
     recursive: extra.recursive ?? false,
     stateBackend: backendHolding({ [STACK]: state, ...(extra.children ?? {}) }),
     diffCalculator: new DiffCalculator(),
+    isNestedChild: false,
   });
 }
 

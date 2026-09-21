@@ -25,7 +25,30 @@ ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
 ([#3239](https://github.com/go-to-k/cdkd/issues/3239)).
 
 `loadStateOrEmpty` holds the read-only container repairs
-([state-malformed-properties.md](state-malformed-properties.md)).
+([state-malformed-properties.md](state-malformed-properties.md)). Two of them —
+a resource's `properties` map and the `outputs` bag — are refusals on the
+deploy, so it returns them as `deployRefusals`; `computeStackDiff`'s SECOND
+`properties` repair, over the records the rollback-orphan splice brought in,
+returns its own under the same name. The TOP-LEVEL node puts one reason per
+(REPAIR PASS × damaged container) on `blocking`, and `countBlocking` sums them:
+a record whose `properties` maps and whose `outputs` bag are both torn reports
+two from the load alone, and a record torn in both the load and the splice
+reports two `properties` reasons. Each carries its own pass's record COUNT, so
+two `properties` reasons read alike only when those counts match. That count is
+what makes exit 3 rather than a silent 0
+when the template declares nothing in the damaged container
+([#3335](https://github.com/go-to-k/cdkd/issues/3335)). The splice arm is
+returned rather than appended to `blocking` in place precisely so that ONE gate
+governs both, and the root test is the explicit `isNestedChild` argument rather
+than `ancestorTemplatePaths` being empty — that set is for CYCLE detection, and
+keying the exit code on it would let a future caller unset exit 3 by seeding a
+parameter that has nothing to do with the decision. One case diffs a damaged
+ROOT with that set already populated, so the inference cannot be restored
+silently. Nested nodes are excluded as a CONSERVATIVE choice rather than because
+reachability is unknowable: the deploy skips an unchanged nested-stack row and
+an attribute-only UPDATE, so a reason there would report a refusal over a deploy
+that succeeds — while a CREATE row, a DELETE row or a property-changing UPDATE
+does say the child is reached, which is where a later lane should start.
 `readNestedTemplate` / `indexNestedChildTemplates` duplicate
 `NestedStackProvider`'s copies to keep the CLI off provisioning; their refusals
 use `displaySafe`, as does the synth-time twin in `assembly-reader.ts`
