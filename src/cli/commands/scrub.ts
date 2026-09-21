@@ -90,6 +90,7 @@ import {
   malformedOutputsWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
+  producerCoordinateKey,
   producerRecordKey,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
@@ -2245,7 +2246,13 @@ function malformedRecordsAuditedError(
   );
 }
 
-function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
+/**
+ * Exported for its unit fence alone — no second production caller. The
+ * collision it must not have (go-to-k/cdkd#3323) is only observable from
+ * whether two queries SHARE a promise, which driving a whole `scrubStack`
+ * fixture cannot show without asserting on a much larger outcome.
+ */
+export function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
   const view = Object.create(backend) as S3StateBackend;
   let listed: ReturnType<S3StateBackend['listStacks']> | undefined;
   const states = new Map<string, ReturnType<S3StateBackend['getState']>>();
@@ -2257,7 +2264,24 @@ function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
     stackName: string,
     stateRegion: string
   ): ReturnType<S3StateBackend['getState']> => {
-    const key = `${stackName}\u0000${stateRegion}`;
+    // {@link producerRecordKey} for why it ENCODES rather than separates. A
+    // collision here changes an ANSWER rather than dropping a warning line: a
+    // shared promise serves record X's state to a query about record Y, and
+    // scrub's cross-stack pre-pass reads exactly that to decide whether a
+    // producer still holds plaintext (go-to-k/cdkd#3323).
+    //
+    // A "this site was fail-CLOSED anyway" argument was written here for one
+    // round and is WRONG; it is recorded so nobody re-derives it. It ran: a
+    // colliding pair must carry a NUL in some half, that half goes into an S3
+    // key, S3 will not serve one, so both reads fail. The last step is false:
+    // `tryGetLegacy` keys on the STACK NAME alone and the region never enters
+    // the key. Its region gate does not stop it either — `readLegacyRegion`
+    // and `tryGetLegacy` read the SAME body, so the gate compares that body's
+    // region against a value taken from it and matches by construction. So a
+    // NUL-bearing REGION reads successfully through the legacy key and its
+    // promise is served to the colliding query. Do not settle this site, or
+    // any other, by asking what S3 will store.
+    const key = producerRecordKey(stackName, stateRegion);
     let pending = states.get(key);
     if (!pending) {
       pending = backend.getState(stackName, stateRegion);
@@ -2788,7 +2812,7 @@ export function producerPublishesSecretExpression(
     /** Stacks crossed to reach this frame, nearest first. Empty at the root. */
     via: readonly string[];
   }
-  const seen = new Set<string>([`${producerStack}\u0000${key}`]);
+  const seen = new Set<string>([producerCoordinateKey(producerStack, key)]);
   const queue: Frame[] = [{ stack: producerStack, key, via: [] }];
   // Set by the ROOT frame only (BFS visits it first), and read by every later
   // frame: a widened root can only ever justify the widened claim, however
@@ -2837,7 +2861,7 @@ export function producerPublishesSecretExpression(
         return isRoot ? { kind: 'declared', via: [] } : { kind: 'chained', via: frame.via };
       }
       for (const hop of collectReExportHops(subject, templates, exportOwners)) {
-        const id = `${hop.stack}\u0000${hop.key}`;
+        const id = producerCoordinateKey(hop.stack, hop.key);
         if (seen.has(id)) continue;
         seen.add(id);
         queue.push({ stack: hop.stack, key: hop.key, via: [...frame.via, hop.stack] });
@@ -3793,7 +3817,7 @@ function makeCrossStackPrePass(deps: {
    */
   const warnedDamagedProducers = new Set<string>();
   const secretExpressionVerdict = (stack: string, key: string): SecretExpressionVerdict => {
-    const id = `${stack}\u0000${key}`;
+    const id = producerCoordinateKey(stack, key);
     let verdict = verdicts.get(id);
     if (!verdict) {
       verdict = producerPublishesSecretExpression(producerTemplates, exportOwners, stack, key);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -4825,17 +4825,284 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     );
   });
 
-  it('ONE spelling: both warned-set sites call this helper', () => {
+  /**
+   * Every file that identifies a state record by `(stackName, region)`, with
+   * how many such keys it builds.
+   *
+   * The COUNT is the half that matters. The previous revision of this fence
+   * asserted only `toContain('producerRecordKey(')` per file, which goes green
+   * the moment ONE key in a file uses the helper however many separators remain
+   * beside it — the same per-FILE shape that let three raw reads ship green on
+   * go-to-k/cdkd#3331. `s3-state-backend.ts` builds two, in sibling branches of
+   * one loop, and is exactly the file that shape would have half-covered.
+   */
+  const RECORD_KEY_SITES: ReadonlyArray<readonly [string, number]> = [
+    // 2 record keys (the warned-once set, the cross-stack read memoizer) plus
+    // 3 coordinate keys (the chain walk's seed, its hop dedupe, its verdict
+    // cache) — all five through this module, so one count covers the file.
+    ['src/cli/commands/scrub.ts', 5],
+    ['src/cli/commands/local-state-loader.ts', 1],
+    ['src/state/s3-state-backend.ts', 2],
+    ['src/cli/commands/state.ts', 1],
+    ['src/cli/commands/state-list-tree.ts', 1],
+    ['src/cli/commands/rollback.ts', 1],
+  ];
+
+  it('ONE spelling: every record-key site calls this helper, for EVERY key it builds', () => {
     // A second spelling is the failure this helper exists to prevent, and
-    // nothing else watches it — the two sites are in different files and a
-    // reviewer comparing them by eye is what the first round relied on.
+    // nothing else watches it — the sites are in different files and a reviewer
+    // comparing them by eye is what the first round relied on.
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    for (const rel of ['src/cli/commands/scrub.ts', 'src/cli/commands/local-state-loader.ts']) {
+    for (const [rel, expected] of RECORD_KEY_SITES) {
       const src = readFileSync(join(root, rel), 'utf-8');
-      expect(src, `${rel} should build its warned-set key through the shared helper`).toContain(
-        'producerRecordKey('
-      );
+      // BOTH exported wrappers count. They are two names over one private
+      // encoding, so a site is covered whichever it uses, and counting only
+      // one of them would have read `scrub.ts` as 2-of-5 covered.
+      const calls =
+        src.split('producerRecordKey(').length -
+        1 +
+        (src.split('producerCoordinateKey(').length - 1);
+      // The import lines and any `{@link ...}` reference in a comment are not
+      // calls; requiring AT LEAST the expected count keeps this from being a
+      // trip-wire on an added doc mention, while still failing when a site is
+      // removed or a new key is built with a separator.
+      expect(
+        calls,
+        `${rel} should build all ${expected} of its record keys through the shared helper`
+      ).toBeGreaterThanOrEqual(expected);
     }
+  });
+
+  it('no record-key site still JOINS two interpolations with a NUL', () => {
+    // The mutation the count above cannot catch: ADDING a third key beside two
+    // correct ones, or reverting one of them. A count knows nothing about a
+    // site that did not exist when the count was written.
+    //
+    // Scoped to the NUL spellings deliberately, and this is the fence's LIMIT
+    // rather than an oversight. A printable separator cannot be searched for
+    // the same way here: `s3-state-backend.ts` legitimately joins
+    // interpolations with `/` and `:` to build S3 keys and ARNs, so a pattern
+    // wide enough to catch `${a}:${b}` as a record key reddens on healthy
+    // code. What covers that direction instead is the helper's own injectivity
+    // case above, which fails for EVERY separator spelling including `:`.
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    // `String.fromCharCode(0)` so this file carries no raw control byte of its
+    // own; the other two are how a TypeScript source spells one.
+    const nulSpellings = [String.fromCharCode(0), String.raw`\u0000`, String.raw`\0`];
+    for (const [rel] of RECORD_KEY_SITES) {
+      const src = readFileSync(join(root, rel), 'utf-8');
+      for (const nul of nulSpellings) {
+        // `}<NUL>${` — the tail of one interpolation, the separator, the head
+        // of the next. Identifier-agnostic, so renaming `stackName` does not
+        // silently retire this.
+        const pattern = `}${nul}\${`;
+        expect(
+          src.includes(pattern),
+          `${rel} joins two interpolations with a NUL instead of the shared helper`
+        ).toBe(false);
+      }
+    }
+  });
+
+  /**
+   * Every NUL-joined interpolation pair left anywhere in `src/`, each with the
+   * reason it is not a record key.
+   *
+   * **This list exists because the list above was built by grepping ONE
+   * spelling.** The first sweep for go-to-k/cdkd#3323 searched only the
+   * backslash-u escaped form and concluded the population was five sites. The
+   * three backslash-zero spelled record keys in `state.ts`,
+   * `state-list-tree.ts` and `rollback.ts` were the same class, in files the
+   * issue never named, and a review round found them. A per-file list cannot
+   * catch that — only a sweep of the whole tree can, so the fence below walks
+   * `src/` and requires every hit to be accounted for here. Adding a NUL-joined
+   * key anywhere now fails until someone writes down what it is.
+   *
+   * Nothing listed here is a `(stack, region)` or `(stack, export)` identity.
+   * The rows naming an issue are tracked there and are NOT exempt on merit.
+   */
+  /**
+   * Every NUL-separated composite key left anywhere in `src/`, with how many
+   * NUL OCCURRENCES that file carries and why none of them is a record
+   * identity that this PR's helpers should own.
+   *
+   * **The COUNT is here for the same reason it is on `RECORD_KEY_SITES`.** A
+   * per-FILE exemption is the shape this fence's own preamble condemns: it
+   * exempts a whole file, so a NEW producer-identity key added beside an
+   * exempt one goes green — and the three files carrying the most
+   * cross-stack machinery are exactly the exempt ones. With a count, adding
+   * any key to an exempt file fails until someone classifies it.
+   *
+   * **The reasons are phrased as what is CHECKED, not as what a value is
+   * expected to be**, after a round where three of them were wrong in that
+   * exact way. "CFn logical ids are alphanumeric" was one: `state.ts` says in
+   * cdkd's own words that "nothing enforces that constraint HERE — state is
+   * read as an unchecked cast", so a rule about what CloudFormation accepts is
+   * not a rule about what reaches this code.
+   */
+  const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
+    [
+      'src/provisioning/providers/dynamodb-delete-budget.ts',
+      1,
+      '(region, physicalId) budget slot — NOT checked; go-to-k/cdkd#3496',
+    ],
+    [
+      'src/provisioning/providers/efs-provider.ts',
+      1,
+      'join() over elements ALREADY through JSON.stringify, which escapes every ' +
+        'character below 0x20 — so no element can carry a raw NUL and the join IS ' +
+        'injective. That clause is the whole justification: the digest becomes an EFS ' +
+        'CreationToken, a creation-idempotency identity, so dropping the .map() would ' +
+        'leave a real identity key with no argument behind it',
+    ],
+    [
+      'src/provisioning/providers/idempotency-token.ts',
+      7,
+      ':155 is a HASH input, where the separator is domain separation. :146 is NOT — ' +
+        '`tokenKey` is the Map key for `inFlight` / `generations`, an IDENTITY, and its ' +
+        '`getCurrentStackName()` / `logicalId` halves are unchecked. The file states the ' +
+        'wrong-value consequence itself — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/state/s3-replication-purge-gap.ts',
+      2,
+      ':403 is (bucket, accountId), both AWS-charset-constrained; :555 joins FREE TEXT — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/deploy-engine.ts',
+      7,
+      'cross-stack 3-part keys + (logicalId, physicalId), plus one COMMENT quoting the ' +
+        'old key shape — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/intrinsic-function-resolver.ts',
+      3,
+      '(region, stackName) cache and a (param, type) warn set — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/secret-redaction.ts',
+      4,
+      'maskedOutputKey; the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
+        'states non-uniqueness and fails closed by POISONING; and UNKNOWN_PART_PLACEHOLDER, ' +
+        'a SENTINEL rather than a separator — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/analyzer/lambda-vpc-deps.ts',
+      1,
+      '(lambdaId, targetId) from an UNCHECKED state cast — a collision drops a delete-dependency edge; go-to-k/cdkd#3496',
+    ],
+    [
+      'src/analyzer/orphan-rewriter.ts',
+      2,
+      '(logicalId, GetAtt attribute name) — the attribute half is everything after the first dot, unchecked; go-to-k/cdkd#3496',
+    ],
+  ];
+
+  it('every NUL-joined interpolation anywhere in src/ is a record key or accounted for', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    // The two needles are BUILT from char codes rather than written as escapes,
+    // so this file carries no NUL escape of its own to be mis-edited — and so
+    // that what is searched for is unmistakably the SOURCE TEXT a TypeScript
+    // file spells a NUL with, not a NUL byte.
+    const BACKSLASH = String.fromCharCode(92);
+    const U = BACKSLASH + 'u0000';
+    const Z = BACKSLASH + '0';
+    // THREE shapes, not one. A round found the first revision searching only
+    // the template-literal form while `.join(NUL)` and a named separator
+    // constant were both already in the tree — the same "one spelling" miss
+    // this fence exists for, one level up.
+    const needles = [
+      '}' + U + '${', // `${a}<NUL>${b}` in a template literal
+      '}' + Z + '${',
+      ".join('" + U + "')", // [a, b].join(NUL)
+      ".join('" + Z + "')",
+      "= '" + U + "'", // const SEP = NUL
+      "= '" + Z + "'",
+    ];
+    // Stated limits, since a fence that overstates its reach is worse than a
+    // narrow one. A named separator constant is caught at its DECLARATION, not
+    // at its uses, so the file is flagged but its call count is not — that is
+    // enough for this fence's job, which is to make sure no FILE holding such
+    // a key is unclassified. A comment QUOTING a key shape counts as a hit;
+    // that is deliberate, since a stale comment asserting an old spelling is
+    // itself a defect this PR had to fix twice. And a separator that is
+    // neither a NUL nor a named NUL constant is out of scope here — the
+    // helper's own injectivity case is what covers those.
+    // `git grep -l` over the whole tree, not a hand-walked list: the point is
+    // that no file can be outside the sweep. BOTH spellings, since searching
+    // one is the mistake this fence exists to make unrepeatable.
+    // `git grep -l` FINDS the files; the counting is done here, over the file
+    // contents, because it must count OCCURRENCES and `git grep -c` counts
+    // matching LINES. That distinction is not academic: `idempotency-token.ts`
+    // has FIVE separators on one line, so appending a seventh component to that
+    // key — a new attacker-influenced half of a live identity — would leave a
+    // line count unchanged, and this fence would wave it through while its own
+    // failure message said "a new composite key was added here".
+    const listed = new Set<string>();
+    for (const needle of needles) {
+      let out: string;
+      try {
+        out = execFileSync('git', ['grep', '-l', '-F', '-e', needle, '--', 'src/'], {
+          cwd: root,
+          encoding: 'utf-8',
+        });
+      } catch {
+        // `git grep` exits 1 when a needle matches nothing. That is an ordinary
+        // outcome for one needle of six, not a failure of the sweep.
+        continue;
+      }
+      for (const f of out.split('\n').filter(Boolean)) listed.add(f);
+    }
+    const counts = new Map<string, number>();
+    for (const rel of listed) {
+      const src = readFileSync(join(root, rel), 'utf-8');
+      let n = 0;
+      for (const needle of needles) n += src.split(needle).length - 1;
+      counts.set(rel, n);
+    }
+    const found = [...counts.keys()].sort();
+
+    // The sweep must actually SEE the tree, or an argv typo silently exempts
+    // it. `git grep -l` matching NOTHING exits 1 and `execFileSync` throws,
+    // but a needle matching one stray file would not.
+    expect(
+      found.length,
+      'the git grep sweep found almost nothing — check its needles'
+    ).toBeGreaterThan(5);
+
+    const accounted = new Set([
+      ...RECORD_KEY_SITES.map(([rel]) => rel),
+      ...NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS.map(([rel]) => rel),
+    ]);
+    expect(
+      found.filter((f) => !accounted.has(f)),
+      'a NUL-joined interpolation pair appeared in a file this fence does not know about. ' +
+        'If it identifies a record or a producer coordinate, route it through ' +
+        'producerRecordKey / producerCoordinateKey; otherwise add it to ' +
+        'NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS with the reason.'
+    ).toEqual([]);
+
+    // Every accounted-as-not-a-record file must still BE a hit, AT THE
+    // RECORDED COUNT. An entry that outlives its code makes the list folklore;
+    // a file that GAINED a key is a new composite key nobody classified, which
+    // is the case a per-file exemption cannot see.
+    for (const [rel, expectedCount] of NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS) {
+      expect(
+        counts.get(rel),
+        `${rel} is listed with ${expectedCount} non-record NUL occurrences but the tree ` +
+          'disagrees. A HIGHER count means a new separator was added here — classify it, and if it ' +
+          'identifies a record or a producer coordinate route it through the shared helper. ' +
+          'A LOWER one means this entry outlived its code; remove it.'
+      ).toBe(expectedCount);
+    }
+  });
+
+  it('the NUL fence would FAIL on the code it replaced', () => {
+    // Guard-the-guard: the assertion above is an `includes` over a hand-built
+    // needle, and a typo in that needle makes it pass over every file forever.
+    // Feed it the exact expression `scrub.ts` carried before go-to-k/cdkd#3323.
+    const before = 'const key = `${stackName}' + String.raw`\u0000` + '${stateRegion}`;';
+    expect(before.includes('}' + String.raw`\u0000` + '${')).toBe(true);
   });
 });
 

@@ -1237,6 +1237,40 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(refs).toHaveLength(1);
       expect(refs[0]).toEqual({ stackName: 'MyStack', region: 'us-east-1' });
     });
+
+    it('keeps TWO records whose halves straddle the old separator — go-to-k/cdkd#3323', async () => {
+      // The dedupe key used to be `stack<NUL>region`, and this is the pair that
+      // collides under it: the same string with the split falling in two
+      // different places.
+      const NUL = String.fromCharCode(0);
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [
+          { Key: `cdkd/Evil${NUL}us-east-1/ap-northeast-1/state.json` },
+          { Key: `cdkd/Evil/us-east-1${NUL}ap-northeast-1/state.json` },
+        ],
+        IsTruncated: false,
+      });
+
+      const refs = await backend.listStacks();
+
+      // BOTH survive. Under the separator the second was silently dropped, and
+      // a record missing from this listing is a stack `cdkd gc`'s reference
+      // scan does not see and `bootstrap --destroy`'s refusal does not count.
+      expect(refs).toHaveLength(2);
+      expect(refs).toContainEqual({ stackName: `Evil${NUL}us-east-1`, region: 'ap-northeast-1' });
+      expect(refs).toContainEqual({ stackName: 'Evil', region: `us-east-1${NUL}ap-northeast-1` });
+    });
+
+    it('the straddling pair really did collide under the old separator', async () => {
+      // Guard-the-guard for the case above, which is only meaningful if the
+      // pair it plants is one a separator merges. Without this the assertion
+      // `toHaveLength(2)` is satisfied by any two distinct records at all.
+      const NUL = String.fromCharCode(0);
+      const naive = (s: string, r: string): string => `${s}${NUL}${r}`;
+      expect(naive(`Evil${NUL}us-east-1`, 'ap-northeast-1')).toBe(
+        naive('Evil', `us-east-1${NUL}ap-northeast-1`)
+      );
+    });
   });
 
   describe('stateExists', () => {

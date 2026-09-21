@@ -2271,36 +2271,11 @@ export function malformedResourcePropertiesWarning(
   );
 }
 
-/**
- * The key a warned-once-per-record `Set` uses to identify a producer RECORD.
- *
- * ONE spelling, shared by `scrub.ts`'s cross-stack pre-pass and
- * `local-state-loader.ts`'s `Fn::GetStackOutput` reader, because two spellings
- * of one rule is how nine sites stay right and the tenth drifts — the same
- * reason every predicate in this module is here rather than at its call sites.
- *
- * ENCODED, not separated, and issue
- * [#3308](https://github.com/go-to-k/cdkd/issues/3308) is the measurement
- * behind that. Both sites previously joined the two halves with a NUL, which
- * NARROWS the collision without closing it: a stack name is read out of an S3
- * key and is exactly as attacker-controlled as the `outputs` bag, so it can
- * carry a NUL too — `tests/unit/cli/commands/scrub-malformed-and-nameless.test.ts`
- * already plants one. Measured: with a NUL separator, stack `Evil<NUL>us-east-1`
- * in `ap-northeast-1` and stack `Evil` in region `us-east-1<NUL>ap-northeast-1`
- * produce the SAME key, so whichever is warned about second is silently not
- * warned about at all.
- *
- * `JSON.stringify` of a two-element array is injective over string pairs: the
- * quoting escapes anything that could imitate the separator, so no planted name
- * can produce another pair's key.
- *
- * The consequence of a collision is one dropped warning LINE, never a wrong
- * resolution — both records are still read as empty and both reads still miss.
- * That is why this is worth one shared helper rather than a larger mechanism.
- */
-export function producerRecordKey(stackName: string, region: string): string {
-  return JSON.stringify([stackName, region]);
-}
+// The record / coordinate key helpers moved to the import-free leaf
+// `src/state/record-keys.ts` (go-to-k/cdkd#3323): their consumers span the
+// cli, state and deployment layers, and `state-list-tree.ts` is deliberately
+// kept with no imports at all. RE-EXPORTED here so no existing importer moved.
+export { producerRecordKey, producerCoordinateKey } from './record-keys.js';
 
 /**
  * How many unreadable logical ids a message names before summarizing. Read by

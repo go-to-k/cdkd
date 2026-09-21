@@ -73,6 +73,27 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
 
+## Two exports here are not guards at all
+
+`producerRecordKey` (a `stack`+`region` RECORD) and `producerCoordinateKey` (a
+`stack`+`export-name` COORDINATE) are the ONE encoding anything identifying a
+producer-side thing by a string pair goes through — a warned-once `Set`, a
+dedupe `Set`, a memoization `Map`. Separate NAMES because the subjects differ
+and a call site reading `producerRecordKey(stack, exportName)` would say
+something false; ONE private implementation, which is the property the
+"one spelling" rule is about.
+
+They live in this module because their callers already import it for the
+guards. **What a collision COSTS is per site, not a property of the key**, and
+the JSDoc says so after a note claiming otherwise shipped with
+go-to-k/cdkd#3308: at the two warned-once sets it drops a warning line, at
+`cdkd scrub`'s read memoizer, chain walk and verdict cache it is a wrong ANSWER
+that can end a run at `No plaintext secrets found` over surviving plaintext.
+So is whether a SEPARATOR was ever injective — it depends on where each half
+comes from, and an S3 key segment cannot carry a NUL while an exports-index
+string can (go-to-k/cdkd#3323, `docs/design/3323-composite-record-keys.md`).
+Derive the call sites with `grep -rn "producerRecordKey(\|producerCoordinateKey(" src/`.
+
 ## `isReadableBag` is defined in `src/types/state.ts`, not here
 
 It is only RE-EXPORTED, so no importer moved. It came down when
