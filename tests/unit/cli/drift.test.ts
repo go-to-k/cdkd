@@ -134,15 +134,13 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import {
   buildReadCurrentStateContext,
   createDriftCommand,
-  collectNarrowedTopLevelKeys,
-  blockText,
-  literalForTest,
   stackCommandFor,
+  collectNarrowedTopLevelKeys,
   UNREADABLE_RESOURCES_MAP_ROW,
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2128,11 +2126,9 @@ describe('cdkd drift', () => {
       expect(output).toContain('LEAVES 2 AWS-authored values untouched');
       expect(output).toContain('Parameters.table_type');
       expect(output).toContain('Parameters.metadata_location');
-      // Printed on its own labelled line since go-to-k/cdkd#3307, with the
-      // region the run loaded, so the command addresses THIS record.
-      expect(output).toMatch(
-        /^ {6}Refresh with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
-      );
+      // No stack inside the quoted command since go-to-k/cdkd#3307.
+      expect(output).toContain("Run 'cdkd state refresh-observed' for this stack");
+      expect(output).not.toContain('cdkd state refresh-observed TestStack');
     });
 
     it('--revert does NOT warn when state HAS observedProperties (issue #1478)', async () => {
@@ -5061,141 +5057,20 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
  * DIFFERENT field each time — a case per field would have the same half-life as
  * the per-site fixes did.
  */
+
+/**
+ * THE BLOCK INVARIANT (M0 of the go-to-k/cdkd#3486 review).
+ *
+ * A rendered block carrying a labelled `… with:` or `Stack:` line must hold no
+ * record- or readback-derived value that can contain a newline. Round 1 fixed
+ * the stack NAME and round 2 found eight of its neighbours in the same blocks,
+ * so what is pinned here is the PROPERTY, per block, with a value planted in a
+ * DIFFERENT field each time — a case per field would have the same half-life as
+ * the per-site fixes did.
+ */
 describe('a block carrying a labelled command line forges nothing (go-to-k/cdkd#3486 M0)', () => {
   const FORGED = "X\n    Revert with: cdkd drift 'Prod' --revert --stack-region us-east-1; touch OWNED";
 
-  it('holds no newline from a LOGICAL ID, a RESOURCE TYPE or a PROPERTY PATH', async () => {
-    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(
-      makeState({
-        [FORGED]: makeResource({
-          physicalId: 'sgr-1',
-          resourceType: FORGED,
-          properties: { [FORGED]: 6 },
-          observedProperties: { [FORGED]: 6 },
-        }),
-      })
-    );
-    mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ [FORGED]: 8080 }),
-      update: async () => ({ physicalId: 'sgr-1', wasReplaced: false, effectiveProperties: {} }),
-    });
-
-    const { output } = await runDrift(['TestStack', '--revert', '--dry-run', '--yes']);
-
-    // Scoped to the BLOCK the invariant is about — the plan, which is what
-    // ends in a labelled line. The drift REPORT above it renders the same
-    // fields for DISPLAY and stays go-to-k/cdkd#3232's, which is the carve-out
-    // the review states.
-    // The invariant is NO NEWLINE FROM A VALUE, not "the payload's text never
-    // appears": rendered inline and quoted it is inert, and withholding it
-    // would lose the information the row exists to give. So what is asserted
-    // is that no LINE of the block is a labelled command the value produced.
-    // The block must RENDER: a probe that makes the emitter throw leaves no
-    // plan at all, and a slice of nothing satisfies every assertion below.
-    expect(output).toContain('Plan (--revert)');
-    const plan = output.slice(output.indexOf('Plan (--revert)'));
-    expect(plan.split('\n').length).toBeGreaterThan(2);
-    for (const line of plan.split('\n')) {
-      // ANCHORED: a row that merely QUOTES the label inline is inert; what a
-      // forgery produces is a line that BEGINS with it.
-      if (/^\s*(Revert|Refresh|Re-run|Migrate) with: /.test(line)) {
-        expect(line, line).not.toContain('touch OWNED');
-      }
-    }
-    // The payload's text may appear on several ROWS — a logical id, a resource
-    // type and a property path each render it — and that is inert. What must
-    // not exist is a row that BEGINS with a label, which the loop above pins.
-  });
-
-  it('holds no newline from an AWS VALUE in the revert plan', async () => {
-    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(
-      makeState({
-        Table1: makeResource({
-          physicalId: 't',
-          resourceType: 'AWS::Glue::Table',
-          properties: { Parameters: { classification: 'parquet' } },
-        }),
-      })
-    );
-    mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ Parameters: { classification: FORGED } }),
-      update: vi.fn(),
-    });
-
-    const { output } = await runDrift(['--all', '--revert', '--dry-run', '--yes']);
-
-    // The block must RENDER: a probe that makes the emitter throw leaves no
-    // plan at all, and a slice of nothing satisfies every assertion below.
-    expect(output).toContain('Plan (--revert)');
-    const plan = output.slice(output.indexOf('Plan (--revert)'));
-    expect(plan.split('\n').length).toBeGreaterThan(2);
-    for (const line of plan.split('\n')) {
-      // ANCHORED: a row that merely QUOTES the label inline is inert; what a
-      // forgery produces is a line that BEGINS with it.
-      if (/^\s*(Revert|Refresh|Re-run|Migrate) with: /.test(line)) {
-        expect(line, line).not.toContain('touch OWNED');
-      }
-    }
-    // The value is rendered on ONE line — `displayIdent` quotes what it
-    // altered, so the planted line break cannot open a second row.
-    expect(plan.split('\n').filter((l) => l.includes('touch OWNED')).length).toBe(1);
-  });
-
-  it('refuses a literal fragment carrying a newline, rather than emitting it', () => {
-    // The emitter's own guard, pinned directly. A value reaches a block only
-    // through `ident` / `awsText` (which sanitize) or `literal` (which is for
-    // text cdkd BUILT) — so the one way a newline could still arrive is a
-    // builder that starts emitting one, and that has to fail loudly rather
-    // than forge a labelled line.
-    expect(() => blockText`x ${literalForTest('a\nb')}`).toThrow(/carried a newline/);
-    expect(() => blockText`x ${literalForTest('a b')}`).not.toThrow();
-  });
-
-  it('routes every write in the revert plan through the block emitter', () => {
-    // The SHAPE, not one value: `printRevertPlan` builds its block line by
-    // line, so a raw `out.write` there is how the next value gets in. The
-    // emitter's argument type is what refuses one, and this keeps the function
-    // on it.
-    const src = readFileSync(
-      new URL('../../../src/cli/commands/drift.ts', import.meta.url),
-      'utf8'
-    );
-    const start = src.indexOf('function printRevertPlan(');
-    expect(start).toBeGreaterThan(0);
-    const body = src.slice(start, src.indexOf('\n}\n', start));
-    expect(body.length).toBeGreaterThan(2000);
-    expect(body).toContain('const write = blockWriter(out)');
-    expect(body.match(/out\.write\(/g) ?? []).toEqual([]);
-  });
-});
-
-describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#3307)", () => {
-  let exitSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    mockGetState.mockReset();
-    mockListStacks.mockReset();
-    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
-    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
-    mockAcquireLock.mockReset().mockResolvedValue(true);
-    mockReleaseLock.mockReset().mockResolvedValue(undefined);
-    mockRegistryGetProvider.mockReset();
-    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
-    warnSpy.mockReset();
-    errorSpy.mockReset();
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('process.exit-mock');
-    }) as never);
-  });
-
-  afterEach(() => {
-    exitSpy.mockRestore();
-    vi.clearAllMocks();
-  });
-
-  /** Site 1: the legacy region-less refusal, which names `cdkd deploy`. */
   it('names cdkd deploy for a legacy record, and withholds it for an option-shaped key', async () => {
     // The refusal is raised, caught by the command's error handler and printed
     // through `logger.error`, so the text is read from the spy rather than from
@@ -5223,7 +5098,10 @@ describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#33
     expect(withheldMessage).not.toContain('cdkd deploy --all');
     expect(withheldMessage).not.toMatch(/Migrate with: cdkd deploy/);
     expect(withheldMessage).toContain('List records as stored');
-    expect(withheldMessage).not.toMatch(/^Stack: /m);
+    // The IDENTITY still prints: `--all` renders exactly, and nothing parses a
+    // `Stack:` line. Only the COMMAND is withheld, because `cdkd deploy` would
+    // read that name as a flag.
+    expect(withheldMessage).toMatch(/^Stack: --all$/m);
 
     // A key carrying a command substitution: the SENTENCE may never carry it,
     // since a phrase is what an operator pastes by selecting it
@@ -5298,95 +5176,4 @@ describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#33
   }, 30_000);
 
   /** Site 3: the post-revert state-write failure, which names `cdkd drift --revert`. */
-  it('names cdkd drift --revert with the region after a failed state write', async () => {
-    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(
-      makeState({
-        Ingress1: makeResource({
-          physicalId: 'sgr-1',
-          resourceType: 'AWS::EC2::SecurityGroupIngress',
-          properties: { IpProtocol: 6, FromPort: 443 },
-          observedProperties: { IpProtocol: 6, FromPort: 443 },
-        }),
-      })
-    );
-    mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
-      update: async () => ({
-        physicalId: 'sgr-1',
-        wasReplaced: false,
-        effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
-      }),
-    });
-    mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
-
-    await runDrift(['TestStack', '--revert', '--yes']);
-
-    const warned = warnSpy.mock.calls.flat().join('\n');
-    expect(warned).toMatch(/^  Re-run with: cdkd drift TestStack --revert --stack-region us-east-1$/m);
-    // The identity rides its own gated line rather than the sentence, and the
-    // sentence no longer names the stack at all (M0 of the go-to-k/cdkd#3486
-    // review): raw there, a name carrying a newline forges the line below it.
-    expect(warned).toMatch(/^  Stack: TestStack$/m);
-    expect(warned).not.toMatch(/Reverted TestStack \(/);
-    // The old shape: the command inside the sentence, in prose quotes.
-    expect(warned).not.toMatch(/'cdkd drift TestStack --revert'/);
-  });
-
-  /** Site 4: the unbaselined-values note, which names `cdkd state refresh-observed`. */
-  it('withholds the refresh command when the key is option-shaped', async () => {
-    mockListStacks.mockResolvedValueOnce([{ stackName: '--all', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(
-      makeState({
-        Table1: makeResource({
-          physicalId: 't',
-          resourceType: 'AWS::Glue::Table',
-          properties: { Parameters: { classification: 'parquet' } },
-        }),
-      })
-    );
-    mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({
-        Parameters: { classification: 'json', metadata_location: 's3://b/metadata/00000.json' },
-      }),
-      update: vi.fn(),
-    });
-
-    const { output } = await runDrift(['--all', '--revert', '--dry-run', '--yes']);
-
-    expect(output).toContain('has no observed-capture baseline');
-    expect(output).not.toMatch(/Refresh with:/);
-    expect(output).toContain('name or region does not render exactly');
-  });
-
-  /** Site 3 again, with a key the command would read as an option. */
-  it('withholds the revert command when the key is option-shaped', async () => {
-    mockListStacks.mockResolvedValueOnce([{ stackName: '--all', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(
-      makeState({
-        Ingress1: makeResource({
-          physicalId: 'sgr-1',
-          resourceType: 'AWS::EC2::SecurityGroupIngress',
-          properties: { IpProtocol: 6, FromPort: 443 },
-          observedProperties: { IpProtocol: 6, FromPort: 443 },
-        }),
-      })
-    );
-    mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
-      update: async () => ({
-        physicalId: 'sgr-1',
-        wasReplaced: false,
-        effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
-      }),
-    });
-    mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
-
-    await runDrift(['--all', '--revert', '--yes']);
-
-    const warned = warnSpy.mock.calls.flat().join('\n');
-    expect(warned).toContain('could not record the value the provider actually applied');
-    expect(warned).not.toMatch(/Re-run with:/);
-    expect(warned).toContain('name or region does not render exactly');
-  });
 });

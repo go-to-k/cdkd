@@ -773,11 +773,11 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     expect(() => JSON.parse(stdout)).not.toThrow();
     expect(stderr).toContain('this resource has no observed-capture baseline');
     expect(stderr).toContain('Parameters.metadata_location');
-    // go-to-k/cdkd#3307: the command moved to its own labelled line, out of the
-    // sentence's quotes, and carries the record's region.
-    expect(stderr).toMatch(
-      /^ {6}Refresh with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
-    );
+    // The command names no stack since go-to-k/cdkd#3307: this block carries
+    // values that cannot be gated, so it has not earned a pasteable line, and
+    // the name is what a pasted span ran.
+    expect(stderr).toContain("Run 'cdkd state refresh-observed' for this stack");
+    expect(stderr).not.toContain("cdkd state refresh-observed TestStack");
     expect(stdout).not.toContain('observed-capture baseline');
     expect(stdout).not.toContain('metadata_location');
   });

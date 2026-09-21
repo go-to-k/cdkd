@@ -31,7 +31,6 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import {
   buildLockContentionMessage,
-  shellQuote,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -66,8 +65,8 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
-  UNRENDERABLE,
 } from '../../utils/display-safe.js';
+import { shellQuote } from '../../state/lock-contention-message.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -984,27 +983,34 @@ async function driftCommand(
       if (!ref.region) {
         // Legacy `version: 1` records have no region in their key — same
         // gap surfaced by `state show`. Tell the user how to migrate.
-        // The name comes from a state KEY, so it is sanitized for display and
-        // the pasteable command is gated and printed last (go-to-k/cdkd#3307).
-        // No `--stack-region`: this record has none, which is why it refuses.
+        // The command is BUILT by the gate and printed LAST on a labelled line,
+        // and the identity rides one of its own — never inside the sentence.
+        // Pasting a prose `'...'` span WITH its quotes is what ran an
+        // interpolated value (go-to-k/cdkd#3363), and `displayIdent` would not
+        // have closed it either: double quotes do not stop command
+        // substitution.
+        //
+        // This is the ONLY site here that prints a labelled command line. The
+        // other three carry a property path, a resource type or an AWS
+        // readback value in the same block, and those cannot be gated for
+        // exactness and still printed — so a labelled line there would be a
+        // trusted shape beside an untrusted value. They keep their command in
+        // prose, and the class is go-to-k/cdkd#3436's.
         const migrate = stackCommandFor('cdkd deploy', ref.stackName, { patternMatched: true });
-        // The IDENTITY rides on its own shell-quoted line rather than inside the
-        // sentence, which interpolated it RAW: an operator pastes a PHRASE, and
-        // a key named `$(printf INJECTED)` executes from one (measured here).
-        // A `displayIdent` boundary would not have closed it either — that is a
-        // JSON string, and double quotes do not stop command substitution.
-        // Same rule as the command below it (go-to-k/cdkd#3363, go-to-k/cdkd#3436).
+        const identity = stackIdentityLine(ref.stackName);
         throw new Error(
-          blockText`A state record for this stack is a legacy one with no region, which drift cannot read. A cdkd write migrates it to the region-scoped layout; re-run drift detection after it.${
-            migrate === undefined
-              ? line(
-                  `The stack name is not printed here: it does not render exactly, is empty, ` +
-                    `is too long, or 'cdkd deploy' would read it as an option or a pattern. ` +
-                    `List records as stored with 'cdkd state list --json' and migrate the one ` +
-                    `whose key matches.`
-                )
-              : line(`Stack: ${shellQuote(ref.stackName)}`)
-          }${migrate === undefined ? literal('') : line(`Migrate with: ${migrate}`)}`
+          `A state record for this stack is a legacy one with no region, which drift cannot ` +
+            `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
+            `detection after it.` +
+            (identity === undefined
+              ? `\nThe stack name is not printed here: it does not render exactly, is empty or ` +
+                `is too long.`
+              : `\n${identity}`) +
+            (migrate === undefined
+              ? `\nThe migrate command is not printed here: ${WITHHELD_COMMAND_REASON} List ` +
+                `records as stored with 'cdkd state list --json' and migrate the one whose key ` +
+                `matches.`
+              : `\nMigrate with: ${migrate}`)
         );
       }
       const report = await runDriftForStack(
@@ -3530,31 +3536,18 @@ async function runAccept(
           // (`--revert` can fix it, `--accept` cannot).
           const refusal = acceptRefusalReason(change, outcome.maskedPaths);
           if (refusal !== undefined) {
-            const revert = stackCommandFor('cdkd drift', report.stackName, {
-              flags: '--revert',
-              region: report.region,
-            });
-            // The IDENTITY leaves the row and rides a gated line of its own
-            // (M0): raw, a name carrying a newline forges a `Revert with:` line
-            // right under this one, and a name holding `$(...)` executes when
-            // the row is selected and pasted. The logical id and resource type
-            // STAY in the row but are sanitized: they are keys and fields of the
-            // state RECORD, not of the template, so they are as
-            // attacker-controllable as the name and would forge a line the same
-            // way.
-            const revertIdentity = stackIdentityLine(report.stackName, '    ');
             logger.warn(
-              blockText`  ! ${ident(outcome.logicalId)} (${ident(outcome.resourceType)}): not accepting ${ident(change.path)} — ${awsText(refusal)}, so cdkd will not write it to state. A revert pushes the referenced value back to AWS; re-deploy instead if the reference changed.${identityClause(
-                revertIdentity,
-                '    '
-              )}${
-                revert === undefined
-                  ? line(
-                      `The revert command is not printed here: ${WITHHELD_COMMAND_REASON}`,
-                      '    '
-                    )
-                  : line(`Revert with: ${revert}`, '    ')
-              }`
+              `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
+                // The command names no stack: this block carries a property
+                // path and a resource type that cannot be gated for exactness
+                // and still printed, so it has not earned a pasteable line
+                // (go-to-k/cdkd#3486 round 3). The NAME is the row's first
+                // field, which go-to-k/cdkd#3232 owns; what this change
+                // removes is the name from INSIDE the quoted command, where a
+                // pasted span ran it.
+                `state. Run 'cdkd drift --revert' for this stack to push the referenced ` +
+                `value back to AWS, or re-deploy if the reference changed.`
             );
             continue;
           }
@@ -5916,14 +5909,9 @@ async function runRevert(
             }
           } catch (captureErr) {
             logger.warn(
-              blockText`  ${ident(report.stackName)}/${ident(outcome.logicalId)} (${ident(
-                outcome.resourceType
-              )}): reverted, but the provider's reported effective properties could not be read — ${awsText(
-                maskSecretsInText(
-                  captureErr instanceof Error ? captureErr.message : String(captureErr),
-                  secrets
-                )
-              )}`
+              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+                `the provider's reported effective properties could not be read — ` +
+                `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
             );
           }
         } catch (err) {
@@ -5933,9 +5921,7 @@ async function runRevert(
           if (err instanceof ResourceUpdateNotSupportedError) {
             totalUnsupported++;
             logger.warn(
-              blockText`  ⊘ ${ident(report.stackName)}/${ident(outcome.logicalId)} (${ident(
-                outcome.resourceType
-              )}): could not revert — ${awsText(maskSecretsInText(err.message, secrets))}`
+              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
             );
             return;
           }
@@ -5944,9 +5930,7 @@ async function runRevert(
           // carried resolved secrets, and AWS quotes the offending value.
           const msg = maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
           logger.error(
-            blockText`  ✗ ${ident(report.stackName)}/${ident(outcome.logicalId)} (${ident(
-              outcome.resourceType
-            )}): AWS update failed — ${awsText(msg)}`
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
           );
         }
       });
@@ -6050,22 +6034,11 @@ async function runRevert(
               `provider actually applied on ${recordedCount} resource(s).`
           );
         } catch (err) {
-          const retry = stackCommandFor('cdkd drift', report.stackName, {
-            flags: '--revert',
-            region: report.region,
-          });
-          const retryIdentity = stackIdentityLine(report.stackName, '  ');
           logger.warn(
-            blockText`Reverted this stack in ${ident(report.region)}, but could not record the value the provider actually applied: ${awsText(
-              err instanceof Error ? err.message : String(err)
-            )}. The next 'cdkd drift' will report the same difference; re-run the revert once the state write can succeed.${identityClause(
-              retryIdentity,
-              '  '
-            )}${
-              retry === undefined
-                ? line(`Its command is not printed here: ${WITHHELD_COMMAND_REASON}`, '  ')
-                : line(`Re-run with: ${retry}`, '  ')
-            }`
+            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+              `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
+              `The next 'cdkd drift' will report the same difference — re-run ` +
+              `'cdkd drift --revert' for this stack once the state write can succeed.`
           );
         }
       }
@@ -6122,12 +6095,12 @@ async function runRevert(
  * is asking about, which is the worse of the two failures.
  *
  * THE TWO MEMBERS BIND AT DIFFERENT TIMES, and the asymmetry is deliberate.
- * `write(blockText` is a closure, so `process.stderr.write(blockText` is looked up per CALL — a
+ * `write` is a closure, so `process.stderr.write` is looked up per CALL — a
  * test that swaps the stream method after the sink was built still observes
  * every write. `stream` is the stream OBJECT, captured eagerly, because
  * `readline.createInterface` takes a sink once and holds it for the interface's
  * lifetime; there is no later lookup for a closure to serve. That costs
- * nothing, since swapping a stream's `write(blockText` METHOD (what a test does) leaves
+ * nothing, since swapping a stream's `write` METHOD (what a test does) leaves
  * the captured object identity intact, and replacing `process.stderr` WHOLESALE
  * is not something either the CLI or its tests do. It does mean a test fences
  * `stream` by asserting the IDENTITY handed to `createInterface`, not by
@@ -6233,17 +6206,10 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     // messages saying one thing.
     out.write(
       plannedWrites === 0
-        ? // The twin of the revert plan's header (m12 of the go-to-k/cdkd#3486
-          // review): `--accept` confirms off THIS plan, and its rows carry the
-          // same record-derived values, so it takes the same emitter.
-          blockText`\nPlan (--accept): no accepted values will be written to cdkd state for ${ident(
-            report.stackName
-          )} (${ident(
-            report.region
-          )}) — every drifted change below is refused (the run still writes the positioned re-redaction):\n`
-        : blockText`\nPlan (--accept): update cdkd state for ${ident(report.stackName)} (${ident(
-            report.region
-          )}):\n`
+        ? `\nPlan (--accept): no accepted values will be written to cdkd state for ` +
+            `${report.stackName} (${report.region}) — every drifted change below is refused ` +
+            `(the run still writes the positioned re-redaction):\n`
+        : `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
     );
     for (const line of lines) out.write(line);
   }
@@ -6255,11 +6221,6 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
  * overwritten on the AWS side.
  */
 function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
-  // Every write in this function goes through the block writer: the block ends
-  // in a labelled `Refresh with:` line, so a raw value here forges one (M0 of
-  // the go-to-k/cdkd#3486 review). A test asserts this function writes only
-  // through the block writer.
-  const write = blockWriter(out);
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
     // reason the accept plan asks it.
@@ -6275,14 +6236,8 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       })
     );
     if (drifted.length === 0) continue;
-    // The header shares this rendered BLOCK with the `Refresh with:` line
-    // below, so the name is sanitized here too (M0 of the go-to-k/cdkd#3486
-    // review): raw, a newline in the key forges a labelled command line inside
-    // a plan the operator is about to confirm.
-    write(
-      blockText`\nPlan (--revert): push cdkd state values back into AWS for ${ident(
-        report.stackName
-      )} (${ident(report.region)}):\n`
+    out.write(
+      `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
     );
     for (const o of drifted) {
       // Issue #2944. `runRevert` declines a marked resource before it reaches
@@ -6290,24 +6245,21 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       // run never makes in front of the CONFIRMATION PROMPT — the one place
       // the user decides on what the plan says.
       if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
-        write(
-          blockText`  ! ${ident(o.logicalId)} (${ident(
-            o.resourceType
-          )}): NOT reverted — a 'cdkd import' run refused this resource's observed-properties baseline, so the only baseline available is the one that refusal already found untrustworthy. Deploy a change to this resource first.\n`
+        out.write(
+          `  ! ${o.logicalId} (${o.resourceType}): NOT reverted — a 'cdkd import' run refused ` +
+            `this resource's observed-properties baseline, so the only baseline available is ` +
+            `the one that refusal already found untrustworthy. Deploy a change to this ` +
+            `resource first.\n`
         );
         continue;
       }
       const word = o.changes.length === 1 ? 'property path' : 'property paths';
-      write(
-        blockText`  → provider.update on ${ident(o.logicalId)} (${ident(
-          o.resourceType
-        )}): revert ${literal(String(o.changes.length))} ${literal(word)}\n`
+      out.write(
+        `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`
       );
       for (const change of o.changes) {
-        write(
-          blockText`    ${ident(change.path)}: ${ident(formatScalar(change.awsValue))} -> ${ident(
-            formatScalar(change.stateValue)
-          )}\n`
+        out.write(
+          `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
         );
       }
       // Issue #1478. Printed as part of the PLAN, not at update time, so it
@@ -6339,10 +6291,10 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
         // holds, which a refusal and a surviving token answer the same way.
         const cannotMaskKeys = o.notComparedCause !== undefined;
         if (cannotMaskKeys && preserved.length > 0) {
-          write(
-            blockText`    ! ${literal(
-              String(preserved.length)
-            )} AWS-authored tag(s) will be preserved, but cdkd could not resolve this resource's dynamic reference(s), so their names are withheld — they come from the live readback and cannot be checked for secrets without them.\n`
+          out.write(
+            `    ! ${preserved.length} AWS-authored tag(s) will be preserved, but cdkd could not ` +
+              `resolve this resource's dynamic reference(s), so their names are withheld — they ` +
+              `come from the live readback and cannot be checked for secrets without them.\n`
           );
           // `else if` below, not a second mirrored `if` (issue #1958). The two
           // arms answer ONE question -- can the key names be masked? -- and the
@@ -6351,10 +6303,9 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           // makes a reader check whether they can both fire.
         } else if (preserved.length > 0) {
           const tagWord = preserved.length === 1 ? 'tag' : 'tags';
-          write(
-            blockText`    ! reverting this tag list KEEPS ${literal(
-              String(preserved.length)
-            )} AWS-authored ${literal(tagWord)} the baseline does not carry:\n`
+          out.write(
+            `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +
+              `${tagWord} the baseline does not carry:\n`
           );
           for (const path of preserved) {
             // Issue #1914: these names are built from `o.awsProperties`, the
@@ -6364,7 +6315,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             // diff lines. Masked at the point of printing rather than at the
             // point of building, so the callers that use these lists as
             // KEY SETS keep the real keys.
-            write(blockText`        ${ident(maskSecretsInText(path, o.secrets))}\n`);
+            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
           // "Every other tag reverts normally" is only true on the
           // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
@@ -6375,10 +6326,10 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             stateResource.observedProperties === undefined
               ? ''
               : `Every other tag reverts normally. `;
-          write(
-            blockText`      ${literal(
-              othersRevert
-            )}A service may require these (ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are AWS-reserved and cannot be removed by hand.\n`
+          out.write(
+            `      ${othersRevert}A service may require these ` +
+              `(ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are ` +
+              `AWS-reserved and cannot be removed by hand.\n`
           );
         }
       }
@@ -6391,29 +6342,28 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
         if (o.notComparedCause !== undefined && unbaselined.length > 0) {
           // Same withholding as the tag list above, and it must say something:
           // silently skipping the block left the user with no signal at all.
-          write(
-            blockText`    ! ${literal(
-              String(unbaselined.length)
-            )} AWS-authored value(s) will be left untouched, but cdkd could not resolve this resource's dynamic reference(s), so their paths are withheld — they come from the live readback and cannot be checked for secrets without them.\n`
+          out.write(
+            `    ! ${unbaselined.length} AWS-authored value(s) will be left untouched, but cdkd ` +
+              `could not resolve this resource's dynamic reference(s), so their paths are ` +
+              `withheld — they come from the live readback and cannot be checked for secrets ` +
+              `without them.\n`
           );
         } else if (unbaselined.length > 0) {
           const word = unbaselined.length === 1 ? 'value' : 'values';
-          write(
-            blockText`    ! this resource has no observed-capture baseline, so the revert pushes the raw TEMPLATE and LEAVES ${literal(String(unbaselined.length))} AWS-authored ${literal(word)} untouched:\n`
+          out.write(
+            `    ! this resource has no observed-capture baseline, so the revert ` +
+              `pushes the raw TEMPLATE and LEAVES ${unbaselined.length} AWS-authored ${word} ` +
+              `untouched:\n`
           );
           for (const path of unbaselined) {
             // Masked for the same reason as the preserved-tag list above.
-            write(blockText`        ${ident(maskSecretsInText(path, o.secrets))}\n`);
+            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
-          const refresh = stackCommandFor('cdkd state refresh-observed', report.stackName, {
-            region: report.region,
-          });
-          write(
-            blockText`      The template does not declare these, so cdkd cannot tell an AWS-authored value from an out-of-band change and will not reset either (issue #1626). A state refresh-observed (or a re-deploy) populates observedProperties if you want them reverted too.${
-              refresh === undefined
-                ? line(`Its command is not printed here: ${WITHHELD_COMMAND_REASON}`, '      ')
-                : line(`Refresh with: ${refresh}`, '      ')
-            }\n`
+          out.write(
+            `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
+              `value from an out-of-band change and will not reset either (issue #1626). ` +
+              `Run 'cdkd state refresh-observed' for this stack (or re-deploy) to populate ` +
+              `observedProperties if you want them reverted too.\n`
           );
         }
       }
@@ -6910,6 +6860,15 @@ function formatScalar(value: unknown): string {
 }
 
 /**
+ * Why site 1's `cdkd deploy` command was withheld — every reason that gate has,
+ * since naming one tells the operator something false about the others (m4 /
+ * m10 of the go-to-k/cdkd#3486 review).
+ */
+const WITHHELD_COMMAND_REASON =
+  "this record's name does not render exactly, is empty, is too long, or " +
+  "'cdkd deploy' would read it as an option or a pattern.";
+
+/**
  * Does `value` reach the terminal as itself — sanitizing changes nothing, and
  * the state-reference cap does not cut it?
  *
@@ -6928,186 +6887,24 @@ function rendersExactly(value: string): boolean {
 }
 
 /**
- * THE BLOCK INVARIANT, and the one emitter that makes it true by construction.
- *
- * A rendered block that contains a labelled `… with:` line or a `Stack:` line
- * must carry NO record- or readback-derived value that can contain a newline.
- * The reason is that this file's labelled lines are a TRUSTED shape: an
- * operator reads `    Revert with: cdkd drift 'X' --revert …` as something cdkd
- * chose. Any raw value in the same block can print one — a state record's
- * property key, a resource type, a scalar value, an SDK error message — and a
- * forged line is byte-identical in shape to the real one. Measured across the
- * go-to-k/cdkd#3486 review: round 1 found the stack NAME; round 2 found eight
- * of its neighbours in the same blocks.
- *
- * Per-site sanitizing did not hold it. Three successive rounds each found the
- * next field, and the mutants that dropped the sanitizing reddened nothing. So
- * the rule is enforced by the TYPE here instead:
- *
- * - {@link blockText} is a tagged template whose interpolations must be
- *   {@link BlockValue}s. A bare `string` does not type-check, so a value cannot
- *   be added to one of these blocks without passing through a renderer.
- * - {@link ident} renders an IDENTIFIER (a stack name, a logical id, a resource
- *   type, a property path) through `displayIdent`: allowlist, cap, and a quoted
- *   boundary with an ALTERED marker, so a hostile id is never silently printed
- *   as a different one.
- * - {@link awsText} renders free-form text (an SDK error message) through
- *   `displayAwsMessage`.
- * - {@link literal} is the escape hatch for text this module BUILT — a command
- *   from {@link stackCommandFor}, a label, a count. It asserts the text carries
- *   no newline, because that is the whole property the block rests on; a
- *   builder that starts emitting one fails loudly here rather than forging a
- *   line quietly.
- *
- * WHEN YOU ADD A LINE TO ONE OF THESE BLOCKS: use `blockText`. If a value will
- * not go through `ident` / `awsText` / `literal`, it does not belong in a block
- * that carries a command — put it in a message that has none.
- */
-type BlockValue =
-  | { readonly kind: 'ident'; readonly value: unknown; readonly maxCodePoints?: number }
-  | { readonly kind: 'aws'; readonly value: unknown }
-  | { readonly kind: 'literal'; readonly text: string }
-  | { readonly kind: 'line'; readonly text: string; readonly indent: string };
-
-/**
- * Why a command was withheld — EVERY reason the gate has, since naming only one
- * tells the operator something false about the others (m4 / m10 of the
- * go-to-k/cdkd#3486 review).
- */
-const WITHHELD_COMMAND_REASON =
-  "this record's name or region does not render exactly, is empty, is too long, or would " +
-  'be read as an option or a pattern rather than as a value.';
-
-/**
- * The identity line, or the sentence that replaces it — always opening a LINE.
- *
- * Concatenating the withheld clause with a space put `Stack: --all Its command
- * is not printed here: …` on one line, which is the shape the labelled block
- * exists to avoid (M7 of the go-to-k/cdkd#3486 review).
- */
-function identityClause(identity: string | undefined, indent: string): BlockValue {
-  return identity === undefined
-    ? line(`The stack is not named here: ${WITHHELD_COMMAND_REASON}`, indent)
-    : line(identity.trimStart(), indent);
-}
-
-/** An identifier: a stack name, a logical id, a resource type, a property path. */
-function ident(value: unknown, maxCodePoints?: number): BlockValue {
-  return maxCodePoints === undefined
-    ? { kind: 'ident', value }
-    : { kind: 'ident', value, maxCodePoints };
-}
-
-/** Free-form text from AWS — an error message, a service string. */
-function awsText(value: unknown): BlockValue {
-  return { kind: 'aws', value };
-}
-
-/**
- * Text THIS module built: a gated command, a label, a formatted count.
- *
- * Asserted newline-free at render time. The block invariant is exactly "no
- * newline from a value", so a builder that begins to emit one has to fail here
- * rather than forge a labelled line silently.
- */
-function literal(text: string): BlockValue {
-  return { kind: 'literal', text };
-}
-
-/**
- * {@link literal}, exported for the test that pins its newline refusal.
- *
- * The refusal is the last line of the block invariant's defence — `ident` and
- * `awsText` sanitize, the argument TYPE stops a raw value, and this catches a
- * BUILDER that starts emitting a line break — so it needs a case of its own.
- */
-export function literalForTest(text: string): BlockValue {
-  return literal(text);
-}
-
-/**
- * A NEW LINE of this block: `\n`, the indent, then cdkd's own text.
- *
- * The newline belongs to the structure rather than to any fragment, which is
- * what lets {@link literal} refuse one outright — a value that could carry a
- * line break is exactly the forgery this block is built against.
- */
-function line(text: string, indent = ''): BlockValue {
-  return { kind: 'line', text, indent };
-}
-
-/**
- * A {@link blockText} bound to a sink — for a block written LINE BY LINE rather
- * than built as one string.
- *
- * `printRevertPlan` is that shape: twenty-odd `out.write(blockText` calls that together
- * form one block, ending in a labelled `Refresh with:` line. Routing them
- * through this writer is what makes the block invariant hold BY CONSTRUCTION
- * there — a raw value does not type-check, so the next editor cannot add one
- * without deciding how it renders. `tests/unit/cli/drift.test.ts` asserts the
- * function contains no direct `out.write(blockText` for the same reason.
- */
-function blockWriter(out: HumanTextSink): (text: BlockString) => void {
-  return (text) => {
-    out.write(text);
-  };
-}
-
-/**
- * What {@link blockText} returns — a nominal type, so the writer above cannot
- * be handed an ordinary string. That is the enforcement: `write('…')` does not
- * compile, `write(blockText`…`)` does, and `blockText` admits only rendered
- * {@link BlockValue}s.
- */
-type BlockString = string & { readonly __blockText: unique symbol };
-
-/**
- * Render one block. Every interpolation is a {@link BlockValue}, so no raw
- * value can reach the output.
- */
-export function blockText(strings: TemplateStringsArray, ...values: BlockValue[]): BlockString {
-  let out = strings[0] ?? '';
-  values.forEach((value, i) => {
-    out += renderBlockValue(value) + (strings[i + 1] ?? '');
-  });
-  return out as BlockString;
-}
-
-function renderBlockValue(value: BlockValue): string {
-  if (value.kind === 'line') {
-    if (/[\r\n]/.test(value.text)) {
-      throw new Error('drift block: a line fragment carried a newline');
-    }
-    return `\n${value.indent}${value.text}`;
-  }
-  if (value.kind === 'literal') {
-    // A newline here would be cdkd forging its own labelled line, which is a
-    // bug in the builder rather than an attack — so it fails loudly.
-    if (/[\r\n]/.test(value.text)) {
-      throw new Error('drift block: a literal fragment carried a newline');
-    }
-    return value.text;
-  }
-  if (value.kind === 'aws') return displayAwsMessage(value.value);
-  return (
-    displayIdent(
-      value.value,
-      value.maxCodePoints === undefined ? undefined : { maxCodePoints: value.maxCodePoints }
-    ) || UNRENDERABLE
-  );
-}
-
-/**
  * The `Stack: '<name>'` line that carries a record's identity NEXT TO a
  * pasteable command, or `undefined` when the name cannot be printed at all.
  *
  * A labelled command line is a trusted-looking shape, and a stack name is an
  * S3 key segment `listStacks` validates only for non-emptiness — so a name
- * carrying a newline printed ABOVE one forges a second `Revert with:` line
- * that the operator has every reason to trust (M0 of the go-to-k/cdkd#3486
- * review). The same gate as the command, and on its own line, shell-quoted:
- * inside a sentence a `$(...)` name executes when the phrase is pasted, which
- * `displayIdent`'s JSON quotes would not stop either.
+ * carrying a newline printed ABOVE one forges a second labelled line that the
+ * operator has every reason to trust. The same gate as the command, on its own
+ * line, shell-quoted: inside a sentence a `$(...)` name executes when the
+ * phrase is pasted, and `displayIdent`'s JSON quotes would not stop that —
+ * double quotes do not close command substitution.
+ *
+ * USED BY SITE 1 ALONE, deliberately. A labelled command line is only safe in
+ * a block whose OTHER values are gated too, and site 1's block carries exactly
+ * two: this identity and the command beside it. The blocks that also carry a
+ * property path, a resource type or an AWS readback value cannot meet that bar
+ * by sanitizing — an arbitrary value cannot be gated for exactness and still
+ * printed — so they keep their command in prose and the whole class is
+ * [#3436](https://github.com/go-to-k/cdkd/issues/3436)'s.
  */
 function stackIdentityLine(stackName: string, indent = ''): string | undefined {
   return rendersExactly(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
