@@ -6,9 +6,11 @@
  * the string `"abc"` that yields one record per character and returns a
  * container holding `"c"`, and `cdkd rollback` SAVES the record after each
  * replayed segment — so a damaged container is rewritten into a differently
- * damaged one, by a writer, with no warning. The other unreadable shapes are
- * not iterable and throw a bare `TypeError` out of the same walk, in a command
- * that may by then have run AWS replay operations.
+ * damaged one, by a writer, with no warning. `null` reads as no orphans at all
+ * through the helper's `?? []`, so the rollback saves a record whose orphan
+ * evidence it silently dropped; the remaining shapes are not iterable and throw
+ * a bare `TypeError` out of the same walk, in a command that may by then have
+ * run AWS replay operations.
  *
  * So the assertions are: refuse, name the container, and save NOTHING. The
  * save is what discriminates — a guard placed after the first replay would
@@ -73,19 +75,34 @@ import { CdkdError } from '../../../src/utils/error-handler.js';
 const REGION = 'us-east-1';
 const STACK = 'S';
 
-/** One replayable segment, so the run reaches the guard rather than stopping above it. */
-const JOURNAL = {
+/**
+ * One genuinely REPLAYABLE segment, built FRESH per install: the command
+ * drains `journal.segments` in memory, so a shared object leaves the second
+ * case of a loop reading "nothing to roll back" — a vacuous pass.
+ *
+ * A CREATE whose resource is still in the
+ * record with the same physicalId, which the executor rolls back by deleting.
+ * A shape it would SKIP (no matching record, or a mismatched physicalId) makes
+ * the control vacuous — the run then saves nothing for a reason that has
+ * nothing to do with this guard.
+ */
+const makeJournal = () => ({
   journalVersion: 1,
   stackName: STACK,
   region: REGION,
   segments: [
     {
       operations: [
-        { logicalId: 'A', operation: 'create', resourceType: 'AWS::SSM::Parameter', physicalId: 'p' },
+        {
+          logicalId: 'A',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SSM::Parameter',
+          physicalId: 'p',
+        },
       ],
     },
   ],
-};
+});
 
 function install(orphans: unknown) {
   const saveState = vi.fn().mockResolvedValue('etag-1');
@@ -93,7 +110,9 @@ function install(orphans: unknown) {
     version: 9,
     stackName: STACK,
     region: REGION,
-    resources: {},
+    resources: {
+      A: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: {} },
+    },
     outputs: {},
     orphans: orphans as StackState['orphans'],
     lastModified: 1,
@@ -103,7 +122,7 @@ function install(orphans: unknown) {
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state, etag: 'e' }),
-      loadRollbackJournal: vi.fn().mockResolvedValue(JOURNAL),
+      loadRollbackJournal: vi.fn().mockResolvedValue(makeJournal()),
       saveState,
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
@@ -160,13 +179,20 @@ describe('rollbackCommand refuses a malformed `orphans` container (go-to-k/cdkd#
     });
   }
 
-  it('CONTROL: a readable container is not refused over this container', async () => {
+  it('CONTROL: a readable container replays and SAVES', async () => {
+    // DRIVEN: the control has to reach the replay and the save, or it passes on
+    // any early failure and proves nothing about this guard.
     for (const orphans of [[], undefined]) {
       vi.clearAllMocks();
-      install(orphans);
+      const h = install(orphans);
       const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);
       const message = thrown instanceof Error ? thrown.message : '';
       expect(message).not.toContain("'orphans'");
+      expect(
+        h.saveState,
+        'the control never saved, so it proves nothing about the guard'
+      ).toHaveBeenCalled();
+      expect(replayProvider.delete, 'the control never replayed anything').toHaveBeenCalled();
     }
   });
 });

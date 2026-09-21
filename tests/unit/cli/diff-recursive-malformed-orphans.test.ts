@@ -30,7 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { getLogger } from '../../../src/utils/logger.js';
-import { buildDiffTree } from '../../../src/cli/commands/diff-recursive.js';
+import { buildDiffTree, diffTreeToJson, renderDiffTree } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { UNREADABLE_ORPHANS_CONTAINER_ROW } from '../../../src/state/malformed-resources-bag.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -122,6 +122,21 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
     // The row is a container stand-in; `displayLogicalId` would quote it as if
     // it were a resource name.
     expect(node.unreadable).toEqual([UNREADABLE_ORPHANS_CONTAINER_ROW]);
+  });
+
+  it('renders the stand-in row verbatim and withholds the logical-id sentence', async () => {
+    // Two clauses of the renderer, both keyed on the row being a CONTAINER
+    // stand-in rather than a logical id: it is not quoted like an id, and the
+    // "one the template still declares is shown above as a create" sentence —
+    // which is about ids — is suppressed. Without the second, a node whose only
+    // row is this container claims the template declares one of them.
+    const node = await diff(record('abc'));
+    expect(diffTreeToJson(node).unreadable).toEqual([UNREADABLE_ORPHANS_CONTAINER_ROW]);
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+    expect(text).toContain(`1 state record row(s) could not be read: ${UNREADABLE_ORPHANS_CONTAINER_ROW}.`);
+    expect(text).not.toContain('shown above as a create');
   });
 
   it('CONTROL: a readable or absent container yields no row and no warning', async () => {

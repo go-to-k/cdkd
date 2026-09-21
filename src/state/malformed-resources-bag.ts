@@ -1280,6 +1280,69 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
 }
 
 /**
+ * The DESTROY refusal text for this container (go-to-k/cdkd#3379 review).
+ *
+ * Its own text rather than {@link malformedOrphansRefusalMessage}, for the
+ * reason every text in this module is its own: that one says the container
+ * would be "written back", and a destroy writes NOTHING back — it removes the
+ * record. What it does with the container instead is DECIDE: the count feeds
+ * `stillEmpty`, and the orphan warning above it is the operator's only notice
+ * that resources from an earlier failed deploy are still live in AWS.
+ *
+ * It also owes the remedy the sibling destroy refusal owes, and for the same
+ * reason go-to-k/cdkd#3161 raised against refusing a cleanup command at all: an
+ * operator who wants the record gone needs a way to do it. `cdkd state orphan`
+ * is that way and reads no `orphans` container, so pointing at it is sound —
+ * the same exactness split as {@link malformedDestroyResourcesRefusalMessage},
+ * since a name that does not render faithfully must not become a command
+ * against a record that may not be the damaged one.
+ */
+export function malformedDestroyOrphansRefusalMessage(stackName: string, region: string): string {
+  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
+  const detail = exact
+    ? `State for ${shellQuote(safeStackName(stackName))} (${shellQuote(safeRegion(region))}) has ` +
+      `no readable 'orphans' list — the record is malformed or truncated.`
+    : `${stackClause(undefined, undefined)} Its 'orphans' list cannot be read — the record is ` +
+      `malformed or truncated.`;
+  const remedy = exact
+    ? `To drop the record deliberately and leave every live resource standing, run ` +
+      `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — spelled ` +
+      `out rather than pasteable, because that command DELETES a record. Confirm the key with ` +
+      `'cdkd state list --long', then: cdkd state orphan <stack> --stack-region <region>`
+    : `This record's stack name or region does NOT render exactly, so this message names no ` +
+      `target and offers no command against one. List the records as stored with ` +
+      `'cdkd state list --long' and act on the one whose key matches. Inspect it with: ` +
+      `${inspectCommand(undefined, undefined)}`;
+  return (
+    `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
+    `container counts as no orphans, so the run would proceed through resource deletion to ` +
+    `removing state.json while the record's evidence that an earlier failed deploy left ` +
+    `resources live in AWS was never read — and that evidence goes with the record. Reading it ` +
+    `as EMPTY is that outcome rather than an alternative to it, so there is no repair available ` +
+    `here. Repair or remove the record first. ${remedy}`
+  );
+}
+
+/**
+ * The destroy-path twin of {@link refuseMalformedOrphans}, carrying the text
+ * above. Both destroy reads take this one: the entry read and the under-lock
+ * re-read, which is the record `stillEmpty` and `deleteState` act on.
+ */
+export function refuseMalformedOrphansForDestroy(
+  state: Pick<StackState, 'orphans'>,
+  stackName: string,
+  region: string
+): void {
+  if (hasReadableOrphans(state)) return;
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDestroyOrphansRefusalMessage(stackName, region),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
  * For a command that can WRITE state: refuse a record whose `orphans` container
  * cannot be read.
  *

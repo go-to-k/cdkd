@@ -2263,12 +2263,18 @@ export function renderDiffTree(
             : displayLogicalId(id)
         );
       const rest = node.unreadable.length - named.length;
-      const onlyTheMap =
-        node.unreadable.length === 1 && node.unreadable[0] === UNREADABLE_RESOURCES_MAP_ROW;
+      // The sentence below is about LOGICAL IDS, so it is suppressed when every
+      // row is a container stand-in rather than only when the one row is the
+      // resources map: a node whose sole row is `(orphans container)` would
+      // otherwise claim the template declares one of them
+      // (go-to-k/cdkd#3379).
+      const onlyContainerRows = node.unreadable.every(
+        (id) => id === UNREADABLE_RESOURCES_MAP_ROW || id === UNREADABLE_ORPHANS_CONTAINER_ROW
+      );
       logFn(
         `${node.unreadable.length} state record row(s) could not be read: ` +
           `${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}.` +
-          (onlyTheMap
+          (onlyContainerRows
             ? ''
             : ` One the template still declares is shown above as a create; one it no ` +
               `longer declares is not shown above.`)

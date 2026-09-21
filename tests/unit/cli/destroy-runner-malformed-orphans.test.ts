@@ -143,9 +143,14 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
       );
       expect(thrown).toBeInstanceOf(CdkdError);
       expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
-      // The CONTAINER by name. Without this the assertion passes on the
-      // `resources` guard alone, which fires for a record with no resources.
+      // The CONTAINER by name. `resources: {}` is READABLE, so the resources
+      // guard does not fire here — what a bare "it threw" assertion would not
+      // separate is this refusal from the ordinary empty-stack path below it.
       expect((thrown as CdkdError).message).toContain("'orphans'");
+      // The DESTROY text, not the generic writer one: a destroy removes the
+      // record rather than writing the container back, and it owes the way out.
+      expect((thrown as CdkdError).message).toContain('DELETES state');
+      expect((thrown as CdkdError).message).toContain('cdkd state orphan');
       // DOMINANCE: nothing deleted, no lock taken, no provider reached.
       expect(
         h.deleteState,
@@ -205,16 +210,19 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
     expect(isMarkedNonRetryable(thrown)).toBe(true);
   });
 
-  it('CONTROL: a readable or absent container is not refused', async () => {
-    for (const orphans of [[], [{ logicalId: 'A' }], undefined]) {
-      const h = makeCtx();
+  it('CONTROL: a readable or absent container runs to the delete', async () => {
+    // DRIVEN rather than asserted absent: an empty record with a readable
+    // container reaches `deleteState`, so an unrelated early failure cannot
+    // satisfy this the way a bare `not.toContain` would.
+    for (const orphans of [[], undefined]) {
+      vi.clearAllMocks();
+      const h = makeCtx(stateWith(orphans));
       const thrown = await runDestroyForStack(STACK, stateWith(orphans), h.ctx).catch(
         (e: unknown) => e
       );
-      // Whatever else the run does with an empty stack, it does not refuse over
-      // this container.
       const message = thrown instanceof CdkdError ? thrown.message : '';
       expect(message).not.toContain("'orphans'");
+      expect(h.deleteState, 'the control never reached the delete, so it proves nothing').toHaveBeenCalled();
     }
   });
 });
