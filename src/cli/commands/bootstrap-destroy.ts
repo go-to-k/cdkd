@@ -1,4 +1,5 @@
 import readline from 'node:readline/promises';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   S3Client,
   HeadBucketCommand,
@@ -602,9 +603,16 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           logger.warn(
             `A bootstrap marker for this region DOES exist at '${siblingKey}', under a ` +
               `different spelling of the region name — its asset bucket and ECR ` +
-              `repository are still alive. Re-run ` +
-              `'cdkd bootstrap --destroy --region ${markerRegionOfKey(siblingKey)}' to tear ` +
-              `it down.`
+              `repository are still alive.` +
+              // The region comes out of an S3 KEY, so it goes through the shared
+              // gate and rides a trailing labelled line rather than the sentence
+              // (go-to-k/cdkd#3436).
+              `\nTear it down with: ${
+                pasteableCommand('cdkd bootstrap', [
+                  { literal: '--destroy' },
+                  { flag: '--region', value: markerRegionOfKey(siblingKey), hole: 'region' },
+                ]).command
+              }`
           );
         }
       }
@@ -629,8 +637,13 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           );
         } else if (markerSiblings.sameRegionKeys.length === 0) {
           logger.info(
-            `If the asset bucket / ECR repo still exist without a marker, re-run ` +
-              `'cdkd bootstrap --region ${region}' to recreate the marker, then destroy again.`
+            `If the asset bucket / ECR repo still exist without a marker, recreate the ` +
+              `marker and destroy again.` +
+              `\nRecreate it with: ${
+                pasteableCommand('cdkd bootstrap', [
+                  { flag: '--region', value: region, hole: 'region' },
+                ]).command
+              }`
           );
         }
         return;
@@ -715,15 +728,25 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         // the canonical marker's storage rather than the one the message named.
         // So the remedy is only per-key when the canonical key is absent.
         const canonicalStillPresent = markerBody !== null && resolvedMarkerKey === markerKey;
-        const listing = markerSiblings.sameRegionKeys
-          .map((k) =>
-            canonicalStillPresent
-              ? `  - ${k}`
-              : `  - ${k}  (cdkd bootstrap --destroy --region ${markerRegionOfKey(k)})`
-          )
-          .join('\n');
+        const listing = markerSiblings.sameRegionKeys.map((k) => `  - ${k}`).join('\n');
+        // The commands trail the WHOLE message rather than riding the listing
+        // (go-to-k/cdkd#3436): with prose after them, a copy through the line
+        // end takes the next sentence's words with the command.
+        const teardownCommands = canonicalStillPresent
+          ? ''
+          : markerSiblings.sameRegionKeys
+              .map(
+                (k) =>
+                  `\nTear it down with: ${
+                    pasteableCommand('cdkd bootstrap', [
+                      { literal: '--destroy' },
+                      { flag: '--region', value: markerRegionOfKey(k), hole: 'region' },
+                    ]).command
+                  }`
+              )
+              .join('');
         const remedy = canonicalStillPresent
-          ? `Run 'cdkd bootstrap --destroy --region ${region}' WITHOUT ` +
+          ? `Re-run the destroy for this region WITHOUT ` +
             `--include-state-bucket ONCE: it tears down '${resolvedMarkerKey}' and then ` +
             `prints the exact --region spelling for each marker still standing. Follow ` +
             `those, then re-run with --include-state-bucket. (No per-marker spelling is ` +
@@ -731,8 +754,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
             `first — and simply repeating this same command would not clear the rest, ` +
             `since once it is gone this region's canonical key no longer resolves ` +
             `anything.)`
-          : `Run the command shown against each marker above, then re-run with ` +
-            `--include-state-bucket.`;
+          : `Run each command below, then re-run with --include-state-bucket.`;
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': region '${region}' has ` +
             `${markerSiblings.sameRegionKeys.length} further bootstrap marker(s) under a ` +
@@ -740,7 +762,8 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
             `${listing}\n${remedy}\n` +
             `Destroy each one first — deleting the state bucket now would remove those ` +
             `markers while the asset storage they name survives, with no record of its ` +
-            `names.`,
+            `names.` +
+            teardownCommands,
           // Distinct from the other-region refusal above: same bucket, but a
           // different situation and a different remedy, and a consumer that
           // cannot tell them apart cannot act on either.
@@ -851,9 +874,13 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         logger.warn(
           `A further bootstrap marker for this region remains at '${siblingKey}' ` +
             `(this region was bootstrapped under more than one spelling of its name). ` +
-            `It names asset storage that was NOT destroyed by this run — re-run ` +
-            `'cdkd bootstrap --destroy --region ${markerRegionOfKey(siblingKey)}' to ` +
-            `tear that one down too.`
+            `It names asset storage that was NOT destroyed by this run.` +
+            `\nTear it down with: ${
+              pasteableCommand('cdkd bootstrap', [
+                { literal: '--destroy' },
+                { flag: '--region', value: markerRegionOfKey(siblingKey), hole: 'region' },
+              ]).command
+            }`
         );
       }
       if (!markerListingSucceeded) {

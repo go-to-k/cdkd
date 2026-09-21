@@ -363,10 +363,50 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     );
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state show TestStack~Child'");
-    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
+    // WHOLE LINES, not substrings (go-to-k/cdkd#3436): one command per line is
+    // the property — dropping the newline `hintFor` prefixes concatenates two
+    // commands into one invocation and every substring check still passes.
+    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child'$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child'$/m);
     // The parent's own file must NOT be the one named — that is the bug.
-    expect(warn).not.toContain("'cdkd state show TestStack'");
+    expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
+  });
+
+  it('gives EVERY skipped target its own command line, never one concatenated run', () => {
+    // Two targets is where the hazard lives: with one, the call site's own
+    // layout hides a `hintFor` that stopped opening a line, and the two
+    // commands then paste as a single invocation with the second handed to the
+    // first as arguments (proxy round 8 on go-to-k/cdkd#3436).
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    return runDestroyForStack(
+      'TestStack',
+      makeState({
+        ChildA: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+        ChildB: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+      }),
+      makeCtx()
+    ).then(() => {
+      const lines = allWarn().split('\n');
+      expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
+        "Inspect it with: cdkd state show 'TestStack~ChildA'",
+        "Inspect it with: cdkd state show 'TestStack~ChildB'",
+      ]);
+      expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA'",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB'",
+      ]);
+      // ...and those four lines END the summary, in that order, with nothing
+      // between them: a blank entry or a reordering means a stray newline or a
+      // join crept back in. (Earlier blank lines belong to the separate
+      // per-resource warning `allWarn` also collects.)
+      expect(lines.slice(-4)).toEqual([
+        "Inspect it with: cdkd state show 'TestStack~ChildA'",
+        "Inspect it with: cdkd state show 'TestStack~ChildB'",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA'",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB'",
+      ]);
+    });
   });
 
   it('names THIS stack\'s file for an ordinary (non-nested) skip', async () => {
@@ -379,8 +419,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state show TestStack'");
-    expect(warn).toContain("'cdkd state orphan TestStack'");
+    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack$/m);
     expect(warn).not.toContain('TestStack~');
   });
 

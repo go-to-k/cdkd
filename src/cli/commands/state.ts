@@ -1,4 +1,5 @@
 import * as readline from 'node:readline/promises';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -905,8 +906,13 @@ async function stateResourcesCommand(
     if (!ref.region) {
       throw new Error(
         `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `Run 'cdkd deploy ${safe(stackName)}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
-          `then re-run this command.`
+          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
+          `after it.` +
+          `\nMigrate with: ${
+            pasteableCommand('cdkd deploy', [
+              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
+            ]).command
+          }`
       );
     }
     const stateResult = await setup.stateBackend.getState(stackName, ref.region);
@@ -1287,8 +1293,13 @@ async function stateShowCommand(
     if (!ref.region) {
       throw new Error(
         `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `Run 'cdkd deploy ${safe(stackName)}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
-          `then re-run this command.`
+          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
+          `after it.` +
+          `\nMigrate with: ${
+            pasteableCommand('cdkd deploy', [
+              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
+            ]).command
+          }`
       );
     }
 
@@ -2196,8 +2207,12 @@ async function stateOrphanCommand(
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
-            `Use 'cdkd destroy ${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
-            `if you want to delete the actual resources.\n\n`
+            `Delete the actual resources instead with the command below.\n` +
+            `Destroy with: ${
+              pasteableCommand('cdkd destroy', [
+                { value: stackName, hole: 'stack', opts: { patternMatched: true } },
+              ]).command
+            }\n\n`
         );
         const ok = await confirmStateOrphanRemoval(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
@@ -3367,25 +3382,24 @@ async function stateRefreshObservedCommand(
     for (const target of targets) {
       if (!target.region) {
         const stack = shellQuote(safeStackName(target.stackName));
-        // `cdkd deploy` WRITES, so its example is printed only when rendering
-        // left the name exact — the gate `cdkd export` applies to
-        // `refresh-observed`. A name sanitizing altered (a control byte
-        // removed) can name a DIFFERENT stack in the user's app, and pasting it
-        // would deploy that one. When printed, the command is LAST and
-        // UNWRAPPED: `shellQuote` does its own quoting, and an outer `'...'`
-        // composes with it into something unpastable.
-        //
-        // Exact is not enough on its own, because `cdkd deploy` reads its
-        // argument as a PATTERN (`src/cli/stack-matcher.ts`): a `*` turns it
-        // into a wildcard and a `/` matches the display path instead. A legacy
-        // key named `*` renders exactly and would print `cdkd deploy '*'`,
-        // which deploys every stack in the app. So a name carrying either is
-        // withheld too, and so is one starting with `-`: shell quoting does not
-        // stop Commander from parsing `'--all'` as the `--all` flag.
-        const example =
-          safeStackName(target.stackName) === target.stackName && !/^-|[*/]/.test(target.stackName)
-            ? ` For example: cdkd deploy ${stack}`
-            : '';
+        // The gate this site spelled out by hand is `pasteableCommand`'s
+        // (go-to-k/cdkd#3436), and every clause of it survives: the name is
+        // named only when it renders EXACTLY (an altered one can name a
+        // DIFFERENT stack in the user's app, and `cdkd deploy` WRITES), it is
+        // withheld when `cdkd deploy` would read it as a PATTERN — a legacy key
+        // named `*` renders exactly and would deploy every stack — or as an
+        // OPTION, since quoting does not stop Commander parsing `'--all'` as a
+        // flag. Withheld, the hole is printed rather than the altered spelling.
+        // The command is LAST and UNWRAPPED on its own labelled line.
+        const migrate = pasteableCommand('cdkd deploy', [
+          { value: target.stackName, hole: 'stack', opts: { patternMatched: true } },
+        ]);
+        // WITHHELD ENTIRELY when the gate holds the name, which is this site's
+        // own call and differs from the shared default of printing the hole:
+        // the sentence already tells the operator that any cdkd write migrates
+        // the record, so there is no ambient-default command to fall into --
+        // the reason go-to-k/cdkd#3363 prints a hole rather than nothing.
+        const example = migrate.exact ? ` For example: ${migrate.command}` : '';
         throw new Error(
           `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +

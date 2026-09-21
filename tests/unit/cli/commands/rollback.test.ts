@@ -138,7 +138,11 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
  * from the file it guards -- a population computed from the subject cannot
  * notice the subject shrinking.
  */
-const EXPECTED_STACK_NAME_RENDERS = 12;
+// Three of the twelve were the `cdkd rollback <stack>` retry hints; since
+// go-to-k/cdkd#3436 the name reaches those through `pasteableCommand`'s gate on
+// a labelled line instead of through `safeStack` inside prose quotes, so they
+// are no longer renders of this helper.
+const EXPECTED_STACK_NAME_RENDERS = 9;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -1999,9 +2003,16 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       .find((l) => l.includes('Failed to persist state after a rollback operation'));
 
     expect(line).toBeDefined();
-    expect(line!.split('\n')).toHaveLength(1);
-    expect(line).toContain('caf\u00e9');
-    expect(line).toContain('- delete   RealDatabase');
+    // TWO lines now, and the second is cdkd's own labelled command
+    // (go-to-k/cdkd#3436). The invariant is unchanged -- no line comes from the
+    // AWS TEXT -- and still exact: the denylist render drops the newline a
+    // planted message would need, so a third line could only come from a
+    // regression here.
+    const lines = line!.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toMatch(/^Re-run with: cdkd rollback S$/);
+    expect(lines[0]).toContain('caf\u00e9');
+    expect(lines[0]).toContain('- delete   RealDatabase');
   });
 
   it('the failed-strip warning renders the S3 error through the DENYLIST too', async () => {

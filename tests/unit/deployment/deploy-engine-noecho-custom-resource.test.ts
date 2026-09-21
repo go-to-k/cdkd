@@ -530,7 +530,7 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       // rendering for a target that CAN be repaired is pinned by the shapes
       // table, which covers the ordinary-type row this fixture cannot reach.
       expect(refusal).toContain('Do NOT re-import Cr');
-      expect(refusal).not.toContain('--resource Cr=<physicalId>');
+      expect(refusal).not.toContain("--resource 'Cr=<physicalId>'");
       // ...and the withholding must not silently route a LOCAL record to the
       // cross-stack arm, which would assert the record lives elsewhere.
       //

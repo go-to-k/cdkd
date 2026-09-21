@@ -216,7 +216,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     // ...and names the read, which is what tells the user WHICH record to fix.
     expect(warned).toContain('Ref Tbl (state key TableName)');
     // The remedy is computed, not described.
-    expect(warned).toContain('--resource Tbl=<physicalId>');
+    expect(warned).toContain("--resource 'Tbl=<physicalId>'");
   });
 
   it('is PROMOTED to a deploy error under --strict-getatt', async () => {
@@ -295,7 +295,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     expect(warned).toContain('Ref Tbl-2 (state key TableName)');
     // The remedy names the hyphenated record too, rather than withholding the
     // one command that repairs it.
-    expect(warned).toContain('--resource Tbl-2=<physicalId>');
+    expect(warned).toContain("--resource 'Tbl-2=<physicalId>'");
   });
 
   it('publishes the recovered NAME for a HYPHENATED id when the record is NOT masked', async () => {

@@ -2676,7 +2676,15 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
     // ... and prescribes the order that actually clears it: MID cannot store
     // the expression until ROOT has been scrubbed down to one.
-    expect(message).toContain(`'cdkd scrub ${ROOT}', then 'cdkd scrub ${MID}'`);
+    // The WHOLE trailing sequence, in order and ending the message: the
+    // producers head-of-chain first, then this stack's own retry. Asserting
+    // the producer lines alone lets the consumer retry be dropped, renamed to
+    // a producer, or moved above them (proxy round 10 on go-to-k/cdkd#3436).
+    expect(message.split('\n').slice(-3)).toEqual([
+      `Scrub with: cdkd scrub ${ROOT}`,
+      `Scrub with: cdkd scrub ${MID}`,
+      `Then re-run: cdkd scrub ${CONSUMER}`,
+    ]);
     // Nothing is written for a stack scrub could not redact.
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(lockManager.releaseLock).toHaveBeenCalledTimes(1);
@@ -2754,9 +2762,13 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     const message = (err as Error).message;
     expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
     expect(message).toContain(`(through '${SECOND_MID}')`);
-    expect(message).toContain(
-      `'cdkd scrub ${ROOT}', then 'cdkd scrub ${SECOND_MID}', then 'cdkd scrub ${MID}'`
-    );
+    // One labelled line per hop, in scrub order (go-to-k/cdkd#3436).
+    expect(message.split('\n').slice(-4)).toEqual([
+      `Scrub with: cdkd scrub ${ROOT}`,
+      `Scrub with: cdkd scrub ${SECOND_MID}`,
+      `Scrub with: cdkd scrub ${MID}`,
+      `Then re-run: cdkd scrub ${CONSUMER}`,
+    ]);
   });
 
   it('TERMINATES on a cycle in the export graph and still finds the secret behind it', async () => {
@@ -2862,7 +2874,8 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     const message = (err as Error).message;
     expect(message).toContain(`declares '${EXPORT_NAME}' from a {{resolve:...}}`);
     expect(message).not.toContain('RE-EXPORTING');
-    expect(message).toContain(`Scrub the producer first ('cdkd scrub ${PRODUCER}')`);
+    expect(message).toContain('Scrub the producer first');
+    expect(message).toMatch(new RegExp(`^Scrub with: cdkd scrub ${PRODUCER}$`, 'm'));
   });
 
   it('a WIDENED root keeps the widened claim even when the expression was found up the chain', async () => {
@@ -2909,7 +2922,13 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     expect(message).not.toContain('output from a {{resolve:...}} expression');
     // ... and the remedy is the whole chain, not the single command that would
     // land the user in a second refusal.
-    expect(message).toContain(`'cdkd scrub ${ROOT}', then 'cdkd scrub ${MID}'`);
+    // Labelled lines now, head of chain first, each built by the shared gate
+    // (go-to-k/cdkd#3436).
+    expect(message).toMatch(new RegExp(`^Scrub with: cdkd scrub ${ROOT}$`, 'm'));
+    expect(message).toMatch(new RegExp(`^Scrub with: cdkd scrub ${MID}$`, 'm'));
+    expect(message.indexOf(`Scrub with: cdkd scrub ${ROOT}`)).toBeLessThan(
+      message.indexOf(`Scrub with: cdkd scrub ${MID}`)
+    );
   });
 
   it('an upstream export produced OUTSIDE the app is the documented residual, not a refusal', async () => {
@@ -3340,10 +3359,13 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
     expect(message).toContain(`(through '${SECOND_MID}', '${THIRD_MID}')`);
-    expect(message).toContain(
-      `'cdkd scrub ${ROOT}', then 'cdkd scrub ${THIRD_MID}', then 'cdkd scrub ${SECOND_MID}', ` +
-        `then 'cdkd scrub ${MID}'`
-    );
+    expect(message.split('\n').slice(-5)).toEqual([
+      `Scrub with: cdkd scrub ${ROOT}`,
+      `Scrub with: cdkd scrub ${THIRD_MID}`,
+      `Scrub with: cdkd scrub ${SECOND_MID}`,
+      `Scrub with: cdkd scrub ${MID}`,
+      `Then re-run: cdkd scrub ${CONSUMER}`,
+    ]);
   });
   it('memoizes the verdict per (producer, KEY), not per producer', async () => {
     // ONE producer, TWO exports, OPPOSITE verdicts, both read in a single scrub:
@@ -3726,22 +3748,44 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
   const KEY = 'App:DbSecret';
 
   it('DECLARED names the key and prescribes one command', async () => {
-    const { templateClaim, remedy } = scrubRefusalWording({ kind: 'declared', via: [] }, KEY, 'P', []);
+    const { templateClaim, remedy, remedyCommands } = scrubRefusalWording({ kind: 'declared', via: [] }, KEY, 'P', []);
 
     expect(templateClaim).toBe(`declares '${KEY}' from a {{resolve:...}} expression`);
-    expect(remedy).toBe("Scrub the producer first ('cdkd scrub P')");
+    expect(remedy).toBe('Scrub the producer first');
+    expect(remedyCommands).toEqual(['Scrub with: cdkd scrub P']);
+  });
+
+  it('holds a PATTERN-shaped producer name, which scrub would expand across stacks', async () => {
+    // `matchStacks` resolves scrub's argument, so `Prod*` selects every stack
+    // it matches — quoting stops the SHELL expanding it, not cdkd. Dropping
+    // `patternMatched` leaves every wording case above passing while the
+    // command becomes `cdkd scrub 'Prod*'` (measured, proxy round 15).
+    const direct = scrubRefusalWording({ kind: 'declared', via: [] }, KEY, 'Prod*', []);
+    expect(direct.remedyCommands).toEqual(["Scrub with: cdkd scrub '<stack>'"]);
+
+    // ...and up the CHAIN too, where the names come from other records.
+    const chained = scrubRefusalWording({ kind: 'chained', via: ['Stage/Up', 'Prod*'] }, KEY, 'P', [
+      'Stage/Up',
+      'Prod*',
+    ]);
+    expect(chained.remedyCommands).toEqual([
+      "Scrub with: cdkd scrub '<stack>'",
+      "Scrub with: cdkd scrub '<stack>'",
+      'Scrub with: cdkd scrub P',
+    ]);
   });
 
   it('WIDENED without a chain keeps both halves of its hedge', async () => {
-    const { templateClaim, remedy } = scrubRefusalWording({ kind: 'widened', via: [] }, KEY, 'P', []);
+    const { templateClaim, remedy, remedyCommands } = scrubRefusalWording({ kind: 'widened', via: [] }, KEY, 'P', []);
 
     expect(templateClaim).toContain('publishes at least one output from a {{resolve:...}} expression');
     expect(templateClaim).toContain(`could not match '${KEY}' to a declared output`);
-    expect(remedy).toBe("Scrub the producer first ('cdkd scrub P')");
+    expect(remedy).toBe('Scrub the producer first');
+    expect(remedyCommands).toEqual(['Scrub with: cdkd scrub P']);
   });
 
   it('WIDENED with a chain says the output RE-EXPORTS one, and still hedges', async () => {
-    const { templateClaim, remedy } = scrubRefusalWording(
+    const { templateClaim, remedy, remedyCommands } = scrubRefusalWording(
       { kind: 'widened', via: ['R'] },
       KEY,
       'P',
@@ -3754,9 +3798,11 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     // which is the thing the walk proved false about P.
     expect(templateClaim).toContain("publishes at least one output that RE-EXPORTS a value 'R'");
     expect(templateClaim).not.toContain('output from a {{resolve:...}} expression');
-    expect(remedy).toBe(
-      "Scrub the producers first, from the head of the chain ('cdkd scrub R', then 'cdkd scrub P')"
-    );
+    expect(remedy).toBe('Scrub the producers first, from the head of the chain, in the order below');
+    expect(remedyCommands).toEqual([
+      'Scrub with: cdkd scrub R',
+      'Scrub with: cdkd scrub P',
+    ]);
   });
 
   it('CHAINED with an empty via does NOT borrow the widened hedge', async () => {
@@ -3776,7 +3822,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     // `A -> B -> A`: the walk left A under the consumer's key and found the
     // expression in ANOTHER of A's outputs. Both halves must survive: the claim
     // still names A (B declares nothing), and the remedy runs each command once.
-    const { templateClaim, remedy } = scrubRefusalWording(
+    const { templateClaim, remedy, remedyCommands } = scrubRefusalWording(
       { kind: 'chained', via: ['B', 'A'] },
       KEY,
       'A',
@@ -3785,11 +3831,16 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
 
     expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
     expect(templateClaim).toContain("(through 'B')");
-    expect(remedy).toBe(
-      "Scrub the producers first, from the head of the chain ('cdkd scrub B', then 'cdkd scrub A')"
-    );
+    expect(remedy).toBe('Scrub the producers first, from the head of the chain, in the order below');
+    expect(remedyCommands).toEqual([
+      'Scrub with: cdkd scrub B',
+      'Scrub with: cdkd scrub A',
+    ]);
     // THE ASSERTION: no command is repeated, and the DIRECT producer is last.
-    const commands = [...remedy.matchAll(/'cdkd scrub ([^']+)'/g)].map((m) => m[1]);
+    // Read off the COMMAND LINES since go-to-k/cdkd#3436 — `remedy` is now the
+    // prose half and carries no command, so matching it returns [] and the
+    // de-duplication this case exists for would go unchecked.
+    const commands = remedyCommands.map((c) => c.replace('Scrub with: cdkd scrub ', ''));
     expect(commands).toEqual(['B', 'A']);
   });
 
@@ -3797,7 +3848,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     // `A -> A`: same stack, different output key. Left undeduplicated this read
     // "producer 'A' ... a value that 'A' declares ... (through 'A')" with
     // `cdkd scrub A` twice.
-    const { templateClaim, remedy } = scrubRefusalWording(
+    const { templateClaim, remedy, remedyCommands } = scrubRefusalWording(
       { kind: 'chained', via: ['A', 'A'] },
       KEY,
       'A',
@@ -3806,19 +3857,20 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
 
     expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
     expect(templateClaim).not.toContain('(through');
-    expect(remedy).toBe("Scrub the producer first ('cdkd scrub A')");
+    expect(remedy).toBe('Scrub the producer first');
+    expect(remedyCommands).toEqual(['Scrub with: cdkd scrub A']);
   });
 
   it('a three-stack chain keeps every distinct stack, in scrub order', async () => {
     // The control for the two de-duplication cases above: nothing is dropped
     // when nothing repeats.
-    const { remedy } = scrubRefusalWording({ kind: 'chained', via: ['B', 'C', 'R'] }, KEY, 'P', [
+    const { remedy, remedyCommands } = scrubRefusalWording({ kind: 'chained', via: ['B', 'C', 'R'] }, KEY, 'P', [
       'B',
       'C',
       'R',
     ]);
 
-    expect([...remedy.matchAll(/'cdkd scrub ([^']+)'/g)].map((m) => m[1])).toEqual([
+    expect(remedyCommands.map((c) => c.replace('Scrub with: cdkd scrub ', ''))).toEqual([
       'R',
       'C',
       'B',

@@ -46,6 +46,7 @@
  *    replays each op exactly once).
  */
 
+import { pasteableCommand } from '../utils/pasteable-command.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
@@ -3226,9 +3227,12 @@ async function replaySingle(
               `Create API is name-idempotent and the new resource still holds the same ` +
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
-              `state now records the pre-replacement properties, so run ` +
-              `'cdkd drift ${stackName}' to inspect and 'cdkd deploy' to reconcile, or rename ` +
-              `the resource to make the replacement reversible.`
+              `state now records the pre-replacement properties, so inspect the drift and ` +
+              `'cdkd deploy' to reconcile, or rename the resource to make the replacement ` +
+              `reversible.` +
+              `\nInspect it with: ${
+                pasteableCommand('cdkd drift', [{ value: stackName, hole: 'stack' }]).command
+              }`
           );
           result.warnings++;
         }

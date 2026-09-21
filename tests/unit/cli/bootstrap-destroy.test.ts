@@ -1444,7 +1444,10 @@ describe('cdkd bootstrap --destroy', () => {
 
       const hint = loggerMocks.info.mock.calls
         .map((c) => String(c[0]))
-        .find((line) => line.includes("re-run 'cdkd bootstrap --region"));
+        // The labelled line, not the old prose: keyed on a phrase the message no
+        // longer prints, the SUPPRESSION case below passes vacuously
+        // (go-to-k/cdkd#3436).
+        .find((line) => /^Recreate it with: cdkd bootstrap --region /m.test(line));
       expect(hint).toBeUndefined();
     });
 
@@ -1458,7 +1461,10 @@ describe('cdkd bootstrap --destroy', () => {
 
       const hint = loggerMocks.info.mock.calls
         .map((c) => String(c[0]))
-        .find((line) => line.includes("re-run 'cdkd bootstrap --region"));
+        // The labelled line, not the old prose: keyed on a phrase the message no
+        // longer prints, the SUPPRESSION case below passes vacuously
+        // (go-to-k/cdkd#3436).
+        .find((line) => /^Recreate it with: cdkd bootstrap --region /m.test(line));
       expect(hint).toBeDefined();
       expectNothingDeleted();
     });

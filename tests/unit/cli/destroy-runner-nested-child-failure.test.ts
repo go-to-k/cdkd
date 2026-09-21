@@ -83,7 +83,7 @@ const REGION = 'us-east-1';
 const NESTED_TYPE = 'AWS::CloudFormation::Stack';
 
 /** Exactly what `NestedStackProvider.delete` throws for a 2-error child. */
-const CHILD_FAILURE_MESSAGE = nestedStackChildFailureMessage('TestStack~Child', 2, 0, false);
+const CHILD_FAILURE_MESSAGE = nestedStackChildFailureMessage('TestStack~Child', 2, 0, false, "cdkd state show 'TestStack~Child'");
 
 function res(extra: Partial<ResourceState> = {}): ResourceState {
   return {
@@ -230,8 +230,8 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     await runDestroyForStack('TestStack', makeState({ Child: nestedRes() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
-    expect(warn).not.toContain("'cdkd state orphan TestStack'");
+    expect(warn).toContain("cdkd state orphan 'TestStack~Child'");
+    expect(warn).not.toMatch(/cdkd state orphan TestStack(?![\w~])/);
   });
 
   it("control: an ordinary failing resource still names THIS stack's file", async () => {
@@ -244,7 +244,7 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state orphan TestStack'");
+    expect(warn).toMatch(/cdkd state orphan TestStack(?![\w~])/);
     expect(warn).not.toContain('TestStack~');
   });
 
@@ -262,8 +262,8 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     );
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
-    expect(warn).toContain("'cdkd state orphan TestStack'");
+    expect(warn).toContain("cdkd state orphan 'TestStack~Child'");
+    expect(warn).toMatch(/cdkd state orphan TestStack(?![\w~])/);
   });
 
   it('a run with BOTH an error and a skip keeps #1752 guidance for the skipped row', async () => {
@@ -288,11 +288,16 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     expect(result.skippedCount).toBe(1);
 
     const warn = allWarn();
-    // The failure's remedy still names the child.
-    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
-    // ...AND the skip's own guidance survives, naming ITS target.
-    expect(warn).toContain("'cdkd state show TestStack'");
     expect(warn).toContain('were SKIPPED');
+    // The COMPLETE trailing sequence for the mixed case: the failure's own
+    // orphan hint naming the child, then the skip's pair naming ITS target.
+    // Asserting the three individually leaves the skipped orphan hint
+    // droppable (proxy round 13 on go-to-k/cdkd#3436).
+    expect(warn.split('\n').slice(-3)).toEqual([
+      "Drop the record with: cdkd state orphan 'TestStack~Child'",
+      'Inspect it with: cdkd state show TestStack',
+      'Drop the record with: cdkd state orphan TestStack',
+    ]);
   });
 
   it('control: an error-only run prints no skipped guidance', async () => {
@@ -304,7 +309,9 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
 
     const warn = allWarn();
     expect(warn).not.toContain('were SKIPPED');
-    expect(warn).not.toContain("'cdkd state show");
+    // Keyed on the shape the builder emits NOW (go-to-k/cdkd#3436): the old
+    // prose-quoted spelling is never printed, so matching it passes vacuously.
+    expect(warn).not.toMatch(/cdkd state show /);
   });
 
   it('a SKIPPED nested-stack delete (interrupt / child skip) preserves the same three things', async () => {

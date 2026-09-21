@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   commonOptions,
   deprecatedRegionOption,
@@ -505,7 +506,22 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
         `${gray(`${safeCount(run.eventCount)} events`)}`
     );
   }
-  logger.info(gray(`\nUse 'cdkd events ${safeStack} --run <runId>' to read one run's events.`));
+  // The RAW `stackName`, not `safeStack`: the gate's whole test is sanitized
+  // === raw, so handing it an already-sanitized value compares two sanitized
+  // spellings and passes for anything. A name sanitizing would ALTER prints as
+  // a hole here rather than in its altered spelling, which would address a
+  // different record. The `<runId>` hole is quoted for the redirection shape
+  // (go-to-k/cdkd#3436).
+  logger.info(
+    gray(
+      `\nRead one run's events with: ${
+        pasteableCommand('cdkd events', [
+          { value: stackName, hole: 'stack' },
+          { flag: '--run', hole: 'runId' },
+        ]).command
+      }`
+    )
+  );
 }
 
 /** Human-readable single-run event stream (in recorded order). */

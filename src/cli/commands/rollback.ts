@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   commonOptions,
   stateOptions,
@@ -642,7 +643,13 @@ export async function rollbackCommand(
           } catch (retryError) {
             logger.warn(
               `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
-                `The resource was reverted in AWS; re-run 'cdkd rollback ${safeStack(stackName)}' to reconcile state.`
+                `The resource was reverted in AWS; re-run the rollback to reconcile state.` +
+                // `displayIdent` (what `safeStack` applies) bounds a JSON string,
+                // not a shell word, so the name went on a trailing labelled line
+                // behind the shared gate instead (go-to-k/cdkd#3436).
+                `\nRe-run with: ${
+                  pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+                }`
             );
           }
         }
@@ -819,13 +826,15 @@ export async function rollbackCommand(
       // 10. Exit codes.
       if (interrupted) {
         throw new PartialFailureError(
-          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${safeStack(stackName)}' to finish.`
+          `Rollback interrupted. Journal preserved — re-run the rollback to finish.` +
+            `\nRe-run with: ${pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command}`
         );
       }
       if (totalFailures > 0) {
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-            `re-run 'cdkd rollback ${safeStack(stackName)}' to retry.`
+            `re-run the rollback to retry.` +
+            `\nRe-run with: ${pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command}`
         );
       }
       if (totalWarnings > 0) {

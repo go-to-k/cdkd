@@ -16,6 +16,7 @@ import {
   analyze,
   extractTemplates,
   scanTemplateLiterals,
+  templateLiteralParts,
   matchesSourceTemplate,
   scanPage,
   collectDocPages,
@@ -56,6 +57,120 @@ function templatesOf(source: string): ReturnType<typeof extractTemplates> {
 }
 
 const fenced = (line: string): string => ['```text', line, '```'].join('\n');
+
+describe('docs error-string checker: escapes in a source template (go-to-k/cdkd#3436)', () => {
+  it('collapses a `\\n` escape like the line break it renders as', () => {
+    // A message that puts its pasteable command on a trailing line carries
+    // `\\n` in the SOURCE and a line break in the doc's fenced block. Without
+    // this the doc line is refused `no-source-anchor` however faithfully it
+    // was copied.
+    const [t] = templatesOf('const m = `Refused.\\nRetry with: cdkd destroy S`;\n');
+    expect(t).toBeDefined();
+    expect(t!.re.test('Refused. Retry with: cdkd destroy S')).toBe(true);
+  });
+
+  it('does NOT turn an ESCAPED interpolation into a wildcard', () => {
+    // Decoding `\$` before the hole split would make a LITERAL `\${name}` a
+    // wildcard, so the template would accept a doc line the source cannot
+    // produce (delta round 3 on go-to-k/cdkd#3436).
+    const [t] = templatesOf('const m = `cdkd refused the literal \\${name} argument`;\n');
+    expect(t).toBeDefined();
+    // The faithful rendering — the CONTROL, without which a matcher that
+    // accepts nothing passes both refusals below.
+    expect(t!.re.test('cdkd refused the literal ${name} argument')).toBe(true);
+    expect(t!.re.test('cdkd refused the literal FABRICATED argument')).toBe(false);
+    // ...including the fabrication that keeps the backslash, which is what a
+    // split ignoring the escape would admit.
+    expect(t!.re.test('cdkd refused the literal \\FABRICATED argument')).toBe(false);
+  });
+
+  it('does not register a template nested inside a hole as its own anchor', () => {
+    // The visitor returns without descending: text inside an interpolation is
+    // part of THIS template, not a message of its own. Removing that `return`
+    // survives every other case here (proxy round 6).
+    const t = templatesOf(
+      'const m = `cdkd outer ${ `cdkd inner secret text here` } tail`;\n'
+    );
+    expect(matchesSourceTemplate('cdkd inner secret text here', t)).toBe(false);
+    // The CONTROL: the outer template is still registered, so a matcher that
+    // registered nothing would not pass this pair.
+    expect(matchesSourceTemplate('cdkd outer ANYTHING tail', t)).toBe(true);
+  });
+
+  it('trims the OUTER edges only, keeping a space that sits beside a hole', () => {
+    // Deleting either trim independently survived every other case (proxy
+    // round 6). A doc quotation carries neither the source's leading nor its
+    // trailing whitespace, while a space next to a hole is text the message
+    // really prints.
+    const lead = templatesOf('const m = `\n  cdkd leading space here`;\n');
+    expect(matchesSourceTemplate('cdkd leading space here', lead)).toBe(true);
+    const trail = templatesOf('const m = `cdkd trailing space here\n  `;\n');
+    expect(matchesSourceTemplate('cdkd trailing space here', trail)).toBe(true);
+    const beside = templatesOf('const m = `cdkd beside ${x} a hole here`;\n');
+    expect(matchesSourceTemplate('cdkd beside VALUE a hole here', beside)).toBe(true);
+    expect(matchesSourceTemplate('cdkd besideVALUEa hole here', beside)).toBe(false);
+  });
+
+  it('renders every escape the way the running message does, via the parser', () => {
+    // One case per escape CLASS. They were written against a hand-written
+    // decoder, whose clauses each needed their own case; since the parts come
+    // from the TypeScript parser (proxy round 5) what they pin is that
+    // cooking, which is the property the doc quotations depend on.
+    const tabbed = templatesOf('const m = `cdkd tab\\there is text`;\n')[0];
+    expect(tabbed!.re.test('cdkd tab here is text')).toBe(true);
+    const cr = templatesOf('const m = `cdkd cr\\rhere is text`;\n')[0];
+    expect(cr!.re.test('cdkd cr here is text')).toBe(true);
+    const quoted = templatesOf("const m = `cdkd it\\'s a quote here`;\n")[0];
+    expect(quoted!.re.test("cdkd it's a quote here")).toBe(true);
+    const dquoted = templatesOf('const m = `cdkd said \\" loudly here`;\n')[0];
+    expect(dquoted!.re.test('cdkd said " loudly here')).toBe(true);
+    const backtick = templatesOf('const m = `cdkd a \\` tick here`;\n')[0];
+    expect(backtick!.re.test('cdkd a ` tick here')).toBe(true);
+    // A UNICODE escape too: the parser cooks `\\u0041` to `A`, which is what
+    // the running message prints — the hand-written decoder this replaced had
+    // to leave it as written, and so matched neither spelling.
+    const unicode = templatesOf('const m = `cdkd unicode \\u0041 here`;\n')[0];
+    expect(unicode!.re.test('cdkd unicode A here')).toBe(true);
+    expect(unicode!.re.test('cdkd unicode u0041 here')).toBe(false);
+    // A nested-brace hole is a REAL interpolation and the parser says so, so
+    // what the template pins is the literal text around it. The hand-written
+    // scanner refused to split such a span and then had to defend that refusal
+    // against a brace inside a string inside it; there is nothing to defend.
+    const nested = templatesOf('const m = `cdkd nested ${ {a: 1}.a } here`;\n')[0];
+    expect(nested!.re.test('cdkd nested 1 here')).toBe(true);
+    expect(nested!.re.test('cdkd nested 1 THERE')).toBe(false);
+    // The case the hand-written version got wrong last: a brace inside a
+    // STRING inside the hole. The literal parts are still `cdkd nested ` and
+    // ` here`, so nothing outside the hole becomes a wildcard.
+    const braceInString = templatesOf(
+      "const m = `cdkd nested ${ {a: '}}', b: '${x}'}.a } here`;\n"
+    )[0];
+    expect(braceInString!.re.test('cdkd nested FABRICATED here')).toBe(true);
+    expect(braceInString!.re.test('cdkd nested FABRICATED elsewhere')).toBe(false);
+  });
+
+  it('keeps a REAL hole that follows an escaped backslash', () => {
+    // `\\${name}` renders as one backslash and then an interpolation, so the
+    // hole is real. A lookbehind run on already-decoded text mistakes the
+    // single remaining backslash for an escape and suppresses it — which
+    // refuses the faithful line and accepts the literal one (delta round 5 on
+    // go-to-k/cdkd#3436).
+    const [t] = templatesOf('const m = `cdkd refused the literal \\\\${name} argument`;\n');
+    expect(t).toBeDefined();
+    expect(t!.re.test('cdkd refused the literal \\REAL argument')).toBe(true);
+    expect(t!.re.test('cdkd refused the literal ${name} argument')).toBe(false);
+  });
+
+  it('does NOT collapse an ESCAPED backslash followed by n', () => {
+    // `\\\\n` in source renders as a literal backslash then `n` — text, not a
+    // line break. Collapsing it would refuse the faithful quotation and admit
+    // a wrong one, so escape pairs are consumed left to right.
+    const [t] = templatesOf('const m = `A literal \\\\n is not a break here in cdkd`;\n');
+    expect(t).toBeDefined();
+    expect(t!.re.test('A literal \\n is not a break here in cdkd')).toBe(true);
+    expect(t!.re.test('A literal  n is not a break here in cdkd')).toBe(false);
+  });
+});
 
 describe('docs error-string checker: self-probe', () => {
   it('passes its own fixed cases', () => {
@@ -144,6 +259,22 @@ describe('docs error-string checker: template extraction', () => {
       "throw new E(\n  `Failed to acquire lock for stack ` +\n    `'${s}' after ${n} attempts.`\n);"
     );
     expect(matchesSourceTemplate("Failed to acquire lock for stack 'MyStack' after 4 attempts.", t)).toBe(true);
+    // ...with NO hole at the `+` itself: merging the left tail and right head
+    // into ONE part keeps that boundary literal, and a merge replaced by a
+    // plain concatenation of the two part LISTS puts a wildcard there
+    // (measured, proxy round 5).
+    expect(
+      matchesSourceTemplate(
+        "Failed to acquire lock for stack FABRICATED 'MyStack' after 4 attempts.",
+        t
+      )
+    ).toBe(false);
+    // A run whose LITERAL TEXT equals one side's while its holes fall
+    // elsewhere is still its own template: here `${prefix}` contributes no
+    // text, so the run and the right-hand literal flatten identically.
+    const sided = templatesOf('const m = `${prefix}` + `cdkd refused the operation`;\n');
+    expect(matchesSourceTemplate('PREFIX cdkd refused the operation', sided)).toBe(true);
+    expect(matchesSourceTemplate('cdkd refused the operation', sided)).toBe(true);
   });
 
   it('matches a hole in the middle of a phrase, and only the right message', () => {
@@ -249,6 +380,19 @@ describe('docs error-string checker: template extraction', () => {
     expect(() => scanTemplateLiterals('const a = ;;; function (')).toThrow(/parse diagnostic/);
     // Control: a valid file does not throw.
     expect(() => scanTemplateLiterals('const a = `fine ${x}`;')).not.toThrow();
+    // ...and the SAME refusal on the path extraction actually takes since
+    // go-to-k/cdkd#3436, naming the file: disabling the guard there returns an
+    // empty list for malformed input while both assertions above still pass
+    // (measured).
+    expect(() => templateLiteralParts('const a = ;;; function (')).toThrow(/parse diagnostic/);
+    const badDir = mkdtempSync(join(tmpdir(), 'cdkd-doc-err-bad-'));
+    try {
+      const bad = join(badDir, 'broken.ts');
+      writeFileSync(bad, 'const a = ;;; function (', 'utf8');
+      expect(() => extractTemplates([bad])).toThrow(/broken\.ts: refusing to scan/);
+    } finally {
+      rmSync(badDir, { recursive: true, force: true });
+    }
   });
 
   it('treats an empty or whitespace-only template as no template', () => {

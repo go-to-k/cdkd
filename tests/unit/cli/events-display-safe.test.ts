@@ -737,7 +737,7 @@ describe('the run listing keeps its exact benign layout (issue #2438)', () => {
         `${gray('cdkd 0.286.3')}  ${gray('4 events')}`
     );
     expect(lines[2]).toBe(
-      gray(`\nUse 'cdkd events TestStack --run <runId>' to read one run's events.`)
+      gray(`\nRead one run's events with: cdkd events TestStack --run '<runId>'`)
     );
   });
 
@@ -759,7 +759,16 @@ describe('the run listing keeps its exact benign layout (issue #2438)', () => {
 
     const out = rawOutput();
     expect(out).not.toContain(CSI_ERASE_LINE);
-    expect(out).toContain("Use 'cdkd events TestStack [2K --run <runId>'");
+    // Since go-to-k/cdkd#3436 the footer's command takes the RAW name through
+    // `pasteableCommand`, so a name sanitizing ALTERS is not printed in its
+    // altered spelling at all — that spelling addresses a different record.
+    // The hole is printed instead, and the `<runId>` placeholder is quoted.
+    expect(out).toContain("cdkd events '<stack>' --run '<runId>'");
+    expect(out).not.toContain('cdkd events TestStack [2K');
+    // The HEADING still shows the sanitized name: naming it in prose is the
+    // display class (go-to-k/cdkd#3232), a different question from naming it
+    // in a command.
+    expect(out).toContain('TestStack [2K');
   });
 });
 

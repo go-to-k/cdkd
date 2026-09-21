@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
@@ -600,8 +601,17 @@ async function destroyCommand(
         const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
         throw new Error(
           `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-            `Use 'cdkd state orphan ${stackName} --stack-region <region>' to remove cdkd's record for one ` +
-            `region, or run destroy from a CDK app whose env.region matches one of them.`
+            `Remove cdkd's record for ONE region with the command below (fill in the ` +
+            `region), or run destroy from a CDK app whose env.region matches one of them.` +
+            // Both the name AND the `<region>` hole are quoted on a trailing
+            // labelled line: bare, `<region>` reads stdin from a file `region`
+            // and truncates the next word (go-to-k/cdkd#3436).
+            `\nRemove one record with: ${
+              pasteableCommand('cdkd state orphan', [
+                { value: stackName, hole: 'stack' },
+                { flag: '--stack-region', hole: 'region' },
+              ]).command
+            }`
         );
       }
 

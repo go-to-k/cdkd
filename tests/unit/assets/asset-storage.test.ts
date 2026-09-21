@@ -264,8 +264,16 @@ describe('AssetModeResolver', () => {
     // stack's env.region stayed legacy.
     const gcNotices = mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
     expect(gcNotices).toHaveLength(2);
-    expect(String(gcNotices[0]![0])).toContain("Run 'cdkd bootstrap --region us-east-1'");
-    expect(String(gcNotices[1]![0])).toContain("Run 'cdkd bootstrap --region ap-northeast-1'");
+    // The command is pinned as the whole trailing line AND as the END of the
+    // message (go-to-k/cdkd#3436): `toContain` accepts it back inside a prose
+    // sentence, and a line anchor alone accepts it ABOVE the explanation, where
+    // a copy through the line end takes the next sentence with it.
+    expect(String(gcNotices[0]![0])).toMatch(
+      /\nBootstrap with: cdkd bootstrap --region us-east-1$/
+    );
+    expect(String(gcNotices[1]![0])).toMatch(
+      /\nBootstrap with: cdkd bootstrap --region ap-northeast-1$/
+    );
   });
 
   it('shows the legacy notice only once per region across repeated resolves', async () => {
@@ -1367,7 +1375,9 @@ describe('AssetModeResolver auto-create (issue #1007)', () => {
       String(c[0]).includes('Failed to auto-create cdkd asset storage')
     );
     expect(warns).toHaveLength(1);
-    expect(String(warns[0]![0])).toContain(`cdkd bootstrap --region ${REGION}`);
+    expect(String(warns[0]![0])).toMatch(
+      new RegExp(`\nBootstrap with: cdkd bootstrap --region ${REGION}$`)
+    );
     expect(gcNotices()).toHaveLength(1);
   });
 
@@ -1651,7 +1661,9 @@ describe('AssetModeResolver region-case fold (issue #2021)', () => {
 
     const notices = gcNotices();
     expect(notices).toHaveLength(1);
-    expect(String(notices[0]![0])).toContain(`Run 'cdkd bootstrap --region ${REGION}'`);
+    expect(String(notices[0]![0])).toMatch(
+      new RegExp(`\nBootstrap with: cdkd bootstrap --region ${REGION}$`)
+    );
     expect(String(notices[0]![0])).not.toContain(REGION_UPPER);
   });
 

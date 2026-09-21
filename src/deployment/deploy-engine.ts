@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { pasteableCommand } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesSameResource,
@@ -2028,28 +2029,6 @@ export class DeployEngine {
     const hasRefStateRead = reads.some((read) => read.kind === 'ref-state-key' && isLocal(read));
 
     /**
-     * A logical id rendered inside the single-quoted command below.
-     *
-     * cdkd validates no logical-id charset, so the id can contain a `'` — and
-     * the line it lands in is meant to be COPY-PASTED into a shell, where an
-     * unescaped one closes the quoting early and the rest of the command
-     * reparses as something else. POSIX single-quote escaping (`'` becomes
-     * `'\\''`) is the fix: close, emit an escaped quote, reopen.
-     *
-     * cdkd never EXECUTES this string — it is advice in an error message — so
-     * this is about the pasted command being correct, not about injection into
-     * cdkd itself (issue #2847 round-5 review).
-     *
-     * SINCE go-to-k/cdkd#3435 no id reaching this arm can contain a `'`:
-     * `isPasteableIdent` admits `[A-Za-z0-9][A-Za-z0-9~_.-]*` only, and the
-     * command is not emitted for anything else. Kept anyway rather than
-     * deleted — dropping a guard on the strength of a NEW guard one line up is
-     * how the pair later comes apart, and this one costs a `replaceAll` on a
-     * short string.
-     */
-    const quoteSafe = (id: string): string => id.replaceAll("'", `'\\''`);
-
-    /**
      * A logical id rendered as a NAME rather than as a command argument
      * (go-to-k/cdkd#3435 security round).
      *
@@ -2066,6 +2045,8 @@ export class DeployEngine {
     const CFN_LOGICAL_ID_MAX_LENGTH = 255;
 
     const parts: string[] = [];
+    /** Pasteable commands, emitted LAST and one per line (go-to-k/cdkd#3436). */
+    const commandLines: string[] = [];
     if (localTargets.length > 0) {
       // ONE COMMAND PER TARGET: naming several ids beside a single command
       // reads as though the one command covers them all.
@@ -2102,13 +2083,25 @@ export class DeployEngine {
       const pasteable = localTargets.filter(pasteableHere);
       const withheld = localTargets.filter((id) => !pasteableHere(id));
       if (pasteable.length > 0) {
-        parts.push(
-          `Re-import the record that HOLDS the mask: ` +
-            pasteable
-              .map((id) => `'cdkd import <stack> --resource ${quoteSafe(id)}=<physicalId> --force'`)
-              .join(', ') +
-            `.`
-        );
+        // The SENTENCE joins the prose; the commands go to `commandLines`, which
+        // is emitted after every sentence (go-to-k/cdkd#3436). Pushing them here
+        // put later prose on the same line as a command, which is the layout the
+        // rule exists to prevent — and `parts` is space-joined, so a `\n` inside
+        // one part does not make the command last.
+        parts.push(`Re-import the record that HOLDS the mask (command(s) below).`);
+        for (const id of pasteable) {
+          // The old form wrapped the whole command in prose quotes AND left
+          // `<stack>` / `<physicalId>` bare, which pasted as two redirections.
+          commandLines.push(
+            `Re-import with: ${
+              pasteableCommand('cdkd import', [
+                { hole: 'stack' },
+                { flag: '--resource', value: `${id}=<physicalId>`, hole: 'resource' },
+                { literal: '--force' },
+              ]).command
+            }`
+          );
+        }
       }
       if (withheld.length > 0) {
         parts.push(
@@ -2168,7 +2161,7 @@ export class DeployEngine {
           `not apply to such an entry.`
       );
     }
-    return parts.join(' ');
+    return [parts.join(' '), ...commandLines].join('\n');
   }
 
   /**
@@ -2285,9 +2278,12 @@ export class DeployEngine {
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
         `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-        `when it happened. ${DeployEngine.maskedRecordRemedyFor(reads, context.resources)} If that warning named ` +
-        `a missing cloudformation:DescribeType permission, grant it first. ` +
-        `See https://github.com/go-to-k/cdkd/issues/2449.`,
+        `when it happened. If that warning named a missing ` +
+        `cloudformation:DescribeType permission, grant it first. ` +
+        `See https://github.com/go-to-k/cdkd/issues/2449. ` +
+        // LAST: the remedy ends in labelled command lines, and prose after them
+        // lands on the final command's line (go-to-k/cdkd#3436).
+        `${DeployEngine.maskedRecordRemedyFor(reads, context.resources)}`,
       resourceType,
       logicalId
     );
@@ -3402,11 +3398,19 @@ export class DeployEngine {
           this.logger.info(
             failedOnly
               ? `A previous deploy of '${stackName}' failed and was automatically rolled back. ` +
-                  `The failed resource may be partially applied — run ` +
-                  `'cdkd rollback ${stackName} --revert-failed' to revert it, or continue ` +
-                  `deploying to fix forward (a successful deploy clears this note).`
-              : `A previous deploy of '${stackName}' failed or was interrupted. ` +
-                  `Run 'cdkd rollback ${stackName}' to revert it, or continue deploying to fix forward.`
+                  `The failed resource may be partially applied — revert it, or continue ` +
+                  `deploying to fix forward (a successful deploy clears this note).` +
+                  `\nRevert it with: ${
+                    pasteableCommand('cdkd rollback', [
+                      { value: stackName, hole: 'stack' },
+                      { literal: '--revert-failed' },
+                    ]).command
+                  }`
+              : `A previous deploy of '${stackName}' failed or was interrupted. Revert it, ` +
+                  `or continue deploying to fix forward.` +
+                  `\nRevert it with: ${
+                    pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+                  }`
           );
         }
       } catch {
@@ -5153,8 +5157,13 @@ export class DeployEngine {
     );
     this.logger.info(
       `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
-        `record was kept — if it was left partially applied, run ` +
-        `'cdkd rollback ${stackName} --revert-failed' to revert it.`
+        `record was kept — if it was left partially applied, revert it.` +
+        `\nRevert it with: ${
+          pasteableCommand('cdkd rollback', [
+            { value: stackName, hole: 'stack' },
+            { literal: '--revert-failed' },
+          ]).command
+        }`
     );
   }
 
@@ -8125,10 +8134,15 @@ export class DeployEngine {
               'while removing it from the template'
             ) +
               `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
-              `delete. Repair the record first ('cdkd state show ${stackName}' to inspect; ` +
-              `for a nested stack it is the CHILD's own state, whose other resources may ` +
-              `already be gone), or delete the resource by hand and drop the record with ` +
-              `'cdkd state orphan ${stackName}'.`
+              `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
+              `state, whose other resources may already be gone), or delete the resource by ` +
+              `hand and drop the record.` +
+              `\nInspect it with: ${
+                pasteableCommand('cdkd state show', [{ value: stackName, hole: 'stack' }]).command
+              }` +
+              `\nDrop the record with: ${
+                pasteableCommand('cdkd state orphan', [{ value: stackName, hole: 'stack' }]).command
+              }`
           );
           // Deliberately NO `delete stateResources[logicalId]` and NO
           // `counts.deleted++`. Dropping the record is the data-loss half:

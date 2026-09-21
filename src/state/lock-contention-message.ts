@@ -21,6 +21,14 @@
  */
 
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+// Both moved to `src/utils/pasteable-command.ts` with the shared builder
+// (go-to-k/cdkd#3436): `src/utils/**` imports nothing from `src/state/**`, so
+// the builder could not have reached them here. Re-exported because this
+// module's own callers and `.claude/rules/lock-contention-message.md` name
+// this path.
+import { commandHole, shellQuote } from '../utils/pasteable-command.js';
+
+export { commandHole, shellQuote };
 import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
 import type { LockManager } from './lock-manager.js';
 
@@ -121,27 +129,6 @@ function formatDuration(ms: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m${seconds % 60}s`;
-}
-
-/**
- * Quote a value for a pasteable shell command.
- *
- * EXPORTED since issue [#2610]: `src/provisioning/replacement-protection-advice.ts`
- * prints `aws <service> ...` recovery commands naming a resource's physical id,
- * which is the same hazard one directory over. A second spelling of this
- * predicate is how the two would come to disagree about which values need
- * quoting -- the reason `display-safe.ts`'s header gives for not widening a
- * rule by hand. It is a pure function of its argument and imports nothing.
- */
-export function shellQuote(value: string): string {
-  // A profile / prefix / bucket with a space or a quote would otherwise produce
-  // a suggestion that silently truncates when pasted.
-  // `~` is deliberately NOT here. It was added for `Parent~Child` (every
-  // nested-stack child name) when the command was still wrapped in `'...'` and
-  // the two quotings composed into something unpastable. That wrapper is gone,
-  // so a quoted `'Root~Child'` pastes fine and the widening bought nothing —
-  // while costing tilde expansion on a value an S3 key can carry.
-  return /^[A-Za-z0-9._/@:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -261,25 +248,6 @@ export function buildForceUnlockCommand(
       ? `cdkd force-unlock ${shellQuote(safeStack)}`
       : `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`;
   return [head, ...recoveryFlags.flags].join(' ');
-}
-
-/**
- * A placeholder for a value a pasteable command could not name, QUOTED.
- *
- * A bare `<profile>` is two shell redirections, not a word: pasted, `<profile`
- * reads stdin from a file named `profile` and `>` sends stdout to whatever
- * word follows. While the hole was the command's LAST word that was only a
- * syntax error; with flags appended after it (`--profile <profile>
- * --state-bucket b`) it ran the command with `--state-bucket` swallowed as a
- * redirect target and `b` as the profile — a delete against the ambient
- * bucket, with nothing printed (measured by the maintainer, M4 of the
- * go-to-k/cdkd#3363 review). Quoted, it pastes as one literal argument and
- * nothing else — no redirection, no swallowed flag. It is not refused: an
- * UNFILLED hole runs as that literal value (a stack named `<stack>`, a prefix
- * `<prefix>`).
- */
-export function commandHole(name: string): string {
-  return `'<${name}>'`;
 }
 
 /** What {@link recoveryCommandFlags} returns. */

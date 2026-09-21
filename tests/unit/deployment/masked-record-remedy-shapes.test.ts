@@ -95,7 +95,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('names the GetAtt TARGET for the local shape, not the consumer', () => {
     const remedy = remedyFor([attr('Cr', 'Secret')]);
 
-    expect(remedy).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
+    expect(remedy).toMatch(/^Re-import with: cdkd import '<stack>' --resource 'Cr=<physicalId>' --force$/m);
     // And no cross-stack clause when nothing cross-stack is present.
     expect(remedy).not.toContain('ANOTHER stack');
     // A `not.toContain('Param')` stood here — the round-6 fix's "do not advise
@@ -115,7 +115,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // produced by any rendering.
     const remedy = remedyFor([attr('Cr', 'Endpoint.Password')]);
 
-    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).toContain("--resource 'Cr=<physicalId>'");
     expect(remedy).not.toContain('Cr.Endpoint=');
   });
 
@@ -173,7 +173,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('emits BOTH arms when the reads mix local and cross-stack entries', () => {
     const remedy = remedyFor([attr('Cr', 'Secret'), IMPORT_VALUE]);
 
-    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).toContain("--resource 'Cr=<physicalId>'");
     expect(remedy).toContain('ANOTHER stack');
   });
 
@@ -182,9 +182,17 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
 
     // A single command beside a list of names reads as though it covered them
     // all, so each target gets its own copy-pasteable command.
-    expect(remedy).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
-    expect(remedy).toContain("'cdkd import <stack> --resource Db=<physicalId> --force'");
+    expect(remedy).toMatch(/^Re-import with: cdkd import '<stack>' --resource 'Cr=<physicalId>' --force$/m);
+    expect(remedy).toMatch(/^Re-import with: cdkd import '<stack>' --resource 'Db=<physicalId>' --force$/m);
     expect(remedy.match(/cdkd import/g)?.length).toBe(2);
+    // ...and they END the remedy, in order: prose after a command lands on its
+    // line, which is what the labelled-line layout exists to prevent
+    // (go-to-k/cdkd#3436). Returning the command lines BEFORE the prose passes
+    // every `toMatch` above (measured, proxy round 9).
+    expect(remedy.split('\n').slice(-2)).toEqual([
+      "Re-import with: cdkd import '<stack>' --resource 'Cr=<physicalId>' --force",
+      "Re-import with: cdkd import '<stack>' --resource 'Db=<physicalId>' --force",
+    ]);
   });
 
   // A nested stack's output attribute reaches the cross-stack re-resolution arm
@@ -207,7 +215,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('still treats an ordinary dotted attribute as LOCAL', () => {
     const remedy = remedyFor([attr('Cr', 'Endpoint.Address')]);
 
-    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).toContain("--resource 'Cr=<physicalId>'");
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
@@ -220,7 +228,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
       Pp: { resourceType: 'AWS::ServiceCatalog::CloudFormationProvisionedProduct' },
     });
 
-    expect(remedy).toContain('--resource Pp=<physicalId>');
+    expect(remedy).toContain("--resource 'Pp=<physicalId>'");
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
@@ -231,7 +239,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('routes the Ref state-key kind to the LOCAL arm and names the right resource', () => {
     const remedy = remedyFor([refKey('MyTable', 'TableName')]);
 
-    expect(remedy).toContain("'cdkd import <stack> --resource MyTable=<physicalId> --force'");
+    expect(remedy).toMatch(/^Re-import with: cdkd import '<stack>' --resource 'MyTable=<physicalId>' --force$/m);
     expect(remedy).not.toContain('ANOTHER stack');
     // The id must be the resource, never the leading literal of the rendering.
     expect(remedy).not.toContain('--resource Ref=');
@@ -261,7 +269,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     const remedy = remedyFor([attr('MyTable', 'TableARN'), refKey('MyTable', 'TableName')]);
 
     expect(remedy.match(/cdkd import/g)?.length).toBe(1);
-    expect(remedy).toContain('--resource MyTable=<physicalId>');
+    expect(remedy).toContain("--resource 'MyTable=<physicalId>'");
     // Not just de-duplicated — BOTH reads must be on the local side. Without
     // this line the case passes under a partition that drops the `Ref` kind
     // to the foreign arm, since the surviving GetAtt read still emits exactly
@@ -331,7 +339,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     });
 
     // The GetAtt arm is unaffected — this is the control half.
-    expect(remedy).toContain('--resource Foo=<physicalId>');
+    expect(remedy).toContain("--resource 'Foo=<physicalId>'");
     // ...but the Ref-specific advice must not appear.
     expect(remedy).not.toContain("CDKD's own read");
   });
@@ -360,7 +368,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // would pass both rows above while removing the only remedy that works.
     const remedy = remedyFor([attr('Cr', 'Secret')], { Cr: { resourceType: 'AWS::SSM::Parameter' } });
 
-    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).toContain("--resource 'Cr=<physicalId>'");
     expect(remedy).not.toContain('Do NOT re-import');
   });
 
@@ -371,10 +379,12 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     });
 
     // The ordinary one keeps its command...
-    expect(remedy).toContain('--resource Db=<physicalId>');
+    expect(remedy).toContain("--resource 'Db=<physicalId>'");
     // ...the custom resource is named as unclearable, and never as a target.
     expect(remedy).toContain('Do NOT re-import Cr');
-    expect(remedy).not.toContain('--resource Cr=');
+    // The QUOTED spelling the builder emits since go-to-k/cdkd#3436: keyed on
+    // the old bare one, this withholding case can no longer fail.
+    expect(remedy).not.toContain("--resource 'Cr=");
     expect(remedy.match(/cdkd import/g)?.length).toBe(1);
   });
 
@@ -393,8 +403,10 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // and the reversal is a decision worth reading rather than a pin being
     // relaxed.
     //
-    // `quoteSafe`'s POSIX close-escape-reopen (issue #2847 round-5 review) is
-    // still correct about SHELL QUOTING and is still in the code. What that
+    // The POSIX close-escape-reopen (issue #2847 round-5 review) is still
+    // correct about SHELL QUOTING, and since go-to-k/cdkd#3436 it is
+    // `shellQuote`'s, applied by `pasteableCommand` — the local `quoteSafe`
+    // that escaped the id for a prose wrapper is gone with the wrapper. What that
     // round did not ask is the question the security round did: this same
     // message renders a template-supplied id at DEFAULT verbosity, and neither
     // `formatError` nor the logger sanitizes an `error.message`. So the id
@@ -469,13 +481,13 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     const attrRemedy = remedyFor([attr('My-Table', 'Arn')], {
       'My-Table': { resourceType: 'AWS::SQS::Queue' },
     });
-    expect(attrRemedy).toContain('--resource My-Table=<physicalId>');
+    expect(attrRemedy).toContain("--resource 'My-Table=<physicalId>'");
     expect(attrRemedy).not.toContain('ANOTHER stack');
 
     const refRemedy = remedyFor([refKey('My-Table', 'TableName')], {
       'My-Table': { resourceType: 'AWS::S3Tables::Table' },
     });
-    expect(refRemedy).toContain('--resource My-Table=<physicalId>');
+    expect(refRemedy).toContain("--resource 'My-Table=<physicalId>'");
     expect(refRemedy).toContain("CDKD's own read");
     expect(refRemedy).not.toContain('ANOTHER stack');
   });

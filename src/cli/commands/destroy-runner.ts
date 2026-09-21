@@ -1,4 +1,5 @@
 import * as readline from 'node:readline/promises';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
@@ -1253,9 +1254,21 @@ export async function runDestroyForStack(
   // error arm's `cdkd state orphan <parent>` last-resort hint would drop the
   // parent's `Child` row — the exact pointer the throw exists to preserve.
   const failedStateTargets = new Set<string>();
-  /** `'cmd A' / 'cmd B'` — the quoted, slash-joined hint both summary arms print. */
-  const hintFor = (command: string, targets: string[]): string =>
-    targets.map((t) => `'${command} ${t}'`).join(' / ');
+  /**
+   * One labelled line per target — the hint both summary arms print.
+   *
+   * The PROSE quotes are gone, every target goes through the shared gate, and
+   * each command gets its OWN line (go-to-k/cdkd#3436). The old
+   * `'${command} ${t}'` wrapper is the shape whose paste ran an interpolated
+   * value, and this builder was the issue's example of a command the repo-wide
+   * grep cannot see, since neither `'cdkd ` nor the value is on the same line
+   * as the other. The ` / ` join that first replaced it was its own defect:
+   * pasted, it handed the second command to the first as arguments.
+   */
+  const hintFor = (command: string, targets: string[], label: string): string =>
+    targets
+      .map((t) => `\n${label}: ${pasteableCommand(command, [{ value: t, hole: 'stack' }]).command}`)
+      .join('');
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -1995,8 +2008,11 @@ export async function runDestroyForStack(
           ? `This summary is the only record: this run wrote no deployment events, either ` +
             `because it is a 'cdkd state destroy' (go-to-k/cdkd#2423) or because it is a ` +
             `nested-stack child, neither of which threads an event recorder.`
-          : `Run 'cdkd events ${stackName}' for the RESOURCE_GUARD_INDETERMINATE entries, which ` +
-            `name the check and the reason and survive the run.`;
+          : `The RESOURCE_GUARD_INDETERMINATE entries name the check and the reason ` +
+            `and survive the run.` +
+            `\nRead them with: ${
+              pasteableCommand('cdkd events', [{ value: stackName, hole: 'stack' }]).command
+            }`;
       logger.warn(
         `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +
           `be completed during this destroy and cdkd proceeded anyway: ` +
@@ -2019,13 +2035,20 @@ export async function runDestroyForStack(
       // count would misdescribe the run — and the remedy is different too:
       // there is nothing to retry until the state record is repaired.
       const targets = [...skippedStateTargets];
-      const showHint = hintFor('cdkd state show', targets);
-      const orphanHint = hintFor('cdkd state orphan', targets);
+      const showHint = hintFor('cdkd state show', targets, 'Inspect it with');
+      const orphanHint = hintFor('cdkd state orphan', targets, 'Drop the record with');
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
-          `Fix the physicalId in state.json (${showHint}) and ` +
-          `re-run, or delete them by hand and drop the records with ${orphanHint}.`
+          `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
+          `the records.` +
+          // Labelled lines, one command each, with NO trailing punctuation: a
+          // command inside a sentence is copied WITH the period after it, and
+          // `cdkd state orphan TestStack.` addresses a different record
+          // (go-to-k/cdkd#3436). `hintFor` opens each line itself, so adding a
+          // `\n` here too would print a blank one.
+          showHint +
+          orphanHint
       );
     } else {
       // Issue #1777: the failing row can be a nested stack, and then the
@@ -2037,7 +2060,7 @@ export async function runDestroyForStack(
       // skip arm. The `stackName` fallback keeps the hint non-empty if a future
       // path ever increments `errorCount` without recording a target.
       const failedTargets = failedStateTargets.size > 0 ? [...failedStateTargets] : [stackName];
-      const orphanHint = hintFor('cdkd state orphan', failedTargets);
+      const orphanHint = hintFor('cdkd state orphan', failedTargets, 'Drop the record with');
       // Issue #1777: a run can carry BOTH kinds at once, and this arm owns that
       // case (the skip-only arm above is unreachable once errorCount > 0). The
       // counters already print `, N skipped`, so saying nothing about them here
@@ -2048,14 +2071,25 @@ export async function runDestroyForStack(
       const skippedClause =
         skippedTargets.length > 0
           ? ` Separately, ${result.skippedCount} resource(s) were SKIPPED — cdkd could not address them, so no delete was issued and they may still exist in AWS. ` +
-            `Fix the physicalId in state.json (${hintFor('cdkd state show', skippedTargets)}) and re-run, ` +
-            `or delete them by hand and drop the records with ${hintFor('cdkd state orphan', skippedTargets)}.`
+            `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
+            `their records.`
           : '';
+      // Every command AFTER all the prose, one per line (go-to-k/cdkd#3436):
+      // mid-sentence, a copy through the line end takes the words around it.
+      // No length guard: `hintFor` maps over the targets, so an empty set
+      // yields an empty string without reaching the builder. A conditional here
+      // is a branch whose two sides produce identical output.
+      const skippedCommands =
+        hintFor('cdkd state show', skippedTargets, 'Inspect it with') +
+        hintFor('cdkd state orphan', skippedTargets, 'Drop the record with');
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
-          `If the same resource keeps failing, ${orphanHint} is the last resort: it removes the state record without deleting AWS resources.` +
-          skippedClause
+          `If the same resource keeps failing, dropping the state record is the last resort: ` +
+          `it removes the record without deleting AWS resources.` +
+          skippedClause +
+          orphanHint +
+          skippedCommands
       );
     }
   } finally {

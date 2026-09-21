@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
@@ -2513,7 +2514,7 @@ export function scrubRefusalWording(
   loggedExportKey: string,
   loggedProducerStack: string,
   loggedVia: readonly string[]
-): { templateClaim: string; remedy: string } {
+): { templateClaim: string; remedy: string; remedyCommands: string[] } {
   const chain = dedupePreservingOrder(loggedVia, 'first');
   const chainRoot = chain[chain.length - 1];
   const through =
@@ -2545,12 +2546,25 @@ export function scrubRefusalWording(
     [...chain].reverse().concat(loggedProducerStack),
     'last'
   );
+  // The commands leave the prose and become labelled lines the caller appends
+  // LAST (go-to-k/cdkd#3436). `remedyCommands` is ordered head-of-chain first,
+  // which is the order they must be run in.
+  const remedyCommands = scrubOrder.map(
+    (name) =>
+      // `patternMatched`: scrub resolves its argument through `matchStacks`, so
+      // a producer named `Prod*` would select every stack it matches — quoting
+      // stops the SHELL expanding it, not cdkd.
+      `Scrub with: ${
+        pasteableCommand('cdkd scrub', [
+          { value: name, hole: 'stack', opts: { patternMatched: true } },
+        ]).command
+      }`
+  );
   const remedy =
     scrubOrder.length > 1
-      ? `Scrub the producers first, from the head of the chain (` +
-        `${scrubOrder.map((s) => `'cdkd scrub ${s}'`).join(', then ')})`
-      : `Scrub the producer first ('cdkd scrub ${loggedProducerStack}')`;
-  return { templateClaim, remedy };
+      ? `Scrub the producers first, from the head of the chain, in the order below`
+      : `Scrub the producer first`;
+  return { templateClaim, remedy, remedyCommands };
 }
 
 /**
@@ -2668,7 +2682,7 @@ function plaintextProducerCrossStackReadError(
   //
   // Both halves are built by {@link scrubRefusalWording}, which is where the
   // `widened` / `chained` split and the chain de-duplication live.
-  const { templateClaim, remedy } = scrubRefusalWording(
+  const { templateClaim, remedy, remedyCommands } = scrubRefusalWording(
     verdict,
     loggedExportKey,
     loggedProducerStack,
@@ -2681,9 +2695,14 @@ function plaintextProducerCrossStackReadError(
       `${templateClaim}, but its own state still stores ` +
       `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
-      `stack clean. ${remedy}, then re-run ` +
-      `'cdkd scrub ${stackName}' — the read will then return the expression and this stack is ` +
-      `scrubbed normally.`,
+      `stack clean. ${remedy}, then re-run scrub for this stack — the read will then ` +
+      `return the expression and this stack is scrubbed normally.` +
+      `\n${remedyCommands.join('\n')}` +
+      `\nThen re-run: ${
+        pasteableCommand('cdkd scrub', [
+          { value: stackName, hole: 'stack', opts: { patternMatched: true } },
+        ]).command
+      }`,
     'SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT'
   );
 }

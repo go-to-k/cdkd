@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
@@ -2751,8 +2752,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       logger.warn(
         `Stack '${resolvedStackName}' has a rollback journal — a previous deploy failed or was ` +
           `interrupted and has not been reverted. Exporting this half-deployed state to ` +
-          `CloudFormation is likely unintended; run 'cdkd rollback ${resolvedStackName}' to revert ` +
-          `(or 'cdkd deploy' to fix forward) first.`
+          `CloudFormation is likely unintended; revert it first (or 'cdkd deploy' to fix ` +
+          `forward).` +
+          `\nRevert it with: ${
+            pasteableCommand('cdkd rollback', [{ value: resolvedStackName, hole: 'stack' }]).command
+          }`
       );
       if (!options.yes && !options.dryRun) {
         const proceed = await confirmPrompt('Export anyway?');
@@ -7049,9 +7053,12 @@ export async function runPerStackImportLoop(args: {
             `Phase 1A IMPORT changeset failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
               `'${plan.cfnName}'). Stacks imported successfully so far: ${importedSummary}. ` +
               `Stacks not yet imported (cdkd state preserved): ${remainingSummary}. ` +
-              `After resolving the underlying cause, re-run 'cdkd export ${rootStackName}' — ` +
-              `already-imported children will be adopted as nested references on retry. ` +
-              `Cause: ${err instanceof Error ? err.message : String(err)}`,
+              `After resolving the underlying cause, re-run the export — already-imported ` +
+              `children will be adopted as nested references on retry. ` +
+              `Cause: ${err instanceof Error ? err.message : String(err)}` +
+              `\nRe-run with: ${
+                pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
+              }`,
             { cause: err instanceof Error ? err : undefined }
           );
         }

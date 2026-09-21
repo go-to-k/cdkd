@@ -275,7 +275,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       .map((c) => String(c[0]))
       .find((m) => m.includes('partially destroyed'));
     expect(banner).toBeDefined();
-    expect(banner).toContain("'cdkd state orphan TestStack'");
+    expect(banner).toMatch(/cdkd state orphan TestStack(?![\w~])/);
     expect(banner).toContain('without deleting AWS resources');
   });
 
