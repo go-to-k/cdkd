@@ -35,6 +35,13 @@ export interface FailedStage {
    * clause. `displayIdent` is the identity on an ASCII-identifier path and
    * JSON-quotes anything else, so a forging value is visibly a quoted value
    * ([#3277](https://github.com/go-to-k/cdkd/issues/3277) is the same class).
+   *
+   * One accepted consequence, so it is not "fixed" later: a legitimate
+   * non-ASCII stage id displays as `<unrenderable>`, because `displayIdent` is
+   * an ASCII ALLOWLIST. That is the fail-closed direction, the message head
+   * still echoes the user's own pattern, and ATTRIBUTION is unaffected since
+   * it runs on the raw value. Reaching for `displaySafe` to render it reopens
+   * the forgery above.
    */
   stagePath: string;
 

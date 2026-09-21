@@ -359,7 +359,7 @@ export class AssemblyReader {
           // produces. Same choice as `renderNoStackMatch`.
           (stacks.length > 0
             ? `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}`
-            : 'The assembly has no stacks.') +
+            : 'The assembly has no stacks') +
           // "not found" is a lie while a Stage failed to load: its stacks were
           // dropped from `stacks` above (issue go-to-k/cdkd#3482).
           failedStageNote([stackName], failedStages)

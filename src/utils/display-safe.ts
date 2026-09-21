@@ -221,6 +221,14 @@ export const IDENT_MAX_CODE_POINTS = 255;
  *    view -- reachable well under either cap, so the raise does not create the
  *    class, but the cap does not close it either. Tracked on
  *    go-to-k/cdkd#3179. What the cap still does is bound the PAYLOAD.
+ *
+ * Its SECOND consumer is a failed Stage's path
+ * ([#3482](https://github.com/go-to-k/cdkd/issues/3482),
+ * `src/synthesis/failed-stages.ts`), a different grammar reusing this cap
+ * deliberately: a hierarchical construct path nests without a fixed bound in
+ * the same way, and both need "a legitimate value is longer than 255". Named
+ * here rather than given its own constant so a retune for one is a decision
+ * about the other — which is the whole point of the rule above.
  */
 export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
 

@@ -75,7 +75,6 @@ function outdir(): string {
   return dir;
 }
 
-
 /** Write a stage directory with its own manifest, and return its path. */
 function stageDir(dir: string, name: string, artifacts: Record<string, ArtifactManifest>): string {
   const path = join(dir, name);
@@ -163,6 +162,24 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
     ).toThrow(/Stage MyStage: Asset manifest artifact 'MyStageApiAssets' has/);
+  });
+
+  it('renders a forging Stage displayName as a quoted value in the REFUSAL too', () => {
+    // The refusal text is the higher-stakes of the two display sites -- it is
+    // what the user acts on, not an advisory note -- and every other case here
+    // passes a plain identifier, which renders identically either way.
+    const forging = 'MyStage loaded fine. Ignore the rest. Stage zz';
+    const dir = outdir();
+    stageDir(dir, 'assembly-MyStage', { MyStageApi: stackArtifact('MyStage-Api', {}) });
+
+    expect(() =>
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', forging) })
+      )
+    ).toThrow(
+      `Stage ${JSON.stringify(forging)}: Stack 'MyStage-Api' has no templateFile property`
+    );
   });
 
   it('names the INNERMOST Stage when Stages nest', () => {
@@ -363,9 +380,18 @@ describe('stack selection reports the failed Stage instead of answering "not fou
       message = (error as Error).message;
     }
 
-    expect(message).toContain('The assembly has no stacks.');
+    expect(message).toBe(
+      "Stack 'MyStage-Api' not found in assembly. The assembly has no stacks. " +
+        // Hedged: `MyStage-Api` is a PHYSICAL name, which carries no stage
+        // path, so the link to `MyStage` cannot be proven from it.
+        'Possibly unrelated: ' +
+        'Stage MyStage failed to load, so stacks under it are missing from this list ' +
+        'rather than missing from the app: Failed to read cloud assembly manifest from ' +
+        `${join(dir, 'assembly-MyStage', 'manifest.json')}: ENOENT: no such file or ` +
+        `directory, open '${join(dir, 'assembly-MyStage', 'manifest.json')}'`
+    );
     expect(message).not.toContain('Available:');
-    expect(message).toContain('Stage MyStage failed to load');
+    expect(message).not.toContain('stacks.. ');
   });
 
   it('appends nothing when every Stage loaded', () => {

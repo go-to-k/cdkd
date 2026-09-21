@@ -77,6 +77,19 @@ describe('failedStageNote', () => {
     expect(failedStageNote(['(*x/y*)'], [MY_STAGE])).toContain('Possibly unrelated');
   });
 
+  it('hedges, rather than throwing, when the pattern has FEWER segments than the stage path', () => {
+    // Reachable with three-level Stage nesting and a two-segment pattern.
+    // Without the segment-count guard the comparison indexes past the end of
+    // the pattern and throws a TypeError inside the message construction --
+    // the same class as the RegExp crash.
+    expect(() =>
+      failedStageNote(['A/B'], [{ stagePath: 'A/B/C', reason: 'ENOENT' }])
+    ).not.toThrow();
+    expect(failedStageNote(['A/B'], [{ stagePath: 'A/B/C', reason: 'ENOENT' }])).toContain(
+      'Possibly unrelated'
+    );
+  });
+
   it('hedges when the pattern targets a DIFFERENT stage', () => {
     expect(failedStageNote(['Other/Api'], [MY_STAGE])).toContain(
       "Possibly unrelated: Stage MyStage"
