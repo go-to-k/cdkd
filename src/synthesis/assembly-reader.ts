@@ -10,6 +10,7 @@ import type {
 import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
 
@@ -92,6 +93,22 @@ export interface StackInfo {
 
 /**
  * Reads and parses Cloud Assembly from cdk.out directory
+ *
+ * EVERY value this class renders into a message or a log line goes through
+ * `displaySafe` (issue [#3277](https://github.com/go-to-k/cdkd/issues/3277)).
+ * The reason is the one its absolute-`aws:asset:path` refusal states in its own
+ * text: a manifest key, a template key, a `Metadata` string, a
+ * `directoryName`-derived path and the `JSON.parse` failure quoting a hand-fed
+ * file are all chosen by whoever wrote the assembly, and this is the FIRST
+ * layer the CLI reaches, so on a hostile assembly its output is what a user is
+ * asked to trust. C1 bytes and the bidi overrides survive ordinary string
+ * building, and `formatError` sanitizes only an error's `cause`, never its own
+ * `message` — so a crafted value otherwise appends what reads as a second,
+ * cdkd-authored line. `displaySafe` is the identity on every well-formed
+ * assembly: it neither truncates nor quotes, so a legitimate long asset path
+ * still renders in full and byte-identically. The same rule, for the same
+ * reason, guards the twin refusals in `src/cli/commands/diff-recursive.ts`
+ * (go-to-k/cdkd#3243).
  */
 export class AssemblyReader {
   private logger = getLogger().child('AssemblyReader');
@@ -105,11 +122,11 @@ export class AssemblyReader {
     try {
       const content = readFileSync(manifestPath, 'utf-8');
       const manifest = JSON.parse(content) as AssemblyManifest;
-      this.logger.debug(`Loaded manifest: version=${manifest.version}`);
+      this.logger.debug(`Loaded manifest: version=${displaySafe(manifest.version)}`);
       return manifest;
     } catch (error) {
       throw new SynthesisError(
-        `Failed to read cloud assembly manifest from ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -149,8 +166,17 @@ export class AssemblyReader {
             const nestedStacks = this.getAllStacks(nestedDir, nestedManifest);
             stacks.push(...nestedStacks);
           } catch (error) {
+            // `displaySafe` on the caught text is DEFENCE IN DEPTH and is today
+            // the identity, stated because a mutation probe on it finds no
+            // discrimination and the next reader deserves the reason rather
+            // than the puzzle: every error that can reach here is one THIS
+            // module already sanitized (`readManifest`, `extractStackInfo`), or
+            // a runtime `TypeError` from a non-string manifest field, whose
+            // text is `Received type number (42)` and carries no
+            // assembly-chosen characters. It stays because the guard belongs to
+            // the CATCH, not to today's set of throws inside the `try`.
             this.logger.warn(
-              `Failed to read nested assembly '${props.directoryName}': ${error instanceof Error ? error.message : String(error)}`
+              `Failed to read nested assembly '${displaySafe(props.directoryName)}': ${displaySafe(error instanceof Error ? error.message : String(error))}`
             );
           }
         }
@@ -170,7 +196,8 @@ export class AssemblyReader {
 
     if (!stack) {
       throw new SynthesisError(
-        `Stack '${stackName}' not found in assembly. Available: ${stacks.map((s) => s.stackName).join(', ')}`
+        `Stack '${displaySafe(stackName)}' not found in assembly. ` +
+          `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}`
       );
     }
 
@@ -227,7 +254,7 @@ export class AssemblyReader {
     // Load template
     const templateFile = props?.templateFile;
     if (!templateFile) {
-      throw new SynthesisError(`Stack '${stackName}' has no templateFile property`);
+      throw new SynthesisError(`Stack '${displaySafe(stackName)}' has no templateFile property`);
     }
 
     const templatePath = join(assemblyDir, templateFile);
@@ -237,13 +264,13 @@ export class AssemblyReader {
       template = JSON.parse(content) as CloudFormationTemplate;
     } catch (error) {
       throw new SynthesisError(
-        `Failed to read template for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read template for stack '${displaySafe(stackName)}': ${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }
 
     this.logger.debug(
-      `Stack: ${stackName}, Resources: ${Object.keys(template.Resources ?? {}).length}`
+      `Stack: ${displaySafe(stackName)}, Resources: ${Object.keys(template.Resources ?? {}).length}`
     );
 
     // Find asset manifest for this stack
@@ -252,7 +279,9 @@ export class AssemblyReader {
       for (const depId of artifact.dependencies) {
         if (assetManifestMap.has(depId)) {
           assetManifestPath = assetManifestMap.get(depId);
-          this.logger.debug(`Found asset manifest for ${stackName}: ${depId}`);
+          this.logger.debug(
+            `Found asset manifest for ${displaySafe(stackName)}: ${displaySafe(depId)}`
+          );
           break;
         }
       }
@@ -274,7 +303,10 @@ export class AssemblyReader {
     }
 
     if (dependencyNames.length > 0) {
-      this.logger.debug(`Stack '${stackName}' depends on: [${dependencyNames.join(', ')}]`);
+      this.logger.debug(
+        `Stack '${displaySafe(stackName)}' depends on: ` +
+          `[${dependencyNames.map((n) => displaySafe(n)).join(', ')}]`
+      );
     }
 
     // Parse environment
@@ -296,9 +328,11 @@ export class AssemblyReader {
       // CDK emits relative asset paths for nested templates (siblings of the
       // parent template in the same `cdk.out` directory). An absolute path
       // indicates the synth output was hand-modified or generated by a
-      // non-CDK toolchain — `join(assemblyDir, '/abs/foo')` produces
-      // `/abs/foo` on POSIX, silently bypassing the `assemblyDir` scoping
-      // and pointing outside cdk.out. Refuse loudly. Mirrors the deeper
+      // non-CDK toolchain, so this is a TRIPWIRE for "not CDK-generated",
+      // NOT a containment check: `join` does not honour a leading separator
+      // (`join('/tmp/cdk.out', '/abs/foo')` is `/tmp/cdk.out/abs/foo`, which
+      // is `resolve`'s behaviour, not `join`'s), and the shape that does
+      // leave the directory is `..`, which nothing here rejects. Mirrors the deeper
       // guard `isAbsoluteCrossPlatform` in `src/cli/commands/diff-recursive.ts`
       // (which recurses into grandchild templates) so the top-level and
       // recursive walks share the same hardened contract.
@@ -308,8 +342,8 @@ export class AssemblyReader {
         assetPath.startsWith('\\\\')
       ) {
         throw new SynthesisError(
-          `Stack '${stackName}' nested-stack '${logicalId}' has ` +
-            `Metadata['aws:asset:path']='${assetPath}' which is absolute. ` +
+          `Stack '${displaySafe(stackName)}' nested-stack '${displaySafe(logicalId)}' has ` +
+            `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which is absolute. ` +
             `CDK emits relative asset paths for nested templates; an absolute ` +
             `path indicates the synth output was hand-modified or generated by a ` +
             `non-CDK toolchain. Refusing to load.`

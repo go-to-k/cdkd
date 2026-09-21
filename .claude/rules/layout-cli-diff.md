@@ -28,7 +28,9 @@ ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
 ([state-malformed-properties.md](state-malformed-properties.md)).
 `readNestedTemplate` / `indexNestedChildTemplates` duplicate
 `NestedStackProvider`'s copies to keep the CLI off provisioning; their refusals
-use `displaySafe` and are the ONLY sanitized ones.
+use `displaySafe`, as does the synth-time twin in `assembly-reader.ts`
+([#3277](https://github.com/go-to-k/cdkd/issues/3277)). This file's OWN
+`Nested template file not found` throw does not yet.
 
 `computeStackDiff` is the per-stack state-vs-template diff shared by the
 top-level loop and the walker. Its `Outputs` delta is computed HERE, not behind

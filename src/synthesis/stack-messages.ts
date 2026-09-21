@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArtifactManifest, MetadataEntry } from '../types/assembly.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import type { StackInfo } from './assembly-reader.js';
 
@@ -89,13 +90,35 @@ export function collectStackMessages(
       }
       for (const [path, entries] of Object.entries(sideFile)) {
         if (!Array.isArray(entries)) {
+          // Raw on purpose: this Error never escapes the surrounding `catch`,
+          // which is the only thing a user sees and which sanitizes the whole
+          // text. Sanitizing here too would leave a guard nothing can probe.
           throw new Error(`entry for path '${path}' is not an array`);
         }
         merged[path] = [...(merged[path] ?? []), ...entries];
       }
     } catch (error) {
+      // `displaySafe` for the reason `AssemblyReader`'s own refusals give
+      // (go-to-k/cdkd#3277): `additionalMetadataFile` is a manifest string, so
+      // `metadataPath` is chosen by whoever wrote the assembly, and the caught
+      // text quotes either a construct path out of the side file or the
+      // `JSON.parse` failure on its bytes. `formatError` sanitizes only an
+      // error's `cause`, never its `message`.
+      //
+      // The annotation DISPLAY in `processStackMessages` below is still raw,
+      // and that is an OPEN residual rather than a decision
+      // (go-to-k/cdkd#3479). The argument for leaving it -- that the text is
+      // authored by the CDK app the user just ran, so it is the same trust
+      // bucket as the app's own stderr, which `AppExecutor.spawn` relays
+      // verbatim through `logger.info` -- holds ONLY when cdkd executed an app.
+      // It does not under `-a <dir>`: `isPreSynthesizedAssembly` reads
+      // `manifest.json` directly with no subprocess, and `deploy` / `synth`
+      // then display annotations out of that same untrusted file.
+      // What blocks the fix here is that an annotation legitimately carries
+      // newlines, so `displaySafe` (which maps them to spaces) is the wrong
+      // helper and the right one does not exist yet.
       throw new SynthesisError(
-        `Failed to read stack metadata file ${metadataPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read stack metadata file ${displaySafe(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }

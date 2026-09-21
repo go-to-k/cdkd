@@ -152,6 +152,44 @@ describe('collectStackMessages', () => {
     expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
   });
 
+  it('renders the metadata path and the read failure display-safe (issue #3277)', () => {
+    // `additionalMetadataFile` is a manifest string, so `metadataPath` is chosen
+    // by whoever wrote the assembly, and the caught text quotes either a
+    // construct path out of the side file or the `JSON.parse` failure on its
+    // bytes. A DISTINCT marker per half, so dropping `displaySafe` from either
+    // one reds on its own.
+    // eslint-disable-next-line no-control-regex
+    const forging = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+    const artifact = stackArtifact({ additionalMetadataFile: 'meta\u009bdata.json' });
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error('ENOENT\u202efake cdkd line');
+    });
+
+    let message = '';
+    try {
+      collectStackMessages('/asm', artifact);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    // The refusal still names the file it could not read, and still carries the
+    // underlying reason -- neither is dropped, only made safe to print.
+    expect(message).toContain('/asm/meta data.json');
+    expect(message).toContain('ENOENT fake cdkd line');
+    expect(message).not.toMatch(forging);
+  });
+
+  it('leaves an ordinary metadata path and read failure byte-identical', () => {
+    const artifact = stackArtifact({ additionalMetadataFile: 'MyStack.metadata.json' });
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory');
+    });
+
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(
+      'Failed to read stack metadata file /asm/MyStack.metadata.json: ENOENT: no such file or directory'
+    );
+  });
+
   it('renders an entry with no data as an empty message, not "undefined"', () => {
     const artifact = stackArtifact({
       metadata: { '/MyStack': [{ type: 'aws:cdk:warning' }] },
