@@ -10,6 +10,19 @@ Self-implemented. **app-executor.ts** runs the CDK app as a subprocess with
 `CDK_OUTDIR` / `CDK_CONTEXT_JSON` / `CDK_DEFAULT_REGION`; **assembly-reader.ts**
 parses `manifest.json`; **context-providers/** resolves missing context.
 
+- **assembly-reader.ts** renders EVERY assembly-derived value — a manifest key,
+  a `stackName`, a template key, a `Metadata['aws:asset:path']`, a
+  `directoryName`-derived path, a `readFileSync` / `JSON.parse` failure text —
+  through `displaySafe`, in thrown messages AND log lines
+  ([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Synthesis is the first
+  layer the CLI reaches, so on a hand-modified assembly these ARE the lines a
+  user is asked to trust, and `formatError` sanitizes only an error's `cause`.
+  `displaySafe`, never `displayIdent`: a legitimate asset path must stay
+  untruncated and unquoted. `stack-messages.ts`'s side-file refusal follows the
+  same rule; its annotation DISPLAY does not YET — an open residual on
+  [#3479](https://github.com/go-to-k/cdkd/issues/3479), blocked on a helper that
+  preserves newlines, NOT a settled decision: that prose is the user's own app's
+  only when an app ran, which `-a <dir>` skips.
 - **synthesizer.ts** orchestrates the context-provider loop, then routes any
   template `containsMacro` flags through `macro-expander.ts` BEFORE the analyzer
   / provisioner pipeline. The pass is SELECTION-AWARE: `deferMacroExpansion`
