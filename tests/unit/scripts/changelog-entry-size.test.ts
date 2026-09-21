@@ -199,13 +199,16 @@ const CUTOFF = '2026-09-05';
  * The files that STATE the limit in prose. The number is restated in each, and
  * nothing but this list makes them agree -- the drift shape
  * `cross-cutting-list-sync.test.ts` exists for, one file over.
+ *
+ * Every entry must be an INDEPENDENTLY AUTHORED copy. `docs/changelog-cdkd.md`
+ * was one until the assembler began emitting `_header.md` verbatim as its head
+ * (`HEADER_FILE` in `scripts/assemble-changelog.ts`): the two are now one text
+ * by construction, so listing both counted a single surface twice and made the
+ * fence read stronger than it was. The generated file is gitignored besides, so
+ * its row also depended on whether `gen:changelog` had run.
  */
 const PROSE_COPIES = [
   { path: join('changelog.d', '_header.md'), headerOnly: false },
-  // Searched only ABOVE the first entry. The file is append-only and this
-  // change's own entry quotes the phrase, so a whole-file `includes` would stay
-  // green forever no matter what the CONTRACT section said.
-  { path: join('docs', 'changelog-cdkd.md'), headerOnly: true },
   { path: join('.claude', 'skills', 'check-docs', 'SKILL.md'), headerOnly: false },
 ] as const;
 
@@ -557,9 +560,9 @@ describe('changelog entry size', () => {
     // Pinned for the same reason: no verdict here bounds it from above, so it
     // could be raised to anything with the file green.
     expect(MAX_SKIPPED_LINE).toBe(200);
-    // And the number is RESTATED in prose three times. Nothing but this makes
-    // them agree; it is the drift shape cross-cutting-list-sync.test.ts exists
-    // for, one file over.
+    // And the number is RESTATED in prose in two independently authored files.
+    // Nothing but this makes them agree; it is the drift shape
+    // cross-cutting-list-sync.test.ts exists for, one file over.
     const missing = PROSE_COPIES.filter(({ path, headerOnly }) => {
       const full = existsSync(join(REPO_ROOT, path)) ? readFileSync(join(REPO_ROOT, path), 'utf-8') : '';
       const cut = full.split('\n').findIndex((l) => HEADING_PREFIX.test(l));

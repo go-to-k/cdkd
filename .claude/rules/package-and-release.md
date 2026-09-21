@@ -2,6 +2,7 @@
 description: Dependency invariants, the Node.js version floors, and the batched release-please flow
 paths:
   - 'package.json'
+  - 'CHANGELOG.md'
   - 'release-please-config.json'
   - '.release-please-manifest.json'
   - '.github/workflows/release.yml'

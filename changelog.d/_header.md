@@ -16,8 +16,8 @@ behavior is described in the past tense and post-PR behavior in the present
 tense, so a reader reconstructing the history of any subsystem can read
 top-to-bottom by date and see when each capability landed.
 
-AGENTS.md retains the load-bearing summary ("dev/test workflows only, not
-production-ready"); the per-PR detail moved here.
+AGENTS.md retains the load-bearing summary ("for dev/test workflows only —
+early in development, not yet production-ready"); the per-PR detail moved here.
 
 ## What ONE entry may carry (issue [#2552](https://github.com/go-to-k/cdkd/issues/2552))
 

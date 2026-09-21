@@ -684,9 +684,9 @@ interface ResourceProvider {
 }
 ```
 
-The three lifecycle methods are required; `getAttribute` and the roughly
-fifteen further members (`handledProperties`, `readCurrentState`, `import`, the
-drift canonicalizers) are optional — see `src/types/resource.ts` for the whole
+The three lifecycle methods are required; `getAttribute` and the dozen further
+members (`handledProperties`, `readCurrentState`, `import`, the drift
+canonicalizers) are optional — see `src/types/resource.ts` for the whole
 interface.
 
 #### Cloud Control Provider (`cloud-control-provider.ts`)

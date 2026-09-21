@@ -754,15 +754,12 @@ async update(...): Promise<ResourceUpdateResult> {
 ```typescript
 export class ProviderRegistry {
   private providers = new Map<string, ResourceProvider>();
+  private cloudControlProvider: CloudControlProvider;
 
-  // Singleton instance
-  private static instance: ProviderRegistry;
-
-  static getInstance(): ProviderRegistry {
-    if (!this.instance) {
-      this.instance = new ProviderRegistry();
-    }
-    return this.instance;
+  // No singleton: each command constructs its own registry.
+  constructor() {
+    this.cloudControlProvider = new CloudControlProvider();
+    // ...
   }
 
   /**
@@ -801,8 +798,7 @@ import { ProviderRegistry } from './provider-registry.js';
 import { IAMRoleProvider } from './providers/iam-role-provider.js';
 // ... (see register-providers.ts for full list of provider imports)
 
-export function registerAllProviders(): void {
-  const registry = ProviderRegistry.getInstance();
+export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::IAM::Role', new IAMRoleProvider());
   registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
   registry.register('AWS::S3::Bucket', new S3BucketProvider());
@@ -818,6 +814,11 @@ export function registerAllProviders(): void {
   // handled by ProviderRegistry.getProvider()
 }
 ```
+
+The registry is **not a singleton**: each command builds its own and passes it
+in — `const registry = new ProviderRegistry(); registerAllProviders(registry);`
+(see `src/cli/commands/deploy.ts`). So a provider is registered in exactly one
+place, `registerAllProviders`, and never from module scope.
 
 ## Steps to Add a New Provider
 

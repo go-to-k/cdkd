@@ -4055,8 +4055,9 @@ cmd_last_cd_target() {
 # =============================================================================
 #
 # These hooks fire on EVERY Bash call the session makes, including ones that
-# target a SIBLING repository -- deliberate policy (AGENTS.md: "cdkd's gate
-# policy is applied to that repo's commands ... never route around it"). The
+# target a SIBLING repository -- deliberate policy (AGENTS.md: "cdkd's hooks
+# still fire ... never route around it"; the reasoning is in
+# .claude/rules/hooks.md). The
 # integ gate then `cd`s to the resolved target tree and asks markgate about a
 # gate named for cdkd: `integ-destroy`. A repo that spells the same gate
 # differently -- cdk-local names its Docker local-execution gate `integ` --

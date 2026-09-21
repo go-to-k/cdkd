@@ -91,8 +91,8 @@ hunt round files the issue and stops there; a fix-in-session round still files
 it, then closes it from the PR (`Closes #<n>`). The body carries the real
 repro (the CDK app / commands / the exact deploy-update-destroy sequence).
 
-**Every issue carries the four classification lines** (AGENTS.md, "The four TODO
-fields"; the scales are in
+**Every issue carries the four classification lines** (named in AGENTS.md ->
+Reporting; the scales are in
 [../../rules/session-report.md](../../rules/session-report.md), which never
 auto-loads — its `paths:` glob matches only `AGENTS.md`, injected rather than
 read — so open it here), with `Severity` / `Effort` ALSO as labels

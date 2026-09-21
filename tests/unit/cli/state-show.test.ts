@@ -221,7 +221,7 @@ describe('cdkd state show', () => {
         // Not every stored output is a string, and that is ordinary data rather
         // than a hand edit: the deploy engine assigns the resolved value
         // UNCOERCED, so a list-valued `Fn::GetAtt` persists a JSON array
-        // (AGENTS.md, "State Schema"). These two are what tell the value's
+        // (`.claude/rules/state-schema.md`). These two are what tell the value's
         // formatter from a bare strip, which would throw on either.
         outputs: { ApiUrl: 'https://api.example.com', Azs: ['us-east-1a', 'us-east-1b'], Count: 2 },
         resources: {

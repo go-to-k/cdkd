@@ -82,10 +82,12 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 ## Verifying and merging
 
-- **Run `/check` and `/check-docs` before every commit, and `/verify-pr` before
-  opening a PR** (each is `.claude/skills/<name>/SKILL.md`, followable by hand
-  where slash commands are not available). Recommended, not enforced — nothing
-  blocks them, and skipping them is how main goes red.
+- **Run `/check` before every commit — it opens with a four-axis self-review —
+  `/check-docs` whenever the commit touches `src/**`, `docs/**`, `README.md`,
+  `AGENTS.md` or `.claude/rules/**`, and `/verify-pr` before opening a PR**
+  (each is `.claude/skills/<name>/SKILL.md`, followable by hand where slash
+  commands are not available). Recommended, not enforced — nothing blocks them,
+  and skipping them is how main goes red.
 - **Cost is not a tiebreaker for verification depth** on a `src/**` change.
   Wall-clock, tokens and "this is probably fine" are never reasons to take the
   weaker of two options: take the more thorough one, and when genuinely unsure
