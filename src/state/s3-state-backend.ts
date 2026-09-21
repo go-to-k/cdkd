@@ -29,6 +29,7 @@ import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-key
 import { displaySafe, truncateCodePoints, IDENT_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
+import { producerRecordKey } from './malformed-resources-bag.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import {
@@ -794,7 +795,12 @@ export class S3StateBackend {
           if (segments.length === NEW_KEY_DEPTH) {
             const [stackName, region] = segments;
             if (!stackName || !region) continue;
-            const dedupeKey = `${stackName}\0${region}`;
+            // {@link producerRecordKey}, not a separator. Both halves here are
+            // S3 key segments, and the probe on go-to-k/cdkd#3323 measured that
+            // S3 refuses to store a NUL-bearing key at all — so a NUL-separated
+            // key WAS injective, by an invariant about what S3 accepts rather
+            // than by anything this code states, tests, or would notice losing.
+            const dedupeKey = producerRecordKey(stackName, region);
             if (!seen.has(dedupeKey)) {
               seen.add(dedupeKey);
               refs.push({ stackName, region });
@@ -807,7 +813,11 @@ export class S3StateBackend {
             const [stackName] = segments;
             if (!stackName) continue;
             const region = await this.readLegacyRegion(stackName);
-            const dedupeKey = `${stackName}\0${region ?? ''}`;
+            // Same helper, and this arm is the one where the old invariant was
+            // already half gone: the region comes from the record BODY, which
+            // is JSON and may carry a NUL. Injectivity survived only because
+            // the LEFT half is still a key segment.
+            const dedupeKey = producerRecordKey(stackName, region ?? '');
             if (!seen.has(dedupeKey)) {
               seen.add(dedupeKey);
               refs.push({ stackName, ...(region ? { region } : {}) });

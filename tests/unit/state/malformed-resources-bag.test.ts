@@ -4825,17 +4825,88 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     );
   });
 
-  it('ONE spelling: both warned-set sites call this helper', () => {
+  /**
+   * Every file that identifies a state record by `(stackName, region)`, with
+   * how many such keys it builds.
+   *
+   * The COUNT is the half that matters. The previous revision of this fence
+   * asserted only `toContain('producerRecordKey(')` per file, which goes green
+   * the moment ONE key in a file uses the helper however many separators remain
+   * beside it — the same per-FILE shape that let three raw reads ship green on
+   * go-to-k/cdkd#3331. `s3-state-backend.ts` builds two, in sibling branches of
+   * one loop, and is exactly the file that shape would have half-covered.
+   */
+  const RECORD_KEY_SITES: ReadonlyArray<readonly [string, number]> = [
+    // 2 record keys (the warned-once set, the cross-stack read memoizer) plus
+    // 3 coordinate keys (the chain walk's seed, its hop dedupe, its verdict
+    // cache) — all five through this module, so one count covers the file.
+    ['src/cli/commands/scrub.ts', 5],
+    ['src/cli/commands/local-state-loader.ts', 1],
+    ['src/state/s3-state-backend.ts', 2],
+  ];
+
+  it('ONE spelling: every record-key site calls this helper, for EVERY key it builds', () => {
     // A second spelling is the failure this helper exists to prevent, and
-    // nothing else watches it — the two sites are in different files and a
-    // reviewer comparing them by eye is what the first round relied on.
+    // nothing else watches it — the sites are in different files and a reviewer
+    // comparing them by eye is what the first round relied on.
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    for (const rel of ['src/cli/commands/scrub.ts', 'src/cli/commands/local-state-loader.ts']) {
+    for (const [rel, expected] of RECORD_KEY_SITES) {
       const src = readFileSync(join(root, rel), 'utf-8');
-      expect(src, `${rel} should build its warned-set key through the shared helper`).toContain(
-        'producerRecordKey('
-      );
+      // BOTH exported wrappers count. They are two names over one private
+      // encoding, so a site is covered whichever it uses, and counting only
+      // one of them would have read `scrub.ts` as 2-of-5 covered.
+      const calls =
+        src.split('producerRecordKey(').length -
+        1 +
+        (src.split('producerCoordinateKey(').length - 1);
+      // The import lines and any `{@link ...}` reference in a comment are not
+      // calls; requiring AT LEAST the expected count keeps this from being a
+      // trip-wire on an added doc mention, while still failing when a site is
+      // removed or a new key is built with a separator.
+      expect(
+        calls,
+        `${rel} should build all ${expected} of its record keys through the shared helper`
+      ).toBeGreaterThanOrEqual(expected);
     }
+  });
+
+  it('no record-key site still JOINS two interpolations with a NUL', () => {
+    // The mutation the count above cannot catch: ADDING a third key beside two
+    // correct ones, or reverting one of them. A count knows nothing about a
+    // site that did not exist when the count was written.
+    //
+    // Scoped to the NUL spellings deliberately, and this is the fence's LIMIT
+    // rather than an oversight. A printable separator cannot be searched for
+    // the same way here: `s3-state-backend.ts` legitimately joins
+    // interpolations with `/` and `:` to build S3 keys and ARNs, so a pattern
+    // wide enough to catch `${a}:${b}` as a record key reddens on healthy
+    // code. What covers that direction instead is the helper's own injectivity
+    // case above, which fails for EVERY separator spelling including `:`.
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    // `String.fromCharCode(0)` so this file carries no raw control byte of its
+    // own; the other two are how a TypeScript source spells one.
+    const nulSpellings = [String.fromCharCode(0), String.raw`\u0000`, String.raw`\0`];
+    for (const [rel] of RECORD_KEY_SITES) {
+      const src = readFileSync(join(root, rel), 'utf-8');
+      for (const nul of nulSpellings) {
+        // `}<NUL>${` — the tail of one interpolation, the separator, the head
+        // of the next. Identifier-agnostic, so renaming `stackName` does not
+        // silently retire this.
+        const pattern = `}${nul}\${`;
+        expect(
+          src.includes(pattern),
+          `${rel} joins two interpolations with a NUL instead of the shared helper`
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('the NUL fence would FAIL on the code it replaced', () => {
+    // Guard-the-guard: the assertion above is an `includes` over a hand-built
+    // needle, and a typo in that needle makes it pass over every file forever.
+    // Feed it the exact expression `scrub.ts` carried before go-to-k/cdkd#3323.
+    const before = 'const key = `${stackName}' + String.raw`\u0000` + '${stateRegion}`;';
+    expect(before.includes('}' + String.raw`\u0000` + '${')).toBe(true);
   });
 });
 
