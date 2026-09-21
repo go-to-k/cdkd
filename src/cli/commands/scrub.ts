@@ -2273,9 +2273,11 @@ export function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBac
     // A "this site was fail-CLOSED anyway" argument was written here for one
     // round and is WRONG; it is recorded so nobody re-derives it. It ran: a
     // colliding pair must carry a NUL in some half, that half goes into an S3
-    // key, S3 will not serve one, so both reads fail. The last step is false —
-    // `tryGetLegacy` keys on the STACK NAME alone, the region never entering
-    // the key, and its region gate short-circuits on a falsy body region. So a
+    // key, S3 will not serve one, so both reads fail. The last step is false:
+    // `tryGetLegacy` keys on the STACK NAME alone and the region never enters
+    // the key. Its region gate does not stop it either — `readLegacyRegion`
+    // and `tryGetLegacy` read the SAME body, so the gate compares that body's
+    // region against a value taken from it and matches by construction. So a
     // NUL-bearing REGION reads successfully through the legacy key and its
     // promise is served to the colliding query. Do not settle this site, or
     // any other, by asking what S3 will store.

@@ -4923,7 +4923,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    */
   /**
    * Every NUL-separated composite key left anywhere in `src/`, with how many
-   * that file has and why none of them is a record identity.
+   * NUL OCCURRENCES that file carries and why none of them is a record
+   * identity that this PR's helpers should own.
    *
    * **The COUNT is here for the same reason it is on `RECORD_KEY_SITES`.** A
    * per-FILE exemption is the shape this fence's own preamble condemns: it
@@ -4948,12 +4949,19 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     [
       'src/provisioning/providers/efs-provider.ts',
       1,
-      'join() over pre-stringified elements; a hash-style digest input, not an identity',
+      'join() over elements ALREADY through JSON.stringify, which escapes every ' +
+        'character below 0x20 — so no element can carry a raw NUL and the join IS ' +
+        'injective. That clause is the whole justification: the digest becomes an EFS ' +
+        'CreationToken, a creation-idempotency identity, so dropping the .map() would ' +
+        'leave a real identity key with no argument behind it',
     ],
     [
       'src/provisioning/providers/idempotency-token.ts',
-      2,
-      'HASH inputs; the separator is domain separation, not identity',
+      7,
+      ':155 is a HASH input, where the separator is domain separation. :146 is NOT — ' +
+        '`tokenKey` is the Map key for `inFlight` / `generations`, an IDENTITY, and its ' +
+        '`getCurrentStackName()` / `logicalId` halves are unchecked. The file states the ' +
+        'wrong-value consequence itself — go-to-k/cdkd#3496',
     ],
     [
       'src/state/s3-replication-purge-gap.ts',
@@ -4962,7 +4970,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/deployment/deploy-engine.ts',
-      4,
+      7,
       'cross-stack 3-part keys + (logicalId, physicalId), plus one COMMENT quoting the ' +
         'old key shape — go-to-k/cdkd#3496',
     ],
@@ -4973,9 +4981,10 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/deployment/secret-redaction.ts',
-      3,
-      'maskedOutputKey plus the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
-        'states non-uniqueness and fails closed by POISONING — go-to-k/cdkd#3496',
+      4,
+      'maskedOutputKey; the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
+        'states non-uniqueness and fails closed by POISONING; and UNKNOWN_PART_PLACEHOLDER, ' +
+        'a SENTINEL rather than a separator — go-to-k/cdkd#3496',
     ],
     [
       'src/analyzer/lambda-vpc-deps.ts',
@@ -5022,14 +5031,18 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // `git grep -l` over the whole tree, not a hand-walked list: the point is
     // that no file can be outside the sweep. BOTH spellings, since searching
     // one is the mistake this fence exists to make unrepeatable.
-    // `-c`, not `-l`: the per-file COUNT is what stops a new key being added
-    // beside an exempt one. Output is `path:count`, and a file matching zero
-    // needles is simply absent.
-    const counts = new Map<string, number>();
+    // `git grep -l` FINDS the files; the counting is done here, over the file
+    // contents, because it must count OCCURRENCES and `git grep -c` counts
+    // matching LINES. That distinction is not academic: `idempotency-token.ts`
+    // has FIVE separators on one line, so appending a seventh component to that
+    // key — a new attacker-influenced half of a live identity — would leave a
+    // line count unchanged, and this fence would wave it through while its own
+    // failure message said "a new composite key was added here".
+    const listed = new Set<string>();
     for (const needle of needles) {
       let out: string;
       try {
-        out = execFileSync('git', ['grep', '-c', '-F', '-e', needle, '--', 'src/'], {
+        out = execFileSync('git', ['grep', '-l', '-F', '-e', needle, '--', 'src/'], {
           cwd: root,
           encoding: 'utf-8',
         });
@@ -5038,11 +5051,14 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         // outcome for one needle of six, not a failure of the sweep.
         continue;
       }
-      for (const line of out.split('\n').filter(Boolean)) {
-        const at = line.lastIndexOf(':');
-        const file = line.slice(0, at);
-        counts.set(file, (counts.get(file) ?? 0) + Number(line.slice(at + 1)));
-      }
+      for (const f of out.split('\n').filter(Boolean)) listed.add(f);
+    }
+    const counts = new Map<string, number>();
+    for (const rel of listed) {
+      const src = readFileSync(join(root, rel), 'utf-8');
+      let n = 0;
+      for (const needle of needles) n += src.split(needle).length - 1;
+      counts.set(rel, n);
     }
     const found = [...counts.keys()].sort();
 
@@ -5073,8 +5089,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     for (const [rel, expectedCount] of NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS) {
       expect(
         counts.get(rel),
-        `${rel} is listed with ${expectedCount} non-record NUL joins but the tree disagrees. ` +
-          'A HIGHER count means a new composite key was added here — classify it, and if it ' +
+        `${rel} is listed with ${expectedCount} non-record NUL occurrences but the tree ` +
+          'disagrees. A HIGHER count means a new separator was added here — classify it, and if it ' +
           'identifies a record or a producer coordinate route it through the shared helper. ' +
           'A LOWER one means this entry outlived its code; remove it.'
       ).toBe(expectedCount);

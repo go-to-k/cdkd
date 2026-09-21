@@ -119,17 +119,33 @@ promise is a shared failure.
 
 The arithmetic is sound. **The bolded premise is false.** `tryGetLegacy` builds
 `getLegacyStateKey(stackName)` — `{prefix}/{stackName}/state.json` — and the
-REGION never enters that key at all. It is compared against the record BODY's
-`state.region`, and that gate is `if (state.region && state.region !== region)`,
-so it short-circuits on a falsy region and a region-less legacy record is served
-to ANY region. `s3-state-backend.ts` says so itself: *"`tryGetLegacy` hands this
-record to ANY region."*
+REGION never enters that key at all. A NUL-bearing region therefore costs the
+read nothing.
 
-So `("Evil", "us-east-1<NUL>ap-northeast-1")` reads SUCCESSFULLY through
-`cdkd/Evil/state.json`, and collides with
-`("Evil<NUL>us-east-1", "ap-northeast-1")`, whose stack half comes from the
-consumer's template. The memo is first-write-wins, so the successful promise is
-served to the other query. A wrong answer, not a shared failure.
+The region gate does not stop it either, and the reason is **stronger than the
+falsy short-circuit an earlier revision of this section cited**. That branch is
+real but does not fire here: a region-less record makes `readLegacyRegion`
+return `undefined`, so the ref carries `''`, not the NUL string. What actually
+happens is that `readLegacyRegion` and `tryGetLegacy` **read the same body** —
+`readLegacyRegion` returns `probeLegacyState(stackName)`'s region, which is
+that body's own `state.region`. So the gate compares the body's region against
+a value taken from that body and **matches by construction**. Nothing has to be
+planted and no short-circuit is needed. Cite this rather than the `no-region`
+arm: that arm is exactly the branch someone might later close while believing
+the route shut.
+
+Both halves of the colliding pair arise in a real run, not in principle:
+
+- `("Evil", "us-east-1<NUL>ap-northeast-1")` — the region comes from a legacy
+  record's body through `listStacks`' legacy arm, and the query is issued by the
+  `Fn::ImportValue` state-scan arm in `intrinsic-function-resolver.ts`;
+- `("Evil<NUL>us-east-1", "ap-northeast-1")` — the stack comes from the
+  consumer's template through `Fn::GetStackOutput`, and the query is issued by
+  `getSameAccountStackState`.
+
+Both go through the one memoized view `scrub.ts` installs as
+`context.stateBackend`. The memo is first-write-wins, so the successful promise
+is served to the other query. A wrong answer, not a shared failure.
 
 And the claim leaned on a THIRD unmeasured S3 behaviour besides: it needs the
 new-key `GetObject` to answer `NoSuchKey` rather than throw, which the probe
