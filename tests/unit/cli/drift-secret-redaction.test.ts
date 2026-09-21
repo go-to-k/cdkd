@@ -2030,6 +2030,86 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(warned).not.toContain(PUBLIC_SSM_VALUE);
   });
 
+  it('reports a persisted `{{resolve:<plaintext>}}` as an unresolved token, masked, even when the pass already recorded that plaintext (issue #2743)', async () => {
+    // A release before the #2743 refusal persisted the token an `Fn::Sub`
+    // assembled around a resolved secret. `DB` resolves the same secret FIRST,
+    // so this pass holds the needle when it reaches `LEAK` -- the situation in
+    // which the TEMPLATE route refuses. Persisted text must not: AWS already
+    // holds it, and a refusal would take the whole resource out of the
+    // comparison (and exit 2) over a token today's contract reports per leaf.
+    const leaked = `{{resolve:${SECRET_PLAINTEXT}}}`;
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Env: { DB: SECRET_EXPR, LEAK: leaked } },
+          observedProperties: { Env: { DB: SECRET_EXPR, LEAK: leaked } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Env: { DB: SECRET_PLAINTEXT, LEAK: leaked } }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as Array<{
+      drifted: unknown[];
+      notCompared: Array<{ logicalId: string; cause: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Consumer', cause: 'unresolvedToken' }),
+    ]);
+    const said = [warnSpy, errorSpy]
+      .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
+      .concat(output)
+      .join('\n');
+    expect(said).not.toContain('Refusing to resolve');
+    expect(said).toContain('cdkd cannot resolve {{resolve:***}}');
+    expect(said).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('a record scrubbed BEFORE the corrected template is deployed is not compared at that leaf, and the live plaintext is never displayed (issue #2743)', async () => {
+    // State holds the healed text, AWS still holds `{{resolve:<plaintext>}}`.
+    // The healed text is an unresolvable token, so the leaf is reported as an
+    // unresolved token rather than compared: no phantom drift row, nothing for
+    // `--accept` to write, and the AWS side is never printed. Measured, because
+    // docs/troubleshooting.md states the consequence of this ordering.
+    const healed = `{{resolve:${SECRET_EXPR}}}`;
+    const live = `{{resolve:${SECRET_PLAINTEXT}}}`;
+    for (const shape of ['whole', 'embedded'] as const) {
+      const st = shape === 'whole' ? healed : `x-${healed}-y`;
+      const aws = shape === 'whole' ? live : `x-${live}-y`;
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Consumer: {
+            physicalId: 'fn',
+            resourceType: LAMBDA_TYPE,
+            properties: { Env: { LEAK: st, LEVEL: 'info' } },
+            observedProperties: { Env: { LEAK: st, LEVEL: 'info' } },
+          },
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ Env: { LEAK: aws, LEVEL: 'info' } }),
+      });
+      const { output } = await runDrift(['TestStack', '--json']);
+      const payload = JSON.parse(output) as Array<{
+        drifted: unknown[];
+        notCompared: Array<{ cause: string }>;
+      }>;
+      expect(payload[0]!.drifted, shape).toEqual([]);
+      expect(payload[0]!.notCompared.map((n) => n.cause), shape).toEqual(['unresolvedToken']);
+      expect(output, shape).not.toContain(SECRET_PLAINTEXT);
+    }
+    const said = [warnSpy, errorSpy].flatMap((spy) => spy.mock.calls.map((c) => String(c[0])));
+    expect(said.join('\n')).not.toContain(SECRET_PLAINTEXT);
+  });
+
   it('MASKS a rotated value at an ssm-secure position (issue #2482)', async () => {
     // The other half of the same record: AWS no longer holds what the parameter
     // decrypts to, so the array drifts — and the position is secret-bearing by

@@ -923,6 +923,182 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
   // (issue #1933). It used to be a process-global map keyed by the expression
   // alone, so its key and its lifetime were both narrower than the values they
   // stood for: no region component, and no reset between stacks.
+  // Issue #2743: the unsupported-service arm leaves the token in the value, so
+  // a token ASSEMBLED FROM A SECRET carried its plaintext to the provider and
+  // into state. Such a token is refused; one that carries no secret keeps the
+  // warn-and-leave `cdkd drift` and the rollback replay rely on.
+  describe('an unsupported service (issue #2743)', () => {
+    const SENTINEL = 'sentinel-plaintext-2743';
+    const REFUSAL = /^Refusing to resolve .*: its service is not one cdkd resolves \(secretsmanager, ssm, ssm-secure\)/;
+
+    const refusalOf = async (run: Promise<unknown>): Promise<Error> => {
+      const outcome = await run.then(
+        (value) => ({ resolvedInstead: value }),
+        (reason: unknown) => reason
+      );
+      expect(outcome).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      return outcome as Error;
+    };
+
+    it('an untainted token warns and stays in the value, exactly as written', async () => {
+      const recordedSecretValues = new Map<string, string>();
+      const result = await resolver.resolveDynamicReferences('a-{{resolve:notaservice:/x}}-b', {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      expect(result).toBe('a-{{resolve:notaservice:/x}}-b');
+      expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toEqual([
+        'Unsupported dynamic reference service: notaservice',
+      ]);
+      expect(recordedSecretValues.size).toBe(0);
+    });
+
+    it('NEGATIVE control: a sub-floor secret recorded in the pass does not taint a token that merely contains those characters', async () => {
+      // `ab` is below the needle floor, so it is no needle; and the token was
+      // written by the template, not assembled, so its twin is itself.
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: JSON.stringify({ pin: 'ab' }) });
+      const recordedSecretValues = new Map<string, string>();
+      const result = await resolver.resolve(
+        {
+          'Fn::Join': ['', ['{{resolve:secretsmanager:s:SecretString:pin}}', '|{{resolve:cabinet:/lab/x}}']],
+        },
+        { ...defaultContext, recordedSecretValues }
+      );
+
+      expect(recordedSecretValues.has('ab')).toBe(true);
+      expect(result).toBe('ab|{{resolve:cabinet:/lab/x}}');
+    });
+
+    it('TWIN half alone: a sub-floor secret in the service position is refused, and the message names the masked token only', async () => {
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: JSON.stringify({ pin: 'q7' }) });
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::Sub': ['{{resolve:svc-${P}:x}}', { P: '{{resolve:secretsmanager:s:SecretString:pin}}' }] },
+          { ...defaultContext, recordedSecretValues: new Map<string, string>() }
+        )
+      );
+
+      expect(error.message).toMatch(REFUSAL);
+      expect(error.message).toContain('{{resolve:svc-***:x}}');
+      expect(error.message).not.toContain('q7');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('an UNPAIRED twin fails closed: a secret covering the token opener is refused under the bare mask', async () => {
+      // The first variable's secret IS the `{{` of the opener, so the twin
+      // holds no token where the value holds one and nothing can be paired.
+      // Both secrets are below the needle floor, so only the twin can refuse.
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: JSON.stringify({ open: '{{', pin: 'q7' }),
+      });
+      const error = await refusalOf(
+        resolver.resolve(
+          {
+            'Fn::Sub': [
+              '${Open}resolve:svc-${P}:x}}',
+              {
+                Open: '{{resolve:secretsmanager:s:SecretString:open}}',
+                P: '{{resolve:secretsmanager:s:SecretString:pin}}',
+              },
+            ],
+          },
+          { ...defaultContext, recordedSecretValues: new Map<string, string>() }
+        )
+      );
+
+      expect(error.message).toMatch(/^Refusing to resolve \*\*\*: /);
+      expect(error.message).not.toContain('q7');
+    });
+
+    it('NEEDLE half alone: a recorded plaintext in a token no twin describes is refused', async () => {
+      // A plain template leaf, so the twin IS the value: only the needle mask
+      // can say the token holds a secret.
+      const error = await refusalOf(
+        resolver.resolve(`{{resolve:${SENTINEL}}}`, {
+          ...defaultContext,
+          recordedSecretValues: new Map([[SENTINEL, '{{resolve:secretsmanager:s:SecretString:pw}}']]),
+        })
+      );
+
+      expect(error.message).toMatch(REFUSAL);
+      expect(error.message).toContain('{{resolve:***}}');
+      expect(error.message).not.toContain(SENTINEL);
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('NEEDLE half, inherited bag: a nested-stack parameter the parent decrypted is refused too', async () => {
+      const error = await refusalOf(
+        resolver.resolve(`{{resolve:${SENTINEL}:x}}`, {
+          ...defaultContext,
+          inheritedSecrets: new Map([[SENTINEL, '{{resolve:secretsmanager:parent:SecretString:pw}}']]),
+        })
+      );
+
+      expect(error.message).not.toContain(SENTINEL);
+    });
+
+    it('the assembled shape: refused, with the plaintext nowhere in the message or its cause chain', async () => {
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: JSON.stringify({ password: SENTINEL }) });
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::Sub': ['x-{{resolve:${Pw}}}-y', { Pw: '{{resolve:secretsmanager:s:SecretString:password}}' }] },
+          { ...defaultContext, recordedSecretValues: new Map<string, string>() }
+        )
+      );
+
+      expect(error.message).toContain('{{resolve:***}}');
+      for (let link: unknown = error; link instanceof Error; link = link.cause) {
+        expect(link.message).not.toContain(SENTINEL);
+      }
+      expect(mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(SENTINEL);
+    });
+
+    it('PERSISTED text is never refused: the public leaf entry point warns, masked, and leaves it', async () => {
+      // What `cdkd drift` and the rollback replay hand the resolver: a leaf
+      // read back out of a record an older release wrote. AWS already holds
+      // this text, and one shared map per record means the sibling reference
+      // may have recorded the needle first -- a refusal here would fail the
+      // same rollback op on every retry.
+      const recorded = new Map([[SENTINEL, '{{resolve:secretsmanager:s:SecretString:pw}}']]);
+      const leaf = `x-{{resolve:${SENTINEL}}}-y`;
+
+      expect(
+        await resolver.resolveDynamicReferences(leaf, { ...defaultContext, recordedSecretValues: recorded })
+      ).toBe(leaf);
+      // Masked, at default verbosity, exactly as before issue #2743.
+      expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toEqual([
+        'Unsupported dynamic reference service: ***',
+      ]);
+    });
+
+    it('a plaintext holding `}}` forms a token from its own prefix, and the twin half refuses it', async () => {
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: JSON.stringify({ pw: 'ab}}cd' }) });
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::Sub': ['{{resolve:${P}}}', { P: '{{resolve:secretsmanager:s:SecretString:pw}}' }] },
+          { ...defaultContext, recordedSecretValues: new Map<string, string>() }
+        )
+      );
+
+      expect(error.message).not.toContain('ab}}cd');
+      expect(error.message).not.toContain('{{resolve:ab}}');
+    });
+
+    it('a caller that opted into per-token recovery still gets the refusal, not a skipped token', async () => {
+      const abandonedResolutions: never[] = [];
+      await refusalOf(
+        resolver.resolve(`{{resolve:${SENTINEL}}}`, {
+          ...defaultContext,
+          recordedSecretValues: new Map([[SENTINEL, '{{resolve:secretsmanager:s:SecretString:pw}}']]),
+          abandonedResolutions,
+        })
+      );
+      expect(abandonedResolutions).toEqual([]);
+    });
+  });
+
   // Issue #2482: `ssm-secure` used to fall through to the unsupported-service
   // arm, so the LITERAL TOKEN reached the provider and, where the service API
   // accepted it, became the live credential. It now resolves through the same

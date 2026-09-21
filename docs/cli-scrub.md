@@ -646,7 +646,11 @@ service can resolve: `cdkd rollback` reads it as a request for the secret id
 `{{resolve:ssm:/app/dbname` and either refuses or applies the wrong value.
 
 cdkd therefore replaces every match of a recorded secret EXCEPT one that lies
-wholly inside a complete reference and is shorter than it. A stored secret
+wholly inside a complete reference and is shorter than it. "Reference" means a
+`secretsmanager`, `ssm` or `ssm-secure` one: a `{{resolve:...}}` of any other
+service is not something cdkd resolves, so a secret inside it
+(`{{resolve:<secret>}}`, which an `Fn::Sub` placing a secret where the service
+name goes produces) is replaced like any other text. A stored secret
 whose own value IS a reference is still replaced, and so is one that CONTAINS
 a whole reference plus surrounding text — dropping those would leave the
 plaintext in state, which is worse than the mangling this rule prevents. An
@@ -661,9 +665,10 @@ value:
   and a secret after it is still replaced. Leaving the plaintext there instead
   would hide it behind two characters any string can contain.
 - With a **`}}` anywhere later**, the opener and that `}}` bracket one region,
-  and a secret inside it is left alone. This is the one shape where cdkd
-  redacts less than a naive value match would. Narrowing what counts as a
-  reference is not the fix: that would disagree with the resolver about the
+  and when the opener spells one of the three services above
+  (`{{resolve:ssm:` ...) a secret inside it is left alone. This is the one shape where cdkd
+  redacts less than a naive value match would. Reading the braces
+  differently is not the fix: that would disagree with the resolver about the
   same string, and would re-mangle values an older cdkd already mangled. Such
   a value cannot come from a template — it would fail to resolve at deploy
   time — so the way it arrives is a drift read-back

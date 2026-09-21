@@ -304,13 +304,22 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     // shared grammar — such a leaf could not have RESOLVED on the deploy path,
     // so it arrives as an `observedProperties` readback, which is arbitrary
     // text from AWS.
-    const leaf = 'echo {{resolve: ; PASSWORDVALUE ; echo }} done';
+    //
+    // NARROWED by issue #2743: the swallowing span is spared only when it
+    // names a service cdkd resolves, so the residual now needs the stray
+    // opener to spell one. The first leaf below is the original case and is
+    // REDACTED again, as `origin/main` before #1935 did.
+    const expr = '{{resolve:secretsmanager:S:SecretString:pw}}';
+    const secrets = new Map([['PASSWORDVALUE', expr]]);
+    const unknownService = 'echo {{resolve: ; PASSWORDVALUE ; echo }} done';
+    const knownService = 'echo {{resolve:ssm: ; PASSWORDVALUE ; echo }} done';
     const out = redactSecretsForState(
-      { Url: leaf },
-      new Map([['PASSWORDVALUE', '{{resolve:secretsmanager:S:SecretString:pw}}']])
+      { Unknown: unknownService, Known: knownService },
+      secrets
     ) as Record<string, unknown>;
 
-    expect(out['Url']).toBe(leaf);
+    expect(out['Unknown']).toBe(`echo {{resolve: ; ${expr} ; echo }} done`);
+    expect(out['Known']).toBe(knownService);
   });
 
   it('RESIDUAL: the same swallowing span keeps a token-shaped plaintext too', () => {
@@ -320,13 +329,19 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     // case). The stray opener swallows it into a LARGER span, which makes the
     // same needle strictly-inside instead — so the two residual rows really do
     // cover different arms of the rule.
-    const leaf = 'note{{resolve: see {{resolve:ssm:/pub/x}} ok';
+    //
+    // Narrowed by issue #2743 like the row above: only a stray opener that
+    // spells a resolvable service still swallows it.
+    const expr = '{{resolve:secretsmanager:T:SecretString:pw}}';
+    const secrets = new Map([['{{resolve:ssm:/pub/x}}', expr]]);
+    const knownService = 'note{{resolve:ssm: see {{resolve:ssm:/pub/x}} ok';
     const out = redactSecretsForState(
-      { Url: leaf },
-      new Map([['{{resolve:ssm:/pub/x}}', '{{resolve:secretsmanager:T:SecretString:pw}}']])
+      { Unknown: 'note{{resolve: see {{resolve:ssm:/pub/x}} ok', Known: knownService },
+      secrets
     ) as Record<string, unknown>;
 
-    expect(out['Url']).toBe(leaf);
+    expect(out['Unknown']).toBe(`note{{resolve: see ${expr} ok`);
+    expect(out['Known']).toBe(knownService);
   });
 
   it('reaches the walk through `attributes`, which has no source at all', () => {

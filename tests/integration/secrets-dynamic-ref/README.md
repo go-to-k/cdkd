@@ -67,6 +67,28 @@ covers the optional-trailing-field grammar.
      `Resolving dynamic reference:` echo of the assembled reference is in it
      with `***` in the key position. The output is gated so the
      unchanged-stack `diff --fail` guard later never sees it.
+   - Phases 1b3 / 1b4 (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)):
+     two more probe deploys under `CDKD_TEST_SERVICE_SPAN`, whose `Fn::Sub`
+     body `{{resolve:${Pw}}}` puts the resolved password in a reference's
+     SERVICE position. `output` declares it as an output: the deploy exits 0,
+     warns `Failed to resolve output ServiceSpanLeak: Refusing to resolve
+     {{resolve:***}}`, and neither the log (its `Outputs:` summary included)
+     nor `state.json` carries the password or a `ServiceSpanLeak` key.
+     `resource` declares it as an `AWS::IAM::Role` `Description`. The phase
+     first proves, with a throwaway role, that IAM accepts and returns a
+     `{{resolve:...}}` Description, so an absent role means cdkd refused: the deploy
+     exits non-zero with the same refusal, and the role does NOT exist on AWS
+     afterwards (probed gone before and after) and has no state record; the
+     rollback journal (when present) and every `deployments/` object are
+     scanned for the password too. State is checked by the SET OF PATHS
+     holding the password, because the fixture's own Secret keeps it in
+     `properties.SecretString` by design.
+   - Phase 1b5 (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)):
+     seeds `outputs.ServiceSpanLegacy = {{resolve:<password>}}` into
+     `state.json` (what a release before the refusal persisted), runs a real
+     `cdkd scrub`, and asserts the password is gone and the key now reads
+     `{{resolve:{{resolve:secretsmanager:...}}}}`. The key is dropped again
+     afterwards.
 2. Read the consumer Lambda's env vars via `GetFunctionConfiguration`.
 3. For each env var: it is **not** still a literal `{{resolve:...}}` token, AND
    it equals the known expected value. A wrong-or-literal value FAILS with

@@ -247,6 +247,17 @@ describe('secret-redaction - what the refusal must NOT take (issue #2852)', () =
     expect(out).toEqual({ A: { B: deployed } });
   });
 
+  it('MASKS a whole token of a service cdkd does not resolve, which no deploy persists (issue #2743)', () => {
+    // The other polarity of the case above. `{{resolve:<plaintext>}}` is what
+    // an older binary sent to AWS for a secret assembled into the service
+    // position, so a readback can hold it; it is token-SHAPED and was kept.
+    const bogus = `{{resolve:${PLAINTEXT}}}`;
+    const out = readback({ A: { B: bogus } }, { A: EXPR });
+
+    expect(out).toEqual({ A: { B: SECRET_MASK } });
+    expect(JSON.stringify(out)).not.toContain(PLAINTEXT);
+  });
+
   it('MASKS a leaf that merely CONTAINS a token, which is not an expression', () => {
     // The other half of the arm above, and the reason it tests a WHOLE token
     // rather than "contains one". A substring test spared this leaf on the
