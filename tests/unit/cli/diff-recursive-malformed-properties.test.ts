@@ -475,5 +475,25 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
       previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
     });
     expect(node.unreadable).toEqual(['AlphaNull', 'TornOrphan']);
+
+    // And the two TEXTS, which this case is the only one that can falsify.
+    // Both containers are damaged here, so a warning claiming the OTHER one is
+    // intact is false — the claim the orphan text carried in two drafts before
+    // it shipped ("the `resources` map is not what is damaged"), and which
+    // nothing reddened, because the case that disproves it asserted only
+    // `node.unreadable`. The membership spelling is unsafe for the same
+    // reason at one remove: an already-managed logical id sits in BOTH
+    // containers, so "these ids are not from `resources`" can name an id that
+    // is. PROVENANCE is what the sentence may claim.
+    const both = warnings().split('\n');
+    const orphanText = both.filter((m) => m.includes("in 'orphans'"));
+    const entriesText = both.filter((m) => m.includes('resource record(s)'));
+    expect(orphanText).toHaveLength(1);
+    expect(entriesText).toHaveLength(1);
+    expect(orphanText[0]).toContain("were read from 'orphans'");
+    for (const claim of ['not what is damaged', 'is healthy', "not from the 'resources' map"]) {
+      expect(orphanText[0], claim).not.toContain(claim);
+      expect(entriesText[0], claim).not.toContain(claim);
+    }
   });
 });

@@ -2303,7 +2303,10 @@ export function producerRecordKey(stackName: string, region: string): string {
 }
 
 /**
- * How many unreadable logical ids the refusal below names before summarizing.
+ * How many unreadable logical ids a message names before summarizing. Read by
+ * every builder that names ids — the refusal below, `namedEntriesClause` and
+ * `malformedOrphanRecordsWarning` — so "the refusal below" was the count of
+ * readers at the time it was written, not a scope.
  *
  * Five rather than the ten the `cdkd export` baseline report uses: this text
  * already carries the remedy command, and that command has to stay on the
@@ -2506,8 +2509,8 @@ export function malformedOrphanRecordsWarning(
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) holds ${logicalIds.length} ` +
     `rollback-orphan record(s) in 'orphans' that cannot be read as resources — ` +
     `${named}${more} — because they are not objects, or carry no resource type. Continuing ` +
-    `WITHOUT them: they are not previewed for adoption. These ids are from 'orphans', not ` +
-    `from the 'resources' map, which carries its own warning when it is damaged too. See the ` +
+    `WITHOUT them: they are not previewed for adoption. These ids were read from 'orphans'; ` +
+    `the 'resources' map carries its own warning when it is damaged too. See the ` +
     `stored values with: cdkd state show ${shellQuote(stack)} --stack-region ` +
     `${shellQuote(reg)} --json`
   );
