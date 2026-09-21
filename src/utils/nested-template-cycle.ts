@@ -1,6 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { displaySafe } from './display-safe.js';
+import {
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+  type ResolvedAssemblyPath,
+} from './assembly-path.js';
 
 /**
  * Static, READ-ONLY validation of a nested-template tree, run BEFORE anything
@@ -66,6 +71,17 @@ export type NestedTemplateTreeDefect =
       chain: NestedTemplateHop[];
       logicalId: string;
       assetPath: string;
+    }
+  | {
+      kind: 'escaping-path';
+      /** Rows leading to the template that declares the offending row. Never empty. */
+      chain: NestedTemplateHop[];
+      logicalId: string;
+      assetPath: string;
+      /** Where the row resolved to, and what it escaped (issue go-to-k/cdkd#3489). */
+      escape: Extract<ResolvedAssemblyPath, { contained: false }>;
+      /** The directory the row was resolved against. */
+      dir: string;
     };
 
 /**
@@ -103,7 +119,10 @@ export function templateIdentity(templatePath: string): string {
   const dir = path.dirname(templatePath);
   let realDir: string;
   try {
-    realDir = fs.realpathSync(dir);
+    // `.native` (libuv's `realpath(3)`), never the plain form, which is a JS
+    // walker that folds `..` lexically and can spin on a symlinked assembly —
+    // see `tryRealpath` in `assembly-path.ts` (go-to-k/cdkd#3489).
+    realDir = fs.realpathSync.native(dir);
   } catch {
     realDir = path.resolve(dir);
   }
@@ -240,7 +259,24 @@ export function findNestedTemplateTreeDefect(
               assetPath: row.assetPath,
             };
           }
-          const defect = visit(row.logicalId, path.join(dir, row.assetPath));
+          // Containment, so `cdkd deploy` refuses an escaping row UP FRONT
+          // rather than at `NestedStackProvider`'s per-level backstop, with
+          // every level above it already provisioned — the same argument that
+          // put the cycle and absolute checks here (issue go-to-k/cdkd#3489).
+          // It also stops THIS walk reading and parsing a file from outside
+          // the assembly while it looks for rows.
+          const resolved = resolveAssemblyPath(dir, row.assetPath);
+          if (!resolved.contained) {
+            return {
+              kind: 'escaping-path',
+              chain: [...chain],
+              logicalId: row.logicalId,
+              assetPath: row.assetPath,
+              escape: resolved,
+              dir,
+            };
+          }
+          const defect = visit(row.logicalId, resolved.path);
           if (defect) return defect;
         }
       } finally {
@@ -333,6 +369,18 @@ export function renderNestedTemplateTreeDefect(
       `${MAX_NESTING_DEPTH} levels deep: ${renderChain(defect.chain)}. No tree that deep can ` +
       `deploy, because each level lengthens the child's state key and S3 caps a key at 1024 ` +
       `bytes. ${provenance}`
+    );
+  }
+  if (defect.kind === 'escaping-path') {
+    // Worded apart from the absolute arm below on purpose: the two refusals
+    // answer different questions, and `join` never lets an absolute path leave
+    // the directory (issue go-to-k/cdkd#3489). `renderAssemblyPathEscape`
+    // supplies its own provenance sentence and `displaySafe`s its inputs.
+    return (
+      `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
+      `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +
+      `Metadata['aws:asset:path']='${displaySafe(defect.assetPath)}' which ` +
+      `${renderAssemblyPathEscape(defect.escape, defect.dir, action)}`
     );
   }
   return (

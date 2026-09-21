@@ -130,8 +130,13 @@ export class DockerAssetPublisher {
    * via `docker tag` so the downstream `push()` step (which is wired to
    * `localTag` at graph-construction time) keeps working unchanged.
    */
-  async build(asset: DockerImageAsset, cdkOutputDir: string, localTag: string): Promise<void> {
-    await this.buildImage(asset, cdkOutputDir, localTag);
+  async build(
+    asset: DockerImageAsset,
+    cdkOutputDir: string,
+    localTag: string,
+    assetOutdir?: string
+  ): Promise<void> {
+    await this.buildImage(asset, cdkOutputDir, localTag, assetOutdir);
   }
 
   /**
@@ -211,10 +216,12 @@ export class DockerAssetPublisher {
   private async buildImage(
     asset: DockerImageAsset,
     cdkOutputDir: string,
-    tag: string
+    tag: string,
+    assetOutdir?: string
   ): Promise<void> {
     const actualTag = await buildDockerImage(asset, cdkOutputDir, {
       tag,
+      ...(assetOutdir !== undefined && { assetOutdir }),
       wrapError: (stderr) => new AssetError(`Docker build failed: ${stderr}`),
     });
     if (actualTag !== tag) {

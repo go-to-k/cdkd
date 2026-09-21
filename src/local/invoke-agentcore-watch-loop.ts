@@ -25,10 +25,11 @@
  *     no-op WARN).
  */
 
-import { basename, resolve as resolvePath } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile as execFileCb } from 'node:child_process';
 import { getLogger } from '../utils/logger.js';
+import { resolveDockerContextDirectory } from '../assets/docker-build.js';
 import { describeDockerExecFailure, getDockerCmd } from '../utils/docker-cmd.js';
 import { CdkdError } from '../utils/error-handler.js';
 import {
@@ -393,14 +394,35 @@ export async function loadAgentCoreAssetContext(args: {
   const { resolvedTarget, resolved, stacks, cdkOutDir, assetLoader, oldAssetHash } = args;
   const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
   if (!newCandidate) return undefined;
+  // `pickAgentCoreCandidateStack` returns cdk-local's StackInfo, which declares
+  // neither `assetManifestPath` nor `assetOutdir`; cdkd's own record for the
+  // same stack declares both, so the lookup is what recovers them.
+  //
+  // The two are NOT the same directory, and that is the whole point
+  // (issue go-to-k/cdkd#3489): for a stack inside a `cdk.Stage` the manifest
+  // sits in `cdk.out/assembly-<Stage>/` while its assets are staged in the app
+  // root, so `source.path` is `../asset.<hash>`. READ from the manifest's own
+  // directory, CONTAIN within the app outdir.
+  //
+  // `cdkOutDir` is the caller's `--output`, which is right for a top-level
+  // stack and wrong twice over otherwise: a Stage manifest is not there at all,
+  // and `-a <pre-synthesized dir>` never reads `--output`. It stays only as the
+  // fallback for a hand-built record carrying neither field.
+  const cdkdRecord = stacks.find((s) => s.stackName === newCandidate.stackName);
+  const manifestDir = cdkdRecord?.assetManifestPath
+    ? dirname(cdkdRecord.assetManifestPath)
+    : cdkOutDir;
+  const assetOutdir = cdkdRecord?.assetOutdir ?? manifestDir;
   if (resolved.codeArtifact) {
     if (resolved.codeArtifact.s3Source) return undefined;
-    const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+    const manifest = await assetLoader.loadManifest(manifestDir, newCandidate.stackName);
     if (!manifest) return undefined;
     const fileAssets = assetLoader.getFileAssets(manifest);
     const asset = fileAssets.get(resolved.codeArtifact.codeAssetHash);
     if (!asset) return undefined;
-    const sourceDir = assetLoader.getAssetSourcePath(cdkOutDir, asset);
+    // Bound by the app outdir, not the manifest directory: a Stage's assets
+    // are staged one level up (issue go-to-k/cdkd#3489).
+    const sourceDir = assetLoader.getAssetSourcePath(manifestDir, asset, assetOutdir);
     return {
       ...(oldAssetHash !== undefined && { oldAssetHash }),
       newAssetHash: resolved.codeArtifact.codeAssetHash,
@@ -415,13 +437,24 @@ export async function loadAgentCoreAssetContext(args: {
     };
   }
   if (resolved.containerUri === undefined) return undefined;
-  const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+  const manifest = await assetLoader.loadManifest(manifestDir, newCandidate.stackName);
   if (!manifest) return undefined;
   const dockerImageEntry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   if (!dockerImageEntry) return undefined;
   const newDockerImage = dockerImageEntry.asset;
   if (!newDockerImage.source.directory) return undefined;
-  const newAssetSourceDir = resolvePath(cdkOutDir, newDockerImage.source.directory);
+  // Guarded like the file-asset arm above, which goes through
+  // `getAssetSourcePath`: `source.directory` is manifest-supplied and this
+  // path was the one `docker cp <dir>/.` consumer still joining it raw
+  // (go-to-k/cdkd#3489). Resolved from the manifest's own directory and bound
+  // by the stack's `assetOutdir`, so a Stage's `../asset.<hash>` is not
+  // refused.
+  const newAssetSourceDir = resolveDockerContextDirectory(
+    manifestDir,
+    newDockerImage.source.directory,
+    (message) => new Error(message),
+    assetOutdir
+  );
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),
     newAssetHash: dockerImageEntry.hash,
@@ -439,8 +472,11 @@ export async function loadAgentCoreAssetContext(args: {
  * "force rebuild", which is the conservative default.
  *
  * NOT exported from `cdk-local/internal`, so copied locally.
+ *
+ * @internal — exported so its manifest lookup can be fenced beside
+ * {@link loadAgentCoreAssetContext}'s, which is its twin.
  */
-async function deriveOldAssetHash(args: {
+export async function deriveOldAssetHash(args: {
   resolvedTarget: string;
   resolved: ResolvedAgentCoreRuntime;
   stacks: StackInfo[];
@@ -452,7 +488,16 @@ async function deriveOldAssetHash(args: {
   if (resolved.containerUri === undefined) return undefined;
   const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
   if (!candidate) return undefined;
-  const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
+  // Same manifest lookup as `loadAgentCoreAssetContext`, and it must take the
+  // manifest directory the SAME way: under a `cdk.Stage` the manifest is not
+  // in `--output`, so reading it from there returned `undefined`, the
+  // classifier read that as "force rebuild", and soft reload could never
+  // engage for a container-arm runtime in a Stage. Not a containment path --
+  // no path from the manifest is resolved here -- but leaving one half of the
+  // pair on the old lookup is how the twins drift apart.
+  const manifestFile = stacks.find((s) => s.stackName === candidate.stackName)?.assetManifestPath;
+  const manifestDir = manifestFile !== undefined ? dirname(manifestFile) : cdkOutDir;
+  const manifest = await assetLoader.loadManifest(manifestDir, candidate.stackName);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   return entry?.hash;

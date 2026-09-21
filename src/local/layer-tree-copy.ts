@@ -72,7 +72,13 @@ import { join } from 'node:path';
  */
 export function copyLayerTreeLastWins(src: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
-  copyDirLastWins(realpathSync(src), dest);
+  // `.native` (libuv's `realpath(3)`), never the plain form: that one is a
+  // lexical JS walker which both misanswers a `..` after a symlinked component
+  // and can SPIN uncatchably on a two-link shape, hanging `cdkd local invoke`.
+  // Third call site of the one primitive fix (go-to-k/cdkd#3489); the
+  // CONTAINMENT question for this path is separate and lives on
+  // go-to-k/cdkd#3494.
+  copyDirLastWins(realpathSync.native(src), dest);
 }
 
 function copyDirLastWins(fromDir: string, toDir: string): void {

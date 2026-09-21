@@ -108,7 +108,11 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '123456789012',
       'us-east-1',
-      undefined
+      undefined,
+      // The app's outdir, defaulted to the manifest's directory here because
+      // this manifest is a TOP-LEVEL stack's. A Stage's would differ
+      // (go-to-k/cdkd#3489).
+      '/tmp/cdk.out'
     );
   });
 
@@ -138,7 +142,10 @@ describe('AssetPublisher', () => {
     expect(mockDockerBuild).toHaveBeenCalledWith(
       manifest.dockerImages['docker456'],
       '/tmp/cdk.out',
-      'cdkd-asset-docker456'
+      'cdkd-asset-docker456',
+      // The app's outdir, defaulted to the manifest's directory for a
+      // top-level stack (go-to-k/cdkd#3489).
+      '/tmp/cdk.out'
     );
     expect(mockDockerPush).toHaveBeenCalledWith(
       manifest.dockerImages['docker456'],
@@ -248,7 +255,8 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '999888777666',
       'us-east-1',
-      undefined
+      undefined,
+      '/tmp/cdk.out'
     );
   });
 

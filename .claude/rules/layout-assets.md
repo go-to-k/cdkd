@@ -8,6 +8,26 @@ paths:
 
 - **file-asset-publisher.ts** / **docker-asset-publisher.ts** — S3 ZIP upload;
   ECR image build and push.
+- **Three manifest-supplied paths are containment-checked
+  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the rest of the
+  manifest is NOT, and that is a known gap
+  ([#3497](https://github.com/go-to-k/cdkd/issues/3497)).** Checked:
+  `source.path` through `resolveFileAssetSourcePath` and `source.directory`
+  through `resolveDockerContextDirectory` — each THE one spelling its two call
+  sites share, since a second hand-written copy is how a guard on one twin
+  becomes a guard on neither — plus the `<stackName>.assets.json` filename in
+  `loadManifest`. **Those two RESOLVE against the manifest's
+  directory but are CONTAINED within `StackInfo.assetOutdir`**: a Stage's
+  assets sit in the app root, so `source.path` is `../asset.<hash>` by design
+  and containing against the manifest directory refused every Stage asset. `resolveFileAssetSourcePath` runs at the TOP of
+  `publish`, above the `objectExists` short-circuit: below it, an
+  already-present object skipped the check entirely and the HeadObject itself
+  went to a manifest-named bucket. Unchecked and tracked in #3497: every
+  BuildKit passthrough (`dockerFile`, `dockerBuildContexts`,
+  `dockerBuildSecrets`, `cacheFrom` / `cacheTo`, `dockerOutputs`),
+  `source.executable`, and the DESTINATION half — `redirectFileAsset` rewrites
+  only default-bootstrap-shaped destinations, so a manifest-chosen bucket name
+  survives verbatim.
 - **asset-storage.ts** — cdkd-owned asset storage (issue
   [#1002](https://github.com/go-to-k/cdkd/issues/1002)). Custom bucket / repo
   names are validated BEFORE any AWS call and carried in the marker; differing

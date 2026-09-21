@@ -632,6 +632,10 @@ async function deployCommand(
               ...(options.profile && { profile: options.profile }),
               nodePrefix: `${stack.stackName}:`,
               ...(redirect && { redirect }),
+              // The app's outdir, NOT the manifest's directory: a Stage's
+              // assets are staged into the app root and its `source.path` is
+              // `../asset.<hash>` (go-to-k/cdkd#3489).
+              ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
             });
             for (const id of nodeIds) {
               stackDeps.add(id);

@@ -4339,6 +4339,83 @@ describe('cdkd import', () => {
         }
       });
 
+      it('rejects a grandchild aws:asset:path that escapes the assembly directory', async () => {
+        // The containment half (issue go-to-k/cdkd#3489): `path.join`
+        // FOLDS `..`, so this row resolved out of cdk.out and its contents
+        // were read and imported into cdkd state. The absolute tripwire
+        // above cannot see the shape, so both refusals exist and must stay
+        // worded apart.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-escape-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          // Child carries a grandchild nested-stack row whose
+          // `aws:asset:path` leaves the child template's directory.
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                Grandchild: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'x' },
+                  Metadata: { 'aws:asset:path': '../outside.json' },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+          const grandchildArn =
+            'arn:aws:cloudformation:us-east-1:123:stack/Grandchild/uuid';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['Grandchild', grandchildArn]]),
+                  nested: new Map([
+                    [
+                      'Grandchild',
+                      {
+                        stackName: grandchildArn,
+                        physicalId: grandchildArn,
+                        resources: new Map(),
+                        nested: new Map(),
+                      },
+                    ],
+                  ]),
+                },
+              ],
+            ]),
+          });
+
+          await expect(
+            runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+          ).rejects.toThrow();
+          const lastError = String(errorSpy.mock.calls.at(-1)?.[0]);
+          expect(lastError).toMatch(/grandchild nested-stack/);
+          expect(lastError).toMatch(/Grandchild/);
+          expect(lastError).toMatch(/resolves to '.*outside\.json', outside '.*'\./);
+          // Distinguishable from the tripwire beside it.
+          expect(lastError).not.toMatch(/which is absolute/);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
       it('rejects when synth template ↔ AWS tree have mismatched nested-stack ids', async () => {
         const tmpl = template({
           AOnly: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },

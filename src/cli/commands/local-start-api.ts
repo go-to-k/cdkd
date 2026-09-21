@@ -93,7 +93,7 @@ import {
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
-import { resolveExecutionRoleArnFromState } from './local-invoke.js';
+import { resolveExecutionRoleArnFromState, resolveInlineCodeFilePath } from './local-invoke.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
   buildCorsConfigByApiId,
@@ -2573,7 +2573,7 @@ function formatRestV1IntegrationLabel(
  * them. (`cdkd local invoke` runs once and `--rm` is the right model;
  * `cdkd local start-api` lives across requests, so leaks compound.)
  */
-function materializeInlineCode(
+export function materializeInlineCode(
   handler: string,
   source: string,
   fileExtension: string,
@@ -2586,7 +2586,7 @@ function materializeInlineCode(
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-'));
   tmpDirsOut.add(dir);
-  const filePath = path.join(dir, `${modulePath}${fileExtension}`);
+  const filePath = resolveInlineCodeFilePath(dir, modulePath, fileExtension, handler);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, source, 'utf-8');
   return dir;

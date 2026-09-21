@@ -116,9 +116,13 @@ vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
   DiffCalculator: vi.fn().mockImplementation(() => ({})),
 }));
 
+// Hoisted so the OPTIONS the command passes are observable, not just the
+// returned node ids: the `assetOutdir` containment bound
+// (go-to-k/cdkd#3489) is wired here and nowhere else on the deploy path.
+const addAssetsToGraphMock = vi.hoisted(() => vi.fn(() => [] as string[]));
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
   AssetPublisher: vi.fn().mockImplementation(() => ({
-    addAssetsToGraph: vi.fn(() => []),
+    addAssetsToGraph: addAssetsToGraphMock,
     executeNode: vi.fn(async () => undefined),
   })),
 }));
@@ -512,6 +516,48 @@ describe('deploy hands the RAW region spelling to the marker resolver (issue #20
 
   afterEach(() => {
     loadPublishableManifestMock.mockReturnValue(null);
+  });
+
+  it("passes the stack's assetOutdir to addAssetsToGraph as the containment bound", async () => {
+    // The WIRING half of go-to-k/cdkd#3489 on the DEPLOY path. The resolvers
+    // are fenced unmocked elsewhere; what nothing covered is that deploy hands
+    // them the app's outdir at all. Dropping the spread in `deploy.ts` left the
+    // whole suite green while refusing every asset of a `cdk.Stage` stack.
+    addAssetsToGraphMock.mockClear();
+    synthStacks.value = [
+      makeStack('StageStack', {
+        // The Stage shape: manifest in `assembly-<Stage>/`, assets one level up.
+        assetManifestPath: '/tmp/cdk.out/assembly-MyStage/StageStack.assets.json',
+        assetOutdir: '/tmp/cdk.out',
+      }),
+    ];
+    engineResults.set('StageStack', { deleteSkipped: 0, updatePartial: 0 });
+
+    await runDeploy(['--yes']);
+
+    expect(addAssetsToGraphMock).toHaveBeenCalled();
+    const call = addAssetsToGraphMock.mock.calls[0] as unknown as [
+      unknown,
+      string,
+      { assetOutdir?: string },
+    ];
+    // Resolved against the MANIFEST's directory...
+    expect(call[1]).toBe('/tmp/cdk.out/assembly-MyStage/StageStack.assets.json');
+    // ...and contained within the APP's outdir.
+    expect(call[2].assetOutdir).toBe('/tmp/cdk.out');
+  });
+
+  it('omits assetOutdir when the stack record carries none', async () => {
+    addAssetsToGraphMock.mockClear();
+    synthStacks.value = [
+      makeStack('StackA', { assetManifestPath: '/tmp/cdk.out/StackA.assets.json' }),
+    ];
+    engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 0 });
+
+    await runDeploy(['--yes']);
+
+    const opts = (addAssetsToGraphMock.mock.calls[0] as unknown as [unknown, string, object])[2];
+    expect('assetOutdir' in opts).toBe(false);
   });
 
   it('passes the raw spelling to resolve() for an ENV-AGNOSTIC stack', async () => {

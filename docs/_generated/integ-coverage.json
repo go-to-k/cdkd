@@ -2913,7 +2913,8 @@
         "ecr",
         "ecr-scanning",
         "local-run-task-from-state",
-        "migrate-from-cfn"
+        "migrate-from-cfn",
+        "stage-assets"
       ],
       "signals": {
         "destroy-data-guard": [
@@ -2933,6 +2934,9 @@
         "migrate-from-cfn": [
           "l2",
           "literal"
+        ],
+        "stage-assets": [
+          "l2"
         ]
       }
     },
@@ -4278,6 +4282,7 @@
         "sqs-esm-max-concurrency",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
+        "stage-assets",
         "stepfunctions",
         "tags-propagation",
         "update-replace",
@@ -4610,6 +4615,9 @@
           "literal"
         ],
         "stack-lock-renewal": [
+          "l2"
+        ],
+        "stage-assets": [
           "l2"
         ],
         "stepfunctions": [

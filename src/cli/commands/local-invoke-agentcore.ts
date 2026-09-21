@@ -410,7 +410,7 @@ async function localInvokeAgentCoreCommand(
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, assemblyDir } = await synthesizer.synthesize(synthOpts);
 
     const resolvedTarget = await resolveSingleTarget(target, {
       entries: listTargets(stacks).agentCoreRuntimes,
@@ -523,6 +523,7 @@ async function localInvokeAgentCoreCommand(
     const boot = await bootAgentCoreContainer({
       resolved,
       options,
+      assemblyDir,
       profileCredentials,
       profileCredsFile,
       stateProvider,
@@ -838,6 +839,8 @@ export function isAgentCoreWatchEligible(protocol: string): boolean {
 export async function bootAgentCoreContainer(args: {
   resolved: ResolvedAgentCoreRuntime;
   options: LocalInvokeAgentCoreOptions;
+  /** Assembly root from `Synthesizer.synthesize`; see {@link resolveAgentCoreImage}. */
+  assemblyDir: string;
   profileCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined;
@@ -852,6 +855,7 @@ export async function bootAgentCoreContainer(args: {
   const {
     resolved,
     options,
+    assemblyDir,
     profileCredentials,
     profileCredsFile,
     stateProvider,
@@ -866,7 +870,7 @@ export async function bootAgentCoreContainer(args: {
   // for the S3 download).
   await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
 
-  const image = await resolveAgentCoreImage(resolved, options, loadedState);
+  const image = await resolveAgentCoreImage(resolved, options, assemblyDir, loadedState);
 
   const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
     resolved,
@@ -963,7 +967,8 @@ export async function rebuildAgentCoreContainer(args: {
 
   await cleanupBefore();
 
-  const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+  const { stacks: newStacks, assemblyDir: newAssemblyDir } =
+    await synthesizer.synthesize(synthOpts);
   const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, newStacks);
   const { context: newImageContext, loaded: newLoaded } =
     stateProvider && newCandidate
@@ -974,6 +979,9 @@ export async function rebuildAgentCoreContainer(args: {
   const boot = await bootAgentCoreContainer({
     resolved: newResolved,
     options,
+    // The rebuild re-synthesizes, so the bound comes from THAT run's assembly
+    // root rather than the cold boot's (issue go-to-k/cdkd#3489).
+    assemblyDir: newAssemblyDir,
     profileCredentials,
     profileCredsFile,
     stateProvider,
@@ -1254,10 +1262,18 @@ export async function resolveHostCredentialsForSigV4(
  * `loaded` is the `--from-cfn-stack` state record (when available) — threaded
  * through so a bare `--assume-role` can resolve the execution-role ARN from
  * state for the fromS3 download.
+ *
+ * `assemblyDir` is the ASSEMBLY ROOT as `Synthesizer.synthesize` reported it,
+ * and is the containment bound for an asset path read out of the manifest
+ * (issue go-to-k/cdkd#3489). It is NOT `options.output`: under
+ * `-a <pre-synthesized dir>` synthesis is skipped and the assembly root is
+ * `resolve(options.app)` while `--output` keeps its `cdk.out` default, so
+ * binding to `--output` would refuse every asset of an untouched assembly.
  */
 export async function resolveAgentCoreImage(
   resolved: ResolvedAgentCoreRuntime,
   options: LocalInvokeAgentCoreOptions,
+  assemblyDir: string,
   loaded?: LocalStateRecord
 ): Promise<string> {
   const logger = getLogger();
@@ -1269,6 +1285,7 @@ export async function resolveAgentCoreImage(
       resolved.codeArtifact,
       options,
       architecture,
+      assemblyDir,
       loaded
     );
   }
@@ -1325,6 +1342,7 @@ async function resolveAgentCoreCodeImage(
   code: AgentCoreCodeArtifact,
   options: LocalInvokeAgentCoreOptions,
   architecture: 'x86_64' | 'arm64',
+  assemblyDir: string,
   loaded?: LocalStateRecord
 ): Promise<string> {
   if (code.s3Source) {
@@ -1367,10 +1385,20 @@ async function resolveAgentCoreCodeImage(
       'LOCAL_INVOKE_AGENTCORE_CODE_ASSET_NOT_FOUND'
     );
   }
-  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset);
+  // `cdkOutDir` is the MANIFEST's directory, which for a Stage stack is
+  // `cdk.out/assembly-<Stage>/` while the asset itself is staged in the app
+  // root — so the containment bound is the assembly root, or a Stage's
+  // legitimate `../asset.<hash>` is refused (issue go-to-k/cdkd#3489).
+  // `assemblyDir` is that root as `Synthesizer.synthesize` reported it;
+  // `options.output` is NOT, because `-a <pre-synthesized dir>` skips synthesis
+  // and never reads `--output`. `resolved.stack` is cdk-local's StackInfo and
+  // carries no `assetOutdir`, so the value is threaded in from the command.
+  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset, assemblyDir);
   if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
     throw new CdkdError(
-      `AgentCore Runtime '${resolved.logicalId}' code bundle source '${sourceDir}' does not exist or is not a ` +
+      // `sourceDir` is manifest-derived, and this message is the one READER of
+      // the value the containment check above produced (go-to-k/cdkd#3277).
+      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle source '${displaySafe(sourceDir)}' does not exist or is not a ` +
         `directory. Re-synthesize the app and retry.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
     );

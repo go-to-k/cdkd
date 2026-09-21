@@ -1,0 +1,401 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { displaySafe } from './display-safe.js';
+
+/**
+ * Containment for every path a Cloud Assembly names (issue
+ * [#3489](https://github.com/go-to-k/cdkd/issues/3489)).
+ *
+ * A manifest's `directoryName` / `templateFile` / `file` /
+ * `additionalMetadataFile`, and a nested-stack row's
+ * `Metadata['aws:asset:path']`, are all strings chosen by whoever WROTE the
+ * assembly. `cdkd deploy -a <dir>` / `cdkd synth -a <dir>` consume a
+ * PRE-SYNTHESIZED assembly with no CDK subprocess in between, so nothing
+ * upstream validates them, and every site that consumed one used to
+ * `path.join` it onto a directory and read the result.
+ *
+ * `path.join` does NOT honour a leading separator, so an ABSOLUTE value stays
+ * inside the directory (`join('/tmp/cdk.out', '/abs/foo')` is
+ * `/tmp/cdk.out/abs/foo`). The shape that leaves it is `..`:
+ * `join('/tmp/cdk.out', '../../etc/passwd')` is `/etc/passwd`. Where that read
+ * succeeds and the content parses, it becomes the template cdkd deploys.
+ *
+ * This is deliberately NOT the absolute-path tripwire the nested-template
+ * sites already carry (go-to-k/cdkd#595, hardened in go-to-k/cdkd#3481). That
+ * one detects "the assembly was not CDK-generated" and is worth refusing on
+ * its own; it does not and cannot detect the escape. The two refusals stay
+ * separate and word themselves differently, so a reader can tell which fired.
+ *
+ * A LEAF apart from `display-safe.ts`, like `nested-template-cycle.ts`, so
+ * layers 1, 2 and 7 may all import it without an illegal import direction.
+ */
+
+export type ResolvedAssemblyPath =
+  | {
+      readonly contained: true;
+      /** The path the caller should read — what `path.join` would have produced. */
+      readonly path: string;
+    }
+  | {
+      readonly contained: false;
+      readonly escape: 'lexical';
+      /** The lexically resolved path, for the refusal message. */
+      readonly path: string;
+    }
+  | {
+      readonly contained: false;
+      readonly escape: 'symlink';
+      readonly path: string;
+      /** Where the symbolic link(s) actually lead. */
+      readonly realPath: string;
+    };
+
+/**
+ * `true` when `candidate` names something strictly beneath `base`, both given
+ * as already-resolved absolute paths.
+ *
+ * The `..` test is SEPARATOR-AWARE rather than a bare `startsWith('..')`,
+ * which would also reject a legitimate sibling named `..foo`. The empty-string
+ * case is `base` itself: a directory is never a template, a manifest or a
+ * metadata side file, so `.` and `./` are refused rather than read.
+ */
+function isInside(base: string, candidate: string): boolean {
+  const rel = path.relative(base, candidate);
+  if (rel === '' || rel === '..') return false;
+  if (rel.startsWith(`..${path.sep}`)) return false;
+  return !path.isAbsolute(rel);
+}
+
+/**
+ * `realpath(3)`, or `undefined` for a path that does not fully resolve.
+ *
+ * `.native` IS load-bearing and must not be simplified to `fs.realpathSync`.
+ * The plain form is a JavaScript walker that folds `..` LEXICALLY — the same
+ * mistake this module's own model branch is careful not to make — so it
+ * disagrees with the kernel on a target carrying a `..` after a symlinked
+ * component, in both directions:
+ *
+ * - It answers `ENOENT` for a path the kernel resolves and `readFileSync`
+ *   then reads. With `cdk.out/a -> <outside>/sub` and
+ *   `cdk.out/LINK.json -> a/../c.json` (both live), the JS walker folds to
+ *   `cdk.out/c.json`, finds nothing, and the verdict falls through to the
+ *   model — which folds the same way and calls it CONTAINED while the read
+ *   returns `<outside>/c.json`. That is go-to-k/cdkd#3489's original defect,
+ *   reopened by the guard meant to close it.
+ * - On a case-insensitive filesystem (APFS by default) the same shape can make
+ *   it SPIN. A `try`/`catch` cannot catch a spin, so a hand-modified assembly
+ *   hung the very commands this check protects.
+ *
+ * `.native` is libuv's `realpath(3)` (`GetFinalPathNameByHandle` on Windows),
+ * available since Node 8 against a floor of 22, and throws the same
+ * `ENOENT` / `ELOOP` / `EACCES`. Using it is what makes the "exact whenever
+ * the path resolves" claim above TRUE rather than aspirational.
+ */
+function tryRealpath(p: string): string | undefined {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `fs.readlinkSync`, or `undefined` when `p` is not a symbolic link. */
+function tryReadlink(p: string): string | undefined {
+  try {
+    return fs.readlinkSync(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Link follows before the walk gives up and reports the path as unresolvable.
+ * It does NOT refuse: an exhausted budget answers `undefined`, which leaves
+ * the symlink arm silent and the lexical verdict standing. That is safe
+ * because the OS gives up first — macOS caps at 32 (`ELOOP`) — so a chain that
+ * reaches this cap is one nothing can read or create through anyway.
+ */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Unresolvable path COMPONENTS the climb walks before giving up. Bounds the
+ * recursion below, which is one frame per component: 20 000 components raised
+ * an uncaught `RangeError` and 5 000 cost ~200 ms per call. Like the hop cap
+ * this gives up rather than refusing, which is safe for the same reason —
+ * nothing can read or create through a path that deep.
+ */
+const MAX_PATH_COMPONENTS = 1000;
+
+/**
+ * Where `target` REALLY points, for a path that may not exist yet.
+ *
+ * `fs.realpathSync` answers only for a path that fully resolves, and it throws
+ * `ENOENT` for a DANGLING symbolic link exactly as it does for an absent file
+ * — the two are indistinguishable from its result. That difference is the
+ * whole point here: a write FOLLOWS a dangling link and creates the file at
+ * its target, so `cdk.out/Foo.template.json -> ~/.ssh/authorized_keys` (target
+ * absent) is an out-of-directory write that a realpath-only check reports as
+ * contained. Measured: `cdkd synth --verbose` created the victim file.
+ *
+ * So each unresolvable component is handled by hand: climb to the deepest
+ * ancestor that DOES resolve, then re-apply the remaining components,
+ * following any symbolic link with `readlink` and re-resolving its target.
+ * `undefined` means the walk could not resolve the path at all, which for
+ * every caller means their own open fails too.
+ *
+ * KNOW WHAT THIS IS EXACT ABOUT, because the distinction is what bounds it:
+ *
+ * - For a path that FULLY RESOLVES, the answer is `fs.realpathSync`'s and is
+ *   therefore exact. Every READ site is in this case by construction — a file
+ *   that does not resolve cannot be read — so the containment verdict there is
+ *   the kernel's, not this function's. The BASE side is exact there too: every
+ *   one is either user-supplied (`-a`, `--output`, `cdkOutDir`) or the
+ *   `dirname` of a file cdkd has just read successfully, so neither operand of
+ *   a read is in the model's territory.
+ * - For a path that does NOT exist yet, this is a best-effort MODEL of kernel
+ *   resolution, and a model can be wrong at an edge. The known one: `..` INSIDE
+ *   an unresolvable link's target is folded lexically here, while the kernel
+ *   folds it only after following each preceding component, so a target of
+ *   `a/../c.json` under a symlinked `a` diverges.
+ *
+ * That edge decides which of the TWO sites that WRITE needs a second check,
+ * and the difference is the BASE rather than the act of writing:
+ *
+ * - `resolveVerboseTemplatePath` (`src/cli/commands/synth.ts`) writes into
+ *   `--output`, which may be a pre-existing directory the assembly's author
+ *   supplied, so the leaf CAN already be a symbolic link. It therefore asks
+ *   the kernel directly with `lstat` and refuses one whatever it points at. A
+ *   path-string model can be argued around; `lstat` cannot.
+ * - `resolveInlineCodeFilePath` (`src/cli/commands/local-invoke.ts`) writes
+ *   into a `mkdtemp` cdkd has just created, mode 0700 and empty, so no
+ *   component of the candidate can be a symbolic link at all and the edge is
+ *   unreachable. It needs no `lstat`.
+ *
+ * **A third write site over a base cdkd did not create needs the `lstat`**,
+ * and inherits nothing from this function that would give it one.
+ *
+ * That second site is also the repo's first caller to `mkdirSync(...,
+ * { recursive: true })` through a resolved path, which an earlier revision of
+ * this comment leaned on not existing. It is still safe: the climb charges no
+ * hop for a component, and exhausting `MAX_PATH_COMPONENTS` gives up into the
+ * lexical verdict, which a freshly created directory has no link to defeat.
+ */
+function resolveThroughLinks(target: string, hops = 0, climbs = 0): string | undefined {
+  const direct = tryRealpath(target);
+  if (direct !== undefined) return direct;
+  if (hops >= MAX_LINK_HOPS) return undefined;
+  // The climb recurses once per unresolvable COMPONENT, so a path with tens of
+  // thousands of them overflowed the stack — and a `RangeError` raised inside
+  // `tryRealpath`'s own `try` would be swallowed by its `catch`, turning a
+  // crash into a silent `undefined`. A hostile `templateFile` got a
+  // non-actionable stack trace instead of the refusal. Far above any real
+  // assembly (a CDK path has tens of components, not hundreds).
+  if (climbs >= MAX_PATH_COMPONENTS) return undefined;
+
+  const parent = path.dirname(target);
+  // `dirname` is idempotent at a root, which `realpathSync` above would have
+  // resolved — so reaching here means there is nothing left to climb.
+  if (parent === target) return undefined;
+
+  // The climb costs no hop: `hops` bounds the LINK chain, and a deep path of
+  // absent components is not one. Charging the climb made the cap mean
+  // "unresolvable components plus hops", so a deep enough absent path
+  // exhausted the budget and silenced the arm.
+  const realParent = resolveThroughLinks(parent, hops, climbs + 1);
+  if (realParent === undefined) return undefined;
+
+  const link = tryReadlink(target);
+  if (link === undefined) {
+    // The component simply does not exist. Whatever is created there lands
+    // under the real parent.
+    return path.join(realParent, path.basename(target));
+  }
+  // A link whose target does not resolve yet: follow it by hand, relative to
+  // the directory the link itself lives in.
+  //
+  // `realParent`, NOT `path.dirname(target)`, and the difference is load-bearing
+  // rather than stylistic — an earlier revision of this comment claimed the
+  // opposite and a mutation probe falsified it. A target with a LEADING `..`
+  // folds against the directory the link REALLY lives in; fold it against the
+  // lexical parent instead and an escape reads as contained:
+  //
+  //   cdk.out/d                -> <outside>/sub      (live dir link)
+  //   <outside>/sub/L.template.json -> ../x.json      (relative, dangling)
+  //
+  // correct: <outside>/x.json (refused).  lexical parent: contained, and the
+  // write lands outside. Fenced by "resolves a relative dangling target's
+  // LEADING `..` against the link's REAL directory".
+  return resolveThroughLinks(path.resolve(realParent, link), hops + 1, climbs);
+}
+
+/**
+ * Resolve an assembly-supplied `candidate` against `dir` and report whether
+ * the result stays inside it.
+ *
+ * The lexical arm joins exactly the way the call sites used to
+ * (`path.join`, NOT `path.resolve`), so the verdict is about the path the
+ * caller will actually open. `join`'s handling of an absolute candidate makes
+ * this arm strictly more permissive than a `resolve`-based one would be; an
+ * absolute value therefore stays a matter for each site's own tripwire.
+ *
+ * The SYMLINK arm exists because the lexical arm alone leaves an equivalent
+ * hole: `cdk.out/link -> /etc` plus a candidate of `link/passwd` is lexically
+ * contained and still reads `/etc/passwd`. Both sides go through
+ * {@link resolveThroughLinks}, so an assembly directory REACHED through a link
+ * (macOS spells `/tmp` as `/private/tmp`; a user may symlink `cdk.out` itself)
+ * is unaffected, while a candidate that does not exist YET — the shape
+ * `cdkd synth --verbose` writes, and the shape a DANGLING link presents — is
+ * still resolved to where it would actually land. A real `cdk synth` writes no symbolic link
+ * along any of these paths (measured against a CDK 2.268 assembly carrying a
+ * Stage, two nesting levels and an asset manifest), so the arm costs a
+ * legitimate assembly nothing.
+ *
+ * Windows shapes need no special case HERE: `path.relative` is the platform's
+ * own, so a drive-relative or UNC candidate is judged by `path.win32` on
+ * Windows, while on POSIX `C:\evil` and `..\..\evil` are single filename
+ * components that no `readFileSync` can follow out of the directory.
+ *
+ * The verdict is about the assembly AS IT SITS ON DISK, which is the whole
+ * threat model: a hand-modified or third-party `cdk.out` the user then points
+ * cdkd at. It is NOT a defence against a process rewriting that directory
+ * concurrently — the caller opens by path after this returns, so a link
+ * swapped in between is outside what any check here can see.
+ */
+export function resolveAssemblyPath(
+  dir: string,
+  candidate: string,
+  options?: {
+    /**
+     * Contain within THIS directory instead of `dir`.
+     *
+     * A value still RESOLVES against `dir` — that part is the caller's own
+     * `path.join` and must not change — but the containment test runs against
+     * a wider root. The one case is an asset manifest: `cdk synth` stages a
+     * Stage's assets into the APP's outdir while the Stage's manifest sits in
+     * `cdk.out/assembly-<Stage>/`, so upstream emits `source.path` of
+     * `../asset.<hash>` by design (issue
+     * [#3489](https://github.com/go-to-k/cdkd/issues/3489); measured against
+     * aws-cdk-lib 2.268 with no flags).
+     *
+     * This widens the BASE, never the RULE: `path.relative` must still be
+     * non-empty, non-`..`-prefixed and relative. `../../etc/passwd` is refused
+     * from a Stage manifest exactly as from a top-level one, because it leaves
+     * the app outdir either way.
+     *
+     * One consequence to know rather than rediscover: the "names the directory
+     * itself" refusal stops applying to the MANIFEST's directory, since `.`
+     * from a Stage manifest resolves inside the wider bound. That is harmless
+     * for the only callers — an asset `source.path` is legitimately a
+     * directory — but it is a side effect of widening, not a decision.
+     *
+     * `containWithin` must never carry an assembly-supplied value. That is the
+     * invariant; the sources that satisfy it today are `StackInfo.assetOutdir`
+     * and the assembly root `Synthesizer.synthesize` returns, both derived from
+     * the user's own `--app` / `--output` and passed through the Stage
+     * recursion UNCHANGED, so a planted manifest cannot widen its own bound.
+     * A WRONG bound is not uniformly safe, so pick it, do not guess it.
+     * Nothing here checks how `containWithin` relates to `dir`: a DISJOINT
+     * bound costs availability, refusing everything; but an ANCESTOR of the
+     * real one WIDENS — `containWithin: '/'` admits `/etc/passwd`. The bound
+     * must therefore be the assembly root ITSELF and never any parent of it.
+     */
+    containWithin?: string;
+  }
+): ResolvedAssemblyPath {
+  const base = path.resolve(dir);
+  const bound = options?.containWithin === undefined ? base : path.resolve(options.containWithin);
+  const joined = path.resolve(path.join(base, candidate));
+
+  if (!isInside(bound, joined)) {
+    return { contained: false, escape: 'lexical', path: joined };
+  }
+
+  // The same resolver on the base, so an assembly directory that does not
+  // exist yet — or is itself reached through a link — does not silence the
+  // whole arm.
+  //
+  // DEFENCE IN DEPTH, and today the identity: a probe replacing this with
+  // `tryRealpath(base)` reds nothing, because a base that does not resolve has
+  // nothing resolvable beneath it either, so no candidate can differ. It is
+  // written this way because the ASYMMETRY was the round-2 defect in this file
+  // — an arm silently doing nothing because one operand failed to resolve —
+  // and the guard belongs to both operands, not to today's set of reachable
+  // inputs.
+  const realBase = resolveThroughLinks(bound);
+  if (realBase !== undefined) {
+    const realTarget = resolveThroughLinks(joined);
+    if (realTarget !== undefined && !isInside(realBase, realTarget)) {
+      return { contained: false, escape: 'symlink', path: joined, realPath: realTarget };
+    }
+  }
+
+  return { contained: true, path: joined };
+}
+
+/**
+ * The shared tail of every containment refusal: what the value resolved to,
+ * what it escaped, and why that means the assembly is not CDK-generated. Each
+ * call site supplies its own subject ("Stack 'X' has templateFile='...' which
+ * ") and its own error class, because the sites throw four different types.
+ * `action` completes "Refusing to ..." for a caller that declines something
+ * other than loading the file — `renderNestedTemplateTreeDefect` says "deploy"
+ * or "diff", matching its own sibling refusals.
+ *
+ * Every interpolation goes through `displaySafe` for the reason
+ * `AssemblyReader`'s own refusals give (go-to-k/cdkd#3277): this text exists
+ * FOR a hand-modified assembly, so the candidate, the resolved path and even
+ * `dir` (below a Stage it derives from the manifest's `directoryName`) are all
+ * attacker-chosen, and `formatError` sanitizes only an error's `cause`, never
+ * its own `message`.
+ */
+export function renderAssemblyPathEscape(
+  escape: Extract<ResolvedAssemblyPath, { contained: false }>,
+  dir: string,
+  action = 'load',
+  /**
+   * Replaces the default "CDK emits assembly paths ..." sentence for a caller
+   * whose value is NOT an assembly path. `materializeInlineCode` refuses a
+   * `Handler` escaping a temp directory cdkd just created, where the default
+   * text would be false twice over. The containment CLAUSE stays shared —
+   * that is the point of this function — only the provenance moves.
+   */
+  provenanceOverride?: string
+): string {
+  const provenance =
+    provenanceOverride ??
+    `CDK emits assembly paths that stay inside the assembly directory; one that leaves it ` +
+      `indicates the synth output was hand-modified or generated by a non-CDK toolchain. ` +
+      `Refusing to ${action}.`;
+  const base = path.resolve(dir);
+  // The SYMLINK arm compares against the base as the KERNEL sees it, because
+  // that is what `escape.realPath` is. With `-a /tmp/cdk.out` on macOS
+  // (`/tmp -> /private/tmp`) a link to the directory itself otherwise printed
+  // "outside '/tmp/cdk.out'", a false clause about a path that IS the
+  // directory.
+  const realBase = resolveThroughLinks(base) ?? base;
+  if (escape.escape === 'symlink') {
+    // A link pointing AT the directory reaches here with `realPath === base`,
+    // where the "outside" clause below would be a false statement — the same
+    // correction the lexical branch carries.
+    if (escape.realPath === realBase) {
+      return (
+        `resolves to '${displaySafe(escape.path)}', a symbolic link to the directory ` +
+        `'${displaySafe(base)}' itself rather than to a file inside it. ${provenance}`
+      );
+    }
+    return (
+      `resolves to '${displaySafe(escape.path)}', which leads through a symbolic link to ` +
+      `'${displaySafe(escape.realPath)}', outside '${displaySafe(base)}'. ${provenance}`
+    );
+  }
+  // `.`, `./` and `sub/..` are refused because a directory is never a file to
+  // read — but they resolve TO the base, so the "outside" clause below would
+  // be a false statement about them.
+  if (escape.path === base) {
+    return (
+      `names the directory '${displaySafe(base)}' itself rather than a file inside it. ` +
+      `${provenance}`
+    );
+  }
+  return `resolves to '${displaySafe(escape.path)}', outside '${displaySafe(base)}'. ${provenance}`;
+}

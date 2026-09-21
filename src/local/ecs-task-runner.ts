@@ -11,6 +11,7 @@ import {
   redactDockerArgvValues,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -817,18 +818,42 @@ async function prepareOneImage(
       const tag = `cdkd-local-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
+        // `cdkOutDir` is the MANIFEST's directory, which for a stack inside a
+        // `cdk.Stage` is `cdk.out/assembly-<Stage>/` while the asset itself is
+        // staged in the app root — so the containment bound is the app outdir,
+        // or a Stage's legitimate `../asset.<hash>` is refused
+        // (issue go-to-k/cdkd#3489). `task.stack` is cdkd's own `StackInfo`,
+        // which carries it. Absent on a hand-built record, and then
+        // `resolveDockerContextDirectory` falls back to `cdkOutDir`, the
+        // correct bound for a top-level stack.
+        ...(task.stack.assetOutdir !== undefined && { assetOutdir: task.stack.assetOutdir }),
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
             // The `executable` branch renders a user-supplied command line, so
             // it is redacted like every other argv this repo displays
             // (issue #2623). The `directory` branch is a path, not an argv.
-            `docker build failed for ECS container '${container.name}' (${
-              asset.source.directory ??
-              (asset.source.executable
-                ? redactDockerArgvValues(asset.source.executable).join(' ')
-                : undefined)
-            }): ${stderr}`
+            // Every operand sanitized, not just the new one: `container.name`
+            // is a template key and `stderr` is docker's free-form output, so
+            // a guard on one neighbour is defeated by the other
+            // (go-to-k/cdkd#3277). NOT fenced by
+            // `local-profile-display-population.test.ts` — that test derives
+            // its population from identifiers matching `/profile/i` and does
+            // not reach these two statements; it only flagged them once
+            // `displaySafe` appeared in this file. Keeping them sanitized is
+            // a rule followed by hand.
+            `docker build failed for ECS container '${displaySafe(container.name)}' (${
+              asset.source.directory !== undefined
+                ? // `displaySafe` because `source.directory` is an
+                  // assembly-supplied string and the containment refusal
+                  // (go-to-k/cdkd#3489) is raised BEFORE docker runs, so this
+                  // wrapper now renders an attacker-chosen path into a message
+                  // whose inner text is already sanitized (go-to-k/cdkd#3277).
+                  displaySafe(asset.source.directory)
+                : asset.source.executable
+                  ? redactDockerArgvValues(asset.source.executable).join(' ')
+                  : undefined
+            }): ${displaySafe(stderr)}`
           ),
       });
       if (actualTag !== tag) {
@@ -842,7 +867,11 @@ async function prepareOneImage(
           await runDockerStreaming(tagArgs);
         } catch (err) {
           throw new LocalInvokeBuildError(
-            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${describeDockerFailure(err, tagArgs)}`
+            // `actualTag` is the `executable` build script's own STDOUT, so
+            // it is the least trusted value on this line; `container.name` is
+            // a template key. Both sanitized beside the composed docker text.
+            `docker tag failed re-tagging '${displaySafe(actualTag)}' → '${displaySafe(tag)}' ` +
+              `for ECS container '${displaySafe(container.name)}': ${displaySafe(describeDockerFailure(err, tagArgs))}`
           );
         }
       }

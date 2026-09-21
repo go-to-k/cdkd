@@ -162,43 +162,105 @@ describe('findNestedTemplateTreeDefect', () => {
   });
 
   it('treats one real file reached in two directories as two subtrees, not a repeat', () => {
-    // dir1/x.json is a symlink to dir2/x.json. Children resolve against the
-    // directory a template was REACHED in, so the two spellings have different
-    // children: under dir1 the row leads on to dir2/x.json, under dir2 it ends
-    // at a leaf. The tree is finite and must not be refused.
+    // sub/x.json is a symlink to x.json. Children resolve against the directory
+    // a template was REACHED in, so the two spellings have different children:
+    // reached as sub/x.json the row `y.json` is sub/y.json, reached as x.json it
+    // is y.json. Both are leaves, the tree is finite, and it must not be refused
+    // — neither as a repeat nor by the containment check, which follows the
+    // symlink to a file still inside the directory (go-to-k/cdkd#3489).
     const dir = tmp();
-    mkdirSync(join(dir, 'dir1'));
-    mkdirSync(join(dir, 'dir2'));
-    writeTemplate(join(dir, 'dir2'), 'x.json', { Y: 'y.json' });
-    symlinkSync(join('..', 'dir2', 'x.json'), join(dir, 'dir1', 'x.json'), 'file');
-    writeTemplate(join(dir, 'dir1'), 'y.json', { Onward: '../dir2/x.json' });
-    writeTemplate(join(dir, 'dir2'), 'y.json', {});
+    mkdirSync(join(dir, 'sub'));
+    const x = writeTemplate(dir, 'x.json', { Y: 'y.json' });
+    symlinkSync(join('..', 'x.json'), join(dir, 'sub', 'x.json'), 'file');
+    writeTemplate(dir, 'y.json', {});
+    writeTemplate(join(dir, 'sub'), 'y.json', {});
+    const a = writeTemplate(dir, 'a.json', { ViaSub: 'sub/x.json', Direct: 'x.json' });
 
-    expect(findNestedTemplateTreeDefect({ Child: join(dir, 'dir1', 'x.json') })).toBeUndefined();
+    expect(findNestedTemplateTreeDefect({ Child: a })).toBeUndefined();
+    expect(findNestedTemplateTreeDefect({ Child: x })).toBeUndefined();
   });
 
-  it('does not let a subtree proven clean under one spelling vouch for another spelling of the same file', () => {
-    // `out/d -> ../other/real`. Children resolve LEXICALLY, so t.json's row
-    // `../a.json` is a leaf (other/a.json) when t.json is reached as
-    // other/real/t.json, and closes a cycle (out/a.json) when it is reached as
-    // out/d/t.json. Row X walks the first spelling clean; row Y must still be
-    // walked through the second.
+  it('resolves a template identity through realpath(3), not the lexical JS walker', () => {
+    // `templateIdentity` realpaths the template's DIRECTORY, and plain
+    // `fs.realpathSync` is a JS walker that folds `..` lexically. The `..`
+    // must live inside a LINK TARGET on disk — every path the walk builds is
+    // already `path.join`ed, and `join` folds `..` first. With
+    // `a -> <root>/outside/sub` and `d -> a/../real`, the walker answers
+    // ENOENT for a directory the kernel resolves, so two spellings of ONE
+    // file get two identities and the cycle guard stops seeing the repeat.
+    const root = tmp();
+    mkdirSync(join(root, 'outside', 'sub'), { recursive: true });
+    mkdirSync(join(root, 'outside', 'real'), { recursive: true });
+    symlinkSync(join(root, 'outside', 'sub'), join(root, 'a'), 'dir');
+    symlinkSync('a/../real', join(root, 'd'), 'dir');
+    // One real file at <root>/outside/real/t.json, self-referencing.
+    writeTemplate(join(root, 'outside', 'real'), 't.json', { Loop: 't.json' });
+
+    const defect = findNestedTemplateTreeDefect({ Entry: join(root, 'd', 't.json') });
+
+    expect(defect?.kind).toBe('cycle');
+    // Both hops report the REAL location, which is what proves the kernel
+    // resolved it; the lexical walker cannot name this path at all.
+    expect(defect?.chain.map((h) => h.templatePath)).toEqual([
+      join(root, 'outside', 'real', 't.json'),
+      join(root, 'outside', 'real', 't.json'),
+    ]);
+  });
+
+  it('refuses a row whose `..` leaves the directory it is resolved against', () => {
+    // `path.join` folds `..`, so this row used to be walked — and, at deploy
+    // and diff time, READ and deployed (go-to-k/cdkd#3489). The walk refuses
+    // exactly the rows `NestedStackProvider.indexGrandchildTemplates` and
+    // `indexNestedChildTemplates` refuse, so the up-front guard and the
+    // per-level backstop cannot disagree about which trees are well-formed.
+    const dir = tmp();
+    mkdirSync(join(dir, 'out'));
+    const a = writeTemplate(join(dir, 'out'), 'a.json', { Escape: '../outside.json' });
+    writeTemplate(dir, 'outside.json', {});
+
+    const defect = findNestedTemplateTreeDefect({ Root: a });
+
+    expect(defect).toEqual({
+      kind: 'escaping-path',
+      chain: [{ logicalId: 'Root', templatePath: a }],
+      logicalId: 'Escape',
+      assetPath: '../outside.json',
+      escape: { contained: false, escape: 'lexical', path: join(dir, 'outside.json') },
+      dir: join(dir, 'out'),
+    });
+  });
+
+  it('refuses a row that stays inside lexically but leads out through a symlink', () => {
+    // The shape this once described: `out/d -> ../other/real`, where t.json's
+    // row `../a.json` is a leaf when t.json is reached as other/real/t.json and
+    // closes a cycle when it is reached as out/d/t.json — so a subtree proven
+    // clean under one spelling must not vouch for the other. Containment now
+    // refuses `d/t.json` first: it is lexically inside `out` and the symlink
+    // leads to `other/real/t.json`, which is not (go-to-k/cdkd#3489). The
+    // memo's LEXICAL keying is still exercised by the `d1 -> .` / `d2 -> .`
+    // trees below, whose spellings differ without leaving the directory.
     const dir = tmp();
     mkdirSync(join(dir, 'out'));
     mkdirSync(join(dir, 'other', 'real'), { recursive: true });
     symlinkSync(join('..', 'other', 'real'), join(dir, 'out', 'd'), 'dir');
-    const c = writeTemplate(join(dir, 'out'), 'c.json', {
-      X: '../other/real/t.json',
-      Y: 'a.json',
-    });
+    const c = writeTemplate(join(dir, 'out'), 'c.json', { Y: 'a.json' });
     writeTemplate(join(dir, 'out'), 'a.json', { T: 'd/t.json' });
     writeTemplate(join(dir, 'other', 'real'), 't.json', { U: '../a.json' });
     writeTemplate(join(dir, 'other'), 'a.json', {});
 
     const defect = findNestedTemplateTreeDefect({ C: c });
 
-    expect(defect?.kind).toBe('cycle');
-    expect(defect?.chain.map((h) => h.logicalId)).toEqual(['C', 'Y', 'T', 'U']);
+    expect(defect?.kind).toBe('escaping-path');
+    expect(defect?.chain.map((h) => h.logicalId)).toEqual(['C', 'Y']);
+    expect(defect).toMatchObject({
+      logicalId: 'T',
+      assetPath: 'd/t.json',
+      escape: {
+        escape: 'symlink',
+        path: join(dir, 'out', 'd', 't.json'),
+        realPath: join(dir, 'other', 'real', 't.json'),
+      },
+    });
   });
 
   it('follows an ARRAY-valued Resources exactly as the deploy does', () => {
@@ -551,5 +613,72 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
     expect(text).toContain("Metadata['aws:asset:path']='/abs.json' which is absolute");
+  });
+
+  it('names the rows leading to an ESCAPING path, worded apart from the absolute one', () => {
+    // The two refusals answer different questions (go-to-k/cdkd#3489):
+    // `path.join` never lets an absolute value leave the directory, and `..`,
+    // which does, is invisible to the absolute tripwire.
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'escaping-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: 'E',
+        assetPath: '../../etc/passwd',
+        escape: { contained: false, escape: 'lexical', path: '/etc/passwd' },
+        dir: '/out',
+      },
+      'P',
+      'deploy'
+    );
+
+    expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
+    expect(text).toContain(
+      "Metadata['aws:asset:path']='../../etc/passwd' which resolves to '/etc/passwd', outside '/out'."
+    );
+    expect(text).toContain('Refusing to deploy.');
+    expect(text).not.toContain('is absolute');
+  });
+
+  it('names the symlink target when an escaping path is lexically contained', () => {
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'escaping-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: 'E',
+        assetPath: 'link/t.json',
+        escape: {
+          contained: false,
+          escape: 'symlink',
+          path: '/out/link/t.json',
+          realPath: '/etc/t.json',
+        },
+        dir: '/out',
+      },
+      'P',
+      'diff'
+    );
+
+    expect(text).toContain("leads through a symbolic link to '/etc/t.json', outside '/out'.");
+    expect(text).toContain('Refusing to diff.');
+  });
+
+  it('strips terminal-forging characters from an escaping-path refusal', () => {
+    const forged = `E${String.fromCharCode(0x9b)}[2KFORGED`;
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'escaping-path',
+        chain: [{ logicalId: forged, templatePath: `/out/${forged}.json` }],
+        logicalId: forged,
+        assetPath: `../${forged}`,
+        escape: { contained: false, escape: 'lexical', path: `/${forged}` },
+        dir: `/o\u202eut`,
+      },
+      `P${String.fromCharCode(0x85)}Stack`,
+      'deploy'
+    );
+
+    // eslint-disable-next-line no-control-regex
+    expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
   });
 });

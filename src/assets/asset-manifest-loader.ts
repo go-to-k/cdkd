@@ -1,7 +1,51 @@
 import { readFile } from 'fs/promises';
-import { join } from 'path';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
+import { displaySafe } from '../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
+
+/**
+ * THE one spelling of "where does this file asset's source live", shared by
+ * {@link AssetManifestLoader.getAssetSourcePath} and `FileAssetPublisher`
+ * (issue [#3489](https://github.com/go-to-k/cdkd/issues/3489)).
+ *
+ * Both used to `join(cdkOutputDir, asset.source.path)` independently. The
+ * manifest is chosen by whoever wrote the assembly, `path.join` folds `..`,
+ * and the publisher ZIPs whatever it finds and `PutObject`s it to a bucket the
+ * same manifest names — so an unchecked `source.path` is an exfiltration
+ * primitive with the caller's own credentials, which is the harm the manifest
+ * FILE's own containment check cites. One function so the loader and the
+ * publisher cannot disagree about which file is published.
+ */
+export function resolveFileAssetSourcePath(
+  manifestDir: string,
+  asset: FileAsset,
+  /**
+   * The app's outdir, where `cdk synth` stages every asset. Defaults to
+   * `manifestDir`, which is correct for a TOP-LEVEL stack and wrong for a
+   * Stage — see the containment note below.
+   */
+  assetOutdir: string = manifestDir
+): string {
+  // RESOLVE against the manifest's directory, CONTAIN within the app's
+  // outdir. The two differ for a Stage: `cdk synth` stages a Stage's assets
+  // into the app's outdir while the Stage's manifest sits in
+  // `cdk.out/assembly-<Stage>/`, so upstream emits `source.path` of
+  // `../asset.<hash>` by design — measured on aws-cdk-lib 2.268, no flags.
+  // Containing against the manifest directory refused every Stage asset
+  // (issue go-to-k/cdkd#3489).
+  const resolved = resolveAssemblyPath(manifestDir, asset.source.path, {
+    containWithin: assetOutdir,
+  });
+  if (!resolved.contained) {
+    throw new Error(
+      `File asset '${displaySafe(asset.displayName)}' has ` +
+        `source.path='${displaySafe(asset.source.path)}' which ` +
+        `${renderAssemblyPathEscape(resolved, assetOutdir, 'publish it')}`
+    );
+  }
+  return resolved.path;
+}
 
 /**
  * Whether a file asset's `source.path` is a CloudFormation template asset
@@ -37,7 +81,18 @@ export class AssetManifestLoader {
    * @returns Asset manifest or null if not found
    */
   async loadManifest(cdkOutputDir: string, stackName: string): Promise<AssetManifest | null> {
-    const manifestPath = join(cdkOutputDir, `${stackName}.assets.json`);
+    // `stackName` is the manifest's own `properties.stackName` (falling back to
+    // the artifact id), so it is assembly-supplied and becomes a FILENAME here
+    // (issue go-to-k/cdkd#3489). A `../../..`-bearing one would read a
+    // `.assets.json` from outside the assembly and publish whatever it lists.
+    const resolved = resolveAssemblyPath(cdkOutputDir, `${stackName}.assets.json`);
+    if (!resolved.contained) {
+      throw new Error(
+        `Asset manifest for stack '${displaySafe(stackName)}' ` +
+          `${renderAssemblyPathEscape(resolved, cdkOutputDir)}`
+      );
+    }
+    const manifestPath = resolved.path;
 
     try {
       this.logger.debug(`Loading asset manifest from: ${manifestPath}`);
@@ -91,12 +146,18 @@ export class AssetManifestLoader {
   /**
    * Get asset source path (absolute path)
    *
+   * Refuses a `source.path` resolving outside `cdkOutputDir` (issue
+   * [#3489](https://github.com/go-to-k/cdkd/issues/3489)). The manifest is
+   * assembly-supplied and `cdkd deploy -a <dir>` consumes a pre-synthesized
+   * one, so a `source.path` of `../../../home/<user>/.aws` would otherwise be
+   * packaged and uploaded to a bucket the SAME manifest names.
+   *
    * @param cdkOutputDir CDK output directory
    * @param asset File asset
    * @returns Absolute path to asset source
    */
-  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset): string {
-    return join(cdkOutputDir, asset.source.path);
+  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset, assetOutdir?: string): string {
+    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir ?? cdkOutputDir);
   }
 
   /**
