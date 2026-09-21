@@ -110,7 +110,7 @@ describe('matchStacks', () => {
 
 describe('renderNoStackMatch', () => {
   it('lists the available stacks in the parens form the patterns accept', () => {
-    expect(renderNoStackMatch(['Absent'], stacks, {})).toBe(
+    expect(renderNoStackMatch(['Absent'], stacks, { failedStages: [] })).toBe(
       'No stacks matching Absent found in assembly. Available: TopStack, ' +
         'MyStage-Api (MyStage/Api), MyStage-Db (MyStage/Db), ' +
         'OtherStage-Api (OtherStage/Api)'
@@ -118,7 +118,9 @@ describe('renderNoStackMatch', () => {
   });
 
   it('says only that the assembly is empty when no pattern was given', () => {
-    expect(renderNoStackMatch([], [], {})).toBe('No stacks found in assembly');
+    expect(renderNoStackMatch([], [], { failedStages: [] })).toBe(
+      'No stacks found in assembly'
+    );
   });
 
   // Issue go-to-k/cdkd#3482: the whole reason the synthesis result is a
