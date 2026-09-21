@@ -5151,8 +5151,12 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     [
       'src/assets/docker-asset-publisher.ts',
       1,
-      'an ECR registry HOST built from accountId + region; both AWS-charset-bound, ' +
-        'and the result is a hostname rather than a lookup identity',
+      'an ECR registry host, and it IS a lookup identity -- `loggedInRegistries` ' +
+        'gates whether GetAuthorizationToken + docker login re-run. What makes it ' +
+        'safe is neither half: the separator is the multi-character literal ' +
+        '`.dkr.ecr.`, so a collision needs one half to contain that whole string. ' +
+        '(The region half comes from asset-manifest JSON and is NOT charset-gated ' +
+        'here, which an earlier revision of this row claimed.)',
     ],
     [
       'src/cli/upload-cfn-template.ts',
@@ -5180,8 +5184,11 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     [
       'src/local/ecr-puller.ts',
       1,
-      '`${ecrRoleArn}|${region}`; a role ARN is validated before it reaches here and ' +
-        'a region is AWS-charset-bound',
+      '`${ecrRoleArn}|${region}`; NOTHING validates either half -- the ARN is a raw ' +
+        '`--ecr-role-arn` flag and `canonicalizeRegion` only lowercases, which an ' +
+        'earlier revision of this row got wrong. What holds is PROVENANCE: both are ' +
+        'OPERATOR-supplied, a CLI flag and the local AWS config, so a collision ' +
+        'needs the operator to type the separator into their own role ARN',
     ],
     [
       'src/local/httpv2-service-integration.ts',
