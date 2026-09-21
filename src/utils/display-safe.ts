@@ -222,7 +222,8 @@ export const IDENT_MAX_CODE_POINTS = 255;
  *    class, but the cap does not close it either. Tracked on
  *    go-to-k/cdkd#3179. What the cap still does is bound the PAYLOAD.
  *
- * Its SECOND consumer is a failed Stage's path
+ * Its second GRAMMAR (it already has several call sites) is a failed Stage's
+ * path
  * ([#3482](https://github.com/go-to-k/cdkd/issues/3482),
  * `src/synthesis/failed-stages.ts`), a different grammar reusing this cap
  * deliberately: a hierarchical construct path nests without a fixed bound in

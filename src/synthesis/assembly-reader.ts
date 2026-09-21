@@ -12,9 +12,14 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
-import { SynthesisError } from '../utils/error-handler.js';
+import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
-import { failedStageNote, stageScopedError, type FailedStage } from './failed-stages.js';
+import {
+  failedStageNote,
+  renderStagePath,
+  stageScopedError,
+  type FailedStage,
+} from './failed-stages.js';
 
 /**
  * Stack information extracted from cloud assembly
@@ -132,6 +137,23 @@ export interface AssemblyContents {
    * at any depth. Empty on every healthy assembly.
    */
   failedStages: FailedStage[];
+}
+
+/**
+ * The failure's own words, with no path in them.
+ *
+ * A filesystem failure is reduced to its `code` (`ENOENT`, `EACCES`,
+ * `EISDIR`), a fixed string cdkd controls: Node's `message` for one embeds the
+ * path, which is the value being contained. A `JSON.parse` failure has no path
+ * in it -- V8 quotes a bounded window of the file's own bytes -- so its text is
+ * kept, sanitized.
+ */
+function manifestReadFailureText(error: unknown): string {
+  const cause = error instanceof CdkdError ? error.cause : error;
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === 'string' && code.length > 0) return displaySafe(code);
+  const text = cause instanceof Error ? cause.message : String(error);
+  return displaySafe(text);
 }
 
 /**
@@ -301,20 +323,26 @@ export class AssemblyReader {
           // call sits OUTSIDE the try rather than being classified by error
           // type or message: a wider try is what downgraded them before.
           //
-          // `displaySafe` on the caught text is DEFENCE IN DEPTH and is today
-          // the identity, stated because a mutation probe on it finds no
-          // discrimination and the next reader deserves the reason rather than
-          // the puzzle: `readManifest` already sanitizes its own message. It
-          // stays because the guard belongs to the CATCH, not to today's set of
-          // throws inside the `try`.
           let nestedManifest: AssemblyManifest;
           try {
             nestedManifest = this.readManifest(nestedDir);
           } catch (error) {
-            const reason = displaySafe(error instanceof Error ? error.message : String(error));
-            this.logger.warn(
-              `Failed to read nested assembly '${displaySafe(props.directoryName)}': ${reason}`
-            );
+            // The reason is BUILT here rather than taken from the caught
+            // message, and that is a containment decision, not a style one.
+            // `readManifest`'s text embeds the manifest PATH, and under a
+            // Stage that path embeds the assembly-chosen `directoryName` --
+            // twice, since Node's own `ENOENT ... open '<path>'` repeats it.
+            // `displaySafe` is a denylist, so a `directoryName` of
+            // `assembly-Foo. All 3 stacks deployed successfully. Stage Prod`
+            // arrives pre-interpolated into the very sentence a user is asked
+            // to trust. Naming the directory through `renderStagePath` and
+            // keeping only the failure's OWN words closes both occurrences.
+            // (At the TOP level the same path is the user's own `-a` value,
+            // which is why `readManifest` itself keeps `displaySafe`.)
+            const reason =
+              `${manifestReadFailureText(error)} reading ` +
+              `${renderStagePath(props.directoryName)}/manifest.json`;
+            this.logger.warn(`Failed to read nested assembly: ${reason}`);
             // Recorded so stack SELECTION can name this Stage instead of
             // answering "not found" for a stack that may well exist under it.
             failedStages.push({ stagePath, reason });

@@ -132,17 +132,27 @@ describe('renderNoStackMatch', () => {
     expect(message).toContain('Stage MyStage failed to load');
   });
 
-  it('reports an EMPTY assembly as such even when a pattern was given', () => {
-    // `Available: ` with nothing after it says less than the plain sentence,
-    // and an empty assembly is what a failed Stage produces.
+  it('keeps the PATTERN when the assembly is empty, and drops only the stack list', () => {
+    // `Available: ` with nothing after it says less than the plain clause --
+    // but the pattern must survive, because with a non-ASCII Stage path it is
+    // the only thing in the message that identifies what the user asked for.
     const message = renderNoStackMatch(['MyStage/Api'], [], {
       failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
     });
 
-    expect(message).toContain('No stacks found in assembly');
+    expect(message).toContain('No stacks matching MyStage/Api found in assembly.');
+    expect(message).toContain('The assembly has no stacks');
     expect(message).not.toContain('Available:');
     // No hedge: the pattern names that stage.
     expect(message).not.toContain('Possibly unrelated');
+  });
+
+  it('keeps the pattern on an empty assembly with NO failed Stage too', () => {
+    // The clause must not depend on whether a Stage failed -- only the
+    // appended sentence does.
+    expect(renderNoStackMatch(['MyStage/Api'], [], { failedStages: [] })).toBe(
+      'No stacks matching MyStage/Api found in assembly. The assembly has no stacks'
+    );
   });
 
   it('does not hedge when NO pattern was given, since every failed Stage is the answer', () => {

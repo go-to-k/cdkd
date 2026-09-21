@@ -58,26 +58,38 @@ export function describeStack(stack: StackLike): string {
  * `deploy`, `diff`, `list` and `publish-assets`, which all built the identical
  * string by hand.
  *
- * `assembly` is REQUIRED, and that is the point: a Stage that failed to load
- * dropped every stack under it from `available`, so "no stacks matching" names
- * the wrong problem unless the failure is reported with it (issue
- * [#3482](https://github.com/go-to-k/cdkd/issues/3482)). Taking the whole
- * synthesis result rather than an optional extra argument makes a call site
- * that forgets it a COMPILE error instead of a silently weaker message. Pass
- * the `SynthesisResult` itself.
+ * `assembly` is required AND so is its `failedStages` member, which is the
+ * point: a Stage that failed to load dropped every stack under it from
+ * `available`, so "no stacks matching" names the wrong problem unless the
+ * failure is reported with it (issue
+ * [#3482](https://github.com/go-to-k/cdkd/issues/3482)). A REQUIRED member,
+ * not an optional one — `{ failedStages?: ... }` accepts `{}`, so it fences
+ * the argument while leaving the content unfenced, which is the wiring hole
+ * this signature exists to close. `SynthesisResult.failedStages` is required
+ * for the same reason, so passing the result satisfies it and an ad-hoc `{}`
+ * does not.
+ *
+ * What it does NOT fence: a caller passing a STALE or empty list. That is
+ * behaviour, not shape, and it is covered by a wiring test per command.
  */
 export function renderNoStackMatch(
   patterns: readonly string[],
   available: readonly StackLike[],
-  assembly: { failedStages?: readonly FailedStage[] }
+  assembly: { failedStages: readonly FailedStage[] | undefined }
 ): string {
   // An assembly with no stacks at all is reported as such whatever the user
   // named: `Available: ` with nothing after it says less than the plain
   // sentence, and this is the case a failed Stage produces.
+  // The PATTERN is kept whatever the assembly holds: dropping it left a user
+  // who named a stack under a non-ASCII Stage with a message naming neither
+  // their pattern nor the stage. Only the second clause varies, so an empty
+  // assembly never prints `Available: ` with nothing after it.
   const head =
-    patterns.length > 0 && available.length > 0
+    patterns.length > 0
       ? `No stacks matching ${patterns.join(', ')} found in assembly. ` +
-        `Available: ${available.map(describeStack).join(', ')}`
+        (available.length > 0
+          ? `Available: ${available.map(describeStack).join(', ')}`
+          : 'The assembly has no stacks')
       : 'No stacks found in assembly';
   return head + failedStageNote(patterns, assembly.failedStages);
 }

@@ -124,11 +124,11 @@ export interface SynthesisResult {
    * `failedStageNote` (issue
    * [#3482](https://github.com/go-to-k/cdkd/issues/3482)).
    *
-   * Optional so hand-built `SynthesisResult` literals (tests, tooling) stay
-   * valid; `Synthesizer` always sets it, and absent is equivalent to "no stage
-   * failed".
+   * REQUIRED, not optional: `renderNoStackMatch` takes this field as a
+   * required member so that a call site cannot quietly hand it an ad-hoc `{}`
+   * and lose the report. An assembly with no failed Stage carries `[]`.
    */
-  failedStages?: FailedStage[];
+  failedStages: FailedStage[];
 }
 
 /**

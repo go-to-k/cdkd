@@ -632,6 +632,24 @@ describe('deploy names a Stage that failed to load (issue #3482)', () => {
     expect(reported()).toContain("Stage MyStage failed to load");
   });
 
+  it('names the failed Stage with NO pattern, where the branch chain answered "Multiple stacks found: ."', async () => {
+    // The headline case of the issue: an app whose only stacks live in an
+    // unsynthesized Stage, run with no arguments. Zero stacks reached the
+    // multiple-stacks arm, which printed an empty list and never called the
+    // renderer at all.
+    synthStacks.value = [];
+    synthFailedStages.value = [
+      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
+    ];
+
+    const code = await runDeploy(['--yes']);
+
+    expect(code).toBe(1);
+    expect(reported()).not.toContain('Multiple stacks found');
+    expect(reported()).toContain('No stacks found in assembly');
+    expect(reported()).toContain('Stage MyStage failed to load');
+  });
+
   it('leaves the no-match message untouched when every Stage loaded', async () => {
     const code = await runDeploy(['MyStage/Api', '--yes']);
 

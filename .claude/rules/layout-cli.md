@@ -39,8 +39,10 @@ Index of every area: [code-layout.md](code-layout.md).
   owns the empty-selection message for deploy / diff / list / publish-assets and
   takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
   load is named rather than reported as "no stacks matching"
-  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `scrub` and `destroy`
-  still word their own.
+  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a REQUIRED member,
+  so an ad-hoc `{}` is a compile error; `scrub` and `destroy` still word their
+  own. Each of those four also throws it on a ZERO-stack assembly BEFORE its
+  branch chain, which otherwise answers `Multiple stacks found: .`.
 - **src/cli/region-options.ts** - shared region normalization
   ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars

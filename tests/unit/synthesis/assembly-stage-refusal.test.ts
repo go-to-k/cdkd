@@ -182,6 +182,74 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
     );
   });
 
+  it('propagates an escaping templateFile under a Stage', () => {
+    const dir = outdir();
+    stageDir(dir, 'assembly-MyStage', {
+      MyStageApi: stackArtifact('MyStage-Api', { templateFile: '../../outside.json' }),
+    });
+
+    expect(() =>
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
+      )
+    ).toThrow(/Stage MyStage: Stack 'MyStage-Api' has templateFile='\.\.\/\.\.\/outside\.json'/);
+  });
+
+  it('propagates the nested aws:asset:path CONTAINMENT escape under a Stage', () => {
+    // Distinct from the absolute tripwire above: `..` is what actually leaves
+    // the directory, and the tripwire cannot see it.
+    const dir = outdir();
+    const stage = stageDir(dir, 'assembly-MyStage', {
+      MyStageApi: stackArtifact('MyStage-Api', { templateFile: 'MyStageApi.template.json' }),
+    });
+    writeFileSync(join(stage, 'MyStageApi.template.json'), nestedTemplate('../../../etc/child.json'));
+
+    expect(() =>
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
+      )
+    ).toThrow(/Stage MyStage: .*nested-stack 'Child'.*resolves to .*outside/s);
+  });
+
+  it('propagates a DEEPER Stage\'s escaping directoryName', () => {
+    const dir = outdir();
+    stageDir(dir, 'assembly-MyStage', {
+      'assembly-Inner': stageArtifact('../../outside-assembly', 'MyStage/Inner'),
+    });
+
+    expect(() =>
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
+      )
+    ).toThrow(/Stage MyStage: Nested assembly '\.\.\/\.\.\/outside-assembly'/);
+  });
+
+  it('propagates the metadata side-file refusal under a Stage', () => {
+    // `collectStackMessages` is fail-closed because an unreadable side file
+    // could hide an error annotation that must block the deploy. A per-source
+    // narrowing of the try -- wrapping just this call -- would not be caught
+    // by the wholesale case.
+    const dir = outdir();
+    const stage = stageDir(dir, 'assembly-MyStage', {
+      MyStageApi: stackArtifact(
+        'MyStage-Api',
+        { templateFile: 'MyStageApi.template.json' },
+        { additionalMetadataFile: 'absent.metadata.json' }
+      ),
+    });
+    writeFileSync(join(stage, 'MyStageApi.template.json'), JSON.stringify({ Resources: {} }));
+
+    expect(() =>
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
+      )
+    ).toThrow(/^Stage MyStage: /);
+  });
+
   it('names the INNERMOST Stage when Stages nest', () => {
     const dir = outdir();
     const outer = stageDir(dir, 'assembly-MyStage', {
@@ -223,7 +291,10 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
     }
 
     expect(message).toMatch(ABSOLUTE_REFUSAL);
-    expect(message).not.toContain("Stage '");
+    // Anchored: the prefix this asserts the ABSENCE of is `Stage <path>: ` at
+    // the head of the message, and it is unquoted, so a `Stage '` needle could
+    // never fire.
+    expect(message).not.toMatch(/^Stage /);
   });
 });
 
@@ -243,11 +314,14 @@ describe('a Stage whose directory cannot be read still warns and the run continu
 
     expect(stacks.map((s) => s.stackName)).toEqual(['TopStack']);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to read nested assembly 'assembly-MyStage'")
+      'Failed to read nested assembly: ENOENT reading assembly-MyStage/manifest.json'
     );
     expect(failedStages).toHaveLength(1);
     expect(failedStages[0]?.stagePath).toBe('MyStage');
-    expect(failedStages[0]?.reason).toContain('Failed to read cloud assembly manifest');
+    // The failure's own word, and the directory named through `displayIdent`
+    // -- no filesystem path, because under a Stage that path carries the
+    // assembly-chosen `directoryName` into the sentence.
+    expect(failedStages[0]?.reason).toBe('ENOENT reading assembly-MyStage/manifest.json');
   });
 
   it('falls back to the artifact id when the Stage carries no displayName', () => {
@@ -301,10 +375,37 @@ describe('a Stage whose directory cannot be read still warns and the run continu
       expect(note).not.toContain('Possibly unrelated');
     }
 
-    // ...and the rendering is the identity on the ASCII-identifier one.
-    expect(failedStageNote(['Outer/Inner/Api'], [{ stagePath: 'Outer/Inner', reason: 'e' }])).toContain(
-      'Stage Outer/Inner failed to load'
+    // ...and pin how each RENDERS, not only that it matches: the identity on
+    // the ASCII-identifier path, JSON-quoted on the one carrying a space.
+    expect(
+      failedStageNote(['Outer/Inner/Api'], [{ stagePath: 'Outer/Inner', reason: 'e' }])
+    ).toContain('Stage Outer/Inner failed to load');
+    expect(failedStageNote(['My Stage/Api'], [{ stagePath: 'My Stage', reason: 'e' }])).toContain(
+      'Stage "My Stage" failed to load'
     );
+  });
+
+  it('keeps a forging directoryName out of the read-failure sentence', () => {
+    // The read failure's text used to be the caught message, which embeds the
+    // manifest PATH -- and under a Stage that path embeds the assembly-chosen
+    // `directoryName`, twice (Node repeats it in `open '<path>'`). A
+    // `displaySafe` denylist passes the spaces and periods that turn it into a
+    // second, cdkd-sounding clause.
+    const forging = 'assembly-Foo. All 3 stacks deployed successfully. Stage Prod';
+    const dir = outdir();
+
+    const { failedStages } = new AssemblyReader().readAssembly(
+      dir,
+      manifest({ 'assembly-Foo': stageArtifact(forging, 'MyStage') })
+    );
+
+    const reason = failedStages[0]?.reason ?? '';
+    // The forged clause is inside JSON quotes, so it cannot read as prose...
+    expect(reason).toBe(`ENOENT reading ${JSON.stringify(forging)}/manifest.json`);
+    // ...and specifically does not run on into the next word unquoted.
+    expect(reason).not.toContain('Stage Prod/manifest.json');
+    // No filesystem path at all: neither our own clause nor Node's.
+    expect(reason).not.toContain(dir);
   });
 
   it('records a Stage that fails UNDER another Stage, and keeps that outer Stage loaded', () => {
@@ -386,9 +487,7 @@ describe('stack selection reports the failed Stage instead of answering "not fou
         // path, so the link to `MyStage` cannot be proven from it.
         'Possibly unrelated: ' +
         'Stage MyStage failed to load, so stacks under it are missing from this list ' +
-        'rather than missing from the app: Failed to read cloud assembly manifest from ' +
-        `${join(dir, 'assembly-MyStage', 'manifest.json')}: ENOENT: no such file or ` +
-        `directory, open '${join(dir, 'assembly-MyStage', 'manifest.json')}'`
+        'rather than missing from the app: ENOENT reading assembly-MyStage/manifest.json'
     );
     expect(message).not.toContain('Available:');
     expect(message).not.toContain('stacks.. ');

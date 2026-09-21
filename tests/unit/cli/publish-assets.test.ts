@@ -225,6 +225,22 @@ describe('cdkd publish-assets', () => {
       expect(reported).toContain("Stage MyStage failed to load");
     });
 
+    it('names the failed Stage with NO pattern, where the branch chain answered "Multiple stacks found: ."', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+      });
+
+      await runCmd([]);
+
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).not.toContain('Multiple stacks found');
+      expect(reported).toContain('No stacks found in assembly');
+      expect(reported).toContain('Stage MyStage failed to load');
+    });
+
     it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'TopStack' })],

@@ -1032,13 +1032,15 @@ matching":
 ```
 No stacks matching MyStage/Api found in assembly. Available: TopStack. Stage
 MyStage failed to load, so stacks under it are missing from this list rather
-than missing from the app: Failed to read cloud assembly manifest from
-/path/to/cdk.out/assembly-MyStage/manifest.json: ENOENT: no such file or
-directory
+than missing from the app: ENOENT reading assembly-MyStage/manifest.json
 ```
 
+The same sentence is appended when the app has no other stacks to list, and
+when you run with no stack argument at all — the case where every stack in the
+app lives under the Stage that failed.
+
 A pattern without a `/` matches the physical stack name, which carries no stage
-path, so the same sentence is then prefixed `Possibly unrelated:` rather than
+path, so the sentence is then prefixed `Possibly unrelated:` rather than
 claimed as the explanation.
 
 Every other refusal under a Stage — an escaping or absent `templateFile`, an

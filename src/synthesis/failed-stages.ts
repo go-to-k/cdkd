@@ -38,10 +38,13 @@ export interface FailedStage {
    *
    * One accepted consequence, so it is not "fixed" later: a legitimate
    * non-ASCII stage id displays as `<unrenderable>`, because `displayIdent` is
-   * an ASCII ALLOWLIST. That is the fail-closed direction, the message head
-   * still echoes the user's own pattern, and ATTRIBUTION is unaffected since
-   * it runs on the raw value. Reaching for `displaySafe` to render it reopens
-   * the forgery above.
+   * an ASCII ALLOWLIST. That is the fail-closed direction, and ATTRIBUTION is
+   * unaffected since it runs on the raw value — the stage is still matched and
+   * named as targeted rather than hedged. What identifies it to the user is
+   * then the PATTERN they typed, which `renderNoStackMatch` keeps in the head
+   * whenever one was given; with no pattern and a non-ASCII stage the message
+   * names neither, which is the known floor of this trade. Reaching for
+   * `displaySafe` to render it reopens the forgery above.
    */
   stagePath: string;
 
@@ -90,6 +93,15 @@ export function stageScopedError(stagePath: string, error: unknown): unknown {
 
   const message = displaySafe(error instanceof Error ? error.message : String(error));
   const scoped = new SynthesisError(`Stage ${renderStagePath(stagePath)}: ${message}`);
+  // Keep the ORIGIN's frames under this error's own header line. Without it
+  // `handleError`'s `--verbose` stack trace points at this re-raise rather
+  // than at the refusal that fired, which is the one thing that trace is for.
+  // The header is rewritten rather than the whole stack replaced, so the first
+  // line still matches the message the user was shown.
+  if (error instanceof Error && typeof error.stack === 'string') {
+    const frames = error.stack.split('\n').slice(1).join('\n');
+    if (frames.length > 0) scoped.stack = `${scoped.name}: ${scoped.message}\n${frames}`;
+  }
   // Same reasoning as `markNonRetryable`: a non-extensible error is returned
   // unmarked rather than allowed to throw a `TypeError` in place of the
   // refusal. Losing the marker only costs an extra Stage prefix.
@@ -160,7 +172,7 @@ export function failedStageNote(
  * exists for. See {@link FailedStage.stagePath} for why the stored value stays
  * raw and only this rendering is sanitized.
  */
-function renderStagePath(stagePath: string): string {
+export function renderStagePath(stagePath: string): string {
   return displayIdent(stagePath, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 

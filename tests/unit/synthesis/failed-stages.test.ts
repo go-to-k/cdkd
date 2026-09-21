@@ -57,6 +57,9 @@ describe('failedStageNote', () => {
 
     expect(note).toContain(`Stage ${deep} failed to load`);
     expect(note).not.toContain('withheld');
+    // A cut would also stop the path MATCHING the pattern naming it, which is
+    // the half that is invisible if only the rendering is asserted.
+    expect(note).not.toContain('Possibly unrelated');
   });
 
   it('hedges when the pattern is a PHYSICAL stack name, which carries no stage path', () => {

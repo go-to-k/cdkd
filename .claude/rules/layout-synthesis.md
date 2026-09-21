@@ -30,13 +30,21 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   [#3489](https://github.com/go-to-k/cdkd/issues/3489)) BEFORE the read, keeping
   its own refusal distinct from the absolute-path tripwire beside it.
 - **failed-stages.ts** - `FailedStage`, `failedStageNote` (the sentence a
-  selection failure appends) and `stageScopedError` (the re-raise that names the
-  Stage, marked so only the innermost one is named).
+  selection failure appends), `renderStagePath` and `stageScopedError` (the
+  re-raise that names the Stage, marked so only the innermost one is named).
+  `FailedStage.stagePath` is stored RAW because it is a MATCH KEY as well as a
+  subject — rendering it at the write site made the stored form disagree with
+  the user's pattern — and every display site renders it through
+  `renderStagePath` (`displayIdent`, capped at `STACK_REF_MAX_CODE_POINTS` so
+  a deep path is not cut), never `displaySafe`: it is interpolated into prose,
+  where a denylist's tolerance of quotes and spaces is a spoof surface.
 - **Exactly ONE failure is tolerated while reading a Stage**
   (`cdk:cloud-assembly`): the read of that Stage's own `manifest.json`, which is
   the Stage-was-never-synthesized case. It warns, drops the Stage's stacks and
-  records a `FailedStage`. Every other refusal raised under a Stage propagates,
-  re-raised with the INNERMOST Stage named
+  records a `FailedStage` whose reason is BUILT here — the failure's own error
+  code plus the rendered directory — never the caught text, which embeds a
+  path carrying the assembly-chosen `directoryName` twice. Every other refusal
+  raised under a Stage propagates, re-raised with the INNERMOST Stage named
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a hardened check must
   not degrade to advice because the stack sits inside a Stage. **The SCOPE of
   the `try` is the classifier**; do not widen it, and do not replace it with a

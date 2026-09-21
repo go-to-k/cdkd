@@ -204,6 +204,14 @@ async function diffCommand(
     const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
     let targetStacks;
 
+    if (allStacks.length === 0) {
+      // Reached before the branch chain below: with zero stacks and no
+      // pattern, the `else` arm would answer `Multiple stacks found: .` --
+      // and zero stacks is exactly what an app whose only stacks live in an
+      // unsynthesized Stage produces (issue go-to-k/cdkd#3482).
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+    }
+
     if (options.all) {
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
