@@ -550,6 +550,14 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // sibling destroy refusal answers the same way. `cdkd state orphan`
       // reads no orphans container, so the pointer is sound.
       expect(destroy).toContain('cdkd state orphan');
+      // It also owes what every other message in this module ends on: how to
+      // READ the record it is refusing. The first cut dropped it, so the
+      // operator told to "repair or remove" was never told how to look.
+      expect(destroy).toContain('cdkd state show MyStack --stack-region us-east-1 --json');
+      // ...and the sibling's legacy-record clause, because for such a record
+      // the `--stack-region` flag must be OMITTED or it selects nothing.
+      expect(destroy).toContain('legacy record');
+      expect(destroy.split('\n')).toHaveLength(1);
     });
 
     it('the DESTROY text withholds the target when the identity does not render exactly', () => {
@@ -563,6 +571,10 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       expect(withheld).not.toContain('cdkd state orphan <stack>');
       expect(withheld).toContain('cdkd state list --long');
       expect(withheld.split('\n')).toHaveLength(1);
+      // It reads as a SENTENCE: the no-identity clause ends open, so a second
+      // sentence bolted onto it renders with no verb — on the arm a planted
+      // identity reaches.
+      expect(withheld.startsWith('The state record this command loaded has no readable')).toBe(true);
     });
 
     it('differ, because continuing costs something different from refusing', () => {
@@ -2310,6 +2322,28 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
   });
+
+  it('pins the two exclusions the derivation above makes', () => {
+    // `diff.ts` is excluded because it RECEIVES the repaired state rather than
+    // loading one. The moment it loads state itself the exclusion is wrong, and
+    // a comment cannot notice that.
+    expect(
+      code('src/cli/commands/diff.ts'),
+      'diff.ts now loads state itself, so it owes its own guard rather than inheriting ' +
+        "diff-recursive's repair."
+    ).not.toContain('getState(');
+    // `deploy-engine.ts` is anchored on its first SAVE because its only read
+    // above the guard is `redactStateForPersist`, which is reachable only from
+    // the save path. A second read landing above the guard would break that.
+    const engine = code('src/deployment/deploy-engine.ts');
+    const guardAt = engine.indexOf('refuseMalformedOrphans(');
+    const above = engine.slice(0, guardAt).split(/[A-Za-z]*[Ss]tate\.orphans\b/).length - 1;
+    expect(
+      above,
+      'deploy-engine.ts reads the container above its guard somewhere other than ' +
+        'redactStateForPersist, so the save anchor no longer covers every read.'
+    ).toBe(1);
+  });
 });
 
 describe('isReadableBag is the ONE predicate (issue go-to-k/cdkd#3187)', () => {
@@ -3020,11 +3054,35 @@ describe('write-capable commands refuse; read-only ones repair', () => {
           src,
           'the outputs finding no longer reaches the audited-record refusal.'
         ).toContain('malformedOutputRecords.length > 0');
+        // SCOPED to the builder, and keyed on the SENTENCE rather than on the
+        // identifier: `malformedOrphanRecords.length > 0` also occurs in the
+        // dry-run branch above, so a whole-file `toContain` stays green when
+        // the audited-error arm or its sentence is deleted (measured — this
+        // fence read that way for one round).
+        const builderAt = src.indexOf('function malformedRecordsAuditedError');
         expect(
-          src,
-          'the orphans finding no longer reaches the audited-record refusal, so a run that ' +
-            'audited a record with an unreadable orphans container can report it clean.'
-        ).toContain('malformedOrphanRecords.length > 0');
+          builderAt,
+          'malformedRecordsAuditedError was renamed; this fence is reading nothing.'
+        ).toBeGreaterThan(-1);
+        const builder = src.slice(builderAt, src.indexOf('\nfunction ', builderAt + 1));
+        expect(
+          builder,
+          'the audited-record refusal no longer has an orphans sentence, so a run that audited ' +
+            'a record with an unreadable orphans container reports it clean.'
+        ).toContain('EMPTY orphan list');
+        expect(
+          builder,
+          'the orphans list is not a parameter of the audited-record refusal, so its sentence ' +
+            'cannot name the records it covers.'
+        ).toContain('orphanStackNames');
+        // ...and both call sites must pass it, or the builder's arm is dead.
+        const callSites = src.split('malformedRecordsAuditedError(').length - 2;
+        expect(callSites, 'the audited-record refusal lost a call site').toBeGreaterThanOrEqual(2);
+        expect(
+          src.split('malformedOrphanRecords\n').length - 1 + src.split('malformedOrphanRecords,').length - 1,
+          'a call site no longer passes the orphans list, so that run reports a clean record it ' +
+            'could not read.'
+        ).toBeGreaterThanOrEqual(callSites);
       }
 
       expect(src, `${file} no longer calls saveState`).toContain('saveState(');

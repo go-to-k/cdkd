@@ -139,6 +139,21 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
     expect(text).not.toContain('shown above as a create');
   });
 
+  it('keeps the logical-id sentence when a REAL id joins the container row', async () => {
+    // The suppression is `.every`, not "exactly one container row": a node
+    // holding both an unreadable container and a torn resource entry still owes
+    // the sentence, because one of its rows IS a logical id. A `.some` here
+    // would swallow it.
+    const state = record('abc');
+    (state.resources as Record<string, unknown>)['Torn'] = null;
+    const node = await diff(state);
+    expect(node.unreadable).toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
+    expect(node.unreadable).toContain('Torn');
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    expect(lines.join('\n')).toContain('shown above as a create');
+  });
+
   it('CONTROL: a readable or absent container yields no row and no warning', async () => {
     for (const orphans of [[], undefined]) {
       vi.clearAllMocks();

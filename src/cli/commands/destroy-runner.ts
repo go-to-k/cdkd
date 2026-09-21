@@ -704,11 +704,13 @@ export async function runDestroyForStack(
       if (recheck) {
         refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
         // The re-read is the record `stillEmpty` and `deleteState` act on, so
-        // the container guard is owed here as well as at the entry read:
-        // `stillEmpty` reads `(recheck.state.orphans ?? []).length`, which is 0
-        // for a `null` container and `undefined` — never 0 — for the rest, so
-        // an unreadable one either reaches the delete or stops the run with no
-        // cause named (go-to-k/cdkd#3379).
+        // the container guard is owed here as well as at the entry read.
+        // `stillEmpty` reads `(recheck.state.orphans ?? []).length`, and the
+        // shapes split three ways (measured): `null`, `''` and `{length: 0}`
+        // count 0 and REACH the delete; a string or `{length: N}` counts
+        // non-zero; a number, an object or a boolean yields `undefined`, which
+        // fails the `=== 0` test and stops the run with no cause named
+        // (go-to-k/cdkd#3379).
         refuseMalformedOrphansForDestroy(recheck.state, stackName, regionForState);
       }
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;

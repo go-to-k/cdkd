@@ -1,8 +1,9 @@
 /**
  * Issue go-to-k/cdkd#3379: `runDestroyForStack` reads the `orphans` CONTAINER
  * on a bare `?? []` at both of its reads, and what each shape then counts
- * differs — `null` counts 0, a number or a plain object yields `undefined`, a
- * string counts its characters.
+ * splits three ways (measured): `null`, `''` and `{length: 0}` count 0; a
+ * string or `{length: N}` counts non-zero; a number, an object or a boolean
+ * yields `undefined`.
  *
  * That count is what `stillEmpty` consults before `deleteState`, and the orphan
  * warning above it is what would have told the operator that resources from an
@@ -82,6 +83,9 @@ const MALFORMED: Array<[string, unknown]> = [
   // Walked one character at a time by `for...of`.
   ['a string container', 'abc'],
   ['a null container', null],
+  // The other two shapes that count 0 and so reach `deleteState`.
+  ['an empty-string container', ''],
+  ['an object carrying a zero length', { length: 0 }],
 ];
 
 function stateWith(orphans: unknown, resources: Record<string, unknown> = {}): StackState {
@@ -173,6 +177,9 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
       'the refusal does not name `orphans`, so this passes on some other guard and the ' +
         're-read is still unguarded'
     ).toContain("'orphans'");
+    // The DESTROY text at THIS site too: both messages name the container, so
+    // without this the re-read could revert to the writer refusal unnoticed.
+    expect((thrown as CdkdError).message).toContain('DELETES state');
     // What this case pins is the NAMING above: for a string `stillEmpty` reads
     // 3, so the run stops elsewhere without the guard and a bare "refused"
     // assertion would not discriminate. The DELETION is pinned by the null
@@ -185,18 +192,21 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
     expect(h.releaseLock, 'the lock is stranded').toHaveBeenCalled();
   });
 
-  it('refuses a NULL container at the re-read, the shape that would reach deleteState', async () => {
-    // The shapes differ in what they would do without the guard, and only this
-    // one reaches the delete: `null ?? []` is an empty list, so `stillEmpty`
-    // is true and `deleteState` runs on the record whose orphan evidence was
-    // never read. A number or a plain object yields `undefined`, which fails
-    // the `=== 0` test and stops the run elsewhere; a string counts its
-    // characters. So this case pins the DELETION, and the string case above
-    // pins that the refusal names the container.
-    const h = makeCtx(stateWith(null));
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+    ['an object carrying a zero length', { length: 0 }],
+  ])('refuses %s at the re-read, a shape that would reach deleteState', async (_label, orphans) => {
+    // These three count 0, so `stillEmpty` is true and `deleteState` runs on a
+    // record whose orphan evidence was never read. A number or a plain object
+    // yields `undefined` and a string counts its characters, so those stop the
+    // run elsewhere — which is why the string case above pins the NAMING and
+    // these pin the DELETION.
+    const h = makeCtx(stateWith(orphans));
     const thrown = await runDestroyForStack(STACK, stateWith([]), h.ctx).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(CdkdError);
     expect((thrown as CdkdError).message).toContain("'orphans'");
+    expect((thrown as CdkdError).message).toContain('DELETES state');
     expect(
       h.deleteState,
       'the destroy deleted the record the re-read exists to protect'
@@ -214,7 +224,7 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
     // DRIVEN rather than asserted absent: an empty record with a readable
     // container reaches `deleteState`, so an unrelated early failure cannot
     // satisfy this the way a bare `not.toContain` would.
-    for (const orphans of [[], undefined]) {
+    for (const orphans of [[], [{ logicalId: 'A' }], undefined]) {
       vi.clearAllMocks();
       const h = makeCtx(stateWith(orphans));
       const thrown = await runDestroyForStack(STACK, stateWith(orphans), h.ctx).catch(
@@ -222,7 +232,14 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
       );
       const message = thrown instanceof CdkdError ? thrown.message : '';
       expect(message).not.toContain("'orphans'");
-      expect(h.deleteState, 'the control never reached the delete, so it proves nothing').toHaveBeenCalled();
+      // An EMPTY readable container reaches the delete; a POPULATED one does
+      // not (`stillEmpty` is false), and the negative matters there too — the
+      // guard must not fire on a record that simply has orphans.
+      if (Array.isArray(orphans) && orphans.length > 0) {
+        expect(h.deleteState).not.toHaveBeenCalled();
+      } else {
+        expect(h.deleteState, 'the control never reached the delete, so it proves nothing').toHaveBeenCalled();
+      }
     }
   });
 });

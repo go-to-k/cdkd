@@ -1143,6 +1143,7 @@ admits all four.
 | `cdkd deploy` | **Refuses** at the load, before any resource operation (`STATE_RESOURCES_MALFORMED`, exit `1`) — the adoption pass writes the container back, so an unreadable one would be rewritten |
 | `cdkd destroy` / `cdkd state destroy` | **Refuses**, at its first read and again at the re-read it takes under the lock — otherwise the run deletes every resource and then the record, having never reported the orphans it could not read |
 | `cdkd rollback` | **Refuses** before any replay — its own bookkeeping walks the container and saves the result |
+| `cdkd import` | **Refuses** — it carries the container into the record it writes, so importing over a damaged one would leave a record every other command then refuses |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
 | `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see |
 

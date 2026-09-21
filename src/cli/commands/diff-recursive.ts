@@ -2267,7 +2267,9 @@ export function renderDiffTree(
       // row is a container stand-in rather than only when the one row is the
       // resources map: a node whose sole row is `(orphans container)` would
       // otherwise claim the template declares one of them
-      // (go-to-k/cdkd#3379).
+      // (go-to-k/cdkd#3379). Stated rather than solved, and the same bound the
+      // mapping above carries: two planted ids spelled exactly like the two
+      // stand-in rows suppress it too, since the node records only strings.
       const onlyContainerRows = node.unreadable.every(
         (id) => id === UNREADABLE_RESOURCES_MAP_ROW || id === UNREADABLE_ORPHANS_CONTAINER_ROW
       );

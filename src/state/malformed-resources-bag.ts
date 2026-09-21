@@ -1299,16 +1299,21 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
  */
 export function malformedDestroyOrphansRefusalMessage(stackName: string, region: string): string {
   const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
-  const detail = exact
-    ? `State for ${shellQuote(safeStackName(stackName))} (${shellQuote(safeRegion(region))}) has ` +
-      `no readable 'orphans' list — the record is malformed or truncated.`
-    : `${stackClause(undefined, undefined)} Its 'orphans' list cannot be read — the record is ` +
-      `malformed or truncated.`;
+  // Both arms continue `stackClause`'s own sentence rather than starting a new
+  // one after it: the no-identity clause ends open ("The state record this
+  // command loaded"), so a second sentence bolted on renders without a verb —
+  // and that is the arm a planted identity reaches.
+  const detail =
+    `${stackClause(exact ? stackName : undefined, exact ? region : undefined)} has no readable ` +
+    `'orphans' list — the record is malformed or truncated.`;
   const remedy = exact
-    ? `To drop the record deliberately and leave every live resource standing, run ` +
-      `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — spelled ` +
-      `out rather than pasteable, because that command DELETES a record. Confirm the key with ` +
-      `'cdkd state list --long', then: cdkd state orphan <stack> --stack-region <region>`
+    ? `Inspect it with: ${inspectCommand(stackName, region)} To drop the record deliberately and ` +
+      `leave every live resource standing, run 'cdkd state orphan' against the stack and the ` +
+      `region THE RECORD'S S3 KEY holds — spelled out rather than pasteable, because that ` +
+      `command DELETES a record and the region printed above is the one cdkd was pointed at, ` +
+      `not a value cdkd owns. Confirm the key with 'cdkd state list --long' — a legacy record ` +
+      `shows none, and for one of those the flag must be OMITTED or it selects nothing — then: ` +
+      `cdkd state orphan <stack> --stack-region <region>`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
       `'cdkd state list --long' and act on the one whose key matches. Inspect it with: ` +
