@@ -212,8 +212,14 @@ describe('a cache whose key is encoded still INVALIDATES — go-to-k/cdkd#3496',
 
   it('does not clear an id that merely SHARES A PREFIX', () => {
     // The encoded prefix is `["proxy-1",`, so `proxy-10` is a different token
-    // rather than a longer match — which the old `proxy-1:` prefix would also
-    // have got right, and a naive `startsWith(JSON.stringify(id))` would not.
+    // rather than a longer match.
+    //
+    // This is NOT a case a hand-written prefix would fail: `'[' +
+    // JSON.stringify(id)` gets it right too, because `JSON.stringify` carries
+    // its own closing quote. An earlier revision of this comment claimed
+    // otherwise — the false-justification class this change keeps deleting.
+    // The argument for DERIVING is drift, and the `a,b` case below is the one
+    // a plausible hand-written prefix really does fail.
     const provider = new RDSDBProxyProvider();
     const cache = cacheOf(provider);
     cache.set(injectiveKey('proxy-10', 'Endpoint'), 'ten.endpoint');

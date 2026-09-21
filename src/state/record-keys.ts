@@ -86,8 +86,12 @@ export function injectiveKey(...parts: ReadonlyArray<string | number>): string {
 }
 
 /**
- * The prefix every {@link injectiveKey} whose FIRST part is `first` begins
- * with, for the one reader shape an encoded key otherwise breaks: a cache that
+ * The prefix every {@link injectiveKey} OF TWO OR MORE PARTS whose first part
+ * is `first` begins with. The arity matters and an earlier revision of this
+ * line omitted it: a ONE-part key ends with a bracket where this prefix ends
+ * with a comma, so it does not match one. Both call sites build two parts.
+ *
+ * It exists for the one reader shape an encoded key otherwise breaks: a cache that
  * evicts by scanning its keys for a leading component.
  *
  * DERIVED from the same encoder rather than spelled again, and that is the

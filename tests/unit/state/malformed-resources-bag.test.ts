@@ -5103,62 +5103,154 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    * So this one keys on the SHAPE a composite key has — two or more
    * interpolations in one template literal, used as a Map/Set key or bound to
    * a `*Key` name — rather than on the separator, which is the thing that
-   * varies. Residual, stated: `+` concatenation, a separator held in a
-   * variable, and a key built over several statements are still invisible.
+   * varies.
+   *
+   * **It would NOT have caught the defect that motivated it, and saying so is
+   * the point.** A READER that re-spells a key —
+   * `key.startsWith(`${physicalId}:`)` — has ONE interpolation, so no
+   * key-shape rule sees it. What covers that is the behavioural eviction cases
+   * in `tests/unit/state/composite-key-collisions.test.ts` and, structurally,
+   * `injectiveKeyPrefix` existing at all so a reader has nothing to re-spell.
+   * This fence catches the WRITE side; nothing mechanical catches the read
+   * side.
+   *
+   * Further residuals: `+` concatenation, `.join('<printable>')`, a separator
+   * held in a variable, and a key built over several statements.
    */
   const TEMPLATE_KEY_EXPRESSIONS: ReadonlyArray<readonly [string, number, string]> = [
+    // --- arm A: a template literal passed straight to .get/.set/.has/.add ---
     [
       'src/cli/commands/drift.ts',
       2,
-      'per-run sets of RENDERED paths for reporting; not an identity anything is ' +
-        'served by, and both build a path a human reads',
+      'sets of RENDERED report paths; nothing is SERVED by these, they only ' +
+        'deduplicate what is printed',
     ],
     [
       'src/provisioning/property-coverage.ts',
       2,
-      '`${resourceType}:${property}` against the --allow-unsupported-properties set; ' +
-        'the property half comes from the generated drop table, a closed set',
+      '`${resourceType}:${property}` membership in the ' +
+        '--allow-unsupported-properties set; the property half comes from the ' +
+        'GENERATED drop table, a closed set',
     ],
     [
       'src/provisioning/provider-registry.ts',
       3,
-      'same `${resourceType}:${property}` membership test, same closed second half',
+      ':842 / :893 are the closed-set membership test above. :1049 is NOT -- its ' +
+        'property half is `findUnrecognizedProperties`, i.e. TEMPLATE-declared names, ' +
+        'an open set. What holds there is the other half: a collision needs a ' +
+        'REGISTERED resourceType that is a `:`-delimited proper prefix of another, ' +
+        'and no registered type is a prefix of a registered type',
     ],
     [
       'src/provisioning/providers/sns-topic-provider.ts',
       1,
-      '`${protocol}${suffix}`; `protocol` is a closed set and `suffix` a literal',
+      '`${protocol}${suffix}`; `normalizeDeliveryStatusProtocol` returns a closed set ' +
+        'or the loop continues, and the suffixes are three literals',
+    ],
+    // --- arm B: a template literal bound to a `*Key` name -------------------
+    [
+      'src/assets/docker-asset-publisher.ts',
+      1,
+      'an ECR registry HOST built from accountId + region; both AWS-charset-bound, ' +
+        'and the result is a hostname rather than a lookup identity',
+    ],
+    [
+      'src/cli/upload-cfn-template.ts',
+      1,
+      'an S3 OBJECT key being written, not a key anything is looked up by',
+    ],
+    [
+      'src/deployment/deploy-engine.ts',
+      1,
+      'a NUL-joined key, classified in NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS above ' +
+        '-- go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/intrinsic-function-resolver.ts',
+      1,
+      ':6608 `${physicalId}#${attributeName}` INSIDE a switch, so the second half is ' +
+        'one of five literals at that point; a closed second half is what makes a ' +
+        'separator injective here',
+    ],
+    [
+      'src/deployment/recreate-targets.ts',
+      1,
+      'the same `${resourceType}:${property}` closed-set membership test',
+    ],
+    [
+      'src/local/ecr-puller.ts',
+      1,
+      '`${ecrRoleArn}|${region}`; a role ARN is validated before it reaches here and ' +
+        'a region is AWS-charset-bound',
+    ],
+    [
+      'src/local/httpv2-service-integration.ts',
+      1,
+      '`${service}:${region}`; `service` is a literal at the call site',
+    ],
+    [
+      'src/synthesis/context-providers/vpc-provider.ts',
+      1,
+      '`${subnet.type}/${subnet.name}`; the type half is a closed set',
+    ],
+    [
+      'src/utils/proxy-routing-agent.ts',
+      1,
+      "`${secure ? 'https' : 'http'}|…`; the first half is one of two literals",
+    ],
+  ];
+
+  /**
+   * The two shapes a multi-part key is written in, as POSIX ERE.
+   *
+   * **POSIX classes, not `\s` / `\w`.** `git grep -E` is POSIX ERE and supports
+   * neither, so a pattern using them matches NOTHING and says so with exit 1 —
+   * which is indistinguishable from a clean tree unless something checks. An
+   * earlier revision of this fence used `\s` and `\w` in arm B: it matched zero
+   * files, the list said "eight exist, all listed", and the real population was
+   * seventeen. The per-arm floor below is what makes that unrepeatable.
+   */
+  const KEY_EXPRESSION_ARMS: ReadonlyArray<readonly [string, string, string]> = [
+    [
+      'passed to .get/.set/.has/.add/.delete',
+      '\\.(get|set|has|add|delete)\\(`[^`]*\\$\\{[^`]*\\$\\{',
+      'src/provisioning/property-coverage.ts',
+    ],
+    [
+      'bound to a *Key name',
+      '(const|let)[[:space:]]+[[:alnum:]_]*[Kk]ey[[:space:]]*=[[:space:]]*`[^`]*\\$\\{[^`]*\\$\\{',
+      'src/local/ecr-puller.ts',
     ],
   ];
 
   it('every template-literal multi-part key expression in src/ is classified', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    // A Map/Set key argument, or a `*Key` binding, that is a template literal
-    // carrying TWO interpolations. `git grep -E`, so the pattern is the same
-    // one a human would run by hand.
-    const pattern =
-      '(\\.(get|set|has|add|delete)\\(`[^`]*\\$\\{[^`]*\\$\\{)' +
-      '|((const|let)\\s+\\w*[Kk]ey\\s*=\\s*`[^`]*\\$\\{[^`]*\\$\\{)';
-    let out: string;
-    try {
-      out = execFileSync('git', ['grep', '-c', '-E', pattern, '--', 'src/'], {
+    const counts = new Map<string, number>();
+    for (const [label, pattern, mustMatch] of KEY_EXPRESSION_ARMS) {
+      // NO catch. `git grep` exiting 1 means the arm matched nothing, and an
+      // arm that matches nothing is a BROKEN arm, not a clean tree — the
+      // previous revision swallowed that and went green over nine files.
+      const out = execFileSync('git', ['grep', '-c', '-E', pattern, '--', 'src/'], {
         cwd: root,
         encoding: 'utf-8',
       });
-    } catch {
-      // No match anywhere would mean the pattern broke, not that the tree is
-      // clean — the list below asserts otherwise, so fail loudly.
-      out = '';
-    }
-    const counts = new Map<string, number>();
-    for (const line of out.split('\n').filter(Boolean)) {
-      const at = line.lastIndexOf(':');
-      counts.set(line.slice(0, at), Number(line.slice(at + 1)));
+      const armFiles = new Map<string, number>();
+      for (const line of out.split('\n').filter(Boolean)) {
+        const at = line.lastIndexOf(':');
+        armFiles.set(line.slice(0, at), Number(line.slice(at + 1)));
+      }
+      // Guard-the-guard, per ARM: each must still see a file known to carry its
+      // shape. A whole-sweep floor cannot catch one arm of two going inert.
+      expect(
+        armFiles.has(mustMatch),
+        `the "${label}" arm no longer matches ${mustMatch}, so it is seeing nothing`
+      ).toBe(true);
+      for (const [f, n] of armFiles) counts.set(f, (counts.get(f) ?? 0) + n);
     }
 
     const classified = new Set(TEMPLATE_KEY_EXPRESSIONS.map(([rel]) => rel));
     expect(
-      [...counts.keys()].filter((f) => !classified.has(f)),
+      [...counts.keys()].filter((f) => !classified.has(f)).sort(),
       'a multi-part key built as a template literal appeared in a file this fence does ' +
         'not know about. If it identifies something, route it through injectiveKey — and ' +
         'if you MOVE an existing key, find every reader of the old spelling first ' +
