@@ -447,9 +447,14 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     );
 
     const lines = allWarn().split('\n');
+    // ARITY as well as distinctness: `> 0` plus all-distinct is satisfied by a
+    // regression that emits only one of the two labels (m15 of the
+    // go-to-k/cdkd#3499 review).
     const holes = lines.filter((l) => l.includes("'<stack>'"));
-    expect(holes.length).toBeGreaterThan(0);
-    expect(new Set(holes).size).toBe(holes.length);
+    expect(holes).toEqual([
+      "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+    ]);
   });
 
   it('names THIS stack\'s file for an ordinary (non-nested) skip', async () => {

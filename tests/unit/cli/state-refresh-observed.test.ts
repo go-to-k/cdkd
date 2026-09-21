@@ -1511,7 +1511,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       // the user's app (M5 of the go-to-k/cdkd#3499 review made this site match
       // its two siblings, which print the hole).
       expect(message).not.toContain(String.fromCharCode(0x1b));
-      expect(message).toContain(String.raw`Stack 'Old '\''; rm -rf ~ #' has only a legacy`);
+      // `displayIdent`, not POSIX escaping, since go-to-k/cdkd#3499's M9: the
+      // name is prose here, not a shell word — and `displayIdent` QUOTES what
+      // it altered, so a trimmed spelling cannot read as a healthy sibling.
+      expect(message).toContain(String.raw`Stack "Old '; rm -rf ~ #" has only a legacy`);
+      expect(message).toContain('does NOT render exactly');
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
       expect(message).not.toMatch(/cdkd deploy 'Old/);
       expect(mockGetState).not.toHaveBeenCalled();
@@ -1553,8 +1557,33 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
         expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
         expect(message).not.toContain(`cdkd deploy ${name}`);
         expect(message).not.toContain(`cdkd deploy '${name}'`);
+        // ...and no ALTERED spelling either, which the `not.toContain('cdkd
+        // deploy')` this replaced also rejected (m17 of the go-to-k/cdkd#3499
+        // review). Only the hole may follow the verb.
+        expect(message).toMatch(/cdkd deploy '<stack>'/);
+        expect(message.match(/cdkd deploy \S+/g)).toEqual(["cdkd deploy '<stack>'"]);
       });
     }
+
+    it('does not print a TRAILING-SPACE key as its healthy sibling (go-to-k/cdkd#3499 M9)', async () => {
+      // The harm the prose rendering had: `displaySafe` TRIMS, so a planted v1
+      // key `ProdStack ` printed as `Stack ProdStack` — byte-identical to a
+      // real, healthy stack — directly above a `Migrate with: cdkd deploy
+      // '<stack>'` template. The operator fills the hole with the name they
+      // were shown and WRITES to the wrong record. `displayIdent` quotes what
+      // it altered, and the message says another record may render identically.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'ProdStack ' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).not.toContain('Stack ProdStack has only');
+      expect(message).toContain('does NOT render exactly');
+      expect(message).toContain("list them as stored with 'cdkd state list --long'");
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    });
 
     it('prints the `cdkd deploy` example for an ordinary HYPHENATED legacy name', async () => {
       // The `^` of the leading-hyphen guard, pinned from the side that matters:

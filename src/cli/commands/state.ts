@@ -35,7 +35,6 @@ import {
   UNRENDERABLE,
   buildForceUnlockCommand,
   formatLockExpiry,
-  shellQuote,
 } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
@@ -50,7 +49,6 @@ import {
   refuseMalformedResourceEntries,
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
-  safeStackName,
   type RenderedStateContainer,
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
@@ -3377,11 +3375,34 @@ async function stateRefreshObservedCommand(
     // after the stacks ahead of it had been saved. AFTER the prompt rather than
     // ahead of it, so the prompt still names every target the run was asked
     // for, a legacy one included (the go-to-k/cdkd#3164 boundary fence renders
-    // exactly that prompt). The name comes from an S3 key and is
-    // pasted into a command, so it is sanitized and shell-quoted.
+    // exactly that prompt). The name comes from an S3 KEY, and since
+    // go-to-k/cdkd#3436 it is NOT pasted into a command here — `pasteableCommand`
+    // takes the raw value and prints a hole when it cannot name it, so what the
+    // prose owes the reader is a faithful IDENTITY, not a shell word.
     for (const target of targets) {
       if (!target.region) {
-        const stack = shellQuote(safeStackName(target.stackName));
+        // `displayIdent`, not `shellQuote(safeStackName(...))` (M9 of the
+        // go-to-k/cdkd#3499 review). `safeStackName` is `displaySafe`, which
+        // TRIMS: a planted v1 key `cdkd/ProdStack /state.json` printed as
+        // `Stack ProdStack`, byte-identical to a healthy sibling, directly
+        // above a `Migrate with: cdkd deploy '<stack>'` template. The operator
+        // fills the hole with the name they were shown and WRITES to the real
+        // `ProdStack`. `displayIdent` quotes what it altered, so the two cannot
+        // read alike, and `shellQuote` is gone because nothing here is a shell
+        // word any more.
+        //
+        // This is NOT an argument for aligning the prose with the two sibling
+        // refusals in this file: they render a user-typed CLI argument, this
+        // one an S3 key segment an attacker can plant. What M5 made uniform is
+        // the COMMAND — its label, its placement, hole-vs-withhold. Prose
+        // rendering is a different axis and the sites differ on it for a
+        // reason.
+        const exactName =
+          displayIdent(target.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) ===
+          target.stackName;
+        const stack = displayIdent(target.stackName, {
+          maxCodePoints: STACK_REF_MAX_CODE_POINTS,
+        });
         // The gate this site spelled out by hand is `pasteableCommand`'s
         // (go-to-k/cdkd#3436), and every clause of it survives: the name is
         // named only when it renders EXACTLY (an altered one can name a
@@ -3405,6 +3426,14 @@ async function stateRefreshObservedCommand(
         throw new Error(
           `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
+            // `orphanCommandFor`'s clause, for its reason: an altered rendering
+            // may read identically to a healthy record, so the operator has to
+            // be told to work from the KEY rather than from what is printed.
+            (exactName
+              ? ''
+              : ` This record's name does NOT render exactly, so another record may render ` +
+                `identically; list them as stored with 'cdkd state list --long' and act on the ` +
+                `one whose key matches.`) +
             `\nMigrate with: ${migrate.command}`
         );
       }

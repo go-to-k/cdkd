@@ -155,9 +155,15 @@ export interface PasteableCommand {
   readonly command: string;
   /**
    * False when any user-controlled value printed as a HOLE rather than as
-   * itself. What to do with an inexact command is the caller's call, and both
-   * answers are legitimate: suppress the line entirely, or print the template
-   * so the operator knows which shape to fill in. The two older builders that
+   * itself.
+   *
+   * **Every caller in `src/` prints the hole.** The field exists for the
+   * SENTENCE around it — a message that wants to say why it could not name the
+   * record — not as a licence to suppress the command at one site and print it
+   * at another. Per-site judgement about what is safe *here* is what kept
+   * re-introducing this defect (M5 of the go-to-k/cdkd#3499 review), and the
+   * fold-in of the older builders should land on that answer rather than
+   * re-open the choice. The two older builders that
    * made that choice by hand — `buildForceUnlockCommand` and the `cdkd orphan`
    * properties refusal in `state/malformed-resources-bag.ts` — still carry
    * their own copies of this logic and do NOT consume this field yet; folding

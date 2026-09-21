@@ -3821,9 +3821,10 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       // The value renders EXACTLY, so the raw compare admits it — and the
       // shell strips the quotes `shellQuote` adds, handing Commander that argv
       // entry as the FLAG. A record-DELETING command would then be pointed at
-      // an attacker-named bucket. Unlike the logical-id cases above, this
-      // shape needs the ROOT name or the region: a derived child name is
-      // always `<parent>~…` and cannot start with `-`.
+      // an attacker-named bucket. The cases drive the ROOT name and the region
+      // because this site passes the PARENT's `stackName` to the builder, not
+      // the child's — not because a derived name cannot start with `-`, which
+      // it can when its own root does (m16 of the go-to-k/cdkd#3499 review).
       const root = makeState({
         stackName: rootName,
         region,
