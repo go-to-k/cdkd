@@ -7,7 +7,6 @@ import {
   spawnStreaming,
 } from '../utils/docker-cmd.js';
 import { isAbsolute, resolve } from 'path';
-import type { FileAssetResolveOptions } from './asset-manifest-loader.js';
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
@@ -36,8 +35,11 @@ import { getLogger } from '../utils/logger.js';
  */
 export interface DockerContextResolveOptions {
   /**
-   * The app's outdir; see {@link FileAssetResolveOptions.assetOutdir} for why
-   * it differs from the manifest's directory. A dropped bound narrows to the
+   * The app's outdir; `FileAssetResolveOptions.assetOutdir` in
+   * `asset-manifest-loader.ts` carries the full note on why it differs from
+   * the manifest's directory. Named rather than `{@link}`ed: a type imported
+   * only for a doc link is erased by `tsc` but is an eslint `no-unused-vars`
+   * ERROR, which `typecheck` does not see. A dropped bound narrows to the
    * manifest directory and refuses every Stage asset, which no refusal test
    * can see.
    */
