@@ -706,3 +706,58 @@ async function probeBucket(
     throw error;
   }
 }
+
+/**
+ * Options for {@link resolvePermissionsBoundary}.
+ */
+export interface ResolvePermissionsBoundaryOptions {
+  /** The `--permissions-boundary <arn>` CLI value, when passed. */
+  permissionsBoundary?: string | undefined;
+}
+
+/**
+ * Resolve `deploy --permissions-boundary` across its three sources, highest
+ * first: the CLI flag, `CDKD_PERMISSIONS_BOUNDARY`, then `cdk.json`
+ * `context.cdkd.permissionsBoundary`. `undefined` means "honor the template",
+ * which is the default.
+ *
+ * Mirrors {@link resolveSkipPrefix}'s precedence so the two deploy-time flags
+ * behave the same way. The resolved value is plumbed into a
+ * `withForcedPermissionsBoundary(...)` scope around each stack's deploy.
+ *
+ * A blank or non-string value is IGNORED rather than treated as "no boundary":
+ * an operator passing this flag is asking for a boundary, so silently deploying
+ * without one would be the dangerous reading. It is reported so the typo is
+ * visible instead of quietly doing nothing.
+ */
+export function resolvePermissionsBoundary(
+  opts: ResolvePermissionsBoundaryOptions = {}
+): string | undefined {
+  const logger = getLogger();
+
+  const candidates: Array<{ source: string; value: unknown }> = [
+    { source: '--permissions-boundary', value: opts.permissionsBoundary },
+    { source: 'CDKD_PERMISSIONS_BOUNDARY', value: process.env['CDKD_PERMISSIONS_BOUNDARY'] },
+  ];
+
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  candidates.push({
+    source: 'cdk.json context.cdkd.permissionsBoundary',
+    value: cdkdContext?.['permissionsBoundary'],
+  });
+
+  for (const { source, value } of candidates) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const arn = value.trim();
+      logger.debug(`Forcing permissions boundary ${arn} (from ${source})`);
+      return arn;
+    }
+    logger.warn(
+      `Ignoring ${source}: expected a non-empty permissions boundary policy ARN, got ${JSON.stringify(value)}`
+    );
+  }
+
+  return undefined;
+}

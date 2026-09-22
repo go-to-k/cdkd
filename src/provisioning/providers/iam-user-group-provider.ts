@@ -38,6 +38,10 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import {
+  canonicalizePermissionsBoundary,
+  resolvePermissionsBoundary,
+} from '../forced-permissions-boundary.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -148,6 +152,23 @@ export class IAMUserGroupProvider implements ResourceProvider {
           logicalId
         );
     }
+  }
+
+  /**
+   * Fold `deploy --permissions-boundary` onto the desired side so the diff
+   * compares against what the provider will actually send.
+   *
+   * Gated on `AWS::IAM::User`: this provider also serves `AWS::IAM::Group` and
+   * `AWS::IAM::UserToGroupAddition`, which have NO permissions boundary. Folding
+   * the key onto those would add a property the provider never sends, i.e.
+   * phantom drift in the opposite direction.
+   */
+  canonicalizeDesiredProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::IAM::User') return properties;
+    return canonicalizePermissionsBoundary(properties);
   }
 
   async update(
@@ -264,8 +285,20 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // `deleteUser()`) before issuing `DeleteUserCommand` and
       // re-throwing the original error.
       try {
-        // Set permissions boundary if specified
-        const permissionsBoundary = properties['PermissionsBoundary'] as string | undefined;
+        // Set permissions boundary if specified. `deploy --permissions-boundary`
+        // overrides the template here for the same reason as the role provider:
+        // the declared value belongs to whoever wrote the CDK app, so an app
+        // that omits it would otherwise escape the operator's boundary.
+        const permissionsBoundary = resolvePermissionsBoundary(
+          properties['PermissionsBoundary'] as string | undefined,
+          (forced, template) => {
+            this.logger.warn(
+              template === undefined
+                ? `${logicalId}: attaching permissions boundary ${forced} (--permissions-boundary); the template declared none`
+                : `${logicalId}: overriding the template's permissions boundary ${template} with ${forced} (--permissions-boundary)`
+            );
+          }
+        );
         if (permissionsBoundary) {
           await this.iamClient.send(
             new PutUserPermissionsBoundaryCommand({
@@ -405,8 +438,19 @@ export class IAMUserGroupProvider implements ResourceProvider {
         properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
-      // Update permissions boundary
-      const newPermBoundary = properties['PermissionsBoundary'] as string | undefined;
+      // Update permissions boundary. `previousProperties` is a cdkd STATE record
+      // and is left alone, so turning the flag on for an existing user reads as
+      // a change and attaches the boundary on the next deploy.
+      const newPermBoundary = resolvePermissionsBoundary(
+        properties['PermissionsBoundary'] as string | undefined,
+        (forced, template) => {
+          this.logger.warn(
+            template === undefined
+              ? `${logicalId}: attaching permissions boundary ${forced} (--permissions-boundary); the template declared none`
+              : `${logicalId}: overriding the template's permissions boundary ${template} with ${forced} (--permissions-boundary)`
+          );
+        }
+      );
       const oldPermBoundary = previousProperties['PermissionsBoundary'] as string | undefined;
       if (newPermBoundary !== oldPermBoundary) {
         if (newPermBoundary) {

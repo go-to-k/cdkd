@@ -68,11 +68,13 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
 import { withSkipPrefix } from '../../provisioning/resource-name.js';
+import { withForcedPermissionsBoundary } from '../../provisioning/forced-permissions-boundary.js';
 import {
   resolveApp,
   resolveCaptureObservedState,
   resolveAutoAssetStorage,
   resolveSkipPrefix,
+  resolvePermissionsBoundary,
   resolveStateBucketWithDefaultAndSource,
   stateBucketExistenceConfirmed,
   resolveUseCdkBootstrapAssets,
@@ -109,6 +111,7 @@ async function deployCommand(
     fullWait?: boolean;
     captureObservedState: boolean;
     prefixUserSuppliedNames: boolean;
+    permissionsBoundary?: string;
     aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
@@ -222,6 +225,13 @@ async function deployCommand(
   warnDeprecatedNoPrefixCliFlag();
   const skipPrefix = resolveSkipPrefix({
     prefixUserSuppliedNames: options.prefixUserSuppliedNames,
+  });
+
+  // Resolved once here for the same reason as skipPrefix: the value reaches
+  // every IAM principal provider through an AsyncLocalStorage scope rather than
+  // the DeployEngine / ProviderRegistry / per-provider signatures.
+  const forcedPermissionsBoundary = resolvePermissionsBoundary({
+    permissionsBoundary: options.permissionsBoundary,
   });
   if (skipPrefix) {
     logger.debug(
@@ -715,7 +725,11 @@ async function deployCommand(
       // The inner `withStackName(...)` lives in DeployEngine.deploy; the
       // two stores are independent so order does not matter, but
       // outer-skipPrefix / inner-stackName keeps the call-site readable.
-      return withSkipPrefix(skipPrefix, () => runStackInner(stackInfo));
+      return withSkipPrefix(skipPrefix, () =>
+        withForcedPermissionsBoundary(forcedPermissionsBoundary, () =>
+          runStackInner(stackInfo)
+        )
+      );
     };
 
     const runStackInner = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {

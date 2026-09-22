@@ -1206,6 +1206,20 @@ export const deployOptions = [
       'properties (the pre-v3 behavior).'
   ),
   new Option(
+    '--permissions-boundary <arn>',
+    'Attach this IAM permissions boundary to every IAM Role and User cdkd ' +
+      'creates or updates, OVERRIDING whatever the template declares (env: ' +
+      'CDKD_PERMISSIONS_BOUNDARY; cdk.json context.cdkd.permissionsBoundary). ' +
+      'The override is the point: a template-declared boundary belongs to ' +
+      'whoever wrote the CDK app, so an app that omits it — or declares a ' +
+      'weaker one — would otherwise escape the boundary you asked for. Use ' +
+      'this to deploy an app you did not write under a session role whose ' +
+      '`iam:CreateRole` is conditioned on `iam:PermissionsBoundary`, which ' +
+      'would otherwise refuse every ordinary app. The applied value is ' +
+      'recorded in state, so `cdkd diff` does not report the template value ' +
+      'as a pending change.'
+  ),
+  new Option(
     '--prefix-user-supplied-names',
     'Opt in to LEGACY behavior: prepend the stack name to physical names the ' +
       'user explicitly supplied in their CDK code (e.g. `new iam.Role(this, ' +

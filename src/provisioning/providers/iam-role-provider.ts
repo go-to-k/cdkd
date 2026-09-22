@@ -29,6 +29,11 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import {
+  canonicalizePermissionsBoundary,
+  resolvePermissionsBoundary,
+  withAppliedPermissionsBoundary,
+} from '../forced-permissions-boundary.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -124,8 +129,25 @@ export class IAMRoleProvider implements ResourceProvider {
       if (properties['Path']) {
         createParams.Path = properties['Path'] as string;
       }
-      if (properties['PermissionsBoundary']) {
-        createParams.PermissionsBoundary = properties['PermissionsBoundary'] as string;
+      // `deploy --permissions-boundary` OVERRIDES the template here on purpose:
+      // the declared value belongs to whoever wrote the CDK app, so an app that
+      // omits it (or declares a weaker one) would otherwise escape the boundary
+      // the operator asked for. The substituted value is recorded in
+      // `effectiveProperties` below, and folded onto the desired side by
+      // `canonicalizeDesiredProperties`, so the next diff does not read the
+      // template's declared value back as a user change.
+      const appliedBoundary = resolvePermissionsBoundary(
+        properties['PermissionsBoundary'] as string | undefined,
+        (forced, template) => {
+          this.logger.warn(
+            template === undefined
+              ? `${logicalId}: attaching permissions boundary ${forced} (--permissions-boundary); the template declared none`
+              : `${logicalId}: overriding the template's permissions boundary ${template} with ${forced} (--permissions-boundary)`
+          );
+        }
+      );
+      if (appliedBoundary) {
+        createParams.PermissionsBoundary = appliedBoundary;
       }
 
       const response = await this.iamClient.send(new CreateRoleCommand(createParams));
@@ -218,6 +240,14 @@ export class IAMRoleProvider implements ResourceProvider {
       return {
         physicalId: roleName,
         attributes,
+        // Record the boundary actually sent, not the declared one. Without this
+        // the recorded desired bag keeps the template's value and every later
+        // deploy diffs it against what AWS holds forever.
+        ...(appliedBoundary !== (properties['PermissionsBoundary'] as string | undefined)
+          ? {
+              effectiveProperties: withAppliedPermissionsBoundary(properties, appliedBoundary),
+            }
+          : {}),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -229,6 +259,19 @@ export class IAMRoleProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Fold `deploy --permissions-boundary` onto the desired side so the diff
+   * compares against what the provider will actually send. State holds the
+   * forced value (recorded via `effectiveProperties`), so without this the
+   * template's declared boundary reads as a user change on every deploy.
+   */
+  canonicalizeDesiredProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizePermissionsBoundary(properties);
   }
 
   /**
@@ -369,8 +412,20 @@ export class IAMRoleProvider implements ResourceProvider {
         }
       }
 
-      // Update PermissionsBoundary
-      const newBoundary = properties['PermissionsBoundary'] as string | undefined;
+      // Update PermissionsBoundary. The forced value overrides the template on
+      // the same terms as the create path; `previousProperties` is a cdkd STATE
+      // record and is left alone, so flipping the flag on for an existing role
+      // reads as a change and attaches the boundary on the next deploy.
+      const newBoundary = resolvePermissionsBoundary(
+        properties['PermissionsBoundary'] as string | undefined,
+        (forced, template) => {
+          this.logger.warn(
+            template === undefined
+              ? `${logicalId}: attaching permissions boundary ${forced} (--permissions-boundary); the template declared none`
+              : `${logicalId}: overriding the template's permissions boundary ${template} with ${forced} (--permissions-boundary)`
+          );
+        }
+      );
       const oldBoundary = previousProperties['PermissionsBoundary'] as string | undefined;
       if (newBoundary !== oldBoundary) {
         if (newBoundary) {
