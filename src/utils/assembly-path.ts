@@ -463,6 +463,40 @@ export function namesTheSameDirectory(bound: string, candidate: string): boolean
 }
 
 /**
+ * The escape verdict for an assembly-supplied path WITHOUT throwing, taking
+ * whichever arm the value's own shape calls for.
+ *
+ * `resolveAssemblyPath` answers for a RELATIVE value and
+ * {@link absoluteAssemblyPathEscape} for an ABSOLUTE one, and a caller that
+ * only wants to WARN would otherwise branch on `path.isAbsolute` and call
+ * both itself. Three sites already do exactly that
+ * ([#3532](https://github.com/go-to-k/cdkd/issues/3532)'s two asset resolvers,
+ * which must also THROW and so keep their own spelling), and the fourth —
+ * [#3497](https://github.com/go-to-k/cdkd/issues/3497)'s BuildKit
+ * passthroughs — has nothing to throw and a dozen values to judge. This is the
+ * one spelling for that case.
+ *
+ * `base` is what a relative value resolves against; `bound` is what the result
+ * must stay inside. They differ for a Stage. Returns `undefined` when the
+ * value is fine, including when it names `bound` itself, which
+ * {@link namesTheSameDirectory} answers — an asset path legitimately names a
+ * directory and a caller that WARNS has no reason to complain about the
+ * assembly root.
+ */
+export function assemblyPathEscape(
+  base: string,
+  bound: string,
+  candidate: string
+): Extract<ResolvedAssemblyPath, { contained: false }> | undefined {
+  if (path.isAbsolute(candidate)) {
+    return absoluteAssemblyPathEscape(bound, candidate);
+  }
+  const resolved = resolveAssemblyPath(base, candidate, { containWithin: bound });
+  if (resolved.contained || namesTheSameDirectory(bound, resolved.path)) return undefined;
+  return resolved;
+}
+
+/**
  * The shared tail of every containment refusal: what the value resolved to,
  * what it escaped, and why that means the assembly is not CDK-generated. Each
  * call site supplies its own subject ("Stack 'X' has templateFile='...' which

@@ -54,12 +54,22 @@ paths:
   narrates something half of them do not do. `resolveFileAssetSourcePath` runs at the TOP of
   `publish`, above the `objectExists` short-circuit: below it, an
   already-present object skipped the check entirely and the HeadObject itself
-  went to a manifest-named bucket. Unchecked and tracked in #3497: every
-  BuildKit passthrough (`dockerFile`, `dockerBuildContexts`,
-  `dockerBuildSecrets`, `cacheFrom` / `cacheTo`, `dockerOutputs`),
-  `source.executable`, and the DESTINATION half — `redirectFileAsset` rewrites
-  only default-bootstrap-shaped destinations, so a manifest-chosen bucket name
-  survives verbatim.
+  went to a manifest-named bucket. **WARNED but never refused**
+  ([#3497](https://github.com/go-to-k/cdkd/issues/3497),
+  `manifest-passthrough-warnings.ts`): every BuildKit passthrough
+  (`dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`,
+  `cacheFrom` / `cacheTo`, `dockerOutputs`) whose host path leaves the
+  assembly, `source.executable` before it runs, and the DESTINATION half —
+  `redirectFileAsset` rewrites only default-bootstrap-shaped destinations, so a
+  manifest-chosen bucket name survives verbatim. **Do not harden any of these
+  into a refusal or an opt-in flag**: that is the maintainer decision recorded
+  on the issue, not an unfinished state. It is CDK-CLI parity territory, the
+  attack presupposes someone who already controls the assembly and therefore
+  the account, and a default-deny plus flag reduces who HOLDS the capability
+  without protecting who USES it. What was cdkd's to fix was the silence.
+  Every path judgement there goes through `assemblyPathEscape`
+  ([layout-utils.md](layout-utils.md)), which picks the absolute or relative
+  arm; a warn-only caller must not re-derive that branch.
 - **asset-storage.ts** — cdkd-owned asset storage (issue
   [#1002](https://github.com/go-to-k/cdkd/issues/1002)). Custom bucket / repo
   names are validated BEFORE any AWS call and carried in the marker; differing

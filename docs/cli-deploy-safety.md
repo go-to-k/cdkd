@@ -1039,12 +1039,34 @@ where you said it does and the asset really is outside it. Point `-a` at the
 app's `cdk.out` and select the stack by its display path
 (`cdkd deploy 'MyStage/*'`) instead.
 
-This covers the paths in the table and no others. A Docker asset's BuildKit
-passthroughs (`dockerFile`, build contexts, build secrets, cache import and
-export, `--output`) and its `executable` build script are handed to Docker as
-the manifest writes them, and a file asset's destination bucket and object key
-are likewise taken from the manifest. Treat a Cloud Assembly you did not
-synthesize yourself as you would any other untrusted input.
+## A pre-synthesized assembly is trusted input
+
+The containment rules above cover the paths in that table and no others. The
+rest of an asset manifest is forwarded **as the manifest writes it**, and cdkd
+does that deliberately, matching the CDK CLI. What it will not do is stay quiet
+about it: each of the values below prints a warning at normal verbosity when it
+reaches outside the assembly, naming the value.
+
+| Manifest value | What cdkd does with it |
+| --- | --- |
+| `source.executable` | **runs it on this machine** — an arbitrary command line |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `cacheFrom` | reads that host path during the image build |
+| `dockerOutputs`, `cacheTo` | **writes** to that host path |
+| `dest.bucketName` / `objectKey`, the ECR repository | uploads there with your credentials |
+
+**Two of those are worth stating plainly.** `cdkd deploy -a <dir>` *does*
+execute code from the assembly, because a Docker asset may declare
+`source.executable` instead of a Dockerfile — so an assembly is not only data.
+And a build secret or a cache directory is a host path the CloudFormation
+template never shows, so reading the template is not enough to know what a
+deploy will touch.
+
+Pointing `-a` at an assembly you did not produce is the same decision as running
+someone else's build output. cdkd cannot make that decision for you: anyone who
+can rewrite a manifest can equally rewrite the Dockerfile, the Lambda asset and
+the template, so a refusal here would stop nothing while breaking the
+split-synth/deploy pipelines that are the normal shape. Synthesize it yourself,
+or read it first.
 
 The nested-stack walk separately refuses an **absolute** `aws:asset:path`, which
 is a "not CDK-generated" tripwire rather than an escape. It is a different

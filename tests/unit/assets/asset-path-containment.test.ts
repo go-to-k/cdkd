@@ -664,11 +664,19 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
       { tag: 't', wrapError: wrapErr, assetOutdir: dir }
     );
 
+    // TWO lines now: this arm also announces that it is about to run a
+    // manifest-chosen command line (go-to-k/cdkd#3497). Assert each, rather
+    // than loosening the count — the point of the case is that the PATH line
+    // describes a working directory, and a laxer assertion would pass on a
+    // regression that emitted the build-context wording twice.
     const lines = cap.warned();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('working directory');
-    expect(lines[0]).toContain('source.executable');
-    expect(lines[0]).not.toContain('BuildKit');
+    expect(lines).toHaveLength(2);
+    const pathLine = lines.find((l) => l.includes('absolute source.directory'));
+    expect(pathLine).toBeDefined();
+    expect(pathLine).toContain('working directory');
+    expect(pathLine).toContain('source.executable');
+    expect(pathLine).not.toContain('BuildKit');
+    expect(lines.some((l) => l.includes('runs a command line this asset manifest'))).toBe(true);
     // ...and the directory really is what the spawn got, so the warning is
     // describing the value that was used.
     expect(spawnStreaming).toHaveBeenCalledWith(

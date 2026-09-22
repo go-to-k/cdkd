@@ -2,7 +2,15 @@ import { readFileSync } from 'node:fs';
 import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
 import { DockerAssetPublisher } from './docker-asset-publisher.js';
-import { redirectDockerAsset, redirectFileAsset, type AssetRedirectMap } from './asset-redirect.js';
+import {
+  flattenAssetPlaceholders,
+  isDefaultBootstrapBucketName,
+  isDefaultBootstrapRepoName,
+  redirectDockerAsset,
+  redirectFileAsset,
+  type AssetRedirectMap,
+} from './asset-redirect.js';
+import { warnUnrecognizedAssetDestination } from './manifest-passthrough-warnings.js';
 import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets.js';
 import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
@@ -136,6 +144,21 @@ export class AssetPublisher {
         ([hash, asset]) => [hash, redirect ? redirectFileAsset(asset, redirect) : asset] as const
       );
     for (const [hash, asset] of fileAssets) {
+      // The DESTINATION half of go-to-k/cdkd#3497, judged AFTER the redirect so
+      // a cdkd-managed target is silent. Warn, never refuse: a custom
+      // bootstrap is a legitimate configuration.
+      for (const dest of Object.values(asset.destinations)) {
+        const name = flattenAssetPlaceholders(dest.bucketName, options.accountId, options.region);
+        warnUnrecognizedAssetDestination({
+          kind: 'bucket',
+          name,
+          recognized:
+            isDefaultBootstrapBucketName(name, options.accountId, options.region) ||
+            // A redirected destination is cdkd's OWN storage: the map's
+            // VALUES are the targets it rewrites to.
+            (redirect !== undefined && [...redirect.buckets.values()].includes(name)),
+        });
+      }
       const nodeId = `asset-publish:${prefix}file:${hash}`;
       graph.addNode({
         id: nodeId,
@@ -162,6 +185,20 @@ export class AssetPublisher {
     // Docker assets: build node → publish node
     for (const [hash, rawAsset] of Object.entries(manifest.dockerImages || {})) {
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
+      for (const dest of Object.values(asset.destinations)) {
+        const name = flattenAssetPlaceholders(
+          dest.repositoryName,
+          options.accountId,
+          options.region
+        );
+        warnUnrecognizedAssetDestination({
+          kind: 'repository',
+          name,
+          recognized:
+            isDefaultBootstrapRepoName(name, options.accountId, options.region) ||
+            (redirect !== undefined && [...redirect.repos.values()].includes(name)),
+        });
+      }
       const localTag = `cdkd-asset-${hash}`;
       const buildNodeId = `asset-build:${prefix}docker:${hash}`;
       const publishNodeId = `asset-publish:${prefix}docker:${hash}`;
