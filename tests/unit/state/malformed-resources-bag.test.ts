@@ -4416,6 +4416,35 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(text).toContain(HINT);
     });
 
+    it('CHARACTERISES the ungated forgery this message still carries (go-to-k/cdkd#3523)', () => {
+      // NOT an assertion that the behaviour is right — it is the behaviour
+      // go-to-k/cdkd#3523 is open about. Pinned because go-to-k/cdkd#3517
+      // gated the module's three TEMPLATE remedies and left this one, the only
+      // SUBSTITUTING remedy, alone: the fix it tried withheld the drop command
+      // from a legacy record whose name merely needs quoting, which is the
+      // go-to-k/cdkd#3359 path. Without this case the hazard has no fence at
+      // all and a later fix has nothing to measure its effect against.
+      //
+      // What makes it matter rather than merely look bad: `cdkd state orphan`
+      // prompts by default, but `--yes` / `--force` skip it
+      // (`src/cli/commands/state.ts`), so a forged name carrying `--yes`
+      // pastes and deletes with no confirmation.
+      const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1 --yes';
+      const forged = malformedOrphanResourcePropertiesRefusalMessage(FORGED, 'us-east-1', ['A']);
+      // TODAY: named and substituted. When go-to-k/cdkd#3523 lands, this
+      // expectation flips and that is the point of the case.
+      expect(dropOf(forged)).toContain('cdkd state orphan');
+      expect(forged, 'the forged text is rendered inside the quoted name').toContain(
+        'cdkd state orphan prod --stack-region us-east-1 --yes'
+      );
+      // The two controls go-to-k/cdkd#3523's options are judged against, so a
+      // fix that withholds from EVERYTHING is not mistaken for a fix.
+      for (const healthy of ['Parent~Child', "It's Legacy"]) {
+        const text = malformedOrphanResourcePropertiesRefusalMessage(healthy, 'us-east-1', ['A']);
+        expect(dropOf(text), healthy).not.toContain('<stack>');
+      }
+    });
+
     it('shell-quotes an exact region in BOTH arms, and the hint carries the recovery flags', () => {
       // A region that renders exactly but is not shell-plain: quoted in the
       // substituted arm and in the template arm that keeps it.

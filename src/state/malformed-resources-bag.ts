@@ -343,11 +343,12 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
 }
 
 /**
- * The destructive template the two DESTROY refusals offer, on its own line.
+ * The destructive template, in the three messages that offer one.
  *
- * ONE spelling, because two copies are what drift, and these two carry it
- * byte-identically on purpose — a reader who has met one must recognise the
- * other. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
+ * ONE spelling, because copies are what drift, and they carry it byte-identically
+ * on purpose — a reader who has met one must recognise the others. Two wrap it
+ * in {@link DROP_RECORD_LINE}'s label; `divergentRecordRegionRefusalMessage`
+ * ends on it bare. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
  * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
  */
 const DROP_RECORD_TEMPLATE = 'cdkd state orphan <stack> --stack-region <region>';
@@ -367,7 +368,8 @@ const DROP_RECORD_LINE = `Drop the record: ${DROP_RECORD_TEMPLATE}`;
  * it (go-to-k/cdkd#3516 review)?
  *
  * Stricter than `safeIdentifier(x) === x`, which is what these two arms used
- * and which keeps a space, a `'`, a `;` and a `|`. That was enough while the
+ * and which keeps a space, a `:`, a `'`, a `;` and a `|` — the `:` and the
+ * space being the pair a label needs. That was enough while the
  * message was one paragraph, and stopped being enough the moment the commands
  * moved onto LABELLED lines: a stack name spelling
  * `Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
@@ -1835,6 +1837,9 @@ function dropRecordCommand(
  * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
  * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
+ * (go-to-k/cdkd#3363 review, M0 and M2). The shared {@link inspectCommand}
+ * stays ungated for its other callers, which offer a read only.
+ *
  * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
  * with one: the three messages that offer a hole TEMPLATE are all stricter,
  * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). This one is weaker on
