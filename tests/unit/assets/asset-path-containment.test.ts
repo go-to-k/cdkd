@@ -705,6 +705,49 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(lines[0]).not.toContain('working directory');
   });
 
+  it("WIRES buildDockerImage's (context, outdir) pair into the passthrough warning", async () => {
+    // The callee is fenced in `manifest-passthrough-warnings.test.ts`; this is
+    // the only case that can see the ARGUMENTS. Both are `string`, so a swap
+    // compiles — and a swap is not inert: base and bound trade places,
+    // `contextNarrows` flips, and ordinary relative passthroughs start warning
+    // about paths outside the project. That pair is what five review rounds
+    // were about, and nothing reached this call site with a non-empty field
+    // list before.
+    const { dir, outer } = assembly();
+    const victim = join(outer, 'outside-dir');
+    runDockerStreaming.mockClear();
+    runDockerStreaming.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    const cap = captureWarn();
+
+    mkdirSync(join(dir, 'asset.abc123'));
+
+    // `../Dockerfile` from the context is `<outdir>/Dockerfile` — INSIDE the
+    // outdir, so it must be silent. That is the half that pins the ORDER: an
+    // absolute victim path warns under either arrangement, while this one is
+    // silent only when `base` is the context and `bound` is the outdir. Swap
+    // them and `contextNarrows` flips, `../Dockerfile` resolves against the
+    // outdir instead, lands outside the (now narrower) bound, and warns.
+    writeFileSync(join(dir, 'Dockerfile'), '');
+
+    await buildDockerImage(
+      {
+        source: {
+          directory: 'asset.abc123',
+          dockerFile: '../Dockerfile',
+          dockerOutputs: [`type=local,dest=${victim}`],
+        },
+      },
+      dir,
+      { tag: 't', wrapError: wrapErr, assetOutdir: dir }
+    );
+
+    const lines = cap.warned();
+    expect(lines, lines.join(' | ')).toHaveLength(1);
+    expect(lines[0]).toContain('dockerOutputs');
+    expect(lines[0]).toContain(victim);
+    expect(lines[0]).toContain('cdkd will WRITE to it');
+  });
+
   it('measures the absolute path against the APP OUTDIR, not the manifest directory', () => {
     // The bound is what a dropped argument used to get wrong, so assert it
     // directly: the SAME absolute path is silent under the app outdir and
