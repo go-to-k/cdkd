@@ -984,11 +984,7 @@ export function malformedRenderedContainersWarning(
   rawRegion: string,
   containers: readonly RenderedStateContainer[]
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   const names = containers
@@ -1013,6 +1009,14 @@ export function malformedRenderedContainersWarning(
  * is to send them to the damaged one. `undefined` already means "absent" to
  * {@link stackClause} and {@link inspectCommand}, which drop the clause and
  * the flag, and that is the right answer for both identifiers.
+ *
+ * Every message that renders an identity calls this and then
+ * {@link stackClause} / {@link inspectCommand} rather than spelling the clause
+ * and the command again (go-to-k/cdkd#3526): for a present identity those two
+ * render byte-identically to what each builder used to build by hand, and for
+ * an absent one they give the no-identity form and the hole template instead
+ * of `<unrenderable>`. That is why the per-site note is one line — the reason
+ * lives here.
  *
  * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
  * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
@@ -1131,11 +1135,7 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsWarning(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1204,11 +1204,7 @@ export function refuseMalformedState(state: StackState, stackName: string, regio
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsRefusalMessage(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1246,11 +1242,7 @@ export function malformedOutputsRefusalMessage(rawStackName: string, rawRegion: 
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportSourceWarning(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1290,9 +1282,7 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportNamesWarning(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} (go-to-k/cdkd#3526):
-  // byte-identical for a present identity, and the no-identity form plus the
-  // hole template for an absent one, which `''` now is.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1430,11 +1420,7 @@ export function repairMalformedOrphansForReadOnly(state: StackState): boolean {
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansWarning(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1465,11 +1451,7 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1481,7 +1463,6 @@ export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: 
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
     `record first, and no cdkd command repairs this container: rewriting it to [] by hand ` +
     `discards the very evidence this refusal is protecting. Inspect the record with: ` +
-    `` +
     inspectCommand(stackName, region)
   );
 }
@@ -1624,11 +1605,7 @@ export function malformedDestroyOutputsRefusalMessage(
   rawStackName: string,
   rawRegion: string
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1699,13 +1676,11 @@ export function malformedNestedChildOutputsRefusalMessage(
   rawChildStackName: string,
   rawRegion: string
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} (go-to-k/cdkd#3526):
-  // byte-identical for a present identity, and the no-identity form plus the
-  // hole template for an absent one, which `''` now is.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const childStackName = absentIfEmpty(rawChildStackName);
   const region = absentIfEmpty(rawRegion);
   return (
-    `${stackClause(childStackName, region, 'nested stack child ')} has no readable ` +
+    `${stackClause(childStackName, region, 'nested stack child')} has no readable ` +
     `'outputs' map — the record is malformed or truncated. The parent's 'Outputs.<Key>' ` +
     `attributes are REBUILT from this bag and persisted into the PARENT's record, and ` +
     `'Object.entries' walks a string or a list as readily as a map — so a six-character value ` +
@@ -1777,11 +1752,7 @@ export function refuseMalformedNestedChildOutputs(
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: string): string {
-  // Through {@link stackClause} and {@link inspectCommand} rather than spelling
-  // the clause and the command again (go-to-k/cdkd#3526): for a present
-  // identity they render byte-identically to what this built by hand, and an
-  // absent one — which `''` now is, per {@link absentIfEmpty} — gets the
-  // no-identity form and the hole template instead of `<unrenderable>`.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -1833,13 +1804,15 @@ function stackClause(
    * What the name IS, for the one caller whose subject is not a plain stack:
    * `malformedNestedChildOutputsRefusalMessage` opens `State for nested stack
    * child '<name>'`. A qualifier rather than a rewrite at that site, so the
-   * no-identity arm stays this function's single spelling.
+   * no-identity arm stays this function's single spelling. The SEPARATOR is
+   * this function's, not the caller's: an argument carrying its own trailing
+   * space renders `child'Name'` the moment someone trims it.
    */
   kind = ''
 ): string {
   if (stackName === undefined) return 'The state record this command loaded';
   const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
-  return `State for ${kind}${shellQuote(safeStackName(stackName))}${where}`;
+  return `State for ${kind ? `${kind} ` : ''}${shellQuote(safeStackName(stackName))}${where}`;
 }
 
 /**
@@ -2908,9 +2881,7 @@ export function malformedResourceEntriesWarning(
   rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} (go-to-k/cdkd#3526):
-  // byte-identical for a present identity, and the no-identity form plus the
-  // hole template for an absent one, which `''` now is.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
@@ -2954,9 +2925,7 @@ export function malformedOrphanRecordsWarning(
   rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} (go-to-k/cdkd#3526):
-  // byte-identical for a present identity, and the no-identity form plus the
-  // hole template for an absent one, which `''` now is.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   const named = logicalIds
@@ -3025,9 +2994,7 @@ export function malformedResourceEntriesRefusalMessage(
   rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  // Through {@link stackClause} and {@link inspectCommand} (go-to-k/cdkd#3526):
-  // byte-identical for a present identity, and the no-identity form plus the
-  // hole template for an absent one, which `''` now is.
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
