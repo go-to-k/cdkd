@@ -1012,9 +1012,11 @@ export function malformedRenderedContainersWarning(
  * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
  * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
  * is not the module's only floor — but a floor in the SHARED helpers was tried
- * here and removed: measured, no builder that lacks the boundary reaches
- * `stackClause` or `inspectCommand` for its identity clause, so the floor
- * reddened no case and bought nothing. The boundary is what covers every
+ * here and removed, and the reason is NOT that nothing reaches them: three
+ * unboundaried builders do. It is that each passes `exact ? x : undefined`,
+ * and `''` is never exact — `safeIdentifier('')` is the placeholder, so
+ * `safeStackName('') !== ''` — so those helpers already receive `undefined`
+ * and a floor there reddened no case. The boundary is what covers every
  * helper a builder reaches at once, which is the property
  * {@link malformedOrphanResourcePropertiesRefusalMessage} measured when
  * guarding inside ONE helper fixed only part of its message.
