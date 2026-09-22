@@ -990,10 +990,14 @@ up further still. Those paths load normally. What is refused is a path leaving
 the output directory itself, from a Stage manifest and a top-level one alike.
 
 The `cdkd local *` commands apply the same rule to SOME of the assembly they
-read — including one path the deploy side has no equivalent of, a Lambda's
+read — including a path the deploy side has no equivalent of, a Lambda's
 `Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
-before running it. Others there are not covered yet, among them the
-`aws:asset:path` they bind-mount into the container.
+before running it. They also refuse the `aws:asset:path` they bind-mount into
+the container, on both counts: an escaping value and an **absolute** one. There
+the absolute case is a real escape rather than the "not CDK-generated"
+tripwire it is above — those commands resolve the value with `path.resolve`,
+which discards its base for an absolute path, where `path.join` does not.
+Others there are not covered yet.
 [Local Execution](local-emulation.md) lists which are which.
 
 One consequence of measuring against the app's output directory: pointing `-a`

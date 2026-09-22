@@ -194,7 +194,19 @@ Refused:
   assembly's own bytes to a path of its choosing;
 - a Docker asset's `source.directory` under `cdkd local run-task`;
 - a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
-  `source.directory` its `--watch` soft reload reads.
+  `source.directory` its `--watch` soft reload reads;
+- a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke` and
+  `cdkd local start-api` — both the function's own code directory and a
+  same-stack layer's. This one is refused on **two** counts, worded apart so
+  you can tell which fired: a path that leaves the app's output directory, and
+  a path that is **absolute**. An absolute value used to be honoured on
+  purpose, and it reached the same place `../..` does without needing a `..` at
+  all, so refusing only one of the two would have closed almost nothing. The
+  result is bind-mounted read-only at `/var/task` (a layer's at `/opt`) inside
+  a container running handler code the same assembly supplies, and
+  `cdkd local invoke` forwards your credentials into it — so the mount is what
+  would carry that code from a session it already has to the raw contents of
+  your home directory.
 
 A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
 staged into the app's output directory, so `../asset.<hash>` is the shape CDK
@@ -203,9 +215,6 @@ deploy path; see [Deploy safety](cli-deploy-safety.md).
 
 Not refused today:
 
-- a Lambda's `Metadata['aws:asset:path']`, which these commands bind-mount into
-  the container and which may be absolute. This is a known gap rather than a
-  design choice, and containment for it is planned;
 - every Docker build context that goes through the bundled `cdk-local` engine,
   which joins the path itself: a container-image Lambda under
   `cdkd local invoke` and `cdkd local start-api`, and the image build of

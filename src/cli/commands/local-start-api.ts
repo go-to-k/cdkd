@@ -88,7 +88,9 @@ import {
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
+  assetPathDirs,
   extractEphemeralStorageMb,
+  resolveAssetCodeDirectory,
   resolveLambdaLayers,
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
@@ -121,7 +123,7 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
   strandedProfileCredentialsNotice,
@@ -2483,6 +2485,19 @@ function resolveImageLambda(args: {
  * Locate the Lambda's local code directory using the CDK-blessed
  * `Metadata['aws:asset:path']` hint. Bind-mounted directly at
  * `/var/task` (read-only) by the docker-runner.
+ *
+ * The containment and absolute-path refusals go through
+ * `resolveAssetCodeDirectory`, which is the ONE spelling this and `cdkd local
+ * invoke`'s resolver share (issue
+ * [#3494](https://github.com/go-to-k/cdkd/issues/3494)). This copy previously
+ * spelled the resolution itself, so a guard on the other one would have been a
+ * guard on neither. It keeps its own error class and command name by passing
+ * its own `wrapError`.
+ *
+ * `assetPathDirs` is shared for the same reason: the bound it returns is what
+ * go-to-k/cdkd#3493's two sites disagreed about. Pass `manifestDir` as the
+ * bound instead and a Stage's legitimate `../asset.<hash>` is refused, which
+ * `local-asset-code-path-containment.test.ts`'s start-api wiring case pins.
  */
 function resolveAssetCodePath(
   stack: StackInfo,
@@ -2493,11 +2508,17 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda '${displaySafe(logicalId)}' has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
-  const cdkOutDir = stack.assetManifestPath ? path.dirname(stack.assetManifestPath) : process.cwd();
-  return path.isAbsolute(assetPath) ? assetPath : path.resolve(cdkOutDir, assetPath);
+  const { manifestDir, assetOutdir } = assetPathDirs(stack);
+  return resolveAssetCodeDirectory(
+    manifestDir,
+    assetPath,
+    logicalId,
+    (message) => new Error(message),
+    assetOutdir
+  );
 }
 
 /**

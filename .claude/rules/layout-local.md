@@ -34,6 +34,14 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   wrong one FAILS CLOSED (refuses everything) — neither looks like a
   containment hole to a test that only checks refusals. Fence the WIRING: per
   call site, a case asserting the bound it passes, red under a probe.
+- A Lambda's `Metadata['aws:asset:path']` is the one of these whose value is
+  BIND-MOUNTED, so it takes a SECOND refusal the manifest paths do not: an
+  ABSOLUTE value, which the two resolvers used to honour deliberately
+  (go-to-k/cdkd#3494). `path.resolve` discards its base for one, so containment
+  alone would close almost nothing while looking closed. `resolveAssetCodeDirectory`
+  in `lambda-resolver.ts` is THE one spelling, shared with
+  `local-start-api.ts`'s resolver through a `wrapError` callback so each keeps
+  its own error class and command name. The two refusals stay worded apart.
 
 ## Region case folding (#1836)
 

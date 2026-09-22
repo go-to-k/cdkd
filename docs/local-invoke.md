@@ -350,6 +350,13 @@ read-only. Inline `Code.ZipFile` functions are materialized to a tmpdir using
 the file path implied by the function's `Handler` property (`index.handler` →
 `tmpdir/index.js`).
 
+The hint is refused when it is **absolute**, or when it resolves outside the
+app's output directory — see [What cdkd trusts in the
+assembly](local-emulation.md#what-cdkd-trusts-in-the-assembly). A stack inside
+a `cdk.Stage` is unaffected: `cdk synth` stages a Stage's assets into the app's
+`cdk.out` while the Stage's own manifest sits in `cdk.out/assembly-<Stage>/`,
+so the `../asset.<hash>` CDK writes there resolves and mounts normally.
+
 **Container-image Lambdas.** See [Container-image
 Lambdas](#container-image-lambdas) above.
 
