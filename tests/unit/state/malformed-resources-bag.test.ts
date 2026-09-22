@@ -138,9 +138,12 @@ function expectDestroyCommandLines(
   // The prose is line 0 and carries no pasteable command of its own.
   expect(lines.slice(1)).toEqual(commandLines);
   expect(lines[0], 'a command leaked into the prose line').not.toContain('cdkd state show');
-  // Non-vacuity: a builder that emitted only prose would satisfy an
-  // every()-style check over an empty list.
-  expect(commandLines.length).toBeGreaterThan(0);
+  // nit 6 of the review: the lines being right does not prove the template was
+  // not ALSO re-buried in the prose, which is the half a change keeping the
+  // lines would pass.
+  expect(lines[0], 'the destructive template is back in the prose').not.toContain(
+    'cdkd state orphan <stack>'
+  );
 }
 
 function state(resources: unknown): StackState {
@@ -1123,17 +1126,26 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       const m = build(HOSTILE, 'us-east-1');
       expect(m).not.toContain(`${HOSTILE} --stack-region`);
       expect(m).toContain('cdkd state show');
-      // Against a BENIGN control rather than a hardcoded 1: the destroy text
-      // emits one command per line on purpose since go-to-k/cdkd#3516, so the
-      // property this owes is that the IDENTIFIER injected no line — which a
-      // fixed count can no longer express. `sanitizeAsciiOnly` replaces a
-      // newline with a space, and this is the second, independent check that it
-      // did.
-      const benign = build('S', 'us-east-1');
-      expect(m.split('\n')).toHaveLength(benign.split('\n').length);
+      // Against a control ON THE SAME ARM, not a hardcoded 1 and not a benign
+      // name: the destroy text emits one command per line since
+      // go-to-k/cdkd#3516, and its line COUNT differs per arm — a name carrying
+      // a quote fails `isPasteableIdent` and takes the withhold arm, which has
+      // no `Drop the record:` line. So the control has to be another
+      // withhold-arm build, or this compares arms rather than line injection.
+      //
+      // The pair differs ONLY by the newline, which is the property owed:
+      // `sanitizeAsciiOnly` replaces it with a space, and a regression there
+      // shows up as an extra line against a control that already renders a
+      // space (review nit n2 — the old form fed only `HOSTILE`, which carries
+      // no newline, so neither spelling exercised it).
+      const spaceControl = build('a b', 'us-east-1');
+      expect(build('a\nb', 'us-east-1').split('\n')).toHaveLength(
+        spaceControl.split('\n').length
+      );
+      expect(m.split('\n')).toHaveLength(spaceControl.split('\n').length);
       // Non-vacuity: a build that collapsed to a single empty string would
       // match the control too.
-      expect(benign.split('\n')[0]!.length).toBeGreaterThan(0);
+      expect(spaceControl.split('\n')[0]!.length).toBeGreaterThan(0);
     });
 
     it(`${label} names the container it is about`, () => {
@@ -1165,6 +1177,47 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       expect(text.split('\n')).toHaveLength(1);
     });
   }
+
+  it('refuses to NAME a target whose name forges the destructive line', () => {
+    // The forgery the per-line shape made credible (review of
+    // go-to-k/cdkd#3516). `safeIdentifier(x) === x` keeps a space and a quote,
+    // so this name renders EXACTLY and used to take the naming arm, landing
+    // inside the quoted stack name on the `Inspect the record:` line — where a
+    // terminal wrap starts a visual line with cdkd's own label, carrying a
+    // destructive command whose holes are ALREADY FILLED against a record of
+    // the planter's choosing. A line-select copies it, two lines above the
+    // genuine hole-bearing one the operator was told to fill in.
+    //
+    // Reachable: the stack name reaches these builders from an S3 key segment,
+    // which is chosen by anyone able to write the state bucket.
+    const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1';
+    for (const build of [
+      malformedDestroyResourcesRefusalMessage,
+      malformedDestroyOrphansRefusalMessage,
+    ]) {
+      const text = build(FORGED, 'us-east-1');
+      // The WITHHOLD arm: no identity, so nothing to forge with.
+      expect(text.startsWith('The state record this command loaded'), build.name).toBe(true);
+      expect(text, build.name).not.toContain('prod --stack-region us-east-1');
+      // Exactly ONE `Drop the record:` occurrence would still be one too many
+      // here — the withhold arm offers none at all.
+      expect(text, build.name).not.toContain('Drop the record:');
+      expectDestroyCommandLines(text, {
+        inspect: "cdkd state show '<stack>' --stack-region '<region>' --json",
+      });
+    }
+    // The CONTROL, or this passes for a gate that withholds from everything: a
+    // nested child's `Parent~Child` is a real CloudFormation-producible name and
+    // must still be named, with its template offered.
+    const healthy = malformedDestroyResourcesRefusalMessage('Parent~Child', 'us-east-1');
+    expect(healthy).toContain('Parent~Child');
+    expectDestroyCommandLines(healthy, {
+      // QUOTED, because `~` is shell-significant (tilde expansion) — the
+      // gate admits the name, and `shellQuote` still does its job on it.
+      inspect: "cdkd state show 'Parent~Child' --stack-region us-east-1 --json",
+      drop: 'cdkd state orphan <stack> --stack-region <region>',
+    });
+  });
 
   it('the DESTROY refusal puts each command on its own line, per arm', () => {
     // Pinned DIRECTLY rather than through the distance case below: that one

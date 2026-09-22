@@ -78,18 +78,38 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
 
 ## Where a pasteable command goes (go-to-k/cdkd#3516)
 
-A message ENDS on its pasteable read, `inspectCommand`. Mid-sentence it is one
-space from the next clause and a line-select paste carries that clause in as
-positional arguments, so `toContain` is not the assertion — `endsWith` is.
+Three shapes, and which one a message takes follows from what it offers.
 
-**A message offering BOTH a read and a destructive template puts one command per
-LINE** (`Inspect the record:` / `Drop the record:`), because a single line cannot
-satisfy both rules at once: the read has to end a line, and the template has to
-be LAST with no substituted region after it, or the value the prose has just said
-not to trust sits below the holes an operator fills by hand. Do not collapse
-them back. The per-line shape makes a hardcoded "one line" assertion wrong for
-those two, so an injected-newline check there compares the line count against a
-BENIGN control build instead.
+**A message offering only a READ ends on it**, `inspectCommand`. Mid-sentence it
+is one space from the next clause and a line-select paste carries that clause in
+as positional arguments, so the fence is `endsWith`, never `toContain` — the
+weaker spelling is what let four consumers bury it.
+
+**A message offering BOTH a read and the destructive template puts one command
+per LINE** (`Inspect the record:` / `Drop the record:`), because a single line
+cannot satisfy both rules at once: the read has to end a line, and the template
+has to be LAST with no substituted region after it, or the value the prose has
+just said not to trust sits below the holes an operator fills by hand. Do not
+collapse them back. Its fence is a line LIST compared with `toEqual`, so a
+forged, duplicated or collapsed line fails too; `endsWith` cannot express it.
+A hardcoded "one line" assertion is also wrong for these, so an
+injected-newline check compares the line count against a BENIGN control build.
+
+**Naming a target beside that template needs more than faithful rendering.**
+`safeIdentifier(x) === x` keeps a space and a quote, so a stack name spelling
+`Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
+exactly and forges cdkd's own line inside the quoted name once the terminal
+wraps. The gate is `isPasteableIdent` on BOTH identifiers.
+
+**One message still ends on the template on a single line**:
+`divergentRecordRegionRefusalMessage` offers no read at all, so nothing competes
+for its tail. It is not the shape to copy for a message that has both.
+
+**Residual, stated rather than fenced**: two readers FLATTEN the newlines —
+`events.ts`'s `safeText` and `error-handler.ts`'s `cause` rendering — so a
+refusal surfaced through `cdkd events` shows the pre-go-to-k/cdkd#3516 run-on.
+Reachable through a nested child's destroy. The per-line shape is a property of
+the MESSAGE, not of every surface that prints it.
 
 ## Two exports here are not guards at all
 

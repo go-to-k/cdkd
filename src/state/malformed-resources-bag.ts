@@ -6,6 +6,7 @@ import {
   UNRENDERABLE,
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
@@ -263,8 +264,9 @@ const MALFORMED_RESOURCES_DIAGNOSIS =
  * a line-select paste then handed `cdkd state show` the following sentence as
  * positional arguments. The command is {@link inspectCommand}'s, and the
  * caller ends ON it — the contract that function's own note states, and the
- * shape {@link malformedDestroyOrphansRefusalMessage} and
- * {@link malformedDestroyOutputsRefusalMessage} already had.
+ * shape {@link malformedDestroyOutputsRefusalMessage} already had. Its
+ * `orphans` twin had it too until this change gave both DESTROY refusals a
+ * per-line shape instead, so that one is no longer the example to copy.
  *
  * `stackName` is optional so the withhold arm of
  * {@link malformedDestroyResourcesRefusalMessage} takes this same helper: that
@@ -337,6 +339,53 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
     `rather than continuing: saving over a record whose resource map could not be read would ` +
     `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
     `remove the record first. Inspect it with: ${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * The destructive template the two DESTROY refusals offer, on its own line.
+ *
+ * ONE spelling, because two copies are what drift, and these two carry it
+ * byte-identically on purpose — a reader who has met one must recognise the
+ * other. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
+ * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
+ */
+const DROP_RECORD_LINE = 'Drop the record: cdkd state orphan <stack> --stack-region <region>';
+
+/**
+ * May this message NAME its target and offer the destructive template beside
+ * it (go-to-k/cdkd#3516 review)?
+ *
+ * Stricter than `safeIdentifier(x) === x`, which is what these two arms used
+ * and which keeps a space, a `'`, a `;` and a `|`. That was enough while the
+ * message was one paragraph, and stopped being enough the moment the commands
+ * moved onto LABELLED lines: a stack name spelling
+ * `Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
+ * exactly, takes this arm, and lands inside the quoted name on the inspect
+ * line — where a terminal wrap puts cdkd's own label at the start of a visual
+ * line, carrying a destructive command whose holes are already filled. A
+ * line-select copies it. The label vocabulary is what made the forgery
+ * credible, so the gate that admits a name into it is the one that had to
+ * tighten.
+ *
+ * {@link isPasteableIdent} is that gate and the codebase already spends it on
+ * this question (`gc.ts` gates its own destructive hint on the same pair). It
+ * refuses a space and a quote outright while keeping every name CloudFormation
+ * can produce, `Parent~Child` included, so no healthy record loses its
+ * identity here.
+ */
+function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): boolean {
+  // A CONJUNCTION with the per-kind exactness, never a replacement for it.
+  // `isPasteableIdent` measures against the STACK cap
+  // (`STACK_REF_MAX_CODE_POINTS`), so on its own it admits a region past a
+  // REGION's 128 — which `safeRegion` truncates, putting a cut value in the
+  // clause above the template. Measured: dropping the first two operands
+  // reddens the truncated-region withhold case.
+  return (
+    safeStackName(stackName) === stackName &&
+    safeRegion(region) === region &&
+    isPasteableIdent(stackName) &&
+    isPasteableIdent(region)
   );
 }
 
@@ -470,7 +519,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // Through the per-kind helpers: this arm's VERDICT turns on the caps, and a
   // stack name capped at a region's 128 would send an ordinary multi-level
   // nested child down the withhold arm.
-  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
+  const exact = mayNameTargetWithDestructiveRemedy(stackName, region);
   // The DIAGNOSIS half, one helper for both arms: it carries no command, so the
   // only difference is the identity it is allowed to name. The withhold arm must
   // name none — a message that has just said "another record may render
@@ -517,7 +566,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
     // Only the exact arm offers it. The withhold arm names no target, so a
     // destructive template there would be an instruction with nothing to fill
     // the holes from.
-    ...(exact ? ['Drop the record: cdkd state orphan <stack> --stack-region <region>'] : []),
+    ...(exact ? [DROP_RECORD_LINE] : []),
   ].join('\n');
 }
 
@@ -1329,7 +1378,7 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
  * against a record that may not be the damaged one.
  */
 export function malformedDestroyOrphansRefusalMessage(stackName: string, region: string): string {
-  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
+  const exact = mayNameTargetWithDestructiveRemedy(stackName, region);
   // Both arms continue `stackClause`'s own sentence rather than starting a new
   // one after it: the no-identity clause ends open ("The state record this
   // command loaded"), so a second sentence bolted on renders without a verb —
@@ -1364,7 +1413,7 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
   return [
     prose,
     `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined)}`,
-    ...(exact ? ['Drop the record: cdkd state orphan <stack> --stack-region <region>'] : []),
+    ...(exact ? [DROP_RECORD_LINE] : []),
   ].join('\n');
 }
 
@@ -1750,7 +1799,12 @@ function rendersExactly(value: string): boolean {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
 }
 
-/** The remedy command {@link stackClause}'s message ends on. */
+/**
+ * The remedy command a message ends ON — unless the message also offers the
+ * destructive template, in which case it ends the READ's own LINE and
+ * {@link DROP_RECORD_LINE} is last (go-to-k/cdkd#3516). Two of the eight call
+ * sites are that shape; the rest close their string with it.
+ */
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
