@@ -990,3 +990,80 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The COMMAND-level half of the `orphans` container guard (go-to-k/cdkd#3379).
+ * `scrub-malformed-orphans.test.ts` enters at `scrubStack` and asserts the
+ * FIELD; what happens to that field afterwards lives here.
+ *
+ * Without the feed into `malformedOrphanRecords` the repaired list is empty, so
+ * every orphan-side counter is legitimately zero, the run reaches the `--fail`
+ * arm on the plaintext it DID find, and exits through the silent
+ * `ScrubNeededError` — "rotate the secret" — over a record it could not read.
+ */
+describe('cdkd scrub: an unreadable orphans container reaches the VERDICT (go-to-k/cdkd#3379)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    synthStacks.length = 0;
+    synthStacks.push(makeStackInfo('Damaged'));
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      // The container, damaged. `resources` and `outputs` are both healthy, so
+      // a sibling container's refusal would be the wrong text — and the record
+      // still holds the PLAINTEXT its template resolves, which is what makes
+      // the `--fail` arm below genuinely reachable rather than hypothetical.
+      (state as { orphans?: unknown }).orphans = 'abc';
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  it('--dry-run --fail exits 2 naming the container, not 1 through the silent finding', async () => {
+    const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
+      (e: unknown) => e
+    );
+
+    // The AUDITED-RECORD error, which is exit 2 and says "repair the record".
+    // `SCRUB_NEEDED` here would be the defect: exit 1 is "--fail found a leak",
+    // and `ScrubNeededError` prints nothing about the container at all.
+    expect((err as { code?: string }).code).toBe('STATE_RESOURCES_MALFORMED');
+    expect((err as { code?: string }).code).not.toBe('SCRUB_NEEDED');
+    expect((err as { exitCode?: number }).exitCode).toBe(2);
+    expect(String((err as { message?: string }).message)).toContain("'orphans'");
+    // The stack is NAMED, so an operator can act on the right record.
+    expect(String((err as { message?: string }).message)).toContain('Damaged');
+    // `--dry-run` wrote nothing, so the evidence survives the report.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('a REAL run refuses the stack rather than auditing it', async () => {
+    const err = await scrubCommand([], commandOptions({})).catch((e: unknown) => e);
+    // Under `--all` a per-stack refusal is reported as the batch code; the
+    // container's own MESSAGE reaches the error log (`describeFailure` renders
+    // the message and its causes, never the code).
+    expect((err as { code?: string }).code).toBe('SCRUB_STACKS_FAILED');
+    const errored = commandLogger.error.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain("'orphans'");
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('FLOOR: a readable and an ABSENT container reach the ordinary verdict', async () => {
+    // Without this the two cases above are satisfied by a guard that refused
+    // everything. The ABSENT row is the ordinary record — a stack that never
+    // had a failed deploy — and must still scrub.
+    for (const container of [[], undefined]) {
+      vi.clearAllMocks();
+      commandStateBackend.getState.mockImplementation((stackName: string) => {
+        const state = makeState(stackName, false);
+        if (container !== undefined) (state as { orphans?: unknown }).orphans = container;
+        return Promise.resolve({ state, etag: 'etag-1' });
+      });
+      commandStateBackend.saveState.mockResolvedValue('etag-2');
+      const err = await scrubCommand([], commandOptions({})).catch((e: unknown) => e);
+      expect(err, `container ${JSON.stringify(container)} was refused`).toBeUndefined();
+      // DRIVEN to the write: the control proves the run reached the rewrite,
+      // not merely that it failed somewhere else.
+      expect(commandStateBackend.saveState).toHaveBeenCalled();
+    }
+  });
+});

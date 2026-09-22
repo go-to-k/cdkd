@@ -712,6 +712,37 @@ the resources still matter. An **absent** `outputs` field is not
 a defect and is never refused: cdkd writes such records on purpose. The full
 per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
 
+## A malformed `orphans` list refuses the destroy
+
+The `orphans` field records the `DeletionPolicy: Retain` resources an earlier
+failed deploy left standing in AWS, and the destroy reads it twice: to LIST them
+for you before deleting anything — the only notice that those resources stop
+being tracked — and to decide whether a record with no resources left is empty
+enough to delete outright.
+
+It is a LIST, and the same absent shape check lets a hand-edited or truncated
+record hold a string, a number, an object or `null` there:
+
+| How the field reads | What the destroy would do unguarded |
+| --- | --- |
+| As length 0 — `null`, `""`, `{"length": 0}` | Counts as no orphans: the listing is skipped and, on a stack with nothing else left, the record is **removed** outright, taking the evidence that retained resources are still live in AWS with it |
+| Every other unreadable shape | Dies in the listing with a `TypeError` that names nothing (a string is walked one **character** at a time; the other shapes are not iterable), or skips the listing and finishes the destroy without ever reporting the orphans — removing the record on a clean run, or writing it back with the damaged field intact when resources failed, were skipped, or the run was interrupted |
+
+Reading the field as empty is the FIRST of those rows rather than an
+alternative to it, so there is no safe repair here either.
+
+`cdkd destroy` therefore refuses at its first read AND at the under-lock re-read
+(`STATE_RESOURCES_MALFORMED`, exit `1`) — the re-read matters because a
+concurrent writer or a hand edit between the two is exactly what the lock is
+there to catch, and the re-read record is the one the deletion acts on.
+
+To drop such a record deliberately and leave every live resource standing, the
+route is the one the `outputs` refusal above names — `cdkd state orphan`, which
+removes the record without reading either field, and whose caveats are the same
+here. An **absent** `orphans` field is not a defect and is never refused. The
+full per-command table is in
+[State Management](state-management.md#when-orphans-is-not-a-list).
+
 ## Every other mutating confirmation prompt is interactive-only too
 
 Ten more commands prompt before a mutation, and all of them follow the same

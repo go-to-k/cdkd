@@ -26,6 +26,7 @@ import { displayIdent, displaySafe, isPasteableIdent } from '../utils/display-sa
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedOrphans,
   refuseMalformedResourcesForDeploy,
 } from '../state/malformed-resources-bag.js';
 import {
@@ -3357,6 +3358,12 @@ export class DeployEngine {
       // go-to-k/cdkd#3018 exists to remove. `cdkd diff` keeps its repair-and-warn
       // half at its own load, so the preview this refusal points at still works.
       refuseMalformedResourcesForDeploy(currentState, stackName, this.stackRegion);
+      // The `orphans` CONTAINER, beside it and for the same placement reason
+      // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
+      // and ASSIGNS `currentState.orphans` from what it read, so an unreadable
+      // container is rewritten by a writer. AFTER the lock, so the guarantee is
+      // "before any resource operation" rather than "before any lock".
+      refuseMalformedOrphans(currentState, stackName, this.stackRegion);
       // Set when we loaded a `version: 1` legacy record. The next save
       // migrates it to the new key.
       const migrationPending = currentStateData?.migrationPending ?? false;

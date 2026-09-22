@@ -44,7 +44,10 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import {
+  refuseMalformedOrphans,
+  refuseMalformedState,
+} from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
 
 interface RollbackOptions {
@@ -493,6 +496,12 @@ export async function rollbackCommand(
       // empty one, in the command a user reaches for when state is ALREADY
       // suspect (go-to-k/cdkd#3018).
       refuseMalformedState(baseState, stackName, region);
+      // The `orphans` CONTAINER, ahead of every replay and of
+      // `orphansAfterRollback` (go-to-k/cdkd#3379): that helper walks the
+      // container with `for...of`, so a string comes back as a list of its
+      // characters and this command SAVES it — a damaged container rewritten
+      // into a differently damaged one, silently.
+      refuseMalformedOrphans(baseState, stackName, region);
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
       // `DeletionPolicy: Retain` (issue #2934). Declared beside

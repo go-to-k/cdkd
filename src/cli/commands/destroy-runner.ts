@@ -37,6 +37,7 @@ import { shouldRetainResource, type ResourceState, type StackState } from '../..
 import {
   refuseDivergentRecordRegionForDestroy,
   refuseMalformedOutputsForDestroy,
+  refuseMalformedOrphansForDestroy,
   refuseMalformedResourcesForDestroy,
 } from '../../state/malformed-resources-bag.js';
 import type { ResourceDeleteResult } from '../../types/resource.js';
@@ -532,6 +533,10 @@ export async function runDestroyForStack(
   // separates them — which is why this cannot be folded into the
   // `resourceCount === 0` test below.
   refuseMalformedResourcesForDestroy(state, stackName, regionForState);
+  // The `orphans` CONTAINER (go-to-k/cdkd#3379). The orphan warning below reads
+  // it on `?? []`, so an unreadable one counts 0 and this run would delete every
+  // resource and then the record with its orphan evidence never reported.
+  refuseMalformedOrphansForDestroy(state, stackName, regionForState);
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -696,7 +701,18 @@ export async function runDestroyForStack(
       // edit landing between the two reads, can make it unreadable. The count
       // below would then be 0, `stillEmpty` would be true, and `deleteState`
       // would run on the very line the re-read exists to protect.
-      if (recheck) refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
+      if (recheck) {
+        refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
+        // The re-read is the record `stillEmpty` and `deleteState` act on, so
+        // the container guard is owed here as well as at the entry read.
+        // `stillEmpty` reads `(recheck.state.orphans ?? []).length`, and the
+        // shapes split three ways (measured): `null`, `''` and `{length: 0}`
+        // count 0 and REACH the delete; a string or `{length: N}` counts
+        // non-zero; a number, an object or a boolean yields `undefined`, which
+        // fails the `=== 0` test and stops the run with no cause named
+        // (go-to-k/cdkd#3379).
+        refuseMalformedOrphansForDestroy(recheck.state, stackName, regionForState);
+      }
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
       // Same widening as the entry check (issue #2934): a record that gained

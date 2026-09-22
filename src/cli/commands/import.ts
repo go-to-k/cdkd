@@ -88,6 +88,7 @@ import {
 } from '../../types/state.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedOrphans,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
 
@@ -607,6 +608,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // exports index then republishes. AT THE LOAD, on the same line as the
     // resources refusal, so neither can drift below a read.
     if (existingState) refuseMalformedOutputs(existingState, stackInfo.stackName, targetRegion);
+    // The `orphans` CONTAINER, third call for the same reason (go-to-k/cdkd#3379).
+    // This one does NOT launder: `orphansCarriedFrom` copies the stored value
+    // verbatim into the save. What it would do instead is write a record every
+    // other command then refuses — on the command the docs offer as a recovery
+    // route after a failed deploy — and say nothing. Refusing here names the
+    // container while the record can still be repaired.
+    if (existingState) refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 

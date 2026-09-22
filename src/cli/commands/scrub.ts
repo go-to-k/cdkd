@@ -87,11 +87,15 @@ import {
   hasReadableResources,
   isReadableBag,
   malformedOutputsRefusalMessage,
+  hasReadableOrphans,
+  malformedOrphansRefusalMessage,
+  malformedOrphansWarning,
   malformedOutputsWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   producerCoordinateKey,
   producerRecordKey,
+  repairMalformedOrphansForReadOnly,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
@@ -624,6 +628,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
    */
   const malformedOutputRecords: string[] = [];
   /**
+   * Stacks whose `orphans` CONTAINER could not be read (go-to-k/cdkd#3379).
+   * Its own list for the reason `malformedOutputRecords` is its own: the
+   * audited error names the container that is broken.
+   */
+  const malformedOrphanRecords: string[] = [];
+  /**
    * Stacks whose scrub met a PRODUCER record with an unreadable `outputs` map
    * (go-to-k/cdkd#3192 review round 5).
    *
@@ -888,6 +898,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.malformedOutputs) {
       malformedOutputRecords.push(stack.stackName);
     }
+    if (scrubbed.malformedOrphans) {
+      malformedOrphanRecords.push(stack.stackName);
+    }
     if (scrubbed.unverifiableLeaves > 0) {
       totalStacksWithUnverifiableLeaves++;
       logger.warn(
@@ -993,7 +1006,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // The `outputs` half of exactly that (go-to-k/cdkd#3192): the repaired bag
     // is empty, so the secret-bearing-key scan and both redaction passes walk
     // nothing and every outputs-side counter is legitimately zero too.
-    malformedOutputRecords.length === 0
+    malformedOutputRecords.length === 0 &&
+    // The `orphans` half of the same (go-to-k/cdkd#3379): the repaired list is
+    // empty, so no orphan row is reported and every counter stays zero.
+    malformedOrphanRecords.length === 0
   ) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
@@ -1116,8 +1132,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // `ScrubNeededError` is exit 1 AND silent: leaving it lower would report
     // "scrub found a leak" for a record scrub could not read, and swallow this
     // message on the way out.
-    if (malformedRecords.length > 0 || malformedOutputRecords.length > 0) {
-      throw malformedRecordsAuditedError(malformedRecords, malformedOutputRecords);
+    if (
+      malformedRecords.length > 0 ||
+      malformedOutputRecords.length > 0 ||
+      malformedOrphanRecords.length > 0
+    ) {
+      throw malformedRecordsAuditedError(
+        malformedRecords,
+        malformedOutputRecords,
+        malformedOrphanRecords
+      );
     }
     // UNGATED by `--fail`, and above it for the same rank reason the refusals
     // here already are: exit 2 is "cdkd could not finish", exit 1 is "cdkd
@@ -1181,8 +1205,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // returns. Kept so a later writer of the flag on the real-run path cannot
   // drop the finding silently; `tests/unit/state/malformed-resources-bag.test.ts`
   // pins that the dry-run copy is the one that fires.
-  if (malformedRecords.length > 0 || malformedOutputRecords.length > 0) {
-    throw malformedRecordsAuditedError(malformedRecords, malformedOutputRecords);
+  if (
+    malformedRecords.length > 0 ||
+    malformedOutputRecords.length > 0 ||
+    malformedOrphanRecords.length > 0
+  ) {
+    throw malformedRecordsAuditedError(
+      malformedRecords,
+      malformedOutputRecords,
+      malformedOrphanRecords
+    );
   }
   // The real-run copy, and unlike the line above it this one IS reachable:
   // nothing about a damaged PRODUCER record is `--dry-run`-only. Ungated by
@@ -2187,7 +2219,10 @@ function malformedRecordsAuditedError(
   // `malformedRecords.length > 0 || malformedOutputRecords.length > 0`;
   // requiring the argument only stops a third caller from omitting it by
   // accident.
-  outputStackNames: readonly string[]
+  outputStackNames: readonly string[],
+  // The `orphans` CONTAINER's list (go-to-k/cdkd#3379), a third parameter for
+  // the reason the second one is not a default: both call sites pass all three.
+  orphanStackNames: readonly string[]
 ): ScrubRefusalError {
   // One sentence per CONTAINER, and only for a container that actually has
   // names (issue go-to-k/cdkd#3192). A record can be malformed in either alone,
@@ -2238,6 +2273,14 @@ function malformedRecordsAuditedError(
         `The report above describes their resources only — nothing is known about the values ` +
         `their outputs hold, and those values are what the exports index republishes to ` +
         `consumer stacks, so this run cannot certify them clean.`
+    );
+  }
+  if (orphanStackNames.length > 0) {
+    parts.push(
+      `${orphanStackNames.length} stack(s) were audited with an EMPTY orphan list because ` +
+        `their state record has no readable 'orphans' list: ${safeNames(orphanStackNames)}. ` +
+        `Nothing is known about resources an earlier failed deploy may have left live in AWS ` +
+        `for them, so this run cannot certify them clean.`
     );
   }
   return new ScrubRefusalError(
@@ -4453,6 +4496,15 @@ export interface ScrubStackResult {
    * text has to name the one that is broken.
    */
   malformedOutputs?: true;
+  /**
+   * The `orphans` CONTAINER could not be read (go-to-k/cdkd#3379).
+   *
+   * A THIRD field for the reason {@link malformedOutputs} is a second one: a
+   * record can be malformed in this container alone, and what it costs differs
+   * — the list is the record's only evidence that an earlier failed deploy left
+   * resources live in AWS.
+   */
+  malformedOrphans?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -4750,6 +4802,27 @@ export async function scrubStack(
     } else if (!hasReadableOutputs(state)) {
       throw new ScrubRefusalError(
         malformedOutputsRefusalMessage(stack.stackName, region),
+        STATE_RESOURCES_MALFORMED
+      );
+    }
+
+    // The `orphans` CONTAINER, decided the same way again (go-to-k/cdkd#3379).
+    // A real run REFUSES: this command's write gate is `recordsChanged > 0`,
+    // which a RESOURCES or OUTPUTS change alone satisfies, and the save writes
+    // the whole record — so an unconditional repair here would persist
+    // `orphans: []` over the damaged container whenever some other field
+    // changed, erasing the record's evidence that resources are still live in
+    // AWS. `--dry-run` repairs and reports instead, for the reason the two
+    // branches above give.
+    let malformedOrphans: true | undefined;
+    if (opts.dryRun) {
+      if (repairMalformedOrphansForReadOnly(state)) {
+        malformedOrphans = true;
+        logger.warn(malformedOrphansWarning(stack.stackName, region));
+      }
+    } else if (!hasReadableOrphans(state)) {
+      throw new ScrubRefusalError(
+        malformedOrphansRefusalMessage(stack.stackName, region),
         STATE_RESOURCES_MALFORMED
       );
     }
@@ -5679,6 +5752,7 @@ export async function scrubStack(
         unverifiableLeaves,
         ...(malformedResources ? { malformedResources } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
+        ...(malformedOrphans ? { malformedOrphans } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
@@ -5999,6 +6073,7 @@ export async function scrubStack(
       unverifiableLeaves,
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
+      ...(malformedOrphans ? { malformedOrphans } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };

@@ -1129,6 +1129,39 @@ different defect, and it is **not yet guarded**: such an entry reads as absent,
 so `cdkd deploy` plans a `CREATE` for a resource it already manages. It is not
 reported by anything above. Tracked separately.
 
+#### When `orphans` is not a list
+
+`orphans` records resources an earlier failed deploy left live in AWS under a
+`Retain` policy, so the next deploy can adopt them instead of re-creating them.
+It is a list, it is unchecked in the same way as the maps above, and a
+hand-edited or truncated record can hold a string, a number, an object or
+`null` there. Every reader reached it through a `?? []` or a `?.length`, which
+admits all four.
+
+| Command | Answer |
+| --- | --- |
+| `cdkd deploy` | **Refuses** at the load, before any resource operation (`STATE_RESOURCES_MALFORMED`, exit `1`) — the adoption pass writes the container back, so an unreadable one would be rewritten |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses**, at its first read and again at the re-read it takes under the lock — otherwise the run deletes every resource and then the record, having never reported the orphans it could not read |
+| `cdkd rollback` | **Refuses** before any replay — its own bookkeeping walks the container and saves the result |
+| `cdkd import` | **Refuses** — it carries the container into the record it writes, so importing over a damaged one would leave a record every other command then refuses |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
+| `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see |
+
+A string is the shape that makes this worse than a lost preview: walking it
+character by character yields one garbage orphan record per character, and
+`cdkd rollback` saved exactly that — a damaged container rewritten into a
+differently damaged one, with nothing said. The other shapes read as **no
+orphans at all**, so `cdkd diff` previewed no adoption and `cdkd destroy`
+removed the record with its evidence unread.
+
+An **absent** `orphans` container is the ordinary record, not a defect: a stack
+that never had a failed deploy has no orphan list, and no command writes an
+empty one over it. An empty `[]` is healthy too.
+
+Damage INSIDE a readable list — a row that is not an object, or carries no
+`resourceType` — is a separate question. `cdkd diff` drops such rows before
+previewing an adoption and names them; other commands do not yet guard them.
+
 #### Example
 
 ```json
