@@ -5,6 +5,7 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { ProvisioningError, formatError } from '../../../src/utils/error-handler.js';
+import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   markNonRetryable,
   isMarkedNonRetryable,
@@ -122,6 +123,60 @@ describe('maskSecretsInError - the whole cause chain is masked (issue #2038)', (
     expect(maskSecretsInError('not an error', bag())).toBe('not an error');
     const err = new Error(SECRET);
     expect(maskSecretsInError(err, new Map())).toBe(err);
+  });
+});
+
+describe("maskSecretsInError runs BEFORE formatError's cap (go-to-k/cdkd#3479)", () => {
+  // go-to-k/cdkd#3479 added a CAP to `formatError`'s `Caused by:` line, and the
+  // one shape worth checking before the byte count is ORDER: truncation that
+  // removes text is safe, truncation that split a not-yet-masked secret would
+  // not be. These assert the order rather than arguing it — the pipeline is
+  // mask (on the error OBJECT, at the throw site) -> `formatError` -> a logger
+  // that masks nothing, so the text reaching the cap is already masked and
+  // there is no plaintext left for a boundary to split.
+  //
+  // The flood goes in the error handed to `wrap`, because that is the link
+  // `formatError` renders — it walks ONE level, per this file's header.
+
+  it('cuts already-masked text, so no plaintext can straddle the boundary', () => {
+    // The secret sits PAST the cap, the position that would expose an order
+    // bug: cut-then-mask would carry it through untouched; mask-then-cut
+    // removes it with everything else past the bound.
+    const filler = 'f'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 500);
+    const cause = new Error(`${filler} Value '${SECRET}' failed to satisfy constraint`);
+    const masked = maskSecretsInError(cause, bag());
+
+    const rendered = formatError(wrap(masked));
+
+    expect(rendered).not.toContain(SECRET);
+    expect(rendered).toContain('more characters withheld]');
+    expect(rendered).toContain('Caused by:');
+    expect(rendered.length).toBeLessThan(cause.message.length);
+  });
+
+  it('cuts the MASK MARKER harmlessly when the boundary lands inside it', () => {
+    // The residual shape: the cut can land mid-marker. That leaves a truncated
+    // MARKER, never a partial secret — the plaintext was replaced before this
+    // render ever saw the string.
+    const lead = 'g'.repeat(AWS_MESSAGE_MAX_CODE_POINTS - 4);
+    const cause = new Error(`${lead}${SECRET} trailing`);
+    const masked = maskSecretsInError(cause, bag());
+
+    const rendered = formatError(wrap(masked));
+
+    expect(rendered).not.toContain(SECRET);
+    expect(rendered).toContain('more characters withheld]');
+  });
+
+  it('is the identity on a masked cause that fits under the cap', () => {
+    const cause = new Error(`Value '${SECRET}' failed to satisfy constraint`);
+    const masked = maskSecretsInError(cause, bag());
+
+    const rendered = formatError(wrap(masked));
+
+    expect(rendered).not.toContain(SECRET);
+    expect(rendered).toContain(SECRET_MASK);
+    expect(rendered).not.toContain('withheld');
   });
 });
 
