@@ -1,6 +1,7 @@
 import { stripControlChars } from '../../utils/regexp.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
@@ -273,7 +274,11 @@ export function indexNestedChildTemplates(
   templatePath: string
 ): Record<string, string> {
   const dir = path.dirname(templatePath);
-  const result: Record<string, string> = {};
+  // Null-prototype, like every other nested-template index (issue
+  // go-to-k/cdkd#3480): a logical id is a template key, so a `{}` literal drops
+  // a row named `__proto__` through the inherited setter and answers a
+  // never-indexed `toString` / `valueOf` with a prototype member.
+  const result = nullPrototypeRecord<string>();
   for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
     if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     const meta = resource.Metadata as Record<string, unknown> | undefined;

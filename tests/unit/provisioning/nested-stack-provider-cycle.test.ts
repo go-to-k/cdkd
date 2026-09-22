@@ -64,7 +64,15 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   })),
 }));
 
-function makeContext(nestedTemplates: Record<string, string>): NestedStackProviderContext {
+/**
+ * `nestedTemplates` is rebuilt onto a NULL-PROTOTYPE record so this harness
+ * carries the shape production carries: `AssemblyReader.extractStackInfo` and
+ * every consumer's `??` fallback build one (issue go-to-k/cdkd#3480), and on a
+ * `{}` literal the `if (!childTemplatePath)` guards below answer an inherited
+ * `Object.prototype` member for a logical id like `toString` and skip.
+ */
+function makeContext(rows: Record<string, string>): NestedStackProviderContext {
+  const nestedTemplates = Object.assign(Object.create(null) as Record<string, string>, rows);
   const state: StackState = {
     version: 10,
     stackName: 'any',
@@ -368,18 +376,41 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
     expect(engineDeploys).toEqual(['Parent~Child', 'Parent~Child~__proto__']);
   });
 
-  it('reports a root row whose indexed path is not a string readably, not as a bare TypeError', async () => {
-    // A plain-object root index (AssemblyReader's) answers `Object.prototype`
-    // for a logical id of `__proto__`.
+  it.each(['__proto__', 'toString', 'constructor'])(
+    'fires the not-found guard for an unindexed row named %s, rather than reading a prototype member',
+    async (logicalId) => {
+      // The WIRING half of issue go-to-k/cdkd#3480: the root index reaching
+      // this provider is null-prototype, so a row that was never indexed reads
+      // back `undefined` and `if (!childTemplatePath)` fires with the row's
+      // name in it. On the `{}` literal this index used to be, the lookup
+      // answered an inherited `Object.prototype` member -- truthy -- so the
+      // guard was SKIPPED and the member reached `readFileSync`, surfacing as
+      // `Failed to read nested template at [object Object]`.
+      const provider = new NestedStackProvider();
+
+      const err = await capture(() =>
+        withNestedStackContext(makeContext({}), () =>
+          provider.create(logicalId, 'AWS::CloudFormation::Stack', {})
+        )
+      );
+
+      expect(err.message).toContain('Nested template file not found');
+      expect(err.message).toContain(logicalId);
+      expect(err.message).not.toContain('[object Object]');
+    }
+  );
+
+  it('still follows an indexed row whose name collides with Object.prototype', async () => {
+    const dir = tmp();
+    const child = writeTemplate(dir, 'child.json', {});
+
     const provider = new NestedStackProvider();
 
-    const err = await capture(() =>
-      withNestedStackContext(makeContext({}), () =>
-        provider.create('__proto__', 'AWS::CloudFormation::Stack', {})
-      )
+    await withNestedStackContext(makeContext({ toString: child }), () =>
+      provider.create('toString', 'AWS::CloudFormation::Stack', {})
     );
 
-    expect(err.message).toContain('Failed to read nested template');
+    expect(engineDeploys).toEqual(['Parent~toString']);
   });
 
   it('still deploys a diamond: two sibling rows naming one template', async () => {

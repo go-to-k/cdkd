@@ -17,6 +17,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
 import {
   withErrorHandling,
@@ -1013,7 +1014,12 @@ async function deployCommand(
             awsClients: stackAwsClients,
             stateBucket,
             exportIndexStore,
-            nestedTemplates: stackInfo.nestedTemplates ?? {},
+            // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480):
+            // the index is omitted when no row carried a usable asset path, and
+            // on a `{}` fallback `NestedStackProvider`'s
+            // `if (!childTemplatePath)` guard reads an inherited member for a
+            // row named `toString` / `valueOf` and is skipped.
+            nestedTemplates: stackInfo.nestedTemplates ?? nullPrototypeRecord<string>(),
             dagBuilder,
             diffCalculator,
             options: deployEngineOptions,

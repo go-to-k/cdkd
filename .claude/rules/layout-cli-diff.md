@@ -36,6 +36,13 @@ that directory and not the assembly root
 ([#3489](https://github.com/go-to-k/cdkd/issues/3489)). This file's OWN
 `Nested template file not found` throw does not yet.
 
+`indexNestedChildTemplates` builds onto `nullPrototypeRecord()`, never a `{}`
+literal, as does `diff.ts`'s `??` fallback for a stack with no indexable row: a
+plain object drops a row named `__proto__` AND answers `buildDiffTree`'s
+`if (!childTemplatePath)` with an inherited member, which `defineOwnKey` would
+not fix ([own-keys.md](own-keys.md),
+[#3480](https://github.com/go-to-k/cdkd/issues/3480)).
+
 `computeStackDiff` is the per-stack state-vs-template diff shared by the
 top-level loop and the walker. Its `Outputs` delta is computed HERE, not behind
 a second entry point, because parameter binding and condition evaluation issue
