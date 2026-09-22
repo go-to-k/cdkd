@@ -2486,13 +2486,13 @@ function resolveImageLambda(args: {
  * `Metadata['aws:asset:path']` hint. Bind-mounted directly at
  * `/var/task` (read-only) by the docker-runner.
  *
- * The containment and absolute-path refusals go through
- * `resolveAssetCodeDirectory`, which is the ONE spelling this and `cdkd local
- * invoke`'s resolver share (issue
- * [#3494](https://github.com/go-to-k/cdkd/issues/3494)). This copy previously
- * spelled the resolution itself, so a guard on the other one would have been a
- * guard on neither. It keeps its own error class and command name by passing
- * its own `wrapError`.
+ * The verdicts go through `resolveAssetCodeDirectory`, which is the ONE
+ * spelling this and `cdkd local invoke`'s resolver share (issue
+ * [#3494](https://github.com/go-to-k/cdkd/issues/3494)): it REFUSES an escaping
+ * RELATIVE value and WARNS on an ABSOLUTE one that leaves the asset outdir.
+ * This copy previously spelled the resolution itself, so a guard on the other
+ * one would have been a guard on neither. It keeps its own error class and
+ * command name by passing its own `wrapError`.
  *
  * `assetPathDirs` is shared for the same reason: the bound it returns is what
  * go-to-k/cdkd#3493's two sites disagreed about. Pass `manifestDir` as the
@@ -2516,8 +2516,8 @@ function resolveAssetCodePath(
     manifestDir,
     assetPath,
     (message) => new Error(message),
-    logicalId,
-    assetOutdir
+    assetOutdir,
+    logicalId
   );
 }
 

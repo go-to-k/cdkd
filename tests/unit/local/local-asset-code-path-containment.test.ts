@@ -37,7 +37,7 @@
  * - `../../victim` REFUSED from that same manifest — reds if the bound is
  *   widened past the app outdir (fails open).
  */
-import { describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +124,15 @@ function assembly(
   return { outdir, manifestDir, outer, stack };
 }
 
+// n1: restore spies from a hook, NOT as the last statement of each case. A
+// trailing `warn.mockRestore()` never runs when an assertion above it throws,
+// so ONE failing case used to leak a silencing `warn` stub into every case
+// after it in the file -- including the "stays SILENT" ones, which would then
+// pass for the wrong reason. `tests/setup.ts` installs no global restore.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /** The two sites, called through each one's own public entry point. */
 const SITES = [
   {
@@ -161,7 +170,6 @@ for (const site of SITES) {
       // the user did not expect has to be VISIBLE, not silent.
       expect(said).toContain(victim);
       expect(said).toMatch(/--no-staging/);
-      warn.mockRestore();
     });
 
     it('ACCEPTS an absolute value INSIDE the outdir, and stays SILENT', () => {
@@ -176,7 +184,6 @@ for (const site of SITES) {
 
       expect(site.call(a)).toBe(inside);
       expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
-      warn.mockRestore();
     });
 
     it('WARNS for an absolute path INSIDE the outdir that leads out via a symlink', () => {
@@ -200,7 +207,46 @@ for (const site of SITES) {
       const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(said).toMatch(/through a symbolic link to/);
       expect(said).toContain(join(a.outer, 'throwaway-victim'));
-      warn.mockRestore();
+    });
+
+    it('ACCEPTS a value naming the asset outdir ITSELF, by either spelling', () => {
+      // m6: the two arms must agree that the bound is not an escape. The
+      // RELATIVE spelling reaches `resolveAssemblyPath`, whose `isInside` is
+      // false for an empty `path.relative` — right for its other callers, which
+      // read a FILE, wrong here, where the value is a directory to mount.
+      // Unfenced, the acceptance is deletable.
+      const rel = assembly('.');
+      expect(site.call(rel)).toBe(rel.outdir);
+
+      const abs = assembly('/placeholder');
+      (
+        (abs.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
+      )['aws:asset:path'] = abs.outdir;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      expect(site.call(abs)).toBe(abs.outdir);
+      // ...and the absolute spelling must not warn about it either, which is
+      // the `target !== resolvedBound` clause in `absoluteAssemblyPathEscape`.
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
+    });
+
+    it('ACCEPTS the outdir reached through a symlink to itself, without warning', () => {
+      // m5, the second unfenced clause: `realTarget !== realBound`. The link
+      // must live INSIDE the outdir, or the LEXICAL arm fires first and returns
+      // before the real-path arm can exonerate it — measured, and it is the
+      // ordering security n3 raises repo-wide. Placed inside, the value is
+      // lexically contained and resolves through the link to exactly the bound,
+      // which is the only way to reach the clause under test. Delete that
+      // clause and cdkd warns that the assembly's own outdir is outside itself.
+      const a = assembly('/placeholder');
+      const selfLink = join(a.outdir, 'self-link');
+      symlinkSync(a.outdir, selfLink, 'dir');
+      (
+        (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
+      )['aws:asset:path'] = selfLink;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+
+      expect(site.call(a)).toBe(selfLink);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
     });
 
     it('REFUSES an escaping relative value, with the containment wording', () => {
@@ -216,7 +262,6 @@ for (const site of SITES) {
       const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
       expect(() => site.call(a)).toThrow();
       expect(warn).not.toHaveBeenCalled();
-      warn.mockRestore();
     });
 
     it('REFUSES one that stays inside lexically but leads out through a symlink', () => {
@@ -277,7 +322,6 @@ for (const site of SITES) {
 
       expect(site.call(a)).toBe(inside);
       expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
-      warn.mockRestore();
     });
 
     it('WIRING: with no assetManifestPath, the BASE falls back to the outdir, not the cwd', () => {
@@ -323,7 +367,6 @@ describe('aws:asset:path containment — cdkd local invoke layer assets', () => 
 
     expect(layerPath(a)).toBe(victim);
     expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(victim);
-    warn.mockRestore();
   });
 
   it('REFUSES an escaping layer asset path', () => {

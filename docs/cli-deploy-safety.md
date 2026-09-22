@@ -992,9 +992,13 @@ the output directory itself, from a Stage manifest and a top-level one alike.
 The `cdkd local *` commands apply the same rule to SOME of the assembly they
 read — including a path the deploy side has no equivalent of, a Lambda's
 `Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
-before running it. They also refuse the `aws:asset:path` they bind-mount into
-the container, but only when it is **relative**. An **absolute** one is accepted
-there, with a warning naming the directory when it leaves the output directory,
+before running it. **`cdkd local invoke` and `cdkd local start-api`** — those
+two, not the family — also refuse the `aws:asset:path` they bind-mount into
+the container, but only when it is **relative**; the other `local` commands
+that mount Lambda code reach it through the bundled `cdk-local` engine and are
+unguarded, which [Local Execution](local-emulation.md) names. An **absolute**
+one is accepted, with a warning naming the directory when it leaves the output
+directory,
 because `cdk synth --no-staging` emits exactly that — the asset's absolute
 source directory — and refusing it would reject the output of a documented CDK
 CLI flag. That is a deliberate difference from the deploy side's absolute

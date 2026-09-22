@@ -360,6 +360,15 @@ the app's `cdk.out` while the Stage's own manifest sits in
 `cdk.out/assembly-<Stage>/`, so the `../asset.<hash>` CDK writes there resolves
 and mounts normally.
 
+**One consequence to know: pointing `-a` at a Stage SUB-assembly refuses that
+Stage's own assets.** `cdkd local invoke -a cdk.out/assembly-MyStage` bounds
+containment to the directory you named, and the Stage's `../asset.<hash>` really
+does leave it, so the mount is refused — with a message about the output being
+hand-modified, which is not what happened. This changed: it mounted before
+containment was added. Point `-a` at the app's `cdk.out` and select the function
+by its display path instead. The deploy path has the same rule for the same
+reason; see [Deploy safety](cli-deploy-safety.md).
+
 **Container-image Lambdas.** See [Container-image
 Lambdas](#container-image-lambdas) above.
 

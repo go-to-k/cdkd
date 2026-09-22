@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
+  absoluteAssemblyPathEscape,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
   type ResolvedAssemblyPath,
@@ -557,5 +558,100 @@ describe('renderAssemblyPathEscape', () => {
     );
 
     expect(text).toContain(`outside '${path.resolve('cdk.out')}'`);
+  });
+});
+
+/**
+ * `absoluteAssemblyPathEscape` — the sibling for a site that HONOURS an
+ * absolute value (go-to-k/cdkd#3494).
+ *
+ * It lives here rather than only in the local-emulation suite because that is
+ * where its twin's cases live, and because it was reachable ONLY through that
+ * suite: a predicate whose every case arrives through one caller is a predicate
+ * nobody can see the edges of.
+ *
+ * `resolveAssemblyPath` cannot answer this question at all — its lexical arm
+ * uses `path.join`, which folds an absolute candidate INTO the directory, so it
+ * reports a path no caller will open.
+ */
+describe('absoluteAssemblyPathEscape', () => {
+  function dirs(): { bound: string; outer: string } {
+    const outer = realpathSync(mkdtempSync(path.join(tmpdir(), 'cdkd-abs-escape-')));
+    const bound = path.join(outer, 'cdk.out');
+    mkdirSync(bound);
+    return { bound, outer };
+  }
+
+  it('reports no escape for a path inside the bound', () => {
+    const { bound } = dirs();
+    mkdirSync(path.join(bound, 'asset.abc'));
+
+    expect(absoluteAssemblyPathEscape(bound, path.join(bound, 'asset.abc'))).toBeUndefined();
+  });
+
+  it('reports a lexical escape for a path outside the bound', () => {
+    const { bound, outer } = dirs();
+    const victim = path.join(outer, 'outside');
+    mkdirSync(victim);
+
+    expect(absoluteAssemblyPathEscape(bound, victim)).toEqual({
+      contained: false,
+      escape: 'lexical',
+      path: victim,
+    });
+  });
+
+  it('is SEPARATOR-AWARE, so a sibling sharing a prefix still escapes', () => {
+    const { outer } = dirs();
+    const bound = path.join(outer, 'a');
+    mkdirSync(bound);
+    const sibling = path.join(outer, 'ab');
+    mkdirSync(sibling);
+
+    expect(absoluteAssemblyPathEscape(bound, sibling)).toMatchObject({ escape: 'lexical' });
+  });
+
+  it('treats the BOUND ITSELF as inside, unlike resolveAssemblyPath', () => {
+    // The documented divergence. `resolveAssemblyPath` refuses an empty
+    // `path.relative` because a directory is never a FILE to read; this
+    // predicate's callers mount a DIRECTORY, so the same value is legitimate.
+    const { bound } = dirs();
+
+    expect(absoluteAssemblyPathEscape(bound, bound)).toBeUndefined();
+    // ...and a trailing separator is the same directory.
+    expect(absoluteAssemblyPathEscape(bound, `${bound}${path.sep}`)).toBeUndefined();
+    // The sibling still refuses it, which is why both spellings exist.
+    expect(resolveAssemblyPath(bound, '.').contained).toBe(false);
+  });
+
+  it('reports a symlink escape for a path that is lexically inside', () => {
+    const { bound, outer } = dirs();
+    const victim = path.join(outer, 'outside');
+    mkdirSync(victim);
+    const link = path.join(bound, 'link');
+    symlinkSync(victim, link, 'dir');
+
+    expect(absoluteAssemblyPathEscape(bound, link)).toEqual({
+      contained: false,
+      escape: 'symlink',
+      path: link,
+      realPath: victim,
+    });
+  });
+
+  it('reports NO escape for a link that leads back to the bound itself', () => {
+    const { bound } = dirs();
+    const selfLink = path.join(bound, 'self');
+    symlinkSync(bound, selfLink, 'dir');
+
+    expect(absoluteAssemblyPathEscape(bound, selfLink)).toBeUndefined();
+  });
+
+  it('falls back to the lexical verdict when nothing resolves', () => {
+    const { bound } = dirs();
+
+    // Neither operand exists below here, so the symlink arm is silent and the
+    // lexical verdict stands — the same fail-quiet `resolveAssemblyPath` has.
+    expect(absoluteAssemblyPathEscape(bound, path.join(bound, 'absent', 'deeper'))).toBeUndefined();
   });
 });

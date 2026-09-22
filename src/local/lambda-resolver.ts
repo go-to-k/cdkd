@@ -781,26 +781,33 @@ function extractImageLambdaProperties(args: {
 export function resolveAssetCodeDirectory(
   manifestDir: string,
   assetPath: string,
-  /**
-   * BEFORE `logicalId`, which is only for the message, so the signature matches
-   * `resolveDockerContextDirectory`'s `(dir, value, wrapError, assetOutdir)`.
-   * That breaks up a run of THREE adjacent `string` parameters, which
-   * type-checks under any transposition.
-   *
-   * It does NOT leave the signature transposition-proof, and an earlier
-   * revision of this comment claimed it did. `logicalId` / `assetOutdir` are
-   * still an adjacent `string` pair and a swap between them compiles. What
-   * makes that safe is not the types: the bound would become
-   * `path.resolve('<logicalId>')` under the cwd, disjoint from the base, so
-   * every path is refused — fail-closed — and every Stage acceptance case in
-   * `local-asset-code-path-containment.test.ts` reds. `wrapError` is the one
-   * position the COMPILER guards, a function type being unassignable to
-   * `string` in either direction.
-   */
   wrapError: (message: string) => Error,
-  logicalId: string,
-  /** The app's outdir; see the `containWithin` note above for why it differs. */
-  assetOutdir: string = manifestDir
+  /**
+   * The app's outdir, the CONTAINMENT bound; see the note above for why it is
+   * not the manifest's directory.
+   *
+   * **REQUIRED, and positioned here so OMITTING it is a type error.** Two
+   * earlier revisions of this comment were wrong about the signature, in the
+   * same direction each time, so state what is actually true:
+   *
+   * - The dangerous mistake is not a SWAP, it is a DROP. `resolveDockerContextDirectory`
+   *   reads `(manifestDir, directory, wrapError, assetOutdir)`, so a call site
+   *   written from that shape — `resolveAssetCodeDirectory(manifestDir,
+   *   assetPath, wrapError, assetOutdir)` — used to COMPILE while binding the
+   *   outdir string to `logicalId` and defaulting the bound to `manifestDir`.
+   *   That silently reinstates go-to-k/cdkd#3493's B1 and names the Lambda
+   *   `/path/to/cdk.out` in the refusal. Making this parameter required and
+   *   fourth turns exactly that call into a compile error.
+   * - `logicalId` moves LAST because it is only ever interpolated into a
+   *   message: the least dangerous parameter belongs in the position a
+   *   mistake is least costly.
+   * - A `logicalId` / `assetOutdir` swap is still expressible, and is caught by
+   *   the tests rather than the compiler — the bound becomes
+   *   `path.resolve('<logicalId>')` under the cwd, disjoint from the base, so
+   *   every path is refused and every Stage acceptance case reds.
+   */
+  assetOutdir: string,
+  logicalId: string
 ): string {
   if (isAbsolute(assetPath)) {
     // ACCEPTED — see the header. `path.resolve` only normalises here, the value
@@ -837,6 +844,25 @@ export function resolveAssetCodeDirectory(
   const resolved = resolveAssemblyPath(manifestDir, assetPath, {
     containWithin: assetOutdir,
   });
+  // NAMING THE BOUND ITSELF is not an escape here, and the two arms must agree
+  // about that. `resolveAssemblyPath`'s `isInside` is false for an empty
+  // `path.relative`, and `renderAssemblyPathEscape` then says the value "names
+  // the directory ... rather than a file inside it" — a true and useful
+  // diagnosis for its other nineteen callers, every one of which READS A FILE,
+  // and a false one here, where the value is a DIRECTORY to bind-mount by
+  // design. Left alone it also contradicts the absolute arm, which accepts the
+  // same directory, and it already disagreed with ITSELF: with `containWithin`
+  // set, `.` from a Stage manifest resolves INSIDE the wider bound and is
+  // accepted, while `.` from a top-level one lands on the bound and is refused.
+  // So accept it HERE rather than changing the shared helper, whose refusal is
+  // right for a file. No real synth emits either shape.
+  if (
+    !resolved.contained &&
+    resolved.escape === 'lexical' &&
+    resolved.path === resolve(assetOutdir)
+  ) {
+    return resolved.path;
+  }
   if (!resolved.contained) {
     // cdkd-raw-beside-safe: `renderAssemblyPathEscape` is a safe RENDERER, not
     // a value — it `displaySafe`s every path it interpolates and the rest of
@@ -898,8 +924,10 @@ export function assetPathDirs(stack: StackInfo): {
  * Falls back to a clear error when the metadata is missing OR the resolved
  * directory does not exist (CDK should always emit it for asset-backed
  * Lambdas; absence usually means the user pre-synthesized with a different
- * cdk.out and pointed `--output` at a stale one), and refuses an absolute or
- * escaping value through {@link resolveAssetCodeDirectory}.
+ * cdk.out and pointed `--output` at a stale one). Through
+ * {@link resolveAssetCodeDirectory} it REFUSES an escaping RELATIVE value and
+ * WARNS on an ABSOLUTE one that leaves the asset outdir -- see that function
+ * for why the two differ.
  */
 function resolveAssetCodePath(
   stack: StackInfo,
@@ -921,8 +949,8 @@ function resolveAssetCodePath(
     manifestDir,
     assetPath,
     (message) => new LocalInvokeResolutionError(message),
-    logicalId,
-    assetOutdir
+    assetOutdir,
+    logicalId
   );
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
