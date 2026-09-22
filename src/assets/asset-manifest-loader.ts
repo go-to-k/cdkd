@@ -7,7 +7,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
-import { warnAbsoluteAssetPath } from './absolute-asset-path-warning.js';
+import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -107,6 +107,15 @@ export function resolveFileAssetSourcePath(
         escape,
         sink,
       });
+    } else if (absolute === resolve(assetOutdir)) {
+      // Inside the bound, so `absoluteAssemblyPathEscape` says nothing — but
+      // it IS the bound, which means the whole assembly is the source.
+      warnWholeAssemblyAsSource({
+        subject: `File asset '${displaySafe(asset.displayName)}'`,
+        field: 'source.path',
+        outdir: absolute,
+        sink,
+      });
     }
     return absolute;
   }
@@ -130,11 +139,24 @@ export function resolveFileAssetSourcePath(
   // design. Accepted HERE rather than by changing the shared helper, whose
   // refusal is right for a file. Mirrors the local twin
   // (`resolveAssetCodeDirectory`, go-to-k/cdkd#3494); no real synth emits `.`.
+  //
+  // **It WARNS, where the twin is silent, and the difference is the sink.**
+  // The twin bind-mounts a directory; this layer zips it and uploads it to a
+  // bucket the same manifest names, so accepting `.` silently means the whole
+  // `cdk.out` leaves the machine with no line printed. A first revision of
+  // this arm did exactly that, in the name of parity with the twin — parity of
+  // the VERDICT is right, parity of the SILENCE is not.
   if (
     !resolved.contained &&
     resolved.escape === 'lexical' &&
     resolved.path === resolve(assetOutdir)
   ) {
+    warnWholeAssemblyAsSource({
+      subject: `File asset '${displaySafe(asset.displayName)}'`,
+      field: 'source.path',
+      outdir: resolved.path,
+      sink,
+    });
     return resolved.path;
   }
   if (!resolved.contained) {
@@ -269,13 +291,15 @@ export class AssetManifestLoader {
     asset: FileAsset,
     assetOutdir: string,
     /**
-     * What the caller does with the directory next. Defaulted HERE and only
-     * here: every caller of this method READS the directory locally (the
-     * AgentCore build and its watch loop) — none uploads, which is why
-     * baking the publisher's "upload it" clause into the resolver was wrong.
-     * A future caller that publishes must pass its own.
+     * What the caller does with the directory next.
+     *
+     * **REQUIRED, with no default.** A default is the droppable-argument shape
+     * this PR made `assetOutdir` required to kill, and it had already produced
+     * a wrong sentence: the watch loop's file arm inherited "read that
+     * directory" while actually `docker cp`-ing it into a running container.
+     * Each caller states its own.
      */
-    sink = 'read that directory and build a local image from it'
+    sink: string
   ): string {
     return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir, sink);
   }

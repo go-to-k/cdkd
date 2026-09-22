@@ -13,7 +13,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
-import { warnAbsoluteAssetPath } from './absolute-asset-path-warning.js';
+import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -108,6 +108,11 @@ export interface BuildDockerImageOptions {
  * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
  * Exported for unit testing.
  */
+/** One spelling of the warning subject, so the two arms cannot drift. */
+function dockerSubject(assetId: string | undefined): string {
+  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
+}
+
 export function resolveDockerContextDirectory(
   manifestDir: string,
   directory: string,
@@ -145,11 +150,17 @@ export function resolveDockerContextDirectory(
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined) {
       warnAbsoluteAssetPath({
-        subject:
-          assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`,
+        subject: dockerSubject(assetId),
         field: 'source.directory',
         absolute,
         escape,
+        sink,
+      });
+    } else if (absolute === resolve(assetOutdir)) {
+      warnWholeAssemblyAsSource({
+        subject: dockerSubject(assetId),
+        field: 'source.directory',
+        outdir: absolute,
         sink,
       });
     }
@@ -162,13 +173,19 @@ export function resolveDockerContextDirectory(
     containWithin: assetOutdir,
   });
   // NAMING THE BOUND ITSELF is not an escape; the twin's comment in
-  // `resolveFileAssetSourcePath` carries the reasoning, and the two arms of
-  // THIS function must agree about it for the same reason.
+  // `resolveFileAssetSourcePath` carries the reasoning — including why it
+  // WARNS rather than accepting silently, which is the sink.
   if (
     !resolved.contained &&
     resolved.escape === 'lexical' &&
     resolved.path === resolve(assetOutdir)
   ) {
+    warnWholeAssemblyAsSource({
+      subject: dockerSubject(assetId),
+      field: 'source.directory',
+      outdir: resolved.path,
+      sink,
+    });
     return resolved.path;
   }
   if (!resolved.contained) {

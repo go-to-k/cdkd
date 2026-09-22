@@ -422,7 +422,16 @@ export async function loadAgentCoreAssetContext(args: {
     if (!asset) return undefined;
     // Bound by the app outdir, not the manifest directory: a Stage's assets
     // are staged one level up (issue go-to-k/cdkd#3489).
-    const sourceDir = assetLoader.getAssetSourcePath(manifestDir, asset, assetOutdir);
+    // The SINK is the same one the Docker arm below states explicitly: this
+    // path feeds `softReload` -> `docker cp <dir>/. <container>:<workdir>`.
+    // Taking the read-only default here restated the defect the shared sink
+    // was introduced to fix, on the other half of the same function.
+    const sourceDir = assetLoader.getAssetSourcePath(
+      manifestDir,
+      asset,
+      assetOutdir,
+      "copy that directory into the running container's workspace"
+    );
     return {
       ...(oldAssetHash !== undefined && { oldAssetHash }),
       newAssetHash: resolved.codeArtifact.codeAssetHash,

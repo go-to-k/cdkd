@@ -291,6 +291,18 @@ export function resolveAssemblyPath(
      * for the only callers — an asset `source.path` is legitimately a
      * directory — but it is a side effect of widening, not a decision.
      *
+     * A consequence the ABSOLUTE sibling had to fix and this arm does not:
+     * `absoluteAssemblyPathEscape` compares two paths that arrive
+     * INDEPENDENTLY, so it exonerates two spellings of one directory
+     * (go-to-k/cdkd#3532). Here the candidate is built BY JOINING onto `base`,
+     * so base and candidate share the caller's spelling by construction and
+     * the mismatch cannot arise — EXCEPT between `base` and `containWithin`,
+     * which are two strings. Today both derive from one `assemblyDir` value
+     * threaded unchanged through the Stage recursion, so they cannot disagree;
+     * a future caller that computes them apart would get a spurious REFUSAL,
+     * which is worse than the spurious warning the sibling had, and must add
+     * the same real-path exoneration here.
+     *
      * `containWithin` must never carry an assembly-supplied value. That is the
      * invariant; the sources that satisfy it today are `StackInfo.assetOutdir`
      * and the assembly root `Synthesizer.synthesize` returns, both derived from

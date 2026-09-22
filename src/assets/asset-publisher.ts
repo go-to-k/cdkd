@@ -217,8 +217,7 @@ export class AssetPublisher {
         data.cdkOutputDir,
         data.accountId,
         data.region,
-        data.assetOutdir,
-        data.profile
+        data.assetOutdir
       );
     } else if (data.kind === 'docker-build') {
       await this.dockerPublisher.build(

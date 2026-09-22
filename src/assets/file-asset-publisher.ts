@@ -27,7 +27,12 @@ export class FileAssetPublisher {
    * @param cdkOutputDir CDK output directory (cdk.out)
    * @param accountId AWS account ID
    * @param region AWS region
-   * @param profile AWS profile (optional)
+   *
+   * There is deliberately NO `profile` parameter. It was unused, and being
+   * OPTIONAL and last it let a pre-go-to-k/cdkd#3532 call
+   * `(…, accountId, region, profile)` keep compiling with the profile NAME
+   * bound to `assetOutdir` — the required bound catches a DROP, not a SWAP,
+   * so the parameter that made the swap expressible is gone instead.
    */
   async publish(
     assetHash: string,
@@ -44,8 +49,7 @@ export class FileAssetPublisher {
      * optional kept the drop expressible one layer out, which is the exact
      * defect the resolver's own required parameter was made to stop.
      */
-    assetOutdir: string,
-    _profile?: string
+    assetOutdir: string
   ): Promise<void> {
     // Containment FIRST, before any S3 client exists and before the
     // already-exists short-circuit below (issue go-to-k/cdkd#3489). Two
@@ -71,7 +75,12 @@ export class FileAssetPublisher {
       cdkOutputDir,
       asset,
       assetOutdir,
-      `package that path and upload it to ${destinations.join(', ')}`
+      // A manifest may write `destinations: {}`, and then nothing is uploaded
+      // at all — "upload it to " with nothing after it would be worse than
+      // the generic clause.
+      destinations.length > 0
+        ? `package that path and upload it to ${destinations.join(', ')}`
+        : 'package that path for upload to the destinations this manifest names'
     );
 
     // Process each destination

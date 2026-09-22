@@ -539,13 +539,21 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(lines[0]).toContain(outsideReal);
   });
 
-  it('ACCEPTS a value naming the BOUND ITSELF, by either spelling, in BOTH arms', () => {
+  it('ACCEPTS a value naming the BOUND ITSELF by either spelling, and WARNS on all four', () => {
     // The two arms have to agree about the bound directory. The absolute arm
     // treats `target === bound` as inside; the relative arm reaches
     // `resolveAssemblyPath`, whose empty `path.relative` reads as "names the
     // directory rather than a file inside it" — true and useful for its other
     // callers, which all READ A FILE, and false here, where an asset source IS
     // a directory. Mirrors the local twin (go-to-k/cdkd#3494).
+    //
+    // **But it must not be SILENT, and a first revision of this case asserted
+    // that it was.** The twin bind-mounts; this layer zips the directory and
+    // uploads it to a bucket the manifest names, so accepting `.` silently
+    // sends the WHOLE `cdk.out` — every template and every staged asset — with
+    // no line printed. Parity of the verdict is right, parity of the silence
+    // is not. Four spellings, because the absolute and relative arms of each
+    // resolver reach the check by different routes.
     const { dir } = assembly();
     const cap = captureWarn();
 
@@ -554,7 +562,32 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(resolveDocker(dir, dir, dir)).toBe(dir);
     expect(resolveDocker(dir, '.', dir)).toBe(dir);
 
-    expect(cap.warned()).toEqual([]);
+    const lines = cap.warned();
+    expect(lines).toHaveLength(4);
+    for (const line of lines) {
+      expect(line).toContain('output directory ITSELF');
+      expect(line).toContain('WHOLE');
+      expect(line).toContain(dir);
+    }
+    // The sink still comes from the caller, so a user reads what happens next.
+    expect(lines[0]).toContain(FILE_SINK);
+    expect(lines[2]).toContain(DOCKER_SINK);
+  });
+
+  it("WARNS for a Stage manifest's `..`, which resolves onto the outdir the same way", () => {
+    // The reachable spelling: from `cdk.out/assembly-<Stage>/`, `..` IS the
+    // app outdir, so a tampered Stage manifest reaches the whole-assembly case
+    // without ever writing `.`.
+    const outdir = tmp();
+    const manifestDir = join(outdir, 'assembly-MyStage');
+    mkdirSync(manifestDir);
+    const cap = captureWarn();
+
+    expect(resolveFile(manifestDir, fileAsset('..'), outdir)).toBe(outdir);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('output directory ITSELF');
   });
 
   it("names the Docker asset when the caller has an id, and does not when it has none", () => {
