@@ -95,15 +95,18 @@ control from the SAME ARM — the line count differs per arm.
 exactness keeps a space and a `:`, so an identifier can spell one of these
 labels and forge it inside the quoted clause once the terminal wraps. Add
 `isPasteableIdent` on BOTH identifiers, in CONJUNCTION with exactness, measured
-at the cap the message's own clause RENDERS at. FOUR messages carry it, through
-three spellings: the two DESTROY refusals via
-`mayNameTargetWithDestructiveRemedy` (region at 128);
+at the cap the message's own clause RENDERS at. THREE messages carry it: the two
+DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128), and
 `divergentRecordRegionRefusalMessage`, which spells its own because it renders a
-KEY region at the state-record cap (go-to-k/cdkd#3328); and
-`dropRecordCommand`, which is the one site that SUBSTITUTES into the command
-rather than offering a hole, so it is the strongest instance rather than a
-weaker one. Every other message in this module offers a read ONLY and is
-ungated. Borrowing a gate across sites is fail-safe in ONE direction
+KEY region at the state-record cap (go-to-k/cdkd#3328).
+
+**The one EXCEPTION is the strongest instance, and it is open**
+(go-to-k/cdkd#3523): `dropRecordCommand` SUBSTITUTES into `cdkd state orphan`
+rather than offering a hole, and gates on `rendersExactly` alone. Tightening it
+withholds the drop command from a legacy record whose name merely needs quoting,
+which is the path go-to-k/cdkd#3359 built — so it is a trade-off to decide, not
+an oversight to close in passing. Every other message here offers a read ONLY
+and is ungated. Borrowing a gate across sites is fail-safe in ONE direction
 only: a 128-capped gate at a 1152-capped site just withholds, but a 1152-capped
 gate at a 128-capped site NAMES a region whose clause above it renders
 truncated — a target printed cut, with a read that selects no record.

@@ -4416,67 +4416,18 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(text).toContain(HINT);
     });
 
-    it('withholds an identity that forges the destructive line', () => {
-      // The strongest instance of the forgery go-to-k/cdkd#3516's review
-      // closed on the two destroy refusals and the divergent-region one: this
-      // is the only message that SUBSTITUTES into `cdkd state orphan` rather
-      // than offering a hole, so a forged label here renders above a genuine,
-      // already-runnable `Drop the record:` line. `cdkd orphan` reads a
-      // prebuilt assembly's stack name unvalidated (go-to-k/cdkd#3360).
-      const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1';
-      // The expected command differs per row, and that is the helper's own
-      // rule rather than an inconsistency: it is "keyed to what IS trusted", so
-      // an exact, pasteable region SURVIVES a forged stack because it narrows
-      // the delete. What must never survive is the forged half.
-      for (const [label, stackName, region, expected] of [
-        ['in the stack name', FORGED, 'us-east-1', "cdkd state orphan '<stack>' --stack-region us-east-1"],
-        ['in the region', 'S', FORGED, "cdkd state orphan '<stack>' --stack-region '<region>'"],
-      ] as ReadonlyArray<readonly [string, string, string, string]>) {
-        const text = malformedOrphanResourcePropertiesRefusalMessage(stackName, region, ['A']);
-        expect(dropOf(text), label).toBe(expected);
-        expect(dropOf(text), label).not.toContain('orphan prod');
-      }
-      // The CONTROL, or this passes for a helper that templates everything: a
-      // shell-plain identity is still SUBSTITUTED, which is what this message
-      // does that its three siblings do not.
-      const healthy = malformedOrphanResourcePropertiesRefusalMessage(
-        'Parent~Child',
-        'us-east-1',
-        ['A']
-      );
-      // QUOTED: `~` is shell-significant, so the gate admits the name and
-      // `shellQuote` still wraps it. Substituted is the point, not bare.
-      expect(dropOf(healthy)).toBe("cdkd state orphan 'Parent~Child' --stack-region us-east-1");
-    });
-
-    it('withholds a region that is not shell-plain, and the hint carries the recovery flags', () => {
-      // CHANGED by go-to-k/cdkd#3516's review: a region that renders exactly
-      // but needs shell quoting is no longer SUBSTITUTED into the destructive
-      // command. `it's` is not itself a forgery vector — a label needs a space
-      // and a `:` — but this is the one site that substitutes into
-      // `cdkd state orphan` rather than offering a hole, and the module's three
-      // other destructive remedies all gate on `isPasteableIdent`. A fourth,
-      // bespoke predicate here ("exact, and no space or colon") would be the
-      // spelling proliferation this review set out to remove.
-      //
-      // The cost is bounded and it is the DEGRADATION this helper already has:
-      // the drop command becomes a template. The READ still substitutes, and
-      // `Find the exact name:` still names the record, so nothing that helps
-      // the operator identify the record is withheld — only the command that
-      // DELETES it.
+    it('shell-quotes an exact region in BOTH arms, and the hint carries the recovery flags', () => {
+      // A region that renders exactly but is not shell-plain: quoted in the
+      // substituted arm and in the template arm that keeps it.
       const sub = malformedOrphanResourcePropertiesRefusalMessage('S', "it's", ['A']);
-      expect(dropOf(sub)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
+      expect(dropOf(sub)).toBe("cdkd state orphan S --stack-region 'it'\\''s'");
       const tpl = malformedOrphanResourcePropertiesRefusalMessage('S ', "it's", ['A'], {
         profile: 'prod',
         stateBucket: 'b',
         statePrefix: 'x',
       });
-      // Same reason as the arm above: the region is exact but not shell-plain,
-      // so it becomes a hole here too rather than being kept while the stack
-      // degrades. The recovery FLAGS are unaffected — they are cdkd's own
-      // values, not record-derived, which is why they stay substituted.
       expect(dropOf(tpl)).toBe(
-        "cdkd state orphan \'<stack>\' --stack-region \'<region>\' --profile prod --state-bucket b --state-prefix x"
+        "cdkd state orphan \'<stack>\' --stack-region 'it'\\''s' --profile prod --state-bucket b --state-prefix x"
       );
       // The listing the hint sends the operator to must read the SAME bucket.
       expect(tpl).toContain(HINT);

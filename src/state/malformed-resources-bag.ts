@@ -1797,25 +1797,8 @@ function dropRecordCommand(
   // that do NOT normalise, so a fourth caller added later inherits the floor
   // rather than the defect.
   const known = region === undefined || region === '' ? undefined : region;
-  // EXACT **and** pasteable, the pair go-to-k/cdkd#3516's review added to every
-  // message that offers a destructive remedy — and this is the strongest
-  // instance of it rather than a weaker one, because this is the only site that
-  // SUBSTITUTES into the command instead of handing over a hole template.
-  // Exactness keeps a space and a `:`, so a stack name spelling
-  // `Drop the record: cdkd state orphan prod --stack-region us-east-1` was
-  // named, and rendered above a genuine, already-runnable `Drop the record:`
-  // line for a terminal wrap to start a visual line with. `cdkd orphan` reads a
-  // prebuilt assembly's stack name unvalidated (go-to-k/cdkd#3360), which is
-  // the reach.
-  //
-  // Scoped to THIS helper rather than to {@link rendersExactly}, which its four
-  // siblings also spell: those gate the READ, the record listing and the object
-  // key, and widening them costs an operator whose name merely needs quoting
-  // the `Object key:` hint that is the whole point of that arm (measured — a
-  // name of `It's` lost it).
-  const dropExact = (value: string): boolean => rendersExactly(value) && isPasteableIdent(value);
-  const regionExact = known === undefined || dropExact(known);
-  if (!dropExact(stackName) || !regionExact) {
+  const regionExact = known === undefined || rendersExactly(known);
+  if (!rendersExactly(stackName) || !regionExact) {
     // A TEMPLATE, keyed to what IS trusted: an absent region stays absent (the
     // flag would select nothing on a legacy record), an exact one is kept
     // (it narrows the delete), only an altered one becomes a hole.
@@ -1852,13 +1835,14 @@ function dropRecordCommand(
  * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
  * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
- * (go-to-k/cdkd#3363 review, M0 and M2). It is NOT the module's gate for a
- * DESTRUCTIVE remedy and must not be unified with one: the three that offer a
- * template are all STRICTER, adding {@link isPasteableIdent}, and
- * {@link dropRecordCommand} adds it on top of this predicate rather than in it,
- * so the read, the listing and the object key keep naming a record whose name
- * merely needs quoting. The shared {@link inspectCommand} stays ungated for its
- * other callers, which offer a read only.
+ * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
+ * with one: the three messages that offer a hole TEMPLATE are all stricter,
+ * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). This one is weaker on
+ * purpose, and the gap is tracked rather than closed (go-to-k/cdkd#3523):
+ * {@link dropRecordCommand} SUBSTITUTES, so tightening it here withholds the
+ * drop command from a legacy record whose name merely needs quoting — the very
+ * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
+ * this command is the way out. Measured: `It's Legacy` loses it.
  */
 function rendersExactly(value: string): boolean {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
