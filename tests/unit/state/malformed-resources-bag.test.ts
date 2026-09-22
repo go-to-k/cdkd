@@ -6346,17 +6346,33 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       // forbids (review nit n4). The clause is the observable the decision is
       // actually about.
       expect(build('', 'us-east-1')).not.toContain(UNRENDERABLE);
-      // The observable is that the message names NO stack, which each builder
-      // words its own way — `divergentRecordRegionRefusalMessage` has its own
-      // no-identity opening, so pinning one sentence here would be pinning
-      // prose. What every one of them owes is that a name a caller did not
-      // supply does not appear.
-      expect(build('', 'us-east-1')).not.toContain('MyStack');
+      // The REGION goes with it, which is the cost the helper's JSDoc states:
+      // a record cdkd cannot name is one it cannot build a selecting command
+      // for either, so `inspectCommand` answers a missing stack with the
+      // two-hole template. Pinned here because it is the only assertion on
+      // this axis that cannot pass vacuously — an earlier cut asserted the
+      // message does not contain a name the caller never supplied, which no
+      // implementation can fail, and which left this case strictly weaker
+      // than the region one beside it.
+      expect(build('', 'us-east-1')).not.toContain('us-east-1');
       // CONTROL: a real name IS named, so this does not pass for a builder
       // that withheld every identity.
       expect(build('MyStack', 'us-east-1')).toContain('MyStack');
     });
   }
+
+  it('safeRegion tolerates undefined, which the REGION cases above rely on', () => {
+    // Five of the fenced builders have a required `string` region, so
+    // `build('S', undefined)` reaches them through a cast (review nit n6). It
+    // works because `safeRegion(undefined)` lands on `displaySafe`'s
+    // unrenderable arm rather than throwing. That tolerance is undocumented,
+    // so it is pinned here: if it narrows, ONE case reds saying why instead of
+    // five reding with a TypeError that names nothing.
+    expect(() => malformedStateRefusalMessage('S', undefined as unknown as string)).not.toThrow();
+    expect(malformedStateRefusalMessage('S', undefined as unknown as string)).not.toContain(
+      '--stack-region'
+    );
+  });
 
   it('the enumeration above is every exported builder that takes an identifier', () => {
     // Derived from the source so a builder added later joins it or fails here.
@@ -6365,7 +6381,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     // `region?: string` all accept `''` identically.
     const src = readFileSync(join(repoRoot, 'src/state/malformed-resources-bag.ts'), 'utf8');
     const taking = [...src.matchAll(/export function (\w+)\(([^)]*)\)/gs)]
-      .filter(([, , params]) => /\b(raw)?([Ss]tackName|[Rr]egion)\??:/.test(params!))
+      .filter(([, , params]) => /(raw)?\w*([Ss]tackName|[Rr]egion)\??:/.test(params!))
       .map(([, name]) => name!);
     expect(taking.length, 'the derivation matched nothing').toBeGreaterThan(0);
     // These RENDER NOTHING — they pass their identifiers to a builder above
@@ -6406,38 +6422,55 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     // already correct by a different route. Asserting each is still BROKEN is
     // what would have caught that on the first run, and is what stops a name
     // staying here after someone fixes it.
-    const KNOWN_UNFIXED: ReadonlyArray<readonly [string, () => string]> = [
-      ['malformedExportNamesWarning', () => malformedExportNamesWarning('S', '')],
-      ['malformedExportSourceWarning', () => malformedExportSourceWarning('S', '')],
-      ['malformedLocalOutputsWarning', () => malformedLocalOutputsWarning('S', '')],
+    const KNOWN_UNFIXED: ReadonlyArray<readonly [string, (axis: 'stack' | '') => string]> = [
+      ['malformedExportNamesWarning', (axis) => malformedExportNamesWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedExportSourceWarning', (axis) => malformedExportSourceWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedLocalOutputsWarning', (axis) => malformedLocalOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
       [
         'malformedNestedChildOutputsRefusalMessage',
-        () => malformedNestedChildOutputsRefusalMessage('S', ''),
+        (axis) => malformedNestedChildOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
       ],
-      ['malformedOrphanRecordsWarning', () => malformedOrphanRecordsWarning('S', '', ['A'])],
-      ['malformedOrphansRefusalMessage', () => malformedOrphansRefusalMessage('S', '')],
-      ['malformedOrphansWarning', () => malformedOrphansWarning('S', '')],
+      ['malformedOrphanRecordsWarning', (axis) => malformedOrphanRecordsWarning('S', '', ['A'])],
+      ['malformedOrphansRefusalMessage', (axis) => malformedOrphansRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedOrphansWarning', (axis) => malformedOrphansWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
       [
         'malformedDestroyOutputsRefusalMessage',
-        () => malformedDestroyOutputsRefusalMessage('S', ''),
+        (axis) => malformedDestroyOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
       ],
-      ['malformedOutputsRefusalMessage', () => malformedOutputsRefusalMessage('S', '')],
-      ['malformedOutputsWarning', () => malformedOutputsWarning('S', '')],
+      ['malformedOutputsRefusalMessage', (axis) => malformedOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedOutputsWarning', (axis) => malformedOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
       [
         'malformedRenderedContainersWarning',
-        () => malformedRenderedContainersWarning('S', '', ['outputs']),
+        (axis) => malformedRenderedContainersWarning('S', '', ['outputs']),
       ],
       [
         'malformedResourceEntriesRefusalMessage',
-        () => malformedResourceEntriesRefusalMessage('S', '', ['A']),
+        (axis) => malformedResourceEntriesRefusalMessage('S', '', ['A']),
       ],
-      ['malformedResourceEntriesWarning', () => malformedResourceEntriesWarning('S', '', ['A'])],
+      ['malformedResourceEntriesWarning', (axis) => malformedResourceEntriesWarning('S', '', ['A'])],
     ];
+    // BOTH axes per entry: a thunk probing only the region leaves a
+    // half-swept builder — one that gained `absentIfEmpty(rawStackName)` alone
+    // — in this list with everything green, while the fenced table demands
+    // both. The thunk takes the axis so the entry cannot claim more than it
+    // checks.
     for (const [name, build] of KNOWN_UNFIXED) {
-      expect(build(), `${name} no longer has the defect — move it into BUILDERS`).toContain(
+      expect(build(''), `${name} no longer has the REGION defect — move it into BUILDERS`).toContain(
         UNRENDERABLE
       );
+      expect(
+        build('stack'),
+        `${name} no longer has the STACK-NAME defect — move it into BUILDERS`
+      ).toContain(UNRENDERABLE);
     }
+    // Label-to-thunk drift: a copy-paste where the label names one builder and
+    // the thunk calls another leaves one unchecked and one checked twice, and
+    // nothing above reds. Distinct outputs is the cheapest observation that
+    // catches it — two entries calling the same builder render identically.
+    expect(
+      new Set(KNOWN_UNFIXED.map(([, build]) => build(''))).size,
+      'two entries render the same message — a label and its thunk disagree'
+    ).toBe(KNOWN_UNFIXED.length);
     const unfixedNames = KNOWN_UNFIXED.map(([n]) => n);
     // A fenced builder must still be IN the derivation, or a param list that
     // gains a `)` drops it out and the partition below still passes.
