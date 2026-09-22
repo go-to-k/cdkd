@@ -71,17 +71,16 @@ export class FileAssetPublisher {
           `${this.resolvePlaceholders(d.objectKey, accountId, region)}`
       )
       .map((u) => displaySafe(u));
-    const sourcePath = resolveFileAssetSourcePath(
-      cdkOutputDir,
-      asset,
+    const sourcePath = resolveFileAssetSourcePath(cdkOutputDir, asset, {
       assetOutdir,
-      // A manifest may write `destinations: {}`, and then nothing is uploaded
-      // at all — "upload it to " with nothing after it would be worse than
-      // the generic clause.
-      destinations.length > 0
-        ? `package that path and upload it to ${destinations.join(', ')}`
-        : 'package that path, though this manifest names no destination for it'
-    );
+      sink:
+        // A manifest may write `destinations: {}`, and then nothing is uploaded
+        // at all — "upload it to " with nothing after it would be worse than
+        // the generic clause.
+        destinations.length > 0
+          ? `package that path and upload it to ${destinations.join(', ')}`
+          : 'package that path, though this manifest names no destination for it',
+    });
 
     // Process each destination
     for (const [, dest] of Object.entries(asset.destinations)) {

@@ -486,8 +486,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
           source: { path: '../outside-dir', packaging: 'zip' },
           destinations: {},
         },
-        outdir,
-        'read that directory and build a local image from it'
+        { assetOutdir: outdir, sink: 'read that directory and build a local image from it' }
       )
     ).toThrow(/outside/);
     await expect(call(outdir)).rejects.toThrow(/outside/);

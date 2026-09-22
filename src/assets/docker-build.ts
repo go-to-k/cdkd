@@ -7,6 +7,7 @@ import {
   spawnStreaming,
 } from '../utils/docker-cmd.js';
 import { isAbsolute, resolve } from 'path';
+import type { FileAssetResolveOptions } from './asset-manifest-loader.js';
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
@@ -114,31 +115,48 @@ export interface BuildDockerImageOptions {
  * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
  * Exported for unit testing.
  */
+/**
+ * The three values that decide what {@link resolveDockerContextDirectory}
+ * does, as a BAG rather than positionals (issue
+ * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+ *
+ * `assetOutdir` and `sink` are both `string`, and `assetId` is another — so a
+ * call written `(…, assetOutdir, assetId)` compiled and printed
+ * `cdkd will cdkd-asset-<hash>`. Making each required, which
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did, catches a DROP and
+ * not a TRANSPOSITION; this is the shape that was left.
+ */
+export interface DockerContextResolveOptions {
+  /**
+   * The app's outdir; see {@link FileAssetResolveOptions.assetOutdir} for why
+   * it differs from the manifest's directory. A dropped bound narrows to the
+   * manifest directory and refuses every Stage asset, which no refusal test
+   * can see.
+   */
+  assetOutdir: string;
+  /**
+   * What THIS caller does with the directory next, completing "cdkd will ...".
+   * The two arms of `buildDockerImage` have DIFFERENT sinks, and describing
+   * one on the other understates: the `executable` arm sends nothing to
+   * BuildKit — the directory becomes the working directory of a
+   * manifest-supplied argv.
+   */
+  sink: string;
+  /**
+   * How to name the asset in the warning. Absent renders a bare subject; with
+   * several image assets under `--no-staging` that gives N indistinguishable
+   * lines.
+   */
+  assetId?: string;
+}
+
 export function resolveDockerContextDirectory(
   manifestDir: string,
   directory: string,
   wrapError: (message: string) => Error,
-  /**
-   * The app's outdir; see `resolveFileAssetSourcePath` for why it differs from
-   * the manifest's directory, and why it is REQUIRED rather than defaulted —
-   * a dropped bound narrows to the manifest directory and refuses every Stage
-   * asset, which no refusal test can see.
-   */
-  assetOutdir: string,
-  /**
-   * What THIS caller does with the directory next, completing "cdkd will ...".
-   * REQUIRED and caller-supplied: the two arms of `buildDockerImage` have
-   * DIFFERENT sinks, and describing one on the other is a false statement in
-   * the direction that understates. See `AbsoluteAssetPathWarning.sink`.
-   */
-  sink: string,
-  /**
-   * How to name the asset in the warning. Absent renders a bare subject, which
-   * is what a caller with no identity to hand has; with several image assets
-   * under `--no-staging` a bare subject gives N indistinguishable lines.
-   */
-  assetId?: string
+  opts: DockerContextResolveOptions
 ): string {
+  const { assetOutdir, sink, assetId } = opts;
   if (isAbsolute(directory)) {
     // HONOURED and warned about, never refused — the twin decision to
     // `resolveFileAssetSourcePath`'s, for the same three reasons, and this is
@@ -239,14 +257,11 @@ export async function buildDockerImage(
   // larger risk than a BuildKit context and was previously described as the
   // smaller one.
   const contextDirectory = (directory: string, sink: string): string =>
-    resolveDockerContextDirectory(
-      cdkOutDir,
-      directory,
-      options.wrapError,
-      options.assetOutdir ?? cdkOutDir,
+    resolveDockerContextDirectory(cdkOutDir, directory, options.wrapError, {
+      assetOutdir: options.assetOutdir ?? cdkOutDir,
       sink,
-      options.tag
-    );
+      ...(options.tag !== undefined && { assetId: options.tag }),
+    });
 
   // Executable source: run the script and read stdout for the tag.
   //

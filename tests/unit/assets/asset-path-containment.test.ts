@@ -93,9 +93,13 @@ const wrapErr = (m: string): Error => new Error(m);
 const FILE_SINK = 'do the file thing with it';
 const DOCKER_SINK = 'do the docker thing with it';
 const resolveFile = (dir: string, a: FileAsset, bound: string): string =>
-  resolveFileAssetSourcePath(dir, a, bound, FILE_SINK);
+  resolveFileAssetSourcePath(dir, a, { assetOutdir: bound, sink: FILE_SINK });
 const resolveDocker = (dir: string, d: string, bound: string, id?: string): string =>
-  resolveDockerContextDirectory(dir, d, wrapErr, bound, DOCKER_SINK, id);
+  resolveDockerContextDirectory(dir, d, wrapErr, {
+    assetOutdir: bound,
+    sink: DOCKER_SINK,
+    ...(id !== undefined && { assetId: id }),
+  });
 
 describe("a file asset's source.path", () => {
   it('refuses one that leaves the assembly directory, naming the asset and the path', () => {
@@ -331,7 +335,10 @@ describe("a Docker asset's source.directory", () => {
     class Typed extends Error {}
 
     expect(() =>
-      resolveDockerContextDirectory(dir, '../outside-dir', (m) => new Typed(m), dir, DOCKER_SINK)
+      resolveDockerContextDirectory(dir, '../outside-dir', (m) => new Typed(m), {
+        assetOutdir: dir,
+        sink: DOCKER_SINK,
+      })
     ).toThrow(Typed);
   });
 });

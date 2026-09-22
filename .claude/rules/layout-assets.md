@@ -20,11 +20,16 @@ paths:
   directory but are CONTAINED within `StackInfo.assetOutdir`**: a Stage's
   assets sit in the app root, so `source.path` is `../asset.<hash>` by design
   and containing against the manifest directory refused every Stage asset.
-  **`assetOutdir` is REQUIRED on both resolvers AND on
-  `FileAssetPublisher.publish` / `DockerAssetPublisher.build`**, so a dropped
-  argument is a compile error rather than a silent narrowing back onto the
-  manifest directory; exactly one `??` survives, in `buildDockerImage`, whose
-  options bag may legitimately lack it, and it narrows, never opens.
+  **Both resolvers take their trailing values as an OPTIONS BAG**
+  (`FileAssetResolveOptions` / `DockerContextResolveOptions`), and
+  `assetOutdir` is REQUIRED there and on `FileAssetPublisher.publish` /
+  `DockerAssetPublisher.build`. Required catches a DROP; the bag catches a
+  TRANSPOSITION, which required does not — the values are all `string`, so
+  `(…, assetOutdir, assetId)` used to compile and print
+  `cdkd will cdkd-asset-<hash>`
+  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). Exactly one `??`
+  survives, in `buildDockerImage`, whose options bag may legitimately lack the
+  outdir, and it narrows, never opens.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because

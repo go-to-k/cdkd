@@ -426,12 +426,10 @@ export async function loadAgentCoreAssetContext(args: {
     // path feeds `softReload` -> `docker cp <dir>/. <container>:<workdir>`.
     // Taking the read-only default here restated the defect the shared sink
     // was introduced to fix, on the other half of the same function.
-    const sourceDir = assetLoader.getAssetSourcePath(
-      manifestDir,
-      asset,
+    const sourceDir = assetLoader.getAssetSourcePath(manifestDir, asset, {
       assetOutdir,
-      "copy that directory into the running container's workspace"
-    );
+      sink: "copy that directory into the running container's workspace",
+    });
     return {
       ...(oldAssetHash !== undefined && { oldAssetHash }),
       newAssetHash: resolved.codeArtifact.codeAssetHash,
@@ -462,8 +460,7 @@ export async function loadAgentCoreAssetContext(args: {
     manifestDir,
     newDockerImage.source.directory,
     (message) => new Error(message),
-    assetOutdir,
-    "copy that directory into the running container's workspace"
+    { assetOutdir, sink: "copy that directory into the running container's workspace" }
   );
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),

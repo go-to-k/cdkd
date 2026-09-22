@@ -1393,12 +1393,10 @@ async function resolveAgentCoreCodeImage(
   // `options.output` is NOT, because `-a <pre-synthesized dir>` skips synthesis
   // and never reads `--output`. `resolved.stack` is cdk-local's StackInfo and
   // carries no `assetOutdir`, so the value is threaded in from the command.
-  const sourceDir = loader.getAssetSourcePath(
-    cdkOutDir,
-    asset,
-    assemblyDir,
-    'read that directory and build a local image from it'
-  );
+  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset, {
+    assetOutdir: assemblyDir,
+    sink: 'read that directory and build a local image from it',
+  });
   if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
     throw new CdkdError(
       // `sourceDir` is manifest-derived, and this message is the one READER of

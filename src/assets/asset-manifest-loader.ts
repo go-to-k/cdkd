@@ -68,32 +68,47 @@ import { getLogger } from '../utils/logger.js';
  * it is no longer a boundary against anyone who chose the value. The docs say
  * this to users in the same words; do not soften either copy.
  */
-export function resolveFileAssetSourcePath(
-  manifestDir: string,
-  asset: FileAsset,
+/**
+ * The two values that decide what {@link resolveFileAssetSourcePath} does, as
+ * a BAG rather than positionals (issue
+ * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+ *
+ * Both are `string`, and making each REQUIRED — which
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did — catches a DROP
+ * and not a TRANSPOSITION. A caller passing them the other way round compiled
+ * and bound a prose clause to the containment bound. The same PR deleted
+ * `FileAssetPublisher.publish`'s unused `profile` for that reason; this is the
+ * shape that was left.
+ */
+export interface FileAssetResolveOptions {
   /**
    * The app's outdir, where `cdk synth` stages every asset — the containment
    * bound for a relative value and the warning bound for an absolute one.
    *
-   * **REQUIRED, so that OMITTING it is a type error.** It used to default to
-   * `manifestDir`, which is right for a TOP-LEVEL stack and wrong for a Stage:
-   * `cdk synth` stages a Stage's assets into the APP's outdir while the
-   * Stage's manifest sits in `cdk.out/assembly-<Stage>/`, so upstream emits
-   * `source.path` of `../asset.<hash>` by design and binding to the manifest
-   * directory refuses every Stage asset (go-to-k/cdkd#3489's own defect). A
-   * default made that regression re-expressible by DROPPING an argument, which
-   * no refusal test can see; the local twin was made required for the same
-   * reason in go-to-k/cdkd#3529. A caller with no better answer passes
-   * `manifestDir` explicitly, which NARROWS and never opens past the base.
+   * It used to be a positional that DEFAULTED to `manifestDir`, which is right
+   * for a TOP-LEVEL stack and wrong for a Stage: `cdk synth` stages a Stage's
+   * assets into the APP's outdir while the Stage's manifest sits in
+   * `cdk.out/assembly-<Stage>/`, so upstream emits `source.path` of
+   * `../asset.<hash>` by design and binding to the manifest directory refuses
+   * every Stage asset (go-to-k/cdkd#3489's own defect). A caller with no
+   * better answer passes `manifestDir` explicitly, which NARROWS and never
+   * opens past the base.
    */
-  assetOutdir: string,
+  assetOutdir: string;
   /**
    * What THIS caller does with the directory next, completing "cdkd will ...".
-   * REQUIRED and caller-supplied; the reasoning is on
-   * `AbsoluteAssetPathWarning.sink`. Only the ABSOLUTE arm renders it.
+   * Caller-supplied; the reasoning is on `AbsoluteAssetPathWarning.sink`. Only
+   * the ABSOLUTE arm renders it.
    */
-  sink: string
+  sink: string;
+}
+
+export function resolveFileAssetSourcePath(
+  manifestDir: string,
+  asset: FileAsset,
+  opts: FileAssetResolveOptions
 ): string {
+  const { assetOutdir, sink } = opts;
   if (isAbsolute(asset.source.path)) {
     // `path.resolve` only NORMALISES here, the value already being absolute;
     // it is what makes the warning name the directory that is really read
@@ -296,19 +311,9 @@ export class AssetManifestLoader {
   getAssetSourcePath(
     cdkOutputDir: string,
     asset: FileAsset,
-    assetOutdir: string,
-    /**
-     * What the caller does with the directory next.
-     *
-     * **REQUIRED, with no default.** A default is the droppable-argument shape
-     * this PR made `assetOutdir` required to kill, and it had already produced
-     * a wrong sentence: the watch loop's file arm inherited "read that
-     * directory" while actually `docker cp`-ing it into a running container.
-     * Each caller states its own.
-     */
-    sink: string
+    opts: FileAssetResolveOptions
   ): string {
-    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir, sink);
+    return resolveFileAssetSourcePath(cdkOutputDir, asset, opts);
   }
 
   /**
