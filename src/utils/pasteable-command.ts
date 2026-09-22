@@ -167,7 +167,14 @@ export type WithholdReason =
   | 'empty'
   /** Past `STACK_REF_MAX_CODE_POINTS`. */
   | 'too-long'
-  /** A leading `-`: Commander parses it as a flag whatever the shell quoting. */
+  /**
+   * A leading `-`, refused CONSERVATIVELY rather than by parsing. `--all` and
+   * `-x` are options to Commander whatever the shell quoting — quoting only
+   * stops the shell, not the argument parser — while a BARE `-` it takes
+   * positionally (measured). The gate does not distinguish them: the reason
+   * a caller renders from this must therefore name the leading `-`, not
+   * assert that every such value parses as a flag.
+   */
   | 'option-shaped'
   /** `*` or `/` where the command matches PATTERNS rather than names. */
   | 'pattern-shaped';

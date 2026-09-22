@@ -1540,6 +1540,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       ['a leading hyphen', '--all'],
       // A SHORT option, one dash: a gate keyed on `--` alone must not pass it.
       ['a single leading hyphen', '-x'],
+      // The BOUNDARY of that gate, and the reason its sentence names the
+      // leading `-` rather than claiming the value parses as a flag: Commander
+      // takes a bare `-` POSITIONALLY (measured), unlike `--all` and `-x`. The
+      // gate refuses it anyway, conservatively, so the hole is still printed.
+      ['a bare hyphen', '-'],
     ] as const) {
       it(`HOLDS the name out of the \`cdkd deploy\` command for a legacy name with ${label}`, async () => {
         // Since go-to-k/cdkd#3499 this site prints the HOLE on a labelled line
@@ -1622,7 +1627,8 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
       expect(message).toContain(
-        `This record's name would be read as an OPTION by 'cdkd deploy', not as a stack name`
+        `This record's name begins with a '-', so it is not safe to print as an argument to ` +
+          `'cdkd deploy' — a name like '--all' is parsed as the FLAG and targets every stack`
       );
       expect(message).toContain('it is not named in the command below');
       // NOT the exactness sentence: `--all` renders exactly. Keying the clause
@@ -1655,17 +1661,22 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
         );
         expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
         expect(message).not.toContain('does NOT render exactly');
-        expect(message).not.toContain('would be read as an OPTION');
+        expect(message).not.toContain(`begins with a '-'`);
       });
     }
 
     it('explains the HOLE as OVER-LONG for a legacy name past the cap (go-to-k/cdkd#3499 M11)', async () => {
-      // The fourth reachable reason. An S3 key segment carries far more than
-      // `STACK_REF_MAX_CODE_POINTS`, so a planted key can reach this arm, and
-      // the name is neither altered by sanitizing nor option- or
-      // pattern-shaped — only its LENGTH withholds it. Printing the exactness
-      // sentence here would be false, and printing none would leave the hole
-      // unexplained.
+      // An arm this site cannot reach from a real key, covered anyway. The cap
+      // is `STACK_REF_MAX_CODE_POINTS` (1152) and S3 caps the whole key at
+      // 1024 bytes, so `cdkd/<name>/state.json` leaves the name at most 1008 —
+      // `listStacks` can never hand this site an over-cap name. It is pinned
+      // because the REASON belongs to `pasteableCommand`, not to this caller:
+      // the mock is how the sentence gets exercised at the SITE at all, and
+      // without it a change that dropped the arm would fall through to the
+      // pattern sentence with nothing red. The name here is neither altered by
+      // sanitizing nor option- or pattern-shaped, so only its LENGTH withholds
+      // it — the exactness sentence would be false and no sentence would leave
+      // the hole unexplained.
       const overLong = 'A'.repeat(STACK_REF_MAX_CODE_POINTS + 1);
       mockListStacks.mockResolvedValueOnce([{ stackName: overLong }]);
       mockGetState.mockResolvedValue(null);
@@ -1677,6 +1688,28 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       expect(message).toContain(`This record's name is too long to print`);
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
       expect(message).not.toContain('does NOT render exactly');
+    });
+
+    it('explains the HOLE as EMPTY for a blank legacy name (go-to-k/cdkd#3499 M11)', async () => {
+      // The second arm this site cannot reach from a real key — `listStacks`
+      // drops a key whose stack segment is empty (`s3-state-backend.ts`'s
+      // `if (!stackName) continue`) — and pinned for the same reason as the
+      // over-cap one: the REASON is `pasteableCommand`'s, so a caller whose
+      // value comes from elsewhere can see it, and an arm with no case falls
+      // through to the pattern sentence with nothing red. The mock supplies
+      // what the backend filters out, which is the only way to drive the
+      // sentence at the SITE.
+      mockListStacks.mockResolvedValueOnce([{ stackName: '' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain(`This record's name is empty`);
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      expect(message).not.toContain('does NOT render exactly');
+      expect(message).not.toContain('would be read as a PATTERN');
     });
 
     it('prints the `cdkd deploy` example for an ordinary HYPHENATED legacy name', async () => {

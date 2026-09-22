@@ -330,6 +330,28 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       ).toEqual(contentsBefore);
     }
   });
+  it('records EVERY refused value, not just the last (go-to-k/cdkd#3499 M11)', () => {
+    // `withheld` is a list because one command can refuse more than one value,
+    // and a caller's sentence reads it by HOLE. Every other case here refuses
+    // at most one, so an accumulator that kept only the most recent refusal
+    // would satisfy all of them — and the site that reads `.find(w => w.hole
+    // === 'stack')` would then silently get `undefined` and print no sentence
+    // at all whenever a later argument was also refused.
+    const built = pasteableCommand('cdkd state refresh-observed', [
+      { value: '--all', hole: 'stack' },
+      { flag: '--stack-region', value: 'us-east-1\u00a0', hole: 'region' },
+    ]);
+
+    expect(built.exact).toBe(false);
+    expect(built.command).toBe(
+      "cdkd state refresh-observed '<stack>' --stack-region '<region>'"
+    );
+    expect(built.withheld).toEqual([
+      { hole: 'stack', reason: 'option-shaped' },
+      { hole: 'region', reason: 'altered' },
+    ]);
+  });
+
   describe('rendersExactly', () => {
     it('is about RENDERING only, so an option-shaped name is still exact', () => {
       // The compatibility exception M11 had to make explicit. `rendersExactly`

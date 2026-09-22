@@ -3268,12 +3268,24 @@ function createStateInfoCommand(): Command {
  * same clause said nothing above a hole the operator was then invited to fill
  * with the name printed beside it.
  *
- * Four of the five reasons are reachable from this call site. `empty` is not:
- * `listStacks` drops a key whose stack segment is empty
- * (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
- * is non-empty by the time the refusal is built. The arm stays because the
- * REASON is the gate's, not this site's — a later caller with a different
- * source must not fall through to the pattern sentence.
+ * THREE of the five reasons are reachable from this call site, and the other
+ * two are bounded out by where the name comes from — an S3 key segment:
+ *
+ * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
+ *   planted key can spell a name any of those ways in a handful of bytes.
+ * - `empty` is not. `listStacks` drops a key whose stack segment is empty
+ *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
+ *   is non-empty by the time the refusal is built.
+ * - `too-long` is not either, and the bound is not obvious: the cap is
+ *   `STACK_REF_MAX_CODE_POINTS` (1152), while S3 caps the WHOLE key at 1024
+ *   bytes, leaving at most 1008 for the name inside `cdkd/<name>/state.json`.
+ *   A multi-byte character only lowers the code-point count further, so a name
+ *   arriving through `listStacks` can never reach the cap.
+ *
+ * Both unreachable arms stay, and are covered, because the REASON is the
+ * gate's and not this site's: `pasteableCommand` can return either to a caller
+ * whose value comes from somewhere else, and a missing arm would fall through
+ * to the pattern sentence — the exact class of silent disagreement M11 closed.
  */
 function withheldNameClause(built: PasteableCommand): string {
   const reason = built.withheld.find((w) => w.hole === 'stack')?.reason;
@@ -3286,7 +3298,8 @@ function withheldNameClause(built: PasteableCommand): string {
         : reason === 'too-long'
           ? `is too long to print`
           : reason === 'option-shaped'
-            ? `would be read as an OPTION by 'cdkd deploy', not as a stack name`
+            ? `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
+              `name like '--all' is parsed as the FLAG and targets every stack`
             : `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
   return (
     ` This record's name ${why} — so it is not named in the command below; ` +
