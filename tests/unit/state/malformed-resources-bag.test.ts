@@ -6254,3 +6254,237 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
     expect(revertAt, 'runRevert moved INSIDE the detection-only gate').toBeGreaterThan(gateEnd);
   });
 });
+
+/**
+ * `''` is not an identity (issue go-to-k/cdkd#3520).
+ *
+ * PER BUILDER, deliberately. An aggregate case over all of them stays green
+ * for a fix applied to only some, which is exactly how the first cut of
+ * `malformedOrphanResourcePropertiesRefusalMessage`'s own normalisation failed
+ * — it guarded one helper while the rest still rendered the placeholder. The
+ * enumeration is derived below rather than hand-listed, so a builder that
+ * later gains an optional identifier joins it or the derivation fails.
+ */
+describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)", () => {
+  /**
+   * Keyed on TAKING AN IDENTIFIER, not on the parameter being optional. The
+   * first cut enumerated `string | undefined` only, and that is exactly how
+   * `malformedStateRefusalMessage` and `malformedDeployResourcesRefusalMessage`
+   * escaped: their params are `string`, so the derivation could not name them
+   * while they reached the same helpers with the same `''`. A fence that
+   * structurally cannot see a gap is worse than none, because it reads as
+   * coverage.
+   */
+  const BUILDERS: ReadonlyArray<
+    readonly [string, (s: string | undefined, r: string | undefined) => string]
+  > = [
+    ['malformedStateRefusalMessage', (s, r) => malformedStateRefusalMessage(s as string, r as string)],
+    [
+      'malformedDeployResourcesRefusalMessage',
+      (s, r) => malformedDeployResourcesRefusalMessage(s as string, r as string),
+    ],
+    ['malformedResourcesWarning', (s, r) => malformedResourcesWarning(s as string, r)],
+    [
+      'malformedResourcePropertiesRefusalMessage',
+      (s, r) => malformedResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedResourcePropertiesWarning',
+      (s, r) => malformedResourcePropertiesWarning(s, r, ['A']),
+    ],
+    [
+      'malformedOrphanResourcePropertiesRefusalMessage',
+      (s, r) => malformedOrphanResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+    // These THREE are correct without a boundary, by a different route: their
+    // exactness gate rejects `''` (`safeIdentifier('')` is the placeholder, so
+    // `safeStackName('') !== ''`), and the withhold arm they then take passes
+    // `undefined` on. Fenced here rather than trusted, because the property
+    // belongs to the gate and a later change to the gate would take it away
+    // silently. The first cut of this block had them in KNOWN_UNFIXED, which
+    // was a hand classification nothing checked.
+    [
+      'malformedDestroyResourcesRefusalMessage',
+      (s, r) => malformedDestroyResourcesRefusalMessage(s as string, r as string),
+    ],
+    [
+      'malformedDestroyOrphansRefusalMessage',
+      (s, r) => malformedDestroyOrphansRefusalMessage(s as string, r as string),
+    ],
+    [
+      'divergentRecordRegionRefusalMessage',
+      (s, r) => divergentRecordRegionRefusalMessage(s as string, r as string, 'eu-west-1', 1),
+    ],
+  ];
+
+  for (const [label, build] of BUILDERS) {
+    it(`${label} renders an empty REGION exactly as an absent one`, () => {
+      // The SAME STRING, not merely "no placeholder": the weaker form passes
+      // for a builder that renders `''` bare, a different defect.
+      expect(build('S', '')).toBe(build('S', undefined));
+      expect(build('S', '')).not.toContain(UNRENDERABLE);
+      // NOT `not.toContain('--stack-region')`: a builder whose gate sends `''`
+      // down the WITHHOLD arm emits the flag as a hole rather than dropping
+      // it, which is correct and which that assertion called a failure. The
+      // `toBe` above already pins the behaviour exactly, so the flag check was
+      // redundant where it held and wrong where it did not.
+      //
+      // CONTROL, or this also passes for a builder that drops every region.
+      expect(build('S', 'us-east-1')).toContain('us-east-1');
+      expect(build('S', 'us-east-1')).toContain('--stack-region');
+    });
+
+    it(`${label} renders an empty STACK NAME exactly as an absent one`, () => {
+      // go-to-k/cdkd#3520 asked that the stack-name half be DECIDED rather
+      // than inherited. It is decided the same way — `''` is not an identity —
+      // and this is the case that makes the decision falsifiable: without it,
+      // deleting the stack-name normalisation from every builder stays green.
+      //
+      // Asserted against the no-identity CLAUSE rather than against
+      // `build(undefined, …)`: four of these have a required `string`
+      // signature, so passing `undefined` through would pin a state the type
+      // forbids (review nit n4). The clause is the observable the decision is
+      // actually about.
+      expect(build('', 'us-east-1')).not.toContain(UNRENDERABLE);
+      // The REGION goes with it, which is the cost the helper's JSDoc states:
+      // a record cdkd cannot name is one it cannot build a selecting command
+      // for either, so `inspectCommand` answers a missing stack with the
+      // two-hole template. Pinned here because it is the only assertion on
+      // this axis that cannot pass vacuously — an earlier cut asserted the
+      // message does not contain a name the caller never supplied, which no
+      // implementation can fail, and which left this case strictly weaker
+      // than the region one beside it.
+      expect(build('', 'us-east-1')).not.toContain('us-east-1');
+      // CONTROL: a real name IS named, so this does not pass for a builder
+      // that withheld every identity.
+      expect(build('MyStack', 'us-east-1')).toContain('MyStack');
+    });
+  }
+
+  it('safeRegion tolerates undefined, which the REGION cases above rely on', () => {
+    // Five of the fenced builders have a required `string` region, so
+    // `build('S', undefined)` reaches them through a cast (review nit n6). It
+    // works because `safeRegion(undefined)` lands on `displaySafe`'s
+    // unrenderable arm rather than throwing. That tolerance is undocumented,
+    // so it is pinned here: if it narrows, ONE case reds saying why instead of
+    // five reding with a TypeError that names nothing.
+    expect(() => malformedStateRefusalMessage('S', undefined as unknown as string)).not.toThrow();
+    expect(malformedStateRefusalMessage('S', undefined as unknown as string)).not.toContain(
+      '--stack-region'
+    );
+  });
+
+  it('the enumeration above is every exported builder that takes an identifier', () => {
+    // Derived from the source so a builder added later joins it or fails here.
+    // Matches on the PARAMETER NAME rather than on its type, because the type
+    // is what let two of them hide: `string`, `string | undefined` and
+    // `region?: string` all accept `''` identically.
+    const src = readFileSync(join(repoRoot, 'src/state/malformed-resources-bag.ts'), 'utf8');
+    const taking = [...src.matchAll(/export function (\w+)\(([^)]*)\)/gs)]
+      .filter(([, , params]) => /(raw)?\w*([Ss]tackName|[Rr]egion)\??:/.test(params!))
+      .map(([, name]) => name!);
+    expect(taking.length, 'the derivation matched nothing').toBeGreaterThan(0);
+    // These RENDER NOTHING — they pass their identifiers to a builder above
+    // and throw. Named rather than pattern-matched: a `refuseMalformed` prefix
+    // missed `refuseDivergentRecordRegionForDestroy`, and deriving it from the
+    // body shape was worse, matching 14 of 17 (a builder returning a joined
+    // array or assigning a const first does not look like a renderer to a
+    // regex). A list is a claim someone can falsify by reading the functions;
+    // the two assertions around it are what stop it going stale.
+    const PASS_THROUGH = [
+      'refuseDivergentRecordRegionForDestroy',
+      'refuseMalformedNestedChildOutputs',
+      'refuseMalformedOrphans',
+      'refuseMalformedOrphansForDestroy',
+      'refuseMalformedOutputs',
+      'refuseMalformedOutputsForDestroy',
+      'refuseMalformedResourceEntries',
+      'refuseMalformedResourceProperties',
+      'refuseMalformedResourcePropertiesForOrphan',
+      'refuseMalformedResourcesForDeploy',
+      'refuseMalformedResourcesForDestroy',
+      'refuseMalformedState',
+    ];
+    expect(
+      PASS_THROUGH.filter((n) => !taking.includes(n)),
+      'a name recorded as pass-through is no longer an exported builder taking an identifier'
+    ).toEqual([]);
+    const rendering = taking.filter((n) => !PASS_THROUGH.includes(n));
+    const fenced = BUILDERS.map(([n]) => n);
+    // The rest of the module has the SAME defect and is NOT fixed here
+    // (go-to-k/cdkd#3526). Listed rather than filtered away, so the fence
+    // records the gap instead of reading as coverage — and BEHAVIOURAL rather
+    // than hand-classified, which is the correction that matters: the first
+    // cut of this list asserted only that each name was still an exported
+    // builder, so three names that never had the defect sat in it unnoticed.
+    // The exactness gates reject `''` (`safeIdentifier('')` is the
+    // placeholder, so `safeStackName('') !== ''`), which makes those three
+    // already correct by a different route. Asserting each is still BROKEN is
+    // what would have caught that on the first run, and is what stops a name
+    // staying here after someone fixes it.
+    const KNOWN_UNFIXED: ReadonlyArray<readonly [string, (axis: 'stack' | '') => string]> = [
+      ['malformedExportNamesWarning', (axis) => malformedExportNamesWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedExportSourceWarning', (axis) => malformedExportSourceWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedLocalOutputsWarning', (axis) => malformedLocalOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      [
+        'malformedNestedChildOutputsRefusalMessage',
+        (axis) => malformedNestedChildOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
+      ],
+      ['malformedOrphanRecordsWarning', (axis) => malformedOrphanRecordsWarning('S', '', ['A'])],
+      ['malformedOrphansRefusalMessage', (axis) => malformedOrphansRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedOrphansWarning', (axis) => malformedOrphansWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      [
+        'malformedDestroyOutputsRefusalMessage',
+        (axis) => malformedDestroyOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
+      ],
+      ['malformedOutputsRefusalMessage', (axis) => malformedOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      ['malformedOutputsWarning', (axis) => malformedOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
+      [
+        'malformedRenderedContainersWarning',
+        (axis) => malformedRenderedContainersWarning('S', '', ['outputs']),
+      ],
+      [
+        'malformedResourceEntriesRefusalMessage',
+        (axis) => malformedResourceEntriesRefusalMessage('S', '', ['A']),
+      ],
+      ['malformedResourceEntriesWarning', (axis) => malformedResourceEntriesWarning('S', '', ['A'])],
+    ];
+    // BOTH axes per entry: a thunk probing only the region leaves a
+    // half-swept builder — one that gained `absentIfEmpty(rawStackName)` alone
+    // — in this list with everything green, while the fenced table demands
+    // both. The thunk takes the axis so the entry cannot claim more than it
+    // checks.
+    for (const [name, build] of KNOWN_UNFIXED) {
+      expect(build(''), `${name} no longer has the REGION defect — move it into BUILDERS`).toContain(
+        UNRENDERABLE
+      );
+      expect(
+        build('stack'),
+        `${name} no longer has the STACK-NAME defect — move it into BUILDERS`
+      ).toContain(UNRENDERABLE);
+    }
+    // Label-to-thunk drift: a copy-paste where the label names one builder and
+    // the thunk calls another leaves one unchecked and one checked twice, and
+    // nothing above reds. Distinct outputs is the cheapest observation that
+    // catches it — two entries calling the same builder render identically.
+    expect(
+      new Set(KNOWN_UNFIXED.map(([, build]) => build(''))).size,
+      'two entries render the same message — a label and its thunk disagree'
+    ).toBe(KNOWN_UNFIXED.length);
+    const unfixedNames = KNOWN_UNFIXED.map(([n]) => n);
+    // A fenced builder must still be IN the derivation, or a param list that
+    // gains a `)` drops it out and the partition below still passes.
+    expect(
+      fenced.filter((n) => !taking.includes(n)),
+      'a fenced builder left the derivation'
+    ).toEqual([]);
+    expect(
+      rendering.filter((n) => !fenced.includes(n) && !unfixedNames.includes(n)).sort(),
+      'an exported builder takes an identifier and is neither fenced nor recorded as unfixed'
+    ).toEqual([]);
+    expect(
+      unfixedNames.filter((n) => !rendering.includes(n)),
+      'a name recorded as unfixed is no longer an exported builder'
+    ).toEqual([]);
+  });
+});
