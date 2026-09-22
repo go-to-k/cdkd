@@ -333,7 +333,9 @@ export function repairMalformedResourcesForReadOnly(state: StackState): boolean 
  * documents `2` as "PARTIAL — journal kept, idempotent re-run", so a `2` here
  * would tell an operator to re-run a command that attempted nothing.
  */
-export function malformedStateRefusalMessage(stackName: string, region: string): string {
+export function malformedStateRefusalMessage(rawStackName: string, rawRegion: string): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${malformedStateDiagnosis(stackName, region)} This command can WRITE state, so it refuses ` +
     `rather than continuing: saving over a record whose resource map could not be read would ` +
@@ -843,7 +845,12 @@ export function refuseDivergentRecordRegionForDestroy(
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedDeployResourcesRefusalMessage(stackName: string, region: string): string {
+export function malformedDeployResourcesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${malformedStateDiagnosis(stackName, region)} 'cdkd deploy' can WRITE state and AWS ` +
     `resources, so it refuses rather than continuing — under '--dry-run' too, because the plan ` +
@@ -1002,16 +1009,27 @@ export function malformedRenderedContainersWarning(
  * {@link stackClause} and {@link inspectCommand}, which drop the clause and
  * the flag, and that is the right answer for both identifiers.
  *
- * NORMALISE ONCE AT THE BOUNDARY, never inside the helpers — the rule
- * {@link malformedOrphanResourcePropertiesRefusalMessage} already records from
- * measurement: guarding inside ONE helper fixed only part of its message while
- * the others still rendered the placeholder.
+ * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
+ * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
+ * is not the module's only floor — but a floor in the SHARED helpers was tried
+ * here and removed: measured, no builder that lacks the boundary reaches
+ * `stackClause` or `inspectCommand` for its identity clause, so the floor
+ * reddened no case and bought nothing. The boundary is what covers every
+ * helper a builder reaches at once, which is the property
+ * {@link malformedOrphanResourcePropertiesRefusalMessage} measured when
+ * guarding inside ONE helper fixed only part of its message.
  *
  * Not reachable from today's callers: `cdkd state`'s sites sit below an
  * `if (!ref.region) throw`, which is falsy and so rejects `''` too, and
  * `cdkd export` normalises at its own call. What was missing is the CONTRACT —
  * a caller that hands `''` got the placeholder silently, and the guard that
  * would have caught it lived in another file.
+ *
+ * One cost, stated rather than discovered later: an empty STACK name with a
+ * real region now drops that region from the clause and the command too, since
+ * {@link inspectCommand} answers a missing stack with the two-hole template.
+ * That is the existing `undefined` behaviour rather than a new rule — a record
+ * cdkd cannot name is one it cannot build a selecting command for either.
  */
 function absentIfEmpty(value: string | undefined): string | undefined {
   return value === '' ? undefined : value;
@@ -2288,8 +2306,8 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
   // them fixed only part of the message (measured -- the first cut did exactly
   // that, and the other clauses still rendered `('<unrenderable>')` and
   // `--stack-region '<unrenderable>'`).
-  const stackName = rawStackName === '' ? undefined : rawStackName;
-  const region = rawRegion === '' ? undefined : rawRegion;
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   const inspect = orphanInspectClause(stackName, region, recovery);
   const listCommand = withheldIdentityListCommand(stackName, region, recovery);
   // Every PASTEABLE command goes LAST and UNWRAPPED, one per line — never inside
