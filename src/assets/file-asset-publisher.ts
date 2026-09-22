@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
@@ -34,9 +35,17 @@ export class FileAssetPublisher {
     cdkOutputDir: string,
     accountId: string,
     region: string,
-    _profile?: string,
-    /** The app's outdir; see `resolveFileAssetSourcePath` (go-to-k/cdkd#3489). */
-    assetOutdir?: string
+    /**
+     * The app's outdir; see `resolveFileAssetSourcePath` (go-to-k/cdkd#3489).
+     *
+     * REQUIRED, and positioned BEFORE the optional `_profile` so omitting it
+     * is a type error. `FileAssetNodeData.assetOutdir` is itself required, so
+     * the production caller cannot drop it — but leaving this entry point
+     * optional kept the drop expressible one layer out, which is the exact
+     * defect the resolver's own required parameter was made to stop.
+     */
+    assetOutdir: string,
+    _profile?: string
   ): Promise<void> {
     // Containment FIRST, before any S3 client exists and before the
     // already-exists short-circuit below (issue go-to-k/cdkd#3489). Two
@@ -46,11 +55,24 @@ export class FileAssetPublisher {
     // bucket; and that check `continue`s on a hit, which skipped the
     // containment check ENTIRELY whenever the object already existed, making
     // the refusal depend on remote state.
-    // `?? cdkOutputDir` NARROWS and never opens: a caller with no
-    // `StackInfo.assetOutdir` is judged against the manifest's own directory,
-    // so a hand-built stack record is stricter, not looser. `AssetPublisher`
-    // — the one production caller — always threads `data.assetOutdir`.
-    const sourcePath = resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir ?? cdkOutputDir);
+    // The SINK clause names where the bytes actually go. `publish` is the one
+    // caller of this resolver that uploads, and it is the one that knows the
+    // destinations — which the manifest chose, so naming them is the point:
+    // "cdkd will upload it" tells the user nothing they can act on, while
+    // "to s3://<bucket>/<key>" is the bucket they can recognise as not theirs.
+    const destinations = Object.values(asset.destinations)
+      .map(
+        (d) =>
+          `s3://${this.resolvePlaceholders(d.bucketName, accountId, region)}/` +
+          `${this.resolvePlaceholders(d.objectKey, accountId, region)}`
+      )
+      .map((u) => displaySafe(u));
+    const sourcePath = resolveFileAssetSourcePath(
+      cdkOutputDir,
+      asset,
+      assetOutdir,
+      `package that path and upload it to ${destinations.join(', ')}`
+    );
 
     // Process each destination
     for (const [, dest] of Object.entries(asset.destinations)) {

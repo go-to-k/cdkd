@@ -453,7 +453,8 @@ export async function loadAgentCoreAssetContext(args: {
     manifestDir,
     newDockerImage.source.directory,
     (message) => new Error(message),
-    assetOutdir
+    assetOutdir,
+    "copy that directory into the running container's workspace"
   );
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),

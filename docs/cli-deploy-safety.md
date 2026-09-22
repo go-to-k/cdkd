@@ -991,18 +991,30 @@ path leaving the output directory, from a Stage manifest and a top-level one
 alike.
 
 **An ABSOLUTE `source.path` or `source.directory` is accepted**, with a warning
-naming the directory when it falls outside the output directory and saying what
-cdkd does with it — package and upload it, or hand it to the image build as the
-context. `cdk synth --no-staging` emits exactly that: under
-`aws:cdk:disable-asset-staging` CDK writes each asset's absolute SOURCE
-directory instead of a staged copy, and the CDK CLI itself resolves the field in
-a way that honours it. Refusing would reject the output of a documented flag and
-diverge from the CLI cdkd is meant to complement. Be clear about what the
-relative arm still buys once that is true: against someone who hand-wrote the
-manifest, nothing — they write the absolute spelling and reach the same file
-with a warning instead of a refusal. What it still catches is an accidental or
-legacy `..`, and it costs nothing, which is why it stays. **For an absolute
-value the warning is the whole signal, not a boundary.**
+naming the directory when it falls outside the output directory, naming where
+the bytes are going — the destination bucket and key, or the image build — and
+staying silent when the path is inside. `cdk synth --no-staging` emits exactly
+that: under `aws:cdk:disable-asset-staging` CDK writes each asset's absolute
+SOURCE directory instead of a staged copy. Refusing would reject the output of a
+documented flag.
+
+**This is a change, and it gave something up — you should know which.** Until
+`cdkd` gained this behaviour, an absolute path did not reach the upload or the image build
+at all. Not because it was refused, but because it was silently folded into the
+output directory and the command then died with an `ENOENT` on a path that
+existed nowhere. The effect was a boundary: no spelling of an absolute path
+reached a file outside the assembly. Accepting one removes that. A Cloud
+Assembly you did not synthesize can now have any directory your user account can
+read packaged and uploaded to a bucket the same manifest names, using your
+credentials, with the warning as the only signal.
+
+That is accepted because the CDK CLI does the same and does not check at all —
+`cdk-assets` resolves the field with `path.resolve(workDir, …)`, which honours
+an absolute value outright — so cdkd remains stricter than the CLI it
+complements while still running what `cdk synth --no-staging` produces. The
+relative arm still refuses an escaping `..`, which catches an accidental or
+legacy path and costs nothing. **But for a value someone chose deliberately it
+is no longer a boundary: the warning is the whole signal. Read it.**
 
 The `cdkd local *` commands apply the same rule to SOME of the assembly they
 read — including a path the deploy side has no equivalent of, a Lambda's

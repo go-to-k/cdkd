@@ -7,6 +7,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
+import { warnAbsoluteAssetPath } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -39,16 +40,32 @@ import { getLogger } from '../utils/logger.js';
  * - Upstream `cdk deploy` resolves the field with `path.resolve(manifestDir,
  *   p)`, which honours an absolute value and publishes it. Refusing here would
  *   make cdkd diverge from the CLI it is meant to complement.
- * - So the WARNING is the whole signal, and there is no containment boundary
- *   left for an absolute value. The relative `..` arm still refuses, and it is
- *   worth being precise about what that buys: against an ADVERSARY nothing,
- *   since they write the absolute spelling and reach the same file with a
- *   warning. What it still catches is an ACCIDENTAL or legacy `..`, and it
- *   costs nothing, which is why the arm stays. The docs say so to users in the
- *   same words, and the local-emulation twin
- *   ({@link import('../local/lambda-resolver.js').resolveAssetCodeDirectory},
- *   issue [#3494](https://github.com/go-to-k/cdkd/issues/3494)) took the same
- *   decision for the same reasons — the two must not diverge.
+ * - So for an ABSOLUTE value the warning is the whole signal, and no
+ *   containment boundary is left.
+ *
+ * **State plainly what that gave up, because the first version of this comment
+ * did not and was wrong.** It copied the local twin's line — "the relative arm
+ * buys nothing against an adversary, who would write the absolute spelling" —
+ * which is TRUE there and FALSE here, and the difference is the whole point.
+ * `resolveAssetCodeDirectory` already honoured absolute paths before
+ * [#3494](https://github.com/go-to-k/cdkd/issues/3494), so that change only
+ * added a warning to an open door. HERE the door was SHUT: measured on
+ * `path.resolve(path.join(base, c))`, `/Users/victim/.aws`, `/etc/passwd`,
+ * `//etc/passwd` and `/etc/./passwd` all folded INSIDE the outdir and died at
+ * `statSync`, `/../etc/passwd` was refused lexically, and a planted symlink
+ * was refused by the symlink arm — so NO spelling reached an arbitrary host
+ * file. Accidentally, but completely.
+ *
+ * What this opens, therefore, is real and new: a hand-written manifest can now
+ * have any readable directory zipped to a bucket it names, with the operator's
+ * credentials, gated only by the warning. It is accepted because upstream
+ * `@aws-cdk/cdk-assets-lib` does the same with no containment at all
+ * (`path.resolve(this.workDir, source.path)`, `private/handlers/files.js`), so
+ * cdkd stays strictly MORE protective than the CLI it complements while still
+ * running what `cdk synth --no-staging` emits. The relative arm still catches
+ * an accidental or legacy `..` and costs nothing, which is why it stays — but
+ * it is no longer a boundary against anyone who chose the value. The docs say
+ * this to users in the same words; do not soften either copy.
  */
 export function resolveFileAssetSourcePath(
   manifestDir: string,
@@ -68,7 +85,13 @@ export function resolveFileAssetSourcePath(
    * reason in go-to-k/cdkd#3529. A caller with no better answer passes
    * `manifestDir` explicitly, which NARROWS and never opens past the base.
    */
-  assetOutdir: string
+  assetOutdir: string,
+  /**
+   * What THIS caller does with the directory next, completing "cdkd will ...".
+   * REQUIRED and caller-supplied; the reasoning is on
+   * `AbsoluteAssetPathWarning.sink`. Only the ABSOLUTE arm renders it.
+   */
+  sink: string
 ): string {
   if (isAbsolute(asset.source.path)) {
     // `path.resolve` only NORMALISES here, the value already being absolute;
@@ -77,19 +100,13 @@ export function resolveFileAssetSourcePath(
     const absolute = resolve(asset.source.path);
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined) {
-      getLogger()
-        .child('AssetManifestLoader')
-        .warn(
-          `File asset '${displaySafe(asset.displayName)}' has an absolute ` +
-            `source.path pointing outside the assembly: '${displaySafe(absolute)}'` +
-            (escape.escape === 'symlink'
-              ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
-              : '') +
-            `. cdkd will package that path and upload it to the asset bucket this ` +
-            `manifest names. This is what cdk synth --no-staging emits, and is ` +
-            `expected for it; if you did not synthesize with that flag, treat this ` +
-            `assembly as untrusted.`
-        );
+      warnAbsoluteAssetPath({
+        subject: `File asset '${displaySafe(asset.displayName)}'`,
+        field: 'source.path',
+        absolute,
+        escape,
+        sink,
+      });
     }
     return absolute;
   }
@@ -103,6 +120,23 @@ export function resolveFileAssetSourcePath(
   const resolved = resolveAssemblyPath(manifestDir, asset.source.path, {
     containWithin: assetOutdir,
   });
+  // NAMING THE BOUND ITSELF is not an escape here, and the two arms must agree
+  // about that — the absolute arm accepts a value equal to `assetOutdir`, so
+  // the relative one cannot refuse the same directory. `resolveAssemblyPath`'s
+  // `isInside` is false for an empty `path.relative` and the renderer then
+  // says the value "names the directory ... rather than a file inside it",
+  // which is true and useful for its other callers, every one of which READS A
+  // FILE, and false here, where a file asset's source is a DIRECTORY by
+  // design. Accepted HERE rather than by changing the shared helper, whose
+  // refusal is right for a file. Mirrors the local twin
+  // (`resolveAssetCodeDirectory`, go-to-k/cdkd#3494); no real synth emits `.`.
+  if (
+    !resolved.contained &&
+    resolved.escape === 'lexical' &&
+    resolved.path === resolve(assetOutdir)
+  ) {
+    return resolved.path;
+  }
   if (!resolved.contained) {
     throw new Error(
       `File asset '${displaySafe(asset.displayName)}' has ` +
@@ -230,8 +264,20 @@ export class AssetManifestLoader {
    *   silently refuses every Stage asset.
    * @returns Absolute path to asset source
    */
-  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset, assetOutdir: string): string {
-    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir);
+  getAssetSourcePath(
+    cdkOutputDir: string,
+    asset: FileAsset,
+    assetOutdir: string,
+    /**
+     * What the caller does with the directory next. Defaulted HERE and only
+     * here: every caller of this method READS the directory locally (the
+     * AgentCore build and its watch loop) — none uploads, which is why
+     * baking the publisher's "upload it" clause into the resolver was wrong.
+     * A future caller that publishes must pass its own.
+     */
+    sink = 'read that directory and build a local image from it'
+  ): string {
+    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir, sink);
   }
 
   /**

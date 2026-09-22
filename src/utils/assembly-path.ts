@@ -362,6 +362,15 @@ export function resolveAssemblyPath(
  * empty `path.relative` means "names the directory rather than a file inside
  * it". An asset path legitimately names a DIRECTORY, so a value equal to the
  * bound is inside it and reporting it as outside would be a false statement.
+ *
+ * **The real-path walk runs on the ACCEPTING side too, not only to find a
+ * symlink escape.** The two paths arrive here INDEPENDENTLY — the bound from
+ * `-a` or the assembly's own `directoryName`, the target from the manifest —
+ * so they can be two spellings of one directory (`/var/…` and `/private/var/…`
+ * on macOS). `resolveAssemblyPath` never meets that, its candidate being built
+ * by joining onto the base. Left alone it warned "outside the assembly" about
+ * an ordinary `cdk synth --no-staging` asset, and a warning that cries wolf is
+ * worse than none.
  */
 export function absoluteAssemblyPathEscape(
   bound: string,
@@ -369,14 +378,37 @@ export function absoluteAssemblyPathEscape(
 ): Extract<ResolvedAssemblyPath, { contained: false }> | undefined {
   const resolvedBound = path.resolve(bound);
   const target = path.resolve(absolutePath);
+  const realBound = resolveThroughLinks(resolvedBound);
+  const realTarget = resolveThroughLinks(target);
 
   if (!isInside(resolvedBound, target) && target !== resolvedBound) {
-    return { contained: false, escape: 'lexical', path: target };
+    // EXONERATE two spellings of ONE directory before reporting a lexical
+    // escape. `resolveAssemblyPath` never needs this: its candidate is built
+    // BY JOINING onto the base, so both sides share the caller's spelling by
+    // construction. Here the two arrive independently — the bound from the
+    // CLI's `-a` / the assembly's own `directoryName`, the target from the
+    // manifest — and on macOS `/var/...` and `/private/var/...` (or
+    // `/tmp` and `/private/tmp`) are the same directory under different
+    // spellings. Reporting that as "outside the assembly" is a FALSE
+    // statement, and a warning that cries wolf on an ordinary
+    // `cdk synth --no-staging` is worse than no warning: users learn to skip
+    // the line that matters.
+    //
+    // This only ever exonerates; it never admits a real escape. A target
+    // genuinely outside the bound is outside under `realpath` too, and one
+    // reached THROUGH a link out of the bound is caught by the symlink arm
+    // below, which asks the opposite question.
+    if (
+      realBound === undefined ||
+      realTarget === undefined ||
+      (!isInside(realBound, realTarget) && realTarget !== realBound)
+    ) {
+      return { contained: false, escape: 'lexical', path: target };
+    }
+    return undefined;
   }
 
-  const realBound = resolveThroughLinks(resolvedBound);
   if (realBound !== undefined) {
-    const realTarget = resolveThroughLinks(target);
     if (realTarget !== undefined && !isInside(realBound, realTarget) && realTarget !== realBound) {
       return { contained: false, escape: 'symlink', path: target, realPath: realTarget };
     }

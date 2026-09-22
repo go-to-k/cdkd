@@ -108,11 +108,12 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '123456789012',
       'us-east-1',
-      undefined,
       // The app's outdir, defaulted to the manifest's directory here because
       // this manifest is a TOP-LEVEL stack's. A Stage's would differ
-      // (go-to-k/cdkd#3489).
-      '/tmp/cdk.out'
+      // (go-to-k/cdkd#3489). It precedes `profile` so that omitting it is a
+      // type error rather than a silent narrowing (go-to-k/cdkd#3532).
+      '/tmp/cdk.out',
+      undefined
     );
   });
 
@@ -255,8 +256,8 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '999888777666',
       'us-east-1',
-      undefined,
-      '/tmp/cdk.out'
+      '/tmp/cdk.out',
+      undefined
     );
   });
 

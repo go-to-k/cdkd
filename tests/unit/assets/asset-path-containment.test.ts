@@ -83,11 +83,25 @@ const CONTAINMENT = /resolves to '.*', outside '.*'\./;
 
 const wrapErr = (m: string): Error => new Error(m);
 
+/**
+ * Test-local wrappers supplying the SINK clause each resolver now requires.
+ * A literal here rather than the production wording on purpose: the cases
+ * below assert that the caller's phrase reaches the warning, so pinning the
+ * production string would make them pass on a resolver that ignored the
+ * argument and baked its own text back in.
+ */
+const FILE_SINK = 'do the file thing with it';
+const DOCKER_SINK = 'do the docker thing with it';
+const resolveFile = (dir: string, a: FileAsset, bound: string): string =>
+  resolveFileAssetSourcePath(dir, a, bound, FILE_SINK);
+const resolveDocker = (dir: string, d: string, bound: string, id?: string): string =>
+  resolveDockerContextDirectory(dir, d, wrapErr, bound, DOCKER_SINK, id);
+
 describe("a file asset's source.path", () => {
   it('refuses one that leaves the assembly directory, naming the asset and the path', () => {
     const { dir } = assembly();
 
-    expect(() => resolveFileAssetSourcePath(dir, fileAsset('../../outside.json'), dir)).toThrow(
+    expect(() => resolveFile(dir, fileAsset('../../outside.json'), dir)).toThrow(
       /File asset 'MyAsset' has source\.path='\.\.\/\.\.\/outside\.json' which resolves to '.*', outside/
     );
   });
@@ -96,7 +110,7 @@ describe("a file asset's source.path", () => {
     const { dir, outer } = assembly();
     symlinkSync(outer, join(dir, 'link'), 'dir');
 
-    expect(() => resolveFileAssetSourcePath(dir, fileAsset('link/outside.json'), dir)).toThrow(
+    expect(() => resolveFile(dir, fileAsset('link/outside.json'), dir)).toThrow(
       /leads through a symbolic link to '.*outside\.json', outside/
     );
   });
@@ -104,10 +118,10 @@ describe("a file asset's source.path", () => {
   it('still resolves an ordinary asset directory and one that normalises back inside', () => {
     const { dir } = assembly();
 
-    expect(resolveFileAssetSourcePath(dir, fileAsset('asset.abc123'), dir)).toBe(
+    expect(resolveFile(dir, fileAsset('asset.abc123'), dir)).toBe(
       join(dir, 'asset.abc123')
     );
-    expect(resolveFileAssetSourcePath(dir, fileAsset('sub/../asset.abc123'), dir)).toBe(
+    expect(resolveFile(dir, fileAsset('sub/../asset.abc123'), dir)).toBe(
       join(dir, 'asset.abc123')
     );
   });
@@ -140,10 +154,10 @@ describe('a Stage manifest, whose assets are staged one level UP', () => {
   it("ACCEPTS a Stage's `../asset.<hash>` when contained against the app outdir", () => {
     const { outdir, manifestDir } = stage();
 
-    expect(resolveFileAssetSourcePath(manifestDir, fileAsset('../asset.abc123'), outdir)).toBe(
+    expect(resolveFile(manifestDir, fileAsset('../asset.abc123'), outdir)).toBe(
       join(outdir, 'asset.abc123')
     );
-    expect(resolveDockerContextDirectory(manifestDir, '../asset.abc123', wrapErr, outdir)).toBe(
+    expect(resolveDocker(manifestDir, '../asset.abc123', outdir)).toBe(
       join(outdir, 'asset.abc123')
     );
   });
@@ -154,7 +168,7 @@ describe('a Stage manifest, whose assets are staged one level UP', () => {
     mkdirSync(inner, { recursive: true });
     mkdirSync(join(outdir, 'asset.abc123'));
 
-    expect(resolveFileAssetSourcePath(inner, fileAsset('../../asset.abc123'), outdir)).toBe(
+    expect(resolveFile(inner, fileAsset('../../asset.abc123'), outdir)).toBe(
       join(outdir, 'asset.abc123')
     );
   });
@@ -163,10 +177,10 @@ describe('a Stage manifest, whose assets are staged one level UP', () => {
     const { outdir, manifestDir } = stage();
 
     expect(() =>
-      resolveFileAssetSourcePath(manifestDir, fileAsset('../../outside.json'), outdir)
+      resolveFile(manifestDir, fileAsset('../../outside.json'), outdir)
     ).toThrow(CONTAINMENT);
     expect(() =>
-      resolveDockerContextDirectory(manifestDir, '../../outside-dir', wrapErr, outdir)
+      resolveDocker(manifestDir, '../../outside-dir', outdir)
     ).toThrow(CONTAINMENT);
   });
 
@@ -174,10 +188,10 @@ describe('a Stage manifest, whose assets are staged one level UP', () => {
     const outdir = tmp();
 
     expect(() =>
-      resolveFileAssetSourcePath(outdir, fileAsset('../outside.json'), outdir)
+      resolveFile(outdir, fileAsset('../outside.json'), outdir)
     ).toThrow(CONTAINMENT);
     // ...and the widened base must not let ONE `..` through from the top level.
-    expect(() => resolveDockerContextDirectory(outdir, '../outside-dir', wrapErr, outdir)).toThrow(
+    expect(() => resolveDocker(outdir, '../outside-dir', outdir)).toThrow(
       CONTAINMENT
     );
   });
@@ -224,31 +238,29 @@ describe('a Stage manifest, whose assets are staged one level UP', () => {
     expect(data.cdkOutputDir).toBe(manifestDir);
     // ...and resolving with exactly what the node carries must ACCEPT.
     expect(
-      resolveFileAssetSourcePath(data.cdkOutputDir, fileAsset('../asset.abc123'), data.assetOutdir)
+      resolveFile(data.cdkOutputDir, fileAsset('../asset.abc123'), data.assetOutdir)
     ).toBe(join(outdir, 'asset.abc123'));
   });
 
   it('NARROWS to the manifest directory when a caller has no outdir to thread', async () => {
-    // The bound is no longer DEFAULTABLE on the resolvers themselves — it is a
-    // required parameter there, so dropping it is a compile error rather than
-    // a silent re-expression of go-to-k/cdkd#3489's own defect
-    // (go-to-k/cdkd#3532). The `??` now lives at the two CALLERS whose options
-    // bag may legitimately lack it, and this asserts the direction it falls:
-    // toward the manifest directory, which is STRICTER than the app outdir,
-    // never looser. Driven through `publish()` rather than the resolver, since
-    // the resolver can no longer express the case.
+    // The bound is no longer DEFAULTABLE on the resolvers, nor on
+    // `FileAssetPublisher.publish` / `DockerAssetPublisher.build`, where it is
+    // required and positioned so that dropping it is a compile error
+    // (go-to-k/cdkd#3532). ONE `??` survives, in `buildDockerImage`, whose
+    // options bag may legitimately lack an outdir (`ecs-task-runner` spreads
+    // it conditionally). This asserts the direction that one falls: toward the
+    // manifest directory, which is STRICTER than the app outdir, never looser.
+    // Driven through `buildDockerImage`, since no resolver can express it.
     const { manifestDir } = stage();
-    const { FileAssetPublisher } = await import('../../../src/assets/file-asset-publisher.js');
+    runDockerStreaming.mockClear();
 
     await expect(
-      new FileAssetPublisher().publish(
-        'h1',
-        fileAsset('../asset.abc123'),
-        manifestDir,
-        '123456789012',
-        'us-east-1'
-      )
+      buildDockerImage({ source: { directory: '../asset.abc123' } }, manifestDir, {
+        tag: 't',
+        wrapError: wrapErr,
+      })
     ).rejects.toThrow(CONTAINMENT);
+    expect(runDockerStreaming).not.toHaveBeenCalled();
   });
 });
 
@@ -310,12 +322,8 @@ describe("a Docker asset's source.directory", () => {
     const { dir } = assembly();
     mkdirSync(join(dir, 'asset.abc123'));
 
-    expect(resolveDockerContextDirectory(dir, 'asset.abc123', wrap, dir)).toBe(
-      join(dir, 'asset.abc123')
-    );
-    expect(resolveDockerContextDirectory(dir, 'sub/../asset.abc123', wrap, dir)).toBe(
-      join(dir, 'asset.abc123')
-    );
+    expect(resolveDocker(dir, 'asset.abc123', dir)).toBe(join(dir, 'asset.abc123'));
+    expect(resolveDocker(dir, 'sub/../asset.abc123', dir)).toBe(join(dir, 'asset.abc123'));
   });
 
   it('throws through the CALLER-supplied wrapError, keeping its typed class', () => {
@@ -323,7 +331,7 @@ describe("a Docker asset's source.directory", () => {
     class Typed extends Error {}
 
     expect(() =>
-      resolveDockerContextDirectory(dir, '../outside-dir', (m) => new Typed(m), dir)
+      resolveDockerContextDirectory(dir, '../outside-dir', (m) => new Typed(m), dir, DOCKER_SINK)
     ).toThrow(Typed);
   });
 });
@@ -360,8 +368,20 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
    */
   function captureWarn(): { warned: () => string[] } {
     const lines: string[] = [];
+    // The stub carries the WHOLE logger surface, not just `warn`. A
+    // `warn`-only object is enough for a direct resolver call and explodes the
+    // moment a case drives `buildDockerImage`, which also calls `debug` — and
+    // the failure (`logger.debug is not a function`) accuses the code under
+    // test rather than the stub.
     vi.spyOn(getLogger(), 'child').mockImplementation(
-      () => ({ warn: (m: string) => lines.push(m) }) as never
+      () =>
+        ({
+          warn: (m: string) => lines.push(m),
+          debug: () => {},
+          info: () => {},
+          error: () => {},
+          child: () => getLogger().child(''),
+        }) as never
     );
     return { warned: () => lines };
   }
@@ -376,14 +396,15 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     const cap = captureWarn();
 
     // The verdict: the path is returned VERBATIM, not folded under `dir`.
-    expect(resolveFileAssetSourcePath(dir, fileAsset(victim), dir)).toBe(victim);
+    expect(resolveFile(dir, fileAsset(victim), dir)).toBe(victim);
 
     const lines = cap.warned();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(victim);
     expect(lines[0]).toContain('--no-staging');
-    // Says what is DONE with it, which is the whole point of warning at all.
-    expect(lines[0]).toMatch(/upload/i);
+    // Says what is DONE with it, which is the whole point of warning at all —
+    // and says what THIS CALLER does, not a clause baked into the resolver.
+    expect(lines[0]).toContain(FILE_SINK);
   });
 
   it('ACCEPTS an absolute source.path INSIDE the outdir, and stays SILENT', () => {
@@ -392,7 +413,7 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     mkdirSync(inside);
     const cap = captureWarn();
 
-    expect(resolveFileAssetSourcePath(dir, fileAsset(inside), dir)).toBe(inside);
+    expect(resolveFile(dir, fileAsset(inside), dir)).toBe(inside);
 
     const lines = cap.warned();
     expect(lines).toEqual([]);
@@ -408,7 +429,7 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     const viaLink = join(dir, 'link');
     const cap = captureWarn();
 
-    expect(resolveFileAssetSourcePath(dir, fileAsset(viaLink), dir)).toBe(viaLink);
+    expect(resolveFile(dir, fileAsset(viaLink), dir)).toBe(viaLink);
 
     const lines = cap.warned();
     expect(lines).toHaveLength(1);
@@ -421,15 +442,16 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     const victim = join(outer, 'outside-dir');
     const cap = captureWarn();
 
-    expect(resolveDockerContextDirectory(dir, victim, wrapErr, dir)).toBe(victim);
+    expect(resolveDocker(dir, victim, dir)).toBe(victim);
 
     const lines = cap.warned();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(victim);
     expect(lines[0]).toContain('--no-staging');
-    // The Docker sink is a BUILD CONTEXT, not an upload — the two warnings
-    // must not be copies of each other.
-    expect(lines[0]).toMatch(/build context/i);
+    // The sink comes from the CALLER; the two resolvers must not bake in one
+    // shared clause, because their callers do different things.
+    expect(lines[0]).toContain(DOCKER_SINK);
+    expect(lines[0]).not.toContain(FILE_SINK);
   });
 
   it('ACCEPTS an absolute source.directory INSIDE the outdir, and stays SILENT', () => {
@@ -438,7 +460,7 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     mkdirSync(inside);
     const cap = captureWarn();
 
-    expect(resolveDockerContextDirectory(dir, inside, wrapErr, dir)).toBe(inside);
+    expect(resolveDocker(dir, inside, dir)).toBe(inside);
 
     const lines = cap.warned();
     expect(lines).toEqual([]);
@@ -450,7 +472,7 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     const viaLink = join(dir, 'link');
     const cap = captureWarn();
 
-    expect(resolveDockerContextDirectory(dir, viaLink, wrapErr, dir)).toBe(viaLink);
+    expect(resolveDocker(dir, viaLink, dir)).toBe(viaLink);
 
     const lines = cap.warned();
     expect(lines).toHaveLength(1);
@@ -463,15 +485,144 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     const { dir } = assembly();
     const cap = captureWarn();
 
-    expect(() => resolveFileAssetSourcePath(dir, fileAsset('../../outside.json'), dir)).toThrow(
+    expect(() => resolveFile(dir, fileAsset('../../outside.json'), dir)).toThrow(
       CONTAINMENT
     );
-    expect(() => resolveDockerContextDirectory(dir, '../outside-dir', wrapErr, dir)).toThrow(
+    expect(() => resolveDocker(dir, '../outside-dir', dir)).toThrow(
       CONTAINMENT
     );
 
     const lines = cap.warned();
     expect(lines).toEqual([]);
+  });
+
+  it('does NOT warn about two spellings of ONE directory (the macOS /var vs /private/var case)', () => {
+    // A FALSE POSITIVE, not a missed escape. The bound and the target arrive
+    // here independently — the bound from `-a` or the assembly's own
+    // `directoryName`, the target from the manifest — so on macOS one can be
+    // `/var/folders/...` and the other `/private/var/folders/...`, which name
+    // the same directory. `absoluteAssemblyPathEscape` used to return its
+    // LEXICAL verdict without consulting the real paths, so an ordinary
+    // `--no-staging` asset inside the outdir was announced as "outside the
+    // assembly". A warning that cries wolf is worse than none: users learn to
+    // skip the line that matters.
+    const unresolved = mkdtempSync(join(tmpdir(), 'cdkd-spelling-'));
+    const real = realpathSync(unresolved);
+    if (real === unresolved) {
+      // Nothing to prove on a platform whose tmpdir is not behind a link.
+      return;
+    }
+    const inside = join(real, 'asset.abc123');
+    mkdirSync(inside);
+    const cap = captureWarn();
+
+    // Bound spelled one way, target the other. Both arms, since the two
+    // resolvers must agree.
+    expect(resolveFile(unresolved, fileAsset(inside), unresolved)).toBe(inside);
+    expect(resolveDocker(unresolved, inside, unresolved)).toBe(inside);
+
+    expect(cap.warned()).toEqual([]);
+  });
+
+  it('still WARNS when the real paths really are apart, so the exoneration is not a hole', () => {
+    // The complement of the case above: if exonerating on real paths were
+    // unconditional, or compared the wrong pair, a genuine escape would go
+    // silent. Same unresolved spelling for the bound, a target outside it.
+    const unresolved = mkdtempSync(join(tmpdir(), 'cdkd-spelling-'));
+    const outsideReal = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-victim-')));
+    const cap = captureWarn();
+
+    expect(resolveFile(unresolved, fileAsset(outsideReal), unresolved)).toBe(outsideReal);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(outsideReal);
+  });
+
+  it('ACCEPTS a value naming the BOUND ITSELF, by either spelling, in BOTH arms', () => {
+    // The two arms have to agree about the bound directory. The absolute arm
+    // treats `target === bound` as inside; the relative arm reaches
+    // `resolveAssemblyPath`, whose empty `path.relative` reads as "names the
+    // directory rather than a file inside it" — true and useful for its other
+    // callers, which all READ A FILE, and false here, where an asset source IS
+    // a directory. Mirrors the local twin (go-to-k/cdkd#3494).
+    const { dir } = assembly();
+    const cap = captureWarn();
+
+    expect(resolveFile(dir, fileAsset(dir), dir)).toBe(dir);
+    expect(resolveFile(dir, fileAsset('.'), dir)).toBe(dir);
+    expect(resolveDocker(dir, dir, dir)).toBe(dir);
+    expect(resolveDocker(dir, '.', dir)).toBe(dir);
+
+    expect(cap.warned()).toEqual([]);
+  });
+
+  it("names the Docker asset when the caller has an id, and does not when it has none", () => {
+    // With several image assets under `--no-staging` a subject-less warning
+    // gives N indistinguishable lines.
+    const { dir, outer } = assembly();
+    const victim = join(outer, 'outside-dir');
+    const cap = captureWarn();
+
+    expect(resolveDocker(dir, victim, dir, 'cdkd-asset-deadbeef')).toBe(victim);
+    expect(resolveDocker(dir, victim, dir)).toBe(victim);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('cdkd-asset-deadbeef');
+    expect(lines[1]).not.toContain('cdkd-asset-deadbeef');
+  });
+
+  it("describes the EXECUTABLE arm's sink as a working directory, not a build context", async () => {
+    // `buildDockerImage` resolves `source.directory` through ONE closure for
+    // both arms, so the sink is easy to get wrong in the direction that
+    // UNDERSTATES: in the `executable` arm nothing reaches BuildKit and cdkd
+    // pushes nothing — the directory becomes the cwd of a manifest-supplied
+    // argv, which is the larger risk. A probe copying the build-context
+    // wording onto this arm reds here and nowhere else.
+    const { dir, outer } = assembly();
+    const victim = join(outer, 'outside-dir');
+    spawnStreaming.mockClear();
+    spawnStreaming.mockResolvedValue({ stdout: 'built-image:v1', stderr: '', exitCode: 0 });
+    const cap = captureWarn();
+
+    await buildDockerImage(
+      { source: { directory: victim, executable: ['/bin/echo', 'x'] } },
+      dir,
+      { tag: 't', wrapError: wrapErr, assetOutdir: dir }
+    );
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('working directory');
+    expect(lines[0]).toContain('source.executable');
+    expect(lines[0]).not.toContain('BuildKit');
+    // ...and the directory really is what the spawn got, so the warning is
+    // describing the value that was used.
+    expect(spawnStreaming).toHaveBeenCalledWith(
+      '/bin/echo',
+      ['x'],
+      expect.objectContaining({ cwd: victim })
+    );
+  });
+
+  it('describes the DIRECTORY arm as a build context, so the two are not copies', async () => {
+    const { dir, outer } = assembly();
+    const victim = join(outer, 'outside-dir');
+    runDockerStreaming.mockClear();
+    runDockerStreaming.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    const cap = captureWarn();
+
+    await buildDockerImage({ source: { directory: victim } }, dir, {
+      tag: 't',
+      wrapError: wrapErr,
+      assetOutdir: dir,
+    });
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('BuildKit');
+    expect(lines[0]).not.toContain('working directory');
   });
 
   it('measures the absolute path against the APP OUTDIR, not the manifest directory', () => {
@@ -486,12 +637,12 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     mkdirSync(staged);
 
     const wide = captureWarn();
-    expect(resolveFileAssetSourcePath(manifestDir, fileAsset(staged), outdir)).toBe(staged);
+    expect(resolveFile(manifestDir, fileAsset(staged), outdir)).toBe(staged);
     const wideLines = wide.warned();
     expect(wideLines).toEqual([]);
 
     const narrow = captureWarn();
-    expect(resolveFileAssetSourcePath(manifestDir, fileAsset(staged), manifestDir)).toBe(staged);
+    expect(resolveFile(manifestDir, fileAsset(staged), manifestDir)).toBe(staged);
     const narrowLines = narrow.warned();
     expect(narrowLines).toHaveLength(1);
   });
