@@ -1048,7 +1048,7 @@ about it:
 
 | Manifest value | What cdkd does with it | When it warns |
 | --- | --- | --- |
-| `source.executable` | **runs it on this machine** — an arbitrary command line | always, naming the command |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets` and `local invoke`, naming the command |
 | `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom` | reads that host path during the image build | when the path is outside both the build context and the output directory |
 | `dockerOutputs`, `cacheTo` | **writes** to that host path | same, and the line says WRITE |
 | `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
@@ -1056,7 +1056,10 @@ about it:
 **Two of those are worth stating plainly.** Deploying from a pre-synthesized
 assembly *does* execute code from it, because a Docker asset may declare
 `source.executable` instead of a Dockerfile — so an assembly is not only data,
-and `cdkd local invoke` runs it too. And a build secret, an SSH key or a cache
+and `cdkd local invoke` runs it too. `cdkd local start-service` and
+`cdkd local start-alb` build their ECS container assets through the bundled
+emulator, which runs such an executable **without printing that line**; treat
+those two as executing assembly code as well. And a build secret, an SSH key or a cache
 directory is a host path the CloudFormation template never shows, so reading the
 template is not enough to know what a deploy will touch.
 

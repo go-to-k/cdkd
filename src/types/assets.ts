@@ -28,6 +28,13 @@ export interface FileAsset {
 export interface FileAssetSource {
   path: string;
   packaging: 'file' | 'zip';
+  /**
+   * NOT read by `FileAssetPublisher` today, so nothing spawns it and nothing
+   * warns about it. **A future implementation must call
+   * `warnManifestExecutable` first** — the Docker twin's two spawn sites both
+   * do (go-to-k/cdkd#3497), and a manifest-chosen command line that runs
+   * without a line is the defect that issue exists to remove.
+   */
   executable?: string[];
 }
 

@@ -61,56 +61,55 @@ interface HostPathRef {
 }
 
 /**
- * Pull `src=` / `dest=` out of a comma-separated BuildKit option string
- * (`type=local,dest=/tmp/out`, `id=k,src=/etc/passwd`).
+ * Every candidate host path in a buildx option value.
  *
- * Deliberately tolerant: an unparseable option yields nothing rather than
- * throwing, because this module only ever adds a warning and must never be
- * the reason a legitimate build fails.
+ * **Uniform, and over-inclusive on purpose.** Three review rounds found this
+ * parser short in three different ways — `dest=` only (missing the
+ * `--output=<path>` shorthand), case-sensitive `src` (missing `source=` and
+ * `SRC=`), and a per-entry `=` requirement (missing every key after the first
+ * in `--ssh k=./a.key,/home/victim/.ssh/id_rsa`). Each fix was a new special
+ * case, and the next round found the next gap. So the rule is now one rule:
+ * **a part with a key yields its value, a part without one yields itself**,
+ * for every field. An over-inclusive candidate costs at most a warning about
+ * a string that was never a path — and a value that is not a path resolves
+ * inside the build context and is dropped before anything is printed.
  *
- * KNOWN INCOMPLETE, and better here than silently: buildx parses these as CSV,
- * so a quoted value containing a comma (`dest="/tmp/a,b"`) is split wrongly by
- * this naive scan and its path is missed. Closing that means a CSV parser, and
- * a miss costs a warning rather than a refusal, so it is recorded rather than
- * built.
+ * `write` is true only for an explicit `dest=`, or when the caller says the
+ * whole field is a write target (`dockerOutputs`, whose bare-path form IS a
+ * destination). It is NOT inferred from the field name: `cacheFrom` can carry
+ * a `dest=` and `cacheTo` a `src=`.
+ *
+ * KNOWN INCOMPLETE, recorded rather than built: buildx parses these as CSV, so
+ * a quoted value containing a comma (`dest="/tmp/a,b"`) is split wrongly here
+ * and its path is missed. A miss costs a warning, never a refusal, which is
+ * what keeps a CSV parser out of this module.
+ *
+ * Tolerant by construction: an unparseable value yields nothing rather than
+ * throwing. This module only ever ADDS a warning and must never be why a
+ * legitimate build fails.
  */
-function hostPathsInOptionString(value: string): { path: string; write: boolean }[] {
+function candidateHostPaths(
+  value: string,
+  opts: { bareIsWrite: boolean }
+): { path: string; write: boolean }[] {
   const out: { path: string; write: boolean }[] = [];
-  const parts = value.split(',');
-  // BARE-PATH SHORTHAND: `--output=/tmp/out` is valid and means
-  // `type=local,dest=/tmp/out`. Keying only on `dest=` let that write through
-  // unwarned, which is the worst direction for this field to be wrong in.
-  if (parts.length === 1 && !parts[0]!.includes('=') && parts[0]!.trim().length > 0) {
-    return [{ path: parts[0]!.trim(), write: true }];
-  }
-  for (const part of parts) {
+  for (const part of value.split(',')) {
     const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    // buildx lower-cases option keys and accepts `source` as an alias for
-    // `src`, so an exact case-sensitive match on `src` let
-    // `--secret id=x,source=/etc/passwd` and `SRC=` through unwarned.
+    if (eq < 0) {
+      // No key: the part IS the value. `--output=/tmp/out` and the second and
+      // later keys of `--ssh id=a,b,c` both take this branch.
+      const bare = part.trim();
+      if (bare.length > 0) out.push({ path: bare, write: opts.bareIsWrite });
+      continue;
+    }
+    // buildx lower-cases keys and accepts `source` as an alias for `src`.
     const key = part.slice(0, eq).trim().toLowerCase();
     const v = part.slice(eq + 1).trim();
-    if ((key === 'src' || key === 'source' || key === 'dest') && v.length > 0) {
-      out.push({ path: v, write: key === 'dest' });
-    }
-  }
-  return out;
-}
-
-/**
- * `--ssh` takes `default` (the agent socket from the environment, not a
- * manifest-chosen path) or `<id>=<path to a private key>`. Only the second
- * names a host file, and it is the more alarming one — a manifest that writes
- * `k=~/.ssh/id_rsa` has BuildKit read that key.
- */
-function sshKeyPaths(value: string): string[] {
-  const out: string[] = [];
-  for (const entry of value.split(',')) {
-    const eq = entry.indexOf('=');
-    if (eq < 0) continue;
-    const v = entry.slice(eq + 1).trim();
-    if (v.length > 0) out.push(v);
+    if (v.length === 0) continue;
+    // `type=local` / `id=mysecret` / `mode=max` name no path. Everything else
+    // with a key is a candidate; the containment check filters the rest.
+    if (key === 'type' || key === 'id' || key === 'mode' || key === 'name') continue;
+    out.push({ path: v, write: key === 'dest' || opts.bareIsWrite });
   }
   return out;
 }
@@ -125,17 +124,35 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
   for (const [k, v] of Object.entries(source.dockerBuildContexts ?? {})) {
     // No remote-reference filter here, and a probe is why. A first revision
     // skipped `docker-image://` / `https://` / `git@` values as "not host
-    // paths"; deleting that guard reddened nothing, because a remote
-    // reference is a RELATIVE string and folds to `<context>/docker-image:/…`,
-    // which is inside the assembly and silent already. A guard that cannot
-    // change an outcome is a branch nobody can test.
+    // paths"; deleting that guard reddened nothing, because each of those
+    // THREE is a RELATIVE string that folds to `<context>/docker-image:/…`,
+    // inside the assembly and silent already. A guard that cannot change an
+    // outcome is a branch nobody can test.
+    //
+    // The claim is about those three and not about every scheme:
+    // `oci-layout://<path>` carries a real host path behind a scheme, and the
+    // extra `oci-layout:` component makes the fold one level deeper than the
+    // path really is — so a value exactly one level outside reads as inside.
+    // It is buildx-experimental (`BUILDX_EXPERIMENTAL=1`), and the miss costs
+    // a warning rather than a refusal, so it is recorded here rather than
+    // special-cased back in.
     refs.push({ field: 'dockerBuildContexts', where: k, path: v, write: false });
   }
-  for (const p of sshKeyPaths(source.dockerBuildSsh ?? '')) {
+  // `--ssh <id>=<socket|key>[,<key>...]` — the keys AFTER the first carry no
+  // `=`, which is how a first revision dropped them. `default` alone is the
+  // agent socket from the environment, not a manifest-chosen path, and is
+  // skipped for that reason rather than by accident.
+  for (const { path: p } of candidateHostPaths(source.dockerBuildSsh ?? '', {
+    bareIsWrite: false,
+  })) {
+    if (p === 'default') continue;
     refs.push({ field: 'dockerBuildSsh', where: 'dockerBuildSsh', path: p, write: false });
   }
   for (const [k, v] of Object.entries(source.dockerBuildSecrets ?? {})) {
-    for (const { path: p, write } of hostPathsInOptionString(v)) {
+    // `bareIsWrite: false` — the bare-path shorthand is `--output`'s, not
+    // this field's, and labelling a secret READ as a WRITE alarms in the
+    // wrong direction (buildx rejects the spelling outright anyway).
+    for (const { path: p, write } of candidateHostPaths(v, { bareIsWrite: false })) {
       refs.push({ field: 'dockerBuildSecrets', where: k, path: p, write });
     }
   }
@@ -154,7 +171,7 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
     }
   }
   (source.dockerOutputs ?? []).forEach((o, i) => {
-    for (const { path: p, write } of hostPathsInOptionString(o)) {
+    for (const { path: p, write } of candidateHostPaths(o, { bareIsWrite: true })) {
       refs.push({ field: 'dockerOutputs', where: String(i), path: p, write });
     }
   });
@@ -174,14 +191,31 @@ export function warnEscapingBuildKitPaths(
   bound: string
 ): void {
   const logger = getLogger().child('assets');
+  // **The context may only NARROW the question, never widen it.** The read
+  // exemption below treats `base` as a second bound, and
+  // `resolveDockerContextDirectory` HONOURS an absolute `source.directory` —
+  // so a manifest writing `source.directory: "/"` would make every path
+  // "inside the context" and silence the whole set from one field.
+  // `resolveAssemblyPath`'s own `containWithin` note states the rule this
+  // rediscovered: an ANCESTOR of the real bound WIDENS, and `'/'` admits
+  // `/etc/passwd`. When `bound` lies inside `base`, the context is an
+  // ancestor and the exemption is switched off entirely.
+  const contextNarrows = assemblyPathEscape(base, base, bound) !== undefined;
   for (const ref of hostPathsOf(source)) {
-    // INSIDE THE BUILD CONTEXT is never worth a line, even when the context
-    // itself sits outside the outdir. Under `cdk synth --no-staging` the
-    // context IS outside — that is what go-to-k/cdkd#3532's own warning
-    // reports, once — and judging these against the outdir alone then
-    // repeated it per passthrough for values that never leave the directory
-    // BuildKit was already given.
-    if (assemblyPathEscape(base, base, ref.path) === undefined) continue;
+    // INSIDE THE BUILD CONTEXT is not worth a line FOR A READ: BuildKit was
+    // handed that directory already, and under `cdk synth --no-staging` the
+    // context itself sits outside the outdir — which go-to-k/cdkd#3532's own
+    // warning reports once — so judging reads against the outdir alone
+    // repeated it per passthrough for values that never leave the directory.
+    //
+    // **A WRITE gets no such exemption, and the distinction is the whole
+    // point.** "We already gave BuildKit that directory to READ" does not
+    // license creating files in it: under `--no-staging` the context is the
+    // user's own source tree, and a `dockerOutputs` dest inside it would
+    // otherwise drop files there in silence.
+    if (!ref.write && contextNarrows && assemblyPathEscape(base, base, ref.path) === undefined) {
+      continue;
+    }
     const escape = assemblyPathEscape(base, bound, ref.path);
     if (escape === undefined) continue;
     const verb = ref.write ? 'WRITE to' : 'read';
@@ -197,7 +231,9 @@ export function warnEscapingBuildKitPaths(
     // `displaySafe`s every path it interpolates and the rest is its own
     // literal text. `ref.field` and `verb` are this module's own literals.
     logger.warn(
-      `Docker asset ${ref.field}['${displaySafe(ref.where)}'] names a host path ` +
+      `Docker asset ${ref.field}` +
+        (ref.where === ref.field ? '' : `['${displaySafe(ref.where)}']`) +
+        ` names a host path ` +
         `outside the assembly, which ` +
         `${renderAssemblyPathEscape(
           escape,
@@ -246,6 +282,24 @@ export function warnManifestExecutable(executable: readonly string[]): void {
 }
 
 /**
+ * One set per KIND rather than one set of composite keys. A `${kind}` + NUL +
+ * `${name}` key would be a multi-part NUL-joined string, which this repo
+ * fences as a record-key shape — and it is not one: it never leaves the
+ * process, is never persisted, and a collision would suppress one duplicate
+ * warning line. Two sets carry the same information with nothing to classify.
+ */
+const warnedDestinations: Record<'bucket' | 'repository', Set<string>> = {
+  bucket: new Set(),
+  repository: new Set(),
+};
+
+/** Test seam; a process deploys one app, so the sets are per invocation. */
+export function resetDestinationWarnings(): void {
+  warnedDestinations.bucket.clear();
+  warnedDestinations.repository.clear();
+}
+
+/**
  * Warn that an asset destination is not bootstrap-shaped.
  *
  * `redirectFileAsset` rewrites a destination only when it matches a known
@@ -268,24 +322,6 @@ export function warnManifestExecutable(executable: readonly string[]): void {
  * mode nothing is rewritten and every ordinary deploy would otherwise warn,
  * which is the cry-wolf failure this layer already learned once.
  */
-/**
- * One set per KIND rather than one set of composite keys. A `${kind}` + NUL +
- * `${name}` key would be a multi-part NUL-joined string, which this repo
- * fences as a record-key shape — and it is not one: it never leaves the
- * process, is never persisted, and a collision would suppress one duplicate
- * warning line. Two sets carry the same information with nothing to classify.
- */
-const warnedDestinations: Record<'bucket' | 'repository', Set<string>> = {
-  bucket: new Set(),
-  repository: new Set(),
-};
-
-/** Test seam; a process deploys one app, so the sets are per invocation. */
-export function resetDestinationWarnings(): void {
-  warnedDestinations.bucket.clear();
-  warnedDestinations.repository.clear();
-}
-
 export function warnUnrecognizedAssetDestination(opts: {
   kind: 'bucket' | 'repository';
   name: string;

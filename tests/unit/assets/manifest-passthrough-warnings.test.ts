@@ -68,9 +68,9 @@ describe('BuildKit passthrough host paths', () => {
     warnEscapingBuildKitPaths(
       source({
         dockerFile: join(victim, 'Dockerfile'),
-        dockerBuildContexts: { extra: victim },
+        dockerBuildContexts: { extra: join(victim, 'ctx-dir') },
         dockerBuildSecrets: { npmrc: `type=file,src=${join(victim, '.npmrc')}` },
-        cacheFrom: [{ type: 'local', params: { src: join(victim, 'cache') } }],
+        cacheFrom: [{ type: 'local', params: { src: join(victim, 'cache-in') } }],
         cacheTo: { type: 'local', params: { dest: join(victim, 'cache-out') } },
         dockerOutputs: [`type=local,dest=${join(victim, 'out')}`],
       }),
@@ -82,23 +82,31 @@ describe('BuildKit passthrough host paths', () => {
     // One per field: a single line covering six values would make a reader
     // guess which one they need to look at.
     expect(lines).toHaveLength(6);
-    for (const field of [
-      'dockerFile',
-      'dockerBuildContexts',
-      'dockerBuildSecrets',
-      'cacheFrom',
-      'cacheTo',
-      'dockerOutputs',
-    ]) {
+    const leaves: Record<string, string> = {
+      dockerFile: 'Dockerfile',
+      dockerBuildContexts: 'ctx-dir',
+      dockerBuildSecrets: '.npmrc',
+      cacheFrom: 'cache-in',
+      cacheTo: 'cache-out',
+      dockerOutputs: 'out',
+    };
+    for (const field of Object.keys(leaves)) {
       const line = lines.find((l) => l.includes(field));
       expect(line, `no warning named ${field}`).toBeDefined();
-      expect(line).toContain(victim);
+      // The LEAF, not the shared parent. Every fixture path sits under
+      // `victim`, so asserting `victim` alone passed even if a field were
+      // paired with another field's path.
+      expect(line, `${field} named the wrong path`).toContain(leaves[field]);
     }
   });
 
-  it('says WRITE for the two fields that are write targets, and read for the rest', () => {
-    // The distinction a reader acts on: `dockerOutputs` / `cacheTo` create
-    // files on the host, the others only read.
+  it('says WRITE from the dest= KEY, not from the field name', () => {
+    // The distinction a reader acts on, and the one the implementation gets
+    // wrong if it keys on the field: `cacheFrom` can carry a `dest=` and
+    // `cacheTo` a `src=`, so the two DIVERGENT pairs are what this asserts.
+    // A first version used only `cacheTo`+`dest=` and `dockerOutputs`+`dest=`,
+    // where field and key agree — reverting to a field lookup reddened
+    // nothing.
     const { outdir, context, victim } = assembly();
     const cap = captureWarn();
 
@@ -106,7 +114,10 @@ describe('BuildKit passthrough host paths', () => {
       source({
         dockerFile: join(victim, 'Dockerfile'),
         dockerOutputs: [`type=local,dest=${join(victim, 'out')}`],
-        cacheTo: { type: 'local', params: { dest: join(victim, 'cache-out') } },
+        // DIVERGENT: a write key on the "read" field, and a read key on the
+        // "write" field.
+        cacheFrom: [{ type: 'local', params: { dest: join(victim, 'cf-dest') } }],
+        cacheTo: { type: 'local', params: { src: join(victim, 'ct-src') } },
       }),
       context,
       outdir
@@ -114,7 +125,8 @@ describe('BuildKit passthrough host paths', () => {
 
     const lines = cap.warned();
     expect(lines.find((l) => l.includes('dockerOutputs'))).toContain('cdkd will WRITE to it');
-    expect(lines.find((l) => l.includes('cacheTo'))).toContain('cdkd will WRITE to it');
+    expect(lines.find((l) => l.includes('cacheFrom'))).toContain('cdkd will WRITE to it');
+    expect(lines.find((l) => l.includes('cacheTo'))).toContain('cdkd will read it');
     expect(lines.find((l) => l.includes('dockerFile'))).toContain('cdkd will read it');
 
     // **The whole line, because the verb alone passed for the wrong reason.**
@@ -127,6 +139,80 @@ describe('BuildKit passthrough host paths', () => {
       expect(line).not.toContain('Refusing');
       expect(line).toContain('matching the CDK CLI');
     }
+  });
+
+  it('WARNS for EVERY dockerBuildSsh key, not just the first', () => {
+    // `--ssh <id>=<socket|key>[,<key>...]`: the keys AFTER the first carry no
+    // `=`. A revision that required one per entry saw only `k=./ok.key`,
+    // which is inside the context and silent — so the victim's key produced
+    // NO line at all, and the hole a previous round closed was still open for
+    // exactly the input that matters.
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildSsh: `k=ok.key,${join(victim, 'id_rsa')}` }),
+      context,
+      outdir
+    );
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(join(victim, 'id_rsa'));
+  });
+
+  it('does NOT label a dockerBuildSecrets bare path as a WRITE', () => {
+    // The bare-path shorthand belongs to `--output`. Applying it everywhere
+    // made a secret READ announce itself as a write, which alarms in the
+    // wrong direction about a spelling buildx rejects outright.
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildSecrets: { k: join(victim, '.npmrc') } }),
+      context,
+      outdir
+    );
+
+    expect(cap.warned()[0]).toContain('cdkd will read it');
+  });
+
+  it('does NOT let a source.directory of "/" silence the whole set', () => {
+    // The build-context read exemption makes `base` a second bound, and
+    // `resolveDockerContextDirectory` HONOURS an absolute `source.directory`
+    // — so one field could make every path "inside the context". That is the
+    // ancestor-bound hole `resolveAssemblyPath`'s own `containWithin` note
+    // already writes down: `containWithin: '/'` admits `/etc/passwd`. The
+    // exemption switches off when the context contains the bound.
+    const outer = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-ancestor-')));
+    const outdir = join(outer, 'cdk.out');
+    mkdirSync(outdir);
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(source({ directory: '/', dockerFile: '/etc/passwd' }), '/', outdir);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('/etc/passwd');
+  });
+
+  it('WARNS for a WRITE inside the build context when the context is outside the outdir', () => {
+    // The read exemption must not carry to writes. Under `--no-staging` the
+    // context is the user's own source tree; "BuildKit already has that
+    // directory to read" does not license creating files in it.
+    const { outdir, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerFile: 'Dockerfile', dockerOutputs: ['out'] }),
+      victim,
+      outdir
+    );
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('dockerOutputs');
+    expect(lines[0]).toContain('cdkd will WRITE to it');
   });
 
   it('WARNS for a dockerBuildSsh private key path, which is a host file too', () => {
@@ -245,21 +331,32 @@ describe('BuildKit passthrough host paths', () => {
 
   it('tolerates an unparseable option string rather than throwing', () => {
     // This module only ever ADDS a warning; it must never be why a legitimate
-    // build fails. A malformed value yields no path and no line.
+    // build fails.
+    //
+    // The ESCAPING spelling is deliberate, and it has to clear the OUTDIR,
+    // not just the context. A first version used relative
+    // junk and passed because it folded inside the build context, not
+    // because the parser handled it — which hid that the bare-path shorthand
+    // was labelling a secret READ as a WRITE. With `../` the line is emitted
+    // and its verb is asserted, so that defect reds here.
     const { outdir, context } = assembly();
     const cap = captureWarn();
 
     expect(() =>
       warnEscapingBuildKitPaths(
         source({
-          dockerBuildSecrets: { a: 'no-equals-here', b: 'src=' },
+          dockerBuildSecrets: { a: '../../no-equals-here', b: 'src=' },
           dockerOutputs: ['', ',,,', 'type=local'],
         }),
         context,
         outdir
       )
     ).not.toThrow();
-    expect(cap.warned()).toEqual([]);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('dockerBuildSecrets');
+    expect(lines[0]).toContain('cdkd will read it');
   });
 });
 

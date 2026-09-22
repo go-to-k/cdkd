@@ -153,6 +153,12 @@ export class AssetPublisher {
         // destination, so it arrives here unrewritten, and judging
         // `cdk-hnb659fds-assets-<acct>-eu-west-1` against `us-east-1` called a
         // perfectly ordinary bootstrap bucket unrecognized.
+        // `dest.region` is used UNFLATTENED, and that is self-consistent
+        // rather than lucky: the same raw string is both the substitution
+        // `flattenAssetPlaceholders` writes in and the literal the shape
+        // regex then matches, so a `${AWS::Region}` destination agrees with
+        // itself. `buildAssetRedirectMap` flattens it; if this side ever
+        // flattens only one of the two, the agreement breaks.
         const destRegion = dest.region ?? options.region;
         const name = flattenAssetPlaceholders(dest.bucketName, options.accountId, destRegion);
         warnUnrecognizedAssetDestination({
