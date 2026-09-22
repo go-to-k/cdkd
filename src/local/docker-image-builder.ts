@@ -21,6 +21,7 @@ import {
   LocalInvokeBuildError as CdkLocalLocalInvokeBuildError,
   type BuildContainerImageOptions,
 } from 'cdk-local/internal';
+import { warnManifestExecutable } from '../assets/manifest-passthrough-warnings.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 
 export { architectureToPlatform };
@@ -29,6 +30,14 @@ export type { BuildContainerImageOptions };
 export async function buildContainerImage(
   ...args: Parameters<typeof buildContainerImageImpl>
 ): Promise<string> {
+  // `cdkd local invoke`'s container-Lambda build runs a manifest-chosen
+  // `source.executable` too — cdk-local's builder spawns it, exactly as the
+  // deploy path does (go-to-k/cdkd#3497). The warning belongs HERE, at the
+  // shim, because the implementation is cdk-local's and cdkd consumes it
+  // verbatim; without it the docs' claim would have been true only of deploy,
+  // while `cdkd local invoke` executed assembly code in silence.
+  const executable = args[0]?.source?.executable;
+  if (executable && executable.length > 0) warnManifestExecutable(executable);
   try {
     return await buildContainerImageImpl(...args);
   } catch (e) {

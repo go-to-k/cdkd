@@ -1044,22 +1044,26 @@ app's `cdk.out` and select the stack by its display path
 The containment rules above cover the paths in that table and no others. The
 rest of an asset manifest is forwarded **as the manifest writes it**, and cdkd
 does that deliberately, matching the CDK CLI. What it will not do is stay quiet
-about it: each of the values below prints a warning at normal verbosity when it
-reaches outside the assembly, naming the value.
+about it:
 
-| Manifest value | What cdkd does with it |
-| --- | --- |
-| `source.executable` | **runs it on this machine** — an arbitrary command line |
-| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `cacheFrom` | reads that host path during the image build |
-| `dockerOutputs`, `cacheTo` | **writes** to that host path |
-| `dest.bucketName` / `objectKey`, the ECR repository | uploads there with your credentials |
+| Manifest value | What cdkd does with it | When it warns |
+| --- | --- | --- |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | always, naming the command |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom` | reads that host path during the image build | when the path is outside both the build context and the output directory |
+| `dockerOutputs`, `cacheTo` | **writes** to that host path | same, and the line says WRITE |
+| `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
 
-**Two of those are worth stating plainly.** `cdkd deploy -a <dir>` *does*
-execute code from the assembly, because a Docker asset may declare
-`source.executable` instead of a Dockerfile — so an assembly is not only data.
-And a build secret or a cache directory is a host path the CloudFormation
-template never shows, so reading the template is not enough to know what a
-deploy will touch.
+**Two of those are worth stating plainly.** Deploying from a pre-synthesized
+assembly *does* execute code from it, because a Docker asset may declare
+`source.executable` instead of a Dockerfile — so an assembly is not only data,
+and `cdkd local invoke` runs it too. And a build secret, an SSH key or a cache
+directory is a host path the CloudFormation template never shows, so reading the
+template is not enough to know what a deploy will touch.
+
+The destination check is a **name-shape** check, not a proof of ownership: a
+bucket named like a CDK bootstrap bucket for your account can still live in
+someone else's. It narrows what a careless manifest gets away with, nothing
+more.
 
 Pointing `-a` at an assembly you did not produce is the same decision as running
 someone else's build output. cdkd cannot make that decision for you: anyone who

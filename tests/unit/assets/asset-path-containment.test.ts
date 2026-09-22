@@ -676,7 +676,7 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(pathLine).toContain('working directory');
     expect(pathLine).toContain('source.executable');
     expect(pathLine).not.toContain('BuildKit');
-    expect(lines.some((l) => l.includes('runs a command line this asset manifest'))).toBe(true);
+    expect(lines.some((l) => l.includes('source.executable runs a command'))).toBe(true);
     // ...and the directory really is what the spawn got, so the warning is
     // describing the value that was used.
     expect(spawnStreaming).toHaveBeenCalledWith(

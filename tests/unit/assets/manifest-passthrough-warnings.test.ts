@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  resetDestinationWarnings,
   warnEscapingBuildKitPaths,
   warnManifestExecutable,
   warnUnrecognizedAssetDestination,
@@ -42,6 +43,7 @@ function captureWarn(): { warned: () => string[] } {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetDestinationWarnings();
 });
 
 /** An outdir with a real asset directory inside and a victim beside it. */
@@ -111,9 +113,90 @@ describe('BuildKit passthrough host paths', () => {
     );
 
     const lines = cap.warned();
-    expect(lines.find((l) => l.includes('dockerOutputs'))).toContain('WRITE to');
-    expect(lines.find((l) => l.includes('cacheTo'))).toContain('WRITE to');
-    expect(lines.find((l) => l.includes('dockerFile'))).not.toContain('WRITE to');
+    expect(lines.find((l) => l.includes('dockerOutputs'))).toContain('cdkd will WRITE to it');
+    expect(lines.find((l) => l.includes('cacheTo'))).toContain('cdkd will WRITE to it');
+    expect(lines.find((l) => l.includes('dockerFile'))).toContain('cdkd will read it');
+
+    // **The whole line, because the verb alone passed for the wrong reason.**
+    // A first revision passed the verb as `renderAssemblyPathEscape`'s
+    // `action` positional, which fills `Refusing to ${action}.` — so this
+    // case was satisfied by the string `Refusing to WRITE to it silently.`,
+    // in the one change whose entire point is that it does NOT refuse, and
+    // the line went on to say cdkd forwards the path anyway.
+    for (const line of lines) {
+      expect(line).not.toContain('Refusing');
+      expect(line).toContain('matching the CDK CLI');
+    }
+  });
+
+  it('WARNS for a dockerBuildSsh private key path, which is a host file too', () => {
+    // `--ssh <id>=<key path>` makes BuildKit read that key and serve it to a
+    // `RUN --mount=type=ssh` the same manifest wrote. Missing from a first
+    // revision's enumeration, which claimed to cover every host path.
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildSsh: `k=${join(victim, 'id_rsa')}` }),
+      context,
+      outdir
+    );
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('dockerBuildSsh');
+    expect(lines[0]).toContain(join(victim, 'id_rsa'));
+  });
+
+  it('WARNS for the dockerOutputs BARE PATH shorthand, which is a write', () => {
+    // `--output=<path>` with no `=`-keyed part is valid shorthand for
+    // `type=local,dest=<path>`. A first revision required a `dest=` key, so
+    // this write passed unwarned — the worst direction for this field.
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(source({ dockerOutputs: [victim] }), context, outdir);
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('cdkd will WRITE to it');
+  });
+
+  it('WARNS for `source=` and for an upper-case key, which buildx also accepts', () => {
+    // buildx lower-cases option keys and takes `source` as an alias for `src`.
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({
+        dockerBuildSecrets: {
+          a: `type=file,source=${join(victim, '.npmrc')}`,
+          b: `type=file,SRC=${join(victim, '.netrc')}`,
+        },
+      }),
+      context,
+      outdir
+    );
+
+    expect(cap.warned()).toHaveLength(2);
+  });
+
+  it('stays SILENT for a value inside the BUILD CONTEXT, even when the context is outside the outdir', () => {
+    // The `cdk synth --no-staging` shape: the context itself is outside the
+    // outdir, which go-to-k/cdkd#3532's warning already reports once. Judging
+    // these against the outdir alone repeated that per passthrough, for values
+    // that never leave the directory BuildKit was already handed.
+    const { outdir, victim } = assembly();
+    mkdirSync(join(victim, 'sub'));
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerFile: 'Dockerfile', dockerBuildContexts: { extra: 'sub' } }),
+      victim,
+      outdir
+    );
+
+    expect(cap.warned()).toEqual([]);
   });
 
   it('stays SILENT for ordinary values inside the assembly', () => {
@@ -188,23 +271,34 @@ describe('source.executable', () => {
 
     const lines = cap.warned();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('./build.sh --tag x');
+    expect(lines[0]).toContain('./build.sh');
+    expect(lines[0]).toContain('2 argument(s)');
     // The expectation the decision says this exists to correct.
-    expect(lines[0]).toContain('DOES execute code from');
+    expect(lines[0]).toContain('DOES execute code from it');
   });
 
-  it('REDACTS a --build-arg value the script carries', () => {
-    // A build script wrapping `docker build` carries the very pairs the rest
-    // of this layer masks, and this line renders the argv at default
-    // verbosity — so an unmasked render would be a NEW leak, not an inherited
-    // one.
+  it('does NOT render the arguments at default verbosity', () => {
+    // A first revision rendered the whole argv here through
+    // `redactDockerArgvValues`. That masker covers `docker build` flag shapes
+    // and NOTHING else, so a legitimate build script's own secret argument
+    // would have been promoted from `--verbose`-only to a line in every CI
+    // log, on every deploy — a new leak introduced by a warning about leaks.
+    // The decision's words are "naming the command", which argv[0] satisfies.
     const cap = captureWarn();
 
-    warnManifestExecutable(['./build.sh', '--build-arg', 'NPM_TOKEN=s3cr3t-value']);
+    warnManifestExecutable(['./build.sh', '--token', 'ghp_not_a_real_token', '--password=hunter2']);
 
     const line = cap.warned()[0];
-    expect(line).not.toContain('s3cr3t-value');
-    expect(line).toContain('NPM_TOKEN');
+    expect(line).not.toContain('ghp_not_a_real_token');
+    expect(line).not.toContain('hunter2');
+    expect(line).toContain('./build.sh');
+    expect(line).toContain('--verbose shows them');
+  });
+
+  it('omits the argument count when there are none', () => {
+    const cap = captureWarn();
+    warnManifestExecutable(['./build.sh']);
+    expect(cap.warned()[0]).not.toContain('argument(s)');
   });
 });
 
@@ -225,6 +319,23 @@ describe('asset destinations', () => {
     // A custom bootstrap is legitimate, so the line must not read as an
     // accusation the user cannot act on.
     expect(lines[0]).toContain('custom');
+  });
+
+  it('warns ONCE per name, however many assets share it', () => {
+    // Emitted per asset x per destination at graph construction. A legitimate
+    // custom bootstrap or an AppStagingSynthesizer bucket is deliberately
+    // outside the recognized shapes, so a thirty-asset stack printed thirty
+    // identical lines, every deploy.
+    const cap = captureWarn();
+
+    for (let i = 0; i < 5; i++) {
+      warnUnrecognizedAssetDestination({ kind: 'bucket', name: 'my-staging', recognized: false });
+    }
+    warnUnrecognizedAssetDestination({ kind: 'repository', name: 'my-staging', recognized: false });
+
+    // Once for the bucket; the repository of the same NAME is a different
+    // resource and gets its own line.
+    expect(cap.warned()).toHaveLength(2);
   });
 
   it('stays SILENT for a recognized destination', () => {

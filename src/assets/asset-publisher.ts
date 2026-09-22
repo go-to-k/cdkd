@@ -148,12 +148,18 @@ export class AssetPublisher {
       // a cdkd-managed target is silent. Warn, never refuse: a custom
       // bootstrap is a legitimate configuration.
       for (const dest of Object.values(asset.destinations)) {
-        const name = flattenAssetPlaceholders(dest.bucketName, options.accountId, options.region);
+        // The destination's OWN region, not the deploy region.
+        // `buildAssetRedirectMap` deliberately skips a cross-region
+        // destination, so it arrives here unrewritten, and judging
+        // `cdk-hnb659fds-assets-<acct>-eu-west-1` against `us-east-1` called a
+        // perfectly ordinary bootstrap bucket unrecognized.
+        const destRegion = dest.region ?? options.region;
+        const name = flattenAssetPlaceholders(dest.bucketName, options.accountId, destRegion);
         warnUnrecognizedAssetDestination({
           kind: 'bucket',
           name,
           recognized:
-            isDefaultBootstrapBucketName(name, options.accountId, options.region) ||
+            isDefaultBootstrapBucketName(name, options.accountId, destRegion) ||
             // A redirected destination is cdkd's OWN storage: the map's
             // VALUES are the targets it rewrites to.
             (redirect !== undefined && [...redirect.buckets.values()].includes(name)),
@@ -186,16 +192,13 @@ export class AssetPublisher {
     for (const [hash, rawAsset] of Object.entries(manifest.dockerImages || {})) {
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
       for (const dest of Object.values(asset.destinations)) {
-        const name = flattenAssetPlaceholders(
-          dest.repositoryName,
-          options.accountId,
-          options.region
-        );
+        const destRegion = dest.region ?? options.region;
+        const name = flattenAssetPlaceholders(dest.repositoryName, options.accountId, destRegion);
         warnUnrecognizedAssetDestination({
           kind: 'repository',
           name,
           recognized:
-            isDefaultBootstrapRepoName(name, options.accountId, options.region) ||
+            isDefaultBootstrapRepoName(name, options.accountId, destRegion) ||
             (redirect !== undefined && [...redirect.repos.values()].includes(name)),
         });
       }
