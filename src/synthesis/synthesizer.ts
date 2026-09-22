@@ -13,6 +13,28 @@ import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { displaySafe } from '../utils/display-safe.js';
+
+/**
+ * Every manifest- or template-derived value this module RENDERS goes through
+ * `displaySafe` — thrown messages and ordinary `logger.info` lines alike
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). Two reasons it is the
+ * DEFAULT here rather than a judgement per message:
+ *
+ * - The "only where the input is untrusted" boundary keeps being drawn wrong. The
+ *   macro-expansion line below is a DEFAULT-verbosity `logger.info` on a normal
+ *   run, and a `stackName` carrying `ESC [ 2 K` plus a carriage return erases
+ *   cdkd's own line while a trailing line terminator forges another. Nothing
+ *   about the message being "operational" protects it, and `formatError`
+ *   sanitizes only an error's `cause`, never its own `message`.
+ * - The cost is in the helper, not the scope: `displaySafe` neither quotes nor
+ *   truncates, so it is the identity on every legitimate stack name, context key
+ *   and transform name.
+ *
+ * A JOINED list sanitizes per ELEMENT so the separator stays
+ * byte-exact; `displaySafe`'s own doc carries why that is a formatting rule
+ * rather than a safety one.
+ */
 
 /**
  * CDK CLI compatibility: a `--app` value pointing at an existing directory is
@@ -284,7 +306,9 @@ export class Synthesizer {
       if (previousMissingKeys && setsEqual(missingKeys, previousMissingKeys)) {
         throw new SynthesisError(
           'Context resolution made no progress. ' +
-            `Missing context keys: ${[...missingKeys].join(', ')}. ` +
+            // Each key SEPARATELY, so the `, ` separator stays byte-exact — see
+            // the module header for why that, and not safety, is the reason.
+            `Missing context keys: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}. ` +
             'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
         );
       }
@@ -360,7 +384,8 @@ export class Synthesizer {
       (await resolveSdkDefaultRegion(options.profile));
     if (!region) {
       throw new SynthesisError(
-        `Stack(s) [${stacksWithMacros.map((s) => s.stackName).join(', ')}] use CloudFormation ` +
+        `Stack(s) [${stacksWithMacros.map((s) => displaySafe(s.stackName)).join(', ')}] ` +
+          `use CloudFormation ` +
           `macros (Transform / Fn::Transform) but cdkd could not resolve an AWS region for the ` +
           `expansion round-trip. Set AWS_REGION, pass --region <r>, or set env: { region: '<r>' } ` +
           `in your CDK Stack constructor.`
@@ -418,7 +443,7 @@ export class Synthesizer {
       const oversize = stacksWithMacros.find((s) => JSON.stringify(s.template).length > 51_200);
       if (oversize) {
         throw new SynthesisError(
-          `Stack '${oversize.stackName}' uses CloudFormation macros AND its serialized ` +
+          `Stack '${displaySafe(oversize.stackName)}' uses CloudFormation macros AND its serialized ` +
             `template exceeds the 51,200-byte inline TemplateBody limit, so cdkd must ` +
             `upload the template to S3 for the transient expansion changeset. cdkd could ` +
             `not resolve a state bucket: STS GetCallerIdentity failed AND --state-bucket ` +
@@ -437,8 +462,9 @@ export class Synthesizer {
     for (const stack of stacksWithMacros) {
       const macros = enumerateMacros(stack.template);
       this.logger.info(
-        `[macros] Expanding CloudFormation macros for stack '${stack.stackName}' ` +
-          `via CFn round-trip (transforms: ${macros.join(', ')}; may take 30-60s)...`
+        `[macros] Expanding CloudFormation macros for stack '${displaySafe(stack.stackName)}' ` +
+          `via CFn round-trip (transforms: ${macros.map((m) => displaySafe(m)).join(', ')}; ` +
+          `may take 30-60s)...`
       );
       const before = Date.now();
       const expanded = await expandMacros(stack.template, {

@@ -10,13 +10,28 @@ Self-implemented. **app-executor.ts** runs the CDK app as a subprocess with
 `CDK_OUTDIR` / `CDK_CONTEXT_JSON` / `CDK_DEFAULT_REGION`; **assembly-reader.ts**
 parses `manifest.json`; **context-providers/** resolves missing context.
 
+- **`displaySafe` is the DEFAULT at every render of an assembly-, manifest- or
+  template-derived value, in thrown messages AND in ordinary `logger.info` /
+  `debug` lines** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) — not a
+  judgement per message: the "only where the input is untrusted" boundary was
+  drawn wrong repeatedly, and the helper neither quotes nor truncates, so it is
+  the identity on every legitimate value. Adopted in `synthesizer.ts`,
+  `macro-expander.ts` and `src/synthesis/context-providers/index.ts` (where the
+  `provider` / `key` LOOKUP stays raw and the provider failure text takes
+  `displayAwsMessage`, since a lookup argument echoed back makes the LENGTH
+  attacker-chosen too). **Not yet everywhere**: the lookup arguments inside
+  `context-providers/*-provider.ts` and `stack-messages.ts`'s annotation display
+  are open rows on that issue. A joined list sanitizes per ELEMENT so the
+  separator stays byte-exact; `displaySafe` replaces globally, so that is a
+  formatting rule, not a safety one.
 - **assembly-reader.ts** renders EVERY assembly-derived value — a manifest key,
   a `stackName`, a template key, a `Metadata['aws:asset:path']`, a
   `directoryName`-derived path, a `readFileSync` / `JSON.parse` failure text —
   through `displaySafe`, in thrown messages AND log lines
   ([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Synthesis is the first
   layer the CLI reaches, so on a hand-modified assembly these ARE the lines a
-  user is asked to trust, and `formatError` sanitizes only an error's `cause`.
+  user is asked to trust, and `formatError` sanitizes and bounds only an
+  error's `cause`, never the message a thrower builds.
   The split is by what the value IS, not by where it came from: a PATH or
   free-form text takes `displaySafe`, which must leave a legitimate asset path
   untruncated and unquoted; an IDENTIFIER interpolated into prose takes

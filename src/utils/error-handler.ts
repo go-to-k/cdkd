@@ -1,5 +1,5 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
-import { displaySafe } from './display-safe.js';
+import { displayAwsMessage } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -856,7 +856,31 @@ export function formatError(error: unknown): string {
       // would `Caused by: <unrenderable>` -- the `UNRENDERABLE` stand-in is
       // for a FIELD whose slot would otherwise read as absent, and a dropped
       // cause line is not a slot.
-      const cause = displaySafe(error.cause.message);
+      // `displayAwsMessage`, not bare `displaySafe`: this line is where a cap
+      // paid one line up is DEFEATED BY ITS OWN NEIGHBOUR
+      // ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). A thrower that
+      // renders AWS's text through `displayAwsMessage` and then passes the SAME
+      // error as `cause` printed `[cut: N more characters withheld]` on one
+      // line and the whole untruncated text on the next, because this render
+      // sanitized but did not bound. That is exactly the failure
+      // `AWS_MESSAGE_MAX_CODE_POINTS`' own doc describes, one indirection away
+      // from where it was guarded.
+      //
+      // MASKING IS UNAFFECTED, and the ORDER is why rather than the arithmetic:
+      // `maskSecretsInError` rewrites the error OBJECT at the throw site, so the
+      // `message` read here is already masked; `formatError` has exactly one
+      // caller IN `src/` (`handleError` below) and `ConsoleLogger` masks nothing
+      // after it. `src/index.ts` re-exports this function as package API, so
+      // "one caller" is not an invariant the code enforces — it does not weaken
+      // the order argument, since an external consumer is not a masker inside
+      // cdkd's pipeline, but the narrower claim is the true one.
+      // Truncation therefore only ever removes already-masked text — it cannot
+      // split a plaintext secret, because none is left to split. Cutting the
+      // MASK MARKER itself is harmless for the same reason. A masker running at
+      // or after this point would invert that argument, which is why the
+      // pipeline is named here and pinned in
+      // `tests/unit/deployment/secret-redaction-error-masking.test.ts`.
+      const cause = displayAwsMessage(error.cause.message);
       if (cause) message += `\nCaused by: ${cause}`;
     }
     return message;

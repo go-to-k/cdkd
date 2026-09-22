@@ -50,3 +50,17 @@ references, leaving every other intrinsic alone.
   [state-malformed-properties-orphan.md](state-malformed-properties-orphan.md).
 - Whole-stack `cdkd orphan <stack>` hard-fails, redirecting to
   `cdkd state orphan`.
+- Every assembly-derived value it renders — `stackName` / `displayName`, a
+  template logical id, an `aws:cdk:path` — goes through a display helper, in
+  thrown messages AND in the default-verbosity `logger.info` lines
+  ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). `displaySafe` by
+  default, including where the prose already supplies the quotes;
+  `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`) for every UNQUOTED
+  IDENTITY list — each `Available: ...` and the `missing` half sharing a
+  sentence with one — where `displaySafe`'s trim would render a planted entry
+  byte-identical to the genuine one the message says is missing —
+  `grep displayIdent` answers that population. A region rendered outside those
+  lists takes `asciiOnly`.
+  The operator's own `<constructPath>` argv is deliberately NOT sanitized for
+  DISPLAY; where one goes into a PASTEABLE command it is `isPasteableIdent`'s
+  class ([pasteable-ident.md](pasteable-ident.md)), not this one.

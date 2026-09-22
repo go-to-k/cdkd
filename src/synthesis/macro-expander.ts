@@ -25,6 +25,23 @@ import {
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
+
+/**
+ * A transform name comes from the TEMPLATE's own `Transform` / `Fn::Transform`
+ * node, so every render of one goes through `displaySafe`, in thrown messages
+ * and in the `debug` line alike
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). `displaySafe` neither
+ * quotes nor truncates, so a legitimate `AWS::Serverless-2016-10-31` renders
+ * byte-identically.
+ *
+ * A JOINED list sanitizes per ELEMENT so the separator stays
+ * byte-exact; `displaySafe`'s own doc carries why that is a formatting rule
+ * rather than a safety one.
+ */
+function displaySafeTransforms(names: readonly string[]): string {
+  return names.map((name) => displaySafe(name)).join(', ');
+}
 
 /**
  * Options threaded into {@link expandMacros}.
@@ -119,8 +136,62 @@ const EARLY_VALIDATION_MAX_ATTEMPTS = 3;
 const EARLY_VALIDATION_RETRY_BASE_DELAY_MS = 2_000;
 
 /** Matches the changeset FAILED StatusReason emitted by the hook family. */
+const EARLY_VALIDATION_MARKER = /AWS::EarlyValidation::/;
+
+/**
+ * Where the retry verdict is CARRIED, rather than re-derived from the rendered
+ * message.
+ *
+ * The verdict used to be `EARLY_VALIDATION_MARKER.test(err.message)`, and that
+ * became wrong the moment AWS's reply started rendering through
+ * `displayAwsMessage` ([#3479](https://github.com/go-to-k/cdkd/issues/3479)):
+ * the cap CUTS at `AWS_MESSAGE_MAX_CODE_POINTS`, so a `StatusReason` carrying
+ * the hook marker past that point would no longer match, and `cdkd deploy` of a
+ * macro stack would hard-fail on attempt 1 where issue
+ * [#1151](https://github.com/go-to-k/cdkd/issues/1151) says it must retry. The
+ * sanitizer's CHARSET half was never the risk — the marker is plain ASCII —
+ * but a decision re-derived from display text inherits every display rule,
+ * including ones added later for unrelated reasons.
+ *
+ * So each throw site tests the RAW text once and records the answer here. A
+ * symbol rather than a field on `MacroExpansionError`: the verdict is this
+ * module's business, not the shared error class's.
+ *
+ * IT ALSO CLOSES A PATH THAT PRE-DATES THE CAP, which is the stronger argument
+ * for the shape. The old predicate matched the WHOLE message, and two of cdkd's
+ * OWN refusals below interpolate template-supplied transform names — so an
+ * assembly declaring `Transform: AWS::EarlyValidation::x` made the multi-stage
+ * and no-TemplateBody refusals test positive, and a template value steered the
+ * retry loop into three CFn changeset round-trips plus the backoff between
+ * them. A verdict read from a symbol set out of AWS's own text cannot be
+ * steered that way at all.
+ *
+ * IT RIDES THE INSTANCE, which is the one way a future edit can lose it: a site
+ * that catches one of these and wraps it in a NEW `MacroExpansionError` drops
+ * the verdict silently — the same shape as the bug above, one indirection over.
+ * Re-tag at any such wrap.
+ */
+const EARLY_VALIDATION = Symbol('cdkd.macroExpansion.earlyValidationRejection');
+
+/**
+ * Tag `error` when `rawReason` — AWS's text BEFORE any display helper touches
+ * it — names a validation hook.
+ */
+function withEarlyValidationVerdict(
+  error: MacroExpansionError,
+  rawReason: string
+): MacroExpansionError {
+  if (EARLY_VALIDATION_MARKER.test(rawReason)) {
+    (error as MacroExpansionError & { [EARLY_VALIDATION]?: boolean })[EARLY_VALIDATION] = true;
+  }
+  return error;
+}
+
 function isEarlyValidationRejection(err: unknown): boolean {
-  return err instanceof MacroExpansionError && /AWS::EarlyValidation::/.test(err.message);
+  return (
+    err instanceof MacroExpansionError &&
+    (err as MacroExpansionError & { [EARLY_VALIDATION]?: boolean })[EARLY_VALIDATION] === true
+  );
 }
 
 /** Test seam: overridable sleep so retry tests don't wait wall-clock. */
@@ -270,7 +341,7 @@ async function expandMacrosAttempt(
 ): Promise<CloudFormationTemplate> {
   const macros = enumerateMacros(template);
   logger.debug(
-    `Macro expansion: detected transforms [${macros.join(', ')}], starting CFn round-trip...`
+    `Macro expansion: detected transforms [${displaySafeTransforms(macros)}], starting CFn round-trip...`
   );
 
   // 16 chars of UUID hex → ~64 bits of entropy, ample collision
@@ -374,10 +445,20 @@ async function expandMacrosAttempt(
         })
       );
     } catch (err) {
-      throw new MacroExpansionError(
-        `CloudFormation rejected the macro-expansion changeset: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err : undefined
+      // CFn quotes the values it was SUBMITTED back in a validation error — the
+      // transform names and the parameter placeholders built from this
+      // template's own `Parameters` — so this is AWS text echoing assembly
+      // content, the same class as the `StatusReason` below. `displayAwsMessage`
+      // sanitizes AND bounds it; the retry verdict is taken from the RAW text,
+      // because a hook rejection can surface here too.
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      throw withEarlyValidationVerdict(
+        new MacroExpansionError(
+          `CloudFormation rejected the macro-expansion changeset: ` +
+            `${displayAwsMessage(rawMessage)}`,
+          err instanceof Error ? err : undefined
+        ),
+        rawMessage
       );
     }
 
@@ -421,11 +502,23 @@ async function expandMacrosAttempt(
           })
         )
         .catch(() => undefined);
-      const reason = desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)';
-      const status = desc?.Status ?? 'UNKNOWN';
-      throw new MacroExpansionError(
-        `CloudFormation macro expansion failed (status=${status}): ${reason}`,
-        waiterError instanceof Error ? waiterError : undefined
+      // AWS's own reply, and `displayAwsMessage` rather than `displaySafe`: CFn
+      // ECHOES the template's transform name and the macro Lambda's error text
+      // into `StatusReason`, so the value sanitized where the transform name is
+      // first rendered re-enters here — at a length whoever wrote the template
+      // chose. The cap marks its cut, so a bounded message cannot read as a
+      // complete one.
+      const rawReason = desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)';
+      const reason = displayAwsMessage(rawReason);
+      const status = displaySafe(desc?.Status ?? 'UNKNOWN');
+      // The retry verdict is taken from `rawReason`, never from the rendered
+      // message — see `withEarlyValidationVerdict`.
+      throw withEarlyValidationVerdict(
+        new MacroExpansionError(
+          `CloudFormation macro expansion failed (status=${status}): ${reason}`,
+          waiterError instanceof Error ? waiterError : undefined
+        ),
+        rawReason
       );
     }
 
@@ -446,7 +539,7 @@ async function expandMacrosAttempt(
         `CloudFormation returned no Processed-stage template body for the ` +
           `macro-expansion changeset. This typically indicates a CFn-side ` +
           `regression — re-run, and if the failure persists open an issue ` +
-          `with the transforms involved: [${macros.join(', ')}].`
+          `with the transforms involved: [${displaySafeTransforms(macros)}].`
       );
     }
     const expanded = parseTemplateBody(tpl.TemplateBody);
@@ -460,7 +553,7 @@ async function expandMacrosAttempt(
       // policy, not a wrapped failure.
       throw new MacroExpansionError(
         `Macro expansion produced a template that still contains macros ` +
-          `[${inner.join(', ')}]. Multi-stage macros (a macro whose expansion ` +
+          `[${displaySafeTransforms(inner)}]. Multi-stage macros (a macro whose expansion ` +
           `emits another macro reference) are intentionally out of scope in ` +
           `cdkd v1 — see https://github.com/go-to-k/cdkd/issues/463. ` +
           `If you need this pattern, manually pre-expand the template and ` +
@@ -639,8 +732,13 @@ function stringifyParamDefault(
       }
       return 'placeholder';
     }
+    // A `Parameters` KEY and its `Type` are both template-derived, and this is a
+    // DEFAULT-verbosity warn reached before `CreateChangeSet` — so it prints
+    // locally on `cdkd deploy -a ./cdk.out` over a crafted assembly. `type` is
+    // free-form: it is whatever string the file carries in that slot.
     logger.warn(
-      `Parameter '${paramKey}' has unrecognized CFn Type '${type}'; using a generic ` +
+      `Parameter '${displaySafe(paramKey)}' has unrecognized CFn Type ` +
+        `'${displaySafe(type)}'; using a generic ` +
         `string placeholder for the transient macro-expansion changeset. If CFn rejects ` +
         `the changeset with a type error, file an issue with the offending Type.`
     );
@@ -667,11 +765,23 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
       // and YAML for YAML-source ones. cdkd's CDK app outputs JSON, so a
       // non-JSON return is unexpected; surface as MacroExpansionError so
       // the caller sees the wire shape.
+      //
+      // `displayAwsMessage` on the cause, because a `JSON.parse` failure embeds
+      // the OFFENDING INPUT verbatim (measured: `Unexpected token 'o',
+      // "notjson <ESC>[2K forged" is not valid JSON`), and that input is the
+      // round-tripped template. `assembly-reader.ts` avoids quoting a
+      // `JSON.parse` snippet for exactly this reason.
+      //
+      // It is the SANITIZATION this site needs, not the cap: V8 truncates its
+      // own quoted snippet, so the message is a fixed ~56 characters however
+      // large the body was (measured at 20, 100, 5,000 and 20,000). The capping
+      // helper is used anyway so that every render of AWS-or-parser text in this
+      // module is one spelling — but do not cite this site as a flood.
       throw new MacroExpansionError(
         `CloudFormation returned a non-JSON Processed-stage template body. ` +
           `cdkd's macro-expansion path only supports JSON-shaped synth ` +
           `templates (CDK apps emit JSON by default). Cause: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+          `${displayAwsMessage(err instanceof Error ? err.message : String(err))}`,
         err instanceof Error ? err : undefined
       );
     }
@@ -713,5 +823,11 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
 }
 
 function formatErr(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // `displayAwsMessage`, not the raw text. Both call sites are `finally`-block
+  // cleanup warns that quote an AWS SDK error, and an S3 or CloudFormation
+  // failure names the object key or stack it acted on — which is built from
+  // this module's own transient name, but the SDK is free to quote more. This
+  // is what makes the module header's "one spelling for AWS-or-parser text"
+  // true rather than aspirational ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
+  return displayAwsMessage(err instanceof Error ? err.message : String(err));
 }

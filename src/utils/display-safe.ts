@@ -111,6 +111,21 @@ function sanitizeAsciiOnly(text: string): string {
   return text.replace(/[^ -~]/g, ' ').trim();
 }
 
+/**
+ * A JOINED LIST SANITIZES PER ELEMENT, and the reason is FORMATTING rather than
+ * safety. Stated here once because three callers stated it for themselves and
+ * one of the three copies had already drifted into a false claim.
+ *
+ * This function replaces GLOBALLY, so a character in the middle of an element is
+ * stripped whether the caller sanitizes each element or the joined string. The
+ * two differ only at an element EDGE, where the joined form leaves the
+ * replacement space beside the separator: `['A<NEL>', 'B']` renders `A, B` per
+ * element and `A , B` joined. Sanitizing per element is what keeps the
+ * separator byte-exact.
+ *
+ * For `displayIdent` the same shape IS load-bearing rather than cosmetic, since
+ * the boundary it adds is per value.
+ */
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
   // `'undefined'` — a truthy string — so a caller keying its
@@ -289,13 +304,16 @@ export const SECRET_REF_MAX_CODE_POINTS = 2048;
  *
  * `displaySafe` takes no `maxCodePoints` — it is the free-form-text helper and
  * its output is normally an SDK sentence of bounded length. That stops being
- * true at the two sites this constant serves, and for a specific reason: STS
- * and IAM ECHO THE SUBMITTED VALUE VERBATIM in a validation error, so the
- * message's length is chosen by whoever supplied the `RoleArn`. Those sites
+ * true wherever AWS ECHOES A SUBMITTED VALUE VERBATIM, which is the class this
+ * constant serves: the message's length is then chosen by whoever supplied the
+ * value. It started with STS and IAM quoting a `RoleArn` back — those sites
  * sanitize the ARN with `ROLE_ARN_MAX_CODE_POINTS` and then print AWS's reply
- * next to it, where an oversized input returns UNBOUNDED past the cap the ARN
- * itself just paid — the guard defeated by its own neighbour, in the length
- * dimension rather than the charset one.
+ * next to it, where an oversized input returned UNBOUNDED past the cap the ARN
+ * itself just paid, the guard defeated by its own neighbour in the length
+ * dimension rather than the charset one — and has since taken CloudFormation's
+ * `StatusReason` and a context provider's failure text, both of which quote a
+ * TEMPLATE-supplied value back. `grep displayAwsMessage` answers the population;
+ * a count here would only go stale, as this sentence's did.
  *
  * Deliberately generous. The message is the DIAGNOSIS, so cutting it costs the
  * user the answer; this is a flood stop, not a formatting rule. A genuine AWS

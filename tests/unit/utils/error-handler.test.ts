@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   CdkdError,
   handleError,
@@ -362,5 +363,33 @@ describe("formatError's `Caused by:` line (issue #3003)", () => {
   it('leaves an ordinary cause byte-identical', () => {
     const out = formatError(new StateError('outer', new Error('AccessDenied: nope')));
     expect(out).toBe('StateError: outer\nCaused by: AccessDenied: nope');
+  });
+
+  it('leaves a cause JUST UNDER the cap byte-identical', () => {
+    // The other side of the bound added for go-to-k/cdkd#3479: adding a cap
+    // must be the identity on everything a real diagnostic can be. A cause at
+    // exactly the cap is untouched — no marker, no cut.
+    const atCap = 'z'.repeat(AWS_MESSAGE_MAX_CODE_POINTS);
+    const out = formatError(new StateError('outer', new Error(atCap)));
+    expect(out).toBe(`StateError: outer\nCaused by: ${atCap}`);
+    expect(out).not.toContain('withheld');
+  });
+
+  it('CAPS a cause over the limit, so the cap one line up is not defeated', () => {
+    // The defect this closes: a thrower renders AWS's text through
+    // `displayAwsMessage` (capped, cut marked) and then passes the SAME error
+    // as `cause` — so the message line was bounded and this line printed the
+    // whole thing. A crafted template making CloudFormation echo 50 KB got
+    // `[cut: N more characters withheld]` followed by all 50 KB.
+    const flood = `AccessDenied ${'q'.repeat(AWS_MESSAGE_MAX_CODE_POINTS * 2)}`;
+    const out = formatError(new StateError('outer', new Error(flood)));
+    const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+    expect(withheld).toBeGreaterThan(0);
+    // DERIVED from the constant, never transcribed.
+    expect(out.endsWith(`[cut: ${withheld} more characters withheld]`)).toBe(true);
+    // And the point of the cap: the rendered line is bounded, not merely marked.
+    expect(out.length).toBeLessThan(flood.length);
+    // Still ONE cause line — the cut must not introduce a row.
+    expect(out.split('\n')).toHaveLength(2);
   });
 });
