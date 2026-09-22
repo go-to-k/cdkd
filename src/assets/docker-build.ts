@@ -171,6 +171,12 @@ export function resolveDockerContextDirectory(
   // NAMING THE BOUND ITSELF is not an escape; the twin's comment in
   // `resolveFileAssetSourcePath` carries the reasoning — including why it
   // WARNS rather than accepting silently, which is the sink.
+  // The test is "IS the bound", not "lands inside it", and that asymmetry is
+  // deliberate: with `<parent>/back -> cdk.out`, a value of `../back` is
+  // accepted and warned while `../back/asset.abc` is still refused, though it
+  // too lands inside the assembly. Fail-closed, and widening it would mean
+  // re-deciding containment through links for every value, which is
+  // `resolveAssemblyPath`'s job and not this arm's.
   if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
     warnWholeAssemblyAsSource({
       subject: dockerSubject(assetId),

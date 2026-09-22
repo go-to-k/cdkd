@@ -151,6 +151,12 @@ export function resolveFileAssetSourcePath(
   // `cdk.out` leaves the machine with no line printed. A first revision of
   // this arm did exactly that, in the name of parity with the twin — parity of
   // the VERDICT is right, parity of the SILENCE is not.
+  // The test is "IS the bound", not "lands inside it", and that asymmetry is
+  // deliberate: with `<parent>/back -> cdk.out`, a value of `../back` is
+  // accepted and warned while `../back/asset.abc` is still refused, though it
+  // too lands inside the assembly. Fail-closed, and widening it would mean
+  // re-deciding containment through links for every value, which is
+  // `resolveAssemblyPath`'s job and not this arm's.
   if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
     warnWholeAssemblyAsSource({
       subject: `File asset '${displaySafe(asset.displayName)}'`,
