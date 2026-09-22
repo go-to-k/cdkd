@@ -34,6 +34,22 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   wrong one FAILS CLOSED (refuses everything) — neither looks like a
   containment hole to a test that only checks refusals. Fence the WIRING: per
   call site, a case asserting the bound it passes, red under a probe.
+- A Lambda's `Metadata['aws:asset:path']` is the one of these whose value is
+  BIND-MOUNTED, and it answers ABSOLUTE and RELATIVE differently
+  (go-to-k/cdkd#3494). RELATIVE escaping: REFUSED. ABSOLUTE: ACCEPTED, with a
+  WARNING naming the path when it leaves `assetOutdir`. **Do not "restore" a
+  refusal on the absolute arm** — `cdk synth --no-staging`
+  (`aws:cdk:disable-asset-staging`) emits the asset's absolute SOURCE
+  directory, normally outside the outdir, so refusing it rejects the output of
+  a documented CDK CLI flag. The security cost is real and was weighed: cdkd
+  cannot tell that value from a planted one, and the mount is read-only on a
+  local command against an assembly the user named. `resolveAssetCodeDirectory`
+  in `lambda-resolver.ts` is THE one spelling, shared with
+  `local-start-api.ts`'s resolver through a `wrapError` callback so each keeps
+  its own error class and command name; the absolute arm's verdict comes from
+  `absoluteAssemblyPathEscape`, which lives beside `resolveAssemblyPath` so the
+  containment rule is not re-spelled (`path.join` cannot answer for an absolute
+  candidate — it folds one INTO the directory).
 
 ## Region case folding (#1836)
 

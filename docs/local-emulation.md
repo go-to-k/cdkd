@@ -194,24 +194,54 @@ Refused:
   assembly's own bytes to a path of its choosing;
 - a Docker asset's `source.directory` under `cdkd local run-task`;
 - a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
-  `source.directory` its `--watch` soft reload reads.
+  `source.directory` its `--watch` soft reload reads;
+- a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke` and
+  `cdkd local start-api`, when it is **relative** — both the function's own code
+  directory and a same-stack layer's. The result is bind-mounted read-only at
+  `/var/task` (a layer's at `/opt`) inside a container running handler code the
+  same assembly supplies, and `cdkd local invoke` forwards your credentials into
+  it, so a relative path escaping the app's output directory would carry that
+  code from a session it already has to the rest of your filesystem. Nothing a
+  real `cdk synth` emits has that shape, so refusing it costs nothing.
 
 A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
 staged into the app's output directory, so `../asset.<hash>` is the shape CDK
 writes and it loads normally. The same rule and the same wording apply on the
 deploy path; see [Deploy safety](cli-deploy-safety.md).
 
+Warned about, but accepted:
+
+- an **absolute** `Metadata['aws:asset:path']` that points outside the output
+  directory. `cdk synth --no-staging` (the `aws:cdk:disable-asset-staging`
+  context flag) makes CDK write the asset's absolute SOURCE directory there
+  instead of a staged `asset.<hash>`, and that is a documented CDK CLI flag —
+  AWS's own pre-step for `sam local invoke` — so cdkd reads what `cdk` wrote
+  rather than rejecting it. cdkd cannot tell such a value apart from one a
+  hostile assembly planted, so it prints a warning naming the directory and
+  saying it will be mounted. **If you did not synthesize with `--no-staging`,
+  that warning means the assembly is pointing cdkd at a directory of its own
+  choosing — treat it as untrusted.** An absolute path that stays inside the
+  output directory is accepted silently.
+
 Not refused today:
 
-- a Lambda's `Metadata['aws:asset:path']`, which these commands bind-mount into
-  the container and which may be absolute. This is a known gap rather than a
-  design choice, and containment for it is planned;
+- **a Lambda's `Metadata['aws:asset:path']` under `cdkd local start-alb` and
+  `cdkd local start-cloudfront`.** Those two reach Lambda code through the
+  bundled `cdk-local` engine's own copy of the resolution, which is unguarded,
+  so an assembly naming a directory outside the output directory has it
+  bind-mounted at `/var/task` with **no refusal and no warning** — while
+  `cdkd local invoke` and `cdkd local start-api` warn about the very same value.
+  `start-alb` reaches it through a Lambda target group, `start-cloudfront`
+  through a Function-URL origin or Lambda@Edge. The fix is the same change in
+  `cdk-local`;
 - every Docker build context that goes through the bundled `cdk-local` engine,
   which joins the path itself: a container-image Lambda under
-  `cdkd local invoke` and `cdkd local start-api`, and the image build of
+  `cdkd local invoke` and `cdkd local start-api`; the image build of
   `cdkd local invoke-agentcore`'s container arm (so that command contains the
   `source.directory` its watcher classifies against, but not the one it
-  builds).
+  builds); and the ECS image build reached by `cdkd local start-service` and
+  `cdkd local start-alb`. `cdkd local run-task` is the exception — its image
+  build is cdkd's own and IS contained.
 
 Until those land, a hand-modified assembly can still put a directory of its
 choosing in front of code it also supplies. Treat an assembly you did not
