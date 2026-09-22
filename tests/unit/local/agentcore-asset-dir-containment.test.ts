@@ -9,7 +9,7 @@
  * guard on neither. `cdkOutDir` here is `--output`, the app root, so it is
  * both the resolution base and the containment bound.
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import {
   loadAgentCoreAssetContext,
 } from '../../../src/local/invoke-agentcore-watch-loop.js';
 import { AssetManifestLoader } from '../../../src/assets/asset-manifest-loader.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 function tmp(): string {
@@ -61,6 +62,121 @@ const call = (outdir: string): Promise<unknown> =>
     cdkOutDir: outdir,
     assetLoader: new AssetManifestLoader(),
   });
+
+/**
+ * BOTH arms of `loadAgentCoreAssetContext` hand their directory to
+ * `docker cp <dir>/. <container>:<workdir>` (`softReload`). Neither uploads
+ * and neither builds a BuildKit context, so the warning each emits for an
+ * absolute path must say THAT — the file arm inherited a read-only default
+ * clause while actually copying into a running container
+ * (go-to-k/cdkd#3532).
+ */
+describe('loadAgentCoreAssetContext absolute-path warning names ITS OWN sink', () => {
+  function captureWarn(): { warned: () => string[] } {
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'child').mockImplementation(
+      () =>
+        ({
+          warn: (m: string) => lines.push(m),
+          debug: () => {},
+          info: () => {},
+          error: () => {},
+          child: () => getLogger().child(''),
+        }) as never
+    );
+    return { warned: () => lines };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const stageAssembly = (
+    // Takes a FUNCTION, not a literal: the manifest body names the victim
+    // directory, which this helper creates, so a literal argument would
+    // reference it before it exists.
+    body: (victim: string) => Record<string, unknown>
+  ): { outdir: string; manifestDir: string; victim: string } => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+    const manifestDir = join(outdir, 'assembly-MyStage');
+    mkdirSync(manifestDir, { recursive: true });
+    const victim = join(outer, 'victim');
+    mkdirSync(victim);
+    writeFileSync(
+      join(manifestDir, 'StageStack.assets.json'),
+      JSON.stringify({ version: '54.0.0', files: {}, dockerImages: {}, ...body(victim) })
+    );
+    return { outdir, manifestDir, victim };
+  };
+
+  it('FILE arm says it will COPY into the container, not read-and-build', async () => {
+    const { outdir, manifestDir, victim } = stageAssembly((v) => ({
+      files: {
+        codehash: {
+          source: { path: v, packaging: 'zip' },
+          destinations: { d: { bucketName: 'b', objectKey: 'codehash' } },
+        },
+      },
+    }));
+    const cap = captureWarn();
+
+    await expect(
+      loadAgentCoreAssetContext({
+        resolvedTarget: 'StageStack',
+        resolved: { codeArtifact: { codeAssetHash: 'codehash' } } as never,
+        stacks: [
+          {
+            stackName: 'StageStack',
+            assetOutdir: outdir,
+            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+          } as unknown as StackInfo,
+        ],
+        cdkOutDir: outdir,
+        assetLoader: new AssetManifestLoader(),
+      })
+    ).resolves.toMatchObject({ newAssetSourceDir: victim });
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(victim);
+    expect(lines[0]).toContain('copy that directory');
+    // The clause that was wrong: this arm does not build a local image.
+    expect(lines[0]).not.toContain('build a local image');
+  });
+
+  it('DOCKER arm says the same, since it feeds the same docker cp', async () => {
+    const { outdir, manifestDir, victim } = stageAssembly((v) => ({
+      dockerImages: {
+        deadbeef: {
+          source: { directory: v },
+          destinations: { d: { repositoryName: 'repo', imageTag: 'deadbeef' } },
+        },
+      },
+    }));
+    const cap = captureWarn();
+
+    await expect(
+      loadAgentCoreAssetContext({
+        resolvedTarget: 'StageStack',
+        resolved: { containerUri: 'deadbeef' } as never,
+        stacks: [
+          {
+            stackName: 'StageStack',
+            assetOutdir: outdir,
+            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+          } as unknown as StackInfo,
+        ],
+        cdkOutDir: outdir,
+        assetLoader: new AssetManifestLoader(),
+      })
+    ).resolves.toMatchObject({ newAssetSourceDir: victim });
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('copy that directory');
+  });
+});
 
 describe('loadAgentCoreAssetContext docker source.directory containment', () => {
   it('refuses a source.directory that escapes the app outdir', async () => {
@@ -363,11 +479,16 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     expect(manifest).not.toBeNull();
 
     expect(() =>
-      loader.getAssetSourcePath(outdir, {
-        displayName: 'x',
-        source: { path: '../outside-dir', packaging: 'zip' },
-        destinations: {},
-      })
+      loader.getAssetSourcePath(
+        outdir,
+        {
+          displayName: 'x',
+          source: { path: '../outside-dir', packaging: 'zip' },
+          destinations: {},
+        },
+        outdir,
+        'read that directory and build a local image from it'
+      )
     ).toThrow(/outside/);
     await expect(call(outdir)).rejects.toThrow(/outside/);
   });

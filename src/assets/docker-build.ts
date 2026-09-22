@@ -6,8 +6,15 @@ import {
   runDockerStreaming,
   spawnStreaming,
 } from '../utils/docker-cmd.js';
+import { isAbsolute, resolve } from 'path';
 import { displaySafe } from '../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import {
+  absoluteAssemblyPathEscape,
+  namesTheSameDirectory,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
+import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -83,9 +90,12 @@ export interface BuildDockerImageOptions {
 }
 
 /**
- * Where a Docker asset's build context lives, refusing a `source.directory`
- * that resolves outside `cdkOutDir` (issue
- * [#3489](https://github.com/go-to-k/cdkd/issues/3489)).
+ * Where a Docker asset's build context lives, refusing a RELATIVE
+ * `source.directory` that resolves outside `assetOutdir` (issue
+ * [#3489](https://github.com/go-to-k/cdkd/issues/3489)) and HONOURING an
+ * ABSOLUTE one with a warning when it leaves that bound (issue
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532); the reasoning is in
+ * `resolveFileAssetSourcePath`, and the two must not diverge).
  *
  * The field is assembly-supplied and used BOTH as the executable's cwd and as
  * the `docker build` cwd, so an escaping value sends a directory from outside
@@ -103,15 +113,79 @@ export function resolveDockerContextDirectory(
   manifestDir: string,
   directory: string,
   wrapError: (message: string) => Error,
-  /** The app's outdir; see `resolveFileAssetSourcePath` for why it differs. */
-  assetOutdir: string = manifestDir
+  /**
+   * The app's outdir; see `resolveFileAssetSourcePath` for why it differs from
+   * the manifest's directory, and why it is REQUIRED rather than defaulted —
+   * a dropped bound narrows to the manifest directory and refuses every Stage
+   * asset, which no refusal test can see.
+   */
+  assetOutdir: string,
+  /**
+   * What THIS caller does with the directory next, completing "cdkd will ...".
+   * REQUIRED and caller-supplied: the two arms of `buildDockerImage` have
+   * DIFFERENT sinks, and describing one on the other is a false statement in
+   * the direction that understates. See `AbsoluteAssetPathWarning.sink`.
+   */
+  sink: string,
+  /**
+   * How to name the asset in the warning. Absent renders a bare subject, which
+   * is what a caller with no identity to hand has; with several image assets
+   * under `--no-staging` a bare subject gives N indistinguishable lines.
+   */
+  assetId?: string
 ): string {
+  if (isAbsolute(directory)) {
+    // HONOURED and warned about, never refused — the twin decision to
+    // `resolveFileAssetSourcePath`'s, for the same three reasons, and this is
+    // the field `cdk synth --no-staging` turns absolute alongside it
+    // (`dockerImages[*].source.directory`). Previously the fold sent BuildKit
+    // a path under the outdir that does not exist: `unable to prepare
+    // context: path "<outdir>/private/tmp/.../docker-src" not found`
+    // (go-to-k/cdkd#3532).
+    const absolute = resolve(directory);
+    const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
+    if (escape !== undefined) {
+      warnAbsoluteAssetPath({
+        subject: dockerSubject(assetId),
+        field: 'source.directory',
+        absolute,
+        escape,
+        sink,
+      });
+    } else if (namesTheSameDirectory(assetOutdir, absolute)) {
+      warnWholeAssemblyAsSource({
+        subject: dockerSubject(assetId),
+        field: 'source.directory',
+        outdir: absolute,
+        sink,
+      });
+    }
+    return absolute;
+  }
   // RESOLVE against the manifest's directory, CONTAIN within the app's
   // outdir — a Stage's Docker asset is staged into the app's outdir and its
   // `source.directory` is `../asset.<hash>` by design (go-to-k/cdkd#3489).
   const resolved = resolveAssemblyPath(manifestDir, directory, {
     containWithin: assetOutdir,
   });
+  // NAMING THE BOUND ITSELF is not an escape; the twin's comment in
+  // `resolveFileAssetSourcePath` carries the reasoning — including why it
+  // WARNS rather than accepting silently, which is the sink.
+  // The test is "IS the bound", not "lands inside it", and that asymmetry is
+  // deliberate: with `<parent>/back -> cdk.out`, a value of `../back` is
+  // accepted and warned while `../back/asset.abc` is still refused, though it
+  // too lands inside the assembly. Fail-closed, and widening it would mean
+  // re-deciding containment through links for every value, which is
+  // `resolveAssemblyPath`'s job and not this arm's.
+  if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
+    warnWholeAssemblyAsSource({
+      subject: dockerSubject(assetId),
+      field: 'source.directory',
+      outdir: resolved.path,
+      sink,
+    });
+    return resolved.path;
+  }
   if (!resolved.contained) {
     throw wrapError(
       `asset source.directory='${displaySafe(directory)}' which ` +
@@ -119,6 +193,11 @@ export function resolveDockerContextDirectory(
     );
   }
   return resolved.path;
+}
+
+/** One spelling of the warning subject, so the two arms cannot drift. */
+function dockerSubject(assetId: string | undefined): string {
+  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
 }
 
 /**
@@ -144,8 +223,25 @@ export async function buildDockerImage(
   const source = asset.source;
   const logger = getLogger().child('docker-build');
 
-  const contextDirectory = (directory: string): string =>
-    resolveDockerContextDirectory(cdkOutDir, directory, options.wrapError, options.assetOutdir);
+  // `?? cdkOutDir` is the ONE place `BuildDockerImageOptions.assetOutdir`'s
+  // absence is answered, and it NARROWS rather than opening: a caller with no
+  // `StackInfo.assetOutdir` gets the manifest's own directory as the bound, so
+  // a hand-built stack record is judged more strictly, never less.
+  //
+  // The SINK differs per arm and the caller must say which, because the
+  // `executable` arm is not a build context at all: there the directory
+  // becomes the working directory of a manifest-supplied argv, which is a
+  // larger risk than a BuildKit context and was previously described as the
+  // smaller one.
+  const contextDirectory = (directory: string, sink: string): string =>
+    resolveDockerContextDirectory(
+      cdkOutDir,
+      directory,
+      options.wrapError,
+      options.assetOutdir ?? cdkOutDir,
+      sink,
+      options.tag
+    );
 
   // Executable source: run the script and read stdout for the tag.
   //
@@ -164,7 +260,12 @@ export async function buildDockerImage(
     // The executable runs from the asset directory when one is provided
     // (mirrors CDK CLI's `cwd: assetPath` in `buildExternalAsset`). When
     // `directory` is unset, the executable runs from `cdkOutDir`.
-    const cwd = source.directory ? contextDirectory(source.directory) : cdkOutDir;
+    const cwd = source.directory
+      ? contextDirectory(
+          source.directory,
+          "run this asset's source.executable with that directory as its working directory"
+        )
+      : cdkOutDir;
 
     // The user's build script is an ARBITRARY command line, and a script that
     // wraps `docker build` carries the very `--build-arg` pairs this module
@@ -245,7 +346,11 @@ export async function buildDockerImage(
   // `--build-context name=relative/path` resolve relative paths against
   // the build's cwd, NOT against the trailing context positional. Passing
   // an absolute context dir with no cwd silently breaks those flags.
-  const contextDir = contextDirectory(source.directory);
+  const contextDir = contextDirectory(
+    source.directory,
+    'send that directory to BuildKit as the build context and bake it into the ' +
+      'image pushed to the repository this manifest names'
+  );
   buildArgs.push('.');
 
   // The reported site of issue #2623: this rendered every `--build-arg` VALUE

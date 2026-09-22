@@ -69,7 +69,8 @@ describe('FileAssetPublisher.uploadZip against the real archiver package', () =>
       },
       cdkOutputDir,
       '123456789012',
-      'us-east-1'
+      'us-east-1',
+      cdkOutputDir
     );
 
     const put = mockS3Send.mock.calls

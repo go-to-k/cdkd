@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
@@ -26,7 +27,12 @@ export class FileAssetPublisher {
    * @param cdkOutputDir CDK output directory (cdk.out)
    * @param accountId AWS account ID
    * @param region AWS region
-   * @param profile AWS profile (optional)
+   *
+   * There is deliberately NO `profile` parameter. It was unused, and being
+   * OPTIONAL and last it let a pre-go-to-k/cdkd#3532 call
+   * `(…, accountId, region, profile)` keep compiling with the profile NAME
+   * bound to `assetOutdir` — the required bound catches a DROP, not a SWAP,
+   * so the parameter that made the swap expressible is gone instead.
    */
   async publish(
     assetHash: string,
@@ -34,9 +40,16 @@ export class FileAssetPublisher {
     cdkOutputDir: string,
     accountId: string,
     region: string,
-    _profile?: string,
-    /** The app's outdir; see `resolveFileAssetSourcePath` (go-to-k/cdkd#3489). */
-    assetOutdir?: string
+    /**
+     * The app's outdir; see `resolveFileAssetSourcePath` (go-to-k/cdkd#3489).
+     *
+     * REQUIRED, and positioned BEFORE the optional `_profile` so omitting it
+     * is a type error. `FileAssetNodeData.assetOutdir` is itself required, so
+     * the production caller cannot drop it — but leaving this entry point
+     * optional kept the drop expressible one layer out, which is the exact
+     * defect the resolver's own required parameter was made to stop.
+     */
+    assetOutdir: string
   ): Promise<void> {
     // Containment FIRST, before any S3 client exists and before the
     // already-exists short-circuit below (issue go-to-k/cdkd#3489). Two
@@ -46,7 +59,29 @@ export class FileAssetPublisher {
     // bucket; and that check `continue`s on a hit, which skipped the
     // containment check ENTIRELY whenever the object already existed, making
     // the refusal depend on remote state.
-    const sourcePath = resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir ?? cdkOutputDir);
+    // The SINK clause names where the bytes actually go. `publish` is the one
+    // caller of this resolver that uploads, and it is the one that knows the
+    // destinations — which the manifest chose, so naming them is the point:
+    // "cdkd will upload it" tells the user nothing they can act on, while
+    // "to s3://<bucket>/<key>" is the bucket they can recognise as not theirs.
+    const destinations = Object.values(asset.destinations)
+      .map(
+        (d) =>
+          `s3://${this.resolvePlaceholders(d.bucketName, accountId, region)}/` +
+          `${this.resolvePlaceholders(d.objectKey, accountId, region)}`
+      )
+      .map((u) => displaySafe(u));
+    const sourcePath = resolveFileAssetSourcePath(
+      cdkOutputDir,
+      asset,
+      assetOutdir,
+      // A manifest may write `destinations: {}`, and then nothing is uploaded
+      // at all — "upload it to " with nothing after it would be worse than
+      // the generic clause.
+      destinations.length > 0
+        ? `package that path and upload it to ${destinations.join(', ')}`
+        : 'package that path, though this manifest names no destination for it'
+    );
 
     // Process each destination
     for (const [, dest] of Object.entries(asset.destinations)) {

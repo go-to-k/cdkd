@@ -109,7 +109,13 @@ export class DockerAssetPublisher {
 
         // Build Docker image
         const localTag = `cdkd-asset-${assetHash}`;
-        await this.buildImage(asset, cdkOutputDir, localTag);
+        // `cdkOutputDir` as the bound, explicitly. This all-in-one `publish`
+        // has NO production caller — `AssetPublisher` drives `build` and
+        // `push` as separate graph nodes and threads `data.assetOutdir` — so
+        // there is no Stage-aware outdir to pass here. The manifest directory
+        // NARROWS relative to the app outdir, so this arm is stricter, never
+        // looser (go-to-k/cdkd#3532).
+        await this.buildImage(asset, cdkOutputDir, localTag, cdkOutputDir);
 
         // Tag and push (login lazily, only if the push hits an auth failure).
         await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, accountId, destRegion);
@@ -134,7 +140,15 @@ export class DockerAssetPublisher {
     asset: DockerImageAsset,
     cdkOutputDir: string,
     localTag: string,
-    assetOutdir?: string
+    /**
+     * The app's outdir — the containment bound for a relative
+     * `source.directory` and the warning bound for an absolute one.
+     * REQUIRED, so that omitting it is a type error (go-to-k/cdkd#3532):
+     * `DockerBuildNodeData.assetOutdir` is itself required, so the production
+     * caller cannot drop it, and leaving this entry point optional kept the
+     * drop expressible one layer out.
+     */
+    assetOutdir: string
   ): Promise<void> {
     await this.buildImage(asset, cdkOutputDir, localTag, assetOutdir);
   }
@@ -217,11 +231,12 @@ export class DockerAssetPublisher {
     asset: DockerImageAsset,
     cdkOutputDir: string,
     tag: string,
-    assetOutdir?: string
+    /** See {@link DockerAssetPublisher.build}; required for its reason. */
+    assetOutdir: string
   ): Promise<void> {
     const actualTag = await buildDockerImage(asset, cdkOutputDir, {
       tag,
-      ...(assetOutdir !== undefined && { assetOutdir }),
+      assetOutdir,
       wrapError: (stderr) => new AssetError(`Docker build failed: ${stderr}`),
     });
     if (actualTag !== tag) {

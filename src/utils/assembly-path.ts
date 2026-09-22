@@ -291,6 +291,18 @@ export function resolveAssemblyPath(
      * for the only callers — an asset `source.path` is legitimately a
      * directory — but it is a side effect of widening, not a decision.
      *
+     * A consequence the ABSOLUTE sibling had to fix and this arm does not:
+     * `absoluteAssemblyPathEscape` compares two paths that arrive
+     * INDEPENDENTLY, so it exonerates two spellings of one directory
+     * (go-to-k/cdkd#3532). Here the candidate is built BY JOINING onto `base`,
+     * so base and candidate share the caller's spelling by construction and
+     * the mismatch cannot arise — EXCEPT between `base` and `containWithin`,
+     * which are two strings. Today both derive from one `assemblyDir` value
+     * threaded unchanged through the Stage recursion, so they cannot disagree;
+     * a future caller that computes them apart would get a spurious REFUSAL,
+     * which is worse than the spurious warning the sibling had, and must add
+     * the same real-path exoneration here.
+     *
      * `containWithin` must never carry an assembly-supplied value. That is the
      * invariant; the sources that satisfy it today are `StackInfo.assetOutdir`
      * and the assembly root `Synthesizer.synthesize` returns, both derived from
@@ -362,6 +374,15 @@ export function resolveAssemblyPath(
  * empty `path.relative` means "names the directory rather than a file inside
  * it". An asset path legitimately names a DIRECTORY, so a value equal to the
  * bound is inside it and reporting it as outside would be a false statement.
+ *
+ * **The real-path walk runs on the ACCEPTING side too, not only to find a
+ * symlink escape.** The two paths arrive here INDEPENDENTLY — the bound from
+ * `-a` or the assembly's own `directoryName`, the target from the manifest —
+ * so they can be two spellings of one directory (`/var/…` and `/private/var/…`
+ * on macOS). `resolveAssemblyPath` never meets that, its candidate being built
+ * by joining onto the base. Left alone it warned "outside the assembly" about
+ * an ordinary `cdk synth --no-staging` asset, and a warning that cries wolf is
+ * worse than none.
  */
 export function absoluteAssemblyPathEscape(
   bound: string,
@@ -369,19 +390,76 @@ export function absoluteAssemblyPathEscape(
 ): Extract<ResolvedAssemblyPath, { contained: false }> | undefined {
   const resolvedBound = path.resolve(bound);
   const target = path.resolve(absolutePath);
+  const realBound = resolveThroughLinks(resolvedBound);
+  const realTarget = resolveThroughLinks(target);
 
   if (!isInside(resolvedBound, target) && target !== resolvedBound) {
-    return { contained: false, escape: 'lexical', path: target };
+    // EXONERATE two spellings of ONE directory before reporting a lexical
+    // escape. `resolveAssemblyPath` never needs this: its candidate is built
+    // BY JOINING onto the base, so both sides share the caller's spelling by
+    // construction. Here the two arrive independently — the bound from the
+    // CLI's `-a` / the assembly's own `directoryName`, the target from the
+    // manifest — and on macOS `/var/...` and `/private/var/...` (or
+    // `/tmp` and `/private/tmp`) are the same directory under different
+    // spellings. Reporting that as "outside the assembly" is a FALSE
+    // statement, and a warning that cries wolf on an ordinary
+    // `cdk synth --no-staging` is worse than no warning: users learn to skip
+    // the line that matters.
+    //
+    // This only ever exonerates; it never admits a real escape. A target
+    // genuinely outside the bound is outside under `realpath` too, and one
+    // reached THROUGH a link out of the bound is caught by the symlink arm
+    // below, which asks the opposite question.
+    if (
+      realBound === undefined ||
+      realTarget === undefined ||
+      (!isInside(realBound, realTarget) && realTarget !== realBound)
+    ) {
+      return { contained: false, escape: 'lexical', path: target };
+    }
+    return undefined;
   }
 
-  const realBound = resolveThroughLinks(resolvedBound);
   if (realBound !== undefined) {
-    const realTarget = resolveThroughLinks(target);
     if (realTarget !== undefined && !isInside(realBound, realTarget) && realTarget !== realBound) {
       return { contained: false, escape: 'symlink', path: target, realPath: realTarget };
     }
   }
   return undefined;
+}
+
+/**
+ * Whether `candidate` names the SAME DIRECTORY as `bound`, by any spelling.
+ *
+ * It lives here, beside {@link absoluteAssemblyPathEscape}, because it asks
+ * that function's question one step further on and must use its machinery to
+ * answer: `path.resolve` equality is a LEXICAL test, and the two paths reach a
+ * caller independently — the bound from `-a` or the assembly's own
+ * `directoryName`, the candidate from the manifest — so one directory has
+ * several spellings. `/tmp/cdk.out` and `/private/tmp/cdk.out` on macOS;
+ * `<cdk.out>/self` where `self` is a symlink to `cdk.out`; both at once.
+ *
+ * **A caller that re-spells this as `resolve(a) === resolve(b)` gets a test
+ * that misses every spelling but one**, which is how
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532)'s asset resolvers first
+ * shipped their whole-assembly warning: `absoluteAssemblyPathEscape`
+ * exonerates a second spelling of the bound as INSIDE — correctly — and the
+ * lexical equality beside it then said "not the bound", so the one value
+ * meaning "the entire assembly is this asset" passed both tests in silence.
+ * Ask this instead; do not re-derive it.
+ *
+ * Conservative on failure: an unresolvable side answers from the lexical
+ * comparison alone, so it can only ever say "not the same", never wrongly
+ * claim identity.
+ */
+export function namesTheSameDirectory(bound: string, candidate: string): boolean {
+  const resolvedBound = path.resolve(bound);
+  const target = path.resolve(candidate);
+  if (target === resolvedBound) return true;
+
+  const realBound = resolveThroughLinks(resolvedBound);
+  const realTarget = resolveThroughLinks(target);
+  return realBound !== undefined && realTarget !== undefined && realBound === realTarget;
 }
 
 /**

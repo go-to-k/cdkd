@@ -70,17 +70,20 @@ vi.mock('node:stream', () => ({
   }),
 }));
 
-// Mock logger
+// Mock logger. `mockWarn` is SHARED across every `child()` — a fresh `vi.fn()`
+// per call cannot be asserted on, since the object the code under test holds is
+// not the one a test can reach.
+const mockWarn = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...a: unknown[]) => mockWarn(...a),
     error: vi.fn(),
     child: () => ({
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: (...a: unknown[]) => mockWarn(...a),
       error: vi.fn(),
     }),
   }),
@@ -132,7 +135,8 @@ describe('FileAssetPublisher', () => {
       makeFileAsset(),
       '/tmp/cdk.out',
       '123456789012',
-      'us-east-1'
+      'us-east-1',
+      '/tmp/cdk.out'
     );
 
     expect(HeadObjectCommand).toHaveBeenCalledWith({
@@ -160,7 +164,8 @@ describe('FileAssetPublisher', () => {
       makeFileAsset(),
       '/tmp/cdk.out',
       '123456789012',
-      'us-east-1'
+      'us-east-1',
+      '/tmp/cdk.out'
     );
 
     expect(HeadObjectCommand).toHaveBeenCalled();
@@ -193,7 +198,8 @@ describe('FileAssetPublisher', () => {
       zipAsset,
       '/tmp/cdk.out',
       '123456789012',
-      'us-east-1'
+      'us-east-1',
+      '/tmp/cdk.out'
     );
 
     // Should use archiver for zip packaging
@@ -262,7 +268,8 @@ describe('FileAssetPublisher', () => {
         makeFileAsset({ source: { path: 'asset.zip123', packaging: 'zip' } }),
         '/tmp/cdk.out',
         '123456789012',
-        'us-east-1'
+        'us-east-1',
+        '/tmp/cdk.out'
       )
     ).rejects.toThrow('zip module failed');
 
@@ -287,7 +294,8 @@ describe('FileAssetPublisher', () => {
       asset,
       '/tmp/cdk.out',
       '111122223333',
-      'ap-northeast-1'
+      'ap-northeast-1',
+      '/tmp/cdk.out'
     );
 
     expect(HeadObjectCommand).toHaveBeenCalledWith({
@@ -312,15 +320,76 @@ describe('FileAssetPublisher', () => {
 
     await expect(
       publisher.publish(
-        'abc123',
-        makeFileAsset(),
-        '/tmp/cdk.out',
-        '123456789012',
-        'us-east-1'
-      )
+      'abc123',
+      makeFileAsset(),
+      '/tmp/cdk.out',
+      '123456789012',
+      'us-east-1',
+      '/tmp/cdk.out'
+    )
     ).rejects.toThrow('Access Denied');
 
     expect(mockS3Destroy).toHaveBeenCalled();
+  });
+
+  describe('an ABSOLUTE source.path (issue go-to-k/cdkd#3532)', () => {
+    // The WIRING half of the absolute arm. `asset-path-containment.test.ts`
+    // fences the resolver; what only `publish()` can show is that the warning
+    // names the DESTINATION — which the manifest chose, and which is the one
+    // detail a user can act on. "cdkd will upload it" tells them nothing;
+    // `s3://attacker-named-bucket/...` is a bucket they can see is not theirs.
+    it('WARNS naming the manifest-chosen destination, and still publishes', async () => {
+      mockWarn.mockClear();
+      mockS3Send.mockImplementation((command: { _type?: string }) => {
+        if (command._type === 'HeadObject') {
+          return Promise.reject(Object.assign(new Error('NotFound'), { name: 'NotFound' }));
+        }
+        return Promise.resolve({});
+      });
+
+      await publisher.publish(
+        'abs1',
+        makeFileAsset({
+          source: { path: '/srv/victim-dir', packaging: 'zip' },
+          destinations: {
+            'acct-region': { bucketName: 'attacker-named-bucket', objectKey: 'x.zip' },
+          },
+        }),
+        '/tmp/cdk.out',
+        '123456789012',
+        'us-east-1',
+        '/tmp/cdk.out'
+      );
+
+      const warned = mockWarn.mock.calls.map((c) => String(c[0]));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain('/srv/victim-dir');
+      expect(warned[0]).toContain('s3://attacker-named-bucket/x.zip');
+      expect(warned[0]).toContain('--no-staging');
+      // ...and the publish went through, which is the behaviour change.
+      expect(PutObjectCommand).toHaveBeenCalled();
+    });
+
+    it('stays SILENT for an absolute source.path inside the outdir', async () => {
+      mockWarn.mockClear();
+      mockS3Send.mockImplementation((command: { _type?: string }) => {
+        if (command._type === 'HeadObject') {
+          return Promise.reject(Object.assign(new Error('NotFound'), { name: 'NotFound' }));
+        }
+        return Promise.resolve({});
+      });
+
+      await publisher.publish(
+        'abs2',
+        makeFileAsset({ source: { path: '/tmp/cdk.out/asset.abc', packaging: 'zip' } }),
+        '/tmp/cdk.out',
+        '123456789012',
+        'us-east-1',
+        '/tmp/cdk.out'
+      );
+
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
   });
 
   describe('assembly-path containment (issue go-to-k/cdkd#3489)', () => {
@@ -342,7 +411,8 @@ describe('FileAssetPublisher', () => {
           makeFileAsset({ source: { path: '../../../etc', packaging: 'zip' } }),
           '/tmp/cdk.out',
           '123456789012',
-          'us-east-1'
+          'us-east-1',
+          '/tmp/cdk.out'
         )
       ).rejects.toThrow(/source\.path='\.\.\/\.\.\/\.\.\/etc' which resolves to '.*', outside/);
 
@@ -362,7 +432,8 @@ describe('FileAssetPublisher', () => {
           makeFileAsset({ source: { path: '../../../etc', packaging: 'zip' } }),
           '/tmp/cdk.out',
           '123456789012',
-          'us-east-1'
+          'us-east-1',
+          '/tmp/cdk.out'
         )
       ).rejects.toThrow(/outside/);
 
@@ -384,12 +455,13 @@ describe('FileAssetPublisher', () => {
       });
 
       await publisher.publish(
-        'abc123',
-        makeFileAsset(),
-        '/tmp/cdk.out',
-        '123456789012',
-        'us-east-1'
-      );
+      'abc123',
+      makeFileAsset(),
+      '/tmp/cdk.out',
+      '123456789012',
+      'us-east-1',
+      '/tmp/cdk.out'
+    );
 
       expect(mockS3Send).toHaveBeenCalled();
     });

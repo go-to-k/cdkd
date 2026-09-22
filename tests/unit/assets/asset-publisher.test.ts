@@ -108,10 +108,12 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '123456789012',
       'us-east-1',
-      undefined,
       // The app's outdir, defaulted to the manifest's directory here because
       // this manifest is a TOP-LEVEL stack's. A Stage's would differ
-      // (go-to-k/cdkd#3489).
+      // (go-to-k/cdkd#3489). It is LAST and required: the unused `profile`
+      // parameter that used to trail it is gone, because being optional and
+      // last it let an old call bind a profile NAME to this bound — a required
+      // parameter catches a DROP, not a SWAP (go-to-k/cdkd#3532).
       '/tmp/cdk.out'
     );
   });
@@ -255,7 +257,6 @@ describe('AssetPublisher', () => {
       '/tmp/cdk.out',
       '999888777666',
       'us-east-1',
-      undefined,
       '/tmp/cdk.out'
     );
   });

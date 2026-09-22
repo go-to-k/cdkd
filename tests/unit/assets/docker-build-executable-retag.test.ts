@@ -72,7 +72,8 @@ describe('publisher (docker-asset-publisher): executable source re-tag', () => {
         destinations: {},
       },
       '/cdk.out',
-      'cdkd-asset-deadbeef'
+      'cdkd-asset-deadbeef',
+      '/cdk.out'
     );
     const tagCall = mockRunDocker.mock.calls.find(
       ([args]) => Array.isArray(args) && args[0] === 'tag'
@@ -103,7 +104,8 @@ describe('publisher (docker-asset-publisher): executable source re-tag', () => {
           destinations: {},
         },
         '/cdk.out',
-        'cdkd-asset-feedface'
+        'cdkd-asset-feedface',
+        '/cdk.out'
       );
     } catch (err) {
       caught = err;
