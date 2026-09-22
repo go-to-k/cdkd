@@ -30,7 +30,8 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   through `displaySafe`, in thrown messages AND log lines
   ([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Synthesis is the first
   layer the CLI reaches, so on a hand-modified assembly these ARE the lines a
-  user is asked to trust, and `formatError` sanitizes only an error's `cause`.
+  user is asked to trust, and `formatError` sanitizes and bounds only an
+  error's `cause`, never the message a thrower builds.
   The split is by what the value IS, not by where it came from: a PATH or
   free-form text takes `displaySafe`, which must leave a legitimate asset path
   untruncated and unquoted; an IDENTIFIER interpolated into prose takes
