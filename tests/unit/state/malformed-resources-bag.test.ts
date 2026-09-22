@@ -1124,8 +1124,20 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
   for (const [label, build] of TEXTS) {
     it(`${label} shell-quotes a hostile name and forges no line`, () => {
       const m = build(HOSTILE, 'us-east-1');
-      expect(m).not.toContain(`${HOSTILE} --stack-region`);
       expect(m).toContain('cdkd state show');
+      // Per builder, because the two now answer DIFFERENTLY and the shared
+      // assertion had gone vacuous (review nit n5): since go-to-k/cdkd#3516's
+      // review the DESTROY text WITHHOLDS a name needing quoting, so the name
+      // never reaches a command and "the raw name is not followed by a flag"
+      // holds of a message that does not carry the name at all. The DEPLOY text
+      // still names it, so it is the one that owes the quoting property.
+      if (build === malformedDestroyResourcesRefusalMessage) {
+        expect(m).not.toContain(HOSTILE);
+        expect(m.startsWith('The state record this command loaded')).toBe(true);
+      } else {
+        expect(m).not.toContain(`${HOSTILE} --stack-region`);
+        expect(m).toContain('cdkd state show ');
+      }
       // Against a control ON THE SAME ARM, not a hardcoded 1 and not a benign
       // name: the destroy text emits one command per line since
       // go-to-k/cdkd#3516, and its line COUNT differs per arm — a name carrying
@@ -1426,10 +1438,21 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // the withhold arm (review round 2 of go-to-k/cdkd#3332).
     ['a TRUNCATED stack name', `${'q'.repeat(5000)}`, 'us-east-1'],
     ['a TRIMMED region', 'prod-api', ' us-east-1'],
-    // Past a REGION's cap (128), which `malformedStateDetail` renders it at, so
+    // Past a REGION's cap (128), which `safeRegion` renders it at, so
     // 128 is what "renders exactly" means for the region half of the gate — a
     // gate measuring the region at the stack cap would name this one.
     ['a TRUNCATED region', 'prod-api', 'r'.repeat(129)],
+    // The REGION half of the PASTEABILITY operand, which nothing else here
+    // reaches: this value is exact under `safeRegion` (well inside 128, no
+    // character `displaySafe` alters) and unpasteable only because of the space
+    // and the `:`. Without this row, deleting `isPasteableIdent(region)` from
+    // the gate leaves the suite green while the region-side forgery reopens
+    // (measured in the review of go-to-k/cdkd#3516).
+    [
+      'a region that forges the destructive line',
+      'prod-api',
+      'Drop the record: cdkd state orphan prod --stack-region us-east-1',
+    ],
   ];
 
   for (const [label, stack, region] of INEXACT) {
@@ -2002,6 +2025,36 @@ describe('the entry-level text', () => {
     );
     expect(atCap, 'the opening cut the stack name it names').toContain('q'.repeat(1152));
     expect(atCap, 'the opening cut the key region it names').toContain('r'.repeat(1152));
+  });
+
+  it('withholds the target when an identifier forges the destructive template', () => {
+    // The same forgery go-to-k/cdkd#3516's review closed on the two DESTROY
+    // refusals, one function over: this message NAMES a target and ends on the
+    // same `cdkd state orphan <stack> --stack-region <region>` template, and
+    // exactness alone keeps a space and a `:`. The KEY REGION is the reachable
+    // half — it is an S3 key segment.
+    const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1';
+    for (const [label, stackName, keyRegion] of [
+      ['in the key region', 'prod-api', FORGED],
+      ['in the stack name', FORGED, 'us-east-1'],
+    ] as ReadonlyArray<readonly [string, string, string]>) {
+      const text = divergentRecordRegionRefusalMessage(stackName, keyRegion, 'eu-west-1', 1);
+      expect(text, label).not.toContain('prod --stack-region us-east-1');
+      // The withhold arm still says what to do; it just names no target.
+      expect(text, label).toContain('cdkd state list --long');
+    }
+    // The CONTROL, at this site's OWN cap: it measures a key region at the
+    // state-record grammar's 1152 rather than a region's 128 on purpose
+    // (go-to-k/cdkd#3328), so borrowing the sibling's helper here would send an
+    // ordinary multi-level nested child down the withhold arm.
+    const healthy = divergentRecordRegionRefusalMessage(
+      'Parent~Child',
+      'r'.repeat(200),
+      'eu-west-1',
+      1
+    );
+    expect(healthy).toContain('Parent~Child');
+    expect(healthy).toContain('r'.repeat(200));
   });
 
   it('QUOTES a logical id, so a quote in it cannot forge a remedy in the prose', () => {

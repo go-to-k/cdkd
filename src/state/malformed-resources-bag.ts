@@ -350,7 +350,15 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * other. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
  * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
  */
-const DROP_RECORD_LINE = 'Drop the record: cdkd state orphan <stack> --stack-region <region>';
+const DROP_RECORD_TEMPLATE = 'cdkd state orphan <stack> --stack-region <region>';
+
+/**
+ * The same template as a LABELLED line, for the two messages that carry their
+ * commands one per line. The COMMAND is the atom rather than the line, because
+ * the command is what drifts: `divergentRecordRegionRefusalMessage` ends on it
+ * with no label, so a `--stack-region` rename could otherwise half-land.
+ */
+const DROP_RECORD_LINE = `Drop the record: ${DROP_RECORD_TEMPLATE}`;
 
 /**
  * May this message NAME its target and offer the destructive template beside
@@ -375,12 +383,23 @@ const DROP_RECORD_LINE = 'Drop the record: cdkd state orphan <stack> --stack-reg
  * identity here.
  */
 function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): boolean {
-  // A CONJUNCTION with the per-kind exactness, never a replacement for it.
-  // `isPasteableIdent` measures against the STACK cap
-  // (`STACK_REF_MAX_CODE_POINTS`), so on its own it admits a region past a
-  // REGION's 128 — which `safeRegion` truncates, putting a cut value in the
-  // clause above the template. Measured: dropping the first two operands
-  // reddens the truncated-region withhold case.
+  // A CONJUNCTION with the per-kind exactness, never a replacement for it —
+  // and the two halves do NOT earn their place equally, which is worth saying
+  // rather than leaving a reader to infer it from one measurement.
+  //
+  // The REGION pair is load-bearing: `isPasteableIdent` measures against the
+  // STACK cap (`STACK_REF_MAX_CODE_POINTS`), so on its own it admits a region
+  // past a REGION's 128 — which `safeRegion` truncates, putting a cut value in
+  // the clause above the template. Measured: dropping `safeRegion(...)` here
+  // reddens the truncated-region withhold row, and dropping
+  // `isPasteableIdent(region)` reddens the forged-region row.
+  //
+  // The STACK pair OVERLAPS today: `isPasteableIdent`'s charset is a subset of
+  // what `displaySafe(_, { asciiOnly: true })` passes unchanged and its
+  // identity test forbids truncation at the same cap `safeStackName` uses, so
+  // `isPasteableIdent(stackName)` already implies `safeStackName(...) === ...`.
+  // Kept per-kind anyway, so that widening either charset or either cap cannot
+  // silently drop the other's bound.
   return (
     safeStackName(stackName) === stackName &&
     safeRegion(region) === region &&
@@ -676,8 +695,22 @@ export function divergentRecordRegionRefusalMessage(
   // one. Compared against the RAW values, at the STATE-RECORD grammar's cap so
   // an ordinary multi-level nested child does not take the withhold arm.
   const cap = STACK_REF_MAX_CODE_POINTS;
+  // ...AND pasteable, the second half go-to-k/cdkd#3516's review added to the
+  // sibling and which this site owes for the same reason: exactness keeps a
+  // space and a `:`, so a key region spelling
+  // `Drop the record: cdkd state orphan prod --stack-region us-east-1` took the
+  // naming arm and forged a filled-in destructive command inside the quoted
+  // clause, which a terminal wrap starts a visual line with.
+  //
+  // NOT `mayNameTargetWithDestructiveRemedy`: that helper measures the region
+  // at a REGION's 128, and this site measures a KEY region at the state-record
+  // grammar's cap on purpose (go-to-k/cdkd#3328), so borrowing it would take a
+  // healthy multi-level nested child down the withhold arm.
   const exact =
-    safeIdentifier(stackName, cap) === stackName && safeIdentifier(keyRegion, cap) === keyRegion;
+    safeIdentifier(stackName, cap) === stackName &&
+    safeIdentifier(keyRegion, cap) === keyRegion &&
+    isPasteableIdent(stackName) &&
+    isPasteableIdent(keyRegion);
   const lists =
     resourceCount === undefined
       ? 'its resources map cannot be read'
@@ -703,7 +736,7 @@ export function divergentRecordRegionRefusalMessage(
       `against the region the resources are really in, or repair that field to match the key it ` +
       `is stored under and re-run. To drop the record and leave the live resources standing, ` +
       `spelled out rather than pasteable because that command DELETES a record: ` +
-      `cdkd state orphan <stack> --stack-region <region>`
+      DROP_RECORD_TEMPLATE
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records as stored with ` +

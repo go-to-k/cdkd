@@ -93,23 +93,35 @@ just said not to trust sits below the holes an operator fills by hand. Do not
 collapse them back. Its fence is a line LIST compared with `toEqual`, so a
 forged, duplicated or collapsed line fails too; `endsWith` cannot express it.
 A hardcoded "one line" assertion is also wrong for these, so an
-injected-newline check compares the line count against a BENIGN control build.
+injected-newline check compares the line count against a control **on the SAME
+ARM** — the count differs per arm, so a benign-name control compares arms
+instead of line injection.
 
 **Naming a target beside that template needs more than faithful rendering.**
-`safeIdentifier(x) === x` keeps a space and a quote, so a stack name spelling
+`safeIdentifier(x) === x` keeps a space and a `:`, so an identifier spelling
 `Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
-exactly and forges cdkd's own line inside the quoted name once the terminal
-wraps. The gate is `isPasteableIdent` on BOTH identifiers.
+exactly and forges cdkd's own line inside the quoted clause once the terminal
+wraps. Add `isPasteableIdent` on BOTH identifiers, **in CONJUNCTION with the
+per-kind exactness rather than instead of it**: `isPasteableIdent` measures at
+the STACK cap, so on its own it admits a region past a REGION's 128, which
+`safeRegion` then truncates. Fence each operand separately — the pasteability
+half needs a row that is exact yet unpasteable, which no truncation row reaches.
 
-**One message still ends on the template on a single line**:
-`divergentRecordRegionRefusalMessage` offers no read at all, so nothing competes
-for its tail. It is not the shape to copy for a message that has both.
+**Two messages carry this gate**: the `resources` destroy refusal (through
+`mayNameTargetWithDestructiveRemedy`) and `divergentRecordRegionRefusalMessage`,
+which spells its own because it measures a KEY region at the state-record
+grammar's cap on purpose (go-to-k/cdkd#3328), not a region's 128.
 
-**Residual, stated rather than fenced**: two readers FLATTEN the newlines —
-`events.ts`'s `safeText` and `error-handler.ts`'s `cause` rendering — so a
-refusal surfaced through `cdkd events` shows the pre-go-to-k/cdkd#3516 run-on.
-Reachable through a nested child's destroy. The per-line shape is a property of
-the MESSAGE, not of every surface that prints it.
+**That second one still ends on the template on a single line**, because its
+EXACT arm offers no read — its withhold arm does, so it is in `inspectCommand`'s
+caller list. It is not the shape to copy for a message offering both.
+
+**Residual, tracked rather than fenced** (go-to-k/cdkd#3518): two readers
+FLATTEN the newlines — `events.ts`'s `safeText`, and `error-handler.ts` where a
+refusal arrives as a CAUSE — so a refusal surfaced through `cdkd events` shows
+the pre-go-to-k/cdkd#3516 run-on. Reachable through a nested child's destroy.
+The per-line shape is a property of the MESSAGE, not of every surface that
+prints it.
 
 ## Two exports here are not guards at all
 
