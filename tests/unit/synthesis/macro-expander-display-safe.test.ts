@@ -94,6 +94,7 @@ import {
 } from '../../../src/utils/display-safe.js';
 import {
   CSI,
+  ESC,
   hasForgingCharacter,
   LINE_SEP,
   NEL,
@@ -126,6 +127,15 @@ const EXPANDED = { Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties:
 function buildCfnClient(responses: Record<string, unknown>) {
   const send = vi.fn(async (cmd: FakeCommand) => {
     if (cmd._name in responses) return responses[cmd._name];
+    return {};
+  });
+  return { send, destroy: vi.fn() } as never;
+}
+
+/** Like {@link buildCfnClient}, but one command REJECTS. */
+function buildRejectingCfnClient(command: string, error: Error) {
+  const send = vi.fn(async (cmd: FakeCommand) => {
+    if (cmd._name === command) throw error;
     return {};
   });
   return { send, destroy: vi.fn() } as never;
@@ -373,6 +383,74 @@ describe("the changeset-failure refusal quotes CloudFormation's own reply (#3479
     const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
     expect(withheld).toBeGreaterThan(0);
     expect(message.endsWith(`[cut: ${withheld} more characters withheld]`)).toBe(true);
+  });
+});
+
+describe('AWS and parser text that ECHOES the template back (#3479)', () => {
+  it('sanitizes the CreateChangeSet rejection, which quotes the submitted values', async () => {
+    // CFn quotes the transform names and the parameter placeholders it was
+    // handed back in a validation error, so this is AWS text carrying assembly
+    // content.
+    const message = await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: buildRejectingCfnClient(
+          'CreateChangeSet',
+          new Error(`Transform ${HOSTILE.detectedA.raw} is not valid`)
+        ),
+      })
+    );
+    expect(message).toBe(
+      'CloudFormation rejected the macro-expansion changeset: ' +
+        `Transform ${HOSTILE.detectedA.clean} is not valid`
+    );
+    expect(hasForgingCharacter(message)).toBe(false);
+  });
+
+  it('leaves an ordinary CreateChangeSet rejection byte-identical', async () => {
+    const message = await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: buildRejectingCfnClient('CreateChangeSet', new Error('AccessDenied')),
+      })
+    );
+    expect(message).toBe(
+      'CloudFormation rejected the macro-expansion changeset: AccessDenied'
+    );
+  });
+
+  it("sanitizes the JSON.parse failure, which embeds CFn's returned body verbatim", async () => {
+    // Measured: Node quotes the offending INPUT inside its own parse error, so
+    // the round-tripped template's bytes re-enter through the parser's text.
+    const message = await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: buildCfnClient({
+          CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+          GetTemplate: { TemplateBody: `notjson ${ESC}[2K forged` },
+        }),
+      })
+    );
+    expect(message).toContain('CloudFormation returned a non-JSON Processed-stage');
+    expect(message).toContain('Cause: ');
+    // The parse error carried the ESC through before this site was sanitized.
+    expect(message.includes(`${ESC}[2K`)).toBe(false);
+    expect(message).toContain('notjson  [2K forged');
+    expect(hasForgingCharacter(message)).toBe(false);
+  });
+
+  it('leaves an ordinary parse failure readable', async () => {
+    const message = await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: buildCfnClient({
+          CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+          GetTemplate: { TemplateBody: 'Resources:\n  Fn:\n    Type: AWS::Lambda::Function' },
+        }),
+      })
+    );
+    expect(message).toContain('Cause: ');
+    expect(message).toContain('is not valid JSON');
   });
 });
 

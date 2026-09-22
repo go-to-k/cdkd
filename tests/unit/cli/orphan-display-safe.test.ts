@@ -709,6 +709,44 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
     });
   });
 
+  describe("the lock-release warn quotes AWS's own text", () => {
+    /**
+     * The lock key is `cdkd/{stackName}/{region}/lock.json`, so an S3 error
+     * naming the key echoes the manifest-derived stack name back through AWS's
+     * reply — the same echo path as CloudFormation's `StatusReason`.
+     */
+    function arrangeReleaseFailure(stackName: string, logicalId: string, reason: string): void {
+      primeStacks([{ stackName, resources: { [logicalId]: `${stackName}/Bucket` } }]);
+      primeState(stackName, 'us-east-1', { [logicalId]: entry() });
+      mockReleaseLock.mockRejectedValue(new Error(reason));
+    }
+
+    function warnLines(): string[] {
+      return warnSpy.mock.calls.map((call) => String(call[0]));
+    }
+
+    it('sanitizes the SDK text', async () => {
+      arrangeReleaseFailure(
+        HOSTILE.stackA.raw,
+        HOSTILE.logicalId.raw,
+        `NoSuchKey: cdkd/${HOSTILE.stackA.raw}/us-east-1/lock.json`
+      );
+      await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes']);
+      expect(warnLines()).toContain(
+        `Failed to release lock: NoSuchKey: cdkd/${HOSTILE.stackA.clean}/us-east-1/lock.json`
+      );
+      expectNoForgingIn(warnLines());
+    });
+
+    it('leaves ordinary SDK text byte-identical', async () => {
+      arrangeReleaseFailure('MyStack', 'Bucket', 'NoSuchKey: cdkd/MyStack/us-east-1/lock.json');
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(warnLines()).toContain(
+        'Failed to release lock: NoSuchKey: cdkd/MyStack/us-east-1/lock.json'
+      );
+    });
+  });
+
   describe('the confirmation prompt names the stack it is about to rewrite', () => {
     it('sanitizes the stack name in the question the operator answers', async () => {
       primeStacks([
