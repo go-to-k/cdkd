@@ -36,6 +36,48 @@ import {
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+
+/**
+ * `cdkd orphan` renders three families of assembly-derived value — a stack's
+ * `stackName` / `displayName`, a template logical id, and an `aws:cdk:path`
+ * from the template's own `Metadata` — in thrown messages AND in
+ * default-verbosity `logger.info` lines. All of them go through a display
+ * helper ([#3479](https://github.com/go-to-k/cdkd/issues/3479)), and which
+ * helper is chosen per SENTENCE rather than per value:
+ *
+ * - `displaySafe` is the default. It neither quotes nor truncates, so every
+ *   legitimate value is byte-identical — including in a message whose own prose
+ *   already supplies the quotes (`stack '<name>'`), where `displayIdent` would
+ *   double-quote.
+ * - `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`, so a deep nested path
+ *   is not cut) serves the two UNQUOTED `Available: ...` lists, whose job is the
+ *   value's IDENTITY — which names the user could have meant. There `displaySafe`
+ *   is not enough: it maps the stripped character to a space and then TRIMS, so a
+ *   planted `MyStack/Table\n` would render byte-identical to the genuine entry
+ *   and the message would list the very path it says was not found. This is the
+ *   same choice `describeStack` makes for the same class of sentence.
+ *
+ * A JOINED list sanitizes per ELEMENT: sanitizing the joined string only trims
+ * its two ends and leaves a mid-list line terminator intact.
+ *
+ * Deliberately NOT sanitized: `pathArgs` and the `<head>` segment parsed out of
+ * one. Those are the operator's own argv echoed back, a different trust bucket
+ * from the assembly, and `renderNoStackMatch` renders a user-supplied pattern
+ * the same way.
+ */
+
+/** Every element sanitized, then joined with the list separator. */
+function displaySafeList(values: readonly string[]): string {
+  return values.map((value) => displaySafe(value)).join(', ');
+}
+
+/** One `Available:` entry per element, each with a visible boundary. */
+function displayIdentList(values: readonly string[], separator: string): string {
+  return values
+    .map((value) => displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }))
+    .join(separator);
+}
 
 interface OrphanOptions {
   app?: string;
@@ -186,7 +228,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     );
 
     logger.info(
-      `Target: ${stackInfo.stackName} (${targetRegion}); orphaning ${orphanLogicalIds.length} resource(s): ${orphanLogicalIds.join(', ')}`
+      `Target: ${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)}); ` +
+        `orphaning ${orphanLogicalIds.length} resource(s): ${displaySafeList(orphanLogicalIds)}`
     );
 
     // Acquire lock so a concurrent deploy can't observe the half-rewritten
@@ -228,7 +271,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       const stateData = await stateBackend.getState(stackInfo.stackName, targetRegion);
       if (!stateData) {
         throw new Error(
-          `No state found for stack '${stackInfo.stackName}' (${targetRegion}). ` +
+          `No state found for stack '${displaySafe(stackInfo.stackName)}' ` +
+            `(${displaySafe(targetRegion)}). ` +
             `Nothing to orphan. (Did the stack get deployed?)`
         );
       }
@@ -286,10 +330,15 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // would silently no-op while the user expected a removal.
       const missing = orphanLogicalIds.filter((id) => !(id in state.resources));
       if (missing.length > 0) {
-        const have = Object.keys(state.resources ?? {}).join(', ');
+        // `have` is state-derived rather than assembly-derived, and it is
+        // sanitized anyway: it shares a message with values that are, and a raw
+        // neighbour forges a cdkd-looking line just as well as the value beside
+        // it would have.
+        const have = displayIdentList(Object.keys(state.resources ?? {}), ', ');
         throw new Error(
-          `Resource(s) not in state for stack '${stackInfo.stackName}' (${targetRegion}): ` +
-            `${missing.join(', ')}.\n` +
+          `Resource(s) not in state for stack '${displaySafe(stackInfo.stackName)}' ` +
+            `(${displaySafe(targetRegion)}): ` +
+            `${displaySafeList(missing)}.\n` +
             `Available logical IDs: ${have}`
         );
       }
@@ -331,7 +380,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       if (!options.yes && !options.force) {
         const ok = await confirmPrompt(
           `Orphan ${orphanLogicalIds.length} resource(s) from cdkd state for ` +
-            `${stackInfo.stackName} (${targetRegion})? AWS resources will NOT be deleted.`
+            `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)})? ` +
+            `AWS resources will NOT be deleted.`
         );
         if (!ok) {
           logger.info('Orphan cancelled.');
@@ -345,7 +395,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       });
 
       logger.info(
-        `Orphaned ${orphanLogicalIds.length} resource(s) from state: ${stackInfo.stackName} (${targetRegion}). ` +
+        `Orphaned ${orphanLogicalIds.length} resource(s) from state: ` +
+          `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)}). ` +
           `AWS resources are still in AWS; cdkd will no longer manage them.`
       );
     } finally {
@@ -394,7 +445,10 @@ function resolveConstructPaths(
     const head = p.slice(0, slash);
     const candidate = byDisplayName.get(head) ?? byStackName.get(head);
     if (!candidate) {
-      const available = stacks.map((s) => s.displayName ?? s.stackName).join(', ');
+      const available = displayIdentList(
+        stacks.map((s) => s.displayName ?? s.stackName),
+        ', '
+      );
       throw new Error(
         `Construct path '${p}': stack '${head}' not found in synthesized app. ` +
           `Available: ${available}`
@@ -405,7 +459,7 @@ function resolveConstructPaths(
     } else if (stack.stackName !== candidate.stackName) {
       throw new Error(
         `All construct paths must reference the same stack. ` +
-          `Got '${stack.stackName}' and '${candidate.stackName}'. ` +
+          `Got '${displaySafe(stack.stackName)}' and '${displaySafe(candidate.stackName)}'. ` +
           `Run 'cdkd orphan' once per stack.`
       );
     }
@@ -417,9 +471,10 @@ function resolveConstructPaths(
     const index = buildCdkPathIndex(candidate.template);
     const matches = resolveCdkPathToLogicalIds(p, index);
     if (matches.length === 0) {
-      const available = [...index.keys()].sort().join('\n  ');
+      const available = displayIdentList([...index.keys()].sort(), '\n  ');
       throw new Error(
-        `Construct path '${p}' not found in template for stack '${candidate.stackName}'.\n` +
+        `Construct path '${p}' not found in template for stack ` +
+          `'${displaySafe(candidate.stackName)}'.\n` +
           `Available paths:\n  ${available}`
       );
     }
@@ -475,15 +530,16 @@ async function pickStackRegion(
     if (flag) return { region: flag, recordRegion: flag };
     if (synthRegion) return { region: synthRegion, recordRegion: synthRegion };
     throw new Error(
-      `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack '${displaySafe(stackName)}'. ` +
+        `Run 'cdkd state list' to see available stacks.`
     );
   }
   if (flag) {
     const found = refs.find((r) => r.region === flag);
     if (!found) {
-      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+      const seen = displaySafeList(refs.map((r) => r.region ?? '(legacy)'));
       throw new Error(
-        `No state found for stack '${stackName}' in region '${flag}'. ` +
+        `No state found for stack '${displaySafe(stackName)}' in region '${flag}'. ` +
           `Available regions: ${seen}.`
       );
     }
@@ -497,9 +553,9 @@ async function pickStackRegion(
     const recordRegion = refs[0]!.region;
     return { region: recordRegion ?? synthRegion ?? '', recordRegion };
   }
-  const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+  const regions = displaySafeList(refs.map((r) => r.region ?? '(legacy)'));
   throw new Error(
-    `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+    `Stack '${displaySafe(stackName)}' has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
   );
 }
@@ -507,7 +563,9 @@ async function pickStackRegion(
 function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string[]): void {
   const logger = getLogger();
   logger.info('');
-  logger.info(`Orphaning ${orphanLogicalIds.length} resource(s): ${orphanLogicalIds.join(', ')}`);
+  logger.info(
+    `Orphaning ${orphanLogicalIds.length} resource(s): ${displaySafeList(orphanLogicalIds)}`
+  );
   if (rewrites.length === 0) {
     logger.info('  No sibling references — every reference was already to a non-orphan resource.');
     return;
@@ -516,7 +574,9 @@ function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string
   for (const r of rewrites) {
     const before = stringifyForAudit(r.before);
     const after = r.kind === 'dependency' ? '(dropped)' : stringifyForAudit(r.after);
-    logger.info(`  [${r.kind}] ${r.logicalId}.${r.path}: ${before} → ${after}`);
+    logger.info(
+      `  [${r.kind}] ${displaySafe(r.logicalId)}.${displaySafe(r.path)}: ${before} → ${after}`
+    );
   }
 }
 
@@ -524,13 +584,26 @@ function printUnresolvable(unresolvable: UnresolvableReference[]): void {
   const logger = getLogger();
   logger.error(`${unresolvable.length} reference(s) could not be resolved:`);
   for (const u of unresolvable) {
-    logger.error(`  ${u.logicalId}.${u.path}: ${u.orphanLogicalId}.${u.attribute} — ${u.reason}`);
+    logger.error(
+      `  ${displaySafe(u.logicalId)}.${displaySafe(u.path)}: ` +
+        `${displaySafe(u.orphanLogicalId)}.${displaySafe(u.attribute)} — ${displaySafe(u.reason)}`
+    );
   }
 }
 
+/**
+ * A rewrite's before / after is a TEMPLATE value, so it is sanitized after
+ * serialization ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
+ * `JSON.stringify` is not the boundary on its own — measured: it escapes C0 and
+ * DEL but passes the C1 range, `U+2028`/`U+2029` and the bidi overrides
+ * straight through, and `U+009B` is read as CSI by a UTF-8 xterm.
+ */
 function stringifyForAudit(value: unknown): string {
-  if (typeof value === 'string') return JSON.stringify(value);
-  return JSON.stringify(value);
+  // `JSON.stringify` answers `undefined` — not a string — for `undefined`, a
+  // function and a symbol, all of which `unknown` admits. `String()` keeps the
+  // rendering those had before this sanitization was added, where `displaySafe`
+  // alone would print an EMPTY cell that reads as "nothing was there".
+  return displaySafe(JSON.stringify(value) ?? String(value));
 }
 
 /**

@@ -25,6 +25,20 @@ import {
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { displaySafe } from '../utils/display-safe.js';
+
+/**
+ * A transform name comes from the TEMPLATE's own `Transform` / `Fn::Transform`
+ * node, so every render of one goes through `displaySafe`, in thrown messages
+ * and in the `debug` line alike
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). Per ELEMENT, before
+ * the join: sanitizing the joined string only trims its two ends and leaves a
+ * mid-list line terminator intact. `displaySafe` neither quotes nor truncates,
+ * so a legitimate `AWS::Serverless-2016-10-31` renders byte-identically.
+ */
+function displaySafeTransforms(names: readonly string[]): string {
+  return names.map((name) => displaySafe(name)).join(', ');
+}
 
 /**
  * Options threaded into {@link expandMacros}.
@@ -270,7 +284,7 @@ async function expandMacrosAttempt(
 ): Promise<CloudFormationTemplate> {
   const macros = enumerateMacros(template);
   logger.debug(
-    `Macro expansion: detected transforms [${macros.join(', ')}], starting CFn round-trip...`
+    `Macro expansion: detected transforms [${displaySafeTransforms(macros)}], starting CFn round-trip...`
   );
 
   // 16 chars of UUID hex → ~64 bits of entropy, ample collision
@@ -446,7 +460,7 @@ async function expandMacrosAttempt(
         `CloudFormation returned no Processed-stage template body for the ` +
           `macro-expansion changeset. This typically indicates a CFn-side ` +
           `regression — re-run, and if the failure persists open an issue ` +
-          `with the transforms involved: [${macros.join(', ')}].`
+          `with the transforms involved: [${displaySafeTransforms(macros)}].`
       );
     }
     const expanded = parseTemplateBody(tpl.TemplateBody);
@@ -460,7 +474,7 @@ async function expandMacrosAttempt(
       // policy, not a wrapped failure.
       throw new MacroExpansionError(
         `Macro expansion produced a template that still contains macros ` +
-          `[${inner.join(', ')}]. Multi-stage macros (a macro whose expansion ` +
+          `[${displaySafeTransforms(inner)}]. Multi-stage macros (a macro whose expansion ` +
           `emits another macro reference) are intentionally out of scope in ` +
           `cdkd v1 — see https://github.com/go-to-k/cdkd/issues/463. ` +
           `If you need this pattern, manually pre-expand the template and ` +

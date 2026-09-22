@@ -43,6 +43,14 @@ Index of every area: [code-layout.md](code-layout.md).
   so an ad-hoc `{}` is a compile error; `scrub` and `destroy` still word their
   own. Each of those four also throws it on a ZERO-stack assembly BEFORE its
   branch chain, which otherwise answers `Multiple stacks found: .`.
+  `describeStack` renders both names through `displayIdent`, which is right for
+  the PROSE it serves and wrong for a PAYLOAD: **`list.ts` deliberately does not
+  route through it** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) —
+  its display id puts `displayName` FIRST, and `displayIdent` would quote a
+  legitimate `My Stack` into a stream a shell loop reads, so `formatDisplayId`
+  sanitizes locally with `displaySafe`. `toLongRecord` does too: measured,
+  `JSON.stringify` and `yaml` both pass C1 and `U+2028`, so the encoder is not
+  the boundary for the `--long` / `--show-dependencies` payloads.
 - **src/cli/region-options.ts** - shared region normalization
   ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars

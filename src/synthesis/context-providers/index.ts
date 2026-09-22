@@ -1,5 +1,6 @@
 import type { MissingContext } from '../../types/assembly.js';
 import { getLogger } from '../../utils/logger.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { AZContextProvider } from './az-provider.js';
 import { SSMContextProvider } from './ssm-provider.js';
 import { HostedZoneContextProvider } from './hosted-zone-provider.js';
@@ -78,24 +79,43 @@ export class ContextProviderRegistry {
 
     for (const entry of missing) {
       const provider = this.providers.get(entry.provider);
+      // `provider` and `key` are read straight out of the manifest's `missing`
+      // list, so every RENDER of either goes through `displaySafe` — the `debug`
+      // lines included ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
+      // The LOOKUP above stays on the raw value: this pair identifies a provider
+      // and a context key, and sanitizing what is used rather than shown would
+      // change which provider answers.
+      const shownProvider = displaySafe(entry.provider);
+      const shownKey = displaySafe(entry.key);
 
       if (!provider) {
-        this.logger.warn(`No context provider registered for: ${entry.provider}`);
+        this.logger.warn(`No context provider registered for: ${shownProvider}`);
         results[entry.key] = {
-          [PROVIDER_ERROR_KEY]: `Unknown context provider: ${entry.provider}`,
+          // Sanitized here too, although this one is a context VALUE rather than
+          // a rendered line: it is handed back to the CDK app, which is free to
+          // put it in its own error, and `ContextStore.save` skips the whole
+          // entry (it carries `TRANSIENT_CONTEXT_KEY`), so nothing downstream
+          // needs the raw spelling.
+          [PROVIDER_ERROR_KEY]: `Unknown context provider: ${shownProvider}`,
           [TRANSIENT_CONTEXT_KEY]: true,
         };
         continue;
       }
 
       try {
-        this.logger.debug(`Resolving context: ${entry.provider} (key: ${entry.key})`);
+        this.logger.debug(`Resolving context: ${shownProvider} (key: ${shownKey})`);
         const value = await provider.resolve(entry.props);
         results[entry.key] = value;
-        this.logger.debug(`Resolved context: ${entry.key}`);
+        this.logger.debug(`Resolved context: ${shownKey}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.error(`Context provider '${entry.provider}' failed: ${message}`);
+        // The provider's own failure text is sanitized as well. It is not
+        // assembly-derived, but this is the RENDER SITE for every lookup argument
+        // the `*-provider.ts` modules interpolate into a thrown message
+        // (`parameterName`, `domainName`, a VPC filter), and those come from the
+        // template's context queries. Leaving this half raw would defeat the
+        // other half of the same sentence.
+        const message = displaySafe(error instanceof Error ? error.message : String(error));
+        this.logger.error(`Context provider '${shownProvider}' failed: ${message}`);
         results[entry.key] = {
           [PROVIDER_ERROR_KEY]: message,
           [TRANSIENT_CONTEXT_KEY]: true,

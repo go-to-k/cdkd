@@ -16,6 +16,7 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
 import { toYaml } from '../../utils/yaml.js';
+import { displaySafe } from '../../utils/display-safe.js';
 
 /**
  * Long-form stack record matching CDK CLI's `cdk list --long` shape.
@@ -75,18 +76,30 @@ function sortByDependency(stacks: StackInfo[]): StackInfo[] {
 
 /**
  * Convert a StackInfo to its `--long` JSON representation.
+ *
+ * Every field is manifest-derived, so each renders through `displaySafe`
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). **The encoder is not
+ * the boundary here** — measured rather than assumed: `JSON.stringify` escapes
+ * C0 and DEL but passes the C1 range, `U+2028` and the bidi overrides through,
+ * and `yaml` escapes ESC while passing C1 and `U+2028`. So a `displayName`
+ * carrying `U+009B` reaches the terminal as a CSI byte inside what looks like a
+ * machine-readable document, on stdout at default verbosity.
+ *
+ * Fidelity costs nothing: `displaySafe` neither quotes nor truncates, so every
+ * legitimate name, account, region and dependency name is byte-identical, and
+ * the only values it changes are ones no assembly should produce.
  */
 function toLongRecord(stack: StackInfo, includeDeps: boolean): LongStackRecord {
   const record: LongStackRecord = {
-    id: stack.displayName,
-    name: stack.stackName,
+    id: displaySafe(stack.displayName),
+    name: displaySafe(stack.stackName),
     environment: {
-      account: stack.account ?? 'unknown-account',
-      region: stack.region ?? 'unknown-region',
+      account: displaySafe(stack.account ?? 'unknown-account'),
+      region: displaySafe(stack.region ?? 'unknown-region'),
     },
   };
   if (includeDeps) {
-    record.dependencies = [...stack.dependencyNames];
+    record.dependencies = stack.dependencyNames.map((name) => displaySafe(name));
   }
   return record;
 }
@@ -209,7 +222,7 @@ async function listCommand(
   if (options.showDependencies) {
     const records: DependencyRecord[] = sorted.map((s) => ({
       id: formatDisplayId(s),
-      dependencies: [...s.dependencyNames],
+      dependencies: s.dependencyNames.map((name) => displaySafe(name)),
     }));
     emitStructured(records, options.json);
     return;
@@ -229,11 +242,39 @@ async function listCommand(
  * in parens: `MyStage/MyStack (MyStage-MyStack)`. Otherwise just the display
  * path. CDK CLI does this in `CloudFormationArtifact.displayName`; see
  * aws-cdk-cli/packages/@aws-cdk/cloud-assembly-api/lib/artifacts/cloudformation-artifact.ts.
+ *
+ * Both names come from the Cloud Assembly and this is the MOST reachable render
+ * of either in cdkd: the default mode writes one of these per line to stdout at
+ * default verbosity, no error path involved, so `cdkd list -a ./cdk.out` over
+ * someone else's assembly prints it. Hence `displaySafe`
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
+ *
+ * `displaySafe`, and deliberately NOT `describeStack` from
+ * `src/cli/stack-matcher.ts`, which sanitizes the same two fields for every
+ * other command. Two reasons, either of which alone decides it:
+ *
+ * - `describeStack` renders `<stackName> (<displayName>)`; this format is the
+ *   other way round, because it is CDK CLI's "display id" and a `cdkd list`
+ *   line is fed back to `cdkd deploy`. Routing through the shared helper would
+ *   silently swap the two fields in a payload.
+ * - `describeStack` uses `displayIdent`, which QUOTES a value that is not a
+ *   plain identifier — correct in the prose it serves ("which stack did you
+ *   mean"), wrong here: `new Stack(app, 'My Stack')` is legal and would start
+ *   printing `"My Stack"` into a stream a shell loop reads.
+ *
+ * The one residual, shared with `describeStack` and recorded there too:
+ * `displaySafe` TRIMS, so a construct id with a leading or trailing space
+ * prints without it and the printed line is then not re-usable verbatim as a
+ * pattern. `matchStacks` matches the RAW name, so selection is unaffected.
  */
 function formatDisplayId(stack: StackInfo): string {
+  const displayName = displaySafe(stack.displayName);
+  // The "are these two fields the same?" test stays on the RAW values. Comparing
+  // the sanitized forms would collapse two names that genuinely differ in the
+  // manifest into one printed name, hiding the difference instead of showing it.
   return stack.displayName === stack.stackName
-    ? stack.displayName
-    : `${stack.displayName} (${stack.stackName})`;
+    ? displayName
+    : `${displayName} (${displaySafe(stack.stackName)})`;
 }
 
 /**
