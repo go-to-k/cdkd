@@ -160,6 +160,15 @@ const EARLY_VALIDATION_MARKER = /AWS::EarlyValidation::/;
  * So each throw site tests the RAW text once and records the answer here. A
  * symbol rather than a field on `MacroExpansionError`: the verdict is this
  * module's business, not the shared error class's.
+ *
+ * IT ALSO CLOSES A PATH THAT PRE-DATES THE CAP, which is the stronger argument
+ * for the shape. The old predicate matched the WHOLE message, and two of cdkd's
+ * OWN refusals below interpolate template-supplied transform names — so an
+ * assembly declaring `Transform: AWS::EarlyValidation::x` made the multi-stage
+ * and no-TemplateBody refusals test positive, and a template value steered the
+ * retry loop into three CFn changeset round-trips plus the backoff between
+ * them. A verdict read from a symbol set out of AWS's own text cannot be
+ * steered that way at all.
  */
 const EARLY_VALIDATION = Symbol('cdkd.macroExpansion.earlyValidationRejection');
 
