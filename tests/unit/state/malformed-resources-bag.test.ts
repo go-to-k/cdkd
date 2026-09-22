@@ -110,6 +110,39 @@ function lineValue(text: string, label: string): string | undefined {
   return new RegExp(`^${escaped}: (.*)$`, 'm').exec(text)?.[1];
 }
 
+/**
+ * The command-line shape both DESTROY refusals take (go-to-k/cdkd#3516).
+ *
+ * One command per LINE, because the two placements a single line can offer are
+ * mutually exclusive and each is a measured hazard:
+ *
+ * - the PASTEABLE read must END its line, or a line-select paste hands
+ *   `cdkd state show` the next clause as positional arguments;
+ * - the DESTRUCTIVE template must be the LAST line and carry no substituted
+ *   region, or the value an operator is told not to trust sits below the holes
+ *   they have to fill by hand — the "printed above" warning stops covering it.
+ *
+ * Asserted as an exact line LIST rather than with `toContain`, so a forged or
+ * duplicated command line fails too, and `drop` omitted means the arm must
+ * offer NO destructive line at all.
+ */
+function expectDestroyCommandLines(
+  text: string,
+  expected: { inspect: string; drop?: string }
+): void {
+  const lines = text.split('\n');
+  const commandLines = [
+    `Inspect the record: ${expected.inspect}`,
+    ...(expected.drop === undefined ? [] : [`Drop the record: ${expected.drop}`]),
+  ];
+  // The prose is line 0 and carries no pasteable command of its own.
+  expect(lines.slice(1)).toEqual(commandLines);
+  expect(lines[0], 'a command leaked into the prose line').not.toContain('cdkd state show');
+  // Non-vacuity: a builder that emitted only prose would satisfy an
+  // every()-style check over an empty list.
+  expect(commandLines.length).toBeGreaterThan(0);
+}
+
 function state(resources: unknown): StackState {
   return {
     version: 10,
@@ -613,14 +646,16 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // READ the record it is refusing. The first cut dropped it, and the
       // second put it MID-SENTENCE, one space from the next clause — so a
       // line-select paste handed `cdkd state show` six junk positional
-      // arguments. `endsWith`, not `toContain`, is what pins the placement.
-      expect(destroy.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(
-        true
-      );
+      // arguments. ONE COMMAND PER LINE is what answers that AND keeps the
+      // destructive template last (go-to-k/cdkd#3516): a line-select paste is
+      // bounded by the LINE, so each command must end its own.
+      expectDestroyCommandLines(destroy, {
+        inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
+        drop: 'cdkd state orphan <stack> --stack-region <region>',
+      });
       // ...and the sibling's legacy-record clause, because for such a record
       // the `--stack-region` flag must be OMITTED or it selects nothing.
       expect(destroy).toContain('legacy record');
-      expect(destroy.split('\n')).toHaveLength(1);
     });
 
     it('the DESTROY text withholds the target when the identity does not render exactly', () => {
@@ -633,7 +668,11 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       const withheld = malformedDestroyOrphansRefusalMessage(`a${String.fromCharCode(0x1b)}b`, 'us-east-1');
       expect(withheld).not.toContain('cdkd state orphan <stack>');
       expect(withheld).toContain('cdkd state list --long');
-      expect(withheld.split('\n')).toHaveLength(1);
+      // No `Drop the record:` LINE either, which is the half a per-string
+      // `not.toContain` cannot tell from a template rendered inside the prose.
+      expectDestroyCommandLines(withheld, {
+        inspect: "cdkd state show '<stack>' --stack-region '<region>' --json",
+      });
       // It reads as a SENTENCE: the no-identity clause ends open, so a second
       // sentence bolted onto it renders with no verb — on the arm a planted
       // identity reaches.
@@ -1080,17 +1119,79 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
   // inherited — inheritance is exactly what stops holding when a helper is
   // inlined.
   for (const [label, build] of TEXTS) {
-    it(`${label} shell-quotes a hostile name and stays on one line`, () => {
+    it(`${label} shell-quotes a hostile name and forges no line`, () => {
       const m = build(HOSTILE, 'us-east-1');
       expect(m).not.toContain(`${HOSTILE} --stack-region`);
       expect(m).toContain('cdkd state show');
-      expect(m.split('\n')).toHaveLength(1);
+      // Against a BENIGN control rather than a hardcoded 1: the destroy text
+      // emits one command per line on purpose since go-to-k/cdkd#3516, so the
+      // property this owes is that the IDENTIFIER injected no line — which a
+      // fixed count can no longer express. `sanitizeAsciiOnly` replaces a
+      // newline with a space, and this is the second, independent check that it
+      // did.
+      const benign = build('S', 'us-east-1');
+      expect(m.split('\n')).toHaveLength(benign.split('\n').length);
+      // Non-vacuity: a build that collapsed to a single empty string would
+      // match the control too.
+      expect(benign.split('\n')[0]!.length).toBeGreaterThan(0);
     });
 
     it(`${label} names the container it is about`, () => {
       expect(build('S', 'us-east-1')).toContain(`'resources'`);
     });
   }
+
+  /**
+   * `inspectCommand`'s own contract — "the remedy command the message ends on"
+   * (go-to-k/cdkd#3516). These three carry no destructive template, so nothing
+   * competes for the tail and the pasteable read simply ends the string.
+   *
+   * `endsWith`, not `toContain`: `toContain` is what let all four consumers of
+   * the old `malformedStateDetail` bury the command mid-sentence, one space from
+   * the next clause, for a line-select paste to hand `cdkd state show` the
+   * following sentence as positional arguments.
+   */
+  const ENDS_ON_THE_READ: ReadonlyArray<readonly [string, string]> = [
+    ['the WRITE refusal', malformedStateRefusalMessage('MyStack', 'us-east-1')],
+    ['the DEPLOY refusal', malformedDeployResourcesRefusalMessage('MyStack', 'us-east-1')],
+    ['the read-only WARNING', malformedResourcesWarning('MyStack', 'us-east-1')],
+  ];
+  for (const [label, text] of ENDS_ON_THE_READ) {
+    it(`${label} ends ON the pasteable read command`, () => {
+      expect(text.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+      // Still one line: with no destructive template to place, these have no
+      // reason to split, and a split would weaken the injected-newline check
+      // the hostile-identity cases above make against a benign control.
+      expect(text.split('\n')).toHaveLength(1);
+    });
+  }
+
+  it('the DESTROY refusal puts each command on its own line, per arm', () => {
+    // Pinned DIRECTLY rather than through the distance case below: that one
+    // asserts what the destructive LINE must not carry, which stays green for a
+    // builder that stopped emitting separate lines at all and buried both
+    // commands in the prose again (measured — probe 1 of go-to-k/cdkd#3516 reds
+    // only the distance case without this).
+    expectDestroyCommandLines(malformedDestroyResourcesRefusalMessage('MyStack', 'us-east-1'), {
+      inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
+      drop: 'cdkd state orphan <stack> --stack-region <region>',
+    });
+    // The withhold arm keeps the read as a TEMPLATE and offers no destructive
+    // line: it has just said another record may render identically, so it has
+    // no target to hand over.
+    expectDestroyCommandLines(malformedDestroyResourcesRefusalMessage('pad ', 'us-east-1'), {
+      inspect: "cdkd state show '<stack>' --stack-region '<region>' --json",
+    });
+  });
+
+  it('the read-only WARNING drops the flag, and still ends on the command, with no region', () => {
+    // A v1 record predates the region-prefixed key layout, so a placeholder
+    // `--stack-region` would select no record at all. This is the one consumer
+    // of the three that can be reached without a region.
+    const w = malformedResourcesWarning('MyStack', undefined);
+    expect(w).not.toContain('--stack-region');
+    expect(w.endsWith('cdkd state show MyStack --json')).toBe(true);
+  });
 
   /**
    * The sanitize / cap properties are asserted on the DEPLOY text and on the
@@ -1214,8 +1315,18 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
    * either way, and the bound below is a claim about the BUILDER.
    *
    * The asymmetry with the `cdkd state show` line in the same message is
-   * deliberate: that one READS, and substituting into it is
-   * `malformedStateDetail`'s pre-existing behaviour.
+   * deliberate: that one READS, and substituting into it is `inspectCommand`'s
+   * pre-existing behaviour. Measured for go-to-k/cdkd#3516: in every reachable
+   * case the substituted region resolves the SAME record the refusal is about —
+   * for a v2+ record it is the key's own, and a legacy record is accepted from
+   * any region when its body names none and compared when it does — so the read
+   * is not a guess even where the destructive operand would be.
+   *
+   * Since go-to-k/cdkd#3516 the bound is PER LINE rather than over the whole
+   * string. One command per line is what lets the pasteable read end a line
+   * while the template stays last, and the property this case is really about
+   * survives that: the line carrying the destructive template must hold no
+   * substituted region for an operator to fill its holes from.
    */
   it('spells the DESTRUCTIVE remedy as a template, so a record-supplied region cannot aim it', () => {
     const PLANTED = 'zz-planted-1';
@@ -1224,18 +1335,23 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // Non-vacuity first: the region really is in the message, so the bound
     // below is a POSITION test rather than an absence test.
     expect(m).toContain(PLANTED);
-    const orphanAt = m.indexOf('cdkd state orphan');
-    expect(orphanAt, 'the orphan remedy is gone; this case is asserting nothing').toBeGreaterThan(
-      -1
-    );
+    const lines = m.split('\n');
+    const dropLine = lines.find((l) => l.startsWith('Drop the record: '));
+    expect(dropLine, 'the orphan remedy is gone; this case is asserting nothing').toBeDefined();
     // The discriminating half. The planted region may appear in the prose and
-    // in the read-only `state show` remedy, but nothing at or after the
-    // destructive command may carry it — `lastIndexOf` is what makes that a
-    // bound on EVERY occurrence rather than on the first.
+    // on the read-only `state show` line, but the line carrying the destructive
+    // template must not hold it — that line is what an operator copies and
+    // fills in, and a substituted region on it is the value they would use.
     expect(
-      m.lastIndexOf(PLANTED),
-      'a record-supplied region was substituted into, or after, the destructive remedy'
-    ).toBeLessThan(orphanAt);
+      dropLine,
+      'a record-supplied region was substituted into the destructive remedy line'
+    ).not.toContain(PLANTED);
+    // ...and it is the LAST line, so nothing substituted follows it either.
+    expect(lines[lines.length - 1]).toBe(dropLine);
+    // Non-vacuity for the line split itself: the read line DOES carry the
+    // region, so "the drop line does not" is a discrimination rather than the
+    // region being absent from the message altogether.
+    expect(lines.find((l) => l.startsWith('Inspect the record: '))).toContain(PLANTED);
   });
 
   /**

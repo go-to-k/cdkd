@@ -76,6 +76,21 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
 
+## Where a pasteable command goes (go-to-k/cdkd#3516)
+
+A message ENDS on its pasteable read, `inspectCommand`. Mid-sentence it is one
+space from the next clause and a line-select paste carries that clause in as
+positional arguments, so `toContain` is not the assertion — `endsWith` is.
+
+**A message offering BOTH a read and a destructive template puts one command per
+LINE** (`Inspect the record:` / `Drop the record:`), because a single line cannot
+satisfy both rules at once: the read has to end a line, and the template has to
+be LAST with no substituted region after it, or the value the prose has just said
+not to trust sits below the holes an operator fills by hand. Do not collapse
+them back. The per-line shape makes a hardcoded "one line" assertion wrong for
+those two, so an injected-newline check there compares the line count against a
+BENIGN control build instead.
+
 ## Two exports here are not guards at all
 
 `producerRecordKey` (a `stack`+`region` RECORD) and `producerCoordinateKey` (a
