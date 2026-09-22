@@ -39,32 +39,43 @@ import {
 import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 
 /**
- * `cdkd orphan` renders three families of assembly-derived value — a stack's
- * `stackName` / `displayName`, a template logical id, and an `aws:cdk:path`
- * from the template's own `Metadata` — in thrown messages AND in
- * default-verbosity `logger.info` lines. All of them go through a display
- * helper ([#3479](https://github.com/go-to-k/cdkd/issues/3479)), and which
- * helper is chosen per SENTENCE rather than per value:
+ * `cdkd orphan` renders assembly-derived values — a stack's `stackName` /
+ * `displayName`, a template logical id, an `aws:cdk:path` from the template's
+ * own `Metadata`, a rewritten template VALUE — plus their state-derived
+ * neighbours, in thrown messages AND in default-verbosity `logger.info` lines.
+ * All of them go through a display helper
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)), and which helper is
+ * chosen per SENTENCE rather than per value:
  *
  * - `displaySafe` is the default. It neither quotes nor truncates, so every
  *   legitimate value is byte-identical — including in a message whose own prose
  *   already supplies the quotes (`stack '<name>'`), where `displayIdent` would
  *   double-quote.
  * - `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`, so a deep nested path
- *   is not cut) serves the two UNQUOTED `Available: ...` lists, whose job is the
+ *   is not cut) serves every UNQUOTED `Available: ...` list, whose job is the
  *   value's IDENTITY — which names the user could have meant. There `displaySafe`
  *   is not enough: it maps the stripped character to a space and then TRIMS, so a
- *   planted `MyStack/Table\n` would render byte-identical to the genuine entry
- *   and the message would list the very path it says was not found. This is the
- *   same choice `describeStack` makes for the same class of sentence.
+ *   planted `us-east-1` plus a line terminator renders byte-identical to the
+ *   genuine `us-east-1` and the message lists the very value it says is missing
+ *   (measured). This is the same choice `describeStack` makes for the same class
+ *   of sentence. The population is `grep displayIdentList` rather than a count
+ *   here, which is what goes stale.
  *
- * A JOINED list sanitizes per ELEMENT: sanitizing the joined string only trims
- * its two ends and leaves a mid-list line terminator intact.
+ * A JOINED list sanitizes per ELEMENT. For `displayIdent` that is load-bearing
+ * — the boundary is per value. For `displaySafe` the reason is FORMATTING
+ * rather than safety, and it is stated that way because the first revision of
+ * this comment claimed otherwise: `displaySafe` replaces globally, so a
+ * mid-value character is stripped either way, and what differs is an element
+ * EDGE, where the joined form leaves the replacement space beside the separator
+ * and prints `A , B` for `['A<NEL>', 'B']`.
  *
  * Deliberately NOT sanitized: `pathArgs` and the `<head>` segment parsed out of
  * one. Those are the operator's own argv echoed back, a different trust bucket
  * from the assembly, and `renderNoStackMatch` renders a user-supplied pattern
- * the same way.
+ * the same way. The one place argv goes into a PASTEABLE command
+ * (`cdkd state orphan <p>`) is `isPasteableIdent`'s class rather than this
+ * one — [.claude/rules/pasteable-ident.md](../../../.claude/rules/pasteable-ident.md),
+ * tracked on go-to-k/cdkd#3436.
  */
 
 /** Every element sanitized, then joined with the list separator. */
@@ -72,11 +83,52 @@ function displaySafeList(values: readonly string[]): string {
   return values.map((value) => displaySafe(value)).join(', ');
 }
 
-/** One `Available:` entry per element, each with a visible boundary. */
+/**
+ * One `Available:` entry per element, each with a visible boundary.
+ *
+ * **This helper is NOT the identity on every legitimate value**, and the
+ * difference is the point: `displayIdent` JSON-quotes anything outside
+ * `PLAIN_IDENT`, and a construct id may legitimately carry a space
+ * (`new Table(this, 'My Table')` is legal — `constructs` rewrites only `/`), so
+ * `MyStack/My Table/Resource` renders quoted in `Available paths:`. Accepted
+ * here for the reason `describeStack` accepts it: these sentences exist to say
+ * which values are valid, and the alternative passes the spaces and quotes a
+ * crafted value needs. It is why `cdkd list`'s PAYLOAD does not use it.
+ */
 function displayIdentList(values: readonly string[], separator: string): string {
   return values
     .map((value) => displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }))
     .join(separator);
+}
+
+/**
+ * The `Available regions: ...` lists, which are identity sentences over a
+ * STATE-derived region.
+ *
+ * A REGION has a known ASCII charset, so every OTHER render of one in this file
+ * passes `asciiOnly` — the positive allowlist `display-safe.ts`'s own header
+ * asks such a caller for, and the only mode with no invisible-formatter
+ * residual. Measured: plain `displaySafe` keeps a zero-width space planted
+ * inside a region name; `{ asciiOnly: true }` does not. `displayIdent` already
+ * applies that allowlist, so these two lists need no second spelling of it.
+ *
+ * `displayIdent` for a real region and the bare literal for a legacy ref with
+ * none. Measured: `displaySafe('us-east-1' + U+0085)` is `'us-east-1'`, so
+ * under `displaySafe` a planted state key makes `pickStackRegion` print
+ * `Available regions: us-east-1.` in the sentence that just said that region
+ * holds no state, and `multiple regions: us-east-1, us-east-1` in the other.
+ * `(legacy)` is cdkd's OWN placeholder, not a value read from anywhere, and it
+ * is outside `PLAIN_IDENT`, so routing it through the helper would quote a
+ * string no attacker controls.
+ */
+function displayRegionList(refs: readonly { region?: string | undefined }[]): string {
+  return refs
+    .map((ref) =>
+      ref.region === undefined
+        ? '(legacy)'
+        : displayIdent(ref.region, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })
+    )
+    .join(', ');
 }
 
 interface OrphanOptions {
@@ -228,7 +280,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     );
 
     logger.info(
-      `Target: ${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)}); ` +
+      `Target: ${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}); ` +
         `orphaning ${orphanLogicalIds.length} resource(s): ${displaySafeList(orphanLogicalIds)}`
     );
 
@@ -272,7 +324,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       if (!stateData) {
         throw new Error(
           `No state found for stack '${displaySafe(stackInfo.stackName)}' ` +
-            `(${displaySafe(targetRegion)}). ` +
+            `(${displaySafe(targetRegion, { asciiOnly: true })}). ` +
             `Nothing to orphan. (Did the stack get deployed?)`
         );
       }
@@ -337,7 +389,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         const have = displayIdentList(Object.keys(state.resources ?? {}), ', ');
         throw new Error(
           `Resource(s) not in state for stack '${displaySafe(stackInfo.stackName)}' ` +
-            `(${displaySafe(targetRegion)}): ` +
+            `(${displaySafe(targetRegion, { asciiOnly: true })}): ` +
             `${displaySafeList(missing)}.\n` +
             `Available logical IDs: ${have}`
         );
@@ -380,7 +432,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       if (!options.yes && !options.force) {
         const ok = await confirmPrompt(
           `Orphan ${orphanLogicalIds.length} resource(s) from cdkd state for ` +
-            `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)})? ` +
+            `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })})? ` +
             `AWS resources will NOT be deleted.`
         );
         if (!ok) {
@@ -396,7 +448,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
       logger.info(
         `Orphaned ${orphanLogicalIds.length} resource(s) from state: ` +
-          `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion)}). ` +
+          `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}). ` +
           `AWS resources are still in AWS; cdkd will no longer manage them.`
       );
     } finally {
@@ -537,7 +589,7 @@ async function pickStackRegion(
   if (flag) {
     const found = refs.find((r) => r.region === flag);
     if (!found) {
-      const seen = displaySafeList(refs.map((r) => r.region ?? '(legacy)'));
+      const seen = displayRegionList(refs);
       throw new Error(
         `No state found for stack '${displaySafe(stackName)}' in region '${flag}'. ` +
           `Available regions: ${seen}.`
@@ -553,7 +605,7 @@ async function pickStackRegion(
     const recordRegion = refs[0]!.region;
     return { region: recordRegion ?? synthRegion ?? '', recordRegion };
   }
-  const regions = displaySafeList(refs.map((r) => r.region ?? '(legacy)'));
+  const regions = displayRegionList(refs);
   throw new Error(
     `Stack '${displaySafe(stackName)}' has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
@@ -594,15 +646,19 @@ function printUnresolvable(unresolvable: UnresolvableReference[]): void {
 /**
  * A rewrite's before / after is a TEMPLATE value, so it is sanitized after
  * serialization ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
- * `JSON.stringify` is not the boundary on its own — measured: it escapes C0 and
- * DEL but passes the C1 range, `U+2028`/`U+2029` and the bidi overrides
- * straight through, and `U+009B` is read as CSI by a UTF-8 xterm.
+ * `JSON.stringify` is not the boundary on its own — measured: it escapes C0
+ * (below `U+0020`) and nothing above it, so DEL, the C1 range,
+ * `U+2028`/`U+2029` and the bidi overrides pass straight through, and `U+009B`
+ * is read as CSI by a UTF-8 xterm.
  */
 function stringifyForAudit(value: unknown): string {
   // `JSON.stringify` answers `undefined` — not a string — for `undefined`, a
   // function and a symbol, all of which `unknown` admits. `String()` keeps the
-  // rendering those had before this sanitization was added, where `displaySafe`
-  // alone would print an EMPTY cell that reads as "nothing was there".
+  // pre-PR rendering for `undefined`, where `displaySafe` alone would print an
+  // EMPTY cell that reads as "nothing was there". It is NOT byte-identical for a
+  // function (`String(fn)` prints its source, where the old expression printed
+  // `undefined`), which is unreachable for a `JSON.parse`d template value and is
+  // recorded rather than special-cased.
   return displaySafe(JSON.stringify(value) ?? String(value));
 }
 

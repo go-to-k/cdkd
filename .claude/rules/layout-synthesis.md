@@ -10,18 +10,20 @@ Self-implemented. **app-executor.ts** runs the CDK app as a subprocess with
 `CDK_OUTDIR` / `CDK_CONTEXT_JSON` / `CDK_DEFAULT_REGION`; **assembly-reader.ts**
 parses `manifest.json`; **context-providers/** resolves missing context.
 
-- **Every module here renders an assembly-, manifest- or template-derived value
-  through a display helper**, in thrown messages AND in ordinary `logger.info` /
-  `debug` lines ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) —
-  `synthesizer.ts`'s missing-context keys and macro progress line,
-  `macro-expander.ts`'s transform names, and, in
-  `src/synthesis/context-providers/index.ts`, the `provider` / `key` pair
-  (whose LOOKUP stays raw) plus the provider failure text it is the render site
-  for. `displaySafe` is the DEFAULT, not a judgement per
-  message: the "only where the input is untrusted" boundary was drawn wrong
-  repeatedly, and the helper neither quotes nor truncates, so it is the identity
-  on every legitimate value. A JOINED list sanitizes per ELEMENT — sanitizing
-  the joined string only trims its two ends.
+- **`displaySafe` is the DEFAULT at every render of an assembly-, manifest- or
+  template-derived value, in thrown messages AND in ordinary `logger.info` /
+  `debug` lines** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) — not a
+  judgement per message: the "only where the input is untrusted" boundary was
+  drawn wrong repeatedly, and the helper neither quotes nor truncates, so it is
+  the identity on every legitimate value. Adopted in `synthesizer.ts`,
+  `macro-expander.ts` and `src/synthesis/context-providers/index.ts` (where the
+  `provider` / `key` LOOKUP stays raw and the provider failure text takes
+  `displayAwsMessage`, since a lookup argument echoed back makes the LENGTH
+  attacker-chosen too). **Not yet everywhere**: the lookup arguments inside
+  `context-providers/*-provider.ts` and `stack-messages.ts`'s annotation display
+  are open rows on that issue. A joined list sanitizes per ELEMENT so the
+  separator stays byte-exact; `displaySafe` replaces globally, so that is a
+  formatting rule, not a safety one.
 - **assembly-reader.ts** renders EVERY assembly-derived value — a manifest key,
   a `stackName`, a template key, a `Metadata['aws:asset:path']`, a
   `directoryName`-derived path, a `readFileSync` / `JSON.parse` failure text —

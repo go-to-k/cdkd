@@ -5,9 +5,9 @@
  * writes one display id per line to STDOUT at default verbosity with no error
  * path involved, so `cdkd list -a ./cdk.out` over someone else's assembly
  * prints it. `--long` / `--show-dependencies` are no safer for being structured
- * — measured, not assumed: `JSON.stringify` escapes C0 and DEL but passes the
- * C1 range, `U+2028` and the bidi overrides, and `yaml` escapes ESC while
- * passing C1 and `U+2028`.
+ * — measured, not assumed: `JSON.stringify` escapes C0 (below `U+0020`) and
+ * nothing above it, so DEL, the C1 range, `U+2028` and the bidi overrides all
+ * pass through; `yaml` escapes ESC and likewise passes DEL, C1 and `U+2028`.
  *
  * `displaySafe` rather than `describeStack` (which sanitizes the same two fields
  * for every other command) is deliberate; the reasons are at `formatDisplayId`.
@@ -131,6 +131,17 @@ describe('cdkd list renders manifest-derived values display-safe (#3479)', () =>
     it('leaves a plain stack name byte-identical', async () => {
       primeStacks([makeStack({ stackName: 'StackA', displayName: 'StackA' })]);
       expect(await runList([])).toBe('StackA\n');
+    });
+  });
+
+  describe('the display-path/physical-name equality test stays on the RAW values', () => {
+    it('still prints BOTH names when two names differ only in what sanitization removes', async () => {
+      // Comparing the SANITIZED forms would collapse these into one printed
+      // name, hiding that the manifest carries two different values.
+      primeStacks([
+        makeStack({ stackName: `A${NEL}B`, displayName: `A${CSI}B` }),
+      ]);
+      expect(await runList([])).toBe('A B (A B)\n');
     });
   });
 

@@ -80,22 +80,38 @@ function sortByDependency(stacks: StackInfo[]): StackInfo[] {
  * Every field is manifest-derived, so each renders through `displaySafe`
  * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). **The encoder is not
  * the boundary here** — measured rather than assumed: `JSON.stringify` escapes
- * C0 and DEL but passes the C1 range, `U+2028` and the bidi overrides through,
- * and `yaml` escapes ESC while passing C1 and `U+2028`. So a `displayName`
- * carrying `U+009B` reaches the terminal as a CSI byte inside what looks like a
- * machine-readable document, on stdout at default verbosity.
+ * C0 (below `U+0020`) and nothing above it, so DEL, the C1 range, `U+2028` and
+ * the bidi overrides all pass through; `yaml` escapes ESC and likewise passes
+ * DEL, C1 and `U+2028`. So a `displayName` carrying `U+009B` reached the
+ * terminal as a CSI byte inside what looks like a machine-readable document, on
+ * stdout at default verbosity.
  *
  * Fidelity costs nothing: `displaySafe` neither quotes nor truncates, so every
  * legitimate name, account, region and dependency name is byte-identical, and
  * the only values it changes are ones no assembly should produce.
+ *
+ * One residual this does NOT close, recorded rather than implied away: a value
+ * with nothing renderable left sanitizes to the EMPTY string, so a control-only
+ * `displayName` emits `id: ""` here and a BLANK line in the default mode — which
+ * reads as absent rather than as unrenderable. `UNRENDERABLE` is the repo's
+ * answer for a field slot, and picking between them per slot is the open
+ * "Helper choice, not only helper presence" row on
+ * [#3479](https://github.com/go-to-k/cdkd/issues/3479), which covers the same
+ * question for `assembly-reader.ts`. Deciding it here alone would leave the two
+ * disagreeing.
  */
 function toLongRecord(stack: StackInfo, includeDeps: boolean): LongStackRecord {
   const record: LongStackRecord = {
     id: displaySafe(stack.displayName),
     name: displaySafe(stack.stackName),
     environment: {
-      account: displaySafe(stack.account ?? 'unknown-account'),
-      region: displaySafe(stack.region ?? 'unknown-region'),
+      // `asciiOnly` on both: an AWS account id and a region have a KNOWN ASCII
+      // charset, and `display-safe.ts`'s header asks such a caller for the
+      // positive allowlist, which is the only mode with no
+      // invisible-formatter residual. Measured: plain `displaySafe` keeps a
+      // zero-width space planted inside a region name; `asciiOnly` does not.
+      account: displaySafe(stack.account ?? 'unknown-account', { asciiOnly: true }),
+      region: displaySafe(stack.region ?? 'unknown-region', { asciiOnly: true }),
     },
   };
   if (includeDeps) {

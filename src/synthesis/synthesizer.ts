@@ -31,8 +31,12 @@ import { displaySafe } from '../utils/display-safe.js';
  *   truncates, so it is the identity on every legitimate stack name, context key
  *   and transform name.
  *
- * A JOINED list sanitizes per ELEMENT. Sanitizing the joined string only trims
- * its two ends, leaving a mid-list line terminator intact.
+ * A JOINED list sanitizes per ELEMENT. The reason is FORMATTING rather than
+ * safety, and it is stated that way because the first revision of this comment
+ * claimed otherwise: `displaySafe` replaces globally, so a mid-value character
+ * is stripped either way. What differs is an element EDGE — the joined form
+ * leaves the replacement space beside the separator and prints `A , B` for
+ * `['A<NEL>', 'B']` — so only the per-element form keeps the separator exact.
  */
 
 /**
@@ -305,9 +309,8 @@ export class Synthesizer {
       if (previousMissingKeys && setsEqual(missingKeys, previousMissingKeys)) {
         throw new SynthesisError(
           'Context resolution made no progress. ' +
-            // Each key SEPARATELY, before the join: sanitizing the joined string
-            // would only trim its two ends, so a key carrying a line terminator
-            // in the middle of the list still breaks the line.
+            // Each key SEPARATELY, so the `, ` separator stays byte-exact — see
+            // the module header for why that, and not safety, is the reason.
             `Missing context keys: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}. ` +
             'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
         );

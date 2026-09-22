@@ -1,6 +1,6 @@
 import type { MissingContext } from '../../types/assembly.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
 import { AZContextProvider } from './az-provider.js';
 import { SSMContextProvider } from './ssm-provider.js';
 import { HostedZoneContextProvider } from './hosted-zone-provider.js';
@@ -114,7 +114,13 @@ export class ContextProviderRegistry {
         // (`parameterName`, `domainName`, a VPC filter), and those come from the
         // template's context queries. Leaving this half raw would defeat the
         // other half of the same sentence.
-        const message = displaySafe(error instanceof Error ? error.message : String(error));
+        //
+        // `displayAwsMessage` and not bare `displaySafe`, because that makes the
+        // LENGTH attacker-chosen too: those lookup arguments are manifest
+        // `missing[].props` values echoed back into the text, so the message is
+        // as long as whoever wrote the assembly made it. The cap MARKS its cut,
+        // so a bounded diagnostic cannot read as a complete one.
+        const message = displayAwsMessage(error instanceof Error ? error.message : String(error));
         this.logger.error(`Context provider '${shownProvider}' failed: ${message}`);
         results[entry.key] = {
           [PROVIDER_ERROR_KEY]: message,

@@ -55,7 +55,10 @@ references, leaving every other intrinsic alone.
   thrown messages AND in the default-verbosity `logger.info` lines
   ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). `displaySafe` by
   default, including where the prose already supplies the quotes;
-  `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`) for the two UNQUOTED
-  `Available: ...` lists, where `displaySafe`'s trim would render a planted
-  entry byte-identical to the genuine one the message says is missing. The
-  operator's own `<constructPath>` argv is deliberately NOT sanitized.
+  `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`) for every UNQUOTED
+  `Available: ...` list, where `displaySafe`'s trim would render a planted
+  entry byte-identical to the genuine one the message says is missing —
+  `grep displayIdentList` answers that population. A region takes `asciiOnly`.
+  The operator's own `<constructPath>` argv is deliberately NOT sanitized for
+  DISPLAY; where one goes into a PASTEABLE command it is `isPasteableIdent`'s
+  class ([pasteable-ident.md](pasteable-ident.md)), not this one.

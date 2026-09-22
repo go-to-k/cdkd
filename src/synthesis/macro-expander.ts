@@ -25,16 +25,23 @@ import {
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
 
 /**
  * A transform name comes from the TEMPLATE's own `Transform` / `Fn::Transform`
  * node, so every render of one goes through `displaySafe`, in thrown messages
  * and in the `debug` line alike
- * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). Per ELEMENT, before
- * the join: sanitizing the joined string only trims its two ends and leaves a
- * mid-list line terminator intact. `displaySafe` neither quotes nor truncates,
- * so a legitimate `AWS::Serverless-2016-10-31` renders byte-identically.
+ * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). `displaySafe` neither
+ * quotes nor truncates, so a legitimate `AWS::Serverless-2016-10-31` renders
+ * byte-identically.
+ *
+ * Per ELEMENT rather than over the joined string, and the reason is FORMATTING
+ * rather than safety — measured, because the first revision of this comment
+ * claimed otherwise. `displaySafe` replaces globally, so a mid-value character
+ * is stripped either way; what differs is an element EDGE, where the joined form
+ * leaves the stripped character's replacement space beside the separator and
+ * prints `A , B` for `['A<NEL>', 'B']`. The separator stays byte-exact only
+ * per element.
  */
 function displaySafeTransforms(names: readonly string[]): string {
   return names.map((name) => displaySafe(name)).join(', ');
@@ -435,8 +442,14 @@ async function expandMacrosAttempt(
           })
         )
         .catch(() => undefined);
-      const reason = desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)';
-      const status = desc?.Status ?? 'UNKNOWN';
+      // AWS's own reply, and `displayAwsMessage` rather than `displaySafe`: CFn
+      // ECHOES the template's transform name and the macro Lambda's error text
+      // into `StatusReason`, so the value sanitized where the transform name is
+      // first rendered re-enters here — at a length whoever wrote the template
+      // chose. The cap marks its cut, so a bounded message cannot read as a
+      // complete one.
+      const reason = displayAwsMessage(desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)');
+      const status = displaySafe(desc?.Status ?? 'UNKNOWN');
       throw new MacroExpansionError(
         `CloudFormation macro expansion failed (status=${status}): ${reason}`,
         waiterError instanceof Error ? waiterError : undefined
@@ -653,8 +666,13 @@ function stringifyParamDefault(
       }
       return 'placeholder';
     }
+    // A `Parameters` KEY and its `Type` are both template-derived, and this is a
+    // DEFAULT-verbosity warn reached before `CreateChangeSet` — so it prints
+    // locally on `cdkd deploy -a ./cdk.out` over a crafted assembly. `type` is
+    // free-form: it is whatever string the file carries in that slot.
     logger.warn(
-      `Parameter '${paramKey}' has unrecognized CFn Type '${type}'; using a generic ` +
+      `Parameter '${displaySafe(paramKey)}' has unrecognized CFn Type ` +
+        `'${displaySafe(type)}'; using a generic ` +
         `string placeholder for the transient macro-expansion changeset. If CFn rejects ` +
         `the changeset with a type error, file an issue with the offending Type.`
     );

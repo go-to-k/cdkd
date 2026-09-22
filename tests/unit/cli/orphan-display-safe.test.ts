@@ -10,11 +10,16 @@
  * Which helper each site takes is a per-SENTENCE decision documented at the top
  * of `src/cli/commands/orphan.ts`; the cases below pin it both ways:
  *
- * - the two UNQUOTED `Available: ...` lists take `displayIdent`, so a value
- *   whose sanitization was not the identity gains a visible boundary and cannot
- *   render byte-identical to the genuine entry the message says is missing;
+ * - every UNQUOTED `Available: ...` list takes `displayIdent`, so a value whose
+ *   sanitization was not the identity gains a visible boundary and cannot render
+ *   byte-identical to the genuine entry the message says is missing;
  * - everything else takes `displaySafe`, which neither quotes nor truncates, so
  *   an ordinary value is byte-identical.
+ *
+ * One case pins the JOINED-list choice, which nothing else here can: every
+ * hostile marker below sits MID-value, and `displaySafe` replaces globally, so
+ * per-element and whole-string sanitization agree on all of them. They diverge
+ * only at an element EDGE, so `edgeLogicalId` carries its marker there.
  *
  * Both polarities per site; the hostile cases carry a DISTINCT marker per
  * interpolated value.
@@ -131,6 +136,12 @@ const HOSTILE = {
   logicalId: { raw: `Bucket${PARA_SEP}Id`, clean: 'Bucket Id' },
   otherLogicalId: { raw: `Other${ESC}[2KId`, clean: 'Other [2KId' },
   region: { raw: `us-${NEL}east-1`, clean: 'us- east-1' },
+  // TRAILING-edge marker: the only position at which sanitizing per element and
+  // sanitizing the joined string differ (`A, B` vs `A , B`).
+  edgeLogicalId: { raw: `EdgeId${PARA_SEP}`, clean: 'EdgeId' },
+  propKey: { raw: `Bucket${CSI}Name`, clean: 'Bucket Name' },
+  attribute: { raw: `Arn${LINE_SEP}x`, clean: 'Arn x' },
+  resourceType: { raw: `AWS::S3${RLO}::Bucket`, clean: 'AWS::S3 ::Bucket' },
 } as const;
 
 async function runOrphan(args: string[]): Promise<void> {
@@ -173,7 +184,10 @@ function stackOf(spec: StackSpec): Record<string, unknown> {
     stackName: spec.stackName,
     displayName: spec.displayName ?? spec.stackName,
     template: { Resources },
-    region: spec.region ?? 'us-east-1',
+    // `'region' in spec` rather than `??`: a spec that names `region: undefined`
+    // is asking for a stack with NO synthesized region, which is what makes
+    // `pickStackRegion` reach its ambiguity refusal.
+    region: 'region' in spec ? spec.region : 'us-east-1',
   };
 }
 
@@ -360,24 +374,14 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
 
   describe('the multi-region disambiguation refusal names the stack', () => {
     it('sanitizes the stack name and every listed region', async () => {
-      primeStacks([
-        { stackName: HOSTILE.stackA.raw, region: undefined, resources: { A: 'A/B' } },
-      ]);
       // No synthesized region to match, two records listed → ambiguous.
-      mockSynthesize.mockResolvedValue({
-        stacks: [
-          {
-            stackName: HOSTILE.stackA.raw,
-            displayName: HOSTILE.stackA.raw,
-            template: {
-              Resources: {
-                A: { Type: 'AWS::S3::Bucket', Metadata: { 'aws:cdk:path': `${HOSTILE.stackA.raw}/A` } },
-              },
-            },
-            region: undefined,
-          },
-        ],
-      });
+      primeStacks([
+        {
+          stackName: HOSTILE.stackA.raw,
+          region: undefined,
+          resources: { A: `${HOSTILE.stackA.raw}/A` },
+        },
+      ]);
       mockListStacks.mockResolvedValue([
         { stackName: HOSTILE.stackA.raw, region: HOSTILE.region.raw },
         { stackName: HOSTILE.stackA.raw, region: 'eu-west-1' },
@@ -387,9 +391,25 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ).rejects.toThrow();
       expect(reportedError()).toContain(
         `Stack '${HOSTILE.stackA.clean}' has state in multiple regions: ` +
-          `${HOSTILE.region.clean}, eu-west-1.`
+          `"${HOSTILE.region.clean}", eu-west-1.`
       );
       expectNoForgingIn([reportedError()]);
+    });
+
+    it('leaves ordinary regions UNQUOTED, and cdkd\'s own (legacy) literal bare', async () => {
+      // `(legacy)` is outside `PLAIN_IDENT`, so routing it through `displayIdent`
+      // would quote a string no assembly controls.
+      primeStacks([
+        { stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } },
+      ]);
+      mockListStacks.mockResolvedValue([
+        { stackName: 'MyStack', region: 'us-east-1' },
+        { stackName: 'MyStack' },
+      ]);
+      await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).toContain(
+        "Stack 'MyStack' has state in multiple regions: us-east-1, (legacy)."
+      );
     });
   });
 
@@ -398,10 +418,11 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       primeStacks([
         {
           stackName: HOSTILE.stackA.raw,
+          region: HOSTILE.region.raw,
           resources: { [HOSTILE.logicalId.raw]: `${HOSTILE.stackA.raw}/Bucket` },
         },
       ]);
-      primeState(HOSTILE.stackA.raw, 'us-east-1', {
+      primeState(HOSTILE.stackA.raw, HOSTILE.region.raw, {
         [HOSTILE.otherLogicalId.raw]: entry(),
       });
       await expect(
@@ -409,8 +430,8 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ).rejects.toThrow();
       const message = reportedError();
       expect(message).toContain(
-        `Resource(s) not in state for stack '${HOSTILE.stackA.clean}' (us-east-1): ` +
-          `${HOSTILE.logicalId.clean}.`
+        `Resource(s) not in state for stack '${HOSTILE.stackA.clean}' ` +
+          `(${HOSTILE.region.clean}): ${HOSTILE.logicalId.clean}.`
       );
       expect(message).toContain(`Available logical IDs: "${HOSTILE.otherLogicalId.clean}"`);
       expectNoForgingIn([message]);
@@ -424,6 +445,65 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       expect(message).toContain(
         "Resource(s) not in state for stack 'MyStack' (us-east-1): Bucket.\n" +
           'Available logical IDs: Other'
+      );
+    });
+  });
+
+  describe('a joined list is sanitized per ELEMENT, so the separator stays exact', () => {
+    it('keeps `, ` exact for a marker at an element EDGE', async () => {
+      // The one position at which per-element and whole-string sanitization
+      // differ: `displaySafe` replaces globally, so a MID-value marker is
+      // stripped either way, but sanitizing the joined string would leave the
+      // replacement space beside the separator and print `EdgeId , Bucket Id`.
+      primeStacks([
+        {
+          stackName: 'MyStack',
+          resources: {
+            [HOSTILE.edgeLogicalId.raw]: 'MyStack/Edge',
+            [HOSTILE.logicalId.raw]: 'MyStack/Bucket',
+          },
+        },
+      ]);
+      primeState('MyStack', 'us-east-1', {
+        [HOSTILE.edgeLogicalId.raw]: entry(),
+        [HOSTILE.logicalId.raw]: entry(),
+      });
+      await runOrphan(['MyStack/Edge', 'MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(infoLines()).toContain(
+        `Target: MyStack (us-east-1); orphaning 2 resource(s): ` +
+          `${HOSTILE.edgeLogicalId.clean}, ${HOSTILE.logicalId.clean}`
+      );
+    });
+  });
+
+  describe('the unlisted-stack refusal names the stack', () => {
+    it('sanitizes the stack name', async () => {
+      // No ref listed, no `--stack-region`, and no synthesized region — the one
+      // branch of `pickStackRegion` that refuses before `getState` is reached.
+      primeStacks([
+        {
+          stackName: HOSTILE.stackA.raw,
+          region: undefined,
+          resources: { A: `${HOSTILE.stackA.raw}/A` },
+        },
+      ]);
+      mockListStacks.mockResolvedValue([]);
+      await expect(
+        runOrphan([`${HOSTILE.stackA.raw}/A`, '--app', 'noop', '--yes'])
+      ).rejects.toThrow();
+      expect(reportedError()).toContain(
+        `No state found for stack '${HOSTILE.stackA.clean}'. ` +
+          "Run 'cdkd state list' to see available stacks."
+      );
+      expectNoForgingIn([reportedError()]);
+    });
+
+    it('leaves an ordinary stack name byte-identical', async () => {
+      primeStacks([{ stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } }]);
+      mockListStacks.mockResolvedValue([]);
+      await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).toContain(
+        "No state found for stack 'MyStack'. Run 'cdkd state list' to see available stacks."
       );
     });
   });
@@ -521,7 +601,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ).rejects.toThrow();
       expect(reportedError()).toContain(
         `No state found for stack '${HOSTILE.stackA.clean}' in region 'eu-west-1'. ` +
-          `Available regions: ${HOSTILE.region.clean}.`
+          `Available regions: "${HOSTILE.region.clean}".`
       );
       expectNoForgingIn([reportedError()]);
     });
@@ -544,10 +624,22 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
   describe('the unresolvable-reference report names each site', () => {
     /**
      * A sibling holding `Fn::GetAtt` on the orphan, whose provider answers no
-     * attribute, is what reaches `printUnresolvable` — a `logger.error` list
-     * with four interpolations per row.
+     * attribute, is what reaches `printUnresolvable` — a `logger.error` row with
+     * FIVE interpolations, each needing its own marker. `path` is derived from
+     * the property KEY, `attribute` from the template's `Fn::GetAtt`, and
+     * `reason` embeds the orphan's `resourceType`, so all three are supplied
+     * from the fixture rather than left as clean cdkd text (a probe on any of
+     * them was VACUOUS while they were).
      */
-    function arrangeUnresolvable(stackName: string, orphanId: string, siblingId: string): void {
+    function arrangeUnresolvable(args: {
+      stackName: string;
+      orphanId: string;
+      siblingId: string;
+      propKey: string;
+      attribute: string;
+      resourceType: string;
+    }): void {
+      const { stackName, orphanId, siblingId, propKey, attribute, resourceType } = args;
       primeStacks([
         {
           stackName,
@@ -555,38 +647,57 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         },
       ]);
       primeState(stackName, 'us-east-1', {
-        [orphanId]: entry(),
+        [orphanId]: { physicalId: 'p', resourceType, properties: {} },
         [siblingId]: entry({
-          properties: { BucketName: { 'Fn::GetAtt': [orphanId, 'Arn'] } },
+          properties: { [propKey]: { 'Fn::GetAtt': [orphanId, attribute] } },
         }),
       });
     }
 
-    it('sanitizes the sibling id, the property path, the orphan id and the attribute', async () => {
-      arrangeUnresolvable(HOSTILE.stackA.raw, HOSTILE.logicalId.raw, HOSTILE.otherLogicalId.raw);
+    /** The `logger.error` rows, which are the ones this report indents. */
+    function errorRows(): string[] {
+      return errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith('  '));
+    }
+
+    it('sanitizes all five interpolations, one marker per value', async () => {
+      arrangeUnresolvable({
+        stackName: HOSTILE.stackA.raw,
+        orphanId: HOSTILE.logicalId.raw,
+        siblingId: HOSTILE.otherLogicalId.raw,
+        propKey: HOSTILE.propKey.raw,
+        attribute: HOSTILE.attribute.raw,
+        resourceType: HOSTILE.resourceType.raw,
+      });
       await expect(
         runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
-      const lines = errorSpy.mock.calls.map((call) => String(call[0]));
-      expect(
-        lines.some(
-          (line) =>
-            line.includes(`  ${HOSTILE.otherLogicalId.clean}.`) &&
-            line.includes(`${HOSTILE.logicalId.clean}.Arn`)
-        )
-      ).toBe(true);
-      expectNoForgingIn(lines.filter((line) => line.startsWith('  ')));
+      const rows = errorRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.startsWith(
+        `  ${HOSTILE.otherLogicalId.clean}.properties.${HOSTILE.propKey.clean}: ` +
+          `${HOSTILE.logicalId.clean}.${HOSTILE.attribute.clean} — ` +
+          `no provider available for ${HOSTILE.resourceType.clean}:`
+      )).toBe(true);
+      expectNoForgingIn(rows);
     });
 
-    it('leaves ordinary ids byte-identical on the same rows', async () => {
-      arrangeUnresolvable('MyStack', 'Bucket', 'Other');
+    it('leaves ordinary values byte-identical on the same row', async () => {
+      arrangeUnresolvable({
+        stackName: 'MyStack',
+        orphanId: 'Bucket',
+        siblingId: 'Other',
+        propKey: 'BucketName',
+        attribute: 'Arn',
+        resourceType: 'AWS::S3::Bucket',
+      });
       await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
-      const lines = errorSpy.mock.calls.map((call) => String(call[0]));
-      expect(
-        lines.some(
-          (line) => line.startsWith('  Other.') && line.includes('Bucket.Arn')
-        )
-      ).toBe(true);
+      const rows = errorRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.startsWith(
+        '  Other.properties.BucketName: Bucket.Arn — no provider available for AWS::S3::Bucket:'
+      )).toBe(true);
     });
   });
 
@@ -595,15 +706,18 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       primeStacks([
         {
           stackName: HOSTILE.stackA.raw,
+          region: HOSTILE.region.raw,
           resources: { [HOSTILE.logicalId.raw]: `${HOSTILE.stackA.raw}/Bucket` },
         },
       ]);
-      primeState(HOSTILE.stackA.raw, 'us-east-1', { [HOSTILE.logicalId.raw]: entry() });
+      primeState(HOSTILE.stackA.raw, HOSTILE.region.raw, {
+        [HOSTILE.logicalId.raw]: entry(),
+      });
       readlineQuestion.mockResolvedValue('n');
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop']);
       const question = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
       expect(question).toContain(
-        `from cdkd state for ${HOSTILE.stackA.clean} (us-east-1)?`
+        `from cdkd state for ${HOSTILE.stackA.clean} (${HOSTILE.region.clean})?`
       );
       expectNoForgingIn([question]);
       expect(mockSaveState).not.toHaveBeenCalled();
