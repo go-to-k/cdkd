@@ -140,8 +140,48 @@ const EARLY_VALIDATION_MAX_ATTEMPTS = 3;
 const EARLY_VALIDATION_RETRY_BASE_DELAY_MS = 2_000;
 
 /** Matches the changeset FAILED StatusReason emitted by the hook family. */
+const EARLY_VALIDATION_MARKER = /AWS::EarlyValidation::/;
+
+/**
+ * Where the retry verdict is CARRIED, rather than re-derived from the rendered
+ * message.
+ *
+ * The verdict used to be `EARLY_VALIDATION_MARKER.test(err.message)`, and that
+ * became wrong the moment AWS's reply started rendering through
+ * `displayAwsMessage` ([#3479](https://github.com/go-to-k/cdkd/issues/3479)):
+ * the cap CUTS at `AWS_MESSAGE_MAX_CODE_POINTS`, so a `StatusReason` carrying
+ * the hook marker past that point would no longer match, and `cdkd deploy` of a
+ * macro stack would hard-fail on attempt 1 where issue
+ * [#1151](https://github.com/go-to-k/cdkd/issues/1151) says it must retry. The
+ * sanitizer's CHARSET half was never the risk — the marker is plain ASCII —
+ * but a decision re-derived from display text inherits every display rule,
+ * including ones added later for unrelated reasons.
+ *
+ * So each throw site tests the RAW text once and records the answer here. A
+ * symbol rather than a field on `MacroExpansionError`: the verdict is this
+ * module's business, not the shared error class's.
+ */
+const EARLY_VALIDATION = Symbol('cdkd.macroExpansion.earlyValidationRejection');
+
+/**
+ * Tag `error` when `rawReason` — AWS's text BEFORE any display helper touches
+ * it — names a validation hook.
+ */
+function withEarlyValidationVerdict(
+  error: MacroExpansionError,
+  rawReason: string
+): MacroExpansionError {
+  if (EARLY_VALIDATION_MARKER.test(rawReason)) {
+    (error as MacroExpansionError & { [EARLY_VALIDATION]?: boolean })[EARLY_VALIDATION] = true;
+  }
+  return error;
+}
+
 function isEarlyValidationRejection(err: unknown): boolean {
-  return err instanceof MacroExpansionError && /AWS::EarlyValidation::/.test(err.message);
+  return (
+    err instanceof MacroExpansionError &&
+    (err as MacroExpansionError & { [EARLY_VALIDATION]?: boolean })[EARLY_VALIDATION] === true
+  );
 }
 
 /** Test seam: overridable sleep so retry tests don't wait wall-clock. */
@@ -395,10 +435,20 @@ async function expandMacrosAttempt(
         })
       );
     } catch (err) {
-      throw new MacroExpansionError(
-        `CloudFormation rejected the macro-expansion changeset: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err : undefined
+      // CFn quotes the values it was SUBMITTED back in a validation error — the
+      // transform names and the parameter placeholders built from this
+      // template's own `Parameters` — so this is AWS text echoing assembly
+      // content, the same class as the `StatusReason` below. `displayAwsMessage`
+      // sanitizes AND bounds it; the retry verdict is taken from the RAW text,
+      // because a hook rejection can surface here too.
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      throw withEarlyValidationVerdict(
+        new MacroExpansionError(
+          `CloudFormation rejected the macro-expansion changeset: ` +
+            `${displayAwsMessage(rawMessage)}`,
+          err instanceof Error ? err : undefined
+        ),
+        rawMessage
       );
     }
 
@@ -448,11 +498,17 @@ async function expandMacrosAttempt(
       // first rendered re-enters here — at a length whoever wrote the template
       // chose. The cap marks its cut, so a bounded message cannot read as a
       // complete one.
-      const reason = displayAwsMessage(desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)');
+      const rawReason = desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)';
+      const reason = displayAwsMessage(rawReason);
       const status = displaySafe(desc?.Status ?? 'UNKNOWN');
-      throw new MacroExpansionError(
-        `CloudFormation macro expansion failed (status=${status}): ${reason}`,
-        waiterError instanceof Error ? waiterError : undefined
+      // The retry verdict is taken from `rawReason`, never from the rendered
+      // message — see `withEarlyValidationVerdict`.
+      throw withEarlyValidationVerdict(
+        new MacroExpansionError(
+          `CloudFormation macro expansion failed (status=${status}): ${reason}`,
+          waiterError instanceof Error ? waiterError : undefined
+        ),
+        rawReason
       );
     }
 
@@ -699,11 +755,18 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
       // and YAML for YAML-source ones. cdkd's CDK app outputs JSON, so a
       // non-JSON return is unexpected; surface as MacroExpansionError so
       // the caller sees the wire shape.
+      //
+      // `displayAwsMessage` on the cause, because a `JSON.parse` failure embeds
+      // the OFFENDING INPUT verbatim (measured: `Unexpected token 'o',
+      // "notjson <ESC>[2K forged" is not valid JSON`), and that input is the
+      // round-tripped template. `assembly-reader.ts` avoids quoting a
+      // `JSON.parse` snippet for exactly this reason; here the snippet is
+      // already inside AWS's text, so it is sanitized and bounded instead.
       throw new MacroExpansionError(
         `CloudFormation returned a non-JSON Processed-stage template body. ` +
           `cdkd's macro-expansion path only supports JSON-shaped synth ` +
           `templates (CDK apps emit JSON by default). Cause: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+          `${displayAwsMessage(err instanceof Error ? err.message : String(err))}`,
         err instanceof Error ? err : undefined
       );
     }

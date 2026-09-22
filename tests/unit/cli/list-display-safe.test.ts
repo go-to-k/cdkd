@@ -5,9 +5,9 @@
  * writes one display id per line to STDOUT at default verbosity with no error
  * path involved, so `cdkd list -a ./cdk.out` over someone else's assembly
  * prints it. `--long` / `--show-dependencies` are no safer for being structured
- * — measured, not assumed: `JSON.stringify` escapes C0 (below `U+0020`) and
- * nothing above it, so DEL, the C1 range, `U+2028` and the bidi overrides all
- * pass through; `yaml` escapes ESC and likewise passes DEL, C1 and `U+2028`.
+ * — measured, not assumed: `JSON.stringify` and `yaml` both escape every C0
+ * character and NEITHER escapes DEL, the C1 range, `U+2028`/`U+2029` or the
+ * bidi overrides.
  *
  * `displaySafe` rather than `describeStack` (which sanitizes the same two fields
  * for every other command) is deliberate; the reasons are at `formatDisplayId`.

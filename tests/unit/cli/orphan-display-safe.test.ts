@@ -114,6 +114,7 @@ import {
   PARA_SEP,
   RLO,
   ST,
+  ZWSP,
 } from '../_forging-characters.js';
 
 /**
@@ -135,7 +136,11 @@ const HOSTILE = {
   cdkPathB: { raw: `Target/${LRI}Queue`, clean: 'Target/ Queue' },
   logicalId: { raw: `Bucket${PARA_SEP}Id`, clean: 'Bucket Id' },
   otherLogicalId: { raw: `Other${ESC}[2KId`, clean: 'Other [2KId' },
-  region: { raw: `us-${NEL}east-1`, clean: 'us- east-1' },
+  // Carries BOTH a forging character and a ZWSP. The ZWSP is what discriminates
+  // the two `displaySafe` MODES: `NEL` is removed by the denylist and the
+  // allowlist alike, so a region marked with it alone cannot tell them apart,
+  // and every `targetRegion` render here passes `{ asciiOnly: true }`.
+  region: { raw: `us-${NEL}east${ZWSP}-1`, clean: 'us- east -1' },
   // TRAILING-edge marker: the only position at which sanitizing per element and
   // sanitizing the joined string differ (`A, B` vs `A , B`).
   edgeLogicalId: { raw: `EdgeId${PARA_SEP}`, clean: 'EdgeId' },
@@ -431,7 +436,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       const message = reportedError();
       expect(message).toContain(
         `Resource(s) not in state for stack '${HOSTILE.stackA.clean}' ` +
-          `(${HOSTILE.region.clean}): ${HOSTILE.logicalId.clean}.`
+          `(${HOSTILE.region.clean}): "${HOSTILE.logicalId.clean}".`
       );
       expect(message).toContain(`Available logical IDs: "${HOSTILE.otherLogicalId.clean}"`);
       expectNoForgingIn([message]);
@@ -446,6 +451,9 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         "Resource(s) not in state for stack 'MyStack' (us-east-1): Bucket.\n" +
           'Available logical IDs: Other'
       );
+      // Neither half gains quotes for an ordinary logical id, which is what
+      // makes one helper across the whole sentence safe to adopt.
+      expect(message).not.toContain('"');
     });
   });
 

@@ -48,9 +48,10 @@ Index of every area: [code-layout.md](code-layout.md).
   route through it** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) —
   its display id puts `displayName` FIRST, and `displayIdent` would quote a
   legitimate `My Stack` into a stream a shell loop reads, so `formatDisplayId`
-  sanitizes locally with `displaySafe`. `toLongRecord` does too: measured,
-  `JSON.stringify` and `yaml` both pass DEL, C1 and `U+2028`, so the encoder is
-  not the boundary for the `--long` / `--show-dependencies` payloads. A
+  sanitizes locally with `displaySafe`. `toLongRecord` does too: measured, both
+  `JSON.stringify` and `yaml` escape every C0 character and neither escapes DEL,
+  C1, `U+2028` or the bidi overrides, so the encoder is not the boundary for the
+  `--long` / `--show-dependencies` payloads. A
   control-only name still sanitizes to EMPTY there, which reads as absent —
   `UNRENDERABLE`-vs-empty per slot is an open row on
   [#3479](https://github.com/go-to-k/cdkd/issues/3479).

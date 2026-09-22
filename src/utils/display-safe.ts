@@ -289,13 +289,16 @@ export const SECRET_REF_MAX_CODE_POINTS = 2048;
  *
  * `displaySafe` takes no `maxCodePoints` — it is the free-form-text helper and
  * its output is normally an SDK sentence of bounded length. That stops being
- * true at the two sites this constant serves, and for a specific reason: STS
- * and IAM ECHO THE SUBMITTED VALUE VERBATIM in a validation error, so the
- * message's length is chosen by whoever supplied the `RoleArn`. Those sites
+ * true wherever AWS ECHOES A SUBMITTED VALUE VERBATIM, which is the class this
+ * constant serves: the message's length is then chosen by whoever supplied the
+ * value. It started with STS and IAM quoting a `RoleArn` back — those sites
  * sanitize the ARN with `ROLE_ARN_MAX_CODE_POINTS` and then print AWS's reply
- * next to it, where an oversized input returns UNBOUNDED past the cap the ARN
- * itself just paid — the guard defeated by its own neighbour, in the length
- * dimension rather than the charset one.
+ * next to it, where an oversized input returned UNBOUNDED past the cap the ARN
+ * itself just paid, the guard defeated by its own neighbour in the length
+ * dimension rather than the charset one — and has since taken CloudFormation's
+ * `StatusReason` and a context provider's failure text, both of which quote a
+ * TEMPLATE-supplied value back. `grep displayAwsMessage` answers the population;
+ * a count here would only go stale, as this sentence's did.
  *
  * Deliberately generous. The message is the DIAGNOSIS, so cutting it costs the
  * user the answer; this is a flood stop, not a formatting rule. A genuine AWS

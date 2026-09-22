@@ -107,15 +107,25 @@ import {
   ST,
 } from '../_forging-characters.js';
 
-/** One hostile marker per interpolated value, each with its own sanitized twin. */
+/**
+ * One hostile marker per interpolated value, each with its own sanitized twin.
+ *
+ * Every `A` entry carries its marker at the element's TRAILING EDGE and every
+ * `B` entry mid-value, because those two positions test different things. A
+ * mid-value marker is removed whether the list is sanitized per element or as
+ * one joined string, so only an edge marker discriminates the two — and only on
+ * a NON-LAST element, since a trailing marker on the last one is erased by
+ * `displaySafe`'s own final trim either way. Each of this module's three joined
+ * lists therefore leads with an `A`.
+ */
 const HOSTILE = {
-  contextKeyA: { raw: `ssm:key${CSI}A`, clean: 'ssm:key A' },
+  contextKeyA: { raw: `ssm:keyA${CSI}`, clean: 'ssm:keyA' },
   contextKeyB: { raw: `ami:key${LINE_SEP}B`, clean: 'ami:key B' },
-  macroStackA: { raw: `Macro${NEL}StackA`, clean: 'Macro StackA' },
+  macroStackA: { raw: `MacroStackA${NEL}`, clean: 'MacroStackA' },
   macroStackB: { raw: `Macro${RLO}StackB`, clean: 'Macro StackB' },
   oversizeStack: { raw: `Oversize${ST}Stack`, clean: 'Oversize Stack' },
   infoStack: { raw: `Info${ESC}[2KStack`, clean: 'Info [2KStack' },
-  transformA: { raw: `AWS::Serverless${LRI}2016`, clean: 'AWS::Serverless 2016' },
+  transformA: { raw: `AWS::Serverless2016${LRI}`, clean: 'AWS::Serverless2016' },
   transformB: { raw: `My::Macro${NEL}v2`, clean: 'My::Macro v2' },
 } as const;
 

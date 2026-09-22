@@ -89,6 +89,10 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { expandMacros } from '../../../src/synthesis/macro-expander.js';
 import {
+  AWS_MESSAGE_MAX_CODE_POINTS,
+  displayAwsMessage,
+} from '../../../src/utils/display-safe.js';
+import {
   CSI,
   hasForgingCharacter,
   LINE_SEP,
@@ -364,7 +368,84 @@ describe("the changeset-failure refusal quotes CloudFormation's own reply (#3479
         cfnClient: failingWaiter(flood, 'FAILED'),
       })
     );
-    expect(message.endsWith('[cut: 904 more characters withheld]')).toBe(true);
+    // DERIVED from the cap rather than transcribed: a retune of the constant
+    // must not red this case with a diff that blames the wrong thing.
+    const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+    expect(withheld).toBeGreaterThan(0);
+    expect(message.endsWith(`[cut: ${withheld} more characters withheld]`)).toBe(true);
+  });
+});
+
+describe('the EarlyValidation retry verdict survives the message cap (#3479)', () => {
+  /**
+   * The retry that issue go-to-k/cdkd#1151 exists for used to be decided by
+   * testing the RENDERED message for `AWS::EarlyValidation::`. Rendering AWS's
+   * reply through `displayAwsMessage` made that wrong: the cap CUTS at
+   * `AWS_MESSAGE_MAX_CODE_POINTS`, so a hook marker sitting past that point
+   * vanished from the text the predicate read, and a macro deploy hard-failed on
+   * attempt 1 instead of retrying. The verdict is now taken from the RAW reason
+   * and carried on the error.
+   *
+   * The reason here is built so the marker is PAST the cap — the one shape that
+   * discriminates the two designs. A reason with the marker near the front
+   * passes either way, which is why the existing suite stayed green through the
+   * regression.
+   */
+  const MARKER = 'The following hook(s)/validation failed: [AWS::EarlyValidation::ResourceExistenceCheck].';
+
+  function reasonWithMarkerPastTheCap(): string {
+    return `${'p'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 100)} ${MARKER}`;
+  }
+
+  it('still retries when the hook marker is cut out of the rendered message', async () => {
+    const reason = reasonWithMarkerPastTheCap();
+    // The premise, asserted rather than assumed: the rendered text really does
+    // NOT carry the marker any more.
+    expect(displayAwsMessage(reason).includes('AWS::EarlyValidation::')).toBe(false);
+
+    waitUntilChangeSetCreateCompleteMock.mockRejectedValueOnce(new Error('waiter failed'));
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    let describeCalls = 0;
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'CreateChangeSet') return { Id: 'cs-arn', StackId: 's-arn' };
+      if (cmd._name === 'DescribeChangeSet') {
+        describeCalls += 1;
+        return { Status: 'FAILED', StatusReason: reason };
+      }
+      if (cmd._name === 'GetTemplate') return { TemplateBody: EXPANDED };
+      return {};
+    });
+    const result = await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: { send, destroy: vi.fn() } as never,
+    });
+    expect(result.Resources).toEqual(EXPANDED.Resources);
+    expect(describeCalls).toBe(1);
+  });
+
+  it('still does NOT retry a rejection that is not a hook, however long', async () => {
+    // The other polarity: a marker-free reason of the same length must fail on
+    // the first attempt, so the case above cannot be satisfied by retrying
+    // everything.
+    waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter failed'));
+    let createCalls = 0;
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'CreateChangeSet') {
+        createCalls += 1;
+        return { Id: 'cs-arn', StackId: 's-arn' };
+      }
+      if (cmd._name === 'DescribeChangeSet') {
+        return { Status: 'FAILED', StatusReason: 'q'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 100) };
+      }
+      return {};
+    });
+    await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: { send, destroy: vi.fn() } as never,
+      })
+    );
+    expect(createCalls).toBe(1);
   });
 });
 

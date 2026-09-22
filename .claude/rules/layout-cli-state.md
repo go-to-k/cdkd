@@ -58,7 +58,8 @@ references, leaving every other intrinsic alone.
   `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`) for every UNQUOTED
   `Available: ...` list, where `displaySafe`'s trim would render a planted
   entry byte-identical to the genuine one the message says is missing —
-  `grep displayIdentList` answers that population. A region takes `asciiOnly`.
+  `grep displayIdent` answers that population. A region rendered outside those
+  lists takes `asciiOnly`.
   The operator's own `<constructPath>` argv is deliberately NOT sanitized for
   DISPLAY; where one goes into a PASTEABLE command it is `isPasteableIdent`'s
   class ([pasteable-ident.md](pasteable-ident.md)), not this one.

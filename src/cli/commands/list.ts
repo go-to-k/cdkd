@@ -79,12 +79,11 @@ function sortByDependency(stacks: StackInfo[]): StackInfo[] {
  *
  * Every field is manifest-derived, so each renders through `displaySafe`
  * ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). **The encoder is not
- * the boundary here** — measured rather than assumed: `JSON.stringify` escapes
- * C0 (below `U+0020`) and nothing above it, so DEL, the C1 range, `U+2028` and
- * the bidi overrides all pass through; `yaml` escapes ESC and likewise passes
- * DEL, C1 and `U+2028`. So a `displayName` carrying `U+009B` reached the
- * terminal as a CSI byte inside what looks like a machine-readable document, on
- * stdout at default verbosity.
+ * the boundary here** — measured rather than assumed: `JSON.stringify` and
+ * `yaml` both escape every C0 character and NEITHER escapes DEL, the C1 range,
+ * `U+2028`/`U+2029` or the bidi overrides. So a `displayName` carrying `U+009B`
+ * reached the terminal as a CSI byte inside what looks like a machine-readable
+ * document, on stdout at default verbosity.
  *
  * Fidelity costs nothing: `displaySafe` neither quotes nor truncates, so every
  * legitimate name, account, region and dependency name is byte-identical, and
