@@ -31,12 +31,9 @@ import { displaySafe } from '../utils/display-safe.js';
  *   truncates, so it is the identity on every legitimate stack name, context key
  *   and transform name.
  *
- * A JOINED list sanitizes per ELEMENT. The reason is FORMATTING rather than
- * safety, and it is stated that way because the first revision of this comment
- * claimed otherwise: `displaySafe` replaces globally, so a mid-value character
- * is stripped either way. What differs is an element EDGE — the joined form
- * leaves the replacement space beside the separator and prints `A , B` for
- * `['A<NEL>', 'B']` — so only the per-element form keeps the separator exact.
+ * A JOINED list sanitizes per ELEMENT so the separator stays
+ * byte-exact; `displaySafe`'s own doc carries why that is a formatting rule
+ * rather than a safety one.
  */
 
 /**

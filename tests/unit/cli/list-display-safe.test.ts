@@ -244,6 +244,36 @@ describe('cdkd list renders manifest-derived values display-safe (#3479)', () =>
     });
   });
 
+  describe('the YAML arm — the DEFAULT for --long, and where the yaml claim bites', () => {
+    it('sanitizes before the encoder, which passes C1 and U+2028 straight through', async () => {
+      // `--json` is the ENCODING, not what makes stdout a payload, so the YAML
+      // arm is the one most runs take. It is also where the measurement lands:
+      // `yaml` would have emitted `U+009B` and `U+2028` unescaped.
+      primeStacks([
+        makeStack({
+          stackName: HOSTILE.stackName.raw,
+          displayName: HOSTILE.displayName.raw,
+          account: HOSTILE.account.raw,
+          region: HOSTILE.region.raw,
+        }),
+      ]);
+      const stdout = await runList(['--long']);
+      expect(stdout).toContain(`id: ${HOSTILE.displayName.clean}`);
+      expect(stdout).toContain(`name: ${HOSTILE.stackName.clean}`);
+      expect(stdout).toContain(`account: ${HOSTILE.account.clean}`);
+      expect(stdout).toContain(`region: ${HOSTILE.region.clean}`);
+      expectNoForgingLine(stdout);
+    });
+
+    it('leaves an ordinary record byte-identical in YAML', async () => {
+      primeStacks([makeStack({ stackName: 'StackA', displayName: 'StackA' })]);
+      expect(await runList(['--long'])).toBe(
+        '- id: StackA\n  name: StackA\n  environment:\n' +
+          '    account: "111111111111"\n    region: us-east-1\n'
+      );
+    });
+  });
+
   describe('--show-dependencies without --long — the display id inside a payload', () => {
     it('sanitizes the id and every dependency name', async () => {
       primeStacks([

@@ -111,6 +111,21 @@ function sanitizeAsciiOnly(text: string): string {
   return text.replace(/[^ -~]/g, ' ').trim();
 }
 
+/**
+ * A JOINED LIST SANITIZES PER ELEMENT, and the reason is FORMATTING rather than
+ * safety. Stated here once because three callers stated it for themselves and
+ * one of the three copies had already drifted into a false claim.
+ *
+ * This function replaces GLOBALLY, so a character in the middle of an element is
+ * stripped whether the caller sanitizes each element or the joined string. The
+ * two differ only at an element EDGE, where the joined form leaves the
+ * replacement space beside the separator: `['A<NEL>', 'B']` renders `A, B` per
+ * element and `A , B` joined. Sanitizing per element is what keeps the
+ * separator byte-exact.
+ *
+ * For `displayIdent` the same shape IS load-bearing rather than cosmetic, since
+ * the boundary it adds is per value.
+ */
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
   // `'undefined'` — a truthy string — so a caller keying its

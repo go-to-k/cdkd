@@ -35,13 +35,9 @@ import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
  * quotes nor truncates, so a legitimate `AWS::Serverless-2016-10-31` renders
  * byte-identically.
  *
- * Per ELEMENT rather than over the joined string, and the reason is FORMATTING
- * rather than safety — measured, because the first revision of this comment
- * claimed otherwise. `displaySafe` replaces globally, so a mid-value character
- * is stripped either way; what differs is an element EDGE, where the joined form
- * leaves the stripped character's replacement space beside the separator and
- * prints `A , B` for `['A<NEL>', 'B']`. The separator stays byte-exact only
- * per element.
+ * A JOINED list sanitizes per ELEMENT so the separator stays
+ * byte-exact; `displaySafe`'s own doc carries why that is a formatting rule
+ * rather than a safety one.
  */
 function displaySafeTransforms(names: readonly string[]): string {
   return names.map((name) => displaySafe(name)).join(', ');
@@ -827,5 +823,11 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
 }
 
 function formatErr(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // `displayAwsMessage`, not the raw text. Both call sites are `finally`-block
+  // cleanup warns that quote an AWS SDK error, and an S3 or CloudFormation
+  // failure names the object key or stack it acted on — which is built from
+  // this module's own transient name, but the SDK is free to quote more. This
+  // is what makes the module header's "one spelling for AWS-or-parser text"
+  // true rather than aspirational ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
+  return displayAwsMessage(err instanceof Error ? err.message : String(err));
 }

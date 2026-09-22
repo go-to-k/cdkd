@@ -69,13 +69,9 @@ import {
  *   `displayIdentList` and `displayRegionList` alike — rather than a count here,
  *   which is what goes stale.
  *
- * A JOINED list sanitizes per ELEMENT. For `displayIdent` that is load-bearing
- * — the boundary is per value. For `displaySafe` the reason is FORMATTING
- * rather than safety, and it is stated that way because the first revision of
- * this comment claimed otherwise: `displaySafe` replaces globally, so a
- * mid-value character is stripped either way, and what differs is an element
- * EDGE, where the joined form leaves the replacement space beside the separator
- * and prints `A , B` for `['A<NEL>', 'B']`.
+ * A JOINED list sanitizes per ELEMENT — load-bearing for `displayIdent`, whose
+ * boundary is per value, and a formatting rule for `displaySafe`; its own doc
+ * carries the difference.
  *
  * Deliberately NOT sanitized: `pathArgs` and the `<head>` segment parsed out of
  * one. Those are the operator's own argv echoed back, a different trust bucket
@@ -409,7 +405,11 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         // compares them against each other. Splitting the helpers would accept
         // the quoting cost on one half and leave the other unable to show a
         // boundary. A raw neighbour forges just as well as the value beside it.
-        const have = displayIdentList(Object.keys(state.resources ?? {}), ', ');
+        // No `?? {}`: the `in` test two lines above already indexes
+        // `state.resources` unguarded, and `refuseMalformedState` at the load
+        // refused a record whose bag could not be read — so a fallback here
+        // only pretends the two lines disagree about whether it can be absent.
+        const have = displayIdentList(Object.keys(state.resources), ', ');
         throw new Error(
           `Resource(s) not in state for stack '${displaySafe(stackInfo.stackName)}' ` +
             `(${displaySafe(targetRegion, { asciiOnly: true })}): ` +

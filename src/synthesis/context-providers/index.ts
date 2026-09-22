@@ -86,7 +86,6 @@ export class ContextProviderRegistry {
       // and a context key, and sanitizing what is used rather than shown would
       // change which provider answers.
       const shownProvider = displaySafe(entry.provider);
-      const shownKey = displaySafe(entry.key);
 
       if (!provider) {
         this.logger.warn(`No context provider registered for: ${shownProvider}`);
@@ -102,6 +101,8 @@ export class ContextProviderRegistry {
         continue;
       }
 
+      // Below the `continue` above, which is the only arm that never renders it.
+      const shownKey = displaySafe(entry.key);
       try {
         this.logger.debug(`Resolving context: ${shownProvider} (key: ${shownKey})`);
         const value = await provider.resolve(entry.props);

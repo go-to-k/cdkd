@@ -103,7 +103,19 @@ function sortByDependency(stacks: StackInfo[]): StackInfo[] {
  * "Helper choice, not only helper presence" row on
  * [#3479](https://github.com/go-to-k/cdkd/issues/3479), which covers the same
  * question for `assembly-reader.ts`. Deciding it here alone would leave the two
- * disagreeing.
+ * disagreeing. *
+ * THE RESIDUAL THAT MATTERS HERE IS A COLLISION, not the empty string. This is
+ * a MACHINE-READABLE payload, and sanitizing is many-to-one: `Prod<U+0085>Stack`
+ * and a genuine `Prod Stack` both emit `name: "Prod Stack"`, and so do `Prod`
+ * and `Prod ` (the trim). Pre-PR their bytes differed. So
+ * `jq 'select(.name=="Prod Stack") | .environment.account'` can return TWO
+ * accounts for what reads as one stack, and a script taking the first may take
+ * the planted one. It fails safe for SELECTION — `matchStacks` matches the RAW
+ * name, so `cdkd deploy` still resolves to the genuine stack and never the
+ * planted one — which is why this is recorded rather than blocking, and why
+ * `UNRENDERABLE`-vs-empty-vs-collision is one question rather than three. It is
+ * folded into the open "Helper choice, not only helper presence" row on
+ * [#3479](https://github.com/go-to-k/cdkd/issues/3479).
  */
 function toLongRecord(stack: StackInfo, includeDeps: boolean): LongStackRecord {
   const record: LongStackRecord = {
@@ -283,10 +295,17 @@ async function listCommand(
  *   mean"), wrong here: `new Stack(app, 'My Stack')` is legal and would start
  *   printing `"My Stack"` into a stream a shell loop reads.
  *
- * The one residual, shared with `describeStack` and recorded there too:
+ * Two residuals, shared with `describeStack` and recorded there too.
  * `displaySafe` TRIMS, so a construct id with a leading or trailing space
  * prints without it and the printed line is then not re-usable verbatim as a
- * pattern. `matchStacks` matches the RAW name, so selection is unaffected.
+ * pattern. And because sanitizing is MANY-TO-ONE, two distinct manifest entries
+ * can print one identical line here — `MyStage/<U+0085>Api` and a genuine
+ * `MyStage/ Api` both emit `MyStage/ Api`, so a `sort -u` over this stream
+ * collapses them and a per-line consumer sees one stack where the assembly
+ * declared two. `matchStacks` matches the RAW name, so SELECTION is unaffected
+ * and a pasted line still resolves to the genuine stack; the collision is
+ * recorded at `toLongRecord` and folded into the open helper-choice row on
+ * [#3479](https://github.com/go-to-k/cdkd/issues/3479).
  */
 function formatDisplayId(stack: StackInfo): string {
   const displayName = displaySafe(stack.displayName);

@@ -94,6 +94,16 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
+    // `getProviderFor` is the method `orphan-rewriter.ts` actually calls.
+    // Stubbing only `getProvider` made the registry throw a TypeError, which
+    // the rewriter's catch turned into `no provider available for <type>` — so
+    // the unresolvable report was reached through a MOCK-SHAPE MISMATCH rather
+    // than through the condition the case claims to model. With the real method
+    // present the run takes the modelled arm instead: the provider resolves and
+    // `getAttribute` answers `undefined`.
+    getProviderFor: vi.fn(() => ({
+      provider: { getAttribute: vi.fn(async () => undefined) },
+    })),
     getProvider: vi.fn(() => ({ getAttribute: vi.fn(async () => undefined) })),
   })),
 }));
@@ -104,6 +114,10 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createOrphanCommand } from '../../../src/cli/commands/orphan.js';
+import {
+  AWS_MESSAGE_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../../src/utils/display-safe.js';
 import {
   CSI,
   ESC,
@@ -457,6 +471,33 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
     });
   });
 
+  describe("the rewrite audit's AFTER value is sanitized too", () => {
+    it('sanitizes a substituted physical id, not just the (dropped) arm', async () => {
+      // `after` was only ever exercised on the `dependency` arm, whose value is
+      // the literal `(dropped)` — so nothing reached `stringifyForAudit` with
+      // hostile AFTER text. A `Ref` rewrite substitutes the orphan's
+      // physicalId, which is STATE-derived and attacker-shaped on a planted
+      // record. `U+2029` again, because `JSON.stringify` would escape a C0 to
+      // printable ASCII before the sanitizer is reached.
+      primeStacks([
+        {
+          stackName: 'MyStack',
+          resources: { Bucket: 'MyStack/Bucket', Other: 'MyStack/Other' },
+        },
+      ]);
+      primeState('MyStack', 'us-east-1', {
+        Bucket: entry({ physicalId: `bucket${PARA_SEP}name` }),
+        Other: entry({ properties: { BucketName: { Ref: 'Bucket' } } }),
+      });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      const lines = infoLines();
+      expect(lines).toContain(
+        '  [ref] Other.properties.BucketName: {"Ref":"Bucket"} → "bucket name"'
+      );
+      expectNoForgingIn(lines);
+    });
+  });
+
   describe('a joined list is sanitized per ELEMENT, so the separator stays exact', () => {
     it('keeps `, ` exact for a marker at an element EDGE', async () => {
       // The one position at which per-element and whole-string sanitization
@@ -635,9 +676,17 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
      * attribute, is what reaches `printUnresolvable` — a `logger.error` row with
      * FIVE interpolations, each needing its own marker. `path` is derived from
      * the property KEY, `attribute` from the template's `Fn::GetAtt`, and
-     * `reason` embeds the orphan's `resourceType`, so all three are supplied
-     * from the fixture rather than left as clean cdkd text (a probe on any of
-     * them was VACUOUS while they were).
+     * `reason` embeds the orphan's `resourceType` AND the attribute, so all
+     * three are supplied from the fixture rather than left as clean cdkd text
+     * (a probe on any of them was VACUOUS while they were).
+     *
+     * The row is reached through the MODELLED condition — the provider resolves
+     * and its `getAttribute` answers `undefined`. It used to be reached through
+     * a mock-shape mismatch instead: the `ProviderRegistry` double exposed only
+     * `getProvider` while the rewriter calls `getProviderFor`, so a TypeError
+     * took the `no provider available` arm and the case pinned a row cdkd does
+     * not produce here. The assertions are `toBe` on the whole row rather than
+     * `startsWith`, so the tail cannot hide a change either.
      */
     function arrangeUnresolvable(args: {
       stackName: string;
@@ -683,11 +732,12 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ).rejects.toThrow();
       const rows = errorRows();
       expect(rows.length).toBe(1);
-      expect(rows[0]!.startsWith(
+      expect(rows[0]).toBe(
         `  ${HOSTILE.otherLogicalId.clean}.properties.${HOSTILE.propKey.clean}: ` +
           `${HOSTILE.logicalId.clean}.${HOSTILE.attribute.clean} — ` +
-          `no provider available for ${HOSTILE.resourceType.clean}:`
-      )).toBe(true);
+          `provider returned undefined for ${HOSTILE.resourceType.clean}.` +
+          `${HOSTILE.attribute.clean}`
+      );
       expectNoForgingIn(rows);
     });
 
@@ -703,9 +753,40 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
       const rows = errorRows();
       expect(rows.length).toBe(1);
-      expect(rows[0]!.startsWith(
-        '  Other.properties.BucketName: Bucket.Arn — no provider available for AWS::S3::Bucket:'
-      )).toBe(true);
+      expect(rows[0]).toBe(
+        '  Other.properties.BucketName: Bucket.Arn — ' +
+          'provider returned undefined for AWS::S3::Bucket.Arn'
+      );
+    });
+  });
+
+  describe('the identity lists are capped at STACK_REF_MAX_CODE_POINTS, not 255', () => {
+    it('does not cut a legitimate construct path longer than the default cap', async () => {
+      // `displayIdent`'s DEFAULT is 255 code points, and a deep CDK path passes
+      // it easily — `[cut: N more characters withheld]` inside the list whose
+      // only job is to name the paths would be the failure
+      // `STACK_REF_MAX_CODE_POINTS` exists to prevent. Dropping the
+      // `maxCodePoints` option was green without this.
+      const deepPath = `MyStack/${'Nested/'.repeat(60)}Resource`;
+      expect(deepPath.length).toBeGreaterThan(255);
+      expect(deepPath.length).toBeLessThan(STACK_REF_MAX_CODE_POINTS);
+      primeStacks([{ stackName: 'MyStack', resources: { A: deepPath } }]);
+      await expect(runOrphan(['MyStack/Nope', '--app', 'noop', '--yes'])).rejects.toThrow();
+      const message = reportedError();
+      expect(message).toContain(deepPath);
+      expect(message).not.toContain('characters withheld');
+    });
+
+    it('does not cut a legitimate region list either', async () => {
+      primeStacks([
+        { stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } },
+      ]);
+      mockListStacks.mockResolvedValue([
+        { stackName: 'MyStack', region: 'us-east-1' },
+        { stackName: 'MyStack', region: 'eu-west-1' },
+      ]);
+      await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).not.toContain('characters withheld');
     });
   });
 
@@ -736,6 +817,21 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         `Failed to release lock: NoSuchKey: cdkd/${HOSTILE.stackA.clean}/us-east-1/lock.json`
       );
       expectNoForgingIn(warnLines());
+    });
+
+    it('CAPS an oversized SDK message and MARKS the cut', async () => {
+      // Without this the cap at that site is undiscriminated — swapping
+      // `displayAwsMessage` for bare `displaySafe` stayed green.
+      const flood = `NoSuchKey: ${'k'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 300)}`;
+      arrangeReleaseFailure('MyStack', 'Bucket', flood);
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+      expect(withheld).toBeGreaterThan(0);
+      expect(
+        warnLines().some((line) =>
+          line.endsWith(`[cut: ${withheld} more characters withheld]`)
+        )
+      ).toBe(true);
     });
 
     it('leaves ordinary SDK text byte-identical', async () => {

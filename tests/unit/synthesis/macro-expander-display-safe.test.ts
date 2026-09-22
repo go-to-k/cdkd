@@ -415,6 +415,22 @@ describe('AWS and parser text that ECHOES the template back (#3479)', () => {
     expect(hasForgingCharacter(message)).toBe(false);
   });
 
+  it('CAPS an oversized CreateChangeSet rejection and MARKS the cut', async () => {
+    // CFn echoes the submitted values back, so the LENGTH is template-chosen
+    // here too. Without this the cap at that site is undiscriminated —
+    // swapping `displayAwsMessage` for bare `displaySafe` stayed green.
+    const flood = `Transform ${'y'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 500)} is not valid`;
+    const message = await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: buildRejectingCfnClient('CreateChangeSet', new Error(flood)),
+      })
+    );
+    const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+    expect(withheld).toBeGreaterThan(0);
+    expect(message.endsWith(`[cut: ${withheld} more characters withheld]`)).toBe(true);
+  });
+
   it('leaves an ordinary CreateChangeSet rejection byte-identical', async () => {
     const message = await messageOf(() =>
       expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
@@ -532,6 +548,64 @@ describe('the EarlyValidation retry verdict survives the message cap (#3479)', (
       })
     );
     expect(createCalls).toBe(1);
+  });
+});
+
+describe('the finally-block cleanup warns quote AWS text too (#3479)', () => {
+  /**
+   * Both warns go through `formatErr`, which is what makes this module's header
+   * claim — one spelling for AWS-or-parser text — true. Neither had a case that
+   * could see the difference: the only existing assertion matches the warn's own
+   * opening phrase and a clean error string, so dropping the sanitizer was
+   * green.
+   */
+  function warnLines(): string[] {
+    return loggerSpies.warn.mock.calls.map((call) => String(call[0]));
+  }
+
+  /** Expansion SUCCEEDS; only the `DeleteStack` cleanup fails. */
+  function cleanupFails(error: Error) {
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'CreateChangeSet') return { Id: 'cs-arn', StackId: 's-arn' };
+      if (cmd._name === 'GetTemplate') return { TemplateBody: EXPANDED };
+      if (cmd._name === 'DeleteStack') throw error;
+      return {};
+    });
+    return { send, destroy: vi.fn() } as never;
+  }
+
+  it('sanitizes the SDK text in the DeleteStack cleanup warn', async () => {
+    const result = await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: cleanupFails(new Error(`AccessDenied${CSI}2K on delete`)),
+    });
+    // The cleanup failure must not mask the successful expansion.
+    expect(result.Resources).toEqual(EXPANDED.Resources);
+    const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('AccessDenied 2K on delete');
+    expect(hasForgingCharacter(warn!)).toBe(false);
+  });
+
+  it('leaves ordinary SDK text byte-identical in that warn', async () => {
+    await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: cleanupFails(new Error('AccessDenied')),
+    });
+    const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
+    expect(warn).toContain(': AccessDenied. Clean up manually via');
+  });
+
+  it('CAPS an oversized cleanup error and MARKS the cut', async () => {
+    const flood = `AccessDenied ${'d'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 200)}`;
+    await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: cleanupFails(new Error(flood)),
+    });
+    const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+    expect(withheld).toBeGreaterThan(0);
+    const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
+    expect(warn).toContain(`[cut: ${withheld} more characters withheld]`);
   });
 });
 
