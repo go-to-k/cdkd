@@ -232,8 +232,8 @@ Not refused today:
   bind-mounted at `/var/task` with **no refusal and no warning** — while
   `cdkd local invoke` and `cdkd local start-api` warn about the very same value.
   `start-alb` reaches it through a Lambda target group, `start-cloudfront`
-  through a Function-URL origin or Lambda@Edge. Tracked separately; the fix is
-  the same change in `cdk-local`;
+  through a Function-URL origin or Lambda@Edge. The fix is the same change in
+  `cdk-local`;
 - every Docker build context that goes through the bundled `cdk-local` engine,
   which joins the path itself: a container-image Lambda under
   `cdkd local invoke` and `cdkd local start-api`; the image build of
