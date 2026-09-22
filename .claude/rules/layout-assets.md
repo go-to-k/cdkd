@@ -28,8 +28,12 @@ paths:
   `(…, assetOutdir, assetId)` used to compile and print
   `cdkd will cdkd-asset-<hash>`
   ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). The surviving `??`
-  fallbacks — two in `buildDockerImage`, one in `AssetPublisher` — all NARROW
-  onto the manifest directory and never open past it.
+  fallbacks IN THIS LAYER — two in `buildDockerImage`, one in
+  `AssetPublisher` — all NARROW onto the manifest directory and never open
+  past it. `src/local/` holds two more that feed the same resolvers
+  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too,
+  so the safety claim is whole-program while the COUNT is scoped to the files
+  this page governs.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because
