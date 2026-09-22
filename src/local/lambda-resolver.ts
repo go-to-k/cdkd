@@ -771,9 +771,19 @@ export function resolveAssetCodeDirectory(
   assetPath: string,
   /**
    * BEFORE `logicalId`, which is only for the message, so the signature matches
-   * `resolveDockerContextDirectory`'s `(dir, value, wrapError, assetOutdir)`
-   * and leaves only TWO adjacent `string` parameters. Three in a row
-   * type-check under any transposition, so the ordering is the guard.
+   * `resolveDockerContextDirectory`'s `(dir, value, wrapError, assetOutdir)`.
+   * That breaks up a run of THREE adjacent `string` parameters, which
+   * type-checks under any transposition.
+   *
+   * It does NOT leave the signature transposition-proof, and an earlier
+   * revision of this comment claimed it did. `logicalId` / `assetOutdir` are
+   * still an adjacent `string` pair and a swap between them compiles. What
+   * makes that safe is not the types: the bound would become
+   * `path.resolve('<logicalId>')` under the cwd, disjoint from the base, so
+   * every path is refused — fail-closed — and every Stage acceptance case in
+   * `local-asset-code-path-containment.test.ts` reds. `wrapError` is the one
+   * position the COMPILER guards, a function type being unassignable to
+   * `string` in either direction.
    */
   wrapError: (message: string) => Error,
   logicalId: string,
