@@ -196,30 +196,32 @@ Refused:
 - a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
   `source.directory` its `--watch` soft reload reads;
 - a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke` and
-  `cdkd local start-api` — both the function's own code directory and a
-  same-stack layer's. This one is refused on **two** counts, worded apart so
-  you can tell which fired: a path that leaves the app's output directory, and
-  a path that is **absolute**. An absolute value used to be honoured on
-  purpose, and it reached the same place `../..` does without needing a `..` at
-  all, so refusing only one of the two would have closed almost nothing. The
-  result is bind-mounted read-only at `/var/task` (a layer's at `/opt`) inside
-  a container running handler code the same assembly supplies, and
-  `cdkd local invoke` forwards your credentials into it — so the mount is what
-  would carry that code from a session it already has to the raw contents of
-  your home directory.
-
-  **One benign assembly is refused by the absolute half, and it is a real CDK
-  one:** `cdk synth --no-staging` (the `aws:cdk:disable-asset-staging` context
-  flag) makes CDK write the asset's absolute SOURCE directory into
-  `aws:asset:path` instead of a staged `asset.<hash>`. cdkd cannot tell that
-  apart from a planted absolute path — both are a directory the assembly chose
-  — so it refuses, and the message names `--no-staging` as the likely cause.
-  Re-synthesize without the flag.
+  `cdkd local start-api`, when it is **relative** — both the function's own code
+  directory and a same-stack layer's. The result is bind-mounted read-only at
+  `/var/task` (a layer's at `/opt`) inside a container running handler code the
+  same assembly supplies, and `cdkd local invoke` forwards your credentials into
+  it, so a relative path escaping the app's output directory would carry that
+  code from a session it already has to the rest of your filesystem. Nothing a
+  real `cdk synth` emits has that shape, so refusing it costs nothing.
 
 A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
 staged into the app's output directory, so `../asset.<hash>` is the shape CDK
 writes and it loads normally. The same rule and the same wording apply on the
 deploy path; see [Deploy safety](cli-deploy-safety.md).
+
+Warned about, but accepted:
+
+- an **absolute** `Metadata['aws:asset:path']` that points outside the output
+  directory. `cdk synth --no-staging` (the `aws:cdk:disable-asset-staging`
+  context flag) makes CDK write the asset's absolute SOURCE directory there
+  instead of a staged `asset.<hash>`, and that is a documented CDK CLI flag —
+  AWS's own pre-step for `sam local invoke` — so cdkd reads what `cdk` wrote
+  rather than rejecting it. cdkd cannot tell such a value apart from one a
+  hostile assembly planted, so it prints a warning naming the directory and
+  saying it will be mounted. **If you did not synthesize with `--no-staging`,
+  that warning means the assembly is pointing cdkd at a directory of its own
+  choosing — treat it as untrusted.** An absolute path that stays inside the
+  output directory is accepted silently.
 
 Not refused today:
 

@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
@@ -7,8 +7,13 @@ import { matchStacks } from '../cli/stack-matcher.js';
 import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import {
+  absoluteAssemblyPathEscape,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * Result of resolving a `cdkd local invoke <target>` argument back to a
@@ -709,9 +714,8 @@ function extractImageLambdaProperties(args: {
 }
 
 /**
- * Where a Lambda's `Metadata['aws:asset:path']` really lives on this host,
- * refusing an ABSOLUTE value and one that escapes the assembly (issue
- * [#3494](https://github.com/go-to-k/cdkd/issues/3494)).
+ * Where a Lambda's `Metadata['aws:asset:path']` really lives on this host
+ * (issue [#3494](https://github.com/go-to-k/cdkd/issues/3494)).
  *
  * THE one spelling shared by `cdkd local invoke`'s resolver and
  * `cdkd local start-api`'s, which each carried their own copy of
@@ -721,40 +725,42 @@ function extractImageLambdaProperties(args: {
  * make about their own pair. It throws through the CALLER's `wrapError` so
  * each keeps its own typed error class and names its own command.
  *
- * WHY THIS ONE REFUSES RATHER THAN WARNS, where the neighbouring asset-manifest
- * passthroughs (go-to-k/cdkd#3497) do not. The result is BIND-MOUNTED read-only
- * at `/var/task` (or `/opt` for a layer) into a container running handler code
- * the SAME assembly supplied. The attacker there already controls the
- * container's code but NOT the host filesystem, and this mount is the one thing
- * that carries them across that boundary: `cdkd local invoke` forwards the
- * caller's credentials, so their handler already holds a session, and what
- * reading `~/.aws` adds is the raw long-lived keys, other profiles, and
- * non-AWS secrets.
+ * TWO VALUE SHAPES, ANSWERED DIFFERENTLY, and the asymmetry is the decision
+ * rather than an accident:
  *
- * TWO REFUSALS, WORDED APART, because they answer different questions and a
- * reader must be able to tell which fired — the same separation
- * `src/utils/assembly-path.ts` keeps between containment and the nested-template
- * absolute tripwire:
+ * - RELATIVE, escaping. REFUSED. `path.resolve` folds `..` exactly as
+ *   `path.join` does, so `../../../home/<user>/.aws` leaves the assembly, and
+ *   nothing a real `cdk synth` emits has that shape.
+ * - ABSOLUTE. ACCEPTED, with a WARNING naming the path when it leaves the
+ *   asset outdir.
  *
- * - ABSOLUTE. Honouring one was a deliberate branch here, and it is the LARGER
- *   half of the hole: `path.resolve` discards its base for an absolute
- *   candidate, so `/home/<user>/.aws` needs no `..` at all. Containment alone
- *   would close almost nothing while looking closed. Measured before the
- *   change: both sites mounted the named directory verbatim.
- * - ESCAPING. `path.resolve` folds `..` exactly as `path.join` does, so
- *   `../../../home/<user>/.aws` reaches the same place by the other road.
+ * **Why absolute is accepted, when the security axis argued for refusing it.**
+ * `cdk synth --no-staging` (context flag `aws:cdk:disable-asset-staging`) makes
+ * upstream `AssetStaging.relativeStagedPath` return the staged path verbatim
+ * instead of relativising it, so `aws:asset:path` is the asset's absolute
+ * SOURCE directory, normally outside the outdir. Measured on aws-cdk-lib 2.268:
+ * `noStaging=false` gives `asset.<hash>`, `noStaging=true` gives
+ * `/abs/path/to/srcdir`. Refusing it therefore rejects the output of a
+ * documented CDK CLI flag — AWS's own pre-step for `sam local invoke` — and the
+ * user's view is simply that cdkd will not read what `cdk` just wrote.
  *
- * **A REAL `cdk synth` CAN EMIT AN ABSOLUTE ONE, so the message must not say it
- * cannot.** Under `aws:cdk:disable-asset-staging` — what `cdk synth
- * --no-staging` sets, and AWS's own documented pre-step for `sam local invoke`
- * — upstream `AssetStaging.relativeStagedPath` returns the staged path verbatim
- * rather than relativising it, so `aws:asset:path` is the absolute SOURCE
- * directory. Measured on aws-cdk-lib 2.268: `noStaging=false` gives
- * `asset.<hash>`, `noStaging=true` gives `/abs/path/to/srcdir`. That value is
- * benign and is usually OUTSIDE the outdir, so containment would refuse it too.
- * cdkd cannot tell it apart from a planted one — both are "an absolute path
- * chosen by the assembly" — so the refusal stands, but it NAMES the benign
- * cause and the remedy instead of calling the assembly hand-modified.
+ * The maintainer weighed that against the security reading and chose
+ * acceptance. Record BOTH halves, because the trade is real and a later reader
+ * must not "restore" the refusal as an oversight:
+ *
+ * - The security cost is genuine. This value is BIND-MOUNTED read-only at
+ *   `/var/task` (or `/opt` for a layer) into a container running handler code
+ *   the SAME assembly supplied, and `cdkd local invoke` forwards the caller's
+ *   credentials, so an absolute path a hostile assembly chose reaches the host
+ *   filesystem. cdkd cannot distinguish a `--no-staging` value from a planted
+ *   one: both are an absolute directory the assembly named.
+ * - What bounds it: this is a LOCAL developer command run against an assembly
+ *   the user pointed at, the mount is read-only, and the warning names the path
+ *   so an unexpected one is visible rather than silent.
+ *
+ * The `..` containment is NOT relaxed with it. A relative escape has no
+ * legitimate producer, so refusing it costs nothing and keeps the shape
+ * go-to-k/cdkd#3489 closed.
  *
  * CONTAIN WITHIN `assetOutdir`, NOT the manifest's directory. A Lambda inside a
  * `cdk.Stage` legitimately carries `../asset.<hash>`, because `cdk synth`
@@ -791,22 +797,35 @@ export function resolveAssetCodeDirectory(
   assetOutdir: string = manifestDir
 ): string {
   if (isAbsolute(assetPath)) {
-    // cdkd-raw-beside-safe: the only operands are `displaySafe(...)` calls and
-    // this file's own literals. What the fence reads as a raw neighbour is the
-    // ESCAPED BACKTICKS quoting `cdk synth --no-staging` and
-    // `aws:cdk:disable-asset-staging` — fixed text, not a value, and nothing
-    // assembly-supplied reaches it.
-    throw wrapError(
-      `Lambda '${displaySafe(logicalId)}' has ` +
-        `Metadata['aws:asset:path']='${displaySafe(assetPath)}', an absolute path. ` +
-        `cdkd bind-mounts this directory into the container, where the assembly's own ` +
-        `handler code can read it, so an absolute value would expose an arbitrary ` +
-        `directory on this machine. Refusing to mount it. ` +
-        `If the assembly was synthesized with \`cdk synth --no-staging\` (or the ` +
-        `\`aws:cdk:disable-asset-staging\` context flag), that is the cause and it is ` +
-        `benign — re-synthesize without it. Otherwise the synth output was hand-modified ` +
-        `or generated by a non-CDK toolchain.`
-    );
+    // ACCEPTED — see the header. `path.resolve` only normalises here, the value
+    // already being absolute; it is what makes the warning name the directory
+    // that is really mounted rather than an unfolded spelling of it.
+    const absolute = resolve(assetPath);
+    const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
+    if (escape !== undefined) {
+      // WARN, never throw: the one producer of this shape is a real
+      // `cdk synth --no-staging`, and refusing it rejects the output of a
+      // documented CDK CLI flag. The warning exists so an absolute path the
+      // user did NOT expect is visible rather than silent, so it names the
+      // directory and says what is done with it.
+      // cdkd-raw-beside-safe: every RENDERED operand is a `displaySafe(...)`
+      // call. What the fence reads as a raw neighbour is `escape.escape ===
+      // 'symlink'`, a DISCRIMINANT comparison choosing between two of this
+      // file's literals — it selects text, it does not render a value.
+      getLogger().warn(
+        `Lambda '${displaySafe(logicalId)}' has an absolute ` +
+          `Metadata['aws:asset:path'] pointing outside the assembly: ` +
+          `'${displaySafe(absolute)}'` +
+          (escape.escape === 'symlink'
+            ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
+            : '') +
+          `. cdkd will bind-mount that directory into the container read-only, where ` +
+          `the code in this assembly can read it. This is what ` +
+          `cdk synth --no-staging emits, and is expected for it; if you did not ` +
+          `synthesize with that flag, treat this assembly as untrusted.`
+      );
+    }
+    return absolute;
   }
   // RESOLVE against the manifest's directory, CONTAIN within the app's outdir.
   const resolved = resolveAssemblyPath(manifestDir, assetPath, {

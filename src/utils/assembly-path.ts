@@ -333,6 +333,55 @@ export function resolveAssemblyPath(
 }
 
 /**
+ * Whether an ALREADY-ABSOLUTE assembly-supplied path lies outside `bound`.
+ *
+ * {@link resolveAssemblyPath} cannot answer this, and the reason is structural
+ * rather than an oversight: its lexical arm joins with `path.join`, which does
+ * NOT honour a leading separator, so an absolute candidate is folded INTO the
+ * directory (`join('/tmp/cdk.out', '/abs/foo')` is `/tmp/cdk.out/abs/foo`) and
+ * the verdict describes a path no caller will open. A site that HONOURS an
+ * absolute value needs the verdict about the value itself.
+ *
+ * The one caller is `cdkd local invoke` / `cdkd local start-api`'s
+ * `Metadata['aws:asset:path']` (issue
+ * [#3494](https://github.com/go-to-k/cdkd/issues/3494)). Those honour an
+ * absolute path because `cdk synth --no-staging` emits one — CDK writes the
+ * asset's absolute SOURCE directory under `aws:cdk:disable-asset-staging`,
+ * usually outside the outdir — and they WARN rather than refuse when it leaves
+ * the bound, so this returns a verdict rather than throwing.
+ *
+ * It exists HERE, beside `resolveAssemblyPath`, so the containment rule has one
+ * spelling: it reuses this module's own {@link isInside} and
+ * {@link resolveThroughLinks}, symlink arm included, rather than letting a
+ * caller re-spell `path.relative` and drift from it.
+ *
+ * `bound` itself is NOT an escape, unlike in `resolveAssemblyPath`, where an
+ * empty `path.relative` means "names the directory rather than a file inside
+ * it". An asset path legitimately names a DIRECTORY, so a value equal to the
+ * bound is inside it and reporting it as outside would be a false statement.
+ */
+export function absoluteAssemblyPathEscape(
+  bound: string,
+  absolutePath: string
+): Extract<ResolvedAssemblyPath, { contained: false }> | undefined {
+  const resolvedBound = path.resolve(bound);
+  const target = path.resolve(absolutePath);
+
+  if (!isInside(resolvedBound, target) && target !== resolvedBound) {
+    return { contained: false, escape: 'lexical', path: target };
+  }
+
+  const realBound = resolveThroughLinks(resolvedBound);
+  if (realBound !== undefined) {
+    const realTarget = resolveThroughLinks(target);
+    if (realTarget !== undefined && !isInside(realBound, realTarget) && realTarget !== realBound) {
+      return { contained: false, escape: 'symlink', path: target, realPath: realTarget };
+    }
+  }
+  return undefined;
+}
+
+/**
  * The shared tail of every containment refusal: what the value resolved to,
  * what it escaped, and why that means the assembly is not CDK-generated. Each
  * call site supplies its own subject ("Stack 'X' has templateFile='...' which

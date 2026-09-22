@@ -6,15 +6,25 @@
  *
  * Both resolvers — `cdkd local invoke`'s in `src/local/lambda-resolver.ts` and
  * `cdkd local start-api`'s in `src/cli/commands/local-start-api.ts` — spelled
- * the resolution as `isAbsolute(p) ? p : resolve(cdkOutDir, p)`, so an
- * absolute value was honoured ON PURPOSE and `..` folded exactly as `join`
- * does. Measured before the fix against a throwaway directory beside the
- * assembly: both shapes, at both sites, returned the outside directory
- * verbatim as the path to mount.
+ * the resolution as `isAbsolute(p) ? p : resolve(cdkOutDir, p)`, so `..` folded
+ * exactly as `join` does and left the assembly silently. Measured before the
+ * fix against a throwaway directory beside the assembly: both shapes, at both
+ * sites, returned the outside directory verbatim as the path to mount.
  *
- * TWO REFUSALS, and both polarities of each, per site. They are asserted apart
- * because they answer different questions: refusing `..` while honouring an
- * absolute path would close almost nothing and look closed.
+ * THE TWO SHAPES ARE ANSWERED DIFFERENTLY, and the asymmetry is the whole
+ * decision, so each site asserts BOTH arms:
+ *
+ * - a RELATIVE escape (`../throwaway-victim`) is REFUSED — no real synth emits
+ *   one;
+ * - an ABSOLUTE value is ACCEPTED, with a WARNING naming the path when it
+ *   leaves the asset outdir and SILENCE when it does not. `cdk synth
+ *   --no-staging` emits exactly that shape (the asset's absolute source
+ *   directory, measured on aws-cdk-lib 2.268), so refusing it would reject the
+ *   output of a documented CDK CLI flag.
+ *
+ * The relative case asserts `warn` was NOT called, and the absolute one asserts
+ * it WAS: a regression that collapsed the two arms into one behaviour would
+ * otherwise leave a suite that still passes.
  *
  * THE WIRING PAIR is the part a guard-only suite misses. On
  * go-to-k/cdkd#3493 the whole suite stayed green with the bound argument
@@ -27,7 +37,7 @@
  * - `../../victim` REFUSED from that same manifest — reds if the bound is
  *   widened past the app outdir (fails open).
  */
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +45,7 @@ import { join } from 'node:path';
 import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 function tmp(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-local-asset-')));
@@ -129,33 +140,43 @@ const SITES = [
 
 for (const site of SITES) {
   describe(`aws:asset:path containment — ${site.name}`, () => {
-    it('REFUSES an absolute value, with the absolute-path wording', () => {
+    it('ACCEPTS an absolute value that escapes, and WARNS naming the path', () => {
+      // THE `cdk synth --no-staging` SHAPE. Under
+      // `aws:cdk:disable-asset-staging` upstream writes the asset's absolute
+      // SOURCE directory, normally outside the outdir (measured, aws-cdk-lib
+      // 2.268). Refusing it would reject the output of a documented CDK CLI
+      // flag, so it is accepted and the escape is a warning instead.
       const a = assembly('/placeholder');
+      const victim = join(a.outer, 'throwaway-victim');
       (
         (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
-      )['aws:asset:path'] = join(a.outer, 'throwaway-victim');
+      )['aws:asset:path'] = victim;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
 
-      expect(() => site.call(a)).toThrow(/an absolute path/);
-      expect(() => site.call(a)).toThrow(/Refusing to mount it/);
-      // The two refusals must stay tellable apart: the absolute one must NOT
-      // borrow the containment sentence.
-      expect(() => site.call(a)).not.toThrow(/outside '/);
+      expect(site.call(a)).toBe(victim);
+
+      const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(said).toMatch(/absolute/);
+      // Naming the path is the whole point of the warning: an absolute path
+      // the user did not expect has to be VISIBLE, not silent.
+      expect(said).toContain(victim);
+      expect(said).toMatch(/--no-staging/);
+      warn.mockRestore();
     });
 
-    it('names --no-staging as the benign cause, since a real cdk synth emits one', () => {
-      // `aws:cdk:disable-asset-staging` makes upstream `AssetStaging`
-      // return the absolute SOURCE directory verbatim rather than relativising
-      // it, so this refusal fires on a genuine CDK assembly (measured on
-      // aws-cdk-lib 2.268). The message must not call that "hand-modified",
-      // and must name a remedy.
+    it('ACCEPTS an absolute value INSIDE the outdir, and stays SILENT', () => {
+      // Nothing escaped, so there is nothing to warn about — a warning here
+      // would train the reader to ignore the one that matters.
       const a = assembly('/placeholder');
+      const inside = join(a.outdir, 'asset.abc123');
       (
         (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
-      )['aws:asset:path'] = join(a.outer, 'throwaway-victim');
+      )['aws:asset:path'] = inside;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
 
-      expect(() => site.call(a)).toThrow(/--no-staging/);
-      expect(() => site.call(a)).toThrow(/aws:cdk:disable-asset-staging/);
-      expect(() => site.call(a)).toThrow(/re-synthesize without it/i);
+      expect(site.call(a)).toBe(inside);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
+      warn.mockRestore();
     });
 
     it('REFUSES an escaping relative value, with the containment wording', () => {
@@ -163,8 +184,15 @@ for (const site of SITES) {
 
       expect(() => site.call(a)).toThrow(/outside '/);
       expect(() => site.call(a)).toThrow(/hand-modified or generated by a non-CDK toolchain/);
-      // ...and must NOT claim the value was absolute.
-      expect(() => site.call(a)).not.toThrow(/an absolute path/);
+      // A RELATIVE escape is still REFUSED, and that asymmetry is the decision:
+      // an absolute path has a legitimate producer (`cdk synth --no-staging`),
+      // `../../victim` has none. So this must THROW, not warn — a regression
+      // that relaxed it into a warning alongside the absolute arm would
+      // otherwise look like success.
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      expect(() => site.call(a)).toThrow();
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
 
     it('REFUSES one that stays inside lexically but leads out through a symlink', () => {
@@ -238,13 +266,20 @@ describe('aws:asset:path containment — cdkd local invoke layer assets', () => 
     (resolveLambdaTarget('Stk:Fn', [a.stack]) as { layers: { assetPath: string }[] })
       .layers[0]!.assetPath;
 
-  it('REFUSES an absolute layer asset path', () => {
+  it('ACCEPTS an absolute layer asset path, and WARNS naming it', () => {
+    // A layer's directory mounts at `/opt`, so it takes the same decision as
+    // the function's own — including the `--no-staging` shape, which CDK emits
+    // for a `LayerVersion` asset exactly as it does for a function's.
     const a = assembly('/placeholder', { layer: true });
+    const victim = join(a.outer, 'throwaway-victim');
     (
       (a.stack.template.Resources!['Lyr']!.Metadata as Record<string, string>)
-    )['aws:asset:path'] = join(a.outer, 'throwaway-victim');
+    )['aws:asset:path'] = victim;
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
 
-    expect(() => layerPath(a)).toThrow(/an absolute path/);
+    expect(layerPath(a)).toBe(victim);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(victim);
+    warn.mockRestore();
   });
 
   it('REFUSES an escaping layer asset path', () => {
