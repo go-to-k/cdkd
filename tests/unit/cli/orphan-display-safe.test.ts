@@ -777,7 +777,27 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       expect(message).not.toContain('characters withheld');
     });
 
-    it('does not cut a legitimate region list either', async () => {
+    it('CUTS an over-long region at the TIGHTER default, unlike a construct path', async () => {
+      // The region list keeps `displayIdent`'s 255 default rather than the
+      // wider `STACK_REF_MAX_CODE_POINTS` the path list passes: a region's
+      // grammar is ~25 characters, and a region read out of a planted S3 key
+      // segment is unbounded. This is the case that tells the two caps apart —
+      // a short region cannot, so passing the wider cap here was invisible.
+      const overLong = `us-east-${'9'.repeat(400)}`;
+      expect(overLong.length).toBeGreaterThan(255);
+      expect(overLong.length).toBeLessThan(STACK_REF_MAX_CODE_POINTS);
+      primeStacks([
+        { stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } },
+      ]);
+      mockListStacks.mockResolvedValue([
+        { stackName: 'MyStack', region: overLong },
+        { stackName: 'MyStack', region: 'eu-west-1' },
+      ]);
+      await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).toContain('characters withheld');
+    });
+
+    it('leaves an ordinary region list uncut', async () => {
       primeStacks([
         { stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } },
       ]);
@@ -786,6 +806,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         { stackName: 'MyStack', region: 'eu-west-1' },
       ]);
       await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).toContain('multiple regions: us-east-1, eu-west-1.');
       expect(reportedError()).not.toContain('characters withheld');
     });
   });

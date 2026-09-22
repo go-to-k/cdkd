@@ -121,6 +121,15 @@ function displayIdentList(values: readonly string[], separator: string): string 
  * under `displaySafe` a planted state key makes `pickStackRegion` print
  * `Available regions: us-east-1.` in the sentence that just said that region
  * holds no state, and `multiple regions: us-east-1, us-east-1` in the other.
+ * THE CAP IS THE 255 DEFAULT, deliberately, and NOT the
+ * `STACK_REF_MAX_CODE_POINTS` its sibling `displayIdentList` passes. A region's
+ * grammar is ~25 characters, so the default is already generous, and
+ * `display-safe.ts` asks each caller to keep the TIGHTEST cap its grammar
+ * allows — a region read out of a planted S3 key segment is unbounded, and the
+ * tighter cap is what bounds that payload. The wider one was passed here first
+ * for symmetry with the path list, which is the wrong reason: a construct path
+ * genuinely exceeds 255 and a region never does.
+ *
  * `(legacy)` is cdkd's OWN placeholder, not a value read from anywhere, and it
  * is outside `PLAIN_IDENT`, so routing it through the helper would quote a
  * string no attacker controls. **The carve-out is SAFE because of that same
@@ -140,11 +149,7 @@ function displayIdentList(values: readonly string[], separator: string): string 
  */
 function displayRegionList(refs: readonly { region?: string | undefined }[]): string {
   return refs
-    .map((ref) =>
-      ref.region === undefined
-        ? '(legacy)'
-        : displayIdent(ref.region, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })
-    )
+    .map((ref) => (ref.region === undefined ? '(legacy)' : displayIdent(ref.region)))
     .join(', ');
 }
 
