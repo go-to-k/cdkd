@@ -6254,3 +6254,71 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
     expect(revertAt, 'runRevert moved INSIDE the detection-only gate').toBeGreaterThan(gateEnd);
   });
 });
+
+/**
+ * `''` is not an identity (issue go-to-k/cdkd#3520).
+ *
+ * PER BUILDER, deliberately. An aggregate case over all of them stays green
+ * for a fix applied to only some, which is exactly how the first cut of
+ * `malformedOrphanResourcePropertiesRefusalMessage`'s own normalisation failed
+ * — it guarded one helper while the rest still rendered the placeholder. The
+ * enumeration is derived below rather than hand-listed, so a builder that
+ * later gains an optional identifier joins it or the derivation fails.
+ */
+describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)", () => {
+  const WITH_OPTIONAL_REGION: ReadonlyArray<
+    readonly [string, (s: string, r: string | undefined) => string]
+  > = [
+    ['malformedResourcesWarning', (s, r) => malformedResourcesWarning(s, r)],
+    [
+      'malformedResourcePropertiesRefusalMessage',
+      (s, r) => malformedResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedResourcePropertiesWarning',
+      (s, r) => malformedResourcePropertiesWarning(s, r, ['A']),
+    ],
+    [
+      'malformedOrphanResourcePropertiesRefusalMessage',
+      (s, r) => malformedOrphanResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+  ];
+
+  for (const [label, build] of WITH_OPTIONAL_REGION) {
+    it(`${label} renders '' exactly as it renders undefined`, () => {
+      // The whole point: the two must be the SAME string. Asserting only that
+      // `<unrenderable>` is absent would pass for a builder that renders `''`
+      // bare, which is a different defect.
+      expect(build('S', '')).toBe(build('S', undefined));
+      expect(build('S', '')).not.toContain(UNRENDERABLE);
+      expect(build('S', '')).not.toContain('--stack-region');
+      // The CONTROL, or the case also passes for a builder that drops every
+      // region: a real one is still named and still carries the flag.
+      const real = build('S', 'us-east-1');
+      expect(real).toContain('us-east-1');
+      expect(real).toContain('--stack-region');
+    });
+  }
+
+  it('the enumeration above is every exported builder taking an optional region', () => {
+    // Derived from the source, so a builder that gains the parameter later
+    // fails here instead of joining the ungated side silently. The two
+    // `refuseMalformed*` wrappers are excluded on a PROVEN premise rather than
+    // by omission: they pass their identifiers straight to a builder above and
+    // render nothing themselves.
+    const src = readFileSync(join(repoRoot, 'src/state/malformed-resources-bag.ts'), 'utf8');
+    const taking = [
+      ...src.matchAll(/export function (\w+)\(([^)]*)\)/gs),
+    ]
+      .filter(([, , params]) => /(raw)?[Rr]egion\??: string \| undefined/.test(params!))
+      .map(([, name]) => name!);
+    expect(taking.length, 'the derivation matched nothing').toBeGreaterThan(0);
+    const messageBuilders = taking.filter((n) => !n.startsWith('refuseMalformed'));
+    expect(messageBuilders.sort()).toEqual(WITH_OPTIONAL_REGION.map(([n]) => n).sort());
+    // The excluded wrappers, named so the exclusion is a claim rather than a gap.
+    expect(taking.filter((n) => n.startsWith('refuseMalformed')).sort()).toEqual([
+      'refuseMalformedResourceProperties',
+      'refuseMalformedResourcePropertiesForOrphan',
+    ]);
+  });
+});

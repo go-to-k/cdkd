@@ -992,8 +992,38 @@ export function malformedRenderedContainersWarning(
   );
 }
 
+/**
+ * `''` is NOT an identity, and every renderer below treats it as one
+ * (go-to-k/cdkd#3520). `safeStackName('')` and `safeRegion('')` are both
+ * `UNRENDERABLE`, so an empty region rendered `('<unrenderable>')` in the
+ * clause AND `--stack-region '<unrenderable>'` in the command the reader
+ * pastes — a flag that selects no record at all, on a message whose whole job
+ * is to send them to the damaged one. `undefined` already means "absent" to
+ * {@link stackClause} and {@link inspectCommand}, which drop the clause and
+ * the flag, and that is the right answer for both identifiers.
+ *
+ * NORMALISE ONCE AT THE BOUNDARY, never inside the helpers — the rule
+ * {@link malformedOrphanResourcePropertiesRefusalMessage} already records from
+ * measurement: guarding inside ONE helper fixed only part of its message while
+ * the others still rendered the placeholder.
+ *
+ * Not reachable from today's callers: `cdkd state`'s sites sit below an
+ * `if (!ref.region) throw`, which is falsy and so rejects `''` too, and
+ * `cdkd export` normalises at its own call. What was missing is the CONTRACT —
+ * a caller that hands `''` got the placeholder silently, and the guard that
+ * would have caught it lived in another file.
+ */
+function absentIfEmpty(value: string | undefined): string | undefined {
+  return value === '' ? undefined : value;
+}
+
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
-export function malformedResourcesWarning(stackName: string, region: string | undefined): string {
+export function malformedResourcesWarning(
+  rawStackName: string,
+  rawRegion: string | undefined
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${malformedStateDiagnosis(stackName, region)} Continuing with an EMPTY resource set: this ` +
     `command's output describes zero resources, which is not the same as the stack having none. ` +
@@ -2130,10 +2160,12 @@ function namedPropertyBagsClause(
  * `cdkd diff` instead of weakening the guard.
  */
 export function malformedResourcePropertiesRefusalMessage(
-  stackName: string | undefined,
-  region: string | undefined,
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
   logicalIds: readonly string[]
 ): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd deploy' can WRITE state and ` +
     `AWS resources, so it refuses rather than continuing — under '--dry-run' too, because the ` +
@@ -2619,10 +2651,12 @@ export function refuseMalformedResourcePropertiesForOrphan(
  * emits.
  */
 export function malformedResourcePropertiesWarning(
-  stackName: string | undefined,
-  region: string | undefined,
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
   logicalIds: readonly string[]
 ): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${namedPropertyBagsClause(stackName, region, logicalIds)} Continuing with those maps ` +
     `EMPTY: what these records are stored as holding is NOT what this preview compares against. ` +
