@@ -207,6 +207,12 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
   //
   // `default` needs no special case any more: with no `=` there is no path
   // list at all, so the agent-socket form falls out structurally.
+  //
+  // The assumption this rests on, and the input that falsifies it: buildx's
+  // grammar allows ONE id group per `--ssh` value. If that ever changes,
+  // `k=/a,b=/home/victim/.ssh/id_rsa` makes the second group a relative
+  // string that folds inside the context and goes silent again. Run that
+  // value through here before trusting this split after a buildx upgrade.
   const ssh = source.dockerBuildSsh ?? '';
   const sshEq = ssh.indexOf('=');
   for (const entry of sshEq < 0 ? [] : ssh.slice(sshEq + 1).split(',')) {
