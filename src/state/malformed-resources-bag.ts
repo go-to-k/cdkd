@@ -1781,6 +1781,40 @@ function stackClause(stackName: string | undefined, region: string | undefined):
 }
 
 /**
+ * Could this identifier, once rendered, be read as a LINE cdkd wrote
+ * (go-to-k/cdkd#3523)?
+ *
+ * The one message that SUBSTITUTES into `cdkd state orphan` rather than
+ * offering a hole is the strongest instance of the forgery the three template
+ * remedies are gated against: a forged label renders above a genuine,
+ * already-runnable `Drop the record:` line, and `--yes` can be spelled into it
+ * — `cdkd state orphan` prompts by default but that flag skips the prompt, so
+ * a paste deletes with no confirmation.
+ *
+ * Keyed on the SHAPE, deliberately, not on {@link isPasteableIdent} and not on
+ * a list of labels:
+ *
+ * - `isPasteableIdent` refuses every space, which withholds the drop command
+ *   from a legacy record whose name merely needs quoting — the path
+ *   go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and this
+ *   command is the operator's way out. Measured: `It's Legacy` loses it. That
+ *   is the right gate where the command is a TEMPLATE and costs nothing; here
+ *   it is broader than the hazard.
+ * - a list of the module's labels would go stale the moment one is added. This
+ *   does not know the labels; it knows the SEPARATOR every one of them uses.
+ *
+ * What it does NOT close, stated rather than implied: an identifier spelling a
+ * FOREIGN command (`x aws s3 rm s3://... --recursive`) has no `: ` and no
+ * `cdkd `, so it passes. That residual belongs to go-to-k/cdkd#3519, which is
+ * about making the labels unforgeable at all eighteen ungated messages rather
+ * than gating one caller.
+ */
+function couldForgeALine(value: string): boolean {
+  const rendered = safeIdentifier(value, STACK_REF_MAX_CODE_POINTS);
+  return /: /.test(rendered) || /(^|\s)cdkd\s/.test(rendered);
+}
+
+/**
  * The DESTRUCTIVE remedy, built the way {@link inspectCommand} builds the
  * read-only one, and the region clause follows the SAME rule for two reasons
  * that pull in opposite directions.
@@ -1849,8 +1883,13 @@ function dropRecordCommand(
   // that do NOT normalise, so a fourth caller added later inherits the floor
   // rather than the defect.
   const known = region === undefined || region === '' ? undefined : region;
-  const regionExact = known === undefined || rendersExactly(known);
-  if (!rendersExactly(stackName) || !regionExact) {
+  // EXACT and unable to forge a line (go-to-k/cdkd#3523). The second half is
+  // this site's alone: its three siblings offer a hole template, where the
+  // broader {@link isPasteableIdent} costs nothing, while this one SUBSTITUTES
+  // and that breadth would take the go-to-k/cdkd#3359 recovery path with it.
+  const usable = (v: string): boolean => rendersExactly(v) && !couldForgeALine(v);
+  const regionExact = known === undefined || usable(known);
+  if (!usable(stackName) || !regionExact) {
     // A TEMPLATE, keyed to what IS trusted: an absent region stays absent (the
     // flag would select nothing on a legacy record), an exact one is kept
     // (it narrows the delete), only an altered one becomes a hole.

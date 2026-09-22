@@ -100,10 +100,14 @@ DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128), and
 `divergentRecordRegionRefusalMessage`, which spells its own because it renders a
 KEY region at the state-record cap (go-to-k/cdkd#3328).
 
-`dropRecordCommand` is the EXCEPTION and it is open: it SUBSTITUTES rather than
-templating and still gates on `rendersExactly` alone — a trade-off, not an
-oversight (go-to-k/cdkd#3523 carries why, and the behaviour is pinned). Every
-other message here offers a read ONLY and is ungated. Borrowing a gate across
+`dropRecordCommand` gates DIFFERENTLY and the difference is the point
+(go-to-k/cdkd#3523): it SUBSTITUTES rather than templating, so
+`isPasteableIdent`'s refusal of every space would withhold the drop command
+from a legacy record whose name merely needs quoting — the go-to-k/cdkd#3359
+recovery path. It keys on the SHAPE of a forged line instead: `": "` or a
+`cdkd ` invocation in the sanitized form. Not a list of this module's labels,
+which would go stale; not a charset, which is broader than the hazard here.
+Every other message offers a read ONLY and is ungated. Borrowing a gate across
 sites is safe only DOWNWARD: a 128-capped gate at a 1152-capped site withholds;
 the reverse names a region its own clause renders truncated.
 

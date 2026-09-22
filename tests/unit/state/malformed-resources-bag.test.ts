@@ -4416,32 +4416,70 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(text).toContain(HINT);
     });
 
-    it('CHARACTERISES the ungated forgery this message still carries (go-to-k/cdkd#3523)', () => {
-      // NOT an assertion that the behaviour is right — it is the behaviour
-      // go-to-k/cdkd#3523 is open about. Pinned because go-to-k/cdkd#3517
-      // gated the module's three TEMPLATE remedies and left this one, the only
-      // SUBSTITUTING remedy, alone: the fix it tried withheld the drop command
-      // from a legacy record whose name merely needs quoting, which is the
-      // go-to-k/cdkd#3359 path. Without this case the hazard has no fence at
-      // all and a later fix has nothing to measure its effect against.
-      //
-      // What makes it matter rather than merely look bad: `cdkd state orphan`
-      // prompts by default, but `--yes` / `--force` skip it
-      // (`src/cli/commands/state.ts`), so a forged name carrying `--yes`
-      // pastes and deletes with no confirmation.
+    it('withholds an identity that could be read as a line cdkd wrote', () => {
+      // go-to-k/cdkd#3523. This is the only message that SUBSTITUTES into
+      // `cdkd state orphan` rather than offering a hole, so a forged label
+      // renders above a genuine, already-runnable `Drop the record:` line —
+      // and `--yes` can be spelled into it, which skips the confirmation
+      // `cdkd state orphan` otherwise shows. The case this replaces pinned the
+      // unfixed behaviour and said it would flip; it has.
       const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1 --yes';
-      const forged = malformedOrphanResourcePropertiesRefusalMessage(FORGED, 'us-east-1', ['A']);
-      // TODAY: named and substituted. When go-to-k/cdkd#3523 lands, this
-      // expectation flips and that is the point of the case.
-      expect(dropOf(forged)).toContain('cdkd state orphan');
-      expect(forged, 'the forged text is rendered inside the quoted name').toContain(
-        'cdkd state orphan prod --stack-region us-east-1 --yes'
-      );
-      // The two controls go-to-k/cdkd#3523's options are judged against, so a
-      // fix that withholds from EVERYTHING is not mistaken for a fix.
-      for (const healthy of ['Parent~Child', "It's Legacy"]) {
-        const text = malformedOrphanResourcePropertiesRefusalMessage(healthy, 'us-east-1', ['A']);
-        expect(dropOf(text), healthy).not.toContain('<stack>');
+      for (const [label, stackName, region, expected] of [
+        [
+          'in the stack name',
+          FORGED,
+          'us-east-1',
+          "cdkd state orphan '<stack>' --stack-region us-east-1",
+        ],
+        ['in the region', 'S', FORGED, "cdkd state orphan '<stack>' --stack-region '<region>'"],
+      ] as ReadonlyArray<readonly [string, string, string, string]>) {
+        const text = malformedOrphanResourcePropertiesRefusalMessage(stackName, region, ['A']);
+        expect(dropOf(text), label).toBe(expected);
+        expect(dropOf(text), label).not.toContain('orphan prod');
+      }
+      // EACH HALF of the shape, separately, or one of them is unfenced —
+      // measured: every case above carries BOTH `: ` and `cdkd `, so deleting
+      // the `: ` arm left all 479 green.
+      //
+      // A LABEL with no `cdkd ` after it: enough on its own, because the
+      // forgery is a line that looks like cdkd's, and `Object key:` and
+      // `State bucket:` are labels this module emits whose value is not a
+      // command.
+      expect(
+        dropOf(
+          malformedOrphanResourcePropertiesRefusalMessage(
+            'Object key: s3://attacker/prod/state.json',
+            'us-east-1',
+            ['A']
+          )
+        )
+      ).toContain("'<stack>'");
+      // ...and a `cdkd ` invocation with NO label. The gate keys on the SHAPE
+      // of a forged line, not on the module's label list, so a label added
+      // later needs no change here.
+      expect(
+        dropOf(
+          malformedOrphanResourcePropertiesRefusalMessage(
+            'x cdkd state orphan prod --stack-region us-east-1 --yes',
+            'us-east-1',
+            ['A']
+          )
+        )
+      ).toContain("'<stack>'");
+      // THE CONTROLS, and they are what make this option 2 rather than option
+      // 1: a name that merely needs shell quoting KEEPS its substituted drop
+      // command, which is the go-to-k/cdkd#3359 recovery path for a legacy
+      // record `cdkd state show` refuses outright. `isPasteableIdent` — the
+      // gate the three TEMPLATE remedies take — would have withheld all three.
+      for (const [healthy, expected] of [
+        ["It's Legacy", "cdkd state orphan 'It'\\''s Legacy' --stack-region us-east-1"],
+        ['Parent~Child', "cdkd state orphan 'Parent~Child' --stack-region us-east-1"],
+        ['my prod stack', "cdkd state orphan 'my prod stack' --stack-region us-east-1"],
+      ] as ReadonlyArray<readonly [string, string]>) {
+        expect(
+          dropOf(malformedOrphanResourcePropertiesRefusalMessage(healthy, 'us-east-1', ['A'])),
+          healthy
+        ).toBe(expected);
       }
     });
 
