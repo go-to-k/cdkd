@@ -1039,12 +1039,44 @@ where you said it does and the asset really is outside it. Point `-a` at the
 app's `cdk.out` and select the stack by its display path
 (`cdkd deploy 'MyStage/*'`) instead.
 
-This covers the paths in the table and no others. A Docker asset's BuildKit
-passthroughs (`dockerFile`, build contexts, build secrets, cache import and
-export, `--output`) and its `executable` build script are handed to Docker as
-the manifest writes them, and a file asset's destination bucket and object key
-are likewise taken from the manifest. Treat a Cloud Assembly you did not
-synthesize yourself as you would any other untrusted input.
+## A pre-synthesized assembly is trusted input
+
+The containment rules above cover the paths in that table and no others. The
+rest of an asset manifest is forwarded **as the manifest writes it**, and cdkd
+does that deliberately, matching the CDK CLI. What it will not do is stay quiet
+about it:
+
+| Manifest value | What cdkd does with it | When it warns |
+| --- | --- | --- |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets`, `local invoke`, `local start-api`, `local run-task` and `local invoke-agentcore`, naming the command |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside the output directory; a path inside the build context is usually left quiet |
+| a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
+| `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
+
+The read/write split follows the `dest=` key, not the field: a `cacheFrom`
+carrying a `dest=` is a write and a `cacheTo` carrying a `src=` is a read.
+
+**Two of those are worth stating plainly.** Deploying from a pre-synthesized
+assembly *does* execute code from it, because a Docker asset may declare
+`source.executable` instead of a Dockerfile — so an assembly is not only data,
+and `cdkd local invoke` runs it too. `cdkd local start-service` and
+`cdkd local start-alb` build their ECS container assets through the bundled
+emulator, which runs such an executable **without printing that line**; treat
+those two as executing assembly code as well. And a build secret, an SSH key or a cache
+directory is a host path the CloudFormation template never shows, so reading the
+template is not enough to know what a deploy will touch.
+
+The destination check is a **name-shape** check, not a proof of ownership: a
+bucket named like a CDK bootstrap bucket for your account can still live in
+someone else's. It narrows what a careless manifest gets away with, nothing
+more.
+
+Pointing `-a` at an assembly you did not produce is the same decision as running
+someone else's build output. cdkd cannot make that decision for you: anyone who
+can rewrite a manifest can equally rewrite the Dockerfile, the Lambda asset and
+the template, so a refusal here would stop nothing while breaking the
+split-synth/deploy pipelines that are the normal shape. Synthesize it yourself,
+or read it first.
 
 The nested-stack walk separately refuses an **absolute** `aws:asset:path`, which
 is a "not CDK-generated" tripwire rather than an escape. It is a different

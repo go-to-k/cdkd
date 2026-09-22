@@ -664,11 +664,19 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
       { tag: 't', wrapError: wrapErr, assetOutdir: dir }
     );
 
+    // TWO lines now: this arm also announces that it is about to run a
+    // manifest-chosen command line (go-to-k/cdkd#3497). Assert each, rather
+    // than loosening the count — the point of the case is that the PATH line
+    // describes a working directory, and a laxer assertion would pass on a
+    // regression that emitted the build-context wording twice.
     const lines = cap.warned();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('working directory');
-    expect(lines[0]).toContain('source.executable');
-    expect(lines[0]).not.toContain('BuildKit');
+    expect(lines).toHaveLength(2);
+    const pathLine = lines.find((l) => l.includes('absolute source.directory'));
+    expect(pathLine).toBeDefined();
+    expect(pathLine).toContain('working directory');
+    expect(pathLine).toContain('source.executable');
+    expect(pathLine).not.toContain('BuildKit');
+    expect(lines.some((l) => l.includes('source.executable runs a command'))).toBe(true);
     // ...and the directory really is what the spawn got, so the warning is
     // describing the value that was used.
     expect(spawnStreaming).toHaveBeenCalledWith(
@@ -695,6 +703,49 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('BuildKit');
     expect(lines[0]).not.toContain('working directory');
+  });
+
+  it("WIRES buildDockerImage's (context, outdir) pair into the passthrough warning", async () => {
+    // The callee is fenced in `manifest-passthrough-warnings.test.ts`; this is
+    // the only case that can see the ARGUMENTS. Both are `string`, so a swap
+    // compiles — and a swap is not inert: base and bound trade places,
+    // `contextNarrows` flips, and ordinary relative passthroughs start warning
+    // about paths outside the project. That pair is what five review rounds
+    // were about, and nothing reached this call site with a non-empty field
+    // list before.
+    const { dir, outer } = assembly();
+    const victim = join(outer, 'outside-dir');
+    runDockerStreaming.mockClear();
+    runDockerStreaming.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    const cap = captureWarn();
+
+    mkdirSync(join(dir, 'asset.abc123'));
+
+    // `../Dockerfile` from the context is `<outdir>/Dockerfile` — INSIDE the
+    // outdir, so it must be silent. That is the half that pins the ORDER: an
+    // absolute victim path warns under either arrangement, while this one is
+    // silent only when `base` is the context and `bound` is the outdir. Swap
+    // them and `contextNarrows` flips, `../Dockerfile` resolves against the
+    // outdir instead, lands outside the (now narrower) bound, and warns.
+    writeFileSync(join(dir, 'Dockerfile'), '');
+
+    await buildDockerImage(
+      {
+        source: {
+          directory: 'asset.abc123',
+          dockerFile: '../Dockerfile',
+          dockerOutputs: [`type=local,dest=${victim}`],
+        },
+      },
+      dir,
+      { tag: 't', wrapError: wrapErr, assetOutdir: dir }
+    );
+
+    const lines = cap.warned();
+    expect(lines, lines.join(' | ')).toHaveLength(1);
+    expect(lines[0]).toContain('dockerOutputs');
+    expect(lines[0]).toContain(victim);
+    expect(lines[0]).toContain('cdkd will WRITE to it');
   });
 
   it('measures the absolute path against the APP OUTDIR, not the manifest directory', () => {

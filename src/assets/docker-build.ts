@@ -1,4 +1,4 @@
-import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
+import type { DockerImageAssetSource } from '../types/assets.js';
 import {
   describeDockerFailure,
   getDockerCmd,
@@ -14,7 +14,12 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
+import {
+  warnEscapingBuildKitPaths,
+  warnManifestExecutable,
+} from './manifest-passthrough-warnings.js';
 import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
+import { cacheOptionToFlag } from './docker-cache-option.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -257,6 +262,10 @@ export async function buildDockerImage(
     if (!cmd) {
       throw options.wrapError('asset source.executable[] is empty');
     }
+    // BEFORE anything is spawned, and before the cwd is even resolved: this is
+    // the line that tells a user `-a <dir>` runs code from the assembly
+    // (go-to-k/cdkd#3497). Warn, never refuse — the decision on that issue.
+    warnManifestExecutable(source.executable);
     // The executable runs from the asset directory when one is provided
     // (mirrors CDK CLI's `cwd: assetPath` in `buildExternalAsset`). When
     // `directory` is unset, the executable runs from `cdkOutDir`.
@@ -352,6 +361,15 @@ export async function buildDockerImage(
       'image pushed to the repository this manifest names'
   );
   buildArgs.push('.');
+
+  // Judge the BuildKit passthroughs against the SAME pair the context
+  // directory was judged against, and do it HERE rather than inside
+  // `buildDockerBuildCommand`: that function is a pure argv builder with no
+  // outdir to compare to, and a relative `--secret src=` / `--build-context`
+  // resolves against the build's cwd, which is `contextDir` and is only known
+  // now (go-to-k/cdkd#3497). Above the spawn, so the line precedes the read or
+  // the write it describes.
+  warnEscapingBuildKitPaths(source, contextDir, options.assetOutdir ?? cdkOutDir);
 
   // The reported site of issue #2623: this rendered every `--build-arg` VALUE
   // into `cdkd deploy --verbose` output.
@@ -463,14 +481,4 @@ export function buildDockerBuildCommand(
   }
 
   return args;
-}
-
-function cacheOptionToFlag(option: DockerCacheOption): string {
-  let flag = `type=${option.type}`;
-  if (option.params) {
-    for (const [k, v] of Object.entries(option.params)) {
-      flag += `,${k}=${v}`;
-    }
-  }
-  return flag;
 }
