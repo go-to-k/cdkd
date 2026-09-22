@@ -236,6 +236,26 @@ for (const site of SITES) {
       expect(() => site.call(a)).toThrow(/outside '/);
     });
 
+    it("WIRING: an absolute path in the app outdir is SILENT below a Stage manifest", () => {
+      // The ABSOLUTE arm has its own bound, and a top-level shape cannot see
+      // it — `manifestDir === assetOutdir` there, so a probe swapping one for
+      // the other stays green. Measured: it did. Below a Stage they differ,
+      // and this asset sits in the app outdir, OUTSIDE the Stage's manifest
+      // directory. Bound correctly, nothing escaped and there is no warning;
+      // bound to `manifestDir`, cdkd cries wolf on every Stage asset that
+      // `--no-staging` made absolute.
+      const a = assembly('/placeholder', { stage: true });
+      const inside = join(a.outdir, 'asset.abc123');
+      (
+        (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
+      )['aws:asset:path'] = inside;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+
+      expect(site.call(a)).toBe(inside);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/aws:asset:path/);
+      warn.mockRestore();
+    });
+
     it('WIRING: with no assetManifestPath, the BASE falls back to the outdir, not the cwd', () => {
       // `AssemblyReader` always sets `assetOutdir` but may leave
       // `assetManifestPath` undefined. Taking `process.cwd()` as the base then
