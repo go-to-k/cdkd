@@ -1049,7 +1049,7 @@ about it:
 | Manifest value | What cdkd does with it | When it warns |
 | --- | --- | --- |
 | `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets`, `local invoke`, `local start-api`, `local run-task` and `local invoke-agentcore`, naming the command |
-| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside both the build context and the output directory |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside the output directory; a path inside the build context is usually left quiet |
 | a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
 | `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
 

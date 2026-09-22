@@ -5,9 +5,11 @@ import type { DockerCacheOption } from '../types/assets.js';
  * BuildKit receives.
  *
  * Its own LEAF module, imported by both `docker-build.ts` (which pushes it
- * into the argv) and `manifest-passthrough-warnings.ts` (which judges it),
- * because those two import each other and a shared helper in either would be
- * a cycle.
+ * into the argv) and `manifest-passthrough-warnings.ts` (which judges it).
+ * Not because those two form a cycle — `docker-build.ts` imports the warnings
+ * module and not the reverse — but because the helper belongs to NEITHER: it
+ * is the shared definition of what BuildKit will be handed, and keeping it in
+ * the builder would make the judge import the thing it judges.
  *
  * **It is the one spelling on purpose, and the reason is a defect**
  * ([#3497](https://github.com/go-to-k/cdkd/issues/3497)): the warning layer

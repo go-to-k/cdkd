@@ -108,9 +108,20 @@ function candidateHostPaths(
     const key = part.slice(0, eq).trim().toLowerCase();
     const v = part.slice(eq + 1).trim();
     if (v.length === 0) continue;
-    // `type=local` / `id=mysecret` / `mode=max` name no path. Everything else
-    // with a key is a candidate; the containment check filters the rest.
-    if (key === 'type' || key === 'id' || key === 'mode' || key === 'name') continue;
+    // **A KEYED part is a candidate only under `src` / `source` / `dest`** —
+    // the keys that make BuildKit touch a file. An earlier revision took every
+    // key not on a small skip list, reasoning that a non-path folds inside the
+    // build context and is dropped; that holds only while the context
+    // exemption is ON, and it is off for a write and off whenever the context
+    // CONTAINS the outdir — the ordinary `directory: '.'` shape. There it
+    // announced a registry ref, a GHA cache scope and an env-var NAME as host
+    // paths cdkd would read (`type=registry,ref=…` → `<root>/ghcr.io/…`).
+    //
+    // This gives up nothing the round that introduced it bought: all three CSV
+    // injections closed then smuggle `src=` or `dest=`, because that is what
+    // makes BuildKit open a file. What closed them was judging the RENDERED
+    // string rather than the struct, which is untouched here.
+    if (key !== 'src' && key !== 'source' && key !== 'dest') continue;
     // `bareIsWrite` governs the BARE branch only. Letting it decide here too
     // made every keyed parameter of `--output` a write, so
     // `dockerOutputs: ['type=image,push=true']` warned "cdkd will WRITE to"
@@ -129,6 +140,15 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
     refs.push({ field: 'dockerFile', where: 'dockerFile', path: source.dockerFile, write: false });
   }
   for (const [k, v] of Object.entries(source.dockerBuildContexts ?? {})) {
+    // The RENDERED element, like every other field — `args.push('--build-context',
+    // `${k}=${v}`)`, and buildx takes everything after the FIRST `=` as the
+    // value, so a key containing `=` makes BuildKit's value a strict superset
+    // of `v`. No reachable payload exists (anything hidden that way must itself
+    // contain `=`, and a real target like `.ssh/id_rsa` does not), but four
+    // rounds running it was the part left safe BY ARGUMENT that broke next, so
+    // there is no argument left here to be wrong about. NOT through
+    // `candidateHostPaths`: this value is not CSV, and splitting it on commas
+    // would break a legitimate path containing one.
     // No remote-reference filter here, and a probe is why. A first revision
     // skipped `docker-image://` / `https://` / `git@` values as "not host
     // paths"; deleting that guard reddened nothing, because each of those
@@ -143,16 +163,26 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
     // It is buildx-experimental (`BUILDX_EXPERIMENTAL=1`), and the miss costs
     // a warning rather than a refusal, so it is recorded here rather than
     // special-cased back in.
-    refs.push({ field: 'dockerBuildContexts', where: k, path: v, write: false });
+    const rendered = `${k}=${v}`;
+    refs.push({
+      field: 'dockerBuildContexts',
+      where: k,
+      path: rendered.slice(rendered.indexOf('=') + 1),
+      write: false,
+    });
   }
-  // `--ssh <id>=<socket|key>[,<key>...]` — the keys AFTER the first carry no
-  // `=`, which is how a first revision dropped them. `default` alone is the
-  // agent socket from the environment, not a manifest-chosen path, and is
-  // skipped for that reason rather than by accident.
-  for (const { path: p } of candidateHostPaths(source.dockerBuildSsh ?? '', {
-    bareIsWrite: false,
-  })) {
-    if (p === 'default') continue;
+  // `--ssh <id>=<socket|key>[,<key>...]` is NOT the keyed-CSV shape the other
+  // option strings have, so it does not go through `candidateHostPaths`:
+  // there the key selects whether a part is a path, while here EVERY part is
+  // one. The ID is an arbitrary name the manifest chooses (`k=`, `mykey=`),
+  // so a `src|source|dest` rule would drop every real key, and the entries
+  // after the first carry no `=` at all — which is how one revision dropped
+  // those. `default` alone is the agent socket from the environment rather
+  // than a manifest-chosen path, and is skipped for that reason.
+  for (const [i, entry] of (source.dockerBuildSsh ?? '').split(',').entries()) {
+    const eq = entry.indexOf('=');
+    const p = (i === 0 && eq >= 0 ? entry.slice(eq + 1) : entry).trim();
+    if (p.length === 0 || p === 'default') continue;
     refs.push({ field: 'dockerBuildSsh', where: 'dockerBuildSsh', path: p, write: false });
   }
   for (const [k, v] of Object.entries(source.dockerBuildSecrets ?? {})) {

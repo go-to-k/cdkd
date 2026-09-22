@@ -237,6 +237,60 @@ describe('BuildKit passthrough host paths', () => {
     expect(cap.warned()).toEqual([]);
   });
 
+  it('judges the RENDERED --build-context element, key included', () => {
+    // `args.push('--build-context', `${k}=${v}`)` and buildx takes everything
+    // after the FIRST `=` as the value, so a key containing `=` makes
+    // BuildKit's value a superset of `v`. No exploit is reachable — anything
+    // hidden that way must itself contain `=`, and real targets do not — but
+    // this was the last place left safe BY ARGUMENT, and four rounds running
+    // the place left safe by argument is what broke next. A probe on the fix
+    // came back GREEN until this case existed, which is the point.
+    const { outdir, context } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      // `v` alone folds inside the context and is silent; the rendered
+      // element escapes, so the two spellings genuinely differ here.
+      // The key's own TAIL is what lands in BuildKit's path: for
+      // `name=../../outside`, the rendered element is
+      // `name=../../outside=inner` and BuildKit reads `../../outside=inner`,
+      // while `v` alone is `inner` — inside the context and silent.
+      source({ dockerBuildContexts: { 'name=../../outside': 'inner' } }),
+      context,
+      outdir
+    );
+
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('dockerBuildContexts');
+  });
+
+  it('does NOT turn a registry ref or an env-var NAME into a host-path line', () => {
+    // The configuration that makes this reachable is ORDINARY, not hostile:
+    // a context CONTAINING the outdir (`directory: '.'` at a project root)
+    // switches the build-context exemption off, because a context that
+    // contains the bound would otherwise widen it. A revision that treated
+    // every keyed option part as a path then announced `<root>/ghcr.io/u/app:cache`
+    // and `<root>/MY_TOKEN` as host paths cdkd would read.
+    const outer = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-nonpath-')));
+    const outdir = join(outer, 'cdk.out');
+    mkdirSync(outdir);
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({
+        cacheFrom: [{ type: 'registry', params: { ref: 'ghcr.io/u/app:cache' } }],
+        cacheTo: { type: 'gha', params: { scope: 'build', mode: 'max' } },
+        dockerBuildSecrets: { t: 'type=env,env=MY_TOKEN' },
+        dockerOutputs: ['type=image,push=true'],
+      }),
+      outer,
+      outdir
+    );
+
+    expect(cap.warned()).toEqual([]);
+  });
+
   it('does NOT let a source.directory of "/" silence the whole set', () => {
     // The build-context read exemption makes `base` a second bound, and
     // `resolveDockerContextDirectory` HONOURS an absolute `source.directory`
