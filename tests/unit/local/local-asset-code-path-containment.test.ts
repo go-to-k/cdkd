@@ -179,6 +179,30 @@ for (const site of SITES) {
       warn.mockRestore();
     });
 
+    it('WARNS for an absolute path INSIDE the outdir that leads out via a symlink', () => {
+      // The ONLY shape where an absolute path inside the bound is not silent,
+      // and the only thing the warning's symbolic-link clause renders. Both
+      // reviewers found this arm dead in the suite: deleting the real-path
+      // block in `absoluteAssemblyPathEscape`, flipping its `!isInside`, or
+      // dropping the ternary in the warning all stayed green. It is also the
+      // shape a hostile assembly would now reach for, a lexical escape being
+      // refused and a plain absolute one loud.
+      const a = assembly('/placeholder');
+      const link = join(a.outdir, 'asset.link');
+      symlinkSync(join(a.outer, 'throwaway-victim'), link, 'dir');
+      (
+        (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
+      )['aws:asset:path'] = link;
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+
+      expect(site.call(a)).toBe(link);
+
+      const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(said).toMatch(/through a symbolic link to/);
+      expect(said).toContain(join(a.outer, 'throwaway-victim'));
+      warn.mockRestore();
+    });
+
     it('REFUSES an escaping relative value, with the containment wording', () => {
       const a = assembly('../throwaway-victim');
 

@@ -758,9 +758,15 @@ function extractImageLambdaProperties(args: {
  *   the user pointed at, the mount is read-only, and the warning names the path
  *   so an unexpected one is visible rather than silent.
  *
- * The `..` containment is NOT relaxed with it. A relative escape has no
- * legitimate producer, so refusing it costs nothing and keeps the shape
- * go-to-k/cdkd#3489 closed.
+ * The `..` containment is NOT relaxed with it — but be precise about what that
+ * still buys, because an earlier revision of this comment claimed it "keeps the
+ * shape go-to-k/cdkd#3489 closed" and that is FALSE. Against an ADVERSARY it
+ * stops nothing: they write the ABSOLUTE spelling and reach the same place with
+ * a warning instead of a refusal (`/Users/<user>/.aws` directly, or a path
+ * `path.resolve` folds for them). What it still catches is an ACCIDENTAL or
+ * legacy `..`, and it costs nothing, which is why the arm stays. **There is no
+ * containment boundary here any more; the warning is the whole signal.** The
+ * docs say so to users in the same words.
  *
  * CONTAIN WITHIN `assetOutdir`, NOT the manifest's directory. A Lambda inside a
  * `cdk.Stage` legitimately carries `../asset.<hash>`, because `cdk synth`

@@ -236,7 +236,10 @@ function resolveThroughLinks(target: string, hops = 0, climbs = 0): string | und
  * (`path.join`, NOT `path.resolve`), so the verdict is about the path the
  * caller will actually open. `join`'s handling of an absolute candidate makes
  * this arm strictly more permissive than a `resolve`-based one would be; an
- * absolute value therefore stays a matter for each site's own tripwire.
+ * absolute value therefore stays a matter for each site's own tripwire — and
+ * for a site that HONOURS one, {@link absoluteAssemblyPathEscape} below is the
+ * sibling that answers containment for it, because this function structurally
+ * cannot.
  *
  * The SYMLINK arm exists because the lexical arm alone leaves an equivalent
  * hole: `cdk.out/link -> /etc` plus a candidate of `link/passwd` is lexically

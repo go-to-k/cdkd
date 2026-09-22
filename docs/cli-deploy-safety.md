@@ -998,9 +998,9 @@ there, with a warning naming the directory when it leaves the output directory,
 because `cdk synth --no-staging` emits exactly that — the asset's absolute
 source directory — and refusing it would reject the output of a documented CDK
 CLI flag. That is a deliberate difference from the deploy side's absolute
-tripwire, and [Local Execution](local-emulation.md) states the trade.
-Others there are not covered yet.
-[Local Execution](local-emulation.md) lists which are which.
+tripwire. Others there are not covered yet;
+[Local Execution](local-emulation.md) states the trade and lists which are
+which.
 
 One consequence of measuring against the app's output directory: pointing `-a`
 at a Stage SUB-assembly (`cdkd deploy -a cdk.out/assembly-MyStage`) refuses that
