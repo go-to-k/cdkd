@@ -97,9 +97,17 @@ interface HostPathRef {
  *   only through `dest` (`name`, `push`, `compression*`, `annotation.*`,
  *   `store`, the docker exporter's `context` are not paths); `--cache-to` and
  *   `--cache-from` only under `type=local` (`registry`, `s3`, `azblob`, `gha`
- *   reach the network or take inline values). `src/utils/docker-cmd.ts`'s
- *   `ARGV_PARAM_LIST_LOCATOR_PARAMS` enumerates the same backends for the
- *   redaction side and agrees; **update both or neither.**
+ *   reach the network or take inline values). For the CACHE flags alone there
+ *   is a second enumeration to keep in step: `src/utils/docker-cmd.ts`'s
+ *   `ARGV_PARAM_LIST_LOCATOR_PARAMS`, consulted under `ARGV_PARAM_LIST_FLAGS`
+ *   (`--cache-from` / `--cache-to`), lists the same backends for the
+ *   redaction side and agrees — **update both or neither.** `--secret` and
+ *   `--output` have no counterpart there, so a new exporter key is judged
+ *   here and nowhere else.
+ * - a leading or trailing SPACE is trimmed here and is NOT trimmed by buildx
+ *   or by Go's CSV reader, so ` ../../x` is a directory literally named
+ *   `" .."` to the kernel while cdkd judges the trimmed spelling. It can only
+ *   OVER-warn, which is why it is recorded rather than removed.
  *
  * Both misses cost a WARNING, never a refusal, which is the whole reason
  * neither is worth a CSV parser or a wider net.
@@ -215,11 +223,15 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
   // value through here before trusting this split after a buildx upgrade.
   const ssh = source.dockerBuildSsh ?? '';
   const sshEq = ssh.indexOf('=');
-  for (const entry of sshEq < 0 ? [] : ssh.slice(sshEq + 1).split(',')) {
+  (sshEq < 0 ? [] : ssh.slice(sshEq + 1).split(',')).forEach((entry, i) => {
     const p = entry.trim();
-    if (p.length === 0) continue;
-    refs.push({ field: 'dockerBuildSsh', where: 'dockerBuildSsh', path: p, write: false });
-  }
+    // `String(i)`, like every other multi-valued field: a constant `where`
+    // made two keys render an identical prefix differing only by the path,
+    // which is what `HostPathRef.where` exists to prevent.
+    if (p.length > 0) {
+      refs.push({ field: 'dockerBuildSsh', where: String(i), path: p, write: false });
+    }
+  });
   for (const [k, v] of Object.entries(source.dockerBuildSecrets ?? {})) {
     // **The string the argv pushes, not the value alone.** `buildDockerBuildCommand`
     // renders `--secret id=${k},${v}` with no quoting, so a manifest can put

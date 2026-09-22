@@ -263,18 +263,26 @@ describe('BuildKit passthrough host paths', () => {
     expect(cap.warned(), 'continuation keys').toHaveLength(2);
     vi.restoreAllMocks();
 
-    // No `=` at all is the agent-socket form and names no manifest path, so
-    // `default` needs no special case — nor does any other bare id.
+    // No `=` at all is the agent-socket form and names no manifest path. The
+    // discriminating spelling is NOT `default`, which both the old rule and
+    // the new one drop — the old one by an explicit name check, so it proves
+    // nothing about the structural claim. An ESCAPING bare id does: the old
+    // rule warned about it, the new one is silent because a value with no
+    // `=` has no path list at all.
+    cap = captureWarn();
+    warnEscapingBuildKitPaths(source({ dockerBuildSsh: '../../outside' }), context, outdir);
+    expect(cap.warned(), 'escaping bare id').toEqual([]);
+    vi.restoreAllMocks();
+
     cap = captureWarn();
     warnEscapingBuildKitPaths(source({ dockerBuildSsh: 'default' }), context, outdir);
-    expect(cap.warned(), 'bare id').toEqual([]);
+    expect(cap.warned(), 'agent socket').toEqual([]);
   });
 
   it('stays SILENT for an EMPTY --build-context value, which would name the context itself', () => {
     // `{ a: '' }` renders `a=`, whose "path" is the context directory — a true
     // sentence pointing at the wrong thing. `candidateHostPaths` guards this;
     // the build-context arm no longer goes through it, so it carries the guard.
-    const { outdir, outer } = { ...assembly(), outer: '' };
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-emptyctx-')));
     const od = join(root, 'cdk.out');
     mkdirSync(od);
@@ -283,8 +291,6 @@ describe('BuildKit passthrough host paths', () => {
     warnEscapingBuildKitPaths(source({ dockerBuildContexts: { a: '' } }), root, od);
 
     expect(cap.warned()).toEqual([]);
-    void outdir;
-    void outer;
   });
 
   it('judges the RENDERED --build-context element, key included', () => {
