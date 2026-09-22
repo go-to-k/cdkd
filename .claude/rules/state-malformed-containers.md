@@ -76,6 +76,47 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
 
+## Where a pasteable command goes (go-to-k/cdkd#3516)
+
+**A message offering only a READ ends ON it**, `inspectCommand`. Mid-sentence it
+sits one space from the next clause and a line-select paste carries that clause
+in as arguments, so the fence is `endsWith`; `toContain` is what let four
+consumers bury it.
+
+**A message offering a read AND the destructive template puts one command per
+LINE** (`Inspect the record:` / `Drop the record:`). One line cannot do both:
+the read must end a line, and the template must be LAST with no substituted
+region after it, or the value the prose just said not to trust sits below the
+holes the operator fills by hand. Do not collapse them. Fence with a line LIST
+(`toEqual`), which `endsWith` cannot express, and take the injected-newline
+control from the SAME ARM — the line count differs per arm.
+
+**Naming a target beside that template needs more than faithful rendering**:
+exactness keeps a space and a `:`, so an identifier can spell one of these
+labels and forge it inside the quoted clause once the terminal wraps. Add
+`isPasteableIdent` on BOTH identifiers, in CONJUNCTION with exactness, measured
+at the cap the message's own clause RENDERS at. THREE messages carry it: the two
+DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128), and
+`divergentRecordRegionRefusalMessage`, which spells its own because it renders a
+KEY region at the state-record cap (go-to-k/cdkd#3328).
+
+`dropRecordCommand` is the EXCEPTION and it is open: it SUBSTITUTES rather than
+templating and still gates on `rendersExactly` alone — a trade-off, not an
+oversight (go-to-k/cdkd#3523 carries why, and the behaviour is pinned). Every
+other message here offers a read ONLY and is ungated. Borrowing a gate across
+sites is safe only DOWNWARD: a 128-capped gate at a 1152-capped site withholds;
+the reverse names a region its own clause renders truncated.
+
+Where a site's two caps DIFFER, fence that operand — the pasteability half needs a row
+that is exact yet unpasteable, which no truncation row reaches. Where they are
+the SAME, exactness is subsumed and nothing can red on dropping it: unfenceable
+rather than unfenced.
+
+That third message still ends on the template, on one line, because its EXACT
+arm offers no read; its withhold arm does. Not the shape to copy for a message
+offering both. And the per-line shape is a property of the MESSAGE, not of every
+surface printing it — two readers flatten it back (go-to-k/cdkd#3518).
+
 ## Two exports here are not guards at all
 
 `producerRecordKey` (a `stack`+`region` RECORD) and `producerCoordinateKey` (a

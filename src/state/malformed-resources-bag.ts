@@ -6,6 +6,7 @@ import {
   UNRENDERABLE,
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
@@ -243,11 +244,11 @@ export function displayLogicalId(value: string): string {
 /**
  * The DIAGNOSIS sentence itself, with no identity and no remedy in it.
  *
- * ONE spelling, because two copies of a diagnosis are what drift. It is extracted because
- * {@link malformedDestroyResourcesRefusalMessage} needs the same sentence
- * under an identity it does NOT trust, where the detail's substituted
- * `cdkd state show` command must not appear — a difference in the COMMAND, not
- * in the diagnosis.
+ * ONE spelling, because two copies of a diagnosis are what drift. Its two
+ * consumers are the arms of {@link malformedStateDiagnosis}, which differ by
+ * the IDENTITY they may name and not by this sentence — since
+ * go-to-k/cdkd#3516 neither arm carries a command at all, so there is nothing
+ * else for them to differ in.
  */
 const MALFORMED_RESOURCES_DIAGNOSIS =
   `has no readable 'resources' map — the record is malformed or truncated. Both 'cdkd deploy' ` +
@@ -256,22 +257,27 @@ const MALFORMED_RESOURCES_DIAGNOSIS =
   `would make a deploy re-CREATE every resource and a destroy delete none of them.`;
 
 /**
- * `region` is optional for ONE caller's sake: `cdkd export`'s baseline report,
- * whose loaded region is absent when the record it loaded is a legacy
- * region-less one and no synth region was available to stand in for it. A placeholder there would put a `--stack-region` into a
- * command the reader pastes that selects no record at all — so an absent
- * region drops the clause and the flag rather than inventing one.
+ * Identity plus the diagnosis, and NO command — every consumer appends prose
+ * after this half, so a command baked in here can only land mid-sentence
+ * (go-to-k/cdkd#3516). It used to end on a substituted `cdkd state show`, which
+ * put the one runnable command in four messages one space from the next clause:
+ * a line-select paste then handed `cdkd state show` the following sentence as
+ * positional arguments. The command is {@link inspectCommand}'s, and the
+ * caller ends ON it — the contract that function's own note states, and the
+ * shape {@link malformedDestroyOutputsRefusalMessage} already had. Its
+ * `orphans` twin had it too until this change gave both DESTROY refusals a
+ * per-line shape instead, so that one is no longer the example to copy.
+ *
+ * `stackName` is optional so the withhold arm of
+ * {@link malformedDestroyResourcesRefusalMessage} takes this same helper: that
+ * arm must state the diagnosis under an identity it does not trust, which is
+ * {@link stackClause}'s no-identity form rather than a second spelling.
  */
-function malformedStateDetail(stackName: string, region: string | undefined): string {
-  const stack = safeStackName(stackName);
-  const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
-  const regionFlag =
-    region === undefined ? '' : ` --stack-region ${shellQuote(safeRegion(region))}`;
-  return (
-    `State for ${shellQuote(stack)}${where} ${MALFORMED_RESOURCES_DIAGNOSIS} ` +
-    `Inspect it with: ` +
-    `cdkd state show ${shellQuote(stack)}${regionFlag} --json`
-  );
+function malformedStateDiagnosis(
+  stackName: string | undefined,
+  region: string | undefined
+): string {
+  return `${stackClause(stackName, region)} ${MALFORMED_RESOURCES_DIAGNOSIS}`;
 }
 
 /**
@@ -329,10 +335,80 @@ export function repairMalformedResourcesForReadOnly(state: StackState): boolean 
  */
 export function malformedStateRefusalMessage(stackName: string, region: string): string {
   return (
-    `${malformedStateDetail(stackName, region)} This command can WRITE state, so it refuses ` +
+    `${malformedStateDiagnosis(stackName, region)} This command can WRITE state, so it refuses ` +
     `rather than continuing: saving over a record whose resource map could not be read would ` +
     `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
-    `remove the record first.`
+    `remove the record first. Inspect it with: ${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * The destructive template, in the three messages that offer one.
+ *
+ * ONE spelling, because copies are what drift, and they carry it byte-identically
+ * on purpose — a reader who has met one must recognise the others. Two wrap it
+ * in {@link DROP_RECORD_LINE}'s label; `divergentRecordRegionRefusalMessage`
+ * ends on it bare. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
+ * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
+ */
+const DROP_RECORD_TEMPLATE = 'cdkd state orphan <stack> --stack-region <region>';
+
+/**
+ * The same template as a LABELLED line, for the two messages that carry their
+ * commands one per line. The COMMAND is the atom rather than the line, because
+ * the command is what drifts: `divergentRecordRegionRefusalMessage` ends on it
+ * with no label, so THIS PAIR cannot half-land a `--stack-region` rename.
+ * {@link dropRecordCommand} still spells it separately for the `cdkd orphan`
+ * messages, which substitute into it — that one is not covered here.
+ */
+const DROP_RECORD_LINE = `Drop the record: ${DROP_RECORD_TEMPLATE}`;
+
+/**
+ * May this message NAME its target and offer the destructive template beside
+ * it (go-to-k/cdkd#3516 review)?
+ *
+ * Stricter than `safeIdentifier(x) === x`, which is what these two arms used
+ * and which keeps a space, a `:`, a `'`, a `;` and a `|` — the `:` and the
+ * space being the pair a label needs. That was enough while the
+ * message was one paragraph, and stopped being enough the moment the commands
+ * moved onto LABELLED lines: a stack name spelling
+ * `Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
+ * exactly, takes this arm, and lands inside the quoted name on the inspect
+ * line — where a terminal wrap puts cdkd's own label at the start of a visual
+ * line, carrying a destructive command whose holes are already filled. A
+ * line-select copies it. The label vocabulary is what made the forgery
+ * credible, so the gate that admits a name into it is the one that had to
+ * tighten.
+ *
+ * {@link isPasteableIdent} is that gate and the codebase already spends it on
+ * this question (`gc.ts` gates its own destructive hint on the same pair). It
+ * refuses a space and a quote outright while keeping every name CloudFormation
+ * can produce, `Parent~Child` included, so no healthy record loses its
+ * identity here.
+ */
+function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): boolean {
+  // A CONJUNCTION with the per-kind exactness, never a replacement for it —
+  // and the two halves do NOT earn their place equally, which is worth saying
+  // rather than leaving a reader to infer it from one measurement.
+  //
+  // The REGION pair is load-bearing: `isPasteableIdent` measures against the
+  // STACK cap (`STACK_REF_MAX_CODE_POINTS`), so on its own it admits a region
+  // past a REGION's 128 — which `safeRegion` truncates, putting a cut value in
+  // the clause above the template. Measured: dropping `safeRegion(...)` here
+  // reddens the truncated-region withhold row, and dropping
+  // `isPasteableIdent(region)` reddens the forged-region row.
+  //
+  // The STACK pair OVERLAPS today: `isPasteableIdent`'s charset is a subset of
+  // what `displaySafe(_, { asciiOnly: true })` passes unchanged and its
+  // identity test forbids truncation at the same cap `safeStackName` uses, so
+  // `isPasteableIdent(stackName)` already implies `safeStackName(...) === ...`.
+  // Kept per-kind anyway, so that widening either charset or either cap cannot
+  // silently drop the other's bound.
+  return (
+    safeStackName(stackName) === stackName &&
+    safeRegion(region) === region &&
+    isPasteableIdent(stackName) &&
+    isPasteableIdent(region)
   );
 }
 
@@ -397,7 +473,7 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * destructive command at a DIFFERENT region's record for the same stack. That
  * is the misdirection class {@link stackClause} records for stack names, one
  * field over. Substituting into the read-only `state show` line is the
- * pre-existing behaviour of {@link malformedStateDetail} and is left alone;
+ * pre-existing behaviour of {@link inspectCommand} and is left alone;
  * what this lane must not add is a destructive one.
  *
  * **go-to-k/cdkd#3328 closed the BODY half of that, and the template stays
@@ -444,16 +520,17 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * because a LEGACY record has no key region at all, in which case the value
  * printed is the CLI's own and `--stack-region` must be omitted.
  *
- * **The VERDICT turns on the identifier caps**, which is why the stack name is
- * measured through {@link safeStackName} (`STACK_REF_MAX_CODE_POINTS`) and the
- * region through {@link safeRegion} (128, which no real region approaches). At
- * 128 an ordinary multi-level CDK nested child
+ * **The VERDICT is {@link mayNameTargetWithDestructiveRemedy}** — the identifier
+ * caps AND pasteability, since go-to-k/cdkd#3516 — so the stack name is
+ * measured at `STACK_REF_MAX_CODE_POINTS` and the region at a region's 128,
+ * which no real region approaches. Measuring the STACK at 128 instead is the
+ * trap: an ordinary multi-level CDK nested child
  * (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150 code
- * points) truncates, fails `exact`, and takes the withhold arm on a HEALTHY
- * record — which is fail-safe but makes the fallback the common path for
- * exactly the nested destroys this lane added a guard to (review round 2 of
- * go-to-k/cdkd#3332). The bound is still a bound: a planted multi-kilobyte name
- * is truncated at 1152 and lands in the withhold arm.
+ * points) WOULD truncate there and take the withhold arm on a HEALTHY record,
+ * making the fallback the common path for exactly the nested destroys this
+ * lane added a guard to (review round 2 of go-to-k/cdkd#3332). The bound is
+ * still a bound: a planted multi-kilobyte name is truncated at 1152 and lands
+ * in the withhold arm.
  *
  * Identifiers are sanitized and THEN shell-quoted, for the reasons
  * {@link safeIdentifier}'s note gives.
@@ -466,40 +543,55 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // Through the per-kind helpers: this arm's VERDICT turns on the caps, and a
   // stack name capped at a region's 128 would send an ordinary multi-level
   // nested child down the withhold arm.
-  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
-  // The DIAGNOSIS half. On the exact arm it is the shared detail, whose
-  // pasteable `cdkd state show` is sound because the identity renders
-  // faithfully. On the withhold arm it must NOT be: a message that has just
-  // said "another record may render identically" cannot then hand over a
-  // command built from that rendering — following it would READ the healthy
-  // sibling, return a clean record, and raise the operator's confidence right
-  // before the destructive step. So that arm takes the module's own
-  // no-identity form instead.
-  const detail = exact
-    ? malformedStateDetail(stackName, region)
-    : `${stackClause(undefined, undefined)} ${MALFORMED_RESOURCES_DIAGNOSIS}`;
+  const exact = mayNameTargetWithDestructiveRemedy(stackName, region);
+  // The DIAGNOSIS half, one helper for both arms: it carries no command, so the
+  // only difference is the identity it is allowed to name. The withhold arm must
+  // name none — a message that has just said "another record may render
+  // identically" cannot then hand over a command built from that rendering, since
+  // following it would READ the healthy sibling, return a clean record, and raise
+  // the operator's confidence right before the destructive step.
+  const detail = malformedStateDiagnosis(exact ? stackName : undefined, exact ? region : undefined);
   const remedy = exact
     ? `To drop the record deliberately and leave the live resources standing, run ` +
-      `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — ` +
-      `spelled out rather than pasteable, because that command DELETES a record and the region ` +
-      `printed above is the one cdkd was pointed at, not a value cdkd owns. ` +
-      `Confirm the key with 'cdkd state list --long' — a legacy record shows none, and for one ` +
-      `of those the flag must be OMITTED or it selects nothing — then: ` +
-      `cdkd state orphan <stack> --stack-region <region>`
+      `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds. It is ` +
+      `spelled as a template on its own line below rather than handed over ready to run, ` +
+      `because that command DELETES a record and a key segment is chosen by anyone who can ` +
+      `write this bucket: the key says WHICH record this is, which is not the same as ` +
+      `vouching for it as a delete target. Confirm the key with 'cdkd state list --long' — a ` +
+      `legacy record shows none, and for one of those the flag must be OMITTED or it selects ` +
+      `nothing.`
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
       `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
-      `on the one whose key matches. Inspect it with: ${inspectCommand(undefined, undefined)}`;
-  return (
+      `on the one whose key matches.`;
+  const prose =
     `${detail} This command DELETES state, so it refuses ` +
     `rather than continuing: the resource map IS the list of what to delete, so an unreadable ` +
     `one counts as ZERO resources and the run takes the empty-stack fast path, which removes ` +
     `state.json and reports success while every resource the record named is still live in AWS ` +
     `and no longer referenced by anything. Reading the bag as EMPTY is that same outcome rather ` +
     `than an alternative to it, so there is no repair available here. Repair or remove the ` +
-    `record first. ${remedy}`
-  );
+    `record first. ${remedy}`;
+  // ONE COMMAND PER LINE, the shape
+  // {@link malformedOrphanResourcePropertiesRefusalMessage} already takes
+  // (go-to-k/cdkd#3516). A single line cannot hold both: the pasteable READ has
+  // to end its line or a line-select paste hands it the next clause as
+  // positional arguments, and the destructive TEMPLATE has to be the last thing
+  // on its own line or the substituted region sitting after it is the value an
+  // operator fills the holes with — the warning above it says not to, and
+  // "above" stops covering what follows. Separate lines answer both.
+  // The inspect command takes the SAME arguments the diagnosis did: on the
+  // withhold arm it must stay a template, or the message hands over a read
+  // built from a rendering it has just said may name a healthy sibling.
+  return [
+    prose,
+    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined)}`,
+    // Only the exact arm offers it. The withhold arm names no target, so a
+    // destructive template there would be an instruction with nothing to fill
+    // the holes from.
+    ...(exact ? [DROP_RECORD_LINE] : []),
+  ].join('\n');
 }
 
 /**
@@ -608,8 +700,31 @@ export function divergentRecordRegionRefusalMessage(
   // one. Compared against the RAW values, at the STATE-RECORD grammar's cap so
   // an ordinary multi-level nested child does not take the withhold arm.
   const cap = STACK_REF_MAX_CODE_POINTS;
+  // ...AND pasteable, the second half go-to-k/cdkd#3516's review added to the
+  // sibling and which this site owes for the same reason: exactness keeps a
+  // space and a `:`, so a key region spelling
+  // `Drop the record: cdkd state orphan prod --stack-region us-east-1` took the
+  // naming arm and forged a filled-in destructive command inside the quoted
+  // clause, which a terminal wrap starts a visual line with.
+  //
+  // NOT `mayNameTargetWithDestructiveRemedy`: that helper measures the region
+  // at a REGION's 128, and this site measures a KEY region at the state-record
+  // grammar's cap on purpose (go-to-k/cdkd#3328), so borrowing it would take a
+  // healthy multi-level nested child down the withhold arm. The invariant both
+  // gates satisfy is the same — measure at the cap this message's own clause
+  // RENDERS at.
+  //
+  // Here that makes BOTH exactness operands subsumed, unlike the sibling: this
+  // site's `cap` IS the bound `isPasteableIdent` measures at, so
+  // `isPasteableIdent(x)` already implies `safeIdentifier(x, cap) === x` and no
+  // test can red on dropping them. Unfenceable rather than unfenced — do not
+  // go looking for the per-operand case the sibling has. Kept so that changing
+  // either bound cannot silently drop the other.
   const exact =
-    safeIdentifier(stackName, cap) === stackName && safeIdentifier(keyRegion, cap) === keyRegion;
+    safeIdentifier(stackName, cap) === stackName &&
+    safeIdentifier(keyRegion, cap) === keyRegion &&
+    isPasteableIdent(stackName) &&
+    isPasteableIdent(keyRegion);
   const lists =
     resourceCount === undefined
       ? 'its resources map cannot be read'
@@ -635,7 +750,7 @@ export function divergentRecordRegionRefusalMessage(
       `against the region the resources are really in, or repair that field to match the key it ` +
       `is stored under and re-run. To drop the record and leave the live resources standing, ` +
       `spelled out rather than pasteable because that command DELETES a record: ` +
-      `cdkd state orphan <stack> --stack-region <region>`
+      DROP_RECORD_TEMPLATE
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records as stored with ` +
@@ -730,7 +845,7 @@ export function refuseDivergentRecordRegionForDestroy(
  */
 export function malformedDeployResourcesRefusalMessage(stackName: string, region: string): string {
   return (
-    `${malformedStateDetail(stackName, region)} 'cdkd deploy' can WRITE state and AWS ` +
+    `${malformedStateDiagnosis(stackName, region)} 'cdkd deploy' can WRITE state and AWS ` +
     `resources, so it refuses rather than continuing — under '--dry-run' too, because the plan ` +
     `a dry run would print is the wrong one: an unreadable map reads as ZERO recorded ` +
     `resources, so every resource the template declares is planned as a CREATE and the deploy ` +
@@ -738,7 +853,8 @@ export function malformedDeployResourcesRefusalMessage(stackName: string, region
     `duplicating the rest, then saves a well-formed record over the only evidence anything was ` +
     `wrong. Reading the bag as EMPTY produces that same plan rather than avoiding it. Nothing ` +
     `was provisioned and no state was written FOR THIS STACK. Repair or remove the record ` +
-    `first; 'cdkd diff' previews the stack with this map read as EMPTY and warns that it did.`
+    `first; 'cdkd diff' previews the stack with this map read as EMPTY and warns that it did. ` +
+    `Inspect it with: ${inspectCommand(stackName, region)}`
   );
 }
 
@@ -878,7 +994,11 @@ export function malformedRenderedContainersWarning(
 
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
 export function malformedResourcesWarning(stackName: string, region: string | undefined): string {
-  return `${malformedStateDetail(stackName, region)} Continuing with an EMPTY resource set: this command's output describes zero resources, which is not the same as the stack having none.`;
+  return (
+    `${malformedStateDiagnosis(stackName, region)} Continuing with an EMPTY resource set: this ` +
+    `command's output describes zero resources, which is not the same as the stack having none. ` +
+    `Inspect it with: ${inspectCommand(stackName, region)}`
+  );
 }
 
 /**
@@ -1305,7 +1425,7 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
  * against a record that may not be the damaged one.
  */
 export function malformedDestroyOrphansRefusalMessage(stackName: string, region: string): string {
-  const exact = safeStackName(stackName) === stackName && safeRegion(region) === region;
+  const exact = mayNameTargetWithDestructiveRemedy(stackName, region);
   // Both arms continue `stackClause`'s own sentence rather than starting a new
   // one after it: the no-identity clause ends open ("The state record this
   // command loaded"), so a second sentence bolted on renders without a verb —
@@ -1316,24 +1436,32 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
   const remedy = exact
     ? `To drop the record deliberately and ` +
       `leave every live resource standing, run 'cdkd state orphan' against the stack and the ` +
-      `region THE RECORD'S S3 KEY holds — spelled out as 'cdkd state orphan <stack> ` +
-      `--stack-region <region>' rather than pasteable, because that ` +
-      `command DELETES a record and the region printed above is the one cdkd was pointed at, ` +
-      `not a value cdkd owns. Confirm the key with 'cdkd state list --long' — a legacy record ` +
-      `shows none, and for one of those the flag must be OMITTED or it selects nothing. ` +
-      `Inspect it with: ${inspectCommand(stackName, region)}`
+      `region THE RECORD'S S3 KEY holds. It is spelled as a template on its own line below ` +
+      `rather than handed over ready to run, because that command DELETES a record and a key ` +
+      `segment is chosen by anyone who can write this bucket: the key says WHICH record this ` +
+      `is, which is not the same as vouching for it as a delete target. Confirm the key with ` +
+      `'cdkd state list --long' — a legacy record shows none, and for one of those the flag ` +
+      `must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long' and act on the one whose key matches. Inspect it with: ` +
-      `${inspectCommand(undefined, undefined)}`;
-  return (
+      `'cdkd state list --long' and act on the one whose key matches.`;
+  const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
     `container counts as no orphans, so the run would proceed through resource deletion to ` +
     `removing state.json while the record's evidence that an earlier failed deploy left ` +
     `resources live in AWS was never read — and that evidence goes with the record. Reading it ` +
     `as EMPTY is that outcome rather than an alternative to it, so there is no repair available ` +
-    `here. Repair or remove the record first. ${remedy}`
-  );
+    `here. Repair or remove the record first. ${remedy}`;
+  // ONE COMMAND PER LINE, for the reason
+  // {@link malformedDestroyResourcesRefusalMessage}'s note gives
+  // (go-to-k/cdkd#3516). go-to-k/cdkd#3379 shipped both commands on one line
+  // with the pasteable READ last, which put the substituted region AFTER the
+  // template an operator has to fill the holes of by hand.
+  return [
+    prose,
+    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined)}`,
+    ...(exact ? [DROP_RECORD_LINE] : []),
+  ].join('\n');
 }
 
 /**
@@ -1594,7 +1722,7 @@ const NAMED_UNREADABLE_PROPERTY_BAGS = 5;
  * A region may also be absent on a v1 record, which predates the
  * region-prefixed key layout. A placeholder would put a `--stack-region` into
  * a pasted command that selects no record at all, so it is dropped for the
- * same reason — the call go-to-k/cdkd#3226 makes for `malformedStateDetail`.
+ * same reason — the call go-to-k/cdkd#3226 makes for `inspectCommand`.
  */
 function stackClause(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) return 'The state record this command loaded';
@@ -1709,16 +1837,28 @@ function dropRecordCommand(
  * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
  * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
- * (go-to-k/cdkd#3363 review, M0 and M2). What it does NOT cover yet: the
- * destroy refusal and the divergent-region refusal above still spell the same
- * test inline, and the shared {@link inspectCommand} is ungated for its other
- * callers (it renders the stack at that same cap, the region at 128).
+ * (go-to-k/cdkd#3363 review, M0 and M2). The shared {@link inspectCommand}
+ * stays ungated for its other callers, which offer a read only.
+ *
+ * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
+ * with one: the three messages that offer a hole TEMPLATE are all stricter,
+ * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). This one is weaker on
+ * purpose, and the gap is tracked rather than closed (go-to-k/cdkd#3523):
+ * {@link dropRecordCommand} SUBSTITUTES, so tightening it here withholds the
+ * drop command from a legacy record whose name merely needs quoting — the very
+ * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
+ * this command is the way out. Measured: `It's Legacy` loses it.
  */
 function rendersExactly(value: string): boolean {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
 }
 
-/** The remedy command {@link stackClause}'s message ends on. */
+/**
+ * The remedy command a message ends ON — unless the message also offers the
+ * destructive template, in which case it ends the READ's own LINE and
+ * {@link DROP_RECORD_LINE} is last (go-to-k/cdkd#3516). Two of the eight call
+ * sites are that shape; the rest close their string with it.
+ */
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
