@@ -429,29 +429,48 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
   });
 
   describe('the NORMAL-RUN progress lines — logger.info at default verbosity, no error', () => {
-    function arrangeSuccess(stackName: string, logicalId: string, otherId: string): void {
+    /**
+     * `region` is threaded rather than fixed because the `Target:` and success
+     * lines render `targetRegion` beside the stack name, and the state record's
+     * own region is what `pickStackRegion` hands them. A probe deleting the
+     * sanitizer from THAT interpolation stayed green while this was pinned to a
+     * clean `us-east-1`.
+     */
+    function arrangeSuccess(
+      stackName: string,
+      logicalId: string,
+      otherId: string,
+      region: string
+    ): void {
       primeStacks([
         {
           stackName,
+          region,
           resources: { [logicalId]: `${stackName}/Bucket`, [otherId]: `${stackName}/Other` },
         },
       ]);
-      primeState(stackName, 'us-east-1', {
+      primeState(stackName, region, {
         [logicalId]: entry(),
         [otherId]: entry({ dependencies: [logicalId] }),
       });
     }
 
     it('sanitizes the target line, the rewrite audit and the success line', async () => {
-      arrangeSuccess(HOSTILE.stackA.raw, HOSTILE.logicalId.raw, HOSTILE.otherLogicalId.raw);
+      arrangeSuccess(
+        HOSTILE.stackA.raw,
+        HOSTILE.logicalId.raw,
+        HOSTILE.otherLogicalId.raw,
+        HOSTILE.region.raw
+      );
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes']);
       const lines = infoLines();
       expect(lines).toContain(
-        `Target: ${HOSTILE.stackA.clean} (us-east-1); orphaning 1 resource(s): ` +
-          `${HOSTILE.logicalId.clean}`
+        `Target: ${HOSTILE.stackA.clean} (${HOSTILE.region.clean}); ` +
+          `orphaning 1 resource(s): ${HOSTILE.logicalId.clean}`
       );
       expect(lines).toContain(
-        `Orphaned 1 resource(s) from state: ${HOSTILE.stackA.clean} (us-east-1). ` +
+        `Orphaned 1 resource(s) from state: ${HOSTILE.stackA.clean} ` +
+          `(${HOSTILE.region.clean}). ` +
           'AWS resources are still in AWS; cdkd will no longer manage them.'
       );
       // The rewrite audit row names the SIBLING that referenced the orphan, and
@@ -465,7 +484,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
     });
 
     it('leaves ordinary names byte-identical on the same lines', async () => {
-      arrangeSuccess('MyStack', 'Bucket', 'Other');
+      arrangeSuccess('MyStack', 'Bucket', 'Other', 'us-east-1');
       await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
       const lines = infoLines();
       expect(lines).toContain('Target: MyStack (us-east-1); orphaning 1 resource(s): Bucket');
