@@ -2515,8 +2515,8 @@ function resolveAssetCodePath(
   return resolveAssetCodeDirectory(
     manifestDir,
     assetPath,
-    logicalId,
     (message) => new Error(message),
+    logicalId,
     assetOutdir
   );
 }

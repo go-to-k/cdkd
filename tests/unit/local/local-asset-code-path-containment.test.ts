@@ -142,6 +142,22 @@ for (const site of SITES) {
       expect(() => site.call(a)).not.toThrow(/outside '/);
     });
 
+    it('names --no-staging as the benign cause, since a real cdk synth emits one', () => {
+      // `aws:cdk:disable-asset-staging` makes upstream `AssetStaging`
+      // return the absolute SOURCE directory verbatim rather than relativising
+      // it, so this refusal fires on a genuine CDK assembly (measured on
+      // aws-cdk-lib 2.268). The message must not call that "hand-modified",
+      // and must name a remedy.
+      const a = assembly('/placeholder');
+      (
+        (a.stack.template.Resources!['Fn']!.Metadata as Record<string, string>)
+      )['aws:asset:path'] = join(a.outer, 'throwaway-victim');
+
+      expect(() => site.call(a)).toThrow(/--no-staging/);
+      expect(() => site.call(a)).toThrow(/aws:cdk:disable-asset-staging/);
+      expect(() => site.call(a)).toThrow(/re-synthesize without it/i);
+    });
+
     it('REFUSES an escaping relative value, with the containment wording', () => {
       const a = assembly('../throwaway-victim');
 
@@ -190,6 +206,18 @@ for (const site of SITES) {
       // Reds if the bound is widened past the app outdir — the failure mode a
       // refusal-only suite reads as success.
       expect(() => site.call(a)).toThrow(/outside '/);
+    });
+
+    it('WIRING: with no assetManifestPath, the BASE falls back to the outdir, not the cwd', () => {
+      // `AssemblyReader` always sets `assetOutdir` but may leave
+      // `assetManifestPath` undefined. Taking `process.cwd()` as the base then
+      // made base and bound DISJOINT — nothing under the cwd is inside
+      // `cdk.out` — so every asset path was refused with a message blaming the
+      // assembly. Fail-closed, never a hole, but a wrong diagnosis.
+      const a = assembly('asset.abc123');
+      delete (a.stack as { assetManifestPath?: string }).assetManifestPath;
+
+      expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
     });
 
     it('WIRING: a StackInfo with no assetOutdir falls back to the manifest directory', () => {

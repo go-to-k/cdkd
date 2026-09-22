@@ -993,11 +993,14 @@ The `cdkd local *` commands apply the same rule to SOME of the assembly they
 read — including a path the deploy side has no equivalent of, a Lambda's
 `Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
 before running it. They also refuse the `aws:asset:path` they bind-mount into
-the container, on both counts: an escaping value and an **absolute** one. There
-the absolute case is a real escape rather than the "not CDK-generated"
-tripwire it is above — those commands resolve the value with `path.resolve`,
-which discards its base for an absolute path, where `path.join` does not.
-Others there are not covered yet.
+the container, on both counts: an escaping value and an **absolute** one. The
+absolute refusal is load-bearing there rather than a tripwire, because those
+commands used to resolve the value with `path.resolve`, which discards its base
+for an absolute path where `path.join` does not — so an absolute value was a
+real escape, and the refusal is what keeps it one that cannot come back. Note
+that `cdk synth --no-staging` makes CDK emit an absolute `aws:asset:path` of
+its own, so that refusal fires on a genuine CDK assembly too; the message says
+so. Others there are not covered yet.
 [Local Execution](local-emulation.md) lists which are which.
 
 One consequence of measuring against the app's output directory: pointing `-a`

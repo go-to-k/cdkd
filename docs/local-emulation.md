@@ -208,6 +208,14 @@ Refused:
   would carry that code from a session it already has to the raw contents of
   your home directory.
 
+  **One benign assembly is refused by the absolute half, and it is a real CDK
+  one:** `cdk synth --no-staging` (the `aws:cdk:disable-asset-staging` context
+  flag) makes CDK write the asset's absolute SOURCE directory into
+  `aws:asset:path` instead of a staged `asset.<hash>`. cdkd cannot tell that
+  apart from a planted absolute path — both are a directory the assembly chose
+  — so it refuses, and the message names `--no-staging` as the likely cause.
+  Re-synthesize without the flag.
+
 A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
 staged into the app's output directory, so `../asset.<hash>` is the shape CDK
 writes and it loads normally. The same rule and the same wording apply on the
@@ -217,10 +225,12 @@ Not refused today:
 
 - every Docker build context that goes through the bundled `cdk-local` engine,
   which joins the path itself: a container-image Lambda under
-  `cdkd local invoke` and `cdkd local start-api`, and the image build of
+  `cdkd local invoke` and `cdkd local start-api`; the image build of
   `cdkd local invoke-agentcore`'s container arm (so that command contains the
   `source.directory` its watcher classifies against, but not the one it
-  builds).
+  builds); and the ECS image build reached by `cdkd local start-service` and
+  `cdkd local start-alb`. `cdkd local run-task` is the exception — its image
+  build is cdkd's own and IS contained.
 
 Until those land, a hand-modified assembly can still put a directory of its
 choosing in front of code it also supplies. Treat an assembly you did not
