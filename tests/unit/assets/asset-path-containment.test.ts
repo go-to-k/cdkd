@@ -574,6 +574,45 @@ describe('an ABSOLUTE asset source path (cdk synth --no-staging)', () => {
     expect(lines[2]).toContain(DOCKER_SINK);
   });
 
+  it('WARNS for EVERY spelling of the output directory, not just the one `-a` used', () => {
+    // The gap two reviewers found independently, and the reason this check is
+    // `namesTheSameDirectory` rather than `resolve(a) === resolve(b)`.
+    //
+    // The escape check EXONERATES a second spelling of the bound as inside —
+    // correctly, it IS inside. A lexical equality beside it then answers "not
+    // the bound", so the one value meaning "the whole assembly is this asset"
+    // passed both tests and printed nothing. The value is attacker-chosen, so
+    // meeting the trigger is theirs: `<outdir>/self` needs only a symlink they
+    // ship in the assembly, and the realpath spelling needs nothing at all on
+    // macOS, where `$TMPDIR` and `/tmp` are already two spellings of one path.
+    const outer = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-spellings-')));
+    const realOut = join(outer, 'real-outdir');
+    mkdirSync(realOut);
+    // The bound as `-a` gave it: a LINK to the real outdir.
+    const linkOut = join(outer, 'cdk.out');
+    symlinkSync(realOut, linkOut, 'dir');
+    // A self-link inside the assembly, which an assembly author controls.
+    symlinkSync(realOut, join(realOut, 'self'), 'dir');
+
+    for (const spelling of [linkOut, realOut, join(linkOut, 'self'), join(realOut, 'self')]) {
+      const cap = captureWarn();
+      expect(resolveFile(linkOut, fileAsset(spelling), linkOut)).toBe(spelling);
+      const lines = cap.warned();
+      expect(lines, `absolute spelling ${spelling}`).toHaveLength(1);
+      expect(lines[0]).toContain('output directory ITSELF');
+      vi.restoreAllMocks();
+    }
+
+    // ...and the RELATIVE spelling of the same directory must agree. It used
+    // to REFUSE (`resolveAssemblyPath`'s symlink arm), so one directory got a
+    // refusal or a silent accept depending only on how it was written — the
+    // relative-refuses / absolute-sails asymmetry this PR exists to reason
+    // about, reproduced inside the fix for it.
+    const cap = captureWarn();
+    expect(resolveFile(linkOut, fileAsset('self'), linkOut)).toBe(join(linkOut, 'self'));
+    expect(cap.warned()[0]).toContain('output directory ITSELF');
+  });
+
   it("WARNS for a Stage manifest's `..`, which resolves onto the outdir the same way", () => {
     // The reachable spelling: from `cdk.out/assembly-<Stage>/`, `..` IS the
     // app outdir, so a tampered Stage manifest reaches the whole-assembly case

@@ -80,7 +80,7 @@ export class FileAssetPublisher {
       // the generic clause.
       destinations.length > 0
         ? `package that path and upload it to ${destinations.join(', ')}`
-        : 'package that path for upload to the destinations this manifest names'
+        : 'package that path, though this manifest names no destination for it'
     );
 
     // Process each destination

@@ -10,6 +10,7 @@ import { isAbsolute, resolve } from 'path';
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
+  namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
@@ -108,11 +109,6 @@ export interface BuildDockerImageOptions {
  * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
  * Exported for unit testing.
  */
-/** One spelling of the warning subject, so the two arms cannot drift. */
-function dockerSubject(assetId: string | undefined): string {
-  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
-}
-
 export function resolveDockerContextDirectory(
   manifestDir: string,
   directory: string,
@@ -156,7 +152,7 @@ export function resolveDockerContextDirectory(
         escape,
         sink,
       });
-    } else if (absolute === resolve(assetOutdir)) {
+    } else if (namesTheSameDirectory(assetOutdir, absolute)) {
       warnWholeAssemblyAsSource({
         subject: dockerSubject(assetId),
         field: 'source.directory',
@@ -175,11 +171,7 @@ export function resolveDockerContextDirectory(
   // NAMING THE BOUND ITSELF is not an escape; the twin's comment in
   // `resolveFileAssetSourcePath` carries the reasoning — including why it
   // WARNS rather than accepting silently, which is the sink.
-  if (
-    !resolved.contained &&
-    resolved.escape === 'lexical' &&
-    resolved.path === resolve(assetOutdir)
-  ) {
+  if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
     warnWholeAssemblyAsSource({
       subject: dockerSubject(assetId),
       field: 'source.directory',
@@ -195,6 +187,11 @@ export function resolveDockerContextDirectory(
     );
   }
   return resolved.path;
+}
+
+/** One spelling of the warning subject, so the two arms cannot drift. */
+function dockerSubject(assetId: string | undefined): string {
+  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
 }
 
 /**

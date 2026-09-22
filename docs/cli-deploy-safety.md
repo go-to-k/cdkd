@@ -1009,8 +1009,12 @@ line is worth reading, and it is deliberately rare:
 | --- | --- |
 | absolute, inside the output directory | accepted, silently — this is where every staged asset is |
 | absolute, outside it | accepted, **with a warning** naming the directory and the destination |
-| resolving onto the output directory *itself* | accepted, **with a warning** — the whole assembly becomes the asset, and no `cdk synth` emits this |
+| naming the output directory *itself*, by any spelling | accepted, **with a warning** — the whole assembly becomes the asset, and no `cdk synth` emits this |
 | relative, escaping the output directory | refused |
+
+"By any spelling" is meant literally: a symbolic link to the output directory,
+or the path a `realpath` would print for it, is that directory, and cdkd says
+so for all of them.
 
 The relative refusal catches an accidental or legacy `..` and costs nothing,
 which is why it stays. It is not a boundary against a value someone chose: the

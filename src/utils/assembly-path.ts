@@ -384,6 +384,40 @@ export function resolveAssemblyPath(
  * an ordinary `cdk synth --no-staging` asset, and a warning that cries wolf is
  * worse than none.
  */
+/**
+ * Whether `candidate` names the SAME DIRECTORY as `bound`, by any spelling.
+ *
+ * It lives here, beside {@link absoluteAssemblyPathEscape}, because it asks
+ * that function's question one step further on and must use its machinery to
+ * answer: `path.resolve` equality is a LEXICAL test, and the two paths reach a
+ * caller independently — the bound from `-a` or the assembly's own
+ * `directoryName`, the candidate from the manifest — so one directory has
+ * several spellings. `/tmp/cdk.out` and `/private/tmp/cdk.out` on macOS;
+ * `<cdk.out>/self` where `self` is a symlink to `cdk.out`; both at once.
+ *
+ * **A caller that re-spells this as `resolve(a) === resolve(b)` gets a test
+ * that misses every spelling but one**, which is how
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532)'s asset resolvers first
+ * shipped their whole-assembly warning: `absoluteAssemblyPathEscape`
+ * exonerates a second spelling of the bound as INSIDE — correctly — and the
+ * lexical equality beside it then said "not the bound", so the one value
+ * meaning "the entire assembly is this asset" passed both tests in silence.
+ * Ask this instead; do not re-derive it.
+ *
+ * Conservative on failure: an unresolvable side answers from the lexical
+ * comparison alone, so it can only ever say "not the same", never wrongly
+ * claim identity.
+ */
+export function namesTheSameDirectory(bound: string, candidate: string): boolean {
+  const resolvedBound = path.resolve(bound);
+  const target = path.resolve(candidate);
+  if (target === resolvedBound) return true;
+
+  const realBound = resolveThroughLinks(resolvedBound);
+  const realTarget = resolveThroughLinks(target);
+  return realBound !== undefined && realTarget !== undefined && realBound === realTarget;
+}
+
 export function absoluteAssemblyPathEscape(
   bound: string,
   absolutePath: string

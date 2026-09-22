@@ -4,6 +4,7 @@ import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
+  namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
@@ -107,9 +108,13 @@ export function resolveFileAssetSourcePath(
         escape,
         sink,
       });
-    } else if (absolute === resolve(assetOutdir)) {
+    } else if (namesTheSameDirectory(assetOutdir, absolute)) {
       // Inside the bound, so `absoluteAssemblyPathEscape` says nothing — but
       // it IS the bound, which means the whole assembly is the source.
+      // `namesTheSameDirectory`, never `===`: the escape check above
+      // EXONERATES a second spelling of the bound as inside, so a lexical
+      // equality here answers "not the bound" for exactly the values that
+      // most need the line.
       warnWholeAssemblyAsSource({
         subject: `File asset '${displaySafe(asset.displayName)}'`,
         field: 'source.path',
@@ -146,11 +151,7 @@ export function resolveFileAssetSourcePath(
   // `cdk.out` leaves the machine with no line printed. A first revision of
   // this arm did exactly that, in the name of parity with the twin — parity of
   // the VERDICT is right, parity of the SILENCE is not.
-  if (
-    !resolved.contained &&
-    resolved.escape === 'lexical' &&
-    resolved.path === resolve(assetOutdir)
-  ) {
+  if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
     warnWholeAssemblyAsSource({
       subject: `File asset '${displaySafe(asset.displayName)}'`,
       field: 'source.path',

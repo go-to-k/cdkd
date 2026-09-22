@@ -23,7 +23,6 @@ export interface FileAssetNodeData {
   assetOutdir: string;
   accountId: string;
   region: string;
-  profile?: string;
 }
 
 /**
@@ -151,7 +150,10 @@ export class AssetPublisher {
           assetOutdir,
           accountId: options.accountId,
           region: options.region,
-          ...(options.profile && { profile: options.profile }),
+          // No `profile`: `FileAssetPublisher.publish` has no such parameter
+          // (go-to-k/cdkd#3532 removed the unused one, whose optional trailing
+          // position let a caller bind a profile NAME to the containment
+          // bound), so carrying it here would be a field nothing reads.
         } satisfies FileAssetNodeData,
       });
       nodeIds.push(nodeId);

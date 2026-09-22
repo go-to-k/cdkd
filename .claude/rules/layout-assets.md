@@ -43,6 +43,11 @@ paths:
   `docs/cli-deploy-safety.md`, changelog — says so. The nested-stack
   `aws:asset:path` walk keeps REFUSING an absolute value: a different question,
   since CDK always writes a nested template into the outdir.
+  A value NAMING THE OUTDIR ITSELF, by any spelling, is accepted with its own
+  warning rather than silently — the whole assembly becomes the asset, and the
+  local twin's silence does not carry over because this layer's sink is an
+  upload. Both resolvers ask `namesTheSameDirectory`, never `===`
+  ([layout-utils.md](layout-utils.md) says why).
   The warning itself is ONE function, `absolute-asset-path-warning.ts`, and its
   SINK clause is caller-supplied — the resolvers are shared by callers that
   upload, that build an image, and that only read, so a baked-in clause
