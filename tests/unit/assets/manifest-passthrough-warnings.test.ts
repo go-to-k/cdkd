@@ -237,6 +237,56 @@ describe('BuildKit passthrough host paths', () => {
     expect(cap.warned()).toEqual([]);
   });
 
+  it("splits --ssh where buildx splits it: the WHOLE string at the FIRST `=`", () => {
+    // `ParseSSHSpecs` is `strings.SplitN(s, '=', 2)`, so a comma BEFORE that
+    // `=` belongs to the ID, not to the path list. Splitting per entry instead
+    // diverged exactly there: `,k=<victim key>` gave buildx the id `,k` and
+    // the key, while cdkd read `k=<victim key>` whole — a relative string that
+    // folds inside the context, and printed nothing. Third patch to this
+    // field, and the first where cdkd's split IS the consumer's.
+    const { outdir, context, victim } = assembly();
+    const key = join(victim, 'id_rsa');
+
+    let cap = captureWarn();
+    warnEscapingBuildKitPaths(source({ dockerBuildSsh: `,k=${key}` }), context, outdir);
+    expect(cap.warned(), 'comma before the first =').toHaveLength(1);
+    expect(cap.warned()[0]).toContain(key);
+    vi.restoreAllMocks();
+
+    // Every path right of the first `=`, however many.
+    cap = captureWarn();
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildSsh: `k=ok.key,${key},${join(victim, 'ok2.key')}` }),
+      context,
+      outdir
+    );
+    expect(cap.warned(), 'continuation keys').toHaveLength(2);
+    vi.restoreAllMocks();
+
+    // No `=` at all is the agent-socket form and names no manifest path, so
+    // `default` needs no special case — nor does any other bare id.
+    cap = captureWarn();
+    warnEscapingBuildKitPaths(source({ dockerBuildSsh: 'default' }), context, outdir);
+    expect(cap.warned(), 'bare id').toEqual([]);
+  });
+
+  it('stays SILENT for an EMPTY --build-context value, which would name the context itself', () => {
+    // `{ a: '' }` renders `a=`, whose "path" is the context directory — a true
+    // sentence pointing at the wrong thing. `candidateHostPaths` guards this;
+    // the build-context arm no longer goes through it, so it carries the guard.
+    const { outdir, outer } = { ...assembly(), outer: '' };
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-emptyctx-')));
+    const od = join(root, 'cdk.out');
+    mkdirSync(od);
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(source({ dockerBuildContexts: { a: '' } }), root, od);
+
+    expect(cap.warned()).toEqual([]);
+    void outdir;
+    void outer;
+  });
+
   it('judges the RENDERED --build-context element, key included', () => {
     // `args.push('--build-context', `${k}=${v}`)` and buildx takes everything
     // after the FIRST `=` as the value, so a key containing `=` makes

@@ -81,10 +81,28 @@ interface HostPathRef {
  * destination). It is NOT inferred from the field name: `cacheFrom` can carry
  * a `dest=` and `cacheTo` a `src=`.
  *
- * KNOWN INCOMPLETE, recorded rather than built: buildx parses these as CSV, so
- * a quoted value containing a comma (`dest="/tmp/a,b"`) is split wrongly here
- * and its path is missed. A miss costs a warning, never a refusal, which is
- * what keeps a CSV parser out of this module.
+ * KNOWN INCOMPLETE, recorded rather than built, and this list is the whole of
+ * what is left "safe by argument" in this module — four of five review rounds
+ * broke something that lived in that category, so it is written down instead:
+ *
+ * - buildx parses these as CSV, so a quoted value containing a comma
+ *   (`dest="/tmp/a,b"`) is split wrongly here and its path is missed.
+ * - the keyed rule takes `src` / `source` / `dest`, the documented spellings
+ *   that make BuildKit open a file. An UNDOCUMENTED alias, or a NEW key in a
+ *   future buildx, would slip past it, where the earlier take-every-key rule
+ *   would have caught it — that rule was given up because it cost live false
+ *   positives on `ref=` / `scope=` / `env=` at an ordinary project layout.
+ *   What was audited, per backend: `--secret` opens a file only through
+ *   `src` / `source` (`env` is a variable NAME); every `--output` exporter
+ *   only through `dest` (`name`, `push`, `compression*`, `annotation.*`,
+ *   `store`, the docker exporter's `context` are not paths); `--cache-to` and
+ *   `--cache-from` only under `type=local` (`registry`, `s3`, `azblob`, `gha`
+ *   reach the network or take inline values). `src/utils/docker-cmd.ts`'s
+ *   `ARGV_PARAM_LIST_LOCATOR_PARAMS` enumerates the same backends for the
+ *   redaction side and agrees; **update both or neither.**
+ *
+ * Both misses cost a WARNING, never a refusal, which is the whole reason
+ * neither is worth a CSV parser or a wider net.
  *
  * Tolerant by construction: an unparseable value yields nothing rather than
  * throwing. This module only ever ADDS a warning and must never be why a
@@ -139,16 +157,17 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
   if (source.dockerFile) {
     refs.push({ field: 'dockerFile', where: 'dockerFile', path: source.dockerFile, write: false });
   }
+  // The RENDERED element, like every other field — `args.push('--build-context',
+  // `${k}=${v}`)`, and buildx takes everything after the FIRST `=` as the
+  // value, so a key containing `=` makes BuildKit's value a strict superset of
+  // `v`. No reachable payload exists (anything hidden that way must itself
+  // contain `=`, and a real target like `.ssh/id_rsa` does not), but four
+  // rounds running it was the part left safe BY ARGUMENT that broke next, so
+  // there is no argument left here to be wrong about. NOT through
+  // `candidateHostPaths`: this value is not CSV, and splitting it on commas
+  // would break a legitimate path containing one — which also means this arm
+  // must carry that function's empty-value guard itself.
   for (const [k, v] of Object.entries(source.dockerBuildContexts ?? {})) {
-    // The RENDERED element, like every other field — `args.push('--build-context',
-    // `${k}=${v}`)`, and buildx takes everything after the FIRST `=` as the
-    // value, so a key containing `=` makes BuildKit's value a strict superset
-    // of `v`. No reachable payload exists (anything hidden that way must itself
-    // contain `=`, and a real target like `.ssh/id_rsa` does not), but four
-    // rounds running it was the part left safe BY ARGUMENT that broke next, so
-    // there is no argument left here to be wrong about. NOT through
-    // `candidateHostPaths`: this value is not CSV, and splitting it on commas
-    // would break a legitimate path containing one.
     // No remote-reference filter here, and a probe is why. A first revision
     // skipped `docker-image://` / `https://` / `git@` values as "not host
     // paths"; deleting that guard reddened nothing, because each of those
@@ -164,25 +183,35 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
     // a warning rather than a refusal, so it is recorded here rather than
     // special-cased back in.
     const rendered = `${k}=${v}`;
+    const contextPath = rendered.slice(rendered.indexOf('=') + 1).trim();
+    // An empty value renders `a=`, whose "path" is the context directory
+    // itself — a true sentence pointing at the wrong thing. buildx rejects
+    // the spelling anyway.
+    if (contextPath.length === 0) continue;
     refs.push({
       field: 'dockerBuildContexts',
       where: k,
-      path: rendered.slice(rendered.indexOf('=') + 1),
+      path: contextPath,
       write: false,
     });
   }
-  // `--ssh <id>=<socket|key>[,<key>...]` is NOT the keyed-CSV shape the other
-  // option strings have, so it does not go through `candidateHostPaths`:
-  // there the key selects whether a part is a path, while here EVERY part is
-  // one. The ID is an arbitrary name the manifest chooses (`k=`, `mykey=`),
-  // so a `src|source|dest` rule would drop every real key, and the entries
-  // after the first carry no `=` at all — which is how one revision dropped
-  // those. `default` alone is the agent socket from the environment rather
-  // than a manifest-chosen path, and is skipped for that reason.
-  for (const [i, entry] of (source.dockerBuildSsh ?? '').split(',').entries()) {
-    const eq = entry.indexOf('=');
-    const p = (i === 0 && eq >= 0 ? entry.slice(eq + 1) : entry).trim();
-    if (p.length === 0 || p === 'default') continue;
+  // **buildx splits the WHOLE string at the FIRST `=`** — `ParseSSHSpecs` is
+  // `strings.SplitN(s, "=", 2)`, matching the documented
+  // `default|<id>[=<socket>|<key>[,<key>]]` — so the left side is the ID and
+  // everything right of it, comma-separated, is a path. A per-ENTRY split
+  // diverges the moment a comma precedes that `=`: `",k=/home/victim/.ssh/id_rsa"`
+  // gave buildx the id `,k` and the victim's key, while cdkd read entry 1
+  // whole as `k=/home/victim/.ssh/id_rsa`, a relative string folding inside
+  // the context — silent. Third time this field was patched, and the first
+  // time cdkd's split is the consumer's split, which is what ends it.
+  //
+  // `default` needs no special case any more: with no `=` there is no path
+  // list at all, so the agent-socket form falls out structurally.
+  const ssh = source.dockerBuildSsh ?? '';
+  const sshEq = ssh.indexOf('=');
+  for (const entry of sshEq < 0 ? [] : ssh.slice(sshEq + 1).split(',')) {
+    const p = entry.trim();
+    if (p.length === 0) continue;
     refs.push({ field: 'dockerBuildSsh', where: 'dockerBuildSsh', path: p, write: false });
   }
   for (const [k, v] of Object.entries(source.dockerBuildSecrets ?? {})) {
