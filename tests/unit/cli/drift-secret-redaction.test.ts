@@ -667,11 +667,19 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(JSON.stringify(saved)).not.toContain(SECRET_MASK);
     expect(JSON.stringify(saved)).not.toContain('tampered-in-the-console');
     expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
-    expect(
-      warnSpy.mock.calls.some(
-        (c) => typeof c[0] === 'string' && c[0].includes('not accepting') && c[0].includes('SECRET_PASSWORD')
-      )
-    ).toBe(true);
+    const refusal = warnSpy.mock.calls
+      .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+      .find((m) => m.includes('not accepting') && m.includes('SECRET_PASSWORD'));
+    expect(refusal).toBeDefined();
+    // BOTH directions, since go-to-k/cdkd#3486 round 4 (M14). `includes('not
+    // accepting')` alone left the go-to-k/cdkd#3307 defect reinstatable green:
+    // putting `${report.stackName}` back inside the quoted command here —
+    // `main`'s shape, and the exact paste hazard this PR is about — reddened
+    // nothing. The positive pins the stack-free command, the negative pins
+    // that the NAME is not in it.
+    expect(refusal).toContain(`Run 'cdkd drift --revert' for this stack`);
+    expect(refusal).not.toContain('cdkd drift TestStack');
+    expect(refusal).not.toMatch(/cdkd drift \S+ --revert/);
   });
 
   it('--accept still records the NON-secret paths in the same run', async () => {

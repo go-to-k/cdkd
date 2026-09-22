@@ -1003,8 +1003,9 @@ async function driftCommand(
             `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
             `detection after it.` +
             (identity === undefined
-              ? `\nThe stack name is not printed here: it does not render exactly, is empty or ` +
-                `is too long.`
+              ? `\nThe stack name is not printed here: a name is printed only when it renders ` +
+                `exactly, is non-empty and fits the reference cap — this one fails at least ` +
+                `one of those.`
               : `\n${identity}`) +
             (migrate === undefined
               ? `\nThe migrate command is not printed here: ${WITHHELD_COMMAND_REASON} List ` +
@@ -6038,6 +6039,13 @@ async function runRevert(
             `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
               `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
               `The next 'cdkd drift' will report the same difference — re-run ` +
+              // No stack inside the quoted command, for site 2's reason: this
+              // block carries the STATE-WRITE error message (the provider
+              // update already succeeded; this is `saveState` failing after
+              // it), which cannot be gated
+              // for exactness and still printed, so it has not earned a
+              // pasteable line (go-to-k/cdkd#3486 round 3). The NAME is in the
+              // sentence's first clause, which go-to-k/cdkd#3232 owns.
               `'cdkd drift --revert' for this stack once the state write can succeed.`
           );
         }
@@ -6362,6 +6370,11 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
+              // Same as sites 2 and 3: this block lists PROPERTY PATHS, so it
+              // carries no pasteable line and the stack name stays out of the
+              // quoted command. go-to-k/cdkd#3307 also asks this site for a
+              // `--stack-region`; that needs a gated command, so it lands with
+              // the rest of the site in go-to-k/cdkd#3436.
               `Run 'cdkd state refresh-observed' for this stack (or re-deploy) to populate ` +
               `observedProperties if you want them reverted too.\n`
           );
@@ -6864,9 +6877,31 @@ function formatScalar(value: unknown): string {
  * since naming one tells the operator something false about the others (m4 /
  * m10 of the go-to-k/cdkd#3486 review).
  */
+/**
+ * Why a command is not printed, phrased as the RULE rather than as a claim
+ * about the name (m19 of the go-to-k/cdkd#3486 review).
+ *
+ * The earlier wording was a four-way disjunction — "does not render exactly, is
+ * empty, is too long, or ... an option or a pattern" — which is true, but three
+ * of the four disjuncts are visibly FALSE of a name printed on the `Stack:`
+ * line right above it: `--all` renders exactly, is non-empty and is short. A
+ * reader checking the sentence against what they can see concludes the tool is
+ * guessing.
+ *
+ * The leading-`-` clause is stated as the GATE rather than as a parse, because
+ * the gate is wider than Commander: `--all` really is parsed as the flag, while
+ * a BARE `-` Commander takes positionally (measured) and this refuses it
+ * anyway. Writing "would be read as an option" would be false of that one name.
+ *
+ * Naming the ACTUAL reason needs the gate to return it, and deriving it here
+ * from a second copy of the predicates is the exact defect go-to-k/cdkd#3499
+ * closed one file over. So this states the rule and leaves the reason to the
+ * go-to-k/cdkd#3436 fold-in, where `pasteableCommand` supplies it.
+ */
 const WITHHELD_COMMAND_REASON =
-  "this record's name does not render exactly, is empty, is too long, or " +
-  "'cdkd deploy' would read it as an option or a pattern.";
+  'a name is printed in a command only when it renders exactly, is non-empty, ' +
+  "fits the reference cap, does not begin with '-', and is not a 'cdkd deploy' " +
+  'pattern — this one fails at least one of those.';
 
 /**
  * Does `value` reach the terminal as itself — sanitizing changes nothing, and
@@ -6941,22 +6976,30 @@ function stackIdentityLine(stackName: string, indent = ''): string | undefined {
  *   prose `'...'` a quoted value turns the quoting inside out and a pasted span
  *   RUNS (measured in go-to-k/cdkd#3363; the class is go-to-k/cdkd#3436).
  * - REFUSE a name the COMMAND would read as something other than a name. A
- *   leading `-` is parsed as an option by all four commands — a key named
- *   `--all` survives sanitizing, the cap and quoting and then addresses every
- *   stack — and `cdkd deploy` matches its argument as a PATTERN
+ *   leading `-` is refused CONSERVATIVELY: `--all` survives sanitizing, the cap
+ *   and quoting and is then parsed by Commander as the flag, addressing every
+ *   stack. (A BARE `-` Commander takes positionally, so the refusal is wider
+ *   than the parse — the gate is "starts with `-`", not "parses as an option".)
+ *   And `cdkd deploy` matches its argument as a PATTERN
  *   (`src/cli/stack-matcher.ts`), where `*` is a wildcard and `/` selects by
  *   display path. `patternMatched` asks for the last two; `/` cannot arrive
  *   through a key (`listStacks` splits keys on it), so that half is defensive.
  *
- * `region` is passed wherever the caller holds it, because these commands
- * accept `--stack-region` and a stack name held in several regions is otherwise
- * ambiguous. It takes the same gates as the NAME — sanitize, exactness, the
- * cap, emptiness and the leading `-` — because a region is a key SEGMENT, no
- * more trusted than the name.
+ * **`region` and `flags` have NO production caller today, and neither does
+ * `stackIdentityLine`'s `indent`** (M16 / m17 of the go-to-k/cdkd#3486 review;
+ * the one call site is the legacy region-less refusal, which has no region by
+ * definition and passes only `patternMatched`). They are kept, with their
+ * cases, as the landing place for the three `cdkd drift` sites
+ * go-to-k/cdkd#3436 owns — the `--stack-region` requirement go-to-k/cdkd#3307
+ * states for `:6139` is exactly what `region` exists to satisfy. Read their
+ * hazard-matrix cases as a SPECIFICATION for that landing, not as coverage of
+ * a live path. `region` takes the same gates as the NAME — sanitize,
+ * exactness, the cap, emptiness and the leading `-` — because a region is a
+ * key SEGMENT, no more trusted than the name.
  *
  * Exported for `tests/unit/cli/drift.test.ts`, which drives the hazard matrix
- * through it directly; each of the four call sites is driven through the CLI
- * separately, since what a site PASSES is not something a helper test can see.
+ * through it directly; the one call site is driven through the CLI separately,
+ * since what a site PASSES is not something a helper test can see.
  */
 export function stackCommandFor(
   command: string,
