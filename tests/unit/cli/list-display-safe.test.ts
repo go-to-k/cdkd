@@ -42,7 +42,15 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { createListCommand } from '../../../src/cli/commands/list.js';
-import { CSI, hasForgingCharacter, LINE_SEP, NEL, RLO, ST } from '../_forging-characters.js';
+import {
+  CSI,
+  hasForgingCharacter,
+  LINE_SEP,
+  NEL,
+  RLO,
+  ST,
+  ZWSP,
+} from '../_forging-characters.js';
 
 /** One hostile marker per interpolated value, each with its own sanitized twin. */
 const HOSTILE = {
@@ -192,6 +200,44 @@ describe('cdkd list renders manifest-derived values display-safe (#3479)', () =>
           name: 'MyStage-Api',
           environment: { account: '111111111111', region: 'us-east-1' },
           dependencies: ['MyStage-Db'],
+        },
+      ]);
+    });
+  });
+
+  describe('an account and a region take the asciiOnly ALLOWLIST, not the denylist', () => {
+    it('removes an invisible formatter the denylist keeps', async () => {
+      // `displaySafe`'s denylist records the invisible formatters as a
+      // RESIDUAL; `asciiOnly` is a positive allowlist and has none. A region and
+      // an account id have a known ASCII charset, which is the case
+      // `display-safe.ts`'s header asks for that mode.
+      primeStacks([
+        makeStack({
+          stackName: 'StackA',
+          account: `1111${ZWSP}11111111`,
+          region: `us-east${ZWSP}-1`,
+        }),
+      ]);
+      const stdout = await runList(['--long', '--json']);
+      expect(JSON.parse(stdout)).toEqual([
+        {
+          id: 'StackA',
+          name: 'StackA',
+          environment: { account: '1111 11111111', region: 'us-east -1' },
+        },
+      ]);
+    });
+
+    it('leaves an ordinary account and region byte-identical', async () => {
+      primeStacks([
+        makeStack({ stackName: 'StackA', account: '111111111111', region: 'us-east-1' }),
+      ]);
+      const stdout = await runList(['--long', '--json']);
+      expect(JSON.parse(stdout)).toEqual([
+        {
+          id: 'StackA',
+          name: 'StackA',
+          environment: { account: '111111111111', region: 'us-east-1' },
         },
       ]);
     });

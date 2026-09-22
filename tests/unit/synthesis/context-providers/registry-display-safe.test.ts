@@ -3,14 +3,15 @@
  * (issue go-to-k/cdkd#3479).
  *
  * `entry.provider` and `entry.key` are read straight out of the manifest's
- * `missing` list, so they are chosen by whoever wrote the assembly. They reach
- * the terminal at four sites, three of which need no error at all: the
- * unknown-provider `warn`, and two `debug` lines on the SUCCESS path.
+ * `missing` list, so they are chosen by whoever wrote the assembly. Most of
+ * their render sites need no error at all: the unknown-provider `warn`, and the
+ * two `debug` lines on the SUCCESS path.
  *
- * The error-arm case also covers the provider's own failure text, which is the
- * render site for every lookup argument the `*-provider.ts` modules interpolate
- * into a thrown message (`parameterName`, `domainName`, a VPC filter) — all of
- * them from the template's context queries.
+ * The error arm also covers the provider's own failure text, which is the render
+ * site for every lookup argument the `*-provider.ts` modules interpolate into a
+ * thrown message (`parameterName`, `domainName`, a VPC filter) — all of them
+ * from the template's context queries, which makes the LENGTH assembly-chosen
+ * too, so that site takes `displayAwsMessage` and its cut is pinned.
  *
  * Both polarities per site; the hostile cases carry a DISTINCT marker per
  * interpolated value.
@@ -29,6 +30,7 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 
 import { ContextProviderRegistry } from '../../../../src/synthesis/context-providers/index.js';
 import type { MissingContext } from '../../../../src/types/assembly.js';
+import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../../src/utils/display-safe.js';
 import { CSI, hasForgingCharacter, LINE_SEP, NEL, RLO, ST } from '../../_forging-characters.js';
 
 /** One hostile marker per interpolated value, each with its own sanitized twin. */
@@ -117,6 +119,30 @@ describe('ContextProviderRegistry renders manifest-derived values display-safe (
   });
 
   describe('the provider-failure arm — the error line and the context value', () => {
+    it('CAPS an oversized failure text and MARKS the cut', async () => {
+      // The lookup arguments a `*-provider.ts` interpolates into its thrown
+      // message are manifest `missing[].props` values, so the LENGTH is chosen
+      // by whoever wrote the assembly — which is why this site takes
+      // `displayAwsMessage` rather than bare `displaySafe`, and why the cut has
+      // to be visible: a bounded diagnostic must not read as a complete one.
+      const registry = new ContextProviderRegistry();
+      const flood = `parameter not found: ${'x'.repeat(5000)}`;
+      registry.register('ssm', {
+        resolve: async () => {
+          throw new Error(flood);
+        },
+      });
+      const results = await registry.resolve(missing('ssm', 'ssm:parameterName=/db/host'));
+      // DERIVED from the cap rather than transcribed, so the case cannot pin a
+      // number that stopped matching the constant.
+      const withheld = flood.length - AWS_MESSAGE_MAX_CODE_POINTS;
+      const marker = `[cut: ${withheld} more characters withheld]`;
+      expect(withheld).toBeGreaterThan(0);
+      expect(errorLines()[0]!.endsWith(marker)).toBe(true);
+      const entry = results['ssm:parameterName=/db/host'] as Record<string, unknown>;
+      expect(String(entry[PROVIDER_ERROR_KEY]).endsWith(marker)).toBe(true);
+    });
+
     it('sanitizes the provider name AND the provider-supplied failure text', async () => {
       const registry = new ContextProviderRegistry();
       registry.register(HOSTILE.unknownProvider.raw, {

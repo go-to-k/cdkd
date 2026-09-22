@@ -56,3 +56,12 @@ export const PARA_SEP = String.fromCharCode(0x2029);
 export const RLO = String.fromCharCode(0x202e);
 /** LEFT-TO-RIGHT ISOLATE — Trojan Source. */
 export const LRI = String.fromCharCode(0x2066);
+
+/**
+ * ZERO WIDTH SPACE — the recorded RESIDUAL of `displaySafe`'s denylist, which
+ * its `asciiOnly` allowlist does remove. Not in {@link hasForgingCharacter}'s
+ * class, deliberately: it cannot forge a line, only make a rendered value
+ * differ visually from its bytes. It is here so a case can tell the two MODES
+ * apart, which no forging character can.
+ */
+export const ZWSP = String.fromCharCode(0x200b);
