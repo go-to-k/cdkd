@@ -986,24 +986,34 @@ row is the only one that WRITES.
 manifest's own.** A `Stage`'s assets are staged into the app's `cdk.out` while
 the Stage's asset manifest sits in `cdk.out/assembly-<Stage>/`, so CDK writes
 `source.path: "../asset.<hash>"` there by design — and a nested Stage reaches
-up further still. Those paths load normally. What is refused is a path leaving
-the output directory itself, from a Stage manifest and a top-level one alike.
+up further still. Those paths load normally. What is refused is a **relative**
+path leaving the output directory, from a Stage manifest and a top-level one
+alike.
+
+**An ABSOLUTE `source.path` or `source.directory` is accepted**, with a warning
+naming the directory when it falls outside the output directory and saying what
+cdkd does with it — package and upload it, or hand it to the image build as the
+context. `cdk synth --no-staging` emits exactly that: under
+`aws:cdk:disable-asset-staging` CDK writes each asset's absolute SOURCE
+directory instead of a staged copy, and the CDK CLI itself resolves the field in
+a way that honours it. Refusing would reject the output of a documented flag and
+diverge from the CLI cdkd is meant to complement. Be clear about what the
+relative arm still buys once that is true: against someone who hand-wrote the
+manifest, nothing — they write the absolute spelling and reach the same file
+with a warning instead of a refusal. What it still catches is an accidental or
+legacy `..`, and it costs nothing, which is why it stays. **For an absolute
+value the warning is the whole signal, not a boundary.**
 
 The `cdkd local *` commands apply the same rule to SOME of the assembly they
 read — including a path the deploy side has no equivalent of, a Lambda's
 `Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
 before running it. **`cdkd local invoke` and `cdkd local start-api`** — those
-two, not the family — also refuse the `aws:asset:path` they bind-mount into
-the container, but only when it is **relative**; the other `local` commands
-that mount Lambda code reach it through the bundled `cdk-local` engine and are
-unguarded, which [Local Execution](local-emulation.md) names. An **absolute**
-one is accepted, with a warning naming the directory when it leaves the output
-directory,
-because `cdk synth --no-staging` emits exactly that — the asset's absolute
-source directory — and refusing it would reject the output of a documented CDK
-CLI flag. That is a deliberate difference from the deploy side's absolute
-tripwire. Others there are not covered yet;
-[Local Execution](local-emulation.md) states the trade and lists which are
+two, not the family — also refuse a **relative** escaping `aws:asset:path`
+before bind-mounting it into the container, and accept an **absolute** one with
+the same warning, for the same reason; the other `local` commands that mount
+Lambda code reach it through the bundled `cdk-local` engine and are unguarded,
+which [Local Execution](local-emulation.md) names. Others there are not covered
+yet; [Local Execution](local-emulation.md) states the trade and lists which are
 which.
 
 One consequence of measuring against the app's output directory: pointing `-a`
@@ -1020,11 +1030,13 @@ the manifest writes them, and a file asset's destination bucket and object key
 are likewise taken from the manifest. Treat a Cloud Assembly you did not
 synthesize yourself as you would any other untrusted input.
 
-The walk separately refuses an **absolute** `aws:asset:path`, which is a
-"not CDK-generated" tripwire rather than an escape: `path.join` does not honour
-a leading separator, so an absolute value stays inside the directory. Its
-message says `which is absolute` where the containment one says `which resolves
-to ...`, so the two are told apart at a glance. Also refused is a tree nested more than 512 levels
+The nested-stack walk separately refuses an **absolute** `aws:asset:path`, which
+is a "not CDK-generated" tripwire rather than an escape. It is a different
+question from the asset rows above and keeps a different answer: there the value
+is a nested-stack TEMPLATE that CDK always writes into the output directory, so
+`--no-staging` does not relocate it and an absolute one means the assembly was
+not CDK-generated. Its message says `which is absolute` where the containment
+one says `which resolves to ...`, so the two are told apart at a glance. Also refused is a tree nested more than 512 levels
 deep, which could not deploy anyway: each level lengthens the child's state key,
 and S3 caps a key at 1024 bytes. A tree with more than 10,000 nested-stack rows to
 follow is refused as well. That is far beyond any CDK-generated assembly; in

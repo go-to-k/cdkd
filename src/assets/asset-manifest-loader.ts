@@ -1,7 +1,12 @@
 import { readFile } from 'fs/promises';
+import { isAbsolute, resolve } from 'path';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
 import { displaySafe } from '../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import {
+  absoluteAssemblyPathEscape,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -16,17 +21,78 @@ import { getLogger } from '../utils/logger.js';
  * primitive with the caller's own credentials, which is the harm the manifest
  * FILE's own containment check cites. One function so the loader and the
  * publisher cannot disagree about which file is published.
+ *
+ * **An ABSOLUTE `source.path` is HONOURED, and warned about when it leaves
+ * `assetOutdir`** (issue
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532)). It used to be neither
+ * honoured nor refused: `resolveAssemblyPath` joins with `path.join`, which
+ * does not honour a leading separator, so an absolute value was folded INTO
+ * the outdir, read as CONTAINED, and died later at `statSync` with an `ENOENT`
+ * naming a path that exists nowhere and that the user never wrote. Three
+ * things decide the arm:
+ *
+ * - `cdk synth --no-staging` emits exactly this shape. Under
+ *   `aws:cdk:disable-asset-staging` upstream `AssetStaging.relativeStagedPath`
+ *   returns the staged path verbatim, so every `files[*].source.path` is the
+ *   asset's absolute SOURCE directory, normally outside the outdir. Refusing it
+ *   rejects the output of a documented CDK CLI flag.
+ * - Upstream `cdk deploy` resolves the field with `path.resolve(manifestDir,
+ *   p)`, which honours an absolute value and publishes it. Refusing here would
+ *   make cdkd diverge from the CLI it is meant to complement.
+ * - So the WARNING is the whole signal, and there is no containment boundary
+ *   left for an absolute value. The relative `..` arm still refuses, and it is
+ *   worth being precise about what that buys: against an ADVERSARY nothing,
+ *   since they write the absolute spelling and reach the same file with a
+ *   warning. What it still catches is an ACCIDENTAL or legacy `..`, and it
+ *   costs nothing, which is why the arm stays. The docs say so to users in the
+ *   same words, and the local-emulation twin
+ *   ({@link import('../local/lambda-resolver.js').resolveAssetCodeDirectory},
+ *   issue [#3494](https://github.com/go-to-k/cdkd/issues/3494)) took the same
+ *   decision for the same reasons — the two must not diverge.
  */
 export function resolveFileAssetSourcePath(
   manifestDir: string,
   asset: FileAsset,
   /**
-   * The app's outdir, where `cdk synth` stages every asset. Defaults to
-   * `manifestDir`, which is correct for a TOP-LEVEL stack and wrong for a
-   * Stage — see the containment note below.
+   * The app's outdir, where `cdk synth` stages every asset — the containment
+   * bound for a relative value and the warning bound for an absolute one.
+   *
+   * **REQUIRED, so that OMITTING it is a type error.** It used to default to
+   * `manifestDir`, which is right for a TOP-LEVEL stack and wrong for a Stage:
+   * `cdk synth` stages a Stage's assets into the APP's outdir while the
+   * Stage's manifest sits in `cdk.out/assembly-<Stage>/`, so upstream emits
+   * `source.path` of `../asset.<hash>` by design and binding to the manifest
+   * directory refuses every Stage asset (go-to-k/cdkd#3489's own defect). A
+   * default made that regression re-expressible by DROPPING an argument, which
+   * no refusal test can see; the local twin was made required for the same
+   * reason in go-to-k/cdkd#3529. A caller with no better answer passes
+   * `manifestDir` explicitly, which NARROWS and never opens past the base.
    */
-  assetOutdir: string = manifestDir
+  assetOutdir: string
 ): string {
+  if (isAbsolute(asset.source.path)) {
+    // `path.resolve` only NORMALISES here, the value already being absolute;
+    // it is what makes the warning name the directory that is really read
+    // rather than an unfolded spelling of it.
+    const absolute = resolve(asset.source.path);
+    const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
+    if (escape !== undefined) {
+      getLogger()
+        .child('AssetManifestLoader')
+        .warn(
+          `File asset '${displaySafe(asset.displayName)}' has an absolute ` +
+            `source.path pointing outside the assembly: '${displaySafe(absolute)}'` +
+            (escape.escape === 'symlink'
+              ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
+              : '') +
+            `. cdkd will package that path and upload it to the asset bucket this ` +
+            `manifest names. This is what cdk synth --no-staging emits, and is ` +
+            `expected for it; if you did not synthesize with that flag, treat this ` +
+            `assembly as untrusted.`
+        );
+    }
+    return absolute;
+  }
   // RESOLVE against the manifest's directory, CONTAIN within the app's
   // outdir. The two differ for a Stage: `cdk synth` stages a Stage's assets
   // into the app's outdir while the Stage's manifest sits in
@@ -146,18 +212,26 @@ export class AssetManifestLoader {
   /**
    * Get asset source path (absolute path)
    *
-   * Refuses a `source.path` resolving outside `cdkOutputDir` (issue
-   * [#3489](https://github.com/go-to-k/cdkd/issues/3489)). The manifest is
-   * assembly-supplied and `cdkd deploy -a <dir>` consumes a pre-synthesized
-   * one, so a `source.path` of `../../../home/<user>/.aws` would otherwise be
-   * packaged and uploaded to a bucket the SAME manifest names.
+   * Refuses a RELATIVE `source.path` resolving outside `assetOutdir` (issue
+   * [#3489](https://github.com/go-to-k/cdkd/issues/3489)); an ABSOLUTE one is
+   * honoured and warned about instead (issue
+   * [#3532](https://github.com/go-to-k/cdkd/issues/3532)) — see
+   * {@link resolveFileAssetSourcePath} for why the two arms differ. The
+   * manifest is assembly-supplied and `cdkd deploy -a <dir>` consumes a
+   * pre-synthesized one, so a `source.path` of `../../../home/<user>/.aws`
+   * would otherwise be packaged and uploaded to a bucket the SAME manifest
+   * names.
    *
    * @param cdkOutputDir CDK output directory
    * @param asset File asset
+   * @param assetOutdir The app's outdir — the containment / warning bound.
+   *   REQUIRED for the reason {@link resolveFileAssetSourcePath}'s own
+   *   parameter is: a dropped bound narrows to the manifest directory and
+   *   silently refuses every Stage asset.
    * @returns Absolute path to asset source
    */
-  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset, assetOutdir?: string): string {
-    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir ?? cdkOutputDir);
+  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset, assetOutdir: string): string {
+    return resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir);
   }
 
   /**

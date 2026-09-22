@@ -46,6 +46,10 @@ export class FileAssetPublisher {
     // bucket; and that check `continue`s on a hit, which skipped the
     // containment check ENTIRELY whenever the object already existed, making
     // the refusal depend on remote state.
+    // `?? cdkOutputDir` NARROWS and never opens: a caller with no
+    // `StackInfo.assetOutdir` is judged against the manifest's own directory,
+    // so a hand-built stack record is stricter, not looser. `AssetPublisher`
+    // — the one production caller — always threads `data.assetOutdir`.
     const sourcePath = resolveFileAssetSourcePath(cdkOutputDir, asset, assetOutdir ?? cdkOutputDir);
 
     // Process each destination

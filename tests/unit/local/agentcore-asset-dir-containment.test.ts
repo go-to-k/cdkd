@@ -363,11 +363,15 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     expect(manifest).not.toBeNull();
 
     expect(() =>
-      loader.getAssetSourcePath(outdir, {
-        displayName: 'x',
-        source: { path: '../outside-dir', packaging: 'zip' },
-        destinations: {},
-      })
+      loader.getAssetSourcePath(
+        outdir,
+        {
+          displayName: 'x',
+          source: { path: '../outside-dir', packaging: 'zip' },
+          destinations: {},
+        },
+        outdir
+      )
     ).toThrow(/outside/);
     await expect(call(outdir)).rejects.toThrow(/outside/);
   });

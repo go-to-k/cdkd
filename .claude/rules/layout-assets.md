@@ -19,7 +19,24 @@ paths:
   `loadManifest`. **Those two RESOLVE against the manifest's
   directory but are CONTAINED within `StackInfo.assetOutdir`**: a Stage's
   assets sit in the app root, so `source.path` is `../asset.<hash>` by design
-  and containing against the manifest directory refused every Stage asset. `resolveFileAssetSourcePath` runs at the TOP of
+  and containing against the manifest directory refused every Stage asset.
+  **`assetOutdir` is a REQUIRED parameter on both**, so a dropped argument is a
+  compile error rather than a silent narrowing back onto the manifest
+  directory; the `??` fallback lives at the two callers whose options bag may
+  legitimately lack it, and it narrows, never opens.
+  **The containment arm is the RELATIVE one only** (issue
+  [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
+  honoured and WARNED about when it leaves `assetOutdir`, because
+  `cdk synth --no-staging` emits each asset's absolute source directory and
+  upstream `cdk deploy` honours it. `resolveAssemblyPath` cannot answer for an
+  absolute value at all — `path.join` ignores a leading separator, so it folded
+  one INTO the outdir and reported `contained: true` over a path that exists
+  nowhere — so the arm calls `absoluteAssemblyPathEscape` instead. Same
+  decision, same wording, as the local twin `resolveAssetCodeDirectory`
+  ([#3494](https://github.com/go-to-k/cdkd/issues/3494)); the two must not
+  diverge. The nested-stack `aws:asset:path` walk keeps REFUSING an absolute
+  value — a different question, since CDK always writes a nested template into
+  the outdir. `resolveFileAssetSourcePath` runs at the TOP of
   `publish`, above the `objectExists` short-circuit: below it, an
   already-present object skipped the check entirely and the HeadObject itself
   went to a manifest-named bucket. Unchecked and tracked in #3497: every
