@@ -364,10 +364,10 @@ and mounts normally.
 Stage's own assets.** `cdkd local invoke -a cdk.out/assembly-MyStage` bounds
 containment to the directory you named, and the Stage's `../asset.<hash>` really
 does leave it, so the mount is refused — with a message about the output being
-hand-modified, which is not what happened. This changed: it mounted before
-containment was added. Point `-a` at the app's `cdk.out` and select the function
-by its display path instead. The deploy path has the same rule for the same
-reason; see [Deploy safety](cli-deploy-safety.md).
+hand-modified, which is not what happened here. Point `-a` at the app's
+`cdk.out` and select the function by its display path instead. The deploy path
+has the same rule for the same reason; see [Deploy
+safety](cli-deploy-safety.md).
 
 **Container-image Lambdas.** See [Container-image
 Lambdas](#container-image-lambdas) above.
