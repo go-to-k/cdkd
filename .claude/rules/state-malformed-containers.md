@@ -78,50 +78,38 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
 
 ## Where a pasteable command goes (go-to-k/cdkd#3516)
 
-Three shapes, and which one a message takes follows from what it offers.
+**A message offering only a READ ends ON it**, `inspectCommand`. Mid-sentence it
+sits one space from the next clause and a line-select paste carries that clause
+in as arguments, so the fence is `endsWith`; `toContain` is what let four
+consumers bury it.
 
-**A message offering only a READ ends on it**, `inspectCommand`. Mid-sentence it
-is one space from the next clause and a line-select paste carries that clause in
-as positional arguments, so the fence is `endsWith`, never `toContain` — the
-weaker spelling is what let four consumers bury it.
+**A message offering a read AND the destructive template puts one command per
+LINE** (`Inspect the record:` / `Drop the record:`). One line cannot do both:
+the read must end a line, and the template must be LAST with no substituted
+region after it, or the value the prose just said not to trust sits below the
+holes the operator fills by hand. Do not collapse them. Fence with a line LIST
+(`toEqual`), which `endsWith` cannot express, and take the injected-newline
+control from the SAME ARM — the line count differs per arm.
 
-**A message offering BOTH a read and the destructive template puts one command
-per LINE** (`Inspect the record:` / `Drop the record:`), because a single line
-cannot satisfy both rules at once: the read has to end a line, and the template
-has to be LAST with no substituted region after it, or the value the prose has
-just said not to trust sits below the holes an operator fills by hand. Do not
-collapse them back. Its fence is a line LIST compared with `toEqual`, so a
-forged, duplicated or collapsed line fails too; `endsWith` cannot express it.
-A hardcoded "one line" assertion is also wrong for these, so an
-injected-newline check compares the line count against a control **on the SAME
-ARM** — the count differs per arm, so a benign-name control compares arms
-instead of line injection.
+**Naming a target beside that template needs more than faithful rendering**:
+exactness keeps a space and a `:`, so an identifier can spell one of these
+labels and forge it inside the quoted clause once the terminal wraps. Add
+`isPasteableIdent` on BOTH identifiers, in CONJUNCTION with exactness, measured
+at the cap the message's own clause RENDERS at. THREE messages carry it — the
+two DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128),
+and `divergentRecordRegionRefusalMessage`, which spells its own because it
+renders a KEY region at the state-record cap (go-to-k/cdkd#3328). Borrowing
+either way is fail-safe: a spurious withhold, not a forgery.
 
-**Naming a target beside that template needs more than faithful rendering.**
-`safeIdentifier(x) === x` keeps a space and a `:`, so an identifier spelling
-`Drop the record: cdkd state orphan prod --stack-region us-east-1` renders
-exactly and forges cdkd's own line inside the quoted clause once the terminal
-wraps. Add `isPasteableIdent` on BOTH identifiers, **in CONJUNCTION with the
-per-kind exactness rather than instead of it**: `isPasteableIdent` measures at
-the STACK cap, so on its own it admits a region past a REGION's 128, which
-`safeRegion` then truncates. Fence each operand separately — the pasteability
-half needs a row that is exact yet unpasteable, which no truncation row reaches.
+Where those caps DIFFER, fence each operand — the pasteability half needs a row
+that is exact yet unpasteable, which no truncation row reaches. Where they are
+the SAME, exactness is subsumed and nothing can red on dropping it: unfenceable
+rather than unfenced.
 
-**Two messages carry this gate**: the `resources` destroy refusal (through
-`mayNameTargetWithDestructiveRemedy`) and `divergentRecordRegionRefusalMessage`,
-which spells its own because it measures a KEY region at the state-record
-grammar's cap on purpose (go-to-k/cdkd#3328), not a region's 128.
-
-**That second one still ends on the template on a single line**, because its
-EXACT arm offers no read — its withhold arm does, so it is in `inspectCommand`'s
-caller list. It is not the shape to copy for a message offering both.
-
-**Residual, tracked rather than fenced** (go-to-k/cdkd#3518): two readers
-FLATTEN the newlines — `events.ts`'s `safeText`, and `error-handler.ts` where a
-refusal arrives as a CAUSE — so a refusal surfaced through `cdkd events` shows
-the pre-go-to-k/cdkd#3516 run-on. Reachable through a nested child's destroy.
-The per-line shape is a property of the MESSAGE, not of every surface that
-prints it.
+That third message still ends on the template, on one line, because its EXACT
+arm offers no read; its withhold arm does. Not the shape to copy for a message
+offering both. And the per-line shape is a property of the MESSAGE, not of every
+surface printing it — two readers flatten it back (go-to-k/cdkd#3518).
 
 ## Two exports here are not guards at all
 

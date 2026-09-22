@@ -356,7 +356,9 @@ const DROP_RECORD_TEMPLATE = 'cdkd state orphan <stack> --stack-region <region>'
  * The same template as a LABELLED line, for the two messages that carry their
  * commands one per line. The COMMAND is the atom rather than the line, because
  * the command is what drifts: `divergentRecordRegionRefusalMessage` ends on it
- * with no label, so a `--stack-region` rename could otherwise half-land.
+ * with no label, so THIS PAIR cannot half-land a `--stack-region` rename.
+ * {@link dropRecordCommand} still spells it separately for the `cdkd orphan`
+ * messages, which substitute into it — that one is not covered here.
  */
 const DROP_RECORD_LINE = `Drop the record: ${DROP_RECORD_TEMPLATE}`;
 
@@ -705,7 +707,16 @@ export function divergentRecordRegionRefusalMessage(
   // NOT `mayNameTargetWithDestructiveRemedy`: that helper measures the region
   // at a REGION's 128, and this site measures a KEY region at the state-record
   // grammar's cap on purpose (go-to-k/cdkd#3328), so borrowing it would take a
-  // healthy multi-level nested child down the withhold arm.
+  // healthy multi-level nested child down the withhold arm. The invariant both
+  // gates satisfy is the same — measure at the cap this message's own clause
+  // RENDERS at.
+  //
+  // Here that makes BOTH exactness operands subsumed, unlike the sibling: this
+  // site's `cap` IS the bound `isPasteableIdent` measures at, so
+  // `isPasteableIdent(x)` already implies `safeIdentifier(x, cap) === x` and no
+  // test can red on dropping them. Unfenceable rather than unfenced — do not
+  // go looking for the per-operand case the sibling has. Kept so that changing
+  // either bound cannot silently drop the other.
   const exact =
     safeIdentifier(stackName, cap) === stackName &&
     safeIdentifier(keyRegion, cap) === keyRegion &&
