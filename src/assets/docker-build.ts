@@ -24,6 +24,41 @@ import { cacheOptionToFlag } from './docker-cache-option.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
+ * The three values that decide what {@link resolveDockerContextDirectory}
+ * does, as a BAG rather than positionals (issue
+ * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+ *
+ * `assetOutdir` and `sink` are both `string`, and `assetId` is another — so a
+ * call written `(…, assetOutdir, assetId)` compiled and printed
+ * `cdkd will cdkd-asset-<hash>`. Making each required, which
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did, catches a DROP and
+ * not a TRANSPOSITION; this is the shape that was left.
+ */
+export interface DockerContextResolveOptions {
+  /**
+   * The app's outdir; see {@link FileAssetResolveOptions.assetOutdir} for why
+   * it differs from the manifest's directory. A dropped bound narrows to the
+   * manifest directory and refuses every Stage asset, which no refusal test
+   * can see.
+   */
+  assetOutdir: string;
+  /**
+   * What THIS caller does with the directory next, completing "cdkd will ...".
+   * The two arms of `buildDockerImage` have DIFFERENT sinks, and describing
+   * one on the other understates: the `executable` arm sends nothing to
+   * BuildKit — the directory becomes the working directory of a
+   * manifest-supplied argv.
+   */
+  sink: string;
+  /**
+   * How to name the asset in the warning. Absent renders a bare subject; with
+   * several image assets under `--no-staging` that gives N indistinguishable
+   * lines.
+   */
+  assetId?: string;
+}
+
+/**
  * Shared `docker build` invocation used by both
  * `src/assets/docker-asset-publisher.ts` (publish to ECR) and
  * `src/local/ecs-task-runner.ts` (build a `ContainerImage.fromAsset` image for
@@ -115,41 +150,6 @@ export interface BuildDockerImageOptions {
  * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
  * Exported for unit testing.
  */
-/**
- * The three values that decide what {@link resolveDockerContextDirectory}
- * does, as a BAG rather than positionals (issue
- * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
- *
- * `assetOutdir` and `sink` are both `string`, and `assetId` is another — so a
- * call written `(…, assetOutdir, assetId)` compiled and printed
- * `cdkd will cdkd-asset-<hash>`. Making each required, which
- * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did, catches a DROP and
- * not a TRANSPOSITION; this is the shape that was left.
- */
-export interface DockerContextResolveOptions {
-  /**
-   * The app's outdir; see {@link FileAssetResolveOptions.assetOutdir} for why
-   * it differs from the manifest's directory. A dropped bound narrows to the
-   * manifest directory and refuses every Stage asset, which no refusal test
-   * can see.
-   */
-  assetOutdir: string;
-  /**
-   * What THIS caller does with the directory next, completing "cdkd will ...".
-   * The two arms of `buildDockerImage` have DIFFERENT sinks, and describing
-   * one on the other understates: the `executable` arm sends nothing to
-   * BuildKit — the directory becomes the working directory of a
-   * manifest-supplied argv.
-   */
-  sink: string;
-  /**
-   * How to name the asset in the warning. Absent renders a bare subject; with
-   * several image assets under `--no-staging` that gives N indistinguishable
-   * lines.
-   */
-  assetId?: string;
-}
-
 export function resolveDockerContextDirectory(
   manifestDir: string,
   directory: string,

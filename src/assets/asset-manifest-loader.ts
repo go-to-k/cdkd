@@ -12,6 +12,41 @@ import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-ass
 import { getLogger } from '../utils/logger.js';
 
 /**
+ * The two values that decide what {@link resolveFileAssetSourcePath} does, as
+ * a BAG rather than positionals (issue
+ * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+ *
+ * Both are `string`, and making each REQUIRED — which
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did — catches a DROP
+ * and not a TRANSPOSITION. A caller passing them the other way round compiled
+ * and bound a prose clause to the containment bound. The same PR deleted
+ * `FileAssetPublisher.publish`'s unused `profile` for that reason; this is the
+ * shape that was left.
+ */
+export interface FileAssetResolveOptions {
+  /**
+   * The app's outdir, where `cdk synth` stages every asset — the containment
+   * bound for a relative value and the warning bound for an absolute one.
+   *
+   * It used to be a positional that DEFAULTED to `manifestDir`, which is right
+   * for a TOP-LEVEL stack and wrong for a Stage: `cdk synth` stages a Stage's
+   * assets into the APP's outdir while the Stage's manifest sits in
+   * `cdk.out/assembly-<Stage>/`, so upstream emits `source.path` of
+   * `../asset.<hash>` by design and binding to the manifest directory refuses
+   * every Stage asset (go-to-k/cdkd#3489's own defect). A caller with no
+   * better answer passes `manifestDir` explicitly, which NARROWS and never
+   * opens past the base.
+   */
+  assetOutdir: string;
+  /**
+   * What THIS caller does with the directory next, completing "cdkd will ...".
+   * Caller-supplied; the reasoning is on `AbsoluteAssetPathWarning.sink`. Only
+   * the ABSOLUTE arm renders it.
+   */
+  sink: string;
+}
+
+/**
  * THE one spelling of "where does this file asset's source live", shared by
  * {@link AssetManifestLoader.getAssetSourcePath} and `FileAssetPublisher`
  * (issue [#3489](https://github.com/go-to-k/cdkd/issues/3489)).
@@ -68,41 +103,6 @@ import { getLogger } from '../utils/logger.js';
  * it is no longer a boundary against anyone who chose the value. The docs say
  * this to users in the same words; do not soften either copy.
  */
-/**
- * The two values that decide what {@link resolveFileAssetSourcePath} does, as
- * a BAG rather than positionals (issue
- * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
- *
- * Both are `string`, and making each REQUIRED — which
- * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did — catches a DROP
- * and not a TRANSPOSITION. A caller passing them the other way round compiled
- * and bound a prose clause to the containment bound. The same PR deleted
- * `FileAssetPublisher.publish`'s unused `profile` for that reason; this is the
- * shape that was left.
- */
-export interface FileAssetResolveOptions {
-  /**
-   * The app's outdir, where `cdk synth` stages every asset — the containment
-   * bound for a relative value and the warning bound for an absolute one.
-   *
-   * It used to be a positional that DEFAULTED to `manifestDir`, which is right
-   * for a TOP-LEVEL stack and wrong for a Stage: `cdk synth` stages a Stage's
-   * assets into the APP's outdir while the Stage's manifest sits in
-   * `cdk.out/assembly-<Stage>/`, so upstream emits `source.path` of
-   * `../asset.<hash>` by design and binding to the manifest directory refuses
-   * every Stage asset (go-to-k/cdkd#3489's own defect). A caller with no
-   * better answer passes `manifestDir` explicitly, which NARROWS and never
-   * opens past the base.
-   */
-  assetOutdir: string;
-  /**
-   * What THIS caller does with the directory next, completing "cdkd will ...".
-   * Caller-supplied; the reasoning is on `AbsoluteAssetPathWarning.sink`. Only
-   * the ABSOLUTE arm renders it.
-   */
-  sink: string;
-}
-
 export function resolveFileAssetSourcePath(
   manifestDir: string,
   asset: FileAsset,
@@ -302,10 +302,10 @@ export class AssetManifestLoader {
    *
    * @param cdkOutputDir CDK output directory
    * @param asset File asset
-   * @param assetOutdir The app's outdir — the containment / warning bound.
-   *   REQUIRED for the reason {@link resolveFileAssetSourcePath}'s own
-   *   parameter is: a dropped bound narrows to the manifest directory and
-   *   silently refuses every Stage asset.
+   * @param opts The app's outdir and the sink clause; see
+   *   {@link FileAssetResolveOptions}. A bag rather than positionals because
+   *   both are `string` and a transposition otherwise compiled
+   *   (go-to-k/cdkd#3537).
    * @returns Absolute path to asset source
    */
   getAssetSourcePath(

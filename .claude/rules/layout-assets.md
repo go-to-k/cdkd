@@ -27,9 +27,9 @@ paths:
   TRANSPOSITION, which required does not — the values are all `string`, so
   `(…, assetOutdir, assetId)` used to compile and print
   `cdkd will cdkd-asset-<hash>`
-  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). Exactly one `??`
-  survives, in `buildDockerImage`, whose options bag may legitimately lack the
-  outdir, and it narrows, never opens.
+  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). The surviving `??`
+  fallbacks — two in `buildDockerImage`, one in `AssetPublisher` — all NARROW
+  onto the manifest directory and never open past it.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because
