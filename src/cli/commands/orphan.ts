@@ -57,8 +57,10 @@ import {
  *   already supplies the quotes (`stack '<name>'`), where `displayIdent` would
  *   double-quote.
  * - `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`, so a deep nested path
- *   is not cut) serves every UNQUOTED `Available: ...` list, whose job is the
- *   value's IDENTITY — which names the user could have meant. There `displaySafe`
+ *   is not cut) serves every UNQUOTED LIST whose job is the value's IDENTITY —
+ *   which names the user could have meant. That is each `Available: ...` list
+ *   and, since they share one sentence with one, the `missing` half of
+ *   `Resource(s) not in state`. There `displaySafe`
  *   is not enough: it maps the stripped character to a space and then TRIMS, so a
  *   planted `us-east-1` plus a line terminator renders byte-identical to the
  *   genuine `us-east-1` and the message lists the very value it says is missing
@@ -673,10 +675,9 @@ function printUnresolvable(unresolvable: UnresolvableReference[]): void {
 /**
  * A rewrite's before / after is a TEMPLATE value, so it is sanitized after
  * serialization ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
- * `JSON.stringify` is not the boundary on its own — measured: it escapes every
- * C0 character and nothing above, so DEL, the C1 range, `U+2028`/`U+2029` and
- * the bidi overrides pass straight through, and `U+009B` is read as CSI by a
- * UTF-8 xterm.
+ * `JSON.stringify` is not the boundary on its own — measured: it escapes C0 but
+ * nothing above, so DEL, the C1 range, `U+2028`/`U+2029` and the bidi overrides
+ * pass straight through, and `U+009B` is read as CSI by a UTF-8 xterm.
  */
 function stringifyForAudit(value: unknown): string {
   // `JSON.stringify` answers `undefined` — not a string — for `undefined`, a

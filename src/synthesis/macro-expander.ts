@@ -169,6 +169,11 @@ const EARLY_VALIDATION_MARKER = /AWS::EarlyValidation::/;
  * retry loop into three CFn changeset round-trips plus the backoff between
  * them. A verdict read from a symbol set out of AWS's own text cannot be
  * steered that way at all.
+ *
+ * IT RIDES THE INSTANCE, which is the one way a future edit can lose it: a site
+ * that catches one of these and wraps it in a NEW `MacroExpansionError` drops
+ * the verdict silently — the same shape as the bug above, one indirection over.
+ * Re-tag at any such wrap.
  */
 const EARLY_VALIDATION = Symbol('cdkd.macroExpansion.earlyValidationRejection');
 
@@ -769,8 +774,13 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
       // the OFFENDING INPUT verbatim (measured: `Unexpected token 'o',
       // "notjson <ESC>[2K forged" is not valid JSON`), and that input is the
       // round-tripped template. `assembly-reader.ts` avoids quoting a
-      // `JSON.parse` snippet for exactly this reason; here the snippet is
-      // already inside AWS's text, so it is sanitized and bounded instead.
+      // `JSON.parse` snippet for exactly this reason.
+      //
+      // It is the SANITIZATION this site needs, not the cap: V8 truncates its
+      // own quoted snippet, so the message is a fixed ~56 characters however
+      // large the body was (measured at 20, 100, 5,000 and 20,000). The capping
+      // helper is used anyway so that every render of AWS-or-parser text in this
+      // module is one spelling — but do not cite this site as a flood.
       throw new MacroExpansionError(
         `CloudFormation returned a non-JSON Processed-stage template body. ` +
           `cdkd's macro-expansion path only supports JSON-shaped synth ` +

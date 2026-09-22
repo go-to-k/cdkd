@@ -56,8 +56,9 @@ references, leaving every other intrinsic alone.
   ([#3479](https://github.com/go-to-k/cdkd/issues/3479)). `displaySafe` by
   default, including where the prose already supplies the quotes;
   `displayIdent` (capped at `STACK_REF_MAX_CODE_POINTS`) for every UNQUOTED
-  `Available: ...` list, where `displaySafe`'s trim would render a planted
-  entry byte-identical to the genuine one the message says is missing —
+  IDENTITY list — each `Available: ...` and the `missing` half sharing a
+  sentence with one — where `displaySafe`'s trim would render a planted entry
+  byte-identical to the genuine one the message says is missing —
   `grep displayIdent` answers that population. A region rendered outside those
   lists takes `asciiOnly`.
   The operator's own `<constructPath>` argv is deliberately NOT sanitized for

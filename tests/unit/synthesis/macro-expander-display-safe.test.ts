@@ -20,7 +20,7 @@
  * Both polarities per site; the hostile cases use a DISTINCT marker per
  * interpolated value, and the ordinary cases pin the rendered bytes.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const waitUntilChangeSetCreateCompleteMock = vi.hoisted(() => vi.fn());
 
@@ -87,7 +87,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({ ...loggerSpies, child: () => loggerSpies }),
 }));
 
-import { expandMacros } from '../../../src/synthesis/macro-expander.js';
+import { expandMacros, retryDelays } from '../../../src/synthesis/macro-expander.js';
 import {
   AWS_MESSAGE_MAX_CODE_POINTS,
   displayAwsMessage,
@@ -160,6 +160,14 @@ beforeEach(() => {
   for (const spy of Object.values(loggerSpies)) spy.mockReset();
   waitUntilChangeSetCreateCompleteMock.mockReset();
   waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+  // The retry backoff is 2s then 4s of WALL CLOCK. Without this seam a case
+  // that stops retrying when it should reds on Vitest's 5s timeout instead of
+  // on the assertion, which names the wrong thing.
+  vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('expandMacros renders template-derived transform names display-safe (#3479)', () => {
@@ -514,6 +522,56 @@ describe('the EarlyValidation retry verdict survives the message cap (#3479)', (
       }
       if (cmd._name === 'DescribeChangeSet') {
         return { Status: 'FAILED', StatusReason: 'q'.repeat(AWS_MESSAGE_MAX_CODE_POINTS + 100) };
+      }
+      return {};
+    });
+    await messageOf(() =>
+      expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+        ...OPTS,
+        cfnClient: { send, destroy: vi.fn() } as never,
+      })
+    );
+    expect(createCalls).toBe(1);
+  });
+});
+
+describe('the CreateChangeSet site carries its own retry verdict (#3479)', () => {
+  /**
+   * `withEarlyValidationVerdict` is applied at BOTH throw sites, because a
+   * validation hook can reject the `CreateChangeSet` call itself rather than
+   * failing the waiter. Nothing pinned that second site, so deleting its
+   * wrapper was green everywhere — including in the pre-existing #1151 block,
+   * which only drives the `DescribeChangeSet` path.
+   */
+  it('retries a CreateChangeSet rejection naming a validation hook', async () => {
+    let createCalls = 0;
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'CreateChangeSet') {
+        createCalls += 1;
+        if (createCalls === 1) {
+          throw new Error(
+            'The following hook(s)/validation failed: [AWS::EarlyValidation::ResourceExistenceCheck]'
+          );
+        }
+        return { Id: 'cs-arn', StackId: 's-arn' };
+      }
+      if (cmd._name === 'GetTemplate') return { TemplateBody: EXPANDED };
+      return {};
+    });
+    const result = await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: { send, destroy: vi.fn() } as never,
+    });
+    expect(result.Resources).toEqual(EXPANDED.Resources);
+    expect(createCalls).toBe(2);
+  });
+
+  it('does NOT retry a CreateChangeSet rejection that names no hook', async () => {
+    let createCalls = 0;
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'CreateChangeSet') {
+        createCalls += 1;
+        throw new Error('AccessDenied');
       }
       return {};
     });
