@@ -244,11 +244,11 @@ export function displayLogicalId(value: string): string {
 /**
  * The DIAGNOSIS sentence itself, with no identity and no remedy in it.
  *
- * ONE spelling, because two copies of a diagnosis are what drift. It is extracted because
- * {@link malformedDestroyResourcesRefusalMessage} needs the same sentence
- * under an identity it does NOT trust, where the detail's substituted
- * `cdkd state show` command must not appear — a difference in the COMMAND, not
- * in the diagnosis.
+ * ONE spelling, because two copies of a diagnosis are what drift. Its two
+ * consumers are the arms of {@link malformedStateDiagnosis}, which differ by
+ * the IDENTITY they may name and not by this sentence — since
+ * go-to-k/cdkd#3516 neither arm carries a command at all, so there is nothing
+ * else for them to differ in.
  */
 const MALFORMED_RESOURCES_DIAGNOSIS =
   `has no readable 'resources' map — the record is malformed or truncated. Both 'cdkd deploy' ` +
@@ -518,16 +518,17 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * because a LEGACY record has no key region at all, in which case the value
  * printed is the CLI's own and `--stack-region` must be omitted.
  *
- * **The VERDICT turns on the identifier caps**, which is why the stack name is
- * measured through {@link safeStackName} (`STACK_REF_MAX_CODE_POINTS`) and the
- * region through {@link safeRegion} (128, which no real region approaches). At
- * 128 an ordinary multi-level CDK nested child
+ * **The VERDICT is {@link mayNameTargetWithDestructiveRemedy}** — the identifier
+ * caps AND pasteability, since go-to-k/cdkd#3516 — so the stack name is
+ * measured at `STACK_REF_MAX_CODE_POINTS` and the region at a region's 128,
+ * which no real region approaches. Measuring the STACK at 128 instead is the
+ * trap: an ordinary multi-level CDK nested child
  * (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150 code
- * points) truncates, fails `exact`, and takes the withhold arm on a HEALTHY
- * record — which is fail-safe but makes the fallback the common path for
- * exactly the nested destroys this lane added a guard to (review round 2 of
- * go-to-k/cdkd#3332). The bound is still a bound: a planted multi-kilobyte name
- * is truncated at 1152 and lands in the withhold arm.
+ * points) WOULD truncate there and take the withhold arm on a HEALTHY record,
+ * making the fallback the common path for exactly the nested destroys this
+ * lane added a guard to (review round 2 of go-to-k/cdkd#3332). The bound is
+ * still a bound: a planted multi-kilobyte name is truncated at 1152 and lands
+ * in the withhold arm.
  *
  * Identifiers are sanitized and THEN shell-quoted, for the reasons
  * {@link safeIdentifier}'s note gives.
@@ -1796,8 +1797,25 @@ function dropRecordCommand(
   // that do NOT normalise, so a fourth caller added later inherits the floor
   // rather than the defect.
   const known = region === undefined || region === '' ? undefined : region;
-  const regionExact = known === undefined || rendersExactly(known);
-  if (!rendersExactly(stackName) || !regionExact) {
+  // EXACT **and** pasteable, the pair go-to-k/cdkd#3516's review added to every
+  // message that offers a destructive remedy — and this is the strongest
+  // instance of it rather than a weaker one, because this is the only site that
+  // SUBSTITUTES into the command instead of handing over a hole template.
+  // Exactness keeps a space and a `:`, so a stack name spelling
+  // `Drop the record: cdkd state orphan prod --stack-region us-east-1` was
+  // named, and rendered above a genuine, already-runnable `Drop the record:`
+  // line for a terminal wrap to start a visual line with. `cdkd orphan` reads a
+  // prebuilt assembly's stack name unvalidated (go-to-k/cdkd#3360), which is
+  // the reach.
+  //
+  // Scoped to THIS helper rather than to {@link rendersExactly}, which its four
+  // siblings also spell: those gate the READ, the record listing and the object
+  // key, and widening them costs an operator whose name merely needs quoting
+  // the `Object key:` hint that is the whole point of that arm (measured — a
+  // name of `It's` lost it).
+  const dropExact = (value: string): boolean => rendersExactly(value) && isPasteableIdent(value);
+  const regionExact = known === undefined || dropExact(known);
+  if (!dropExact(stackName) || !regionExact) {
     // A TEMPLATE, keyed to what IS trusted: an absent region stays absent (the
     // flag would select nothing on a legacy record), an exact one is kept
     // (it narrows the delete), only an altered one becomes a hole.
@@ -1834,10 +1852,13 @@ function dropRecordCommand(
  * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
  * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
- * (go-to-k/cdkd#3363 review, M0 and M2). What it does NOT cover yet: the
- * destroy refusal and the divergent-region refusal above still spell the same
- * test inline, and the shared {@link inspectCommand} is ungated for its other
- * callers (it renders the stack at that same cap, the region at 128).
+ * (go-to-k/cdkd#3363 review, M0 and M2). It is NOT the module's gate for a
+ * DESTRUCTIVE remedy and must not be unified with one: the three that offer a
+ * template are all STRICTER, adding {@link isPasteableIdent}, and
+ * {@link dropRecordCommand} adds it on top of this predicate rather than in it,
+ * so the read, the listing and the object key keep naming a record whose name
+ * merely needs quoting. The shared {@link inspectCommand} stays ungated for its
+ * other callers, which offer a read only.
  */
 function rendersExactly(value: string): boolean {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;

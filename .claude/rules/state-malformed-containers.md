@@ -95,13 +95,20 @@ control from the SAME ARM — the line count differs per arm.
 exactness keeps a space and a `:`, so an identifier can spell one of these
 labels and forge it inside the quoted clause once the terminal wraps. Add
 `isPasteableIdent` on BOTH identifiers, in CONJUNCTION with exactness, measured
-at the cap the message's own clause RENDERS at. THREE messages carry it — the
-two DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128),
-and `divergentRecordRegionRefusalMessage`, which spells its own because it
-renders a KEY region at the state-record cap (go-to-k/cdkd#3328). Borrowing
-either way is fail-safe: a spurious withhold, not a forgery.
+at the cap the message's own clause RENDERS at. FOUR messages carry it, through
+three spellings: the two DESTROY refusals via
+`mayNameTargetWithDestructiveRemedy` (region at 128);
+`divergentRecordRegionRefusalMessage`, which spells its own because it renders a
+KEY region at the state-record cap (go-to-k/cdkd#3328); and
+`dropRecordCommand`, which is the one site that SUBSTITUTES into the command
+rather than offering a hole, so it is the strongest instance rather than a
+weaker one. Every other message in this module offers a read ONLY and is
+ungated. Borrowing a gate across sites is fail-safe in ONE direction
+only: a 128-capped gate at a 1152-capped site just withholds, but a 1152-capped
+gate at a 128-capped site NAMES a region whose clause above it renders
+truncated — a target printed cut, with a read that selects no record.
 
-Where those caps DIFFER, fence each operand — the pasteability half needs a row
+Where a site's two caps DIFFER, fence that operand — the pasteability half needs a row
 that is exact yet unpasteable, which no truncation row reaches. Where they are
 the SAME, exactness is subsumed and nothing can red on dropping it: unfenceable
 rather than unfenced.
