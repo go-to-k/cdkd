@@ -59,6 +59,7 @@ import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -2644,7 +2645,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     // (#464 PR B2) to recursively load every child template body; empty
     // for flat stacks AND for the `--template` path (the user-supplied
     // template file has no nested-template side cars cdkd could load).
-    let rootNestedTemplatePaths: Record<string, string> = {};
+    // Null-prototype from the DECLARATION, not only on the reassignment below
+    // (issue go-to-k/cdkd#3480): this bag reaches `buildPerStackImportNodes`,
+    // whose `if (!childTemplatePath)` guard would read an inherited
+    // `Object.prototype` member for a child row named `toString` and skip the
+    // out-of-sync refusal.
+    let rootNestedTemplatePaths: Record<string, string> = nullPrototypeRecord<string>();
 
     if (options.template) {
       // User-supplied template path: still need a stack name to load state.
@@ -2700,7 +2706,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       template = stackInfo.template as unknown as Record<string, unknown>;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;
-      rootNestedTemplatePaths = stackInfo.nestedTemplates ?? {};
+      // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
+      rootNestedTemplatePaths = stackInfo.nestedTemplates ?? nullPrototypeRecord<string>();
       allSynthStacks = result.stacks.map((s) => ({
         stackName: s.stackName,
         template: s.template,
@@ -4000,7 +4007,11 @@ export function indexNestedTemplatePaths(
   template: Record<string, unknown>,
   templateDir: string
 ): Record<string, string> {
-  const result: Record<string, string> = {};
+  // Null-prototype, like every other nested-template index (issue
+  // go-to-k/cdkd#3480): a logical id is a template key, so a `{}` literal drops
+  // a row named `__proto__` through the inherited setter and answers a
+  // never-indexed `toString` / `valueOf` with a prototype member.
+  const result = nullPrototypeRecord<string>();
   const resources = template['Resources'];
   if (!resources || typeof resources !== 'object' || Array.isArray(resources)) return result;
   for (const [logicalId, resource] of Object.entries(resources as Record<string, unknown>)) {

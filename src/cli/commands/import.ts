@@ -70,6 +70,7 @@ import {
 } from '../../analyzer/parameter-dependence.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import type {
   CloudFormationTemplate,
@@ -456,7 +457,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         template,
         migrationTree,
         stackInfo.stackName,
-        stackInfo.nestedTemplates ?? {}
+        // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480): this
+        // is the bag `validateNestedStackShape` tests with
+        // `if (!nestedTemplates[id])`, which on a `{}` fallback reads an
+        // inherited member for a row named `toString` and skips the refusal.
+        stackInfo.nestedTemplates ?? nullPrototypeRecord<string>()
       );
     }
 
@@ -939,7 +944,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           lockRecovery,
           parentStackName: stackInfo.stackName,
           parentRegion: targetRegion,
-          parentNestedTemplates: stackInfo.nestedTemplates ?? {},
+          // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
+          parentNestedTemplates: stackInfo.nestedTemplates ?? nullPrototypeRecord<string>(),
           parentTree: migrationTree,
           stateBackend,
           lockManager,
@@ -3522,7 +3528,11 @@ export function indexGrandchildTemplatePaths(
   childTemplatePath: string
 ): Record<string, string> {
   const dir = nodePath.dirname(childTemplatePath);
-  const result: Record<string, string> = {};
+  // Null-prototype, like every other nested-template index (issue
+  // go-to-k/cdkd#3480): a logical id is a template key, so a `{}` literal drops
+  // a row named `__proto__` through the inherited setter and answers a
+  // never-indexed `toString` / `valueOf` with a prototype member.
+  const result = nullPrototypeRecord<string>();
   for (const [grandLogicalId, resource] of Object.entries(childTemplate.Resources)) {
     if (resource.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     const meta = resource.Metadata as Record<string, unknown> | undefined;

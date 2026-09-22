@@ -232,10 +232,19 @@ export function findNestedTemplateTreeDefect(
   let rowsFollowed = 0;
 
   const visit = (logicalId: string, templatePath: string): NestedTemplateTreeDefect | undefined => {
-    // A caller's index can hand back a non-string: a plain-object map looked up
-    // with a logical id of `__proto__` answers `Object.prototype`. Nothing to
-    // follow, and the site that loads the template reports it readably;
-    // `path.dirname` on it would throw a bare TypeError from here instead.
+    // A caller's index can hand back a non-string. No in-tree caller reaches
+    // this with one today: the five nested-template INDEXES are all
+    // prototype-less as of issue go-to-k/cdkd#3480, so a logical id of
+    // `__proto__` reads back `undefined` rather than `Object.prototype`, and
+    // the one caller that passes a `{}` literal instead of an index
+    // (`NestedStackProvider.refuseMalformedNestedTemplateTree`, a one-row
+    // `{ [logicalId]: childTemplatePath }`) is safe for a different reason — a
+    // COMPUTED key defines an own property even for `__proto__`, and this
+    // function only `Object.entries` it. The guard stays for the exported
+    // contract: `Readonly<Record<string, string>>` is a promise an external or
+    // `unknown`-shaped caller can break. Nothing to follow, and the site that
+    // loads the template reports it readably; `path.dirname` on it would throw
+    // a bare TypeError from here instead.
     if (typeof templatePath !== 'string') return undefined;
     const identity = templateIdentity(templatePath);
     const lexical = path.resolve(templatePath);

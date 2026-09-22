@@ -12,6 +12,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
 import {
@@ -559,7 +560,25 @@ export class AssemblyReader {
     // sibling path under `Metadata['aws:asset:path']` on each
     // `AWS::CloudFormation::Stack` resource (verified against `cdk synth` of
     // CDK 2.x `cdk.NestedStack` on 2026-05-22; see docs/design/459-nested-stacks.md §4).
-    const nestedTemplates: Record<string, string> = {};
+    // Null-prototype, like every other nested-template index (issue
+    // go-to-k/cdkd#3480). A logical id is a template key, so on a `{}` literal
+    // a row named `__proto__` runs `Object.prototype`'s setter: the assignment
+    // below DROPS the key, and the SIX `if (!childTemplatePath)` guards that
+    // read this index back then answer with an INHERITED member for any
+    // never-indexed row named `toString` / `valueOf` / `constructor` — truthy,
+    // so the guard is skipped. What follows is NOT a read of a bogus path: the
+    // value never reaches the filesystem, because `path.join` / `path.resolve`
+    // / `readFileSync` each refuse a non-string with `ERR_INVALID_ARG_TYPE`
+    // (`buildDiffTree` trips `path.resolve` first). `[object Object]` is what
+    // the surrounding message RENDERS when it interpolates the value, not what
+    // got opened — so the old failure was fail-closed, just unreadably.
+    // `defineOwnKey` closes only the first of those two; no
+    // prototype left to inherit from closes both. The guards, since a count is
+    // worthless without them: `NestedStackProvider.create` / `update`,
+    // `buildDiffTree` (`diff-recursive.ts`), `validateNestedStackShape` and
+    // `importNestedStackChildrenRecursive` (`import.ts`), and
+    // `buildPerStackImportNodes` (`export.ts`).
+    const nestedTemplates = nullPrototypeRecord<string>();
     for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
       if (resource?.Type !== 'AWS::CloudFormation::Stack') continue;
       const meta = resource.Metadata as Record<string, unknown> | undefined;

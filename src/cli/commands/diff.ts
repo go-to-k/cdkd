@@ -13,6 +13,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -340,7 +341,11 @@ async function diffCommand(
           displayName: stackInfo.stackName,
           region: stackRegion,
           template: stackInfo.template,
-          nestedTemplates: stackInfo.nestedTemplates ?? {},
+          // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480): the
+          // index is omitted when no row carried a usable asset path, and on a
+          // `{}` fallback the `if (!nestedTemplates[id])` readers answer an
+          // inherited member for a row named `toString` / `valueOf`.
+          nestedTemplates: stackInfo.nestedTemplates ?? nullPrototypeRecord<string>(),
           recursive,
           stateBackend,
           diffCalculator,

@@ -77,7 +77,11 @@ export function hasPlainPrototype(value: object): boolean {
  * `Object.keys` / `entries` and `structuredClone` all read it like a plain
  * object; only `instanceof Object` and a direct `.hasOwnProperty()` method call
  * do not, and no consumer on the drift path uses either.
+ *
+ * The type parameter spares a caller with a narrower value type an `as` cast at
+ * every call — `nullPrototypeRecord<string>()` for a logical-id-to-path index.
+ * It defaults to `unknown`, so a zero-argument call is unchanged.
  */
-export function nullPrototypeRecord(): Record<string, unknown> {
-  return Object.create(null) as Record<string, unknown>;
+export function nullPrototypeRecord<T = unknown>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
 }
