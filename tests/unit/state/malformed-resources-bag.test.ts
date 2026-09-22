@@ -1179,6 +1179,39 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     ['the WRITE refusal', malformedStateRefusalMessage('MyStack', 'us-east-1')],
     ['the DEPLOY refusal', malformedDeployResourcesRefusalMessage('MyStack', 'us-east-1')],
     ['the read-only WARNING', malformedResourcesWarning('MyStack', 'us-east-1')],
+    // The thirteen go-to-k/cdkd#3526 routed onto `inspectCommand`. Six of them
+    // had no tail assertion anywhere, and this PR's own conversion produced a
+    // BURIED and a DUPLICATED command twice — so the contract
+    // `.claude/rules/state-malformed-containers.md` states for a read-only
+    // message was unfenced at exactly the sites a sweep was rewriting.
+    ['the outputs WARNING', malformedOutputsWarning('MyStack', 'us-east-1')],
+    ['the outputs refusal', malformedOutputsRefusalMessage('MyStack', 'us-east-1')],
+    ['the destroy outputs refusal', malformedDestroyOutputsRefusalMessage('MyStack', 'us-east-1')],
+    ['the export-source WARNING', malformedExportSourceWarning('MyStack', 'us-east-1')],
+    ['the export-names WARNING', malformedExportNamesWarning('MyStack', 'us-east-1')],
+    ['the local outputs WARNING', malformedLocalOutputsWarning('MyStack', 'us-east-1')],
+    [
+      'the nested-child outputs refusal',
+      malformedNestedChildOutputsRefusalMessage('MyStack', 'us-east-1'),
+    ],
+    ['the orphans WARNING', malformedOrphansWarning('MyStack', 'us-east-1')],
+    ['the orphans refusal', malformedOrphansRefusalMessage('MyStack', 'us-east-1')],
+    [
+      'the orphan-records WARNING',
+      malformedOrphanRecordsWarning('MyStack', 'us-east-1', ['A']),
+    ],
+    [
+      'the entries WARNING',
+      malformedResourceEntriesWarning('MyStack', 'us-east-1', ['A']),
+    ],
+    [
+      'the entries refusal',
+      malformedResourceEntriesRefusalMessage('MyStack', 'us-east-1', ['A']),
+    ],
+    [
+      'the rendered-containers WARNING',
+      malformedRenderedContainersWarning('MyStack', 'us-east-1', ['outputs']),
+    ],
   ];
   for (const [label, text] of ENDS_ON_THE_READ) {
     it(`${label} ends ON the pasteable read command`, () => {
@@ -6296,6 +6329,49 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedOrphanResourcePropertiesRefusalMessage',
       (s, r) => malformedOrphanResourcePropertiesRefusalMessage(s, r, ['A']),
     ],
+    [
+      'malformedExportNamesWarning',
+      (s, r) => malformedExportNamesWarning(s as string, r as string),
+    ],
+    [
+      'malformedNestedChildOutputsRefusalMessage',
+      (s, r) => malformedNestedChildOutputsRefusalMessage(s as string, r as string),
+    ],
+    [
+      'malformedOrphanRecordsWarning',
+      (s, r) => malformedOrphanRecordsWarning(s as string, r as string, ['A']),
+    ],
+    [
+      'malformedResourceEntriesRefusalMessage',
+      (s, r) => malformedResourceEntriesRefusalMessage(s as string, r as string, ['A']),
+    ],
+    [
+      'malformedResourceEntriesWarning',
+      (s, r) => malformedResourceEntriesWarning(s as string, r as string, ['A']),
+    ],
+    // Converted by go-to-k/cdkd#3526 from spelling their own identity clause
+    // and command to taking `stackClause` / `inspectCommand`, which render
+    // byte-identically for a present identity and give the no-identity form
+    // for an absent one.
+    ...([
+      ['malformedDestroyOutputsRefusalMessage', malformedDestroyOutputsRefusalMessage],
+      ['malformedExportSourceWarning', malformedExportSourceWarning],
+      ['malformedLocalOutputsWarning', malformedLocalOutputsWarning],
+      ['malformedOrphansRefusalMessage', malformedOrphansRefusalMessage],
+      ['malformedOrphansWarning', malformedOrphansWarning],
+      ['malformedOutputsRefusalMessage', malformedOutputsRefusalMessage],
+      ['malformedOutputsWarning', malformedOutputsWarning],
+    ] as ReadonlyArray<readonly [string, (s: string, r: string) => string]>).map(
+      ([n, f]) =>
+        [n, (s, r) => f(s as string, r as string)] as readonly [
+          string,
+          (s: string | undefined, r: string | undefined) => string,
+        ]
+    ),
+    [
+      'malformedRenderedContainersWarning',
+      (s, r) => malformedRenderedContainersWarning(s as string, r as string, ['outputs']),
+    ],
     // These THREE are correct without a boundary, by a different route: their
     // exactness gate rejects `''` (`safeIdentifier('')` is the placeholder, so
     // `safeStackName('') !== ''`), and the withhold arm they then take passes
@@ -6411,44 +6487,13 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     ).toEqual([]);
     const rendering = taking.filter((n) => !PASS_THROUGH.includes(n));
     const fenced = BUILDERS.map(([n]) => n);
-    // The rest of the module has the SAME defect and is NOT fixed here
-    // (go-to-k/cdkd#3526). Listed rather than filtered away, so the fence
-    // records the gap instead of reading as coverage — and BEHAVIOURAL rather
-    // than hand-classified, which is the correction that matters: the first
-    // cut of this list asserted only that each name was still an exported
-    // builder, so three names that never had the defect sat in it unnoticed.
-    // The exactness gates reject `''` (`safeIdentifier('')` is the
-    // placeholder, so `safeStackName('') !== ''`), which makes those three
-    // already correct by a different route. Asserting each is still BROKEN is
-    // what would have caught that on the first run, and is what stops a name
-    // staying here after someone fixes it.
-    const KNOWN_UNFIXED: ReadonlyArray<readonly [string, (axis: 'stack' | '') => string]> = [
-      ['malformedExportNamesWarning', (axis) => malformedExportNamesWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      ['malformedExportSourceWarning', (axis) => malformedExportSourceWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      ['malformedLocalOutputsWarning', (axis) => malformedLocalOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      [
-        'malformedNestedChildOutputsRefusalMessage',
-        (axis) => malformedNestedChildOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
-      ],
-      ['malformedOrphanRecordsWarning', (axis) => malformedOrphanRecordsWarning('S', '', ['A'])],
-      ['malformedOrphansRefusalMessage', (axis) => malformedOrphansRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      ['malformedOrphansWarning', (axis) => malformedOrphansWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      [
-        'malformedDestroyOutputsRefusalMessage',
-        (axis) => malformedDestroyOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1'),
-      ],
-      ['malformedOutputsRefusalMessage', (axis) => malformedOutputsRefusalMessage(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      ['malformedOutputsWarning', (axis) => malformedOutputsWarning(axis === '' ? 'S' : '', axis === '' ? '' : 'us-east-1')],
-      [
-        'malformedRenderedContainersWarning',
-        (axis) => malformedRenderedContainersWarning('S', '', ['outputs']),
-      ],
-      [
-        'malformedResourceEntriesRefusalMessage',
-        (axis) => malformedResourceEntriesRefusalMessage('S', '', ['A']),
-      ],
-      ['malformedResourceEntriesWarning', (axis) => malformedResourceEntriesWarning('S', '', ['A'])],
-    ];
+    // EMPTY as of go-to-k/cdkd#3526: every exported builder that renders an
+    // identity now normalises `'' -> undefined` at its boundary. Kept as a
+    // list rather than deleted, because the partition below is what proves it
+    // — an entry added here must still BE broken (which is what caught three
+    // names that never had the defect, and one sorted the other way), and a
+    // builder added to the module must land in one list or the other.
+    const KNOWN_UNFIXED: ReadonlyArray<readonly [string, (axis: 'stack' | '') => string]> = [];
     // BOTH axes per entry: a thunk probing only the region leaves a
     // half-swept builder — one that gained `absentIfEmpty(rawStackName)` alone
     // — in this list with everything green, while the fenced table demands

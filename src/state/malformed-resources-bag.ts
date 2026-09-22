@@ -980,22 +980,23 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * English (review of go-to-k/cdkd#3190).
  */
 export function malformedRenderedContainersWarning(
-  stackName: string,
-  region: string,
+  rawStackName: string,
+  rawRegion: string,
   containers: readonly RenderedStateContainer[]
 ): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   const names = containers
     .map((name) => `'${safeIdentifier(name, SHORT_NAME_MAX_CODE_POINTS)}'`)
     .join(', ');
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has a non-object ${names} — the record ` +
+    `${stackClause(stackName, region)} has a non-object ${names} — the record ` +
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +
     `so rendering one INVENTS a row per character or element. Continuing with it EMPTY: this ` +
     `view shows no rows there, which is not the same as the record holding none. A per-resource ` +
     `container is named once however many resources hold one. See the stored values with: ` +
-    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1008,6 +1009,14 @@ export function malformedRenderedContainersWarning(
  * is to send them to the damaged one. `undefined` already means "absent" to
  * {@link stackClause} and {@link inspectCommand}, which drop the clause and
  * the flag, and that is the right answer for both identifiers.
+ *
+ * Every message that renders an identity calls this and then
+ * {@link stackClause} / {@link inspectCommand} rather than spelling the clause
+ * and the command again (go-to-k/cdkd#3526): for a present identity those two
+ * render byte-identically to what each builder used to build by hand, and for
+ * an absent one they give the no-identity form and the hole template instead
+ * of `<unrenderable>`. That is why the per-site note is one line — the reason
+ * lives here.
  *
  * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
  * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
@@ -1125,18 +1134,19 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * Identifiers are sanitized and then shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOutputsWarning(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedOutputsWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `${stackClause(stackName, region)} has no readable 'outputs' map — the ` +
     `record is malformed or truncated. Where the stored value is a string or a list, ` +
     `'Object.entries' walks it as readily as a map, so diffing it INVENTS a REMOVE row per ` +
     `character or element carrying the record's own characters; where it is a number, a boolean ` +
     `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
     `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
     `same as the record holding none. See the stored value with: ` +
-    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1193,19 +1203,20 @@ export function refuseMalformedState(state: StackState, stackName: string, regio
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOutputsRefusalMessage(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedOutputsRefusalMessage(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `${stackClause(stackName, region)} has no readable 'outputs' map — the ` +
     `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
     `continuing: it REBUILDS the bag before saving, and 'Object.entries' walks a string or a ` +
     `list as readily as a map, so a six-character value would be saved back as a well-formed ` +
     `six-key map (a null one as an empty map). That replaces the only signal anything is wrong ` +
     `with a legitimate-looking record, permanently — and the next deploy republishes it into ` +
     `the shared exports index every other stack's Fn::ImportValue resolves against. Repair or ` +
-    `remove the record first. Inspect it with: cdkd state show ${shellQuote(stack)} ` +
-    `--stack-region ${shellQuote(reg)} --json`
+    `remove the record first. Inspect it with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1230,18 +1241,19 @@ export function malformedOutputsRefusalMessage(stackName: string, region: string
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedExportSourceWarning(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedExportSourceWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map or ` +
+    `${stackClause(stackName, region)} has no readable 'outputs' map or ` +
     `'exportNames' list — the record is malformed or truncated. It contributes NO exports to ` +
     `this region's index, which is not the same as the stack exporting none: an ` +
     `Fn::ImportValue of a name this stack really publishes will fail in the CONSUMER stack, ` +
     `naming that stack rather than this record. Continuing with the other producers — ` +
     `enumerating a string or a list here would instead publish one FABRICATED export per ` +
-    `character or element. See the stored values with: cdkd state show ${shellQuote(stack)} ` +
-    `--stack-region ${shellQuote(reg)} --json`
+    `character or element. See the stored values with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1269,17 +1281,18 @@ export function malformedExportSourceWarning(stackName: string, region: string):
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedExportNamesWarning(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedExportNamesWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has an unusable 'exportNames' list — ` +
+    `${stackClause(stackName, region)} has an unusable 'exportNames' list — ` +
     `the record is malformed or truncated. It is read as an EMPTY export set, which is not the ` +
     `same as the record holding one: no stored key is reported as an export, so a row that ` +
     `should carry an '[export]' tag renders without it. Reading it as UNKNOWN instead would be ` +
     `worse — that falls back to the pre-v9 rule where every output name is importable. See the ` +
-    `stored value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} ` +
-    `--json`
+    `stored value with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1406,17 +1419,19 @@ export function repairMalformedOrphansForReadOnly(state: StackState): boolean {
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOrphansWarning(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedOrphansWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'orphans' list — the ` +
+    `${stackClause(stackName, region)} has no readable 'orphans' list — the ` +
     `record is malformed or truncated. Readers reach it on a bare '?? []' or '?.length', which ` +
     `admits a string, a number, a plain object and null alike: a string is WALKED, one garbage ` +
     `orphan per character, and the others read as no orphans at all. Continuing with it EMPTY: ` +
     `this view previews no adoption and names no orphan, which is NOT the same as the record ` +
     `holding none — resources from an earlier failed deploy may still be live in AWS. See the ` +
-    `stored value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `stored value with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1435,11 +1450,12 @@ export function malformedOrphansWarning(stackName: string, region: string): stri
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOrphansRefusalMessage(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'orphans' list — the ` +
+    `${stackClause(stackName, region)} has no readable 'orphans' list — the ` +
     `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
     `continuing: a string container is WALKED one character at a time and written back as a ` +
     `list of character-shaped orphan records, and every other unreadable shape reads as no ` +
@@ -1447,8 +1463,7 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
     `record first, and no cdkd command repairs this container: rewriting it to [] by hand ` +
     `discards the very evidence this refusal is protecting. Inspect the record with: ` +
-    `cdkd state show ${shellQuote(stack)} ` +
-    `--stack-region ${shellQuote(reg)} --json`
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1586,18 +1601,23 @@ export function refuseMalformedOrphans(
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedDestroyOutputsRefusalMessage(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedDestroyOutputsRefusalMessage(
+  rawStackName: string,
+  rawRegion: string
+): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `${stackClause(stackName, region)} has no readable 'outputs' map — the ` +
     `record is malformed or truncated. This command DELETES state, so it refuses rather than ` +
     `continuing: it reads this bag to decide whether the stack might export anything, and that ` +
     `decision gates the cross-stack check that refuses to delete a producer another stack still ` +
     `imports from. A string or a list invents one export name per character or element; a null, ` +
     `a number or a boolean reads as 'exports nothing' and SKIPS the check entirely, deleting the ` +
     `record while consumers still resolve against it. Repair or remove the record first. ` +
-    `Inspect it with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `Inspect it with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1653,20 +1673,21 @@ export function refuseMalformedOutputsForDestroy(
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedNestedChildOutputsRefusalMessage(
-  childStackName: string,
-  region: string
+  rawChildStackName: string,
+  rawRegion: string
 ): string {
-  const stack = safeStackName(childStackName);
-  const reg = safeRegion(region);
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const childStackName = absentIfEmpty(rawChildStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for nested stack child ${shellQuote(stack)} (${shellQuote(reg)}) has no readable ` +
+    `${stackClause(childStackName, region, 'nested stack child')} has no readable ` +
     `'outputs' map — the record is malformed or truncated. The parent's 'Outputs.<Key>' ` +
     `attributes are REBUILT from this bag and persisted into the PARENT's record, and ` +
     `'Object.entries' walks a string or a list as readily as a map — so a six-character value ` +
     `would become six fabricated parent attributes that every Fn::GetAtt against this nested ` +
     `stack then resolves into live AWS calls. The deploy refuses rather than fabricating them. ` +
-    `Repair or remove the child's record first. Inspect it with: cdkd state show ` +
-    `${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `Repair or remove the child's record first. Inspect it with: ` +
+    inspectCommand(childStackName, region)
   );
 }
 
@@ -1730,16 +1751,18 @@ export function refuseMalformedNestedChildOutputs(
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedLocalOutputsWarning(stackName: string, region: string): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `${stackClause(stackName, region)} has no readable 'outputs' map — the ` +
     `record is malformed or truncated. 'Object.entries' walks a string or a list as readily as ` +
     `a map, so reading it would hand this local run one FABRICATED output per character or ` +
     `element. Continuing with it EMPTY: every reference to an output of this record resolves to ` +
     `nothing and is dropped, which is not the same as the record holding none. See the stored ` +
-    `value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `value with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -1774,10 +1797,22 @@ const NAMED_UNREADABLE_PROPERTY_BAGS = 5;
  * a pasted command that selects no record at all, so it is dropped for the
  * same reason — the call go-to-k/cdkd#3226 makes for `inspectCommand`.
  */
-function stackClause(stackName: string | undefined, region: string | undefined): string {
+function stackClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  /**
+   * What the name IS, for the one caller whose subject is not a plain stack:
+   * `malformedNestedChildOutputsRefusalMessage` opens `State for nested stack
+   * child '<name>'`. A qualifier rather than a rewrite at that site, so the
+   * no-identity arm stays this function's single spelling. The SEPARATOR is
+   * this function's, not the caller's: an argument carrying its own trailing
+   * space renders `child'Name'` the moment someone trims it.
+   */
+  kind = ''
+): string {
   if (stackName === undefined) return 'The state record this command loaded';
   const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
-  return `State for ${shellQuote(safeStackName(stackName))}${where}`;
+  return `State for ${kind ? `${kind} ` : ''}${shellQuote(safeStackName(stackName))}${where}`;
 }
 
 /**
@@ -2842,17 +2877,18 @@ export function repairMalformedResourceEntriesForReadOnly(state: StackState): re
 
 /** The warning a caller of {@link repairMalformedResourceEntriesForReadOnly} emits. */
 export function malformedResourceEntriesWarning(
-  stackName: string,
-  region: string,
+  rawStackName: string,
+  rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${namedEntriesClause(stackName, region, logicalIds)} Continuing WITHOUT them: this ` +
     `command's output describes the remaining resources only, which is not the same as the ` +
-    `stack holding none of these. See the stored values with: cdkd state show ` +
-    `${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `stack holding none of these. See the stored values with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -2885,12 +2921,13 @@ export function malformedResourceEntriesWarning(
  * `UNRENDERABLE` stand-in.
  */
 export function malformedOrphanRecordsWarning(
-  stackName: string,
-  region: string,
+  rawStackName: string,
+  rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_ENTRIES)
     .map((id) => displayLogicalId(id))
@@ -2898,13 +2935,13 @@ export function malformedOrphanRecordsWarning(
   const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
   const more = rest > 0 ? ` and ${rest} more` : '';
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) holds ${logicalIds.length} ` +
+    `${stackClause(stackName, region)} holds ${logicalIds.length} ` +
     `rollback-orphan record(s) in 'orphans' that cannot be read as resources — ` +
     `${named}${more} — because they are not objects, or carry no resource type. Continuing ` +
     `WITHOUT them: they are not previewed for adoption. These ids were read from 'orphans'; ` +
     `the 'resources' map carries its own warning when it is damaged too. See the ` +
-    `stored values with: cdkd state show ${shellQuote(stack)} --stack-region ` +
-    `${shellQuote(reg)} --json`
+    `stored values with: ` +
+    inspectCommand(stackName, region)
   );
 }
 
@@ -2915,12 +2952,10 @@ export function malformedOrphanRecordsWarning(
  * happens NEXT, and a second copy of the diagnosis is what drifts.
  */
 function namedEntriesClause(
-  stackName: string,
-  region: string,
+  stackName: string | undefined,
+  region: string | undefined,
   logicalIds: readonly string[]
 ): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_ENTRIES)
     .map((id) => displayLogicalId(id))
@@ -2928,7 +2963,7 @@ function namedEntriesClause(
   const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
   const more = rest > 0 ? ` and ${rest} more` : '';
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) holds ${logicalIds.length} resource ` +
+    `${stackClause(stackName, region)} holds ${logicalIds.length} resource ` +
     `record(s) that cannot be read as resources — ${named}${more} — because they are not ` +
     `objects, or carry no resource type, so nothing can tell what AWS resource they name. The ` +
     `record is malformed or truncated.`
@@ -2955,17 +2990,18 @@ function namedEntriesClause(
  * re-spelling it, the way the other messages here are consumed.
  */
 export function malformedResourceEntriesRefusalMessage(
-  stackName: string,
-  region: string,
+  rawStackName: string,
+  rawRegion: string,
   logicalIds: readonly string[]
 ): string {
-  const stack = safeStackName(stackName);
-  const reg = safeRegion(region);
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
   return (
     `${namedEntriesClause(stackName, region, logicalIds)} This command can WRITE state, so it ` +
     `refuses rather than skipping them: saving over the record would report a clean run for ` +
     `entries nothing could read, and would leave the next command to fail on them with no more ` +
     `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. Inspect it with: ` +
-    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    inspectCommand(stackName, region)
   );
 }
