@@ -1,4 +1,4 @@
-import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
+import type { DockerImageAssetSource } from '../types/assets.js';
 import {
   describeDockerFailure,
   getDockerCmd,
@@ -19,6 +19,7 @@ import {
   warnManifestExecutable,
 } from './manifest-passthrough-warnings.js';
 import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
+import { cacheOptionToFlag } from './docker-cache-option.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -480,14 +481,4 @@ export function buildDockerBuildCommand(
   }
 
   return args;
-}
-
-function cacheOptionToFlag(option: DockerCacheOption): string {
-  let flag = `type=${option.type}`;
-  if (option.params) {
-    for (const [k, v] of Object.entries(option.params)) {
-      flag += `,${k}=${v}`;
-    }
-  }
-  return flag;
 }

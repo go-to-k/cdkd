@@ -1,4 +1,6 @@
+import { resolve } from 'path';
 import type { DockerImageAssetSource } from '../types/assets.js';
+import { cacheOptionToFlag } from './docker-cache-option.js';
 import { assemblyPathEscape, renderAssemblyPathEscape } from '../utils/assembly-path.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { redactDockerArgvValues } from '../utils/docker-cmd.js';
@@ -109,7 +111,12 @@ function candidateHostPaths(
     // `type=local` / `id=mysecret` / `mode=max` name no path. Everything else
     // with a key is a candidate; the containment check filters the rest.
     if (key === 'type' || key === 'id' || key === 'mode' || key === 'name') continue;
-    out.push({ path: v, write: key === 'dest' || opts.bareIsWrite });
+    // `bareIsWrite` governs the BARE branch only. Letting it decide here too
+    // made every keyed parameter of `--output` a write, so
+    // `dockerOutputs: ['type=image,push=true']` warned "cdkd will WRITE to"
+    // `<context>/true` — and a write is exempt from the context skip, so the
+    // false line survived to the user.
+    out.push({ path: v, write: key === 'dest' });
   }
   return out;
 }
@@ -149,25 +156,37 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
     refs.push({ field: 'dockerBuildSsh', where: 'dockerBuildSsh', path: p, write: false });
   }
   for (const [k, v] of Object.entries(source.dockerBuildSecrets ?? {})) {
-    // `bareIsWrite: false` — the bare-path shorthand is `--output`'s, not
-    // this field's, and labelling a secret READ as a WRITE alarms in the
-    // wrong direction (buildx rejects the spelling outright anyway).
-    for (const { path: p, write } of candidateHostPaths(v, { bareIsWrite: false })) {
+    // **The string the argv pushes, not the value alone.** `buildDockerBuildCommand`
+    // renders `--secret id=${k},${v}` with no quoting, so a manifest can put
+    // CSV in the KEY — `{'x,src=/home/victim/.aws/credentials': 'type=file'}`
+    // — and judging `v` alone saw nothing. `bareIsWrite: false` because the
+    // bare-path shorthand is `--output`'s, not this field's.
+    for (const { path: p, write } of candidateHostPaths(`id=${k},${v}`, {
+      bareIsWrite: false,
+    })) {
       refs.push({ field: 'dockerBuildSecrets', where: k, path: p, write });
     }
   }
+  // **The RENDERED flag, not `params`.** These two carried their own
+  // allowlist loop over the struct — the same shape that was short three
+  // rounds running — while the argv is `cacheOptionToFlag`'s concatenation
+  // with nothing quoted. `type: 'local,dest=/home/victim/.ssh'` with NO
+  // params rendered a host WRITE that this walk could not see, and a
+  // `params` key of `tag: 'v1,src=/home/victim/.aws/credentials'` hid a read
+  // behind a key the allowlist rejected. Judging the string BuildKit parses
+  // closes both by construction.
   (source.cacheFrom ?? []).forEach((c, i) => {
-    for (const [key, v] of Object.entries(c.params ?? {})) {
-      const k = key.toLowerCase();
-      if (k === 'src' || k === 'source' || k === 'dest') {
-        refs.push({ field: 'cacheFrom', where: String(i), path: v, write: k === 'dest' });
-      }
+    for (const { path: p, write } of candidateHostPaths(cacheOptionToFlag(c), {
+      bareIsWrite: false,
+    })) {
+      refs.push({ field: 'cacheFrom', where: String(i), path: p, write });
     }
   });
-  for (const [key, v] of Object.entries(source.cacheTo?.params ?? {})) {
-    const k = key.toLowerCase();
-    if (k === 'src' || k === 'source' || k === 'dest') {
-      refs.push({ field: 'cacheTo', where: 'cacheTo', path: v, write: k === 'dest' });
+  if (source.cacheTo) {
+    for (const { path: p, write } of candidateHostPaths(cacheOptionToFlag(source.cacheTo), {
+      bareIsWrite: false,
+    })) {
+      refs.push({ field: 'cacheTo', where: 'cacheTo', path: p, write });
     }
   }
   (source.dockerOutputs ?? []).forEach((o, i) => {
@@ -200,7 +219,19 @@ export function warnEscapingBuildKitPaths(
   // rediscovered: an ANCESTOR of the real bound WIDENS, and `'/'` admits
   // `/etc/passwd`. When `bound` lies inside `base`, the context is an
   // ancestor and the exemption is switched off entirely.
-  const contextNarrows = assemblyPathEscape(base, base, bound) !== undefined;
+  //
+  // `'/'` is the hostile shape, not the only one. The ORDINARY
+  // `DockerImageAsset({ directory: '.' })` at a project root with `cdk.out`
+  // beside it is also a context containing the outdir, and there the
+  // exemption is off and every passthrough gets its own line. Those lines are
+  // TRUE — the paths really are outside the assembly — so this is a trade,
+  // not a bug: the exemption exists to stop a REPEATED report, and it is
+  // given up wherever keeping it would let the context widen the bound.
+  //
+  // `bound` is `resolve`d because `assemblyPathEscape`'s third parameter is a
+  // candidate resolved against `base`: a relative bound would be joined onto
+  // the context and answer about `<context>/cdk.out` instead.
+  const contextNarrows = assemblyPathEscape(base, base, resolve(bound)) !== undefined;
   for (const ref of hostPathsOf(source)) {
     // INSIDE THE BUILD CONTEXT is not worth a line FOR A READ: BuildKit was
     // handed that directory already, and under `cdk synth --no-staging` the

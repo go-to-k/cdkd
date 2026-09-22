@@ -1048,10 +1048,13 @@ about it:
 
 | Manifest value | What cdkd does with it | When it warns |
 | --- | --- | --- |
-| `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets` and `local invoke`, naming the command |
-| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom` | reads that host path during the image build | when the path is outside both the build context and the output directory |
-| `dockerOutputs`, `cacheTo` | **writes** to that host path | same, and the line says WRITE |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets`, `local invoke`, `local start-api`, `local run-task` and `local invoke-agentcore`, naming the command |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside both the build context and the output directory |
+| a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
 | `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
+
+The read/write split follows the `dest=` key, not the field: a `cacheFrom`
+carrying a `dest=` is a write and a `cacheTo` carrying a `src=` is a read.
 
 **Two of those are worth stating plainly.** Deploying from a pre-synthesized
 assembly *does* execute code from it, because a Docker asset may declare

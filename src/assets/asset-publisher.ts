@@ -198,6 +198,10 @@ export class AssetPublisher {
     for (const [hash, rawAsset] of Object.entries(manifest.dockerImages || {})) {
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
       for (const dest of Object.values(asset.destinations)) {
+        // `dest.region` unflattened, self-consistently — the same note as the
+        // file-asset arm above, repeated rather than cross-referenced because a
+        // future edit that flattens only one side would come in HERE, and the
+        // reasoning has to be where the edit lands.
         const destRegion = dest.region ?? options.region;
         const name = flattenAssetPlaceholders(dest.repositoryName, options.accountId, destRegion);
         warnUnrecognizedAssetDestination({

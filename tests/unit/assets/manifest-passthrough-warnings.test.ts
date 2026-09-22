@@ -174,7 +174,67 @@ describe('BuildKit passthrough host paths', () => {
       outdir
     );
 
-    expect(cap.warned()[0]).toContain('cdkd will read it');
+    const lines = cap.warned();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('cdkd will read it');
+  });
+
+  it('judges the RENDERED argv, so CSV injected through a non-path field still warns', () => {
+    // cdkd sees the struct; BuildKit sees the concatenation, and neither `,`
+    // nor `=` is quoted on the way. Walking the struct therefore missed every
+    // value a manifest smuggled through a field the walk did not treat as a
+    // path — the same "my enumeration was short" shape as the three rounds
+    // before, one level up. All three of these produced NO line.
+    const { outdir, context, victim } = assembly();
+    const secret = join(victim, 'credentials');
+
+    // 1. A cache `type` carrying the whole CSV, with no params at all.
+    let cap = captureWarn();
+    warnEscapingBuildKitPaths(
+      source({ cacheTo: { type: `local,dest=${secret}` } }),
+      context,
+      outdir
+    );
+    expect(cap.warned(), 'cacheTo type= injection').toHaveLength(1);
+    expect(cap.warned()[0]).toContain('cdkd will WRITE to it');
+    vi.restoreAllMocks();
+
+    // 2. A params VALUE under a key the old allowlist rejected.
+    cap = captureWarn();
+    warnEscapingBuildKitPaths(
+      source({ cacheFrom: [{ type: 'local', params: { tag: `v1,src=${secret}` } }] }),
+      context,
+      outdir
+    );
+    expect(cap.warned(), 'cacheFrom params-key injection').toHaveLength(1);
+    expect(cap.warned()[0]).toContain(secret);
+    vi.restoreAllMocks();
+
+    // 3. A secret's KEY, which the argv interpolates as `id=${k},${v}`.
+    cap = captureWarn();
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildSecrets: { [`x,src=${secret}`]: 'type=file' } }),
+      context,
+      outdir
+    );
+    expect(cap.warned(), 'dockerBuildSecrets key injection').toHaveLength(1);
+    expect(cap.warned()[0]).toContain(secret);
+  });
+
+  it('does NOT call a keyed non-dest --output parameter a WRITE', () => {
+    // `write` is exempt from the build-context skip, so an over-eager write
+    // label survives to the user: `type=image,push=true` announced a WRITE to
+    // `<context>/true`. Only `dest=` and the bare-path form are writes.
+    const { outdir, victim } = assembly();
+    const cap = captureWarn();
+
+    warnEscapingBuildKitPaths(
+      source({ dockerOutputs: ['type=image,push=true'] }),
+      victim,
+      outdir
+    );
+
+    expect(cap.warned()).toEqual([]);
   });
 
   it('does NOT let a source.directory of "/" silence the whole set', () => {
