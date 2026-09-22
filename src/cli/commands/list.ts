@@ -103,7 +103,8 @@ function sortByDependency(stacks: StackInfo[]): StackInfo[] {
  * "Helper choice, not only helper presence" row on
  * [#3479](https://github.com/go-to-k/cdkd/issues/3479), which covers the same
  * question for `assembly-reader.ts`. Deciding it here alone would leave the two
- * disagreeing. *
+ * disagreeing.
+ *
  * THE RESIDUAL THAT MATTERS HERE IS A COLLISION, not the empty string. This is
  * a MACHINE-READABLE payload, and sanitizing is many-to-one: `Prod<U+0085>Stack`
  * and a genuine `Prod Stack` both emit `name: "Prod Stack"`, and so do `Prod`

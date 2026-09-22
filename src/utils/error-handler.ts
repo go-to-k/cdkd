@@ -869,7 +869,11 @@ export function formatError(error: unknown): string {
       // MASKING IS UNAFFECTED, and the ORDER is why rather than the arithmetic:
       // `maskSecretsInError` rewrites the error OBJECT at the throw site, so the
       // `message` read here is already masked; `formatError` has exactly one
-      // caller (`handleError` below) and `ConsoleLogger` masks nothing after it.
+      // caller IN `src/` (`handleError` below) and `ConsoleLogger` masks nothing
+      // after it. `src/index.ts` re-exports this function as package API, so
+      // "one caller" is not an invariant the code enforces — it does not weaken
+      // the order argument, since an external consumer is not a masker inside
+      // cdkd's pipeline, but the narrower claim is the true one.
       // Truncation therefore only ever removes already-masked text — it cannot
       // split a plaintext secret, because none is left to split. Cutting the
       // MASK MARKER itself is harmless for the same reason. A masker running at
