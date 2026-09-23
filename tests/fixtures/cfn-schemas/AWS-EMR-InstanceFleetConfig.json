@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::InstanceFleetConfig",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "ClusterId",
     "Id",
@@ -209,6 +209,25 @@
       "InstanceType"
     ],
     "SpotProvisioningSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ]
+  },
+  "nestedRequired": {
+    "InstanceTypeConfigs": [
+      "InstanceType"
+    ],
+    "InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "LaunchSpecifications.OnDemandSpecification": [
+      "AllocationStrategy"
+    ],
+    "LaunchSpecifications.SpotSpecification": [
       "TimeoutAction",
       "TimeoutDurationMinutes"
     ]

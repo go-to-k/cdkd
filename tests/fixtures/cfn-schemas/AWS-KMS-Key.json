@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::KMS::Key",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "BypassPolicyLockoutSafetyCheck",
@@ -61,6 +61,12 @@
   },
   "definitionRequired": {
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
       "Key",
       "Value"
     ]

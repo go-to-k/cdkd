@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFormation::Stack",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Capabilities",
     "ChangeSetId",
@@ -108,6 +108,12 @@
       "StackName"
     ],
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
       "Key",
       "Value"
     ]

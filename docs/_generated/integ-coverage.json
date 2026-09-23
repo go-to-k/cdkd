@@ -5544,6 +5544,7 @@
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
+        "nested-required-preflight",
         "rename-refactor",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
@@ -5644,6 +5645,10 @@
         ],
         "multi-resource": [
           "l2"
+        ],
+        "nested-required-preflight": [
+          "l1",
+          "literal"
         ],
         "rename-refactor": [
           "l2",

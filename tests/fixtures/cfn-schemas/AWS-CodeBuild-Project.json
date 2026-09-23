@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeBuild::Project",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "Artifacts",
@@ -530,6 +530,76 @@
     ],
     "S3LogsConfig": [
       "Status"
+    ]
+  },
+  "nestedRequired": {
+    "Artifacts": [
+      "Type"
+    ],
+    "Cache": [
+      "Type"
+    ],
+    "Environment": [
+      "ComputeType",
+      "Image",
+      "Type"
+    ],
+    "Environment.DockerServer": [
+      "ComputeType"
+    ],
+    "Environment.EnvironmentVariables": [
+      "Name",
+      "Value"
+    ],
+    "Environment.RegistryCredential": [
+      "Credential",
+      "CredentialProvider"
+    ],
+    "FileSystemLocations": [
+      "Identifier",
+      "Location",
+      "MountPoint",
+      "Type"
+    ],
+    "LogsConfig.CloudWatchLogs": [
+      "Status"
+    ],
+    "LogsConfig.S3Logs": [
+      "Status"
+    ],
+    "SecondaryArtifacts": [
+      "Type"
+    ],
+    "SecondarySourceVersions": [
+      "SourceIdentifier"
+    ],
+    "SecondarySources": [
+      "Type"
+    ],
+    "SecondarySources.Auth": [
+      "Type"
+    ],
+    "SecondarySources.GitSubmodulesConfig": [
+      "FetchSubmodules"
+    ],
+    "Source": [
+      "Type"
+    ],
+    "Source.Auth": [
+      "Type"
+    ],
+    "Source.GitSubmodulesConfig": [
+      "FetchSubmodules"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Triggers.PullRequestBuildPolicy": [
+      "RequiresCommentApproval"
+    ],
+    "Triggers.ScopeConfiguration": [
+      "Name"
     ]
   }
 }

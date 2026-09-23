@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::Cluster",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "AdditionalInfo",
     "Applications",
@@ -884,6 +884,221 @@
       "MinCapacity"
     ],
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "BootstrapActions": [
+      "Name",
+      "ScriptBootstrapAction"
+    ],
+    "BootstrapActions.ScriptBootstrapAction": [
+      "Path"
+    ],
+    "Instances.CoreInstanceFleet.InstanceTypeConfigs": [
+      "InstanceType"
+    ],
+    "Instances.CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "Instances.CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification": [
+      "AllocationStrategy"
+    ],
+    "Instances.CoreInstanceFleet.LaunchSpecifications.SpotSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ],
+    "Instances.CoreInstanceGroup": [
+      "InstanceCount",
+      "InstanceType"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy": [
+      "Constraints",
+      "Rules"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Constraints": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules": [
+      "Action",
+      "Name",
+      "Trigger"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules.Action": [
+      "SimpleScalingPolicyConfiguration"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration": [
+      "ScalingAdjustment"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger": [
+      "CloudWatchAlarmDefinition"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition": [
+      "ComparisonOperator",
+      "MetricName",
+      "Period",
+      "Threshold"
+    ],
+    "Instances.CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions": [
+      "Key",
+      "Value"
+    ],
+    "Instances.CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "Instances.MasterInstanceFleet.InstanceTypeConfigs": [
+      "InstanceType"
+    ],
+    "Instances.MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "Instances.MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification": [
+      "AllocationStrategy"
+    ],
+    "Instances.MasterInstanceFleet.LaunchSpecifications.SpotSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ],
+    "Instances.MasterInstanceGroup": [
+      "InstanceCount",
+      "InstanceType"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy": [
+      "Constraints",
+      "Rules"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Constraints": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules": [
+      "Action",
+      "Name",
+      "Trigger"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules.Action": [
+      "SimpleScalingPolicyConfiguration"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration": [
+      "ScalingAdjustment"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger": [
+      "CloudWatchAlarmDefinition"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition": [
+      "ComparisonOperator",
+      "MetricName",
+      "Period",
+      "Threshold"
+    ],
+    "Instances.MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions": [
+      "Key",
+      "Value"
+    ],
+    "Instances.MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "Instances.Placement": [
+      "AvailabilityZone"
+    ],
+    "Instances.TaskInstanceFleets.InstanceTypeConfigs": [
+      "InstanceType"
+    ],
+    "Instances.TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "Instances.TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification": [
+      "AllocationStrategy"
+    ],
+    "Instances.TaskInstanceFleets.LaunchSpecifications.SpotSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ],
+    "Instances.TaskInstanceGroups": [
+      "InstanceCount",
+      "InstanceType"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy": [
+      "Constraints",
+      "Rules"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Constraints": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules": [
+      "Action",
+      "Name",
+      "Trigger"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules.Action": [
+      "SimpleScalingPolicyConfiguration"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration": [
+      "ScalingAdjustment"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger": [
+      "CloudWatchAlarmDefinition"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition": [
+      "ComparisonOperator",
+      "MetricName",
+      "Period",
+      "Threshold"
+    ],
+    "Instances.TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions": [
+      "Key",
+      "Value"
+    ],
+    "Instances.TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs": [
+      "VolumeSpecification"
+    ],
+    "Instances.TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "KerberosAttributes": [
+      "KdcAdminPassword",
+      "Realm"
+    ],
+    "ManagedScalingPolicy.ComputeLimits": [
+      "MaximumCapacityUnits",
+      "MinimumCapacityUnits",
+      "UnitType"
+    ],
+    "PlacementGroupConfigs": [
+      "InstanceRole"
+    ],
+    "Steps": [
+      "HadoopJarStep",
+      "Name"
+    ],
+    "Steps.HadoopJarStep": [
+      "Jar"
+    ],
+    "Tags": [
       "Key",
       "Value"
     ]

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "Description",
@@ -48,6 +48,12 @@
       "Name"
     ],
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
       "Key",
       "Value"
     ]

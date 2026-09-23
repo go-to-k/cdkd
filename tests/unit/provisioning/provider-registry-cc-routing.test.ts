@@ -376,7 +376,12 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
         {
           logicalId: 'Zfs',
           resourceType: FSX,
-          properties: { FileSystemType: 'OPENZFS', OpenZFSConfiguration: { ThroughputCapacity: 64 } },
+          // `DeploymentType` is required in the block; without it the nested
+          // required pre-flight (#1802) refuses, as CloudFormation does.
+          properties: {
+            FileSystemType: 'OPENZFS',
+            OpenZFSConfiguration: { ThroughputCapacity: 64, DeploymentType: 'SINGLE_AZ_1' },
+          },
         },
       ])
     ).not.toThrow();

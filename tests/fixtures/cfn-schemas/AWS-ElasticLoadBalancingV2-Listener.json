@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "AlpnPolicy",
     "Certificates",
@@ -297,6 +297,42 @@
       "Issuer",
       "TokenEndpoint",
       "UserInfoEndpoint"
+    ]
+  },
+  "nestedRequired": {
+    "DefaultActions": [
+      "Type"
+    ],
+    "DefaultActions.AuthenticateCognitoConfig": [
+      "UserPoolArn",
+      "UserPoolClientId",
+      "UserPoolDomain"
+    ],
+    "DefaultActions.AuthenticateOidcConfig": [
+      "AuthorizationEndpoint",
+      "ClientId",
+      "Issuer",
+      "TokenEndpoint",
+      "UserInfoEndpoint"
+    ],
+    "DefaultActions.FixedResponseConfig": [
+      "StatusCode"
+    ],
+    "DefaultActions.JwtValidationConfig": [
+      "Issuer",
+      "JwksEndpoint"
+    ],
+    "DefaultActions.JwtValidationConfig.AdditionalClaims": [
+      "Format",
+      "Name",
+      "Values"
+    ],
+    "DefaultActions.RedirectConfig": [
+      "StatusCode"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
     ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFront::Distribution",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "DistributionConfig",
     "DomainName",
@@ -651,6 +651,115 @@
     ],
     "VpcOriginConfig": [
       "VpcOriginId"
+    ]
+  },
+  "nestedRequired": {
+    "DistributionConfig": [
+      "DefaultCacheBehavior",
+      "Enabled"
+    ],
+    "DistributionConfig.CacheBehaviors": [
+      "PathPattern",
+      "TargetOriginId",
+      "ViewerProtocolPolicy"
+    ],
+    "DistributionConfig.CacheBehaviors.ForwardedValues": [
+      "QueryString"
+    ],
+    "DistributionConfig.CacheBehaviors.ForwardedValues.Cookies": [
+      "Forward"
+    ],
+    "DistributionConfig.CacheBehaviors.GrpcConfig": [
+      "Enabled"
+    ],
+    "DistributionConfig.CacheTagConfig": [
+      "HeaderName"
+    ],
+    "DistributionConfig.ConnectionFunctionAssociation": [
+      "Id"
+    ],
+    "DistributionConfig.CustomErrorResponses": [
+      "ErrorCode"
+    ],
+    "DistributionConfig.CustomOrigin": [
+      "DNSName",
+      "OriginProtocolPolicy",
+      "OriginSSLProtocols"
+    ],
+    "DistributionConfig.DefaultCacheBehavior": [
+      "TargetOriginId",
+      "ViewerProtocolPolicy"
+    ],
+    "DistributionConfig.DefaultCacheBehavior.ForwardedValues": [
+      "QueryString"
+    ],
+    "DistributionConfig.DefaultCacheBehavior.ForwardedValues.Cookies": [
+      "Forward"
+    ],
+    "DistributionConfig.DefaultCacheBehavior.GrpcConfig": [
+      "Enabled"
+    ],
+    "DistributionConfig.OriginGroups": [
+      "Quantity"
+    ],
+    "DistributionConfig.OriginGroups.Items": [
+      "FailoverCriteria",
+      "Id",
+      "Members"
+    ],
+    "DistributionConfig.OriginGroups.Items.FailoverCriteria": [
+      "StatusCodes"
+    ],
+    "DistributionConfig.OriginGroups.Items.FailoverCriteria.StatusCodes": [
+      "Items",
+      "Quantity"
+    ],
+    "DistributionConfig.OriginGroups.Items.Members": [
+      "Items",
+      "Quantity"
+    ],
+    "DistributionConfig.OriginGroups.Items.Members.Items": [
+      "OriginId"
+    ],
+    "DistributionConfig.Origins": [
+      "DomainName",
+      "Id"
+    ],
+    "DistributionConfig.Origins.CustomOriginConfig": [
+      "OriginProtocolPolicy"
+    ],
+    "DistributionConfig.Origins.CustomOriginConfig.OriginMtlsConfig": [
+      "ClientCertificateArn"
+    ],
+    "DistributionConfig.Origins.OriginCustomHeaders": [
+      "HeaderName",
+      "HeaderValue"
+    ],
+    "DistributionConfig.Origins.VpcOriginConfig": [
+      "VpcOriginId"
+    ],
+    "DistributionConfig.Restrictions": [
+      "GeoRestriction"
+    ],
+    "DistributionConfig.Restrictions.GeoRestriction": [
+      "RestrictionType"
+    ],
+    "DistributionConfig.S3Origin": [
+      "DNSName"
+    ],
+    "DistributionConfig.TenantConfig.ParameterDefinitions": [
+      "Definition",
+      "Name"
+    ],
+    "DistributionConfig.TenantConfig.ParameterDefinitions.Definition.StringSchema": [
+      "Required"
+    ],
+    "DistributionConfig.ViewerMtlsConfig.TrustStoreConfig": [
+      "TrustStoreId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
     ]
   }
 }

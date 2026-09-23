@@ -15,6 +15,7 @@ import {
   buildMutuallyExclusiveMessage,
   findMutuallyExclusiveViolations,
 } from './mutually-exclusive-properties.js';
+import { buildNestedRequiredMessage, findNestedRequiredViolations } from './nested-required.js';
 
 /**
  * The provisioning layer that owns a particular resource: SDK Provider
@@ -721,7 +722,10 @@ export class ProviderRegistry {
    * ALSO runs the mutually-exclusive-property check
    * ({@link validateMutuallyExclusiveProperties}), which throws BEFORE any
    * routing decision is logged — a template CloudFormation itself rejects
-   * should not first produce a page of routing chatter.
+   * should not first produce a page of routing chatter. Issue
+   * [#1802](https://github.com/go-to-k/cdkd/issues/1802) adds the nested
+   * `required` check ({@link validateNestedRequiredProperties}) at the same
+   * point, for the same reason.
    *
    * @see findAutoRouteHits for the pure-functional pre-deploy plan-builder
    *      that returns the same information without logging.
@@ -739,6 +743,7 @@ export class ProviderRegistry {
     // generator would be silently empty on the second pass.
     const materialized = [...resources];
     this.validateMutuallyExclusiveProperties(materialized);
+    this.validateNestedRequiredProperties(materialized);
     this.reportSilentDropDecisions(materialized);
   }
 
@@ -778,6 +783,40 @@ export class ProviderRegistry {
         lines.join('\n') +
         `\n\nCloudFormation rejects these combinations too — edit the template to ` +
         `declare only one of each set.`
+    );
+  }
+
+  /**
+   * Reject a template whose PRESENT nested property block lacks a member the
+   * type's schema requires there, for the types CloudFormation was measured to
+   * enforce that on (issue [#1802](https://github.com/go-to-k/cdkd/issues/1802);
+   * the rule, its fail-safe bias and the measurement live in
+   * `nested-required.ts`).
+   *
+   * Aggregated into ONE error, like {@link validateMutuallyExclusiveProperties},
+   * and with no `--allow-*` escape hatch for the same reason: CloudFormation
+   * rejects the template too, and declaring the member is always possible.
+   */
+  validateNestedRequiredProperties(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): void {
+    const lines: string[] = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      for (const violation of findNestedRequiredViolations(resourceType, properties)) {
+        lines.push(buildNestedRequiredMessage(logicalId, violation));
+      }
+    }
+    if (lines.length === 0) return;
+
+    throw new Error(
+      `The following resources declare a nested property block without a member it requires:\n` +
+        lines.join('\n') +
+        `\n\nCloudFormation rejects these blocks too. ` +
+        `Declare the missing members; leaving a whole block out is not a violation.`
     );
   }
 

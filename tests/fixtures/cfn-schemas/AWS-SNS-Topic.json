@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::Topic",
-  "generatedAt": "2026-09-18",
+  "generatedAt": "2026-09-23",
   "properties": [
     "ArchivePolicy",
     "ContentBasedDeduplication",
@@ -104,6 +104,19 @@
     ],
     "LoggingConfig": [
       "Protocol"
+    ]
+  },
+  "nestedRequired": {
+    "DeliveryStatusLogging": [
+      "Protocol"
+    ],
+    "Subscription": [
+      "Endpoint",
+      "Protocol"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
     ]
   }
 }

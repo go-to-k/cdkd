@@ -1617,6 +1617,11 @@
       ]
     },
     {
+      "name": "nested-required-preflight",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nested-stack",
       "annotated": false,
       "scenarios": []
@@ -2953,6 +2958,7 @@
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
+    "nested-required-preflight",
     "nested-stack",
     "nested-stack-deep",
     "nodejs-function",

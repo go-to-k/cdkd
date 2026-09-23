@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "CanonicalHostedZoneID",
     "DNSName",
@@ -126,6 +126,17 @@
       "SubnetId"
     ],
     "Tag": [
+      "Key"
+    ]
+  },
+  "nestedRequired": {
+    "MinimumLoadBalancerCapacity": [
+      "CapacityUnits"
+    ],
+    "SubnetMappings": [
+      "SubnetId"
+    ],
+    "Tags": [
       "Key"
     ]
   }
