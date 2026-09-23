@@ -44,6 +44,8 @@ function contextFor(
     resourceType?: string;
     recordedSecretValues?: RecordedSecretValues;
     redactedAttributeReads?: RedactedAttributeRead[];
+    properties?: Record<string, unknown>;
+    physicalId?: string;
   } = {}
 ): ResolverContext {
   const resourceType = opts.resourceType ?? CR_TYPE;
@@ -54,9 +56,9 @@ function contextFor(
     template,
     resources: {
       Cr: {
-        physicalId: 'cr-phys',
+        physicalId: opts.physicalId ?? 'cr-phys',
         resourceType,
-        properties: {},
+        properties: opts.properties ?? {},
         attributes,
         dependencies: [],
       },
@@ -200,6 +202,88 @@ describe('Fn::GetAtt notes attribute secrecy on every state-served branch (#2274
       await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Secret'] }, context);
 
       expect(redactedAttributeReads.map((read) => read.display)).toEqual(['Cr.Secret']);
+    });
+  });
+
+  // go-to-k/cdkd#2936: two `constructAttribute` arms read the PERSISTED record
+  // and served what they found without the note. Each is reached only when
+  // the flat lookup missed, so `attributes` here is empty and the persisted
+  // leaf sits in `properties`, where a whole-leaf mask-only needle puts `***`.
+  describe('the constructAttribute arms serving a persisted properties leaf (#2936)', () => {
+    it('AWS::EC2::VPC CidrBlock records a REDACTED read', async () => {
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {},
+        {
+          resourceType: 'AWS::EC2::VPC',
+          properties: { CidrBlock: SECRET_MASK },
+          redactedAttributeReads,
+        }
+      );
+
+      const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'CidrBlock'] }, context);
+
+      // Served back unchanged (the NO_CHANGE claim above), and recorded.
+      expect(value).toBe(SECRET_MASK);
+      expect(redactedAttributeReads.map((read) => read.display)).toEqual(['Cr.CidrBlock']);
+      expect(redactedAttributeReads[0]?.kind).toBe('attribute');
+      expect(redactedAttributeReads[0]?.logicalId).toBe('Cr');
+    });
+
+    it('CONTROL: AWS::EC2::VPC CidrBlock serves an ordinary value and records nothing', async () => {
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {},
+        {
+          resourceType: 'AWS::EC2::VPC',
+          properties: { CidrBlock: '10.0.0.0/16' },
+          redactedAttributeReads,
+        }
+      );
+
+      const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'CidrBlock'] }, context);
+
+      expect(value).toBe('10.0.0.0/16');
+      expect(redactedAttributeReads).toEqual([]);
+    });
+
+    it('AWS::Events::Rule Arn records a REDACTED read for a masked bus name it embeds', async () => {
+      // The built ARN holds the mask as an INNER span, which the whole-leaf
+      // `carriesSecretMask` test cannot see: the note has to read the leaf.
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {},
+        {
+          resourceType: 'AWS::Events::Rule',
+          physicalId: 'my-rule',
+          properties: { EventBusName: SECRET_MASK },
+          redactedAttributeReads,
+        }
+      );
+
+      const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Arn'] }, context);
+
+      expect(value).toBe(`arn:aws:events:us-east-1:123456789012:rule/${SECRET_MASK}/my-rule`);
+      expect(redactedAttributeReads.map((read) => read.display)).toEqual(['Cr.Arn']);
+      expect(redactedAttributeReads[0]?.kind).toBe('attribute');
+    });
+
+    it('CONTROL: AWS::Events::Rule Arn embeds an ordinary bus name and records nothing', async () => {
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {},
+        {
+          resourceType: 'AWS::Events::Rule',
+          physicalId: 'my-rule',
+          properties: { EventBusName: 'custom-bus' },
+          redactedAttributeReads,
+        }
+      );
+
+      const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Arn'] }, context);
+
+      expect(value).toBe('arn:aws:events:us-east-1:123456789012:rule/custom-bus/my-rule');
+      expect(redactedAttributeReads).toEqual([]);
     });
   });
 });

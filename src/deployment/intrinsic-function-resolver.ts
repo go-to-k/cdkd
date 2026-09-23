@@ -47,7 +47,7 @@ import { drainDeadlines, withSharedDrainBudget } from './drain-budget.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
 import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
-import { withRetry } from './retry.js';
+import { withRetry, type RetryLogger } from './retry.js';
 import {
   StaleAttributeMissSignal,
   readHealedAttribute,
@@ -1017,10 +1017,11 @@ export interface AbandonedResolution {
    */
   readonly subject: string;
   /**
-   * The thrown message, MASKED at push. An SDK rejection arrives RAW through
-   * `sendWithThrottleRetry`, and an SSM `ValidationException` echoes the `Name`
-   * it was given — which for an assembled reference IS a plaintext. Render
-   * THIS, never {@link error}.
+   * The thrown message, MASKED at push. An SSM `ValidationException` echoes the
+   * `Name` it was given — which for an assembled reference IS a plaintext.
+   * `sendWithThrottleRetry` already rethrows it masked by position
+   * (go-to-k/cdkd#3171); the push-time mask stays as the layer for every other
+   * throw. Render THIS, never {@link error}.
    *
    * The two units are masked to different DEPTHS, and the difference is stated
    * rather than smoothed over. A `'token'` entry additionally maps each raw
@@ -1035,8 +1036,9 @@ export interface AbandonedResolution {
   readonly message: string;
   /**
    * Whatever was thrown, for CLASSIFICATION only. Never render it: unlike
-   * {@link message} it is unmasked, and it is kept so a consumer can test its
-   * class rather than its wording.
+   * {@link message} it is not guaranteed masked (an SDK rejection from a lookup
+   * arrives as a masked clone since go-to-k/cdkd#3171, other throws do not),
+   * and it is kept so a consumer can test its class rather than its wording.
    */
   readonly error: unknown;
   /**
@@ -1640,6 +1642,16 @@ interface CachedDynamicReference {
   secret: boolean;
 }
 
+/** What {@link IntrinsicFunctionResolver.namedRequestMasks} returns (go-to-k/cdkd#3171). */
+interface NamedRequestMasks {
+  /** A masked clone of `error` and its whole cause chain; classification survives. */
+  error: (error: unknown) => unknown;
+  /** A caught SDK message, masked for interpolation into a line or a throw. */
+  text: (message: string) => string;
+  /** The `withRetry` logger for the same request. */
+  retryLogger: RetryLogger;
+}
+
 /**
  * The `{{resolve:...}}` expressions this process has PROVEN resolve to a
  * SECRET, reached through `secret-redaction.ts`'s `recordedSecretExpressions`
@@ -2125,12 +2137,13 @@ async function allSettledKeepingFirstRejection<T>(
     // two call sites are mid-pass, which is what issue #2797 was about), and it
     // is not true that every error arriving here was built at a site this file's
     // coverage checker governs. The drained promises are `resolveValue`, which
-    // reaches the dynamic-reference lookups, and `sendWithThrottleRetry`
-    // rethrows an AWS rejection RAW — an AccessDenied naming an `Fn::Sub`
-    // -assembled SecretId is built by the SDK and passes through unmasked. That
-    // case is covered downstream, where a bag exists:
-    // `DeployEngine.handleOutputResolutionFailure` and the `cdkd import`
-    // boundary mask it (issues #2728 / #2803).
+    // reaches the dynamic-reference lookups. Since go-to-k/cdkd#3171
+    // `sendWithThrottleRetry` rethrows an AWS rejection as a clone masked by
+    // the request's names (an AccessDenied naming an `Fn::Sub`-assembled
+    // SecretId included), so what arrives here from that route is already
+    // masked. The downstream boundary masks stay as the layer for every other
+    // error: `DeployEngine.handleOutputResolutionFailure` and the `cdkd import`
+    // boundary (issues #2728 / #2803).
     if (rejection !== undefined) {
       // Inputs still running here means the CAP won the race: report them,
       // once per budget (issue #2814), so a failure that releases several
@@ -5143,8 +5156,10 @@ export class IntrinsicFunctionResolver {
    * which reads the SAME persisted `attributes` bag and shipped without the
    * note (it takes it now). The rule the note actually needs is about the
    * SOURCE of the value — every branch serving one out of a PERSISTED
-   * `attributes` bag must call this — and that is not a shape a compiler can
-   * enforce. `constructGuardedAttribute`'s return is deliberately outside it:
+   * `attributes` bag must call this, and so must one serving (or embedding) a
+   * persisted `properties` leaf, which a mask-only needle masks whole
+   * (go-to-k/cdkd#2936: the VPC `CidrBlock` and Events rule `Arn` arms) — and
+   * that is not a shape a compiler can enforce. `constructGuardedAttribute`'s return is deliberately outside it:
    * that value is fetched from AWS in this run, not read back from state, so
    * it can be neither a stale mask nor a value a provider declared `NoEcho`.
    *
@@ -5713,7 +5728,19 @@ export class IntrinsicFunctionResolver {
         case 'VpcId':
           return physicalId;
         case 'CidrBlock':
-          return resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'];
+          // Served out of the PERSISTED record, so it takes the note
+          // (go-to-k/cdkd#2936). The operand that answers here is in practice
+          // `properties`: `resolveGetAtt`'s flat lookup serves a PRESENT
+          // `attributes.CidrBlock` first, with its own note. A whole-leaf
+          // mask-only needle can still put `***` in `properties`, and served
+          // unnoted it reaches the consumer's property with nothing recorded
+          // for `refuseRedactedAttributeReads` to refuse.
+          return this.noteAttributeSecrecy(
+            logicalId,
+            attributeName,
+            resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'],
+            context
+          );
         case 'Ipv6CidrBlocks': {
           // Must fetch dynamically - IPv6 CIDR is added by VPCCidrBlock resource after VPC creation.
           // After CC API reports VPCCidrBlock CREATE success, the CIDR may still be in
@@ -5988,7 +6015,19 @@ export class IntrinsicFunctionResolver {
           if (physicalId.startsWith('arn:')) {
             return physicalId;
           }
-          const busRaw = resource.properties?.['EventBusName'];
+          // Noted before it is EMBEDDED (go-to-k/cdkd#2936's audit): the
+          // built ARN holds a masked bus name as an inner span, which the
+          // whole-leaf `carriesSecretMask` test cannot see, so the note has to
+          // read the persisted leaf itself. Its OTHER half (a NoEcho-declared
+          // resource's value becoming a mask-only needle) would therefore
+          // register the bus name, not the built ARN; inert, since nothing
+          // declares an Events rule NoEcho.
+          const busRaw = this.noteAttributeSecrecy(
+            logicalId,
+            attributeName,
+            resource.properties?.['EventBusName'],
+            context
+          );
           const bus = typeof busRaw === 'string' && busRaw && busRaw !== 'default' ? busRaw : '';
           // If EventBusName resolved to an ARN, extract the bus name segment
           const busName = bus.startsWith('arn:') ? bus.split('/').pop() || '' : bus;
@@ -9903,7 +9942,20 @@ export class IntrinsicFunctionResolver {
     pairs: readonly (readonly [string, string])[],
     context?: ResolverContext
   ): never {
-    const extraMask = this.positionalNameMask(pairs);
+    throw this.maskNamedError(error, this.positionalNameMask(pairs), context);
+  }
+
+  /**
+   * {@link maskStateReadError}'s body, RETURNING the masked clone rather than
+   * throwing it, so {@link namedRequestMasks} can hand the same answer to an
+   * SDK call site (go-to-k/cdkd#3171). `extraMask` is a
+   * {@link positionalNameMask} transform, or `undefined` for none.
+   */
+  private maskNamedError(
+    error: unknown,
+    extraMask: ((text: string) => string) | undefined,
+    context?: ResolverContext
+  ): unknown {
     // The SAME two bags in the SAME order as `maskSecretsRaw`, for the same
     // reason (issue #1903 round 2): on a nested-stack child the parent's
     // decrypted parameter plaintext lives in the inherited bag alone until a
@@ -9937,7 +9989,80 @@ export class IntrinsicFunctionResolver {
     // `maskSecretsInError` with an empty bag and a transform is exactly the
     // shape its widened early return admits.
     if (positional) masked = maskSecretsInError(masked, new Map(), positional);
-    throw masked;
+    return masked;
+  }
+
+  /**
+   * The three masks an AWS SDK call site owes the text the SDK produces about a
+   * request that carried template-derived NAMES (go-to-k/cdkd#3171).
+   *
+   * The resolver masks every name it prints ITSELF through the name's log text
+   * (go-to-k/cdkd#3150), but an SDK rejection QUOTES the name it refused back —
+   * `ParameterNotFound: <name>`, a region in a describe failure — and that
+   * text reached only the needle mask, whose substring arm has the
+   * {@link MIN_NEEDLE_LENGTH} floor. A name an `Fn::Sub` assembled around a
+   * 1-3 character secret printed masked in the resolver's own words and in the
+   * clear a few characters later, in the SDK's.
+   *
+   * `pairs` are (raw name as SENT, that name's log text), the same shape
+   * {@link positionalNameMask} takes and for the same reason; an unmasked pair
+   * is dropped there. ONE helper returning all three, so a call site cannot
+   * adopt one and miss the others:
+   *
+   * - `error` — a masked CLONE of the whole cause chain
+   *   ({@link maskNamedError}), which keeps the class and every own descriptor,
+   *   so `isThrottlingError` / `isMarkedNonRetryable` still classify it;
+   * - `text` — a caught message about to be interpolated into a line or a
+   *   throw, positional pass first, then {@link displayMasked};
+   * - `retryLogger` — for `withRetry`, whose per-attempt `debug` line and
+   *   give-up `warn` interpolate the SDK message verbatim.
+   *
+   * THE WHOLE NAME is the key, never its secret span alone: the substitution
+   * rewrites every occurrence of the raw name wherever the SDK put it (inside
+   * an ARN, after a colon). That is what reaches a sub-floor secret — the
+   * whole name is longer than the secret — and it is also the bound: a name
+   * the SDK re-encodes or truncates before quoting it is not matched, and a
+   * masked name of 1-3 characters is matched only where the SDK quotes it
+   * exactly, which may over-mask unrelated text (the SAFE direction
+   * {@link positionalNameMask} documents).
+   */
+  private namedRequestMasks(
+    pairs: readonly (readonly [string, string])[],
+    context?: ResolverContext
+  ): NamedRequestMasks {
+    // A producer-region GUEST's own region rides along on every request: the
+    // guest's clients are built for it, so an endpoint failure quotes it
+    // (`getaddrinfo ENOTFOUND secretsmanager.<region>.amazonaws.com`) in text
+    // no caller-supplied pair covers, and it is template-derived — the secret
+    // ARN's region, which an `Fn::Sub` can assemble around a short secret
+    // (go-to-k/cdkd#3171 review). An ordinary resolver's region has no log
+    // text and adds nothing.
+    const positional = this.positionalNameMask(
+      this.explicitRegion !== undefined && this.explicitRegionLogText !== undefined
+        ? [...pairs, [this.explicitRegion, this.explicitRegionLogText]]
+        : pairs
+    );
+    const text = (message: string): string =>
+      this.displayMasked(positional ? positional(message) : message, context);
+    // `displaySafe` TRIMS, so a line `retry.ts` indents would lose its indent;
+    // the leading SPACES are carried across (spaces only: nothing a terminal
+    // interprets).
+    const line = (message: string): string => {
+      const indent = /^ */.exec(message)?.[0] ?? '';
+      return indent + text(message.slice(indent.length));
+    };
+    return {
+      error: (error) => this.maskNamedError(error, positional, context),
+      text,
+      retryLogger: {
+        debug: (message) => this.logger.debug(line(message)),
+        // UNREACHABLE from `sendWithThrottleRetry` today: `withRetry` warns only
+        // after a propagation / cooldown / server-error retry, and a caller
+        // passing its own `isRetryable` counts none. Masked anyway, since the
+        // interface makes it optional rather than absent.
+        warn: (message) => this.logger.warn(line(message)),
+      },
+    };
   }
 
   /**
@@ -10374,10 +10499,18 @@ export class IntrinsicFunctionResolver {
       // cleared `isClientSafeRegion`, which is only
       // `/^[a-z0-9][a-z0-9-]{0,30}$/` — a real plaintext passes it — and the
       // caught AWS message quotes the region back.
+      //
+      // The AWS text takes the region's POSITIONAL mask first (go-to-k/cdkd#3171):
+      // the needle mask alone cannot see a sub-floor secret an `Fn::Sub`
+      // assembled into the region, and the SDK quotes the region as SENT —
+      // canonicalized, which is why the pair keys on `region` rather than on
+      // the raw value `loggedRegionText` was derived from.
+      const loggedRegion = this.displayMasked(loggedRegionText ?? region, context);
+      const masks = this.namedRequestMasks([[region, loggedRegion]], context);
       throw new Error(
         `Fn::GetAZs: failed to describe availability zones for region ` +
-          `'${this.displayMasked(loggedRegionText ?? region, context)}': ` +
-          `${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+          `'${loggedRegion}': ` +
+          `${masks.text(error instanceof Error ? error.message : String(error))}`
       );
     }
 
@@ -10565,9 +10698,10 @@ export class IntrinsicFunctionResolver {
    * One constructor for both walks so neither can grow a second masking rule:
    * `subject` and `message` are the only fields a consumer may render, and each
    * carries its own route to a plaintext — an assembled reference puts one in
-   * the raw token (issue #2827), and an SDK rejection arrives RAW through
-   * `sendWithThrottleRetry` echoing the `Name` it was handed. `error` is kept
-   * unmasked on purpose and is documented as classification-only.
+   * the raw token (issue #2827), and an SDK rejection echoes the `Name` it was
+   * handed — which `sendWithThrottleRetry` now masks by position before it
+   * rethrows (go-to-k/cdkd#3171), so this is the second layer on that route.
+   * `error` is not re-masked here and is documented as classification-only.
    */
   private abandonedUnit(
     unit: AbandonedResolution['unit'],
@@ -11805,29 +11939,26 @@ export class IntrinsicFunctionResolver {
         context.abandonedResolutions.push(
           this.abandonedUnit('token', tokenLogText, err, context, fullMatch, (text) => {
             // The thrown text can echo the reference's own ARGUMENT back —
-            // `sendWithThrottleRetry` rethrows an SDK rejection RAW, and SSM's
-            // `ValidationException` / `ParameterNotFound` name the parameter.
+            // SSM's `ValidationException` / `ParameterNotFound` name the
+            // parameter. `sendWithThrottleRetry` masks that echo by position
+            // before it rethrows (go-to-k/cdkd#3171); this pass is the layer
+            // for a lookup failure raised by any other route.
             // For an ASSEMBLED reference that argument can be a SUB-FLOOR
             // secret, which the needle mask cannot see. `nameLogText` is
             // twin-derived and so has no floor; map each raw segment through
             // it before the needle mask runs.
-            // LOAD-BEARING, and fenced — an earlier revision of this comment
-            // claimed the opposite and was wrong in the dangerous direction.
-            // It asserted no discriminating case could exist, reasoning that a
-            // twin with two secret-derived colon fields degrades to
-            // `() => SECRET_MASK`. False: `SECRET_MASK` carries no colon, so a
-            // secret wholly inside ONE field leaves the piece counts equal and
-            // `dynamicReferenceNameLogText` does not degrade.
-            //
-            // The discriminating shape is a LONGER secret-derived field that
-            // appears in the thrown text while a SHORTER field prefixing it
-            // sorts EARLIER in `inner.split(':')`. Measured under source order:
-            // `...staging label: ***SECRETTAIL` — ten characters of a recorded
-            // secret in the field this interface documents as masked, and the
-            // needle mask cannot recover it because the needle is mangled.
-            // Fenced by `redacts a LONGER reference field before a shorter one
-            // that prefixes it` in
-            // `tests/unit/deployment/intrinsic-resolver-per-token-recovery.test.ts`.
+            // DEFENCE IN DEPTH since go-to-k/cdkd#3171, and measured as such:
+            // with this pre-pass deleted, `redacts a LONGER reference field
+            // before a shorter one that prefixes it` in
+            // `tests/unit/deployment/intrinsic-resolver-per-token-recovery.test.ts`
+            // stays green, because its SDK rejection is now masked (longest name
+            // first, `positionalNameMask`) before it reaches this catch. That
+            // case was this pass's fence until then. The shape it fences is
+            // still the one to keep in mind: a LONGER secret-derived field in
+            // the thrown text while a SHORTER field prefixing it sorts EARLIER
+            // in `inner.split(':')` (`...staging label: ***SECRETTAIL` under
+            // source order). A secret wholly inside ONE field leaves the piece
+            // counts equal, so `dynamicReferenceNameLogText` does not degrade.
             //
             // LONGEST FIRST, and deduplicated. Replacing a SHORTER segment
             // first mangles a longer one that contains it, so the longer one's
@@ -11986,7 +12117,17 @@ export class IntrinsicFunctionResolver {
 
     const response = await this.sendWithThrottleRetry(
       () => client.send(command),
-      `secretsmanager:${loggedSecretId}`
+      `secretsmanager:${loggedSecretId}`,
+      // Every name the REQUEST carries, as sent (go-to-k/cdkd#3171). The JSON
+      // key is not sent, so no SDK text can quote it.
+      this.namedRequestMasks(
+        [
+          [secretId, loggedSecretId],
+          [versionStage, this.displayMasked(nameLogText(versionStage), context)],
+          [versionId, this.displayMasked(nameLogText(versionId), context)],
+        ],
+        context
+      )
     );
     const secretString = response.SecretString;
 
@@ -12221,13 +12362,27 @@ export class IntrinsicFunctionResolver {
    *   sibling in the SAME region still shares the ambient instance, so the
    *   window survives exactly where the two stacks agree on the region.
    */
-  private sendWithThrottleRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
-    return withRetry(operation, label, {
-      maxRetries: MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES,
-      isRetryable: (_message, error) => isThrottlingError(error),
-      logger: this.logger,
-      ...(dynamicReferenceRetryDelays.sleep ? { sleep: dynamicReferenceRetryDelays.sleep } : {}),
-    });
+  private async sendWithThrottleRetry<T>(
+    operation: () => Promise<T>,
+    label: string,
+    // REQUIRED (go-to-k/cdkd#3171): the lookup's request carries the
+    // reference's names, and both SDK-text routes out of here quote them — the
+    // retry line and the rethrown rejection. A default would print them raw
+    // for a caller that forgot it.
+    masks: NamedRequestMasks
+  ): Promise<T> {
+    try {
+      return await withRetry(operation, label, {
+        maxRetries: MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES,
+        // Classifies the RAW error: the retry decision is made before any
+        // masking, so masking cannot change which failures are retried.
+        isRetryable: (_message, error) => isThrottlingError(error),
+        logger: masks.retryLogger,
+        ...(dynamicReferenceRetryDelays.sleep ? { sleep: dynamicReferenceRetryDelays.sleep } : {}),
+      });
+    } catch (error) {
+      throw masks.error(error);
+    }
   }
 
   /**
@@ -12285,7 +12440,9 @@ export class IntrinsicFunctionResolver {
 
     const response = await this.sendWithThrottleRetry(
       () => client.send(command),
-      `${service}:${loggedParameterName}`
+      `${service}:${loggedParameterName}`,
+      // The one name the request carries (go-to-k/cdkd#3171).
+      this.namedRequestMasks([[parameterName, loggedParameterName]], context)
     );
     const paramValue = response.Parameter?.Value;
 
