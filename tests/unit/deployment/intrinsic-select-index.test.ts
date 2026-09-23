@@ -129,23 +129,23 @@ describe('an integer past the end keeps the OutOfBounds placeholder', () => {
 });
 
 describe('an index that names no element is REFUSED (#3574)', () => {
-  it.each<[string, unknown]>([
-    // [what the pre-fix resolver answered, index]
-    ['the Array constructor', 'constructor'],
-    ['Array.prototype', '__proto__'],
-    ['the list length, 3', 'length'],
-    ['the OutOfBounds placeholder', -1],
-    ['the OutOfBounds placeholder', '-1'],
-    ['undefined', 1.5],
-    ['undefined', '1.5'],
-    ['undefined', ''],
-    ['undefined', ' 1'],
-    ['undefined', Number.NaN],
-    ['the OutOfBounds placeholder', Number.POSITIVE_INFINITY],
-    ['undefined', true],
-    ['undefined', null],
-    ['undefined', [1]],
-  ])('pre-fix %s: index %j', async (_prefix, index) => {
+  it.each<[string, string, unknown]>([
+    // [index as written, what the pre-fix resolver answered, index]
+    ['"constructor"', 'the Array constructor', 'constructor'],
+    ['"__proto__"', 'Array.prototype', '__proto__'],
+    ['"length"', 'the list length, 3', 'length'],
+    ['-1', 'the OutOfBounds placeholder', -1],
+    ['"-1"', 'the OutOfBounds placeholder', '-1'],
+    ['1.5', 'undefined', 1.5],
+    ['"1.5"', 'undefined', '1.5'],
+    ['""', 'undefined', ''],
+    ['" 1"', 'undefined', ' 1'],
+    ['NaN', 'undefined', Number.NaN],
+    ['Infinity', 'the OutOfBounds placeholder', Number.POSITIVE_INFINITY],
+    ['true', 'undefined', true],
+    ['null', 'undefined', null],
+    ['[1]', '"b", the array coercing to the key "1"', [1]],
+  ])('index %s (pre-fix: %s)', async (_written, _prefix, index) => {
     await refusal(index);
   });
 
