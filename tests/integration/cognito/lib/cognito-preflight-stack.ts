@@ -12,7 +12,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  * failure not having cancelled it.
  *
  * The refusing arms are selected ONE AT A TIME by `CDKD_TEST_PREFLIGHT_ARM`
- * (`A`, `B`, `D`, `E` or `F`), rather than mutating several in one update deploy. That is
+ * (`A`, `B`, `D`, `E`, `F`, `G` or `H`), rather than mutating several in one update deploy. That is
  * load-bearing rather than tidiness: the deploy engine sets `interrupted` on
  * the FIRST resource failure and cancels pending siblings, so a single update
  * carrying both mutations could legitimately log one refusal and never reach
@@ -55,18 +55,36 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  * Arm F (#2064) -- the ACCEPTING shape on arm D's pool, which must SUCCEED:
  * the same edit plus `WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`.
  * Run after D, so the pool it updates is the one D's refusal left untouched.
+ *
+ * Arm G (#3562) -- the same accepting edit from a pool already at ON (arm B's
+ * pool, after B's refusal left it at `ON` + `[PASSWORD]`). `UpdateUserPool`
+ * refuses to add `WEB_AUTHN` there until the factor configuration changed, so
+ * this deploys only because `SetUserPoolMfaConfig` now goes FIRST; it deploys
+ * under CloudFormation too (measured).
+ *
+ * Arm H (#3562, the PARITY fence) -- on control C4's pool (live `ON`), lower
+ * MFA to `OPTIONAL` while ADDING `EMAIL_OTP`. CloudFormation rolls this edit
+ * back (measured), so it must still FAIL, atomically, with the pool untouched:
+ * a "fix" that reordered it would hide a production failure.
  */
 export class CognitoPreflightStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // `A` mutates the #1977 pool, `B` the #1975 pool, `D` / `F` the #2064
-    // pool, `E` the #2051 pool; anything else (including unset) is the BASE arm
-    // that must deploy cleanly. Deliberately NOT keyed
+    // `A` mutates the #1977 pool, `B` / `G` the #1975 pool, `D` / `F` the
+    // #2064 pool, `E` the #2051 pool, `H` control C4's pool; anything else
+    // (including unset) is the BASE arm that must deploy cleanly. Deliberately NOT keyed
     // on `CDKD_TEST_UPDATE`: `CognitoStack`'s update phase sets that variable
     // and synthesizes this app too, and an arm that reacted to it would flip
     // shape during a deploy that is not looking at it.
     const arm = process.env.CDKD_TEST_PREFLIGHT_ARM;
+    // The SUCCEEDING arms run in the order F, G, H, and each later deploy
+    // synthesizes every pool, so a pool an earlier arm changed must KEEP that
+    // shape in the later arms -- otherwise arm G would silently revert arm F's
+    // pool, and arm H arm G's, as an unasserted extra update. (A refused arm
+    // leaves its pool at base, so the refusing arms need no such carry.)
+    const afterF = arm === 'F' || arm === 'G' || arm === 'H';
+    const afterG = arm === 'G' || arm === 'H';
 
     // --- Arm A (issue #1977) ------------------------------------------------
     // Base: MFA genuinely on (OPTIONAL + a real factor) and NO
@@ -101,9 +119,15 @@ export class CognitoPreflightStack extends cdk.Stack {
       userPoolTier: 'ESSENTIALS',
       enabledMfas: ['SOFTWARE_TOKEN_MFA'],
       mfaConfiguration: 'ON',
+      ...(afterG ? { webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' } : {}),
       policies: {
         signInPolicy: {
-          allowedFirstAuthFactors: arm === 'B' ? ['PASSWORD', 'EMAIL_OTP'] : ['PASSWORD'],
+          allowedFirstAuthFactors:
+            arm === 'B'
+              ? ['PASSWORD', 'EMAIL_OTP']
+              : afterG
+                ? ['PASSWORD', 'WEB_AUTHN']
+                : ['PASSWORD'],
         },
       },
     });
@@ -188,11 +212,12 @@ export class CognitoPreflightStack extends cdk.Stack {
       userPoolName: `cdkd-test-mfa-preflight-webauthn-on-${cdk.Aws.ACCOUNT_ID}`,
       userPoolTier: 'ESSENTIALS',
       enabledMfas: ['SOFTWARE_TOKEN_MFA'],
-      mfaConfiguration: 'ON',
+      mfaConfiguration: arm === 'H' ? 'OPTIONAL' : 'ON',
       webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
       policies: {
         signInPolicy: {
-          allowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'],
+          allowedFirstAuthFactors:
+            arm === 'H' ? ['PASSWORD', 'WEB_AUTHN', 'EMAIL_OTP'] : ['PASSWORD', 'WEB_AUTHN'],
         },
       },
     });
@@ -206,7 +231,7 @@ export class CognitoPreflightStack extends cdk.Stack {
     //
     // D: ON + WEB_AUTHN, no factor configuration -> refused, nothing sent.
     // F: the same plus MULTI -> must deploy.
-    const webAuthnArm = arm === 'D' || arm === 'F';
+    const webAuthnArm = arm === 'D' || afterF;
     const preflightWebAuthnSinglePool = new cognito.CfnUserPool(
       this,
       'PreflightWebAuthnSinglePool',
@@ -215,7 +240,7 @@ export class CognitoPreflightStack extends cdk.Stack {
         userPoolTier: 'ESSENTIALS',
         enabledMfas: ['SOFTWARE_TOKEN_MFA'],
         mfaConfiguration: webAuthnArm ? 'ON' : 'OPTIONAL',
-        ...(arm === 'F' ? { webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' } : {}),
+        ...(afterF ? { webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' } : {}),
         policies: {
           signInPolicy: {
             allowedFirstAuthFactors: webAuthnArm ? ['PASSWORD', 'WEB_AUTHN'] : ['PASSWORD'],

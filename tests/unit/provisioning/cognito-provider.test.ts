@@ -2641,6 +2641,8 @@ describe('CognitoUserPoolProvider', () => {
 
       // The ACCEPTING shape, now reachable (the SDK floor carries the field).
       it('sends FactorConfiguration and deploys WEB_AUTHN + ON with MULTI on update', async () => {
+        // #3562's order read: live OPTIONAL keeps the usual order.
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OPTIONAL' }); // GetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:multi' } }); // DescribeUserPool
@@ -2658,9 +2660,10 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(3);
-        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
-        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetUserPoolMfaConfigCommand');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const mfaCall = mockSend.mock.calls[2][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.MfaConfiguration).toBe('ON');
         expect(mfaCall.input.WebAuthnConfiguration).toEqual({
@@ -2702,6 +2705,254 @@ describe('CognitoUserPoolProvider', () => {
         expect(mfaCall.input.WebAuthnConfiguration).toEqual({
           FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
         });
+      });
+    });
+
+    // Issue #3562: from a pool live at ON without MULTI, UpdateUserPool refuses
+    // to add WEB_AUTHN until the factor configuration changed, while
+    // CloudFormation deploys the edit -- so SetUserPoolMfaConfig goes FIRST
+    // there, and only there.
+    describe('SetUserPoolMfaConfig before UpdateUserPool (#3562)', () => {
+      const addWebAuthnMulti = {
+        Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] } },
+        EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        MfaConfiguration: 'ON',
+        WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+      };
+      const liveOnSingle = {
+        MfaConfiguration: 'ON',
+        SoftwareTokenMfaConfiguration: { Enabled: true },
+      };
+      const names = () => mockSend.mock.calls.map((c) => c[0].constructor.name);
+
+      it('sends the MFA configuration first when the pool is live at ON without MULTI', async () => {
+        mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:mfa-first' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          addWebAuthnMulti,
+          {}
+        );
+
+        expect(names()).toEqual([
+          'GetUserPoolMfaConfigCommand',
+          'SetUserPoolMfaConfigCommand',
+          'UpdateUserPoolCommand',
+          'DescribeUserPoolCommand',
+        ]);
+        expect(mockSend.mock.calls[1][0].input).toMatchObject({
+          MfaConfiguration: 'ON',
+          WebAuthnConfiguration: { FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' },
+        });
+        expect(mockSend.mock.calls[2][0].input.Policies).toEqual(addWebAuthnMulti.Policies);
+      });
+
+      it.each([
+        ['live OPTIONAL', { MfaConfiguration: 'OPTIONAL' }],
+        ['live OFF', { MfaConfiguration: 'OFF' }],
+        [
+          'live ON already at MULTI',
+          {
+            MfaConfiguration: 'ON',
+            WebAuthnConfiguration: { FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' },
+          },
+        ],
+      ])('keeps UpdateUserPool first for %s', async (_label, live) => {
+        mockSend.mockResolvedValueOnce(live); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:usual' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {});
+
+        expect(names()).toEqual([
+          'GetUserPoolMfaConfigCommand',
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+          'DescribeUserPoolCommand',
+        ]);
+      });
+
+      it('keeps the usual order when the order read fails, saying so at debug only', async () => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized'), {
+            name: 'AccessDeniedException',
+          })
+        );
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:read-failed' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {});
+
+        expect(names().slice(1, 3)).toEqual(['UpdateUserPoolCommand', 'SetUserPoolMfaConfigCommand']);
+        const debugged = childLogger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(debugged).toContain(
+          'GetUserPoolMfaConfig failed for UserPool us-east-1_abc123 while choosing the call order (AccessDeniedException)'
+        );
+        for (const level of [childLogger.warn, childLogger.info, childLogger.error]) {
+          expect(level.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('123456789012');
+        }
+      });
+
+      // The reversed partial-apply window: the MFA call landed, UpdateUserPool
+      // failed. The prior configuration is replayed, member for member, and
+      // the ORIGINAL error surfaces.
+      it('restores the previous MFA configuration when UpdateUserPool then fails', async () => {
+        const prior = {
+          MfaConfiguration: 'ON',
+          SmsMfaConfiguration: { SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::0:role/sms' } },
+          SoftwareTokenMfaConfiguration: { Enabled: true },
+          EmailMfaConfiguration: { Message: 'code {####}' },
+          WebAuthnConfiguration: { RelyingPartyId: 'auth.example.com', FactorConfiguration: 'SINGLE_FACTOR' },
+        };
+        mockSend.mockResolvedValueOnce(prior); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('bad EmailVerificationSubject'), { name: 'InvalidParameterException' })
+        ); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (restore)
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {})
+        );
+
+        expect(error.message).toContain('bad EmailVerificationSubject');
+        expect(names()).toEqual([
+          'GetUserPoolMfaConfigCommand',
+          'SetUserPoolMfaConfigCommand',
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+        ]);
+        expect(mockSend.mock.calls[3][0].input).toEqual({ UserPoolId: 'us-east-1_abc123', ...prior });
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'restoring the previous one also failed'
+        );
+      });
+
+      it('announces a failed restore by error class and still surfaces the original error', async () => {
+        mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('bad EmailVerificationSubject'), { name: 'InvalidParameterException' })
+        ); // UpdateUserPool
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s denied'), {
+            name: 'AccessDeniedException',
+          })
+        ); // SetUserPoolMfaConfig (restore)
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {})
+        );
+
+        expect(error.message).toContain('bad EmailVerificationSubject');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('restoring the previous one also failed (AccessDeniedException)');
+        expect(warned).toContain('may now carry the NEW MFA configuration with its OLD sign-in policy');
+        expect(warned).not.toContain('123456789012');
+      });
+
+      // PARITY: CloudFormation ROLLS BACK lowering MFA from ON while adding
+      // EMAIL_OTP (measured 2026-09-23), so cdkd keeps its atomic rejection --
+      // no order read, UpdateUserPool first.
+      it('does not reorder the lower-MFA-and-add-EMAIL_OTP edit CloudFormation also rejects', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:parity' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          {
+            Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] } },
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+            MfaConfiguration: 'OPTIONAL',
+          },
+          {}
+        );
+
+        expect(names()).toEqual([
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+          'DescribeUserPoolCommand',
+        ]);
+      });
+
+      // The gate keeps MFA at ON: an edit that LOWERS MFA is the class
+      // CloudFormation was measured to roll back, so it is never reordered --
+      // no order read, UpdateUserPool first, whatever the live state.
+      it('does not reorder an edit that lowers MFA to OPTIONAL while adding WEB_AUTHN', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:lowering' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { ...addWebAuthnMulti, MfaConfiguration: 'OPTIONAL' },
+          {}
+        );
+
+        expect(names()).toEqual([
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+          'DescribeUserPoolCommand',
+        ]);
+      });
+
+      // No order read unless the TEMPLATE sends a factor list with WEB_AUTHN.
+      it('does not read the order state when the template sends no WEB_AUTHN list', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: {} }); // #2051 live sign-in read
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:no-list' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          {
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+            MfaConfiguration: 'ON',
+            WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+          },
+          {}
+        );
+
+        expect(names()).not.toContain('GetUserPoolMfaConfigCommand');
+      });
+
+      // ...nor when the list it sends does not contain WEB_AUTHN: nothing is
+      // being added that UpdateUserPool could refuse.
+      it('does not read the order state when the sent list has no WEB_AUTHN', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:no-webauthn' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          {
+            ...addWebAuthnMulti,
+            Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } },
+          },
+          {}
+        );
+
+        expect(names()).toEqual([
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+          'DescribeUserPoolCommand',
+        ]);
       });
     });
 
