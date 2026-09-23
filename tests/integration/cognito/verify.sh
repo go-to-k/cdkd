@@ -1164,8 +1164,78 @@ if [ "${DF_PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    OK: arm F landed WEB_AUTHN + MFA ON + MULTI_FACTOR_WITH_USER_VERIFICATION on the SDK update path"
 
+# --- Phase 6e: arm G (issue #3562) -- from a pool at ON, MUST deploy --
+echo "==> Phase 6e: arm G (#3562) -- WEB_AUTHN + MULTI_FACTOR_WITH_USER_VERIFICATION added to a pool already at MfaConfiguration ON must SUCCEED"
+# Pre-fix, UpdateUserPool went first and AWS refused to add WEB_AUTHN while
+# the live factor configuration was still SINGLE_FACTOR; this deploy failed.
+set +e
+CDKD_TEST_PREFLIGHT_ARM=G node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+ARM_G_RC=$?
+set -e
+if [ "${ARM_G_RC}" -ne 0 ]; then
+  echo "FAIL: arm G deploy exited ${ARM_G_RC} -- adding WEB_AUTHN + MULTI to a pool at ON must deploy, with SetUserPoolMfaConfig sent before UpdateUserPool (issue #3562)" >&2
+  exit 1
+fi
+G_MFA_JSON=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" --output json)
+G_MFA=$(echo "${G_MFA_JSON}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+G_FACTOR=$(echo "${G_MFA_JSON}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("FactorConfiguration")) then .WebAuthnConfiguration.FactorConfiguration else "null" end')
+G_FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if [ "${G_MFA}" != "ON" ] || [ "${G_FACTOR}" != "MULTI_FACTOR_WITH_USER_VERIFICATION" ] \
+  || ! echo "${G_FACTORS}" | jq -e 'index("WEB_AUTHN") != null' >/dev/null; then
+  echo "FAIL: arm G pool is MfaConfiguration '${G_MFA}' / FactorConfiguration '${G_FACTOR}' / AllowedFirstAuthFactors ${G_FACTORS}, expected 'ON' / 'MULTI_FACTOR_WITH_USER_VERIFICATION' / WEB_AUTHN present (issue #3562)" >&2
+  echo "${G_MFA_JSON}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: arm G landed WEB_AUTHN + MULTI on a pool already at ON (MFA configuration sent first)"
+
+# --- Phase 6f: arm H (issue #3562 parity) -- MUST still fail, atomically --
+echo "==> Phase 6f: arm H (#3562 parity) -- lowering MFA from ON while adding EMAIL_OTP must still FAIL, as it does under CloudFormation"
+PREFLIGHT_LOG="$(mktemp -t cdkd-cognito-preflight.XXXXXX)"
+set +e
+CDKD_TEST_PREFLIGHT_ARM=H node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${PREFLIGHT_LOG}" 2>&1
+ARM_H_RC=$?
+set -e
+cat "${PREFLIGHT_LOG}"
+if [ "${ARM_H_RC}" -eq 0 ]; then
+  echo "FAIL: arm H deploy exited 0 -- CloudFormation rolls this edit back, so cdkd must not deploy it (issue #3562 parity)" >&2
+  exit 1
+fi
+# AWS's own rejection, from UpdateUserPool. Anchored on the provider's
+# catch-wrap ("Failed to update Cognito User Pool ..."), which a cdkd
+# PRE-FLIGHT refusal never carries even though its text quotes the same AWS
+# sentence -- so this line cannot be satisfied by a refusal that sent nothing.
+if ! grep -q "Failed to update PreflightWebAuthnOnPool: Failed to update Cognito User Pool PreflightWebAuthnOnPool: .*Only PASSWORD and WEB_AUTHN (if configured) can be enabled as an auth factor if MFA is enabled" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm H did not fail with AWS's own UpdateUserPool rejection for PreflightWebAuthnOnPool" >&2
+  grep -i "PreflightWebAuthnOnPool" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+H_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+H_FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if [ "${H_MFA}" != "ON" ] || echo "${H_FACTORS}" | jq -e 'index("EMAIL_OTP") != null' >/dev/null; then
+  echo "FAIL: arm H pool after the failed update is MfaConfiguration '${H_MFA}' / AllowedFirstAuthFactors ${H_FACTORS}, expected the untouched 'ON' with no EMAIL_OTP -- the edit partly applied (issue #3562)" >&2
+  exit 1
+fi
+echo "    OK: arm H failed atomically on AWS's UpdateUserPool rejection; pool still ON, no EMAIL_OTP"
+rm -f "${PREFLIGHT_LOG}"
+PREFLIGHT_LOG=""
+
 # --- Phase 7: destroy the pre-flight stack ----------------------------
-# Four of the phases above END in a failed deploy, so this also exercises the
+# Five of the phases above END in a failed deploy, so this also exercises the
 # destroy path on a stack carrying a rollback journal.
 echo "==> Phase 7: destroy ${PREFLIGHT_STACK}"
 node "${LOCAL_DIST}" destroy "${PREFLIGHT_STACK}" \
@@ -1192,4 +1262,4 @@ assert_gone "rollback journal s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REG
 echo "    OK: rollback journal is gone"
 
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / announced+retained Policies.SignInPolicy removal with fired-call companion #1979 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975 + WEB_AUTHN without MULTI #2064 + live sign-in policy #2051, WEB_AUTHN + ON + MULTI accepted on create and update #2064, plus four negative controls / clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / announced+retained Policies.SignInPolicy removal with fired-call companion #1979 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975 + WEB_AUTHN without MULTI #2064 + live sign-in policy #2051, WEB_AUTHN + ON + MULTI accepted on create and update #2064 incl. from a pool at ON #3562, lower-MFA-and-add-EMAIL_OTP still refused for CFn parity #3562, plus four negative controls / clean destroy)"

@@ -35,6 +35,7 @@ import {
   type CreateUserPoolCommandInput,
   type UpdateUserPoolCommandInput,
   type SetUserPoolMfaConfigCommandInput,
+  type GetUserPoolMfaConfigCommandOutput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -1200,6 +1201,44 @@ function mfaPreflightNeedsLiveSignInPolicy(
 }
 
 /**
+ * Could this update need `SetUserPoolMfaConfig` BEFORE `UpdateUserPool`
+ * (issue #3562)? True only for the shape that FAILS in cdkd's usual order and
+ * DEPLOYS under CloudFormation: the request keeps MFA `ON`, carries
+ * `FactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`, and the
+ * template's factor list includes `WEB_AUTHN`. Whether the order actually
+ * flips is then decided by the pool's LIVE MFA state
+ * (`readMfaFirstPrior`) -- this only decides whether that read is worth making.
+ *
+ * MEASURED us-east-1 2026-09-23, from a pool at `ON` + SINGLE_FACTOR +
+ * `[PASSWORD]`:
+ *
+ *   UpdateUserPool adding WEB_AUTHN first -> REJECTED ("WEB_AUTHN cannot be
+ *     used as an auth factor when MFA is enabled if not configured for MFA")
+ *   SetUserPoolMfaConfig(ON, MULTI) first, then UpdateUserPool -> both ACCEPTED
+ *   CloudFormation, the same template edit -> UPDATE_COMPLETE
+ *
+ * The OTHER order-dependent edit the issue measured -- lowering MFA from `ON`
+ * while ADDING `EMAIL_OTP` / `SMS_OTP` -- deliberately keeps cdkd's order:
+ * CloudFormation ROLLS BACK that edit (same day, UPDATE_ROLLBACK_COMPLETE with
+ * the same AWS message), so succeeding there would hide from a cdkd user a
+ * failure their production CloudFormation deploy will hit. cdkd's own
+ * rejection is atomic (`UpdateUserPool` refuses before anything lands).
+ */
+function mfaMayNeedToPrecedeUpdateUserPool(
+  properties: Record<string, unknown>,
+  declaredMfaConfiguration: string
+): boolean {
+  const request = buildMfaConfigRequest('', properties, undefined, declaredMfaConfiguration);
+  return (
+    request?.MfaConfiguration === 'ON' &&
+    request.WebAuthnConfiguration?.FactorConfiguration === WEB_AUTHN_MULTI_FACTOR &&
+    // Reads the SENT list: `readAllowedFirstAuthFactors` answers `[]` unless
+    // `AllowedFirstAuthFactors` is a list, so this also implies one is sent.
+    readAllowedFirstAuthFactors(properties).includes('WEB_AUTHN')
+  );
+}
+
+/**
  * Replace a DECLARED-but-unusable `MfaConfiguration` with the value cdkd
  * actually sends, or drop the key when nothing is sent. Returns the input
  * object unchanged when nothing applies, so the common case compares
@@ -2037,6 +2076,101 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * The pool's FULL live MFA configuration when `SetUserPoolMfaConfig` has to
+   * go FIRST (issue #3562), or `undefined` to keep the usual order.
+   *
+   * MFA-first is needed exactly when the live pool is at `ON` without
+   * `MULTI_FACTOR_WITH_USER_VERIFICATION`: `UpdateUserPool` then refuses to add
+   * `WEB_AUTHN` until the factor configuration has changed. Anything else --
+   * live `OFF` / `OPTIONAL`, live `MULTI` already, or a read that FAILED --
+   * keeps `UpdateUserPool` first, which is the pre-#3562 behaviour and at worst
+   * the atomic rejection it always was. The returned response is also what
+   * `restoreMfaConfig` replays if `UpdateUserPool` fails after the MFA call
+   * landed.
+   */
+  private async readMfaFirstPrior(
+    physicalId: string
+  ): Promise<GetUserPoolMfaConfigCommandOutput | undefined> {
+    try {
+      const live = await this.retryOnTransientControlPlane(
+        () => this.getClient().send(new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })),
+        `GetUserPoolMfaConfig(${physicalId}) for the call order`
+      );
+      return live.MfaConfiguration === 'ON' &&
+        live.WebAuthnConfiguration?.FactorConfiguration !== WEB_AUTHN_MULTI_FACTOR
+        ? live
+        : undefined;
+    } catch (error) {
+      // Debug only: the raw AWS message can carry account / role / session text
+      // (see `readLiveMfaConfiguration`), and failing back to the usual order
+      // loses nothing the deploy needs.
+      this.logger.debug(
+        `GetUserPoolMfaConfig failed for UserPool ${physicalId} while choosing the call order ` +
+          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `${describeAwsFailure(error).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Put back the MFA configuration `readMfaFirstPrior` read, after
+   * `UpdateUserPool` failed behind an MFA-first `SetUserPoolMfaConfig` (issue
+   * #3562). Without this the reversed order leaves the #1975 partial apply
+   * mirrored: the MFA change landed, the rest did not. MEASURED us-east-1
+   * 2026-09-23: replaying the earlier `GetUserPoolMfaConfig` members through
+   * `SetUserPoolMfaConfig` restored the pool exactly, after a MULTI change had
+   * landed and the `UpdateUserPool` behind it was rejected.
+   *
+   * Best effort: the caller re-throws the ORIGINAL error either way, and a
+   * failed restore is announced (error CLASS at warn, detail at debug) rather
+   * than replacing it.
+   */
+  private async restoreMfaConfig(
+    physicalId: string,
+    prior: GetUserPoolMfaConfigCommandOutput
+  ): Promise<void> {
+    // Every configuration member `SetUserPoolMfaConfigCommandInput` carries --
+    // the call is a full replace, so a member added to that type later must be
+    // added here too, or a restore resets it.
+    const request: SetUserPoolMfaConfigCommandInput = {
+      UserPoolId: physicalId,
+      ...(prior.MfaConfiguration !== undefined && { MfaConfiguration: prior.MfaConfiguration }),
+      ...(prior.SmsMfaConfiguration !== undefined && {
+        SmsMfaConfiguration: prior.SmsMfaConfiguration,
+      }),
+      ...(prior.SoftwareTokenMfaConfiguration !== undefined && {
+        SoftwareTokenMfaConfiguration: prior.SoftwareTokenMfaConfiguration,
+      }),
+      ...(prior.EmailMfaConfiguration !== undefined && {
+        EmailMfaConfiguration: prior.EmailMfaConfiguration,
+      }),
+      ...(prior.WebAuthnConfiguration !== undefined && {
+        WebAuthnConfiguration: prior.WebAuthnConfiguration,
+      }),
+    };
+    try {
+      await this.retryOnTransientControlPlane(
+        () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),
+        `SetUserPoolMfaConfig(${physicalId}) restore`
+      );
+      this.logger.debug(`Restored the previous MFA configuration on UserPool ${physicalId}`);
+    } catch (restoreError) {
+      this.logger.warn(
+        `UserPool ${physicalId}: UpdateUserPool failed after SetUserPoolMfaConfig had already ` +
+          `applied the new MFA configuration, and restoring the previous one also failed ` +
+          `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
+          `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
+          `or check it with aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}.`
+      );
+      this.logger.debug(
+        `MFA restore failure detail for UserPool ${physicalId}: ` +
+          `${describeAwsFailure(restoreError).detail}`
+      );
+    }
+  }
+
+  /**
    * Retry a Cognito control-plane call on transient "settling" errors. A
    * SetUserPoolMfaConfig issued immediately after CreateUserPool (or another
    * control-plane write) can briefly hit `ConcurrentModificationException` /
@@ -2256,6 +2390,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // adjacent to the other pre-call announcements above.
     this.warnOnUnremovablePoliciesSubKeys(physicalId, properties, previousProperties);
 
+    // The call ORDER (issue #3562): `SetUserPoolMfaConfig` goes first only for
+    // the one measured shape that needs it -- see
+    // `mfaMayNeedToPrecedeUpdateUserPool`. Read before the try, like the other
+    // pre-call reads; it never throws.
+    const mfaFirstPrior = mfaMayNeedToPrecedeUpdateUserPool(properties, mfaConfiguration)
+      ? await this.readMfaFirstPrior(physicalId)
+      : undefined;
+
     try {
       const updateParams: UpdateUserPoolCommandInput = {
         UserPoolId: physicalId,
@@ -2367,7 +2509,33 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         updateParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
       }
 
-      await this.getClient().send(new UpdateUserPoolCommand(updateParams));
+      const mfaOptions = {
+        ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),
+        ...(liveMfa?.failed === true ? { liveReadFailed: true } : {}),
+        declaredKind: classifyDeclaredMfaConfiguration(properties['MfaConfiguration']),
+        // The UPDATE twin of the masker `create()` passes (issue #1932 item 3).
+        // The two paths reach the SAME `buildMfaConfigRequest` warnings with the
+        // same resolved bag, so masking one and not the other would leave the
+        // fix conditional on which path a given deploy happens to take.
+        ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
+      };
+
+      if (mfaFirstPrior) {
+        // MFA first (issue #3562). If `UpdateUserPool` then fails, put the MFA
+        // configuration back so the update stays all-or-nothing, and surface
+        // the ORIGINAL error. A later failure (the Schema reconcile below) is
+        // not unwound -- the usual order does not unwind `UpdateUserPool`
+        // there either.
+        await this.applyMfaConfig(physicalId, properties, mfaConfiguration, mfaOptions);
+        try {
+          await this.getClient().send(new UpdateUserPoolCommand(updateParams));
+        } catch (updateError) {
+          await this.restoreMfaConfig(physicalId, mfaFirstPrior);
+          throw updateError;
+        }
+      } else {
+        await this.getClient().send(new UpdateUserPoolCommand(updateParams));
+      }
 
       // Schema (custom attributes): UpdateUserPool does NOT accept Schema, so a
       // template that adds a custom attribute on redeploy would otherwise be a
@@ -2408,17 +2576,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
       // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
       // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
-      // update (no-op when none are present).
-      await this.applyMfaConfig(physicalId, properties, mfaConfiguration, {
-        ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),
-        ...(liveMfa?.failed === true ? { liveReadFailed: true } : {}),
-        declaredKind: classifyDeclaredMfaConfiguration(properties['MfaConfiguration']),
-        // The UPDATE twin of the masker `create()` passes (issue #1932 item 3).
-        // The two paths reach the SAME `buildMfaConfigRequest` warnings with the
-        // same resolved bag, so masking one and not the other would leave the
-        // fix conditional on which path a given deploy happens to take.
-        ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
-      });
+      // update (no-op when none are present), unless they already went first.
+      if (!mfaFirstPrior) {
+        await this.applyMfaConfig(physicalId, properties, mfaConfiguration, mfaOptions);
+      }
 
       this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
 
