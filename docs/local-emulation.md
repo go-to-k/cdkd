@@ -224,6 +224,16 @@ Warned about, but accepted:
   that warning means the assembly is pointing cdkd at a directory of its own
   choosing — treat it as untrusted.** An absolute path that stays inside the
   output directory is accepted silently.
+- a Docker asset's `source.executable` — a command line the manifest chose,
+  which cdkd runs on your machine to produce the image. Every `cdkd local`
+  command that builds a Docker asset announces it first, naming the command and
+  how many arguments it took; the arguments themselves stay behind `--verbose`,
+  since a build script's own flags are not `docker build` flags and a
+  `--password` among them would otherwise reach every log. Each distinct
+  command is announced once per run rather than once per build, so a
+  `start-service` rebuilding per replica does not repeat it. **Running a local
+  command against an assembly executes code from it, and the CloudFormation
+  template does not show that command.**
 
 Not refused today:
 
