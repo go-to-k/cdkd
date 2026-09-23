@@ -53,8 +53,11 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   decides which directory is resolved and which is contained for a value that
   is then BIND-MOUNTED, and `(assetOutdir, logicalId)` made the bound
   `path.resolve('<logicalId>')` under the cwd. Required-ness caught only a
-  DROP. **A bag makes the swap UNORDERABLE, not inexpressible** — a caller can
-  still write `{ manifestDir: assetOutdir, assetOutdir: manifestDir }`, and
+  DROP. **What the bag buys**: an ordering mistake is now a compile error and a
+  dropped member names itself; what is left is a deliberate mis-naming, which a
+  reader can see. **What it does not**: the swap is UNORDERABLE, not
+  inexpressible — a caller can still write
+  `{ manifestDir: assetOutdir, assetOutdir: manifestDir }`, and
   `local-asset-code-path-containment.test.ts` is what catches that, by driving
   both call sites against a STAGE manifest where the two directories differ
   (measured: it reds three cases; a source scan of the call sites passed).

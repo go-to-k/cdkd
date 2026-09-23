@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
@@ -46,16 +46,25 @@ describe('resolveAssetCodeDirectory declaration shape', () => {
   it('declares AssetCodeResolveOptions IMMEDIATELY above it', () => {
     // The hazard is a doc block DETACHING from its declaration because an edit
     // inserted between the two — four times in this repo. Order alone does not
-    // catch that: an insertion still leaves the interface above the function.
-    // Adjacency does.
+    // catch it, and neither does looking only BELOW the interface: the
+    // previous revision asserted that the gap starts with `/**` and holds one
+    // `*/`, which an UNDOCUMENTED declaration inserted AFTER the doc block
+    // satisfies while the doc now documents that declaration. My own probe
+    // had inserted BEFORE the doc, so it tested the shape that was already
+    // caught. Both halves are needed.
     const src = read(RESOLVER);
     const iface = src.indexOf('export interface AssetCodeResolveOptions');
     expect(iface).toBeGreaterThan(-1);
     const close = src.indexOf('\n}\n', iface);
+    // CRLF, or a reflow that loses the column-0 close, gives -1 and a slice
+    // from index 2 — a confusing red rather than an honest one.
+    expect(close, 'interface close brace not found at column 0').toBeGreaterThan(iface);
     const between = src.slice(close + 3, src.indexOf('export function resolveAssetCodeDirectory'));
-    // Only the function's own doc block may sit between them.
     expect(between.trimStart().startsWith('/**'), `unexpected code between: ${between}`).toBe(true);
     expect(between.split('*/').length - 1, 'more than one block between').toBe(1);
+    // The other half: the doc block must END immediately before the function,
+    // so nothing can sit between the doc and what it documents.
+    expect(src).toMatch(/\*\/\s*export function resolveAssetCodeDirectory\(/);
   });
 
   it('has no positional call anywhere in src/', () => {
@@ -64,22 +73,29 @@ describe('resolveAssetCodeDirectory declaration shape', () => {
     // declaration is stripped first — the first revision of this case matched
     // it and reported the declaration as a violation.
     const files = listTs(join(REPO, 'src'));
-    expect(files.length).toBeGreaterThan(50);
+    // Tied to the subject, not to a round number: a floor of "> 50" proves the
+    // walk found FILES, not that it reached the one that matters, and the loop
+    // below can then iterate zero times while staying green.
+    expect(files).toContain(join(REPO, RESOLVER));
+    let scanned = 0;
     for (const abs of files) {
       const src = readFileSync(abs, 'utf-8');
       if (!src.includes('resolveAssetCodeDirectory(')) continue;
+      scanned += 1;
       const scrubbed = src.replace(/export function resolveAssetCodeDirectory\([^)]*\)/g, '');
-      // A bag literal or a variable holding one are both fine; a bare string
-      // first argument is the positional spelling.
+      // Flags anything whose first argument is NOT a `{` literal and NOT a
+      // lone identifier. The previous revision matched only a STRING literal
+      // first argument, which made it blind to the regression it exists for:
+      // a restored positional call passes identifiers, not literals.
       expect(scrubbed, `${abs}: positional call`).not.toMatch(
-        /resolveAssetCodeDirectory\(\s*['"`]/,
+        /resolveAssetCodeDirectory\((?!\s*\{)(?!\s*[A-Za-z_$][\w$]*\s*\))/,
       );
     }
+    expect(scanned, 'no file mentioned the resolver — the identifier moved').toBeGreaterThan(0);
   });
 });
 
 function listTs(dir: string): string[] {
-  const { readdirSync } = require('node:fs') as typeof import('node:fs');
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
