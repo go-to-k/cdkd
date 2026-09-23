@@ -47,6 +47,21 @@
 #      the user-visible consequence the wiring exists to deliver.
 #   6. Destroy is clean and leaves 0 orphans.
 #
+# OPT-IN CROSS-REGION ARM (issue #1741, second instance)
+#
+# `CDKD_INTEG_MULTI_REGION=1` adds a THIRD GlobalTable whose second replica
+# (`GT_XR_REPLICA_REGION`, default eu-west-1) carries a per-index override for
+# `gsi1`. Its record gets the same malformed index blob as the omit table, so
+# the replay builds a table with NO indexes and then adds the cross-region
+# replica. Before the fix the override for the index the create had just
+# omitted was still sent AND recorded, although the table has no such index
+# and the re-created replica holds no override. Phases 1-6 each
+# grow an assertion for it. Replica provisioning costs minutes per create and
+# per delete, so budget ~40-60 min for the run with the arm on (~10 without).
+# The arm also depends on issue #3569: the rollback re-creates v1 straight
+# after the replacement deleted it, while v1's copy in the replica region is
+# still DELETING, and the replica-add must wait that copy out.
+#
 # BSD/macOS-portable: no grep -P, no date -d. Integ-exit-code-capture pattern
 # (bash ...; rc=$?) so a piped/teed harness can't mask a failure; the script
 # prints an explicit "[verify] PASS" only at the very end.
@@ -126,6 +141,24 @@ UNSENT_WRITE_CAPACITY=7
 SENT_MAX_WRITE_UNITS=11
 SENT_MAX_READ_UNITS=13
 
+# The opt-in cross-region arm (see the header). Off unless the caller sets it,
+# so the default run is byte-for-byte the flow it was before.
+MULTI_REGION="${CDKD_INTEG_MULTI_REGION:-0}"
+export CDKD_INTEG_MULTI_REGION="${MULTI_REGION}"
+XR_REGION="${GT_XR_REPLICA_REGION:-eu-west-1}"
+export GT_XR_REPLICA_REGION="${XR_REGION}"
+GTX_NAME_V1="cdkd-rbreplay-gtx-${GT_RUN_ID}-v1"
+GTX_NAME_V2="cdkd-rbreplay-gtx-${GT_RUN_ID}-v2"
+# The replica's per-index read ceiling the template declares (lib/*.ts). Phase
+# 1 reads it back LIVE, so the phase-4 "withdrawn" assertions cannot pass over
+# an override that never existed.
+XR_INDEX_MAX_READ=13
+# `cdkd drift` counts every resource; the arm adds one.
+EXPECTED_DRIFT_RESOURCES=7
+if [ "${MULTI_REGION}" = "1" ]; then
+  EXPECTED_DRIFT_RESOURCES=8
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-replay-effective-props"
 CDKD="node ${REPO_ROOT}/dist/cli.js"
@@ -146,13 +179,43 @@ cd "${TEST_DIR}"
 # Cleanup: destroy the stack, then sweep by the fixture tag. This fixture
 # INTENTIONALLY creates a failed deploy, so the trap must not leak.
 # --------------------------------------------------------------------------
+# Best-effort, cleanup-only: every non-local replica of <table> is deleted and
+# waited out, then the table itself. Runs under `set +eu` (subshell), so a
+# half-gone table never re-arms strict mode mid-sweep.
+delete_global_table_with_replicas() { (
+  set +eu
+  local t="$1" regions r i left
+  aws dynamodb describe-table --table-name "${t}" >/dev/null 2>&1 || exit 0
+  echo "[verify] cleanup: deleting leftover global table ${t} (replicas first)"
+  regions="$(aws dynamodb describe-table --table-name "${t}" \
+    --query "Table.Replicas[?RegionName!='${REGION}'].RegionName" --output text 2>/dev/null)"
+  for r in ${regions}; do
+    [ "${r}" = "None" ] && continue
+    for i in $(seq 1 30); do
+      aws dynamodb update-table --table-name "${t}" \
+        --replica-updates "Delete={RegionName=${r}}" >/dev/null 2>&1 && break
+      sleep 20
+    done
+    for i in $(seq 1 90); do
+      left="$(aws dynamodb describe-table --table-name "${t}" \
+        --query "Table.Replicas[?RegionName=='${r}'].RegionName" --output text 2>/dev/null)"
+      [ -z "${left}" ] && break
+      sleep 10
+    done
+  done
+  for i in $(seq 1 30); do
+    aws dynamodb delete-table --table-name "${t}" >/dev/null 2>&1 && break
+    sleep 20
+  done
+) }
+
 cleanup() {
   local rc=$?
   set +e
   echo ""
   echo "[verify] cleanup (rc=${rc})..."
 
-  ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1:-}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1:-}" \
+  ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1:-}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1:-}" GT_XR_TABLE_NAME="${GTX_NAME_V1:-}" \
     ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
 
   # The GlobalTable is swept by NAME, not by the fixture tag: the CFn
@@ -169,6 +232,16 @@ cleanup() {
       aws dynamodb delete-table --table-name "${gt}" >/dev/null 2>&1
     fi
   done
+
+  # The cross-region tables cannot be removed by a bare delete-table: AWS
+  # refuses it while a replica lives, so drop every non-local replica first
+  # and wait for it to leave the table's replica list.
+  if [ "${MULTI_REGION:-0}" = "1" ]; then
+    for gt in "${GTX_NAME_V1:-}" "${GTX_NAME_V2:-}"; do
+      [ -n "${gt}" ] || continue
+      delete_global_table_with_replicas "${gt}"
+    done
+  fi
 
   # Tag sweep AFTER the state-based destroy: a failed phase can leave a
   # resource that state no longer knows about, which the destroy cannot reach.
@@ -233,7 +306,7 @@ npm install --silent >/dev/null 2>&1 || npm install >/dev/null
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 1: deploy v1 (destination ${DEST_V1})"
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" ${CDKD} deploy "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --yes
 
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state-v1.json" >/dev/null
@@ -333,6 +406,37 @@ if [ "${GTO_V1_ATTRS}" != "gsipk,pk" ]; then
   exit 1
 fi
 
+GTX_LOGICAL_ID=""
+if [ "${MULTI_REGION}" = "1" ]; then
+  GTX_LOGICAL_ID="$(jq -r --arg n "${GTX_NAME_V1}" '.resources | to_entries[]
+    | select(.value.resourceType == "AWS::DynamoDB::GlobalTable")
+    | select(.value.physicalId == $n) | .key' "${WORK_DIR}/state-v1.json" | head -1)"
+  if [ -z "${GTX_LOGICAL_ID}" ]; then
+    echo "FAIL: phase 1: the cross-region table ${GTX_NAME_V1} is not in state" >&2
+    exit 1
+  fi
+  echo "[verify] phase 1: cross-region table logical id = ${GTX_LOGICAL_ID}"
+  # The override the replay must withdraw has to be LIVE here, or phase 4's
+  # "withdrawn" assertions hold for a replica that never carried one. Read from
+  # the source table's Replicas[] entry: that is where DynamoDB reports a
+  # replica's per-index overrides.
+  GTX_V1_OVERRIDE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" \
+    --query "Table.Replicas[?RegionName=='${XR_REGION}'].GlobalSecondaryIndexes[] | [?IndexName=='gsi1'].OnDemandThroughputOverride.MaxReadRequestUnits | [0]" \
+    --output text)"
+  if [ "${GTX_V1_OVERRIDE}" != "${XR_INDEX_MAX_READ}" ]; then
+    echo "FAIL: phase 1: the ${XR_REGION} replica of ${GTX_NAME_V1} reports gsi1 read ceiling" >&2
+    echo "      '${GTX_V1_OVERRIDE}', expected ${XR_INDEX_MAX_READ}. Without a live override" >&2
+    echo "      phase 4's withdrawal assertions are vacuous." >&2
+    exit 1
+  fi
+  GTX_V1_INDEXES="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+  if [ "${GTX_V1_INDEXES}" != "1" ]; then
+    echo "FAIL: phase 1: ${GTX_NAME_V1} reports ${GTX_V1_INDEXES} index(es), expected 1" >&2
+    exit 1
+  fi
+fi
+
 echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC}; both tables ACTIVE, omit table has 1 index keyed on a dedicated gsipk)"
 
 # --------------------------------------------------------------------------
@@ -385,6 +489,27 @@ jq --arg id "${ROUTE_LOGICAL_ID}" --arg ipv6 "${BAD_IPV6_DEST}" \
        {IndexName: "gsi1", ReadProvisionedThroughputSettings: {ReadCapacityUnits: $wcu}}
      ]' \
   "${WORK_DIR}/state-v1.json" > "${WORK_DIR}/state-doctored.json"
+
+if [ "${MULTI_REGION}" = "1" ]; then
+  # The cross-region table gets ONLY the malformed index blob. Its replica's
+  # override is left exactly as the template recorded it: that override is the
+  # thing the replay used to send against the zero-index table.
+  jq --arg gtx "${GTX_LOGICAL_ID}" --arg gsi "${BAD_GSI_BLOB}" \
+    '.resources[$gtx].properties.GlobalSecondaryIndexes = $gsi' \
+    "${WORK_DIR}/state-doctored.json" > "${WORK_DIR}/state-doctored-xr.json"
+  mv "${WORK_DIR}/state-doctored-xr.json" "${WORK_DIR}/state-doctored.json"
+  GTX_INJ="$(jq -r --arg gtx "${GTX_LOGICAL_ID}" --arg r "${XR_REGION}" \
+    '[.resources[$gtx].properties.GlobalSecondaryIndexes,
+      ([.resources[$gtx].properties.Replicas[] | select(.Region == $r)
+        | .GlobalSecondaryIndexes[]? | select(.IndexName == "gsi1")] | length)]
+     | map(tostring) | join("|")' "${WORK_DIR}/state-doctored.json")"
+  if [ "${GTX_INJ}" != "${BAD_GSI_BLOB}|1" ]; then
+    echo "FAIL: phase 2: the cross-region record is not in the shape the arm needs" >&2
+    echo "      (got '${GTX_INJ}', want '${BAD_GSI_BLOB}|1': a malformed top-level blob" >&2
+    echo "      AND the ${XR_REGION} replica's gsi1 override still recorded)" >&2
+    exit 1
+  fi
+fi
 
 # Fail loudly if any injection did not take -- a silently unchanged record makes
 # every phase-4 absence assertion pass for the WRONG reason (the key would be
@@ -442,7 +567,7 @@ set +e
 # rollback had only the ROUTE to reverse, and phase 3 correctly reported that
 # the GlobalTable replay substitution never fired. The route needs no such
 # consent, so the flag changes nothing about the arm this fixture already had.
-ROUTE_DEST="${DEST_V2}" GT_TABLE_NAME="${GT_NAME_V2}" GT_OMIT_TABLE_NAME="${GTO_NAME_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
+ROUTE_DEST="${DEST_V2}" GT_TABLE_NAME="${GT_NAME_V2}" GT_OMIT_TABLE_NAME="${GTO_NAME_V2}" GT_XR_TABLE_NAME="${GTX_NAME_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --force-stateful-recreation --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
 DEPLOY_RC=$?
 set -e
@@ -452,6 +577,21 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   exit 1
 fi
 echo "[verify] phase 3: deploy failed as expected (rc=${DEPLOY_RC})"
+
+# The cross-region table must have been RE-CREATED -- checked first, because
+# it is the arm this run was opted into for and the generic check below would
+# report its failure under a less specific message. Its known cause is issue
+# #3569: the replay re-adds the replica while v1's copy in the replica region
+# is still DELETING from the replacement's delete.
+if [ "${MULTI_REGION}" = "1" ]; then
+  if ! grep -qF "${GTX_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log"; then
+    echo "FAIL: phase 3: the cross-region table ${GTX_LOGICAL_ID} was NOT re-created" >&2
+    echo "      by the rollback, so phase 4 has nothing to assert on. Lines:" >&2
+    grep -aE "${GTX_LOGICAL_ID}|ValidationException|already existed|still being deleted" \
+      "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+    exit 1
+  fi
+fi
 
 # The rollback must have taken the REVERSE-REPLACEMENT arm specifically.
 #
@@ -651,6 +791,44 @@ if [ "${GTO_REC_ATTRS}" != "pk" ]; then
   exit 1
 fi
 
+if [ "${MULTI_REGION}" = "1" ]; then
+  # WIRE: the replica is really there, and really carries no index override.
+  GTX_LIVE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" \
+    --query "[length(Table.GlobalSecondaryIndexes || \`[]\`), Table.Replicas[?RegionName=='${XR_REGION}'].ReplicaStatus | [0], length(Table.Replicas[?RegionName=='${XR_REGION}'].GlobalSecondaryIndexes[] || \`[]\`)]" \
+    --output text | tr '\t' '|')"
+  if [ "${GTX_LIVE}" != "0|ACTIVE|0" ]; then
+    echo "FAIL: phase 4: the re-created cross-region table reads '${GTX_LIVE}'" >&2
+    echo "      (indexes|${XR_REGION} replica status|replica index overrides), want '0|ACTIVE|0'." >&2
+    exit 1
+  fi
+  # RECORD: no index block anywhere -- not top-level, not on either replica.
+  GTX_REC="$(jq -r --arg gtx "${GTX_LOGICAL_ID}" \
+    '.resources[$gtx].properties
+     | [has("GlobalSecondaryIndexes"),
+        ([.Replicas[]? | select(type == "object") | has("GlobalSecondaryIndexes")] | any),
+        ([.Replicas[]? | .Region] | length),
+        ([.AttributeDefinitions[]?.AttributeName] | sort | join(","))]
+     | map(tostring) | join("|")' "${WORK_DIR}/state-rolled-back.json")"
+  if [ "${GTX_REC}" != "false|false|2|pk" ]; then
+    echo "FAIL: phase 4: issue #1741 (second instance) -- the cross-region record reads" >&2
+    echo "      '${GTX_REC}', want 'false|false|2|pk' (no top-level blob, no replica" >&2
+    echo "      index block, BOTH replicas kept, only pk defined)." >&2
+    exit 1
+  fi
+  # ...and the withdrawal was ANNOUNCED. Last, so a pre-fix run reaches the two
+  # measurements above first. A sentinel for the warning's WORDING as much as
+  # for the arm: the record check above is independent of it, so a reworded
+  # warning fails HERE rather than silently.
+  if ! grep -qF "${GTX_LOGICAL_ID}: omitting the GlobalSecondaryIndexes overrides of replica(s) ${XR_REGION}" \
+    "${WORK_DIR}/deploy-v2.log"; then
+    echo "FAIL: phase 4: the cross-region record is right, but the withdrawal of" >&2
+    echo "      its ${XR_REGION} index override was never announced." >&2
+    grep -aE "${GTX_LOGICAL_ID}" "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+    exit 1
+  fi
+  echo "[verify] phase 4: OK (cross-region table re-created with its ${XR_REGION} replica, no index override sent or recorded)"
+fi
+
 # Sanity, NOT a discriminator: the template's own mode is PAY_PER_REQUEST too, so
 # this cannot tell the substitution from the template. It is here to catch a
 # record that describes a mode the table is not in.
@@ -670,13 +848,50 @@ echo "         kept, GSI blob + local replica block dropped, omit table has 0 li
 echo ""
 echo "[verify] phase 5: two consecutive drift runs must converge"
 set +e
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" ${CDKD} drift "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-1.log" 2>&1
 DRIFT1_RC=$?
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" ${CDKD} drift "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-2.log" 2>&1
 DRIFT2_RC=$?
 set -e
+# COVERAGE BOUND for the cross-region arm, issue #3573: on a multi-region
+# GlobalTable `readCurrentState` leaves the LOCAL replica out of `Replicas`,
+# and the rollback strips `observedProperties`, so drift compares the (right)
+# two-replica record against a one-replica readback. Accepted ONLY in exactly
+# that shape -- one drifted resource, the cross-region table, differing only
+# in `Replicas`, the record naming the deploy region and the readback not --
+# so any OTHER difference on any resource still fails below. When #3573 is
+# fixed this stops matching and the plain rc check takes over: delete it then.
+known_xr_local_replica_gap() { # $1 = drift log
+  local log="$1"
+  [ "${MULTI_REGION}" = "1" ] || return 1
+  [ "$(grep -cE '^[[:space:]]+~ ' "${log}")" = "1" ] || return 1
+  grep -qE "^[[:space:]]+~ ${GTX_LOGICAL_ID} " "${log}" || return 1
+  [ "$(grep -cE '^[[:space:]]+[-+] ' "${log}")" = "2" ] || return 1
+  [ "$(grep -cE '^[[:space:]]+[-+] Replicas: ' "${log}")" = "2" ] || return 1
+  # The ONLY tolerated difference is the missing local entry: the readback
+  # must equal the record with the deploy-region entry removed, member for
+  # member, so a real regression in the OTHER replica's entry still fails.
+  # Each side is one compact JSON line after its `- Replicas: ` / `+ Replicas: `
+  # prefix (state on `-`, readback on `+`).
+  local recorded readback verdict
+  recorded="$(grep -E '^[[:space:]]+- Replicas: ' "${log}" | sed -E 's/^[[:space:]]+- Replicas: //')"
+  readback="$(grep -E '^[[:space:]]+\+ Replicas: ' "${log}" | sed -E 's/^[[:space:]]+\+ Replicas: //')"
+  verdict="$(jq -n -r --argjson rec "${recorded}" --argjson live "${readback}" --arg r "${REGION}" \
+    '(($rec | map(select(.Region == $r)) | length) == 1)
+     and ($rec | map(select(.Region != $r))) == $live' 2>/dev/null)" || return 1
+  [ "${verdict}" = "true" ]
+}
+DRIFT1_GAP_ACCEPTED=0
+for n in 1 2; do
+  eval "rc=\${DRIFT${n}_RC}"
+  if [ "${rc}" -eq 1 ] && known_xr_local_replica_gap "${WORK_DIR}/drift-${n}.log"; then
+    echo "[verify] phase 5: drift run ${n} reports only the known #3573 local-replica readback gap on ${GTX_LOGICAL_ID}; accepted"
+    eval "DRIFT${n}_RC=0"
+    [ "${n}" = "1" ] && DRIFT1_GAP_ACCEPTED=1
+  fi
+done
 if [ "${DRIFT1_RC}" -ne 0 ] || [ "${DRIFT2_RC}" -ne 0 ]; then
   echo "FAIL: phase 5: drift reported a difference (rc=${DRIFT1_RC}/${DRIFT2_RC})." >&2
   echo "      A DestinationIpv6CidrBlock difference here is the #1682 phantom" >&2
@@ -706,8 +921,22 @@ fi
 # is what the first version of this check did). Assert the COUNT instead: the
 # stack has exactly 7 resources, so "7 resources checked, 0 unsupported" is what
 # proves every rewritten record was actually compared rather than skipped.
-if ! grep -qE '7 resources checked, 0 unsupported' "${WORK_DIR}/drift-1.log"; then
-  echo "FAIL: phase 5: drift did not report all 7 resources checked with 0" >&2
+if [ "${DRIFT1_GAP_ACCEPTED}" = "1" ]; then
+  # The drifted branch of the report prints no "N resources checked" line, so
+  # the count cannot be read here. What it CAN prove: exactly one resource
+  # drifted (the known gap, shape-checked above), and nothing was left
+  # uncompared or unsupported -- the `drift unknown` check above covers an
+  # unreadable resource, this covers the rest of the not-compared population.
+  if ! grep -qF 'drift detected on 1 resource' "${WORK_DIR}/drift-1.log" ||
+     grep -qiE 'not compared|not fully compared|partially compared|unsupported' "${WORK_DIR}/drift-1.log"; then
+    echo "FAIL: phase 5: drift run 1 was accepted as the #3573 gap, but its report" >&2
+    echo "      does not show exactly one drifted resource with nothing left" >&2
+    echo "      uncompared, so the other ${EXPECTED_DRIFT_RESOURCES} records are unproven." >&2
+    tail -30 "${WORK_DIR}/drift-1.log" >&2
+    exit 1
+  fi
+elif ! grep -qE "${EXPECTED_DRIFT_RESOURCES} resources checked, 0 unsupported" "${WORK_DIR}/drift-1.log"; then
+  echo "FAIL: phase 5: drift did not report all ${EXPECTED_DRIFT_RESOURCES} resources checked with 0" >&2
   echo "      unsupported, so a rewritten record was skipped and the clean exit" >&2
   echo "      proves nothing about convergence." >&2
   tail -30 "${WORK_DIR}/drift-1.log" >&2
@@ -720,7 +949,7 @@ echo "[verify] phase 5: OK (both drift runs clean; route AND global table both c
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 6: destroy + orphan sweep"
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" \
   ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 VPC_LEFT="$(aws ec2 describe-vpcs \
@@ -758,6 +987,30 @@ assert_gone "phase 6: the v1 omit table ${GTO_NAME_V1} survived destroy" \
   aws dynamodb describe-table --table-name "${GTO_NAME_V1}"
 assert_gone "phase 6: the v2 omit table ${GTO_NAME_V2} survived the rollback" \
   aws dynamodb describe-table --table-name "${GTO_NAME_V2}"
+
+if [ "${MULTI_REGION}" = "1" ]; then
+  assert_gone "phase 6: the v1 cross-region table ${GTX_NAME_V1} survived destroy" \
+    aws dynamodb describe-table --table-name "${GTX_NAME_V1}"
+  assert_gone "phase 6: the v2 cross-region table ${GTX_NAME_V2} survived the rollback" \
+    aws dynamodb describe-table --table-name "${GTX_NAME_V2}"
+  # The replica's regional copy can linger in DELETING for minutes after the
+  # source table is gone, and a same-region probe never sees it -- poll the
+  # replica region itself, or a cross-region orphan passes as clean.
+  for gt in "${GTX_NAME_V1}" "${GTX_NAME_V2}"; do
+    XR_GONE=0
+    for _ in $(seq 1 60); do
+      if gone_probe aws dynamodb describe-table --table-name "${gt}" --region "${XR_REGION}"; then
+        XR_GONE=1
+        break
+      fi
+      sleep 10
+    done
+    if [ "${XR_GONE}" != "1" ]; then
+      echo "FAIL: phase 6: the ${XR_REGION} copy of ${gt} survived -- a cross-region orphan" >&2
+      exit 1
+    fi
+  done
+fi
 
 assert_gone "phase 6: state.json survived destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
