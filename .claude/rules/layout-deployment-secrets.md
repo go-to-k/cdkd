@@ -38,7 +38,7 @@ Deployment layer: [layout-deployment.md](layout-deployment.md). Index:
   - `ResourceState` carries no durable `NoEcho` flag, so a later deploy reads `***` back: `ResolverContext.redactedAttributeReads` collects such reads and `refuseRedactedAttributeReads` fails the resource rather than sending the mask. It RECORDS rather than throws, because the DIFF pass resolves the same leaf and a throw would fail every later deploy.
   - The CROSS-STACK half is a RECOVERY, not a refusal: `recordRecoverableMaskedOutput` / `recoverMaskedOutput` remember `stack + region + output key -> plaintext` for the PROCESS; a hit is re-registered as a mask-only needle in the CONSUMER's bag, a miss refuses. The key is a COORDINATE, never a bare plaintext, and recovered outputs are reported PER ATTRIBUTE, or one sensitive child output masks every sibling.
 
-- **src/deployment/masking-retry-logger.ts** - The masking `RetryLogger` every `withRetry` caller holding a RESOLVED secret bag threads, since `retry.ts` interpolates the AWS message VERBATIM into its `debug` line and its give-up `warn` summary. `RetryLogger.warn` is OPTIONAL. `DeployEngine.maskingRetryLogger` keeps a LAZY variant for call sites holding no bag; a site that DOES hold one binds it eagerly.
+- **src/deployment/masking-retry-logger.ts** - The masking `RetryLogger` a `withRetry` caller holding a RESOLVED secret bag threads: `retry.ts` interpolates the AWS message VERBATIM into its `debug` line and OPTIONAL give-up `warn`. `DeployEngine.maskingRetryLogger` is a LAZY variant for bagless sites. A resolver SDK call sending a template-derived name takes `namedRequestMasks`, masking that name by position (#3171).
 
 - **src/cli/commands/scrub.ts** - `cdkd scrub [STACK...]`: [layout-scrub.md](layout-scrub.md).
 

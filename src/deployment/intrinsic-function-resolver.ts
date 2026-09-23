@@ -5153,8 +5153,10 @@ export class IntrinsicFunctionResolver {
    * which reads the SAME persisted `attributes` bag and shipped without the
    * note (it takes it now). The rule the note actually needs is about the
    * SOURCE of the value — every branch serving one out of a PERSISTED
-   * `attributes` bag must call this — and that is not a shape a compiler can
-   * enforce. `constructGuardedAttribute`'s return is deliberately outside it:
+   * `attributes` bag must call this, and so must one serving (or embedding) a
+   * persisted `properties` leaf, which a mask-only needle masks whole
+   * (go-to-k/cdkd#2936: the VPC `CidrBlock` and Events rule `Arn` arms) — and
+   * that is not a shape a compiler can enforce. `constructGuardedAttribute`'s return is deliberately outside it:
    * that value is fetched from AWS in this run, not read back from state, so
    * it can be neither a stale mask nor a value a provider declared `NoEcho`.
    *
