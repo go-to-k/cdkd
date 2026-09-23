@@ -23,8 +23,8 @@
  *  2. CONSTRAINED sites — the render is reached only after an exact equality
  *     against cdkd literals, so raw and sanitized are the same bytes. That is a
  *     claim about CONTROL FLOW, so it is driven: a NEAR-MISS spelling of the
- *     gated literal must NOT reach that render, and whatever it reaches instead
- *     must be sanitized.
+ *     gated literal must NOT reach that render, and each case pins which arm it
+ *     lands on instead.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -414,10 +414,15 @@ describe('a CONSTRAINED type render is reached only by an exact literal — driv
     expect(near.error ?? '', `a near-miss type reached the placeholder refusal`).not.toContain(
       'is a placeholder'
     );
-    const emitted = [...near.lines, near.error ?? ''].join('\n');
-    for (const [ch, name] of FORBIDDEN) {
-      expect(emitted.includes(ch), `the near-miss path let ${name} through`).toBe(false);
-    }
+    // BOUND WHERE IT LANDED (review): the near miss serves the recorded value
+    // and renders no type at all. Without this, a case that stopped reaching
+    // the map lookup (an earlier, unrelated throw) would pass the negative
+    // above for the wrong reason.
+    expect(near.error, `the near miss threw: ${JSON.stringify(near)}`).toBeUndefined();
+    expect(
+      near.lines.some((l) => l.startsWith('Resolved Fn::GetAtt from attributes: Thing.DataSourceArn')),
+      `the near miss did not serve the recorded attribute: ${JSON.stringify(near)}`
+    ).toBe(true);
   });
 
   it('the RDS DBProxy VpcId refusal: a near-miss type lands on the sanitizing fallback instead', async () => {
