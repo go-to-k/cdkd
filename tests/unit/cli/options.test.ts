@@ -578,6 +578,16 @@ describe('cli/options.ts', () => {
     it('skips entries without an equals sign', () => {
       expect(parseContextOptions(['lonely', 'env=dev'])).toEqual({ env: 'dev' });
     });
+
+    // Issue #3522: on a `{}` literal a `__proto__` key replaced the record's
+    // prototype and was dropped, so `-c __proto__=x` never reached the app.
+    it('keeps a key named __proto__ as an OWN key', () => {
+      const context = parseContextOptions(['__proto__=x', 'env=dev']);
+
+      expect(Object.keys(context)).toEqual(['__proto__', 'env']);
+      expect(Object.getOwnPropertyDescriptor(context, '__proto__')?.value).toBe('x');
+      expect(JSON.stringify(context)).toBe('{"__proto__":"x","env":"dev"}');
+    });
   });
 });
 

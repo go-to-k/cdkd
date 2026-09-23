@@ -6,12 +6,16 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
+import { nullPrototypeRecord } from '../utils/own-keys.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record
  */
 export function parseContextOptions(contextArgs?: string[]): Record<string, string> {
-  const context: Record<string, string> = {};
+  // Null prototype: on a `{}` literal `-c __proto__=x` ran `Object.prototype`'s
+  // setter and the value never reached the app, the same class the synth
+  // context loop had (issue [#3522](https://github.com/go-to-k/cdkd/issues/3522)).
+  const context = nullPrototypeRecord<string>();
   if (contextArgs) {
     for (const arg of contextArgs) {
       const eqIndex = arg.indexOf('=');
