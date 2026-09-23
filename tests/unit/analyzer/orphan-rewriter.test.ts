@@ -1055,6 +1055,35 @@ describe('--force over an unreadable state.attributes cache', () => {
     });
   }
 
+  it('the unreadable-cache warning renders its two identifiers through the display boundary', async () => {
+    const state = baseState({
+      'Bucket\x1b[2J': {
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: 'abcdef' as unknown as Record<string, unknown>,
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { A: { 'Fn::GetAtt': ['Bucket\x1b[2J', 'A\x1b[31m'] } },
+      },
+    });
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    await rewriteResourceReferences(
+      state,
+      ['Bucket\x1b[2J'],
+      fakeRegistry(vi.fn(async () => undefined)),
+      { force: true }
+    );
+    const line = warn.mock.calls.map((c) => String(c[0])).find((w) => w.includes('is not a readable map'));
+    expect(line, 'the unreadable-cache warning did not fire').toBeDefined();
+    expect(line).not.toContain('\x1b');
+    expect(line).toContain("'Bucket [2J'");
+    expect(line).toContain("'A [31m'");
+  });
+
   for (const attribute of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
     it(`does not answer an inherited key (${attribute}) out of a READABLE cache`, async () => {
       const state = baseState({

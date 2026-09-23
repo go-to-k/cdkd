@@ -3365,8 +3365,8 @@ export function refuseMalformedOrphansForOrphan(
 
 /** See {@link orphanRefusal}'s `dropCaveat`. */
 const ORPHANS_DROP_CAVEAT =
-  ` — but it also discards the 'orphans' list, the only record of resources an earlier ` +
-  `failed deploy left live in AWS, so note what it names first`;
+  `; it also discards the 'orphans' list, the only record of resources an earlier failed ` +
+  `deploy left live in AWS`;
 
 /**
  * The text {@link refuseMalformedOrphansForOrphan} raises: the CONTAINER arm

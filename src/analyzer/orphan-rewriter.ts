@@ -33,11 +33,13 @@ const UNREADABLE_ORPHAN_RECORD_REASON =
 /**
  * Whether the fetcher may read an orphaned record at all: the ENTRY class's
  * predicate PLUS a non-empty string `physicalId`. The entry predicate stops at
- * `resourceType` on purpose (its own note), but every value this fetcher
+ * `resourceType` on purpose (its own note), but every LIVE value this fetcher
  * produces is derived from the physical id — `{"resourceType": "T"}` alone
  * made `{"Ref": O}` resolve to `undefined` and `Fn::Sub` to `x-undefined`
  * exactly as a string record did, and a type whose `Ref` recovery reads the id
- * threw a bare `TypeError` (review of go-to-k/cdkd#3568).
+ * threw a bare `TypeError` (review of go-to-k/cdkd#3568). The `--force` cache
+ * is skipped for such a record too, deliberately: a record with no identity is
+ * not one whose cached values can be trusted to describe a live resource.
  */
 function isResolvableOrphanRecord(entry: unknown): boolean {
   if (!isReadableResourceEntry(entry)) return false;

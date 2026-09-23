@@ -1131,8 +1131,8 @@ carries no `resourceType`, is a different defect. `cdkd orphan` refuses it on a
 record it would keep, scoped and with the same three ways out as above: its
 save rebuilds each kept record by copying fields, so a string entry would be
 saved as one key per character and a number as a record with no physical id. A
-reference from another resource to such a record you are orphaning is reported
-as unresolvable rather than substituted. `cdkd deploy` does **not yet guard**
+reference from another resource to such a record you are orphaning, or to one
+with no physical id, is reported as unresolvable rather than substituted. `cdkd deploy` does **not yet guard**
 it: such an entry reads as absent, so deploy plans a `CREATE` for a resource it
 already manages. Tracked separately.
 
