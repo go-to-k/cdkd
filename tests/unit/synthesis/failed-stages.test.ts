@@ -83,15 +83,17 @@ describe('failedStageNote', () => {
   });
 
   it('compares segments with every character but `*` literal (#3508)', () => {
+    // Each stage-level segment carries a `*`: the old expansion compiled only
+    // those, so a star-free segment was already compared literally.
     // `.` is not "any character": the pattern names a different stage.
-    expect(failedStageNote(['My.Stage/*'], [{ stagePath: 'MyXStage', reason: 'ENOENT' }])).toContain(
-      'Possibly unrelated'
-    );
+    expect(
+      failedStageNote(['My.Stage*/*'], [{ stagePath: 'MyXStage1', reason: 'ENOENT' }])
+    ).toContain('Possibly unrelated');
     // `(` is a character, not a RegExp that fails to compile -- the old
     // expansion caught the SyntaxError and hedged a pattern naming this stage.
-    expect(failedStageNote(['My(Stage/*'], [{ stagePath: 'My(Stage', reason: 'ENOENT' }])).not.toContain(
-      'Possibly unrelated'
-    );
+    expect(
+      failedStageNote(['My(Stage*/*'], [{ stagePath: 'My(Stage1', reason: 'ENOENT' }])
+    ).not.toContain('Possibly unrelated');
   });
 
   it('attributes through a catastrophic-backtracking segment without executing any RegExp (#3508)', () => {
