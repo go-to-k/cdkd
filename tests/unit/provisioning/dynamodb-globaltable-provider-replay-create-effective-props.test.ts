@@ -33,6 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import {
   DynamoDBGlobalTableProvider,
   stripProvisionedCapacityKeys,
+  withdrawReplicaIndexBlocks,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
@@ -325,17 +326,14 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     ]);
   });
 
-  it('KEEPS a CROSS-REGION replica index block while dropping the LOCAL one', async () => {
-    // The fence for the region guard the omit arm relies on. A cross-region
-    // block has its OWN send path (`toSdkReplicaGlobalSecondaryIndexes`, wired
-    // after CreateTable), so withdrawing it would record a loss that did not
-    // happen; the LOCAL block is only a capacity source for the translation
-    // that returned empty. Without this case, deleting the region guard so BOTH
-    // are dropped passes the entire suite.
-    //
-    // A cross-region replica makes `create()` run `addReplica`, which polls
-    // until the replica reports ACTIVE — the file's blanket mock returns a
-    // Table with no `Replicas`, so the waiter would never settle.
+  // ─── issue #1741, second instance: the CROSS-REGION replica overrides ──
+
+  /**
+   * A cross-region replica makes `create()` run `addReplica`, which polls until
+   * the replica reports ACTIVE — the file's blanket mock returns a Table with
+   * no `Replicas`, so the waiter would never settle without this.
+   */
+  const primeCrossRegionReplica = () =>
     mockSend.mockResolvedValue({
       Table: {
         TableName: TABLE_NAME,
@@ -347,22 +345,182 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
       },
     });
 
-    const result = await replayCreate({
-      ...baseProps,
-      BillingMode: 'PAY_PER_REQUEST',
-      GlobalSecondaryIndexes: 'bad',
+  /** The replica-add `Create` action — what `addReplica` put on the wire. */
+  const replicaCreateAction = () => {
+    const call = mockSend.mock.calls.find(
+      (c) =>
+        c[0].constructor.name === 'UpdateTableCommand' &&
+        Array.isArray(c[0].input?.ReplicaUpdates) &&
+        c[0].input.ReplicaUpdates[0]?.Create
+    );
+    return call?.[0].input.ReplicaUpdates[0].Create as Record<string, unknown> | undefined;
+  };
+
+  const CROSS_REGION_OVERRIDE_PROPS = {
+    ...baseProps,
+    BillingMode: 'PAY_PER_REQUEST',
+    GlobalSecondaryIndexes: 'bad',
+    Replicas: [
+      { Region: 'us-east-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+      {
+        Region: 'eu-west-1',
+        ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 20 },
+        GlobalSecondaryIndexes: [
+          { IndexName: 'gsi1', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 13 } },
+        ],
+      },
+    ],
+  };
+
+  it('does NOT send a cross-region index override for an index the omit never built', async () => {
+    primeCrossRegionReplica();
+    await replayCreate(CROSS_REGION_OVERRIDE_PROPS);
+
+    // The replica-add went out — the omit withdraws the INDEX overrides, not the
+    // replica — and it carries no override naming `gsi1`, an index the table
+    // does not have. AWS accepts such an override and applies nothing (measured
+    // live), so sending it only made the wire disagree with the record.
+    const action = replicaCreateAction();
+    expect(action).toBeDefined();
+    expect(action!['RegionName']).toBe('eu-west-1');
+    expect('GlobalSecondaryIndexes' in action!).toBe(false);
+    // The replica's own TABLE-level ceiling is not an index override, and it
+    // still goes out: the withdrawal is per KEY, not per replica.
+    expect(action!['OnDemandThroughputOverride']).toEqual({ MaxReadRequestUnits: 20 });
+  });
+
+  it('drops the index block of EVERY replica from the record, keeping the rest', async () => {
+    primeCrossRegionReplica();
+    const result = await replayCreate(CROSS_REGION_OVERRIDE_PROPS);
+
+    // Nothing in either block reached AWS, and `readCurrentState` attaches a
+    // replica's index block only when the live table HAS indexes, so on this
+    // zero-index table a retained block is a never-matchable record.
+    expect(result.effectiveProperties?.['Replicas']).toEqual([
+      { Region: 'us-east-1' },
+      { Region: 'eu-west-1', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 20 } },
+    ]);
+  });
+
+  it('announces the withdrawn cross-region override, naming its region', async () => {
+    primeCrossRegionReplica();
+    await replayCreate(CROSS_REGION_OVERRIDE_PROPS);
+
+    const lines = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    const line = lines.find((l) => l.includes('omitting the GlobalSecondaryIndexes overrides'));
+    expect(line).toBeDefined();
+    expect(line).toContain('eu-west-1');
+    // The LOCAL block is not announced separately: it only ever fed the
+    // translation the omit warning already reports as empty.
+    expect(line).not.toContain('us-east-1');
+  });
+
+  it('does not report a pre-flight diagnostic for a withdrawn override', async () => {
+    // An explicit SDK-shaped `ProvisionedThroughputOverride` on a PAY_PER_REQUEST
+    // table earns a billing-mode-mismatch warning from the pre-flight scan when
+    // the block is going to be SENT. Once the omit has withdrawn it, a warning
+    // about how it will be sent describes a call that never happens.
+    primeCrossRegionReplica();
+    await replayCreate({
+      ...CROSS_REGION_OVERRIDE_PROPS,
       Replicas: [
-        { Region: 'us-east-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
-        { Region: 'eu-west-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+        { Region: 'us-east-1' },
+        {
+          Region: 'eu-west-1',
+          GlobalSecondaryIndexes: [
+            { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 5 } },
+          ],
+        },
       ],
     });
 
-    const replicas = result.effectiveProperties?.['Replicas'] as Record<string, unknown>[];
-    expect(replicas.find((r) => r['Region'] === 'us-east-1')).toEqual({ Region: 'us-east-1' });
-    expect(replicas.find((r) => r['Region'] === 'eu-west-1')).toEqual({
-      Region: 'eu-west-1',
-      GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
+    const lines = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('ProvisionedThroughputOverride was dropped'))).toBe(false);
+  });
+
+  it('STILL sends the cross-region override when the replayed GSI block is valid', async () => {
+    // The negative control: the withdrawal is gated on the omit having FIRED.
+    // A well-formed replay builds `gsi1`, so its override is real and must go
+    // out — an unconditional withdrawal would pass every case above.
+    primeCrossRegionReplica();
+    const result = await replayCreate({
+      ...CROSS_REGION_OVERRIDE_PROPS,
+      AttributeDefinitions: [
+        { AttributeName: 'pk', AttributeType: 'S' },
+        { AttributeName: 'gsipk', AttributeType: 'S' },
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+        },
+      ],
     });
+
+    expect(replicaCreateAction()?.['GlobalSecondaryIndexes']).toEqual([
+      { IndexName: 'gsi1', OnDemandThroughputOverride: { MaxReadRequestUnits: 13 } },
+    ]);
+    expect(result.effectiveProperties).toBeUndefined();
+    const lines = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('omitting the GlobalSecondaryIndexes overrides'))).toBe(
+      false
+    );
+  });
+
+  it('does not register a per-index autoscaling target for an index the omit never built', async () => {
+    // The third consumer of a replica's index block. Registrations run in
+    // sequence, so a target naming a missing index would also skip every
+    // target after it. Pinned at the reconcile boundary: what matters is the
+    // set of targets the create ASKS for.
+    primeCrossRegionReplica();
+    const reconcile = vi
+      .spyOn(
+        provider as unknown as { reconcileAutoScalingTargets: (...a: unknown[]) => Promise<void> },
+        'reconcileAutoScalingTargets'
+      )
+      .mockResolvedValue(undefined);
+    const autoscaled = {
+      ReadCapacityAutoScalingSettings: {
+        MinCapacity: 1,
+        MaxCapacity: 10,
+        TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+      },
+    };
+
+    await replayCreate({
+      ...baseProps,
+      BillingMode: 'PROVISIONED',
+      WriteProvisionedThroughputSettings: {
+        WriteCapacityAutoScalingSettings: {
+          MinCapacity: 1,
+          MaxCapacity: 10,
+          TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+        },
+      },
+      GlobalSecondaryIndexes: 'bad',
+      Replicas: [
+        {
+          Region: 'us-east-1',
+          ReadProvisionedThroughputSettings: autoscaled,
+          GlobalSecondaryIndexes: [{ IndexName: 'gsi1', ReadProvisionedThroughputSettings: autoscaled }],
+        },
+        {
+          Region: 'eu-west-1',
+          ReadProvisionedThroughputSettings: autoscaled,
+          GlobalSecondaryIndexes: [{ IndexName: 'gsi1', ReadProvisionedThroughputSettings: autoscaled }],
+        },
+      ],
+    });
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    const desired = reconcile.mock.calls[0]![2] as Array<{ dimension: string; region: string }>;
+    // Every TABLE-level target survives — the withdrawal must not take them.
+    expect(desired.map((s) => `${s.dimension}@${s.region}`).sort()).toEqual([
+      'dynamodb:table:ReadCapacityUnits@eu-west-1',
+      'dynamodb:table:ReadCapacityUnits@us-east-1',
+      'dynamodb:table:WriteCapacityUnits@us-east-1',
+    ]);
   });
 
   it('COMPOSES with the sibling BillingMode arm on one record', async () => {
@@ -717,5 +875,58 @@ describe('stripProvisionedCapacityKeys (issue #1726)', () => {
   it('leaves a bag with no capacity keys structurally unchanged', () => {
     const input = { TableName: 't', Replicas: [{ Region: 'us-east-1' }] };
     expect(stripProvisionedCapacityKeys(input)).toEqual(input);
+  });
+});
+
+describe('withdrawReplicaIndexBlocks (issue #1741)', () => {
+  it('does NOT mutate the caller array or its entries', () => {
+    const replica = { Region: 'eu-west-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] };
+    const input = [replica];
+
+    const out = withdrawReplicaIndexBlocks(input);
+
+    // On the replay path the caller's bag IS `previousState.properties`.
+    expect(replica.GlobalSecondaryIndexes).toEqual([{ IndexName: 'gsi1' }]);
+    expect(input[0]).toBe(replica);
+    expect(out.replicas).toEqual([{ Region: 'eu-west-1' }]);
+    expect(out.changed).toBe(true);
+  });
+
+  it('passes entries WITHOUT the key through by reference', () => {
+    const plain = { Region: 'us-east-1', Tags: [] };
+    const out = withdrawReplicaIndexBlocks([
+      plain,
+      { Region: 'eu-west-1', GlobalSecondaryIndexes: [] },
+    ]);
+    expect((out.replicas as unknown[])[0]).toBe(plain);
+  });
+
+  it('returns the SAME array with changed:false when no entry carries the key', () => {
+    const input = [{ Region: 'us-east-1' }, null, 'unresolved'];
+    const out = withdrawReplicaIndexBlocks(input);
+    expect(out.replicas).toBe(input);
+    expect(out.changed).toBe(false);
+  });
+
+  it('passes a NON-ARRAY container through untouched', () => {
+    // A malformed `Replicas` must reach AWS as-is — rewriting it would be the
+    // silent-drop class the config-shape guards exist to refuse.
+    const out = withdrawReplicaIndexBlocks({ Ref: 'X' });
+    expect(out).toEqual({ replicas: { Ref: 'X' }, changed: false, withdrawnRegions: [] });
+  });
+
+  it('names only the regions whose block was a sendable NON-EMPTY array', () => {
+    // An empty or malformed block never reached the wire, so withdrawing it is
+    // not a loss worth announcing — but it is still REMOVED from the bag.
+    const out = withdrawReplicaIndexBlocks([
+      { Region: 'eu-west-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+      { Region: 'us-west-2', GlobalSecondaryIndexes: [] },
+      { Region: 'ap-northeast-1', GlobalSecondaryIndexes: 'bad' },
+      { Region: { Ref: 'R' }, GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+    ]);
+    expect(out.withdrawnRegions).toEqual(['eu-west-1']);
+    expect(
+      (out.replicas as Record<string, unknown>[]).every((r) => !('GlobalSecondaryIndexes' in r))
+    ).toBe(true);
   });
 });

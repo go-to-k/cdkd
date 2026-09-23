@@ -46,10 +46,36 @@ same `CreateContext.replayingState` flag (the callback is passed only when
 Phase 4 is what fails against a pre-#1682 binary: the record would still carry
 the key the provider warned it was dropping and never sent to AWS.
 
+## Opt-in cross-region arm (issue #1741, second instance)
+
+`CDKD_INTEG_MULTI_REGION=1` adds a third `AWS::DynamoDB::GlobalTable` whose
+second replica (`GT_XR_REPLICA_REGION`, default `eu-west-1`) carries a
+per-index read ceiling for `gsi1`. Its record gets the same malformed index
+blob as the omit table, so the replay creates a table with no indexes and then
+adds the cross-region replica. Before the fix, the override for the index the
+create had just omitted was still sent and recorded, although the table has no
+such index and the re-created replica holds no override. The arm also depends
+on issue #3569: the rollback re-adds the replica while v1's copy in the replica
+region can still be deleting.
+
+| # | What the arm adds |
+|---|-------------------|
+| 1 | the replica's `gsi1` override is live (read back from `DescribeTable`) |
+| 2 | only the top-level blob is doctored; the replica override stays recorded |
+| 3 | the table took the reverse-replacement arm, and the withdrawal was announced |
+| 4 | record: no index block anywhere, both replicas kept, only `pk` defined; live: 0 indexes, replica `ACTIVE`, no override |
+| 5 | drift counts 8 resources instead of 7; the one tolerated difference is issue #3573 (the readback drops the local replica), accepted only in exactly that shape |
+| 6 | both table names gone, in the deploy region and in the replica region |
+
+Replicas take minutes to create and delete, so the arm takes the run from
+~3 min to ~12-20 min; `/run-integ`'s default watchdog is enough.
+
 ## Running
 
 ```bash
 /run-integ rollback-replay-effective-props
+# with the cross-region arm:
+CDKD_INTEG_MULTI_REGION=1 /run-integ rollback-replay-effective-props
 ```
 
 The fixture intentionally creates a failed deploy, so the `EXIT`/`INT`/`TERM`

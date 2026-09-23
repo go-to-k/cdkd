@@ -836,54 +836,68 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
+    // What the post-`CreateTable` wiring reads the replicas from. It differs
+    // from `properties` only on the omit arm below, and it is ONE value so the
+    // three consumers of a replica's index block — the pre-flight scan,
+    // `addReplica`, and the autoscaling registration — cannot disagree about
+    // whether that block still exists.
+    let wiringProperties: Record<string, unknown> = properties;
     if (indexesOmitted) {
       // Composed onto whatever the earlier arms recorded (`?? properties`) —
       // a single state record can carry more than one malformed value, and
       // this is the LAST of the three arms.
       //
-      // The top-level key is dropped, matching what was actually skipped. A
-      // CROSS-REGION `Replicas[].GlobalSecondaryIndexes` override is a SEPARATE
-      // template key that this guard never read and never refused, and its
-      // wiring runs on its own further down rather than off `sdkIndexes` — so
-      // dropping THOSE would withdraw a value on the strength of a different
-      // key being malformed. The LOCAL replica's block is different and IS
-      // dropped, for the reason given just below; do not read this paragraph as
-      // an argument against that.
+      // The top-level key is dropped, matching what was actually skipped.
       effectiveProperties = { ...(effectiveProperties ?? properties) };
       delete effectiveProperties['GlobalSecondaryIndexes'];
-      // ...and the LOCAL replica's index block, which is not a separate send
-      // path: it is only a CAPACITY SOURCE that `toSdkGlobalSecondaryIndexes`
-      // reads through `localByName`, and that call returned the EMPTY list, so
-      // nothing in it reached AWS. `readCurrentState` attaches
-      // `localReplicaEntry.GlobalSecondaryIndexes` only when the live table has
-      // indexes, so on a zero-index table a retained block is the same
-      // never-matchable record this arm exists to remove, one level down.
+      // ...and EVERY replica's index block, local and cross-region alike
+      // (issue #1741, second instance). Each one names indexes of THIS table,
+      // and this create builds none, so none of them can be applied:
       //
-      // CROSS-REGION replica index blocks are KEPT: those have their own send
-      // path (`toSdkReplicaGlobalSecondaryIndexes`, wired after CreateTable),
-      // so withdrawing them would record a loss that did not happen.
+      //  - the LOCAL block is only a CAPACITY SOURCE that
+      //    `toSdkGlobalSecondaryIndexes` reads through `localByName`, and that
+      //    call returned the EMPTY list;
+      //  - a CROSS-REGION block has its own send path (`addReplica`, after
+      //    `CreateTable`), but it is an OVERRIDE of an index the replica
+      //    inherits from the source table, and there is no such index. Before
+      //    this it was kept, sent AND recorded. Measured live on an on-demand
+      //    read ceiling: AWS accepted the replica-add and the re-created
+      //    replica held no override, so the record claimed a value AWS never
+      //    applied. Live coverage: the opt-in cross-region arm of
+      //    `tests/integration/rollback-replay-effective-props`.
       //
-      // KNOWN GAP, deliberately not closed here (issue #1741, second instance).
-      // Keeping them is right for the RECORDING question this paragraph answers,
-      // and wrong for a question it does not: `addReplica` SENDS those overrides
-      // after `CreateTable`, against the table this arm just created with ZERO
-      // indexes, so AWS rejects an override naming an index that does not
-      // exist. It is the same shape as the `AttributeDefinitions` prune below —
-      // when the omit fires, everything downstream that referenced the indexes
-      // has to be pruned too — but it is unreachable from the current fixture
-      // (whose omit table is deliberately single-replica, so the rollback's
-      // delete-of-the-new-table is never a replica removal and cannot arm
-      // DynamoDB's 24h source-region lock). Reproducing it needs a cross-region
-      // fixture arm, which should land WITH the fix rather than after it.
-      const replicasForOmit = effectiveProperties['Replicas'];
-      if (Array.isArray(replicasForOmit)) {
-        effectiveProperties['Replicas'] = replicasForOmit.map((entry) => {
-          const replica = asRecord(entry);
-          if (!replica || replica['Region'] !== currentRegion) return entry;
-          const copy = { ...replica };
-          delete copy['GlobalSecondaryIndexes'];
-          return copy;
-        });
+      // So the omit prunes everything downstream that referenced the indexes —
+      // the same shape as the `AttributeDefinitions` prune below — on the WIRE
+      // (`wiringProperties`) and in the RECORD alike. The RECORD half is the
+      // one with a user-visible consequence: `readCurrentState` attaches a
+      // replica's index block only when the live table has indexes, so on a
+      // zero-index table a retained block is a never-matchable record, which
+      // the next update reads as its previous side (the #1724 class). The WIRE
+      // half keeps the two in agreement — the record describes what was sent —
+      // and stops a request naming an index that does not exist.
+      //
+      // The block is withdrawn from each bag SEPARATELY: the record composes
+      // onto the earlier arms' answer (the billing strip may already have
+      // rewritten `Replicas`), while the wire reads the replay's own bag.
+      const recorded = withdrawReplicaIndexBlocks(effectiveProperties['Replicas']);
+      if (recorded.changed) effectiveProperties['Replicas'] = recorded.replicas;
+      const wired = withdrawReplicaIndexBlocks(properties['Replicas']);
+      if (wired.changed) {
+        wiringProperties = { ...properties, Replicas: wired.replicas };
+        // Announced from HERE rather than folded into the omit warning above:
+        // that one fires from the GSI guard, which never reads a replica's
+        // block, and a withdrawn cross-region override is a separate loss the
+        // user would otherwise have no way to see. The local block needs no
+        // line of its own — it only ever fed the translation that warning
+        // already reports as empty.
+        const crossRegion = wired.withdrawnRegions.filter((region) => region !== currentRegion);
+        if (crossRegion.length > 0) {
+          warn(
+            `DynamoDB GlobalTable ${logicalId}: omitting the GlobalSecondaryIndexes ` +
+              `overrides of replica(s) ${crossRegion.join(', ')}: they name indexes this ` +
+              `create does not build, so there is nothing for them to apply to`
+          );
+        }
       }
       // ...and PRUNE `AttributeDefinitions` down to the attributes this call
       // still keys on (issue #1741). DynamoDB requires the definitions to be
@@ -1051,7 +1065,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // under `DeletionProtectionEnabled: true` the compensating delete fails,
     // orphaning a billing table with no state record. Reporting is cheap and
     // pure, so it happens BEFORE the first mutating call instead.
-    for (const replica of replicas) {
+    //
+    // Both this scan and the replica-add loop below read `wiringReplicas`, so
+    // a block the omit arm withdrew is neither reported nor sent.
+    const wiringReplicas =
+      (wiringProperties['Replicas'] as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const replica of wiringReplicas) {
       const replicaRegion = replica['Region'] as string | undefined;
       if (!replicaRegion || replicaRegion === currentRegion) continue;
       toSdkReplicaGlobalSecondaryIndexes(
@@ -1091,7 +1110,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // ReplicaUpdates in a single call). Each call must complete before
       // the next — UpdateTable returns immediately but the table flips to
       // UPDATING until the replica is provisioned.
-      for (const replica of replicas) {
+      for (const replica of wiringReplicas) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
         // No diagnostics collector: the same translation already ran in the
@@ -1179,7 +1198,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           await this.reconcileAutoScalingTargets(
             tableName,
             [],
-            collectAutoScalingTargets(properties, currentRegion),
+            // `wiringProperties`, not `properties`: on the replay omit arm a
+            // replica's per-index read target would name an index this create
+            // did not build, and the registrations run in sequence, so one
+            // that throws skips every target after it.
+            collectAutoScalingTargets(wiringProperties, currentRegion),
             currentRegion,
             undefined,
             maskSecrets
@@ -1442,14 +1465,92 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     const replicaUpdates: ReplicationGroupUpdate[] = [{ Create: create }];
 
-    await this.dynamoDBClient.send(
-      new UpdateTableCommand({
-        TableName: tableName,
-        ReplicaUpdates: replicaUpdates,
-      })
-    );
+    // A refusal because the region still holds a same-named table is retried
+    // ONLY after that table is confirmed to be going away (issue #3569): a
+    // table this provider just deleted leaves its regional copy DELETING for
+    // minutes after it has left the source's `Replicas[]`, which is all
+    // `delete()` waits for. A reverse-replacement rollback re-creates the old
+    // table under its old name straight after deleting it, so it hits exactly
+    // that window. Anything but DELETING is re-thrown untouched — a live table
+    // of that name is not cdkd's to wait out, let alone remove.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: tableName,
+            ReplicaUpdates: replicaUpdates,
+          })
+        );
+        break;
+      } catch (error) {
+        if (attempt >= REPLICA_COPY_RELEASE_ATTEMPTS || !isReplicaCopyExistsRefusal(error)) {
+          throw error;
+        }
+        if (!(await this.waitForRegionalCopyReleased(tableName, region, maskSecrets))) throw error;
+        // One more interval AFTER the region reports the copy gone: the source
+        // table's own view of the region can trail the region itself, which is
+        // the lag this retry exists for, and a copy found gone on the FIRST poll
+        // would otherwise be retried at once.
+        await new Promise((resolve) => setTimeout(resolve, REPLICA_COPY_RELEASE_POLL_MS));
+      }
+    }
 
     await this.waitForReplicaActive(tableName, region, logicalId);
+  }
+
+  /**
+   * Poll the replica REGION for its same-named table until it is gone,
+   * answering `true` once it is (so the replica-add may be retried) and
+   * `false` for anything that is not a copy on its way out: a table in any
+   * status but `DELETING`, a probe error, or the cap running out. Only ever
+   * READS the region — the caller re-throws AWS's own refusal on `false`.
+   * Interruptible, like every other bounded wait on this provider's paths.
+   */
+  private async waitForRegionalCopyReleased(
+    tableName: string,
+    region: string,
+    // Both lines below name the RESOLVED table name, and the debug one quotes
+    // AWS's error text, which often echoes it (issue #1997's contract).
+    maskSecrets: SecretMasker
+  ): Promise<boolean> {
+    const client = this.getRegionalClient(region);
+    // Masked: the label reaches the user in `InterruptedWaitError`'s message
+    // on Ctrl-C, and `tableName` is the resolved name.
+    const watch = startInterruptWatch(
+      maskSecrets(`DynamoDB ${region} copy of ${tableName} to finish deleting`)
+    );
+    let announced = false;
+    try {
+      for (let poll = 0; poll < REPLICA_COPY_RELEASE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let status: string | undefined;
+        try {
+          const response = await client.send(new DescribeTableCommand({ TableName: tableName }));
+          status = response.Table?.TableStatus;
+        } catch (probeError) {
+          if (probeError instanceof ResourceNotFoundException) return true;
+          this.logger.debug(
+            maskSecrets(
+              `Could not read the ${region} copy of ${tableName}: ${describeAwsFailure(probeError).detail}`
+            )
+          );
+          return false;
+        }
+        if (status !== 'DELETING') return false;
+        if (!announced) {
+          this.logger.info(
+            maskSecrets(
+              `The ${region} copy of ${tableName} is still being deleted; waiting for it before adding the replica`
+            )
+          );
+          announced = true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, REPLICA_COPY_RELEASE_POLL_MS));
+      }
+      return false;
+    } finally {
+      watch.dispose();
+    }
   }
 
   /**
@@ -3799,7 +3900,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // neither branch, and a watch taken for it is added and removed for a
     // method that never waits. Every `return` from this point on unwinds
     // through the `finally` that disposes it.
-    const watch = startInterruptWatch(`DynamoDB auto-scaling for ${tableName}`);
+    // Masked for the same reason as the replica-copy wait's label: it reaches
+    // the user in `InterruptedWaitError`'s message on Ctrl-C.
+    const watch = startInterruptWatch(maskSecrets(`DynamoDB auto-scaling for ${tableName}`));
     try {
       if (newEnabled) {
         // Register OR update scalable target (idempotent on no-op).
@@ -6654,6 +6757,70 @@ export function collectAutoScalingTargets(
   }
 
   return specs;
+}
+
+/**
+ * How long `addReplica` waits out a same-named regional copy that is still
+ * DELETING (issue #3569): polls x interval, ~15 minutes. A regional copy has
+ * been measured to linger for minutes after it left the source table's
+ * `Replicas[]`.
+ */
+export const REPLICA_COPY_RELEASE_POLLS = 180;
+export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
+/** Replica-add attempts in total, the first included. */
+export const REPLICA_COPY_RELEASE_ATTEMPTS = 3;
+
+/**
+ * AWS's refusal of a `ReplicaUpdates[].Create` whose region already holds a
+ * table of that name. Keyed on the MESSAGE: the error class is a generic
+ * `ValidationException`, shared with every other malformed replica request.
+ */
+export function isReplicaCopyExistsRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error && /one or more replicas already existed as tables/i.test(error.message)
+  );
+}
+
+/**
+ * `Replicas` with every entry's `GlobalSecondaryIndexes` key REMOVED — the
+ * replay-CREATE GSI omit arm's prune of the per-replica index blocks (issue
+ * #1741, second instance), which name indexes that create does not build.
+ *
+ * Copy-on-write: an entry that carries the key is copied without it, every
+ * other entry (a non-object included — an unresolved intrinsic must reach AWS
+ * as-is, not be rewritten) is passed through by reference, and the caller's
+ * array is never mutated. The caller's bag IS `previousState.properties` on
+ * this path. A non-array container is returned untouched with `changed: false`.
+ *
+ * `withdrawnRegions` lists the `Region` of each entry whose block was a
+ * non-empty ARRAY, i.e. one `toSdkReplicaGlobalSecondaryIndexes` would have
+ * turned into a real override on the wire; a malformed or empty block was
+ * never sendable, so withdrawing it is not a loss worth announcing.
+ */
+export function withdrawReplicaIndexBlocks(replicas: unknown): {
+  replicas: unknown;
+  changed: boolean;
+  withdrawnRegions: string[];
+} {
+  if (!Array.isArray(replicas)) return { replicas, changed: false, withdrawnRegions: [] };
+  let changed = false;
+  const withdrawnRegions: string[] = [];
+  const out = replicas.map((entry) => {
+    const replica = asRecord(entry);
+    if (!replica || !Object.prototype.hasOwnProperty.call(replica, 'GlobalSecondaryIndexes')) {
+      return entry;
+    }
+    changed = true;
+    const block = replica['GlobalSecondaryIndexes'];
+    const region = replica['Region'];
+    if (Array.isArray(block) && block.length > 0 && typeof region === 'string') {
+      withdrawnRegions.push(region);
+    }
+    const copy = { ...replica };
+    delete copy['GlobalSecondaryIndexes'];
+    return copy;
+  });
+  return { replicas: changed ? out : replicas, changed, withdrawnRegions };
 }
 
 /**

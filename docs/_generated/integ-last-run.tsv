@@ -84,7 +84,7 @@ drift-revert-vpc	2026-09-23T18:43:53Z	PASS	275	verify.sh	rc ok, orph clean (#180
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-23T15:53:36Z	PASS	186	verify.sh	PR #3560 resolver secret-route masking; rc 0, 3 stacks destroyed 0 errors, 0 orphans, 0 surviving state versions (us-east-1 + us-west-2)
 dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
-dynamodb-globaltable	2026-09-05T22:37:14Z	PASS	1521	verify.sh	PR2662 gate run; 16 steps, destroy 0 errors, 0 orphans across us-east-1/us-west-2/eu-west-1
+dynamodb-globaltable	2026-09-23T21:11:52Z	PASS	1674	verify.sh	CDKD_INTEG_MULTI_REGION=1; PR3571 addReplica change; destroy 0 errors, 0 orphans incl. eu-west-1
 dynamodb-gsi-update	2026-09-20T10:56:17Z	PASS	1276	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-ondemand	2026-09-20T10:56:17Z	PASS	210	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
@@ -249,7 +249,7 @@ rollback-deletion-policy-snapshot	2026-09-19T18:00:07Z	PASS	99	verify.sh	rc ok o
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replay-cc-generated-name	2026-09-19T18:00:07Z	PASS	144	verify.sh	rc ok, orph clean; #2668 type-change routing
-rollback-replay-effective-props	2026-09-20T06:14:17Z	PASS	169	verify.sh	rc ok, orph clean; #1782 shared Contributor Insights reader
+rollback-replay-effective-props	2026-09-23T21:27:56Z	PASS	688	verify.sh	CDKD_INTEG_MULTI_REGION=1 cross-region arm (#1741/#3569); drift bounded on #3573; 0 orphans us-east-1+eu-west-1
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans

@@ -87,10 +87,10 @@ export class RollbackReplayStack extends cdk.Stack {
     // below DependsOn both: the replacements must COMPLETE before the deploy
     // fails, or rollback classifies plain CREATEs instead.
     //
-    // ONE replica each, in the deploy region. A cross-region replica would make
-    // the rollback's delete-of-the-new-table a replica removal, which arms
-    // DynamoDB's 24h source-region delete lock — a fixture hazard with nothing
-    // to do with what this tests.
+    // ONE replica each, in the deploy region. A cross-region replica adds
+    // minutes to every create and delete of a table, and neither of these two
+    // arms has anything to do with replication; the one arm that does is the
+    // opt-in `GsiOmitXrTable` below.
     //
     // Every replica declares the sub-specs `readCurrentState` ALWAYS emits
     // (`Tags`, ContributorInsights, PITR). That is load-bearing, not
@@ -99,13 +99,14 @@ export class RollbackReplayStack extends cdk.Stack {
     // baseline and compares `Replicas` as a whole array. A replica declaring
     // only `Region` would drift against the enriched readback on every run —
     // the fixture would fail phase 5 and its message would ACCUSE THE FIX.
-    const localReplica = (extra: Record<string, unknown> = {}) => ({
-      region: cdk.Aws.REGION,
+    const replicaIn = (region: string, extra: Record<string, unknown> = {}) => ({
+      region,
       tags: [],
       contributorInsightsSpecification: { enabled: false },
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: false },
       ...extra,
     });
+    const localReplica = (extra: Record<string, unknown> = {}) => replicaIn(cdk.Aws.REGION, extra);
 
     // #1726: the capacity-strip subject. It carries a REAL GSI so that the
     // per-INDEX members of the strip have somewhere to live; the PROVISIONED-only
@@ -185,6 +186,59 @@ export class RollbackReplayStack extends cdk.Stack {
       replicas: [localReplica()],
     });
 
+    // #1741, second instance: the CROSS-REGION arm. Opt-in behind
+    // `CDKD_INTEG_MULTI_REGION=1` (the name the `dynamodb-globaltable` fixture
+    // already uses for the same cost): a cross-region replica is created,
+    // deleted and re-created several times across the phases, each taking
+    // minutes, so the arm takes the run from ~3 to ~12-20 min. The env
+    // var is read once per run and never changes between phases, so the table
+    // is either in every template of a run or in none — never a mode-gated
+    // DELETE halfway through.
+    //
+    // The shape is the omit table's plus ONE thing: a replica in a SECOND
+    // region carrying a per-index override for `gsi1`. When the replay omits
+    // the malformed index block, `CreateTable` builds a table with NO indexes,
+    // and the replica-add that follows used to send AND record that override
+    // anyway — for an index the table does not have. The replica is deliberately NOT
+    // removed by any update in this fixture: the only replica deletes are the
+    // provider's own whole-table deletes (the replacement's delete of v1, the
+    // rollback's delete of v2, and destroy), which drop the replica and then
+    // the table together.
+    let crossRegionTable: dynamodb.CfnGlobalTable | undefined;
+    if (process.env['CDKD_INTEG_MULTI_REGION'] === '1') {
+      crossRegionTable = new dynamodb.CfnGlobalTable(this, 'GsiOmitXrTable', {
+        tableName: process.env['GT_XR_TABLE_NAME'] || 'cdkd-rollback-replay-gtx-v1',
+        billingMode: 'PAY_PER_REQUEST',
+        // Keyed on a dedicated attribute for the same reason as the omit table
+        // above: the cross-region withdrawal has to COMPOSE with the
+        // `AttributeDefinitions` prune on one create.
+        attributeDefinitions: [
+          { attributeName: 'pk', attributeType: 'S' },
+          { attributeName: 'gsipk', attributeType: 'S' },
+        ],
+        keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+        globalSecondaryIndexes: [
+          {
+            indexName: 'gsi1',
+            keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
+            projection: { projectionType: 'KEYS_ONLY' },
+          },
+        ],
+        replicas: [
+          localReplica(),
+          replicaIn(process.env['GT_XR_REPLICA_REGION'] || 'eu-west-1', {
+            // An on-demand read ceiling rather than a bare `indexName`: it is
+            // the override a user would actually write, and it turns into a
+            // real `OnDemandThroughputOverride` on the replica-add, so phase 1
+            // can prove it was live before the replay withdraws it.
+            globalSecondaryIndexes: [
+              { indexName: 'gsi1', readOnDemandThroughputSettings: { maxReadRequestUnits: 13 } },
+            ],
+          }),
+        ],
+      });
+    }
+
     if (process.env['ROLLBACK_INTEG_FAIL'] === 'true') {
       // MessageRetentionPeriod's ceiling is 1209600 (14 days); this is well
       // past it, so CreateQueue fails and the deploy rolls back.
@@ -194,6 +248,7 @@ export class RollbackReplayStack extends cdk.Stack {
       failing.addDependency(route);
       failing.addDependency(capacityTable);
       failing.addDependency(gsiOmitTable);
+      if (crossRegionTable) failing.addDependency(crossRegionTable);
     }
   }
 }
