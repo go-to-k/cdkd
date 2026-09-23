@@ -430,7 +430,8 @@ describe('CfnLocalStateProvider comes from cdk-local, not from a cdkd fork (#252
  * bundle chunk, which is regenerated every release and which the previous
  * spelling named after it had stopped existing, go-to-k/cdkd#3551. Measured on
  * cdk-local 0.149.1: two `ListStackResourcesCommand` references, zero
- * `DescribeStackResourcesCommand`). `DescribeStackResources` returns at most one page and
+ * `DescribeStackResourcesCommand`; re-check with `grep -c
+ * 'ListStackResourcesCommand' node_modules/cdk-local/dist/local-studio-*.js`). `DescribeStackResources` returns at most one page and
  * is a different API with a different failure mode, so naming it sends a user
  * debugging a truncated read to the wrong AWS docs page and the wrong IAM
  * action.

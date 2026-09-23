@@ -112,7 +112,9 @@ describe('createLocalStartCloudFrontCommand', () => {
  * Verified against the installed bundle, cited by symbol rather than by file
  * and line — the chunk is content-hashed and the offsets move every release,
  * so the previous citation named a file that no longer exists
- * (go-to-k/cdkd#3551). Last verified against cdk-local 0.149.1: all three
+ * (go-to-k/cdkd#3551). Re-check with `grep -n 'function resolveDeployedS3Origins'
+ * node_modules/cdk-local/dist/local-studio-*.js`.
+ * Last verified against cdk-local 0.149.1: all three
  * consumers miss cdkd's registered provider — `resolveDeployedS3Origins` and
  * `attachKvsModules` both gate on `isCfnFlagPresent(options)` (i.e.
  * `--from-cfn-stack` specifically, not the "any state source is active"

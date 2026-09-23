@@ -84,15 +84,16 @@ function collectLambdaTargetLogicalIds(frontDoor: FrontDoorPlan | undefined): st
  * `cdkd local start-cloudfront` REFUSES cdkd's state flags outright
  * ([#2528](https://github.com/go-to-k/cdkd/issues/2528)) because NO consumer on
  * that command's path reads a host-registered state source. `start-alb` is
- * partial, not total, so the same remedy would delete a working capability:
+ * partial, not total, so the same remedy would delete a working capability.
  *
- * Measured against the bundled engine, and cited by VERSION AND SYMBOL rather
+ * Measured against the bundled engine, and cited by VERSION AND SYMBOL NAME rather
  * than by file and line: the chunk name is content-hashed and the offsets move
  * on any upstream edit, so a citation naming them is born stale at the next
  * release (go-to-k/cdkd#3551 — these lines named `cdk-local@0.147.7` and a
  * chunk that no longer exists). Re-check with
- * `grep -n 'function <symbol>' node_modules/cdk-local/dist/local-studio-*.js`.
- * Last verified: **cdk-local 0.149.1**.
+ * `grep -n 'function bootOneTarget' node_modules/cdk-local/dist/local-studio-*.js`
+ * (and the same for each symbol named below).
+ * Last verified: **cdk-local 0.149.1**. What splits the two target kinds:
  *
  * - **ECS service targets DO honor `--from-state`.** `bootOneTarget` and
  *   `rollOneTarget` hand `createLocalStateProvider` the FULL options bag,

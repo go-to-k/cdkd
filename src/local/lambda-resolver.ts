@@ -1228,9 +1228,11 @@ export type LayerArnClassification =
  *
  * **The download behind it is no longer commercial-only.** This paragraph used
  * to say the opposite, citing a cdk-local build that rebuilt the ARN with a
- * hardcoded `aws` — go-to-k/cdk-local#575, which CLOSED on 2026-08-27. The
- * stale text outlived the defect by a month because it cited a content-hashed
- * bundle chunk and a line number, which nobody could check
+ * hardcoded `aws` — go-to-k/cdk-local#575, which CLOSED on 2026-08-27 and
+ * shipped in cdk-local 0.147.13. cdkd itself has carried a fixed engine since
+ * it went to 0.148.4 on 2026-09-12, so the text was wrong FOR USERS for eleven
+ * days and wrong about upstream for a month. It survived both because it cited
+ * a content-hashed bundle chunk and a line number, which nobody could check
  * (go-to-k/cdkd#3551). Measured on cdk-local 0.149.1:
  * `fetchLayerContentUrl` strips only the `:<version>` suffix from the ARN the
  * caller supplied and hands the remainder to `GetLayerVersionCommand` as
