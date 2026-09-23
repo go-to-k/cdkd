@@ -27,7 +27,15 @@ paths:
   TRANSPOSITION, which required does not — the values are all `string`, so
   `(…, assetOutdir, assetId)` used to compile and print
   `cdkd will cdkd-asset-<hash>`
-  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). The surviving `??`
+  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+  **`resolveDockerContextDirectory` takes EVERY parameter in the bag**, because
+  it had a second transposable pair and that one was not cosmetic:
+  `manifestDir` is the assembly-derived base and `directory` the
+  attacker-chosen value, so a swap changed which directory was resolved and
+  which contained ([#3544](https://github.com/go-to-k/cdkd/issues/3544)).
+  `resolveFileAssetSourcePath` keeps its leading positionals because its second
+  parameter is a `FileAsset` and the swap does not typecheck — the invariant is
+  "no transposable adjacent same-typed pair", not "both twins look alike". The surviving `??`
   fallbacks IN THIS LAYER — two in `buildDockerImage`, one in
   `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers

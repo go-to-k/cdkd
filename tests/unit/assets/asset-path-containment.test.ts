@@ -95,7 +95,10 @@ const DOCKER_SINK = 'do the docker thing with it';
 const resolveFile = (dir: string, a: FileAsset, bound: string): string =>
   resolveFileAssetSourcePath(dir, a, { assetOutdir: bound, sink: FILE_SINK });
 const resolveDocker = (dir: string, d: string, bound: string, id?: string): string =>
-  resolveDockerContextDirectory(dir, d, wrapErr, {
+  resolveDockerContextDirectory({
+    manifestDir: dir,
+    directory: d,
+    wrapError: wrapErr,
     assetOutdir: bound,
     sink: DOCKER_SINK,
     ...(id !== undefined && { assetId: id }),
@@ -335,7 +338,10 @@ describe("a Docker asset's source.directory", () => {
     class Typed extends Error {}
 
     expect(() =>
-      resolveDockerContextDirectory(dir, '../outside-dir', (m) => new Typed(m), {
+      resolveDockerContextDirectory({
+        manifestDir: dir,
+        directory: '../outside-dir',
+        wrapError: (m: string) => new Typed(m),
         assetOutdir: dir,
         sink: DOCKER_SINK,
       })
