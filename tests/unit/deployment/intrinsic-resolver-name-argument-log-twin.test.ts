@@ -163,8 +163,9 @@ const lookupBehaviour = vi.hoisted(() => ({
   ssmThrottles: 0,
   secretsQuote: false,
   /**
-   * An ARN-form secret id fails as an unreachable ENDPOINT would, naming the
-   * ARN's region in the host (what the region-pinned sibling's client hits).
+   * An ARN-form secret id or parameter name fails as an unreachable ENDPOINT
+   * would, naming the ARN's region in the host (what the region-pinned
+   * sibling's client hits).
    */
   endpointFailure: false,
 }));
@@ -202,6 +203,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     ssm: {
       send: vi.fn(async (command: { input?: { Name?: string } }) => {
+        if (lookupBehaviour.endpointFailure && command.input?.Name?.startsWith('arn:')) {
+          throw new Error(
+            `getaddrinfo ENOTFOUND ssm.${command.input.Name.split(':')[3]}.amazonaws.com`
+          );
+        }
         if (lookupBehaviour.ssmThrottles > 0) {
           lookupBehaviour.ssmThrottles--;
           const throttled = new Error(`Rate exceeded for parameter ${String(command.input?.Name)}`);
@@ -2595,6 +2601,23 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       expect(retries[0]).toMatch(
         new RegExp(` - Rate exceeded for parameter missing-${UNRECORDED}$`)
       );
+    });
+
+    it("a region-pinned sibling's endpoint failure quoting the parameter ARN's assembled region", async () => {
+      lookupBehaviour.endpointFailure = true;
+      const error = await rejectionOf(
+        inline('{{resolve:ssm:arn:aws:ssm:us-north-${P}:210987654321:parameter/x}}')
+      );
+      expect(error.message).toBe('getaddrinfo ENOTFOUND ssm.us-north-***.amazonaws.com');
+      expectNowhere(`us-north-${PIN}`, ...everyTextOf(error));
+    });
+
+    it("CONTROL: a region-pinned sibling's unrecorded parameter region prints verbatim", async () => {
+      lookupBehaviour.endpointFailure = true;
+      const error = await rejectionOf(
+        inlinePlain('{{resolve:ssm:arn:aws:ssm:us-north-${P}:210987654321:parameter/x}}')
+      );
+      expect(error.message).toBe(`getaddrinfo ENOTFOUND ssm.us-north-${UNRECORDED}.amazonaws.com`);
     });
 
     it('a throttle that outlasts the retries is re-thrown masked and still classifies as one', async () => {
