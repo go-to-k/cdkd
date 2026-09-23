@@ -20,8 +20,9 @@
  * after the last `*` at the end, then places each middle segment at its
  * LEFTMOST occurrence after the previous one. Leftmost placement is optimal
  * when `*` is the only wildcard — any later placement leaves strictly less room
- * for the segments after it — so no backtracking is needed and the cost is
- * bounded by one `indexOf` per segment.
+ * for the segments after it — so no backtracking is needed. The cost is one
+ * `indexOf` per segment, O(|subject| x |pattern|) in the worst case:
+ * polynomial, where the RegExp was exponential.
  */
 export function globMatches(pattern: string, subject: string): boolean {
   const segments = pattern.split('*');

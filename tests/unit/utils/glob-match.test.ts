@@ -72,6 +72,9 @@ describe('globMatches', () => {
     ['a{2}*', 'aa', 'a{2}x'],
     ['a\\*', 'a..', 'a\\zz'],
     ['*\\d', 'x5', 'x\\d'],
+    ['a$*', 'a', 'a$x'],
+    ['^*', 'x', '^x'],
+    ['(a)*', 'ab', '(a)b'],
   ])('treats every character but `*` as literal: %s', (pattern, regexReading, literal) => {
     // Each row's FIRST subject is one the old expansion matched, so the row
     // discriminates rather than restating the literal answer.
