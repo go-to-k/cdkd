@@ -36,6 +36,76 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--strict-getatt` | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | `--allow-unaddressed` | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
+| `--permissions-boundary <arn>` | deploy | Attach an IAM permissions boundary to every Role and User cdkd creates or updates, [overriding the template](#permissions-boundary-deploy). |
+
+## `--permissions-boundary <arn>` (deploy)
+
+Attaches the named IAM permissions boundary policy to every `AWS::IAM::Role`
+and `AWS::IAM::User` cdkd creates or updates, **overriding whatever the template
+declares**. Also readable from `CDKD_PERMISSIONS_BOUNDARY` and from `cdk.json`
+`context.cdkd.permissionsBoundary`, resolved in that order with the CLI flag
+winning.
+
+```bash
+cdkd deploy --permissions-boundary arn:aws:iam::123456789012:policy/pr-boundary
+```
+
+### Why it overrides the template
+
+A `PermissionsBoundary` declared in a CDK app belongs to whoever wrote the app.
+An app that omits it, or declares a weaker one, would escape the boundary you
+asked for, so the flag wins unconditionally and logs when it replaces a
+different declared value.
+
+That is what makes the flag useful. If you scope a deploy role like this:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "iam:CreateRole",
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {
+      "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/pr-boundary"
+    }
+  }
+}
+```
+
+then a role created without that boundary is refused with `AccessDenied`. That
+correctly stops an app that declares an `AdministratorAccess` role and attaches
+it to its own Lambda. Without this flag it also stops every ordinary app, since
+CDK apps almost never attach a boundary themselves. With the flag, cdkd supplies
+the boundary and the condition is satisfied either way.
+
+The AWS CDK CLI has no equivalent: `PermissionsBoundary.of()` is a synth-time
+construct, so an app you did not write can simply not call it.
+
+### What is recorded
+
+The applied value is recorded in state rather than the declared one, and the
+same value is folded onto the desired side of the diff. So `cdkd diff` does not
+report the template's declared boundary as a pending change on every later
+deploy.
+
+`AWS::IAM::Group` and `AWS::IAM::UserToGroupAddition` have no permissions
+boundary and are untouched.
+
+### Turning it on for an existing stack
+
+The previously recorded properties are left alone, so adding the flag to a stack
+that already exists reads as a change: the next deploy attaches the boundary to
+the roles and users it manages.
+
+### When not to use it
+
+Do not use it as your only control when the deployed application's own
+permissions matter to you and you have not written the boundary policy
+carefully. The boundary caps what the created principals can do; it does not
+review what the app asks for.
+
+A blank or non-string value from any source is ignored with a warning rather
+than read as "no boundary", since passing the flag is a request for one.
 
 ## Which routing flag, when
 

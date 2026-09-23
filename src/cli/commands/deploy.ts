@@ -726,9 +726,7 @@ async function deployCommand(
       // two stores are independent so order does not matter, but
       // outer-skipPrefix / inner-stackName keeps the call-site readable.
       return withSkipPrefix(skipPrefix, () =>
-        withForcedPermissionsBoundary(forcedPermissionsBoundary, () =>
-          runStackInner(stackInfo)
-        )
+        withForcedPermissionsBoundary(forcedPermissionsBoundary, () => runStackInner(stackInfo))
       );
     };
 
