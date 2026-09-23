@@ -921,6 +921,27 @@ describe('cdkd orphan (per-resource)', () => {
       });
     }
 
+    it('a template logical id spelled `constructor` is reported missing, not an internal error', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ constructor: 'MyStack/constructor' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: { Other: other() }, outputs: {}, lastModified: 0 },
+        etag: '"e"',
+      });
+      await expect(runOrphan(['MyStack/constructor', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(refusal()).toContain('Resource(s) not in state');
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
     it('#3345: the ORPHANED record\'s own torn attributes do not block dropping it', async () => {
       arrange({ Bucket: { ...BUCKET, attributes: 'abcdef' }, Other: other() });
       await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);

@@ -1177,8 +1177,8 @@ Damage INSIDE a readable list — a row that is not an object, or carries no
 previewing an adoption and names them. `cdkd orphan` refuses them, along with a
 row whose `logicalId` is not a string or whose `state` holds an unreadable
 `properties` or `attributes` map. Such a row is not in `resources`, so
-`cdkd orphan` cannot remove it: repair its map by hand rather than deleting the
-row, which is the only record that its resource is still live in AWS. Other
+`cdkd orphan` cannot remove it: repair the row by hand rather than deleting it,
+since it is the only record that its resource is still live in AWS. Other
 commands do not yet guard these rows.
 
 #### Example

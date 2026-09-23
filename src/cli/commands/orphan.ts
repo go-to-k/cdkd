@@ -434,7 +434,10 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
       // Validate that every requested orphan exists in state — otherwise we
       // would silently no-op while the user expected a removal.
-      const missing = orphanLogicalIds.filter((id) => !(id in state.resources));
+      // OWN keys, matching the rewriter's snapshot: `in` answered true for a
+      // template logical id spelled `constructor`, which then died in the
+      // rewrite on an internal error instead of being reported here.
+      const missing = orphanLogicalIds.filter((id) => !Object.hasOwn(state.resources, id));
       if (missing.length > 0) {
         // Both halves take `displayIdentList`, and for one reason: this is one
         // sentence over one value grammar — `have` is state-derived and

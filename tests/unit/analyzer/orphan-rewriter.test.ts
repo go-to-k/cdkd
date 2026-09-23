@@ -929,6 +929,13 @@ describe('an orphaned record that is not a readable resource record', () => {
     ['a number', 5],
     ['null', null],
     ['an object with no resource type', { physicalId: 'x', properties: {} }],
+    // Typed but with no usable physical id (review of go-to-k/cdkd#3568): the
+    // entry predicate passes these, and `Ref` resolved to `undefined` /
+    // `x-undefined` exactly as for a string record.
+    ['a typed record with no physical id', { resourceType: 'AWS::S3::Bucket', properties: {} }],
+    ['a typed record with a number physical id', { resourceType: 'AWS::S3::Bucket', physicalId: 5 }],
+    ['a typed record with an empty physical id', { resourceType: 'AWS::S3::Bucket', physicalId: '' }],
+    ['an S3Tables table with no physical id', { resourceType: 'AWS::S3Tables::Table', properties: {} }],
   ] as const) {
     for (const force of [false, true]) {
       it(`leaves every reference to ${label} in place${force ? ' under --force' : ''}`, async () => {
@@ -1047,6 +1054,57 @@ describe('--force over an unreadable state.attributes cache', () => {
       expect(warned.some((w) => w.includes('falling back to cached value'))).toBe(false);
     });
   }
+
+  for (const attribute of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    it(`does not answer an inherited key (${attribute}) out of a READABLE cache`, async () => {
+      const state = baseState({
+        Bucket: {
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: {},
+          attributes: JSON.parse('{"Arn":"arn"}'),
+        },
+        Other: {
+          physicalId: 'o',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { A: { 'Fn::GetAtt': ['Bucket', attribute] } },
+        },
+      });
+      const result = await rewriteResourceReferences(
+        state,
+        ['Bucket'],
+        fakeRegistry(vi.fn(async () => undefined)),
+        { force: true }
+      );
+      expect(result.state.resources['Other']?.properties).toEqual({
+        A: { 'Fn::GetAtt': ['Bucket', attribute] },
+      });
+      expect(result.unresolvable[0]?.reason).toContain('cache also has no value');
+    });
+  }
+
+  it('CONTROL: an OWN key of a readable cache is still served', async () => {
+    const state = baseState({
+      Bucket: {
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: { Arn: 'arn-cached' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { A: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+      },
+    });
+    const result = await rewriteResourceReferences(
+      state,
+      ['Bucket'],
+      fakeRegistry(vi.fn(async () => undefined)),
+      { force: true }
+    );
+    expect(result.state.resources['Other']?.properties).toEqual({ A: 'arn-cached' });
+  });
 
   it('CONTROL: an absent cache still reads as holding nothing, with its own warning', async () => {
     const state = baseState({

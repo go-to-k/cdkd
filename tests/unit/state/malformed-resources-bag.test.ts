@@ -2983,7 +2983,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   const FIRST_DEREF: Record<string, string> = {
     'src/cli/commands/scrub.ts': 'Object.entries(state.resources',
     'src/cli/commands/import.ts': 'hasOwnProperty.call(existingState.resources',
-    'src/cli/commands/orphan.ts': 'id in state.resources',
+    'src/cli/commands/orphan.ts': 'Object.hasOwn(state.resources, id)',
     'src/cli/commands/rollback.ts': '{ ...baseState.resources }',
     // go-to-k/cdkd#3161. Each anchor is the LOADED record's bag, which is what
     // the guard is about.

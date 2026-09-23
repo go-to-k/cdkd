@@ -99,6 +99,18 @@ describe('the attributes container (go-to-k/cdkd#3345)', () => {
     expect(unreadableResourceAttributeBags(record(null))).toEqual([]);
   });
 
+  it('renders each id through the display boundary, and caps the list', () => {
+    const hostile = malformedOrphanResourceAttributesRefusalMessage('S', 'r', ['A\x1b[31m', '']);
+    expect(hostile).not.toContain('\x1b');
+    expect(hostile).toContain(UNRENDERABLE);
+    const text = malformedOrphanResourceAttributesRefusalMessage('S', 'r', [
+      'A', 'B', 'C', 'D', 'E', 'F', 'G',
+    ]);
+    expect(text).toContain('holds 7 resource record(s)');
+    expect(text).toContain('and 2 more');
+    expect(text).not.toContain('F,');
+  });
+
   it('refuses a survivor and subtracts the orphan set', () => {
     const state = record({ A: { ...OK, attributes: 'x' }, B: OK });
     expect(() => refuseMalformedResourceAttributesForOrphan(state, ['A'], 'S', 'r')).not.toThrow();
@@ -131,6 +143,8 @@ describe('the orphans list and its records (go-to-k/cdkd#3344)', () => {
       // Literal, not `rec(OK, undefined)`: the default parameter would fill it.
       { orphanedAt: 1, state: OK },
       rec(OK, 7),
+      null,
+      5,
     ] as unknown as StackState['orphans'];
     expect(unreadableOrphanRecords({ orphans })).toEqual([
       'TornProperties',
@@ -138,6 +152,8 @@ describe('the orphans list and its records (go-to-k/cdkd#3344)', () => {
       'TornAttributes',
       'NoType',
       'NullState',
+      '',
+      '',
       '',
       '',
       '',
@@ -208,8 +224,16 @@ describe('the three texts share the properties refusal\'s remedy half', () => {
   });
 
   it('the orphans texts forbid the deletion a hand repair would reach for', () => {
-    expect(BUILT[2]![1]).toContain('rather than deleting the entry');
+    expect(BUILT[2]![1]).toContain('Repair the record by hand rather than deleting it');
     expect(BUILT[3]![1]).toContain('rewriting it to [] by hand discards');
+  });
+
+  it('only the orphans texts caveat the drop remedy, which discards the same list', () => {
+    for (const [label, text] of BUILT) {
+      const orphans = label.startsWith('orphans');
+      expect(text.includes(`it also discards the 'orphans' list`), label).toBe(orphans);
+    }
+    expect(properties).not.toContain(`discards the 'orphans' list`);
   });
 });
 
@@ -230,6 +254,14 @@ describe('the state and outputs refusals for a region-less legacy record (go-to-
     const text = build('MyStack', undefined);
     expect(text).toContain(`Its prefix is 'cdkd' unless '--state-prefix' was given.`);
     expect(text.split('\n').slice(1)).toEqual([`Object key: '<prefix>/MyStack/state.json'`]);
+  });
+
+  it.each(BUILDERS)('%s: with NO identity at all, still ends on the two-hole command', (_l, build) => {
+    for (const region of ['', undefined]) {
+      expect(build('', region)).toMatch(
+        /Inspect it with: cdkd state show '<stack>' --stack-region '<region>' --json$/
+      );
+    }
   });
 
   it.each(BUILDERS)('%s: an inexact name prints no object path', (_l, build) => {

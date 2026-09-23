@@ -2474,7 +2474,13 @@ function orphanRefusal(
   region: string | undefined,
   recovery: LockRecoveryContext | undefined,
   lead: string,
-  thirdWayOut: string
+  thirdWayOut: string,
+  /**
+   * Appended to the drop remedy for the two `orphans` texts: dropping the whole
+   * record discards the very list their third way out tells the operator not
+   * to delete, so the remedy must say so (review of go-to-k/cdkd#3568).
+   */
+  dropCaveat = ''
 ): string {
   const inspect = orphanInspectClause(stackName, region, recovery);
   const listCommand = withheldIdentityListCommand(stackName, region, recovery);
@@ -2498,7 +2504,7 @@ function orphanRefusal(
   const prose =
     `${lead} No state was written. Two ways out need no CDK app: ` +
     `repair the record by hand, or drop it whole with the 'Drop the record' command below, ` +
-    `which leaves the live AWS resources standing` +
+    `which leaves the live AWS resources standing${dropCaveat}` +
     `${withheldIdentityClause(stackName, region)}${withheldRecoveryClause(recovery)}. ` +
     thirdWayOut +
     (inspect.sentence === undefined ? '' : ` ${inspect.sentence}`);
@@ -3357,6 +3363,11 @@ export function refuseMalformedOrphansForOrphan(
   );
 }
 
+/** See {@link orphanRefusal}'s `dropCaveat`. */
+const ORPHANS_DROP_CAVEAT =
+  ` — but it also discards the 'orphans' list, the only record of resources an earlier ` +
+  `failed deploy left live in AWS, so note what it names first`;
+
 /**
  * The text {@link refuseMalformedOrphansForOrphan} raises: the CONTAINER arm
  * when `logicalIds` is `undefined`, the RECORDS arm otherwise.
@@ -3387,7 +3398,8 @@ export function malformedOrphansForOrphanRefusalMessage(
         `malformed or truncated. ${verbatim} The next 'cdkd deploy' refuses the same record, so ` +
         `continuing would only report success over it and leave that refusal one command later.`,
       `'cdkd orphan' cannot address this list at all, and rewriting it to [] by hand discards ` +
-        `the only record of resources an earlier failed deploy left live in AWS.`
+        `the only record of resources an earlier failed deploy left live in AWS.`,
+      ORPHANS_DROP_CAVEAT
     );
   }
   const named = logicalIds
@@ -3407,7 +3419,8 @@ export function malformedOrphansForOrphanRefusalMessage(
       `are what the next 'cdkd deploy' may re-adopt into 'resources' and what 'cdkd diff' ` +
       `previews for adoption, so continuing would report success over damage the next command meets.`,
     `'cdkd orphan' cannot remove such a record itself: it is not in 'resources', so it has no ` +
-      `construct path. Repair its map rather than deleting the entry — it is the only record ` +
-      `that an earlier failed deploy left its resource live in AWS.`
+      `construct path. Repair the record by hand rather than deleting it — it is the only ` +
+      `record that an earlier failed deploy left its resource live in AWS.`,
+    ORPHANS_DROP_CAVEAT
   );
 }

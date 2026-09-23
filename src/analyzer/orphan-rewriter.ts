@@ -28,7 +28,22 @@ import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
  */
 const UNREADABLE_ORPHAN_RECORD_REASON =
   "the orphaned resource's state record is not a readable resource record (not an object, " +
-  'or no resource type), so nothing in it can be substituted';
+  'no resource type, or no physical id), so nothing in it can be substituted';
+
+/**
+ * Whether the fetcher may read an orphaned record at all: the ENTRY class's
+ * predicate PLUS a non-empty string `physicalId`. The entry predicate stops at
+ * `resourceType` on purpose (its own note), but every value this fetcher
+ * produces is derived from the physical id — `{"resourceType": "T"}` alone
+ * made `{"Ref": O}` resolve to `undefined` and `Fn::Sub` to `x-undefined`
+ * exactly as a string record did, and a type whose `Ref` recovery reads the id
+ * threw a bare `TypeError` (review of go-to-k/cdkd#3568).
+ */
+function isResolvableOrphanRecord(entry: unknown): boolean {
+  if (!isReadableResourceEntry(entry)) return false;
+  const physicalId = (entry as { physicalId?: unknown }).physicalId;
+  return typeof physicalId === 'string' && physicalId !== '';
+}
 
 /**
  * One rewrite the orphan rewriter has applied (or wanted to apply but
@@ -202,7 +217,7 @@ class AttributeFetcher {
     }
     const o = this.orphans[orphanLogicalId]!;
     // Before any read of it, and whatever `--force` says: see the constant.
-    if (!isReadableResourceEntry(o)) {
+    if (!isResolvableOrphanRecord(o)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
     }
     let maskedKey: string | undefined;
@@ -289,7 +304,7 @@ class AttributeFetcher {
     const orphan = this.orphans[orphanLogicalId]!;
     // ABOVE the provider lookup and the `--force` cache fallback alike: both
     // read fields of the record, and the fallback would index its `attributes`.
-    if (!isReadableResourceEntry(orphan)) {
+    if (!isResolvableOrphanRecord(orphan)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
     }
 
@@ -364,15 +379,24 @@ class AttributeFetcher {
     const bag: unknown = orphan.attributes;
     if (bag !== undefined && !isReadableBag(bag)) {
       this.logger.warn(
-        `--force: state.attributes of '${orphanLogicalId}' is not a readable map, so it is not ` +
-          `consulted for '${attribute}'; leaving the original intrinsic in place.`
+        `--force: state.attributes of '${displaySafe(orphanLogicalId, { asciiOnly: true })}' is ` +
+          `not a readable map, so it is not consulted for ` +
+          `'${displaySafe(attribute, { asciiOnly: true })}'; leaving the original intrinsic in place.`
       );
       return {
         ok: false,
         reason: `${reason}; the state.attributes cache is not a readable map`,
       };
     }
-    const stored = orphan.attributes?.[attribute];
+    // OWN keys only, for the same reason: the name is template text, and a
+    // readable map still answers `constructor` / `toString` / `__proto__` from
+    // its prototype — measured, each spliced a function or `{}` into the
+    // sibling's saved properties (review of go-to-k/cdkd#3568). The resolver's
+    // own cached-attribute read has taken `Object.hasOwn` since issue #2767.
+    const stored =
+      bag !== undefined && Object.hasOwn(bag as object, attribute)
+        ? (bag as Record<string, unknown>)[attribute]
+        : undefined;
     // The resolver's flat lookup and this fallback are the two readers of a
     // stored attribute; both read a value the resource can never hold (a
     // security group's `VpcId: ''`, written by a pre-#3097 binary) as ABSENT,
