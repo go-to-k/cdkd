@@ -197,8 +197,9 @@ Refused:
   `source.directory` its `--watch` soft reload reads;
 - a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke`,
   `cdkd local start-api`, `cdkd local start-alb` and
-  `cdkd local start-cloudfront`, when it is **relative** — both the function's own code
-  directory and a same-stack layer's. The result is bind-mounted read-only at
+  `cdkd local start-cloudfront`, when it is **relative** — both the function's
+  own code directory and a same-stack layer's. The result is bind-mounted
+  read-only at
   `/var/task` (a layer's at `/opt`) inside a container running handler code the
   same assembly supplies, and `cdkd local invoke` forwards your credentials into
   it, so a relative path escaping the app's output directory would carry that
