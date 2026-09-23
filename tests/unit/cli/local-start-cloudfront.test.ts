@@ -117,8 +117,8 @@ describe('createLocalStartCloudFrontCommand', () => {
  * Last verified against cdk-local 0.149.1: all three
  * consumers miss cdkd's registered provider — `resolveDeployedS3Origins` and
  * `attachKvsModules` both gate on `isCfnFlagPresent(options)` (i.e.
- * `--from-cfn-stack` specifically, not the "any state source is active"
- * predicate `start-api` uses), and the two Lambda boot paths call
+ * `--from-cfn-stack` specifically, where `start-api` has no such gate at all
+ * and skips only on a falsy provider), and the two Lambda boot paths call
  * `resolveLambdaContainerEnv` without its `extraStateProviders` argument at all.
  * A user emulating a cdkd-deployed distribution therefore got the same `502`
  * from an unresolved origin with the flag as without it, on exactly the command

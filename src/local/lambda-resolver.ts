@@ -1229,11 +1229,16 @@ export type LayerArnClassification =
  * **The download behind it is no longer commercial-only.** This paragraph used
  * to say the opposite, citing a cdk-local build that rebuilt the ARN with a
  * hardcoded `aws` — go-to-k/cdk-local#575, which CLOSED on 2026-08-27 and
- * shipped in cdk-local 0.147.13. cdkd itself has carried a fixed engine since
- * it went to 0.148.4 on 2026-09-12, so the text was wrong FOR USERS for eleven
- * days and wrong about upstream for a month. It survived both because it cited
- * a content-hashed bundle chunk and a line number, which nobody could check
- * (go-to-k/cdkd#3551). Measured on cdk-local 0.149.1:
+ * shipped in cdk-local 0.147.13 three minutes later. The text was wrong from
+ * that moment, for USERS TOO and not only about upstream: cdkd declares
+ * `cdk-local` as a plain runtime dependency with no `bundledDependencies`, so
+ * a consumer resolves the RANGE rather than this repo's lockfile, and the
+ * range then in effect (`^0.147.7`) already admitted 0.147.13. What lagged was
+ * this repo's own pinned tree — `pnpm-lock.yaml` stayed on 0.147.7 until the
+ * 0.148.4 bump on 2026-09-12 — so cdkd's CI ran the broken engine for sixteen
+ * more days than anyone installing cdkd did. The claim survived all of it
+ * because it cited a content-hashed bundle chunk and a line number, which
+ * nobody could check (go-to-k/cdkd#3551). Measured on cdk-local 0.149.1:
  * `fetchLayerContentUrl` strips only the `:<version>` suffix from the ARN the
  * caller supplied and hands the remainder to `GetLayerVersionCommand` as
  * `LayerName`, so whatever partition the ARN names is preserved. Its own

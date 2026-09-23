@@ -409,12 +409,12 @@ Pass `--layer-role-arn <arn>` to `sts:AssumeRole` before
 typically a cross-account one. AWS-published public layers are readable from
 every account and need no role.
 
-A layer ARN in any partition downloads. The ARN you wrote is the one
-`lambda:GetLayerVersion` is called with — only the `:<version>` suffix is
-stripped from it — so `aws-cn`, `aws-us-gov`, `aws-eusc` and the four ISO
-partitions reach AWS as themselves.
+Any layer ARN that parses downloads in the partition it names. The ARN you
+wrote is the one `lambda:GetLayerVersion` is called with — only the
+`:<version>` suffix is stripped from it — so `aws-cn`, `aws-us-gov`,
+`aws-eusc` and the four ISO partitions reach AWS as themselves.
 
-The parse itself accepts all eight partitions — commercial, `aws-cn`,
+The parse accepts all eight partitions — commercial, `aws-cn`,
 `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` —
 because the partition is derived from the ARN's region rather than matched
 against a fixed list. The two segments must agree: `arn:aws-cn:lambda:us-east-1:...`
