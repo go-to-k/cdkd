@@ -102,6 +102,14 @@ export interface FileAssetResolveOptions {
  * an accidental or legacy `..` and costs nothing, which is why it stays — but
  * it is no longer a boundary against anyone who chose the value. The docs say
  * this to users in the same words; do not soften either copy.
+ *
+ * **The leading positionals stay, and that is not an unfinished half of
+ * [#3544](https://github.com/go-to-k/cdkd/issues/3544).** The Docker twin took
+ * every parameter into its bag because `(manifestDir, directory)` were two
+ * adjacent `string`s and swapping them compiled. Here the second parameter is
+ * a `FileAsset`, so the same swap is a type error already. The invariant is
+ * "no transposable adjacent same-typed pair", not "both twins look alike" —
+ * converting this one buys nothing and costs every call site.
  */
 export function resolveFileAssetSourcePath(
   manifestDir: string,

@@ -20,20 +20,35 @@ paths:
   directory but are CONTAINED within `StackInfo.assetOutdir`**: a Stage's
   assets sit in the app root, so `source.path` is `../asset.<hash>` by design
   and containing against the manifest directory refused every Stage asset.
-  **Both resolvers take their trailing values as an OPTIONS BAG**
+  **Both resolvers take an OPTIONS BAG — the file one its trailing values,
+  the Docker one EVERY parameter**
   (`FileAssetResolveOptions` / `DockerContextResolveOptions`), and
   `assetOutdir` is REQUIRED there and on `FileAssetPublisher.publish` /
   `DockerAssetPublisher.build`. Required catches a DROP; the bag catches a
   TRANSPOSITION, which required does not — the values are all `string`, so
   `(…, assetOutdir, assetId)` used to compile and print
   `cdkd will cdkd-asset-<hash>`
-  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)). The surviving `??`
-  fallbacks IN THIS LAYER — two in `buildDockerImage`, one in
-  `AssetPublisher` — all NARROW onto the manifest directory and never open
+  ([#3537](https://github.com/go-to-k/cdkd/issues/3537)).
+  **`resolveDockerContextDirectory` takes EVERY parameter in the bag**, because
+  it had a second transposable pair and that one was not cosmetic:
+  `manifestDir` is the assembly-derived base and `directory` the
+  attacker-chosen value, so a swap changed which directory was resolved and
+  which contained ([#3544](https://github.com/go-to-k/cdkd/issues/3544)).
+  `resolveFileAssetSourcePath` keeps its leading positionals because its second
+  parameter is a `FileAsset` and the swap does not typecheck — the invariant is
+  "no transposable adjacent same-typed pair", not "both twins look alike".
+  That invariant is meant to hold everywhere and is ENFORCED only here:
+  `resolveAssetCodeDirectory` in `src/local/lambda-resolver.ts` still carries
+  the same pair, on the same decision, for a value that gets bind-mounted
+  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)) — a known gap, not an
+  exemption.
+  The surviving `??` fallbacks IN THIS LAYER — two in `buildDockerImage`, one
+  in `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers
-  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too,
-  so the safety claim is whole-program while the COUNT is scoped to the files
-  this page governs.
+  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too, so
+  THAT claim holds whole-program and only its COUNT is limited to the files
+  this page governs — the opposite direction from the invariant above, whose
+  claim is whole-program while its enforcement is not.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because

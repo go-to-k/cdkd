@@ -456,12 +456,13 @@ export async function loadAgentCoreAssetContext(args: {
   // (go-to-k/cdkd#3489). Resolved from the manifest's own directory and bound
   // by the stack's `assetOutdir`, so a Stage's `../asset.<hash>` is not
   // refused.
-  const newAssetSourceDir = resolveDockerContextDirectory(
+  const newAssetSourceDir = resolveDockerContextDirectory({
     manifestDir,
-    newDockerImage.source.directory,
-    (message) => new Error(message),
-    { assetOutdir, sink: "copy that directory into the running container's workspace" }
-  );
+    directory: newDockerImage.source.directory,
+    wrapError: (message: string) => new Error(message),
+    assetOutdir,
+    sink: "copy that directory into the running container's workspace",
+  });
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),
     newAssetHash: dockerImageEntry.hash,

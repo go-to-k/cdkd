@@ -23,17 +23,42 @@ import { cacheOptionToFlag } from './docker-cache-option.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
- * The three values that decide what {@link resolveDockerContextDirectory}
+ * Every value that decides what {@link resolveDockerContextDirectory}
  * does, as a BAG rather than positionals (issue
  * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
  *
- * `assetOutdir` and `sink` are both `string`, and `assetId` is another — so a
- * call written `(…, assetOutdir, assetId)` compiled and printed
- * `cdkd will cdkd-asset-<hash>`. Making each required, which
- * [#3532](https://github.com/go-to-k/cdkd/issues/3532) did, catches a DROP and
- * not a TRANSPOSITION; this is the shape that was left.
+ * **Every parameter, not just the trailing ones**, because this function had
+ * two transposable pairs and only one of them was cosmetic.
+ * [#3532](https://github.com/go-to-k/cdkd/issues/3532) made each required,
+ * which catches a DROP and not a TRANSPOSITION;
+ * [#3537](https://github.com/go-to-k/cdkd/issues/3537) bagged the trailing
+ * values, where `(…, assetOutdir, assetId)` had compiled and printed
+ * `cdkd will cdkd-asset-<hash>` — a wrong word. This bags the LEADING pair
+ * too ([#3544](https://github.com/go-to-k/cdkd/issues/3544)), where a swap is
+ * not cosmetic: `manifestDir` is the assembly-derived base and `directory` is
+ * the attacker-chosen value, so exchanging them changes which directory is
+ * resolved and which is contained.
+ *
+ * The file twin keeps positionals because it has no such pair — its second
+ * parameter is a `FileAsset`, so the swap does not typecheck. The invariant is
+ * "no transposable adjacent same-typed pair", not "both twins look alike".
  */
 export interface DockerContextResolveOptions {
+  /**
+   * Where a RELATIVE `directory` resolves FROM — the manifest's own directory,
+   * which is assembly-derived. Distinct from `assetOutdir`, which is
+   * what the result must stay inside and comes from the user.
+   */
+  manifestDir: string;
+  /**
+   * The manifest-supplied `source.directory`. Attacker-chosen under
+   * `cdkd deploy -a <dir>`, which is why it and `manifestDir` must not be
+   * confusable: swapping them changes WHICH directory is resolved and WHICH
+   * is contained.
+   */
+  directory: string;
+  /** Wrap the refusal in the call site's own typed error class. */
+  wrapError: (message: string) => Error;
   /**
    * The app's outdir; `FileAssetResolveOptions.assetOutdir` in
    * `asset-manifest-loader.ts` carries the full note on why it differs from
@@ -152,13 +177,8 @@ export interface BuildDockerImageOptions {
  * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
  * Exported for unit testing.
  */
-export function resolveDockerContextDirectory(
-  manifestDir: string,
-  directory: string,
-  wrapError: (message: string) => Error,
-  opts: DockerContextResolveOptions
-): string {
-  const { assetOutdir, sink, assetId } = opts;
+export function resolveDockerContextDirectory(opts: DockerContextResolveOptions): string {
+  const { manifestDir, directory, wrapError, assetOutdir, sink, assetId } = opts;
   if (isAbsolute(directory)) {
     // HONOURED and warned about, never refused — the twin decision to
     // `resolveFileAssetSourcePath`'s, for the same three reasons, and this is
@@ -258,10 +278,16 @@ export async function buildDockerImage(
   // becomes the working directory of a manifest-supplied argv, which is a
   // larger risk than a BuildKit context and was previously described as the
   // smaller one.
-  const contextDirectory = (directory: string, sink: string): string =>
-    resolveDockerContextDirectory(cdkOutDir, directory, options.wrapError, {
+  // Takes a BAG for the same reason the callee does: `(directory, sink)` were
+  // two adjacent `string`s, so a swap rendered a prose clause as the directory
+  // and the directory as the sink clause (go-to-k/cdkd#3544).
+  const contextDirectory = (args: { directory: string; sink: string }): string =>
+    resolveDockerContextDirectory({
+      manifestDir: cdkOutDir,
+      directory: args.directory,
+      wrapError: options.wrapError,
       assetOutdir: options.assetOutdir ?? cdkOutDir,
-      sink,
+      sink: args.sink,
       ...(options.tag !== undefined && { assetId: options.tag }),
     });
 
@@ -287,10 +313,10 @@ export async function buildDockerImage(
     // (mirrors CDK CLI's `cwd: assetPath` in `buildExternalAsset`). When
     // `directory` is unset, the executable runs from `cdkOutDir`.
     const cwd = source.directory
-      ? contextDirectory(
-          source.directory,
-          "run this asset's source.executable with that directory as its working directory"
-        )
+      ? contextDirectory({
+          directory: source.directory,
+          sink: "run this asset's source.executable with that directory as its working directory",
+        })
       : cdkOutDir;
 
     // The user's build script is an ARBITRARY command line, and a script that
@@ -372,11 +398,12 @@ export async function buildDockerImage(
   // `--build-context name=relative/path` resolve relative paths against
   // the build's cwd, NOT against the trailing context positional. Passing
   // an absolute context dir with no cwd silently breaks those flags.
-  const contextDir = contextDirectory(
-    source.directory,
-    'send that directory to BuildKit as the build context and bake it into the ' +
-      'image pushed to the repository this manifest names'
-  );
+  const contextDir = contextDirectory({
+    directory: source.directory,
+    sink:
+      'send that directory to BuildKit as the build context and bake it into the ' +
+      'image pushed to the repository this manifest names',
+  });
   buildArgs.push('.');
 
   // Judge the BuildKit passthroughs against the SAME pair the context

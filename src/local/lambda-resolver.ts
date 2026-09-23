@@ -786,18 +786,28 @@ export function resolveAssetCodeDirectory(
    * The app's outdir, the CONTAINMENT bound; see the note above for why it is
    * not the manifest's directory.
    *
-   * **REQUIRED, and positioned here so OMITTING it is a type error.** Two
-   * earlier revisions of this comment were wrong about the signature, in the
-   * same direction each time, so state what is actually true:
+   * **REQUIRED, and positioned here so OMITTING it is a type error.** Earlier
+   * revisions of this comment were repeatedly wrong about the signature, in
+   * the same direction each time, so state what is actually true. (No count:
+   * a tally of how often this comment has been wrong ticks on every revision
+   * of the thing it counts, so it goes stale the next time someone fixes it —
+   * which is how it went stale before.)
    *
-   * - The dangerous mistake is not a SWAP, it is a DROP. `resolveDockerContextDirectory`
-   *   reads `(manifestDir, directory, wrapError, assetOutdir)`, so a call site
-   *   written from that shape — `resolveAssetCodeDirectory(manifestDir,
-   *   assetPath, wrapError, assetOutdir)` — used to COMPILE while binding the
-   *   outdir string to `logicalId` and defaulting the bound to `manifestDir`.
-   *   That silently reinstates go-to-k/cdkd#3493's B1 and names the Lambda
+   * - A DROP is what THIS POSITION answers, and it is not the only hazard
+   *   here — `(manifestDir, assetPath)` is a live transposable pair on the
+   *   same decision (go-to-k/cdkd#3549). A call site that passes the outdir as
+   *   the FOURTH argument and stops there —
+   *   `resolveAssetCodeDirectory(manifestDir, assetPath, wrapError,
+   *   assetOutdir)` — used to COMPILE while binding the outdir string to
+   *   `logicalId` and defaulting the bound to `manifestDir`. That silently
+   *   reinstates go-to-k/cdkd#3493's B1 and names the Lambda
    *   `/path/to/cdk.out` in the refusal. Making this parameter required and
    *   fourth turns exactly that call into a compile error.
+   *
+   *   Two earlier revisions named the Docker twin's parameter list as where
+   *   that mis-call comes from. Do not cite it again: it is an options bag
+   *   now, and citing it is what went stale each time. The hazard is
+   *   a property of THIS signature and needs no sibling to state.
    * - `logicalId` moves LAST because it is only ever interpolated into a
    *   message: the least dangerous parameter belongs in the position a
    *   mistake is least costly.
