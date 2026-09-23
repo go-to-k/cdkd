@@ -42,7 +42,7 @@
  * own-stack refusal, whose region can be `us-east-` + a secret `1`.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { isThrottlingError } from '../../../src/deployment/retryable-errors.js';
 import { displaySafe } from '../../../src/utils/display-safe.js';
@@ -141,7 +141,23 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
 });
 
 /** EC2 `DescribeAvailabilityZones`: a zone, none, or a rejection. */
-const ec2Behaviour = vi.hoisted(() => ({ mode: 'empty' as 'ok' | 'empty' | 'throw' }));
+const ec2Behaviour = vi.hoisted(() => ({
+  mode: 'empty' as 'ok' | 'empty' | 'throw',
+  /**
+   * go-to-k/cdkd#3171: when set, `throw` mode QUOTES the `region-name` filter
+   * value back, the way an SDK rejection names what it refused. Off keeps the
+   * original message, so every pre-existing case is unaffected.
+   */
+  quoteRegion: false,
+}));
+/**
+ * go-to-k/cdkd#3171: the dynamic-reference lookups' SDK text. `ssmThrottles`
+ * makes that many `GetParameter` calls fail with a THROTTLE quoting the name
+ * before the ordinary answer; `secretsQuote` makes a Secrets Manager miss
+ * quote the request's names back (an AccessDenied naming the secret id, and
+ * the staging-label miss naming the stage).
+ */
+const lookupBehaviour = vi.hoisted(() => ({ ssmThrottles: 0, secretsQuote: false }));
 /** STS: the real account, or an answer with no account (a FABRICATED id). */
 const stsBehaviour = vi.hoisted(() => ({ fabricated: false }));
 
@@ -160,13 +176,27 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         if (command.constructor.name === 'DescribeLaunchTemplatesCommand') {
           throw new Error('launch template read refused');
         }
-        if (ec2Behaviour.mode === 'throw') throw new Error('The region is not subscribed');
+        if (ec2Behaviour.mode === 'throw') {
+          const filters = (command as { input?: { Filters?: { Values?: string[] }[] } }).input
+            ?.Filters;
+          throw new Error(
+            ec2Behaviour.quoteRegion
+              ? `The region '${String(filters?.[0]?.Values?.[0])}' is not subscribed`
+              : 'The region is not subscribed'
+          );
+        }
         if (ec2Behaviour.mode === 'empty') return { AvailabilityZones: [] };
         return { AvailabilityZones: [{ ZoneName: 'zone-a' }] };
       }),
     },
     ssm: {
       send: vi.fn(async (command: { input?: { Name?: string } }) => {
+        if (lookupBehaviour.ssmThrottles > 0) {
+          lookupBehaviour.ssmThrottles--;
+          const throttled = new Error(`Rate exceeded for parameter ${String(command.input?.Name)}`);
+          throttled.name = 'ThrottlingException';
+          throw throttled;
+        }
         if (command.input?.Name === 'host') {
           return { Parameter: { Value: PUBLIC_HOST, Type: 'String' } };
         }
@@ -206,6 +236,33 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
             }),
           };
         }
+        if (lookupBehaviour.secretsQuote) {
+          const input = command.input as {
+            SecretId?: string;
+            VersionStage?: string;
+            VersionId?: string;
+          };
+          if (input.VersionId !== undefined) {
+            const noVersion = new Error(
+              `Secrets Manager can't find the specified secret value for VersionId: ${input.VersionId}`
+            );
+            noVersion.name = 'ResourceNotFoundException';
+            throw noVersion;
+          }
+          if (input.VersionStage !== undefined && input.VersionStage !== 'AWSCURRENT') {
+            const noStage = new Error(
+              `Secrets Manager can't find the specified secret value for staging label: ${input.VersionStage}`
+            );
+            noStage.name = 'ResourceNotFoundException';
+            throw noStage;
+          }
+          const denied = new Error(
+            `User: arn:aws:iam::210987654321:user/dev is not authorized to perform: ` +
+              `secretsmanager:GetSecretValue on resource: ${String(input.SecretId)}`
+          );
+          denied.name = 'AccessDeniedException';
+          throw denied;
+        }
         const notFound = new Error("Secrets Manager can't find the specified secret.");
         notFound.name = 'ResourceNotFoundException';
         throw notFound;
@@ -225,7 +282,7 @@ function withRegionOf<T extends object>(clients: T): T & { withRegion: () => T }
   return out;
 }
 
-const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
+const { IntrinsicFunctionResolver, resetAccountInfoCache, dynamicReferenceRetryDelays } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
 
@@ -337,6 +394,9 @@ beforeEach(() => {
   cfnBehaviour.exportName = '';
   cfnBehaviour.outputKey = '';
   ec2Behaviour.mode = 'empty';
+  ec2Behaviour.quoteRegion = false;
+  lookupBehaviour.ssmThrottles = 0;
+  lookupBehaviour.secretsQuote = false;
   stsBehaviour.fabricated = false;
   resetAccountInfoCache();
 });
@@ -2423,5 +2483,188 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // exempted here to defend the JOIN it performed — an exemption that only
     // holds if the sink keeps the character, which it does not.
     expect(checked).toBe(0x110000);
+  });
+});
+
+/**
+ * go-to-k/cdkd#3171: text the AWS SDK produces about a request that carried a
+ * name assembled around a sub-floor secret. The resolver prints the name
+ * masked in its OWN words (go-to-k/cdkd#3150); the SDK quotes the name back as
+ * it was sent, and that text reached only the needle mask, which cannot see a
+ * 2-character secret inside a longer name. Three routes, each with a CONTROL
+ * that prints an unrecorded name verbatim, so a mask-everything regression
+ * reds too. (The fourth route in the issue, the CloudFormation-fallback warn,
+ * is `the CloudFormation fallback warn masks the name the AWS text quotes
+ * back` in the #3234 block above.)
+ */
+describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floor secret', () => {
+  /** One `Fn::Sub` whose body is the reference, with the secret at `${P}`. */
+  const inline = (template: string): unknown => ({
+    'Fn::Sub': [template, { P: ref('pin') }],
+  });
+  /** The CONTROL twin of `inline`: the same body over an unrecorded value. */
+  const inlinePlain = (template: string): unknown => ({
+    'Fn::Sub': [template, { P: UNRECORDED }],
+  });
+
+  beforeEach(() => {
+    dynamicReferenceRetryDelays.sleep = async () => {};
+  });
+  afterEach(() => {
+    delete dynamicReferenceRetryDelays.sleep;
+  });
+
+  async function rejectionOf(value: unknown): Promise<Error> {
+    const outcome = await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(value, makeContext() as never)
+      .then((resolved) => ({ resolvedInstead: JSON.stringify(resolved) }), (reason: unknown) => reason);
+    if (outcome && typeof outcome === 'object' && 'resolvedInstead' in outcome) {
+      throw new Error(`the lookup must fail; it resolved to ${String(outcome.resolvedInstead)}`);
+    }
+    expect(outcome).toBeInstanceOf(Error);
+    return outcome as Error;
+  }
+
+  /** The rejection's message, stack and every cause link: what `formatError` can reach. */
+  function everyTextOf(error: Error): string[] {
+    const out: string[] = [];
+    let link: unknown = error;
+    const seen = new Set<unknown>();
+    while (link instanceof Error && !seen.has(link)) {
+      seen.add(link);
+      out.push(link.message, String(link.stack));
+      link = (link as { cause?: unknown }).cause;
+    }
+    return out;
+  }
+
+  describe('the SSM lookup', () => {
+    it('the rejection re-thrown out of the lookup', async () => {
+      const error = await rejectionOf(inline('{{resolve:ssm:missing-${P}}}'));
+      expect(error.message).toBe('ParameterNotFound: missing-***');
+      // The CLONE keeps the class the classifiers and the renderers read.
+      expect(error.name).toBe('ParameterNotFound');
+      expectNowhere(`missing-${PIN}`, ...everyTextOf(error));
+    });
+
+    it('CONTROL: an unrecorded name in the rejection prints verbatim', async () => {
+      const error = await rejectionOf(inlinePlain('{{resolve:ssm:missing-${P}}}'));
+      expect(error.message).toBe(`ParameterNotFound: missing-${UNRECORDED}`);
+    });
+
+    it('the per-attempt retry line of a throttled lookup, which is still retried', async () => {
+      lookupBehaviour.ssmThrottles = 1;
+      const error = await rejectionOf(inline('{{resolve:ssm:missing-${P}}}'));
+      // The retry HAPPENED: only the second attempt answers `ParameterNotFound`.
+      expect(lookupBehaviour.ssmThrottles).toBe(0);
+      expect(error.message).toBe('ParameterNotFound: missing-***');
+      const retries = everyLine().filter((l) => l.includes('Retrying ssm:'));
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toContain('Retrying ssm:missing-*** in ');
+      expect(retries[0]).toMatch(/ - Rate exceeded for parameter missing-\*\*\*$/);
+      expectNowhere(`missing-${PIN}`, ...everyTextOf(error));
+    });
+
+    it('CONTROL: an unrecorded name in the retry line prints verbatim', async () => {
+      lookupBehaviour.ssmThrottles = 1;
+      await rejectionOf(inlinePlain('{{resolve:ssm:missing-${P}}}'));
+      const retries = everyLine().filter((l) => l.includes('Retrying ssm:'));
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatch(
+        new RegExp(` - Rate exceeded for parameter missing-${UNRECORDED}$`)
+      );
+    });
+
+    it('a throttle that outlasts the retries is re-thrown masked and still classifies as one', async () => {
+      lookupBehaviour.ssmThrottles = 1_000;
+      const error = await rejectionOf(inline('{{resolve:ssm:missing-${P}}}'));
+      expect(error.message).toBe('Rate exceeded for parameter missing-***');
+      // `true`, not `false`: an error stripped of every descriptor classifies
+      // `false` too, so only the positive answer shows the clone kept `name`.
+      expect(isThrottlingError(error)).toBe(true);
+      expectNowhere(`missing-${PIN}`, ...everyTextOf(error));
+    });
+  });
+
+  describe('the Secrets Manager lookup', () => {
+    beforeEach(() => {
+      lookupBehaviour.secretsQuote = true;
+    });
+
+    it('the secret id an AccessDenied quotes back', async () => {
+      const error = await rejectionOf(inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}'));
+      expect(error.message).toMatch(/ on resource: sec-\*\*\*$/);
+      expect(error.name).toBe('AccessDeniedException');
+      expectNowhere(`sec-${PIN}`, ...everyTextOf(error));
+    });
+
+    it('CONTROL: an unrecorded secret id prints verbatim', async () => {
+      const error = await rejectionOf(
+        inlinePlain('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}')
+      );
+      expect(error.message).toMatch(new RegExp(` on resource: sec-${UNRECORDED}$`));
+    });
+
+    it('the version stage a staging-label miss quotes back', async () => {
+      const error = await rejectionOf(
+        inline('{{resolve:secretsmanager:other:SecretString:pin:stage-${P}}}')
+      );
+      expect(error.message).toBe(
+        "Secrets Manager can't find the specified secret value for staging label: stage-***"
+      );
+      expectNowhere(`stage-${PIN}`, ...everyTextOf(error));
+    });
+
+    it('CONTROL: an unrecorded version stage prints verbatim', async () => {
+      const error = await rejectionOf(
+        inlinePlain('{{resolve:secretsmanager:other:SecretString:pin:stage-${P}}}')
+      );
+      expect(error.message).toBe(
+        `Secrets Manager can't find the specified secret value for staging label: stage-${UNRECORDED}`
+      );
+    });
+
+    it('the version id a version miss quotes back', async () => {
+      const error = await rejectionOf(
+        inline('{{resolve:secretsmanager:other:SecretString:pin::ver-${P}}}')
+      );
+      expect(error.message).toBe(
+        "Secrets Manager can't find the specified secret value for VersionId: ver-***"
+      );
+      expectNowhere(`ver-${PIN}`, ...everyTextOf(error));
+    });
+
+    it('CONTROL: an unrecorded version id prints verbatim', async () => {
+      const error = await rejectionOf(
+        inlinePlain('{{resolve:secretsmanager:other:SecretString:pin::ver-${P}}}')
+      );
+      expect(error.message).toBe(
+        `Secrets Manager can't find the specified secret value for VersionId: ver-${UNRECORDED}`
+      );
+    });
+  });
+
+  describe('the Fn::GetAZs describe failure', () => {
+    beforeEach(() => {
+      ec2Behaviour.mode = 'throw';
+      ec2Behaviour.quoteRegion = true;
+    });
+
+    it('the region the AWS text quotes back, canonicalized as it was sent', async () => {
+      const message = await messageOf({ 'Fn::GetAZs': sub('US-NORTH-${P}') }, makeContext());
+      expect(message).toBe(
+        "Fn::GetAZs: failed to describe availability zones for region 'us-north-***': " +
+          "The region 'us-north-***' is not subscribed"
+      );
+      expectNowhere(`us-north-${PIN}`, message);
+    });
+
+    it('CONTROL: an unrecorded region prints verbatim in both places', async () => {
+      const message = await messageOf({ 'Fn::GetAZs': plain('US-NORTH-${P}') }, makeContext());
+      expect(message).toBe(
+        `Fn::GetAZs: failed to describe availability zones for region 'us-north-${UNRECORDED}': ` +
+          `The region 'us-north-${UNRECORDED}' is not subscribed`
+      );
+    });
   });
 });
