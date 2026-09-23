@@ -73,6 +73,12 @@ export const ARCHIVE_FILE = '_archive.md';
  * `<YYYY-MM-DD>-<issue>-<slug>.md`, with a slug of lowercase words. The month
  * and day are RANGE-bounded rather than any two digits: `2026-99-99` sorts
  * ahead of every real date and would silently head the document.
+ *
+ * EXPORTED so a consumer cannot carry a looser copy, the same reason `HEADING`
+ * / `LOOSE_HEADING` are. `check-pr-title-prefix-scope.ts` decides whether a
+ * changed path is a fragment and therefore whether a `feat:` / `fix:` title is
+ * backed; a second hand-written pattern there would let a name THIS file
+ * refuses certify a release note (go-to-k/cdkd#3548).
  */
 export const ENTRY_NAME =
   /^(\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))-(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;

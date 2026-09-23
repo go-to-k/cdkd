@@ -198,12 +198,14 @@ const IS_DEPS = (f: string) => f === 'package.json' || f === 'pnpm-lock.yaml';
  * enforced in neither — and the assembler is the authority on what it can
  * read.
  */
+const ENTRIES_PREFIX = `${FRAGMENT_DIR}/${ENTRIES_DIR}/`;
+/** In the directory but not necessarily a fragment — `.gitkeep`, a typo'd name. */
+const IS_IN_ENTRIES_DIR = (f: string) => f.startsWith(ENTRIES_PREFIX);
 const IS_CHANGELOG_ENTRY = (f: string) => {
-  const prefix = `${FRAGMENT_DIR}/${ENTRIES_DIR}/`;
-  if (!f.startsWith(prefix)) return false;
+  if (!IS_IN_ENTRIES_DIR(f)) return false;
   // Flat by construction: `ENTRY_NAME` forbids a `/`, so a nested path fails
   // here rather than needing its own arm.
-  return ENTRY_NAME.test(f.slice(prefix.length));
+  return ENTRY_NAME.test(f.slice(ENTRIES_PREFIX.length));
 };
 
 /** Why a verdict came out the way it did. Every arm of the hooks' flow has one. */
@@ -396,6 +398,21 @@ export function formatFailure(v: PrefixScopeVerdict): string {
     ``,
     `Branch diff files (no src/**, no changelog.d/entries/** fragment):`,
     ...shown,
+    // Without this the message contradicts itself: "no fragment" prints
+    // directly above the fragment the author just wrote, and nothing says the
+    // NAME is what failed. The assembler reports the same contract, but only
+    // at `vp run assemble-changelog` -- after the rename this message exists
+    // to prompt.
+    ...(v.files.some(IS_IN_ENTRIES_DIR)
+      ? [
+          ``,
+          `A file under changelog.d/entries/ is listed above but is NOT a`,
+          `fragment: the NAME must be <YYYY-MM-DD>-<issue>-<slug>.md, with a`,
+          `real calendar month and day and a lowercase-and-digits slug. The`,
+          `assembler refuses any other name, so it would not reach the`,
+          `changelog either. (.gitkeep is not a fragment.)`,
+        ]
+      : []),
     ``,
     `Suggested title prefix, IF the change is not user-visible: ${v.suggestedPrefix}:`,
     `Otherwise add the changelog entry and keep '${v.prefix}:'.`,
