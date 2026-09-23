@@ -60,7 +60,7 @@ unconditionally:
 
 | Command | What stdout carries |
 | --- | --- |
-| `cdkd synth` | The CloudFormation template — single-stack apps only. |
+| `cdkd synth` | The CloudFormation template of the selected stack, or of the only stack when the app has one. |
 | `cdkd list` | The stack listing in every mode: one display id per line by default, YAML under `--long` / `--show-dependencies`, JSON under `--json`. |
 | `cdkd state list` | The state-record listing: one `Stack (region)` reference per line by default, JSON under `--json`. |
 | `cdkd local invoke` | The function's response payload. |
@@ -112,11 +112,13 @@ terminal still sees it and where it stops corrupting a redirect to a file.
 
 ### `cdkd synth` on a multi-stack app
 
-The template is emitted only when the app has exactly one stack, matching
-`cdk synth`. With several stacks, stdout is empty and the whole summary goes to
-stderr. stdout on `cdkd synth` is the template or it is nothing; the summary is
-never a payload. Use `--output <dir>` and read the per-stack template files from
-the assembly directory to get every stack's template.
+The template is emitted when the SELECTION is exactly one stack — name one
+(`cdkd synth MyStack`), or let the app's only stack select itself. That matches
+`cdk synth`. Selecting several leaves stdout empty and prints the ids you can
+pass; the whole summary goes to stderr either way. stdout on `cdkd synth` is
+one template or it is nothing, never two documents and never the summary. Use
+`--output <dir>` and read the per-stack template files from the assembly
+directory to get every stack's template at once.
 
 ### `cdkd synth`'s stdout parses back to the template
 

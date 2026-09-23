@@ -34,15 +34,22 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/config-loader.ts** - config resolution (cdk.json, env vars for
   `--app` and `--state-bucket`).
 - **src/cli/stack-matcher.ts** - shared stack-name matcher for deploy / diff /
-  destroy / list; routes a pattern by whether it contains `/` (display path) or
-  not (physical name) and returns a deduplicated union. `renderNoStackMatch`
-  owns the empty-selection message for deploy / diff / list / publish-assets and
+  destroy / list / synth; routes a pattern by whether it contains `/` (display
+  path) or not (physical name) and returns a deduplicated union.
+  `renderNoStackMatch` owns the empty-selection message for deploy / diff /
+  list / publish-assets / synth and
   takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
   load is named rather than reported as "no stacks matching"
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a REQUIRED member,
   so an ad-hoc `{}` is a compile error; `scrub` and `destroy` still word their
-  own. Each of those four also throws it on a ZERO-stack assembly BEFORE its
-  branch chain, which otherwise answers `Multiple stacks found: .`.
+  own. Each of the first four also throws it on a ZERO-stack assembly BEFORE
+  its branch chain, which otherwise answers `Multiple stacks found: .`.
+  **`synth` reaches the same message by a different route and has no branch
+  chain to sit before** ([#3550](https://github.com/go-to-k/cdkd/issues/3550)):
+  its selection is unconditional, so a zero-stack assembly and a pattern
+  matching nothing are one empty-selection check. `synth` is also the one
+  consumer whose selection does NOT narrow synthesis — it runs after, matching
+  `cdk`, and narrows only stdout, annotations and the `--verbose` dump.
   `describeStack` renders both names through `displayIdent`, which is right for
   the PROSE it serves and wrong for a PAYLOAD: **`list.ts` deliberately does not
   route through it** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) —
