@@ -33,7 +33,14 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
 `reopened`; unit-tested by `pr-title-prefix-scope.test.ts`.
 
 - **What it enforces**: a `feat:` / `fix:` PR title feeds a release-please
-  version bump, so it must be backed by at least one changed file under `src/**`.
+  version bump, so it must be backed by at least one changed file under `src/**`
+  OR a `changelog.d/entries/**` fragment. The second arm exists because `src/**`
+  cannot see a bump to a runtime dependency cdkd BUNDLES — `cdk-local` ships
+  inside the binary, so its version bump is user-visible with no `src/**` diff
+  ([#3548](https://github.com/go-to-k/cdkd/issues/3548)). The fragment is the
+  author's affirmative claim, per AGENTS.md's rule that only a user-visible
+  change writes one; the filename is validated with the ASSEMBLER's own
+  `ENTRY_NAME`, so `.gitkeep` and a malformed name do not count.
   `revert:` and every non-release type pass. The grammar is
   `^([a-z]+)(\([^)]+\))?!?: ` — lowercase-only type and a REQUIRED space after
   the colon, so `Fix:`, `feat2:` and `fix:x` are not release prefixes.

@@ -8,7 +8,9 @@
  * THE RULE (unchanged from both hooks)
  *   A `feat:` or `fix:` conventional-commit prefix is what makes release-please
  *   cut a version bump AND write a user-facing CHANGELOG line. So a subject
- *   carrying one must be backed by at least one changed file under `src/**`.
+ *   carrying one must be backed by at least one changed file under `src/**`,
+ *   or by a `changelog.d/entries/**` fragment (go-to-k/cdkd#3548 — a bundled
+ *   runtime dependency changes the shipped binary with no `src/**` diff).
  *   Anything else — dev tooling, `.claude/**`, docs, tests, build/CI — is
  *   invisible to someone running the cdkd binary, and a release note for it
  *   reads as a CLI change that does not exist.
@@ -117,8 +119,9 @@
  *     scope, optional breaking `!`, and a REQUIRED space after the colon. A
  *     subject that does not match is not a conventional commit, release-please
  *     ignores it, and so do we;
- *   - "any path under `src/`" as the sole scope test, anchored at the start of
- *     the path (`foo/src/bar.ts` and `srcfoo/x.ts` do not count);
+ *   - "any path under `src/`" as a scope test, anchored at the start of the
+ *     path (`foo/src/bar.ts` and `srcfoo/x.ts` do not count). It was the SOLE
+ *     test until go-to-k/cdkd#3548 added the changelog-fragment arm beside it;
  *   - the suggested-prefix heuristic and its precedence order:
  *       all docs (`docs/**`, `README.md`, `AGENTS.md`, any nested `README.md`) -> docs
  *       all `tests/**`                                                -> test
@@ -142,6 +145,7 @@
  */
 
 import { foldAnnotationText } from './annotation-text.ts';
+import { ENTRIES_DIR, ENTRY_NAME, FRAGMENT_DIR } from './assemble-changelog.ts';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -177,8 +181,30 @@ const IS_DOCS = (f: string) =>
 const IS_TESTS = (f: string) => f.startsWith('tests/');
 const IS_CLAUDE = (f: string) => f.startsWith('.claude/');
 const IS_DEPS = (f: string) => f === 'package.json' || f === 'pnpm-lock.yaml';
-/** A per-change changelog fragment. `changelog.d/_header.md` / `_archive.md` are NOT ones. */
-const IS_CHANGELOG_ENTRY = (f: string) => f.startsWith('changelog.d/entries/');
+/**
+ * A per-change changelog fragment.
+ *
+ * **The directory prefix alone is not the test, and settling for it left a
+ * live hole.** `changelog.d/entries/.gitkeep` is TRACKED, so a CI/tooling PR
+ * touching it would have satisfied a `fix:` title — go-to-k/cdkd#2811 is
+ * exactly that shape, and it is the same class of gap the `_header.md` /
+ * `_archive.md` exclusion was written to close, one file short. A name the
+ * assembler would REJECT is also not a fragment: it passes a prefix test while
+ * making `readEntries` throw, so the gate would be claiming a user-visible
+ * change that the changelog cannot even build.
+ *
+ * `ENTRY_NAME` is IMPORTED from the assembler rather than re-spelled here. A
+ * second hand-written copy is how a rule enforced in one place becomes
+ * enforced in neither — and the assembler is the authority on what it can
+ * read.
+ */
+const IS_CHANGELOG_ENTRY = (f: string) => {
+  const prefix = `${FRAGMENT_DIR}/${ENTRIES_DIR}/`;
+  if (!f.startsWith(prefix)) return false;
+  // Flat by construction: `ENTRY_NAME` forbids a `/`, so a nested path fails
+  // here rather than needing its own arm.
+  return ENTRY_NAME.test(f.slice(prefix.length));
+};
 
 /** Why a verdict came out the way it did. Every arm of the hooks' flow has one. */
 export type VerdictReason =
@@ -233,7 +259,15 @@ export function hasSrcFile(files: readonly string[]): boolean {
 }
 
 /**
- * True when the branch adds or edits a changelog fragment.
+ * True when the branch TOUCHES a changelog fragment.
+ *
+ * Touches, not "adds or edits": the file list CI passes in
+ * (`gh api ... --jq '.[].filename'`, and `--git-diff` locally) carries no
+ * `.status`, so an add, a modify and a DELETE are indistinguishable here. A
+ * delete-only diff therefore satisfies this, which is wrong in principle and
+ * has never happened — zero deletions under this directory in the repo's
+ * history, since archival rewrites `_archive.md` instead. Said plainly rather
+ * than papered over: taking `.status` is the fix if it ever does.
  *
  * **Why this is a second sufficient condition for `feat:` / `fix:`**
  * (issue [#3548](https://github.com/go-to-k/cdkd/issues/3548)). The `src/**`
@@ -360,13 +394,15 @@ export function formatFailure(v: PrefixScopeVerdict): string {
     `runtime dependency cdkd bundles is the live case -- write the changelog`,
     `entry AGENTS.md already requires for one, and this check passes.`,
     ``,
-    `Branch diff files (none in src/**):`,
+    `Branch diff files (no src/**, no changelog.d/entries/** fragment):`,
     ...shown,
     ``,
-    `Suggested title prefix: ${v.suggestedPrefix}:`,
+    `Suggested title prefix, IF the change is not user-visible: ${v.suggestedPrefix}:`,
+    `Otherwise add the changelog entry and keep '${v.prefix}:'.`,
     ``,
     `Mapping:`,
     `  src/**                                 -> feat: or fix:`,
+    `  changelog.d/entries/**                 -> feat: or fix:`,
     `  docs/** / README.md / AGENTS.md        -> docs:`,
     `  tests/** only                          -> test:`,
     `  .claude/** (hook / skill / agent)      -> chore:`,

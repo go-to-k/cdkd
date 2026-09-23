@@ -74,7 +74,8 @@ export const ARCHIVE_FILE = '_archive.md';
  * and day are RANGE-bounded rather than any two digits: `2026-99-99` sorts
  * ahead of every real date and would silently head the document.
  */
-const ENTRY_NAME = /^(\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))-(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
+export const ENTRY_NAME =
+  /^(\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))-(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 
 /** The heading the assembler emits, and the only place its shape is written. */
 export function headingFor(date: string): string {

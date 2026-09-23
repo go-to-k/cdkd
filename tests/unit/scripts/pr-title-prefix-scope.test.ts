@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -228,7 +228,7 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: carrying a changelog fra
     [
       'a fragment alone, with nothing else in the diff',
       'fix: correct a user-visible message',
-      ['changelog.d/entries/2026-09-23-x.md'],
+      ['changelog.d/entries/2026-09-23-3553-x.md'],
     ],
   ])('allows %s', (_label, title, files) => {
     const v = checkPrTitlePrefixScope(title, files);
@@ -240,25 +240,48 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: carrying a changelog fra
   it('prefers src-present when BOTH are in the diff, so the reason stays readable', () => {
     const v = checkPrTitlePrefixScope('fix: thing', [
       'src/cli/options.ts',
-      'changelog.d/entries/2026-09-23-x.md',
+      'changelog.d/entries/2026-09-23-3553-x.md',
     ]);
     expect(v.reason).toBe('src-present');
   });
 
-  it('does NOT open the door the check was built to close', () => {
-    // The whole point of the exemption is that AGENTS.md forbids these PRs
-    // from writing a fragment at all. If a docs-only diff started passing,
-    // the fix would have replaced one wrong verdict with another.
-    for (const files of [
-      ['docs/cli-reference.md', 'README.md'],
-      ['tests/unit/foo.test.ts'],
-      ['.claude/hooks/foo.sh'],
-      ['package.json', 'pnpm-lock.yaml'],
+  it('does NOT count a tooling PR that only touches the directory', () => {
+    // THE hole, and it is not hypothetical: `changelog.d/entries/.gitkeep` is
+    // TRACKED, so a directory-prefix test alone let a CI/tooling diff satisfy
+    // a `fix:` title. go-to-k/cdkd#2811 is exactly this file list.
+    const pr2811 = [
+      '.claude/rules/layout-scripts.md',
+      '.gitignore',
+      'scripts/assemble-changelog.ts',
+      'changelog.d/_header.md',
+      'changelog.d/_archive.md',
+      'changelog.d/entries/.gitkeep',
+    ];
+    expect(hasChangelogEntry(pr2811)).toBe(false);
+    const v = checkPrTitlePrefixScope('fix(changelog): move entries to one file each', pr2811);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('no-src');
+  });
+
+  it('does NOT count a name the ASSEMBLER would refuse to read', () => {
+    // A fragment the assembler rejects passes a prefix test while making
+    // `readEntries` throw — the gate would be certifying a user-visible change
+    // whose changelog cannot build. The filename test is the assembler's own
+    // `ENTRY_NAME`, imported rather than re-spelled.
+    for (const f of [
+      'changelog.d/entries/.gitkeep',
+      'changelog.d/entries/README.md',
+      'changelog.d/entries/2026-13-01-1-x.md', // month 13
+      'changelog.d/entries/2026-09-32-1-x.md', // day 32
+      'changelog.d/entries/2026-09-23-x.md', // no issue number
+      'changelog.d/entries/2026-09-23-1-Mixed-Case.md',
+      'changelog.d/entries/2026-09-23-1-x.txt',
+      'changelog.d/entries/nested/2026-09-23-1-x.md',
     ]) {
-      const v = checkPrTitlePrefixScope('fix: thing', files);
-      expect(v.ok, files.join(',')).toBe(false);
-      expect(v.reason).toBe('no-src');
+      expect(hasChangelogEntry([f]), f).toBe(false);
+      expect(checkPrTitlePrefixScope('fix: thing', [f]).ok, f).toBe(false);
     }
+    expect(hasChangelogEntry(['changelog.d/entries/2026-09-23-3540-a-slug.md'])).toBe(true);
   });
 
   it('is the ENTRIES directory, not changelog.d at large', () => {
@@ -268,17 +291,29 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: carrying a changelog fra
       expect(hasChangelogEntry([f]), f).toBe(false);
       expect(checkPrTitlePrefixScope('fix: thing', [f]).ok, f).toBe(false);
     }
-    expect(hasChangelogEntry(['changelog.d/entries/2026-09-23-x.md'])).toBe(true);
   });
 
   it('anchors the prefix, so a lookalike path does not count', () => {
     for (const f of [
-      'foo/changelog.d/entries/x.md',
-      'changelog.d/entriesfoo/x.md',
-      'changelog.dentries/x.md',
+      'foo/changelog.d/entries/2026-09-23-1-x.md',
+      'changelog.d/entriesfoo/2026-09-23-1-x.md',
+      'changelog.dentries/2026-09-23-1-x.md',
     ]) {
       expect(hasChangelogEntry([f]), f).toBe(false);
     }
+  });
+
+  it('the real fragments in this repo all satisfy the gate', () => {
+    // Synthetic names and the checker can share a blind spot. Read the actual
+    // directory: every tracked fragment the assembler accepts must also pass
+    // here, or the exemption is dead for the very PRs it exists to unblock.
+    const dir = join(import.meta.dirname, '..', '..', '..', 'changelog.d', 'entries');
+    const real = readdirSync(dir).filter((n) => n !== '.gitkeep');
+    expect(real.length).toBeGreaterThan(20);
+    for (const n of real) {
+      expect(hasChangelogEntry([`changelog.d/entries/${n}`]), n).toBe(true);
+    }
+    expect(hasChangelogEntry(['changelog.d/entries/.gitkeep'])).toBe(false);
   });
 
   it('still blocks a non-release prefix question it never answered', () => {
@@ -422,7 +457,27 @@ describe('formatFailure — the message a maintainer acts on', () => {
 
   it('names the offending prefix and the suggested replacement', () => {
     expect(msg).toContain("prefix 'fix:'");
-    expect(msg).toContain('Suggested title prefix: chore:');
+    expect(msg).toContain('Suggested title prefix, IF the change is not user-visible: chore:');
+  });
+
+  it('offers the OTHER remedy too, so the suggestion is not the only route', () => {
+    // The suggestion line is what an author acts on. Before go-to-k/cdkd#3548
+    // it was the only route named, which for a user-visible dependency bump is
+    // the wrong one — it would ship the change with no release note.
+    expect(msg).toContain("Otherwise add the changelog entry and keep 'fix:'");
+    expect(msg).toContain('changelog.d/entries/**                 -> feat: or fix:');
+  });
+
+  it('no longer asserts the change is internal, which was false twice', () => {
+    // The old text said "The change is internal (dev tooling / docs / tests /
+    // build), not a cdkd CLI behavior change" as a statement of fact. For
+    // go-to-k/cdkd#3545 and go-to-k/cdkd#3553 every clause of it was wrong.
+    expect(msg).not.toContain('The change is internal');
+    expect(msg).toContain('nothing in it claims a user-visible behavior change');
+  });
+
+  it('describes the diff by what it LACKS, both arms', () => {
+    expect(msg).toContain('no src/**, no changelog.d/entries/** fragment');
   });
 
   it('lists the changed files that failed the check', () => {
