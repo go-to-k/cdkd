@@ -326,3 +326,108 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     );
   });
 });
+
+describe('the Ref renders of a state-record id and a pseudo-parameter value are sanitized (#3479, PR #3575 review)', () => {
+  function ref(name: string, over: Partial<ResolverContext> = {}): Promise<string[]> {
+    return capture(() =>
+      resolver().resolve({ Ref: name }, {
+        template: { Resources: { Thing: { Type: 'AWS::EC2::VPC' } } } as unknown as CloudFormationTemplate,
+        resources: {
+          Thing: { physicalId: EVIL_ID, resourceType: 'AWS::EC2::VPC', properties: {}, dependencies: [] },
+        },
+        ...over,
+      } as unknown as ResolverContext)
+    );
+  }
+
+  it('sanitizes the resource Ref DEBUG line, which renders the physical id from state', async () => {
+    const got = await ref('Thing');
+    expectSanitized(line(got, 'Resolved Ref to resource: Thing -> '), 'the resource Ref line');
+
+    const control = await capture(() =>
+      resolver().resolve({ Ref: 'Thing' }, {
+        template: { Resources: { Thing: { Type: 'AWS::EC2::VPC' } } } as unknown as CloudFormationTemplate,
+        resources: {
+          Thing: { physicalId: 'vpc-0abc', resourceType: 'AWS::EC2::VPC', properties: {}, dependencies: [] },
+        },
+      } as unknown as ResolverContext)
+    );
+    expect(control).toContain('Resolved Ref to resource: Thing -> vpc-0abc');
+  });
+
+  it('sanitizes the pseudo-parameter DEBUG line, whose AWS::StackName value is manifest-derived', async () => {
+    const got = await ref('AWS::StackName', { stackName: EVIL } as Partial<ResolverContext>);
+    expectSanitized(
+      line(got, 'Resolved Ref to pseudo parameter: AWS::StackName -> '),
+      'the pseudo-parameter line'
+    );
+
+    const control = await ref('AWS::StackName', { stackName: 'MyStack' } as Partial<ResolverContext>);
+    expect(control).toContain('Resolved Ref to pseudo parameter: AWS::StackName -> MyStack');
+  });
+});
+
+describe('a NON-STRING state-record physical id still warns and degrades, instead of throwing (PR #3575 security review)', () => {
+  async function getAttValue(
+    resourceType: string,
+    attribute: string
+  ): Promise<{ lines: string[]; value: unknown; error?: unknown }> {
+    let value: unknown;
+    let error: unknown;
+    const lines = await capture(async () => {
+      try {
+        value = await resolver().resolve({ 'Fn::GetAtt': ['Thing', attribute] }, {
+          template: { Resources: { Thing: { Type: resourceType } } } as unknown as CloudFormationTemplate,
+          resources: {
+            // A hand-edited record: nothing in src/state/ enforces a string id.
+            Thing: { physicalId: 123, resourceType, properties: {}, dependencies: [] },
+          },
+        } as unknown as ResolverContext);
+      } catch (e) {
+        error = e;
+      }
+    });
+    return { lines, value, error };
+  }
+
+  it('VPC Ipv6CidrBlocks: the failure warn is emitted and the arm returns []', async () => {
+    aws.ec2 = async (command) => {
+      throw echoing((command.input?.['VpcIds'] as unknown[] | undefined)?.[0]);
+    };
+    const got = await getAttValue('AWS::EC2::VPC', 'Ipv6CidrBlocks');
+    expect(got.error, String(got.error)).toBeUndefined();
+    expect(got.value).toEqual([]);
+    expect(got.lines).toContain(
+      "Failed to fetch VPC Ipv6CidrBlocks for 123: The ID '123' does not exist"
+    );
+  });
+
+  it('VPC Ipv6CidrBlocks: a successful read renders the numeric id too', async () => {
+    aws.ec2 = async () => ({ Vpcs: [{ Ipv6CidrBlockAssociationSet: [] }] });
+    const got = await getAttValue('AWS::EC2::VPC', 'Ipv6CidrBlocks');
+    expect(got.error, String(got.error)).toBeUndefined();
+    expect(got.lines).toContain('No IPv6 CIDR associations found for VPC 123');
+  });
+
+  it('ServiceDiscovery HostedZoneId: the failure warn is emitted and the arm returns undefined', async () => {
+    aws.sd = async (command) => {
+      throw echoing(command.input?.['Id']);
+    };
+    const got = await getAttValue('AWS::ServiceDiscovery::PrivateDnsNamespace', 'HostedZoneId');
+    expect(got.lines).toContain(
+      "Failed to fetch HostedZoneId for namespace 123: The ID '123' does not exist"
+    );
+  });
+
+  it('LaunchTemplate: the failure warn is emitted and the arm falls back to $Latest', async () => {
+    aws.ec2 = async (command) => {
+      throw echoing((command.input?.['LaunchTemplateIds'] as unknown[] | undefined)?.[0]);
+    };
+    const got = await getAttValue('AWS::EC2::LaunchTemplate', 'LatestVersionNumber');
+    expect(got.error, String(got.error)).toBeUndefined();
+    expect(got.value).toBe('$Latest');
+    expect(got.lines).toContain(
+      "DescribeLaunchTemplates(123) failed for LatestVersionNumber: The ID '123' does not exist"
+    );
+  });
+});

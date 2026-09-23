@@ -4440,9 +4440,15 @@ export class IntrinsicFunctionResolver {
       : undefined;
     if (resource) {
       const refValue = this.resolveRefValue(logicalId, resource, context);
-      // not-in-class(refValue): a Ref result -- everything cfnRefValueFromPhysicalId can return for a RESOURCE, which is FOUR things: the physical id from state; a SEGMENT of it (after-pipe / before-first-pipe / at-index / the name extracted from an ARN); the WAFv2 compound recomposed from that ARN; or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) read out of this record's own persisted properties / attributes. The last is the only member that could be SECRET_MASK, and it is IN-CLASS either way -- do not read the opt-in as removing it. Traced rather than reasoned from the design intent: refStateLookupFromResource skips a masked leaf ONLY for a caller that passed an onMaskedValue, and resolveRefValue passes one only when the context carries a redactedAttributeReads bag, so every BAGLESS caller (cdkd diff, cdkd scrub, cdkd import, cdkd export's child-parameter pass) still gets SECRET_MASK back here. That is safe for the ordinary reason rather than a special one: SECRET_MASK is not plaintext, and the four readers that recognise it still do. A pseudo-parameter value is NOT in this enumeration -- this arm is the RESOURCE branch, and a pseudo-parameter is handled further down (a previous revision listed it here, where it is unreachable). A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog on that branch.
+      // `refValue` through the builder (issue #3479, PR #3575 review): it is
+      // the physical id from the STATE RECORD or a segment of it (see
+      // `cfnRefValueFromPhysicalId`), which is not always AWS-assigned, so the
+      // secret question this line used to answer is not the control-character
+      // one. `String()` first: a hand-edited record can hold a non-string id,
+      // and the builder calls `.replace`. A `SECRET_MASK` read back from a
+      // bagless caller renders unchanged.
       this.logger.debug(
-        `Resolved Ref to resource: ${this.displayMasked(logicalId, context)} -> ${refValue}`
+        `Resolved Ref to resource: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(String(refValue), context)}`
       );
       return refValue;
     }
@@ -4521,8 +4527,12 @@ export class IntrinsicFunctionResolver {
       // THE CLAIM: `logicalId` here is one of `resolvePseudoParameter`'s own
       // literal case labels -- not template text -- so it carries neither a
       // resolved value nor a control character.
-      // not-in-class(valueStr): a Ref result: a physical id from state, or a pseudo-parameter value. A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog.
-      this.logger.debug(`Resolved Ref to pseudo parameter: ${logicalId} -> ${valueStr}`);
+      // `valueStr` through the builder (issue #3479): a pseudo-parameter
+      // VALUE is not constrained the way its name is -- `AWS::StackName` is the
+      // manifest-derived stack name.
+      this.logger.debug(
+        `Resolved Ref to pseudo parameter: ${logicalId} -> ${this.displayMasked(valueStr, context)}`
+      );
       return pseudoValue;
     }
 
@@ -5776,7 +5786,9 @@ export class IntrinsicFunctionResolver {
             // <id>=<physicalId>`, a record another binary or a hand edit
             // wrote), so being an id answers the secret question, not the
             // control-character one. Bound once for the five renders below.
-            const loggedId = this.displayMasked(physicalId, context);
+            // `String()` first: nothing in `src/state/` guarantees a string id,
+            // and the builder calls `.replace` (PR #3575 security review).
+            const loggedId = this.displayMasked(String(physicalId), context);
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
               const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -5815,7 +5827,7 @@ export class IntrinsicFunctionResolver {
             // Rebuilt here rather than reusing `loggedId`, which the `try`
             // scopes away.
             this.logger.warn(
-              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(String(physicalId), context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return [];
           }
@@ -6233,7 +6245,7 @@ export class IntrinsicFunctionResolver {
             // `Ipv6CidrBlocks` arm gives: a state-record id is not always
             // AWS-assigned, and `NamespaceNotFound` can echo it.
             this.logger.warn(
-              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(String(physicalId), context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return undefined;
           }
@@ -6794,7 +6806,7 @@ export class IntrinsicFunctionResolver {
           // beside it already was: a state-record id is not always
           // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
           this.logger.warn(
-            `DescribeLaunchTemplates(${this.displayMasked(physicalId, context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+            `DescribeLaunchTemplates(${this.displayMasked(String(physicalId), context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
           );
         }
         // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -12242,12 +12254,15 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    // not-in-class(count): a `Number()` result, so it renders as digits, `NaN` or `Infinity` (issue #3479).
-    // not-in-class(cidrBits): a `Number()` result, so it renders as digits, `NaN` or `Infinity` (issue #3479).
+    // `count` / `cidrBits` through the builder (PR #3575 review): as
+    // `Number()` results they cannot carry a control character, but they come
+    // back from `resolveValue`, so a numeric secret whose text survives
+    // `Number()` would otherwise print (`"0064"` or `"1e3"` does not survive,
+    // and is not masked).
     this.logger.debug(
       // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
       // comes back from `resolveValue`.
-      `Resolving Fn::Cidr: ipBlock=${this.displayMasked(JSON.stringify(this.maskValueLeaves(ipBlock, context)), context)}, count=${count}, cidrBits=${cidrBits}`
+      `Resolving Fn::Cidr: ipBlock=${this.displayMasked(JSON.stringify(this.maskValueLeaves(ipBlock, context)), context)}, count=${this.displayMasked(String(count), context)}, cidrBits=${this.displayMasked(String(cidrBits), context)}`
     );
 
     const isIpv6 = ipBlock.includes(':');
