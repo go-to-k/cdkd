@@ -10,6 +10,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption } from '../region-options.js';
@@ -98,17 +99,20 @@ export function resolveVerboseTemplatePath(outputDir: string, stackName: string)
  * (go-to-k/cdkd#3489): the guard has its own cases, but reverting the CALL
  * SITE left the suite green.
  */
-export async function synthCommand(options: {
-  app?: string;
-  output: string;
-  verbose: boolean;
-  region?: string;
-  profile?: string;
-  roleArn?: string;
-  context?: string[];
-  strict?: boolean;
-  ignoreErrors?: boolean;
-}): Promise<void> {
+export async function synthCommand(
+  stackPatterns: string[],
+  options: {
+    app?: string;
+    output: string;
+    verbose: boolean;
+    region?: string;
+    profile?: string;
+    roleArn?: string;
+    context?: string[];
+    strict?: boolean;
+    ignoreErrors?: boolean;
+  }
+): Promise<void> {
   const logger = getLogger();
 
   if (options.verbose) {
@@ -180,7 +184,22 @@ export async function synthCommand(options: {
   };
 
   const result = await synthesizer.synthesize(synthOptions);
-  const { stacks, assemblyDir } = result;
+  const { stacks: allStacks, assemblyDir } = result;
+
+  // SELECTION HAPPENS AFTER SYNTHESIS, NEVER BEFORE, and that is upstream's
+  // shape rather than a convenience (issue
+  // [#3550](https://github.com/go-to-k/cdkd/issues/3550)). Measured in
+  // `aws-cdk@2.1142.0`: `Toolkit.synth` calls `synthAndMeasure(...)` and only
+  // then `assembly.selectStacks(...)`, and the context-resolution loop in
+  // `cxapp/cloud-executable.ts` takes no selector at all — it reads
+  // `assembly.manifest.missing` for the WHOLE assembly. So a stack argument
+  // does NOT narrow which `cdk.context.json` lookups run, and narrowing
+  // synthesis here would diverge from `cdk` in a way nothing would report.
+  const selected = stackPatterns.length > 0 ? matchStacks(allStacks, stackPatterns) : allStacks;
+  if (selected.length === 0) {
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+  }
+  const stacks = selected;
 
   // CDK CLI parity (issue #1228): surface Annotations messages — print
   // warnings/infos, refuse to emit a template when any stack carries an
@@ -191,10 +210,25 @@ export async function synthCommand(options: {
     ignoreErrors: options.ignoreErrors === true,
   });
 
-  // Print YAML template to stdout (like CDK CLI) for single stack
+  // Print the template to stdout when the SELECTION is one stack — not when
+  // the assembly happens to hold one. That distinction is the whole of
+  // go-to-k/cdkd#3550: the gate used to read `allStacks.length === 1`, so on a
+  // multi-stack app there was NO way to get a single template onto stdout,
+  // and the selector that would have narrowed it was refused as an excess
+  // argument. `cdk synth MyStack` prints exactly this.
   if (stacks.length === 1) {
     const template = stacks[0]!.template;
     process.stdout.write(toYaml(template));
+  } else {
+    // Whenever the SELECTION is not exactly one, and listing the SELECTED
+    // ids rather than every id in the assembly. Both halves are upstream's,
+    // and both were wrong in the first draft of this: it gated the hint on
+    // "no pattern was given", so `cdkd synth 'My*'` matching three stacks
+    // printed neither a template nor a way to get one, and it listed the
+    // whole assembly, which is the wrong set to narrow from.
+    logger.info(
+      `Supply a stack id (${stacks.map((s) => s.stackName).join(', ')}) to display its template.`
+    );
   }
 
   logger.info(`\n${green('✓')} ${bold('Synthesis complete!')} Found ${stacks.length} stack(s):`);
@@ -224,6 +258,10 @@ export async function synthCommand(options: {
 export function createSynthCommand(): Command {
   const cmd = new Command('synth')
     .description('Synthesize CDK app to CloudFormation template')
+    .argument(
+      '[stacks...]',
+      "Stack name(s) whose template to print. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*'). Every stack is synthesized either way -- the selection decides what reaches stdout."
+    )
     .action(withErrorHandling(synthCommand));
 
   // Add options

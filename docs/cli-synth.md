@@ -6,8 +6,10 @@ description: "Synthesize a CDK app to CloudFormation templates with cdkd synth �
 # cdkd synth
 
 Runs the CDK app and writes its CloudFormation templates to the assembly
-directory, printing the template to stdout when the app has exactly one stack.
-Mirrors `cdk synth`.
+directory, printing one stack's template to stdout. Mirrors `cdk synth`.
+
+Name a stack to choose which template that is. Every stack is synthesized
+either way — the name selects what reaches stdout, not what gets built.
 
 It deploys nothing, but it is not offline. Synthesis resolves the account
 through STS and runs the app's context lookups, and on a template using
@@ -20,11 +22,23 @@ expanded template.
 
 ```bash
 cdkd synth                          # synthesize; print the template if there is one stack
-cdkd synth > template.yaml          # capture the template, progress still on stderr
+cdkd synth MyStack                  # print MyStack's template, whatever else the app holds
+cdkd synth 'MyStage/Api'            # select by CDK display path
+cdkd synth MyStack > template.yaml  # capture it, progress still on stderr
 cdkd synth --output build/assembly  # synthesize somewhere other than cdk.out
 cdkd synth --strict                 # also fail on CDK warning annotations
 cdkd synth --ignore-errors          # never fail on annotations
 ```
+
+## Arguments
+
+| Argument | Description |
+| --- | --- |
+| `[stacks...]` | Which stack's template to print. Accepts physical CloudFormation names (`MyStage-Api`), CDK display paths (`MyStage/Api`) and wildcards (`MyStage/*`). A name matching nothing is refused, naming what the app does hold. |
+
+With no argument and several stacks, cdkd prints no template and lists the
+stack ids you can pass. Selecting several prints none either — stdout carries
+one template or nothing, so a pipe never receives two documents.
 
 ## Options
 

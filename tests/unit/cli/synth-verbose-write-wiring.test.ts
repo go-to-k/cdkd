@@ -44,8 +44,14 @@ function stack(stackName: string): unknown {
   };
 }
 
+// No `as never` on the options object. The cast this replaced hid a SIGNATURE
+// change: `synthCommand` gained a leading `stackPatterns` parameter
+// (go-to-k/cdkd#3550) and this call kept passing options first, so the object
+// landed in `stackPatterns`, `options` was `undefined`, and three cases failed
+// with `Cannot read properties of undefined` instead of a type error. A cast
+// that silences the compiler silences it for the next change too.
 const run = (out: string, stackName: string): Promise<void> =>
-  synthCommand({ app: 'node bin/app.js', output: out, verbose: true } as never);
+  synthCommand([], { app: 'node bin/app.js', output: out, verbose: true });
 
 describe('cdkd synth --verbose write wiring', () => {
   beforeEach(() => {
