@@ -714,6 +714,41 @@ function extractImageLambdaProperties(args: {
 }
 
 /**
+ * Every value that decides what {@link resolveAssetCodeDirectory} does, as a
+ * BAG rather than positionals (issue
+ * [#3549](https://github.com/go-to-k/cdkd/issues/3549)).
+ *
+ * Declared ABOVE its function deliberately. Four of these interfaces have had
+ * their doc block detach from the declaration below them in this repo, each
+ * time by an edit that inserted between the two; putting the interface at the
+ * top of the region leaves nothing to insert into.
+ */
+export interface AssetCodeResolveOptions {
+  /**
+   * Where a RELATIVE `assetPath` resolves FROM — the manifest's own directory,
+   * which is assembly-derived. Distinct from `assetOutdir`, which is what the
+   * result must stay inside.
+   */
+  manifestDir: string;
+  /**
+   * The Lambda's `Metadata['aws:asset:path']`. Attacker-chosen under an
+   * assembly the user did not synthesize, and BIND-MOUNTED into a running
+   * container, which is why it and `manifestDir` must not be swappable.
+   */
+  assetPath: string;
+  /** Wrap the refusal in the caller's own typed error class. */
+  wrapError: (message: string) => Error;
+  /**
+   * The app's outdir, the CONTAINMENT bound. NOT the manifest's directory —
+   * the function's own doc says why, and getting it wrong refuses every Stage
+   * asset rather than opening a hole, which no refusal test can see.
+   */
+  assetOutdir: string;
+  /** How to name the Lambda in a refusal. Only ever interpolated into a message. */
+  logicalId: string;
+}
+
+/**
  * Where a Lambda's `Metadata['aws:asset:path']` really lives on this host
  * (issue [#3494](https://github.com/go-to-k/cdkd/issues/3494)).
  *
@@ -777,48 +812,53 @@ function extractImageLambdaProperties(args: {
  * `tests/unit/local/local-asset-code-path-containment.test.ts`.
  *
  * Exported for unit testing and for `local-start-api.ts`'s copy of the caller.
+ *
+ * **Takes EVERY value in a bag** (issue
+ * [#3549](https://github.com/go-to-k/cdkd/issues/3549)), the shape
+ * [#3544](https://github.com/go-to-k/cdkd/issues/3544) gave the Docker twin
+ * and for a sharper version of the same reason. Positionals left FOUR `string`
+ * parameters in a row, of which two pairs were transposable and neither
+ * typechecked its way out:
+ *
+ * - `(manifestDir, assetPath)` — the assembly-derived base a relative value
+ *   resolves FROM, and the attacker-chosen `aws:asset:path`. Swapping them
+ *   changes which directory is resolved and which is contained, for a value
+ *   that is then BIND-MOUNTED into a running container. That is the Docker
+ *   twin's hazard with a worse sink.
+ * - `(assetOutdir, logicalId)` — the containment bound and a string that only
+ *   ever reaches a message. A swap made the bound `path.resolve('<logicalId>')`
+ *   under the cwd, disjoint from the base, so every path was refused. Caught
+ *   by tests rather than by the compiler, which is the wrong layer for it.
+ *
+ * Required-ness caught a DROP and never a TRANSPOSITION, and the DROP it
+ * caught was real: a call passing the outdir as the fourth argument and
+ * stopping there used to COMPILE while binding the outdir to `logicalId` and
+ * defaulting the bound to `manifestDir`, silently reinstating
+ * [#3493](https://github.com/go-to-k/cdkd/issues/3493)'s B1 and naming the
+ * Lambda `/path/to/cdk.out` in the refusal.
+ *
+ * **What the bag does NOT do, because the first draft of this paragraph
+ * claimed it did**: it does not make a transposition inexpressible, only
+ * UNORDERABLE. `{ manifestDir: assetOutdir, assetOutdir: manifestDir }` still
+ * compiles, and it is still the defect. Measured: that spelling passes every
+ * source-level check and reds three cases in
+ * `local-asset-code-path-containment.test.ts`, which drives both call sites
+ * against a STAGE manifest where the two directories differ. The compiler now
+ * rejects the silent POSITIONAL swap; that suite is what catches the named
+ * one. Do not write a source scan that claims to cover this — one was written
+ * here and passed the real defect.
+ *
+ * Two conventions this comment has learned the hard way and keeps:
+ *
+ * - **No count of how often it has been wrong.** Such a tally ticks on the
+ *   very revision that fixes it, so it is stale the moment it is written —
+ *   which is how the previous one went stale.
+ * - **Do not cite the Docker twin's PARAMETER LIST.** Two revisions did, and
+ *   both were left describing a signature that had moved. Citing its SHAPE
+ *   (an options bag, as above) is stable; citing its arguments is not.
  */
-export function resolveAssetCodeDirectory(
-  manifestDir: string,
-  assetPath: string,
-  wrapError: (message: string) => Error,
-  /**
-   * The app's outdir, the CONTAINMENT bound; see the note above for why it is
-   * not the manifest's directory.
-   *
-   * **REQUIRED, and positioned here so OMITTING it is a type error.** Earlier
-   * revisions of this comment were repeatedly wrong about the signature, in
-   * the same direction each time, so state what is actually true. (No count:
-   * a tally of how often this comment has been wrong ticks on every revision
-   * of the thing it counts, so it goes stale the next time someone fixes it —
-   * which is how it went stale before.)
-   *
-   * - A DROP is what THIS POSITION answers, and it is not the only hazard
-   *   here — `(manifestDir, assetPath)` is a live transposable pair on the
-   *   same decision (go-to-k/cdkd#3549). A call site that passes the outdir as
-   *   the FOURTH argument and stops there —
-   *   `resolveAssetCodeDirectory(manifestDir, assetPath, wrapError,
-   *   assetOutdir)` — used to COMPILE while binding the outdir string to
-   *   `logicalId` and defaulting the bound to `manifestDir`. That silently
-   *   reinstates go-to-k/cdkd#3493's B1 and names the Lambda
-   *   `/path/to/cdk.out` in the refusal. Making this parameter required and
-   *   fourth turns exactly that call into a compile error.
-   *
-   *   Two earlier revisions named the Docker twin's parameter list as where
-   *   that mis-call comes from. Do not cite it again: it is an options bag
-   *   now, and citing it is what went stale each time. The hazard is
-   *   a property of THIS signature and needs no sibling to state.
-   * - `logicalId` moves LAST because it is only ever interpolated into a
-   *   message: the least dangerous parameter belongs in the position a
-   *   mistake is least costly.
-   * - A `logicalId` / `assetOutdir` swap is still expressible, and is caught by
-   *   the tests rather than the compiler — the bound becomes
-   *   `path.resolve('<logicalId>')` under the cwd, disjoint from the base, so
-   *   every path is refused and every Stage acceptance case reds.
-   */
-  assetOutdir: string,
-  logicalId: string
-): string {
+export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string {
+  const { manifestDir, assetPath, wrapError, assetOutdir, logicalId } = opts;
   if (isAbsolute(assetPath)) {
     // ACCEPTED — see the header. `path.resolve` only normalises here, the value
     // already being absolute; it is what makes the warning name the directory
@@ -955,13 +995,13 @@ function resolveAssetCodePath(
   }
 
   const { manifestDir, assetOutdir } = assetPathDirs(stack);
-  const abs = resolveAssetCodeDirectory(
+  const abs = resolveAssetCodeDirectory({
     manifestDir,
     assetPath,
-    (message) => new LocalInvokeResolutionError(message),
+    wrapError: (message) => new LocalInvokeResolutionError(message),
     assetOutdir,
-    logicalId
-  );
+    logicalId,
+  });
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
       `Lambda '${displaySafe(logicalId)}' asset directory '${displaySafe(abs)}' does not exist ` +
