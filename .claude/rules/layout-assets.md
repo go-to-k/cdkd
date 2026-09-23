@@ -37,15 +37,18 @@ paths:
   `resolveFileAssetSourcePath` keeps its leading positionals because its second
   parameter is a `FileAsset` and the swap does not typecheck — the invariant is
   "no transposable adjacent same-typed pair", not "both twins look alike".
-  That invariant is stated for `src/assets/**`; `resolveAssetCodeDirectory` in
-  `src/local/lambda-resolver.ts` still violates it
-  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)).
+  That invariant is meant to hold everywhere and is ENFORCED only here:
+  `resolveAssetCodeDirectory` in `src/local/lambda-resolver.ts` still carries
+  the same pair, on the same decision, for a value that gets bind-mounted
+  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)) — a known gap, not an
+  exemption.
   The surviving `??` fallbacks IN THIS LAYER — two in `buildDockerImage`, one
   in `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers
-  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too,
-  so the safety claim is whole-program while the COUNT is scoped to the files
-  this page governs.
+  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too, so
+  THAT claim holds whole-program and only its COUNT is limited to the files
+  this page governs — the opposite direction from the invariant above, whose
+  claim is whole-program while its enforcement is not.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because

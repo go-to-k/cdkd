@@ -786,9 +786,12 @@ export function resolveAssetCodeDirectory(
    * The app's outdir, the CONTAINMENT bound; see the note above for why it is
    * not the manifest's directory.
    *
-   * **REQUIRED, and positioned here so OMITTING it is a type error.** Two
-   * earlier revisions of this comment were wrong about the signature, in the
-   * same direction each time, so state what is actually true:
+   * **REQUIRED, and positioned here so OMITTING it is a type error.** Earlier
+   * revisions of this comment were repeatedly wrong about the signature, in
+   * the same direction each time, so state what is actually true. (No count:
+   * a tally of how often this comment has been wrong ticks on every revision
+   * of the thing it counts, so it goes stale the next time someone fixes it —
+   * which is how it went stale before.)
    *
    * - A DROP is what THIS POSITION answers, and it is not the only hazard
    *   here — `(manifestDir, assetPath)` is a live transposable pair on the
@@ -803,7 +806,7 @@ export function resolveAssetCodeDirectory(
    *
    *   Two earlier revisions named the Docker twin's parameter list as where
    *   that mis-call comes from. Do not cite it again: it is an options bag
-   *   now, and this comment has been wrong about it three times. The hazard is
+   *   now, and citing it is what went stale each time. The hazard is
    *   a property of THIS signature and needs no sibling to state.
    * - `logicalId` moves LAST because it is only ever interpolated into a
    *   message: the least dangerous parameter belongs in the position a
