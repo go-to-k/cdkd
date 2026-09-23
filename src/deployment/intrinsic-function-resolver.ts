@@ -988,6 +988,23 @@ function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): str
 }
 
 /**
+ * The array position a RESOLVED `Fn::Select` index names, or `undefined` when
+ * it names none (issue #3574): a non-negative safe integer, or a string of
+ * decimal digits denoting one (CloudFormation accepts `"1"`, and a `Ref` to a
+ * parameter the resolver did not coerce is still a string). No `Number()` on
+ * anything else: it trims whitespace and maps `""` / `null` / `[]` to `0`.
+ */
+function selectIndexPosition(value: unknown): number | undefined {
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^[0-9]+$/.test(value)
+        ? Number(value)
+        : undefined;
+  return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
  * One entry in {@link ResolverContext.abandonedResolutions} — one UNIT of a
  * resolution this pass could not complete, recorded instead of abandoning every
  * later unit beside it (issues
@@ -4015,7 +4032,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::Select' in obj) {
-      return await this.resolveSelect(obj['Fn::Select'] as [number, unknown[]], context);
+      return await this.resolveSelect(obj['Fn::Select'], context);
     }
 
     if ('Fn::Split' in obj) {
@@ -4418,6 +4435,48 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * The ONE read of a state record by logical id, shared by `Ref` and
+   * `Fn::GetAtt` (the only two arms that take a record out of
+   * `context.resources`; every other method receives it from them).
+   *
+   * - `Object.hasOwn`, never a bare read (issue #2767): the logical id is
+   *   template text, and a plain-object read walks the prototype chain.
+   * - A record whose `physicalId` is not a string is REFUSED here, above every
+   *   reader (issue #3576). Nothing in `src/state/` checks the type, so a hand
+   *   edit or a foreign writer can leave a number, and the arms below call
+   *   `.startsWith` / `.replace` on it (a bare `TypeError`) or build an ARN
+   *   from it. cdkd never writes such a record, so no answer derived from it
+   *   is honest. `markNonRetryable`: the verdict is a function of the
+   *   persisted record, and the message carries a template-controlled id.
+   *   A NULL record keeps missing as before.
+   */
+  private lookupResourceRecord(
+    logicalId: string,
+    via: 'Ref' | 'Fn::GetAtt',
+    context: ResolverContext
+  ): ResourceState | undefined {
+    const resource = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
+    if (!resource) return undefined;
+    const physicalId: unknown = (resource as { physicalId?: unknown }).physicalId;
+    if (typeof physicalId !== 'string') {
+      const got = physicalId === null ? 'null' : typeof physicalId;
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `${via} ${this.displayMasked(logicalId, context)}: the state record's physical id ` +
+            `is ${got}, not a string. cdkd always records a string id, so this record was ` +
+            `edited by hand or written by another tool. Set the resource's "physicalId" ` +
+            `in the stack's state.json back to the id AWS knows the resource by.`,
+          undefined,
+          'STATE_PHYSICAL_ID_NOT_STRING'
+        )
+      );
+    }
+    return resource;
+  }
+
+  /**
    * Resolve Ref intrinsic function
    *
    * Ref can reference:
@@ -4435,18 +4494,18 @@ export class IntrinsicFunctionResolver {
     // and returned `undefined` -- which `resolveSub` `String()`s, shipping the
     // literal text `undefined` into a live property. The name now misses like
     // any other unknown one and reaches the ordinary refusal below.
-    const resource = Object.hasOwn(context.resources, logicalId)
-      ? context.resources[logicalId]
-      : undefined;
+    const resource = this.lookupResourceRecord(logicalId, 'Ref', context);
     if (resource) {
       const refValue = this.resolveRefValue(logicalId, resource, context);
       // `refValue` through the builder (issue #3479, PR #3575 review): it is
       // the physical id from the STATE RECORD or a segment of it (see
       // `cfnRefValueFromPhysicalId`), which is not always AWS-assigned, so the
       // secret question this line used to answer is not the control-character
-      // one. `String()` first: a hand-edited record can hold a non-string id,
-      // and the builder calls `.replace`. A `SECRET_MASK` read back from a
-      // bagless caller renders unchanged.
+      // one. `String()` first: the id itself is a string (see
+      // `lookupResourceRecord`), but a `Ref` served out of the record's
+      // `properties` / `attributes` is not checked, and the builder calls
+      // `.replace`. A `SECRET_MASK` read back from a bagless caller renders
+      // unchanged.
       this.logger.debug(
         `Resolved Ref to resource: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(String(refValue), context)}`
       );
@@ -4851,9 +4910,7 @@ export class IntrinsicFunctionResolver {
     // `undefined` and the failure surfaces further from its cause than this
     // throw (measured: it reaches a live AWS call). Swept with the two
     // `resolveRef` arms because a template reaches all three by the same name.
-    const resource = Object.hasOwn(context.resources, logicalId)
-      ? context.resources[logicalId]
-      : undefined;
+    const resource = this.lookupResourceRecord(logicalId, 'Fn::GetAtt', context);
     if (!resource) {
       // `markNonRetryable` for the reason given at the `Invalid Fn::GetAtt
       // format` throw above: `logicalId` is template-controlled and the retry
@@ -5786,9 +5843,7 @@ export class IntrinsicFunctionResolver {
             // <id>=<physicalId>`, a record another binary or a hand edit
             // wrote), so being an id answers the secret question, not the
             // control-character one. Bound once for the five renders below.
-            // `String()` first: nothing in `src/state/` guarantees a string id,
-            // and the builder calls `.replace` (PR #3575 security review).
-            const loggedId = this.displayMasked(String(physicalId), context);
+            const loggedId = this.displayMasked(physicalId, context);
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
               const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -5827,7 +5882,7 @@ export class IntrinsicFunctionResolver {
             // Rebuilt here rather than reusing `loggedId`, which the `try`
             // scopes away.
             this.logger.warn(
-              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(String(physicalId), context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return [];
           }
@@ -6245,7 +6300,7 @@ export class IntrinsicFunctionResolver {
             // `Ipv6CidrBlocks` arm gives: a state-record id is not always
             // AWS-assigned, and `NamespaceNotFound` can echo it.
             this.logger.warn(
-              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(String(physicalId), context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return undefined;
           }
@@ -6806,7 +6861,7 @@ export class IntrinsicFunctionResolver {
           // beside it already was: a state-record id is not always
           // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
           this.logger.warn(
-            `DescribeLaunchTemplates(${this.displayMasked(String(physicalId), context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+            `DescribeLaunchTemplates(${this.displayMasked(physicalId, context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
           );
         }
         // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -7776,37 +7831,59 @@ export class IntrinsicFunctionResolver {
    * Resolve Fn::Select intrinsic function
    *
    * Fn::Select: [index, [value1, value2, ...]]
-   * Returns the value at the specified index in the list
+   * Returns the value at the specified index in the list. The index may be an
+   * intrinsic; it is resolved, then must name a position (issue #3574).
    */
-  private async resolveSelect(
-    selectArgs: [number, unknown[]],
-    context: ResolverContext
-  ): Promise<unknown> {
-    const [index, list] = selectArgs;
+  private async resolveSelect(selectArgs: unknown, context: ResolverContext): Promise<unknown> {
+    if (!Array.isArray(selectArgs) || selectArgs.length !== 2) {
+      // Destructuring anything else either throws a bare `TypeError` (an
+      // object is not iterable) or, for a STRING operand, silently reads its
+      // first two characters as the index and the list.
+      throw markNonRetryable(
+        new Error(
+          `Fn::Select takes a two-element list [index, list], got ${this.describeOperandShape(selectArgs, context)}`
+        )
+      );
+    }
+    const [index, list] = selectArgs as [unknown, unknown];
 
-    // Resolve the list first
+    // The index is RESOLVED, then validated (issue #3574). CloudFormation
+    // accepts a `Ref` to a parameter and an `Fn::FindInMap` here, and the raw
+    // operand used to be the property key: an intrinsic index read the key
+    // `"[object Object]"` and yielded `undefined` with no warning, and a
+    // string coercing to `NaN` passed BOTH bounds checks, so `"constructor"`
+    // read the `Array` function off the prototype chain. `selectIndexPosition`
+    // admits only a non-negative safe integer, so the read below is an own
+    // element by construction and the placeholder carries no template text.
+    const resolvedIndex = await this.resolveValue(index, context);
+    const position = selectIndexPosition(resolvedIndex);
+    if (position === undefined) {
+      const source = this.describeSplitValueSource(index);
+      const sourceClause = source ? ` (from ${this.displayMasked(source.label, context)})` : '';
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
+            `(a number, or a string of decimal digits), got ${this.describeOperandShape(resolvedIndex, context)}. ` +
+            `CloudFormation rejects any other index too; use a literal, a Ref to a ` +
+            `parameter or an Fn::FindInMap that yields one.`
+        )
+      );
+    }
+
     const resolvedList = await this.resolveValue(list, context);
 
     if (!Array.isArray(resolvedList)) {
       throw new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`);
     }
 
-    if (index < 0 || index >= resolvedList.length) {
-      // The index through the builder (issue #3479). It is the RAW template
-      // operand, never resolved, so nothing makes it a number: this arm is
-      // reached by any value the comparisons COERCE out of range, and
-      // `Number()` trims whitespace, so `"9\u2028..."` lands here at DEFAULT
-      // verbosity carrying its line terminator.
+    if (position >= resolvedList.length) {
       this.logger.warn(
-        `Fn::Select: index ${this.displayMasked(String(index), context)} out of bounds (array length: ${resolvedList.length})`
+        `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length})`
       );
-      return `{{Fn::Select:${index}:OutOfBounds}}`;
+      return `{{Fn::Select:${position}:OutOfBounds}}`;
     }
 
-    const result: unknown = resolvedList[index];
-    // The index through the builder, as in the warn above: a string the
-    // comparisons coerce to `NaN` passes BOTH bounds checks and lands here
-    // verbatim, ESC and bidi overrides included.
+    const result: unknown = resolvedList[position];
     this.logger.debug(
       // LEAF-masked before the encoding, not after (issue
       // [#2759](https://github.com/go-to-k/cdkd/issues/2759)): `JSON.stringify`
@@ -7814,7 +7891,7 @@ export class IntrinsicFunctionResolver {
       // matches literally — so a mask over the ENCODED text misses exactly the
       // secrets that carry those bytes. Leaf-masking also reaches the
       // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-      `Resolved Fn::Select: index ${this.displayMasked(String(index), context)} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
+      `Resolved Fn::Select: index ${position} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
     );
     return result;
   }
@@ -7853,13 +7930,29 @@ export class IntrinsicFunctionResolver {
    *   naming the parameter.
    *
    * Anything else degrades to its bare intrinsic key, or to `undefined` for a
-   * literal (which the message then simply omits).
+   * literal (which the message then simply omits). `resolveSelect` borrows the
+   * label for its index refusal (issue #3574); only `kind` is Split-specific.
    *
    * `kind` is not decoration: the caller uses it to pick the remedy, since the
    * `Fn::GetAtt` remedy (drop the `Fn::Split`, and the #1868 note for the
    * reader whose `Fn::Split` was that bug's workaround) is irrelevant and
    * confusing for a parameter reference or a hand-written literal.
    */
+  /**
+   * Name a malformed operand's type, and its value when that is a scalar, for
+   * a refusal message. The value is template text or a resolution product, so
+   * it goes through the builder (issue #3479).
+   */
+  private describeOperandShape(value: unknown, context: ResolverContext): string {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return `an array of ${value.length}`;
+    if (typeof value === 'string') return `string "${this.displayMasked(value, context)}"`;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return `${typeof value} ${this.displayMasked(String(value), context)}`;
+    }
+    return typeof value;
+  }
+
   private describeSplitValueSource(
     value: unknown
   ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {

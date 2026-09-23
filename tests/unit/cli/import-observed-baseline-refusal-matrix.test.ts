@@ -861,10 +861,9 @@ const ROWS: readonly Row[] = [
     readback: { Detail: { pw: PLAINTEXT } },
     refused: true,
     why:
-      'the number arm must vouch only for a real index: resolveSelect answers a ' +
-      'negative with its OutOfBounds placeholder, discarding the whole ' +
-      'eagerly-decrypted list, so the persisted leaf is a placeholder literal ' +
-      'the readback pairs against',
+      'the number arm must vouch only for a real index: resolveSelect refuses a ' +
+      'negative index (issue #3574), so no element of the list is ever the ' +
+      'deployed value the readback pairs against',
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
   },
   {
@@ -889,10 +888,10 @@ const ROWS: readonly Row[] = [
     refused: true,
     overRefusal: true,
     why:
-      'the malformed-Select arm, fenced: resolveSelect destructures the first ' +
-      'two args and ignores the extra, so the reference resolves and the token ' +
-      'persists — nothing would have leaked, and the arm refuses the unmodelled ' +
-      'shape anyway, which is the fail-closed trade the label records',
+      'the malformed-Select arm, fenced: resolveSelect refuses anything but a ' +
+      'two-element operand (issue #3574), so nothing would have been deployed or ' +
+      'leaked, and the arm refuses the unmodelled shape anyway, which is the ' +
+      'fail-closed trade the label records',
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
   },
   {
@@ -943,7 +942,7 @@ const ROWS: readonly Row[] = [
     refused: true,
     why:
       'the other half of the out-of-bounds class the negative-index row opened: ' +
-      'resolvedList[999] is undefined, resolveSelect answers its OutOfBounds ' +
+      'index 999 is past the end, resolveSelect answers its OutOfBounds ' +
       'placeholder, and the whole eagerly-decrypted list is discarded — a ' +
       "literal list's length is statically checkable, so vouch only in bounds",
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },

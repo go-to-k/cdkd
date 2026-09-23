@@ -2329,12 +2329,10 @@ function isInertDiscardedSubtree(node: unknown): boolean {
  */
 function isStaticSelectIndex(value: unknown): boolean {
   // Non-negative on the number arm too (parent review): `resolveSelect`
-  // treats a negative index as out-of-bounds and returns its placeholder,
-  // discarding the WHOLE list — the string arm's regex already refuses
-  // `'-1'`, and the two arms vouching for different shapes was the
-  // asymmetry. cdkd deploys the same placeholder, but this predicate's job
-  // is "the selection is a real, deploy-constant index", which a negative
-  // never is.
+  // refuses a negative index (issue #3574) — the string arm's regex already
+  // refuses `'-1'`, and the two arms vouching for different shapes was the
+  // asymmetry. This predicate's job is "the selection is a real,
+  // deploy-constant index", which a negative never is.
   if (typeof value === 'number') return Number.isInteger(value) && value >= 0;
   return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 }
@@ -2525,9 +2523,9 @@ function resolveDiscardsNonInertSubtree(
     }
     return args.some((arg) => resolveDiscardsNonInertSubtree(arg, conditions, mappings));
   }
-  // `Fn::Select` consumes its index RAW — `resolveSelect` never resolves it,
-  // so an intrinsic index selects `undefined` in cdkd while CloudFormation
-  // RESOLVED it at deploy time. The list is resolved eagerly (every element
+  // An intrinsic `Fn::Select` index is resolved at deploy time (a `Ref` to a
+  // parameter, an `Fn::FindInMap`), so the template text does not say which
+  // element was selected. The list is resolved eagerly (every element
   // decrypted and recorded), but the un-selected elements are then discarded,
   // and with the maps dead by capture time the persisted bag cannot vouch for
   // what AWS holds at that position. A non-static index over a non-inert list
@@ -2537,10 +2535,10 @@ function resolveDiscardsNonInertSubtree(
     const args = record['Fn::Select'];
     if (!Array.isArray(args) || args.length !== 2) return true;
     // A static index over a LITERAL list must also be IN BOUNDS (parent
-    // review round 2): `resolvedList[999]` on a two-element list is
-    // `undefined` — `resolveSelect` answers with its OutOfBounds placeholder
-    // and the whole eagerly-decrypted list is discarded, the same class as a
-    // negative index. Only a literal array's length is checkable statically;
+    // review round 2): index 999 on a two-element list makes
+    // `resolveSelect` answer with its OutOfBounds placeholder, and the whole
+    // eagerly-decrypted list is discarded. Only a literal array's length is
+    // checkable statically;
     // an intrinsic list argument keeps the index-only test.
     const staticSelection =
       isStaticSelectIndex(args[0]) && (!Array.isArray(args[1]) || Number(args[0]) < args[1].length);
