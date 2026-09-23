@@ -68,7 +68,7 @@ region can still be deleting.
 | 6 | both table names gone, in the deploy region and in the replica region |
 
 Replicas take minutes to create and delete, so the arm takes the run from
-~10 min to ~40-60 min; raise the `/run-integ` watchdog to match.
+~3 min to ~12-20 min; `/run-integ`'s default watchdog is enough.
 
 ## Running
 

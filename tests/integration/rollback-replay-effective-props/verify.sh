@@ -57,7 +57,7 @@
 # omitted was still sent AND recorded, although the table has no such index
 # and the re-created replica holds no override. Phases 1-6 each
 # grow an assertion for it. Replica provisioning costs minutes per create and
-# per delete, so budget ~40-60 min for the run with the arm on (~10 without).
+# per delete: the arm takes the run from ~3 min to ~12-20 min.
 # The arm also depends on issue #3569: the rollback re-creates v1 straight
 # after the replacement deleted it, while v1's copy in the replica region is
 # still DELETING, and the replica-add must wait that copy out.

@@ -190,7 +190,7 @@ export class RollbackReplayStack extends cdk.Stack {
     // `CDKD_INTEG_MULTI_REGION=1` (the name the `dynamodb-globaltable` fixture
     // already uses for the same cost): a cross-region replica is created,
     // deleted and re-created several times across the phases, each taking
-    // minutes, so the arm roughly triples this fixture's wall-clock. The env
+    // minutes, so the arm takes the run from ~3 to ~12-20 min. The env
     // var is read once per run and never changes between phases, so the table
     // is either in every template of a run or in none — never a mode-gated
     // DELETE halfway through.
