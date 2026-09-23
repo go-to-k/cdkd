@@ -170,4 +170,94 @@ describe('ContextProviderRegistry', () => {
     expect(results['az:key']).toEqual(['us-east-1a']);
     expect(results['ssm:key']).toBe('param-value');
   });
+
+  // Issue #3522: `entry.key` comes from the `JSON.parse`d manifest, where
+  // `__proto__` is an ordinary key. Written onto a `{}` literal it ran
+  // `Object.prototype`'s setter, so the resolved value was DROPPED (no own key,
+  // `JSON.stringify` gave `{}`) and the record's prototype was replaced.
+  describe('a manifest context key named __proto__ (#3522)', () => {
+    /** One `missing` row; `key` is a VALUE here, so a literal carries `__proto__` intact. */
+    function missingRow(key: string, provider: string): MissingContext {
+      return { key, provider, props: { account: '123456789012', region: 'us-east-1' } };
+    }
+
+    /** The own-key view `ContextStore.save` iterates, plus the serialized record. */
+    function ownView(results: Record<string, unknown>): {
+      keys: string[];
+      value: unknown;
+      json: string;
+    } {
+      return {
+        keys: Object.keys(results),
+        value: Object.getOwnPropertyDescriptor(results, '__proto__')?.value,
+        json: JSON.stringify(results),
+      };
+    }
+
+    it('stores a resolved value as an OWN key and leaves the prototype alone', async () => {
+      const registry = new ContextProviderRegistry();
+      registry.register('availability-zones', {
+        resolve: vi.fn().mockResolvedValue(['us-east-1a']),
+      });
+
+      const results = await registry.resolve([missingRow('__proto__', 'availability-zones')]);
+
+      expect(ownView(results)).toEqual({
+        keys: ['__proto__'],
+        value: ['us-east-1a'],
+        json: '{"__proto__":["us-east-1a"]}',
+      });
+      // The pre-fix write made the resolved ARRAY the record's prototype.
+      expect(Array.isArray(Object.getPrototypeOf(results))).toBe(false);
+    });
+
+    it('stores the unknown-provider marker as an OWN key', async () => {
+      const registry = new ContextProviderRegistry();
+
+      const results = await registry.resolve([missingRow('__proto__', 'no-such-provider')]);
+
+      expect(ownView(results)).toEqual({
+        keys: ['__proto__'],
+        value: {
+          $providerError: 'Unknown context provider: no-such-provider',
+          $dontSaveContext: true,
+        },
+        json:
+          '{"__proto__":{"$providerError":"Unknown context provider: no-such-provider",' +
+          '"$dontSaveContext":true}}',
+      });
+    });
+
+    it('stores the provider-failure marker as an OWN key', async () => {
+      const registry = new ContextProviderRegistry();
+      registry.register('failing-provider', {
+        resolve: vi.fn().mockRejectedValue(new Error('AWS API call failed')),
+      });
+
+      const results = await registry.resolve([missingRow('__proto__', 'failing-provider')]);
+
+      expect(ownView(results)).toEqual({
+        keys: ['__proto__'],
+        value: { $providerError: 'AWS API call failed', $dontSaveContext: true },
+        json: '{"__proto__":{"$providerError":"AWS API call failed","$dontSaveContext":true}}',
+      });
+    });
+
+    it('keeps every key that already stored normally, alongside __proto__', async () => {
+      const registry = new ContextProviderRegistry();
+      registry.register('availability-zones', {
+        resolve: vi.fn().mockResolvedValue(['us-east-1a']),
+      });
+      const keys = ['toString', 'constructor', 'ordinary:key', '__proto__'];
+
+      const results = await registry.resolve(
+        keys.map((key) => missingRow(key, 'availability-zones'))
+      );
+
+      expect(Object.keys(results)).toEqual(keys);
+      for (const key of keys) {
+        expect(Object.getOwnPropertyDescriptor(results, key)?.value).toEqual(['us-east-1a']);
+      }
+    });
+  });
 });

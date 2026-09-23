@@ -1,6 +1,7 @@
 import type { MissingContext } from '../../types/assembly.js';
 import { getLogger } from '../../utils/logger.js';
 import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { AZContextProvider } from './az-provider.js';
 import { SSMContextProvider } from './ssm-provider.js';
 import { HostedZoneContextProvider } from './hosted-zone-provider.js';
@@ -75,7 +76,13 @@ export class ContextProviderRegistry {
    * @returns Map of context key → resolved value
    */
   async resolve(missing: MissingContext[]): Promise<Record<string, unknown>> {
-    const results: Record<string, unknown> = {};
+    // Keyed by `entry.key`, read straight out of the manifest's `missing` list,
+    // where `JSON.parse` yields `__proto__` as an ordinary key. On a `{}` literal
+    // `results['__proto__'] = value` runs `Object.prototype`'s setter instead,
+    // DROPPING a lookup that succeeded (issue
+    // [#3522](https://github.com/go-to-k/cdkd/issues/3522)); a null prototype
+    // has no such accessor, so every assignment below defines an own key.
+    const results = nullPrototypeRecord();
 
     for (const entry of missing) {
       const provider = this.providers.get(entry.provider);
