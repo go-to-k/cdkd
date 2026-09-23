@@ -92,8 +92,8 @@
  *   universal from the user-facing caveat, and it survived HERE for a round —
  *   which is the failure mode worth naming, because this is the normative text
  *   a future caller copies. A blanket "resets to default" claim is per-field
- *   and needs a per-field measurement; `DeletionProtection`'s is issue
- *   [#2675](https://github.com/go-to-k/cdkd/issues/2675).
+ *   and needs a per-field measurement; `DeletionProtection`'s (it does NOT
+ *   reset) is issue [#2675](https://github.com/go-to-k/cdkd/issues/2675).
  */
 
 import { displaySafe } from '../utils/display-safe.js';

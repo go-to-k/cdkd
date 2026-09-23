@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1139** (**1137** with read evidence)
+- Declared properties: **1140** (**1138** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **23**
@@ -86,7 +86,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CloudWatchAnomalyDetectorProvider` | cloudwatch-anomaly-detector-provider.ts | wired | 8 | 8 |
 | `CodeBuildProvider` | codebuild-provider.ts | wired | 22 | 22 |
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |
-| `CognitoUserPoolProvider` | cognito-provider.ts | wired | 29 | 29 |
+| `CognitoUserPoolProvider` | cognito-provider.ts | wired | 30 | 30 |
 | `DLMLifecyclePolicyProvider` | dlm-lifecycle-policy-provider.ts | wired | 12 | 12 |
 | `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |

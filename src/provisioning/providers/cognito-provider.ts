@@ -31,6 +31,7 @@ import {
   type UserPoolAddOnsType,
   type UserPoolTierType,
   type UserVerificationType,
+  type WebAuthnFactorConfigurationType,
   type CreateUserPoolCommandInput,
   type UpdateUserPoolCommandInput,
   type SetUserPoolMfaConfigCommandInput,
@@ -137,10 +138,30 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
  * - `EMAIL_OTP`          -> `EmailMfaConfiguration` (carries the email-OTP
  *                           message/subject template — i.e. CFn's
  *                           `EmailAuthenticationMessage` / `Subject`)
+ *
+ * **The email-OTP model, stated once (issue #1924): the `EmailMfaConfiguration`
+ * block's PRESENCE is the factor.** `EmailMfaConfigType` is exactly
+ * `{Message?, Subject?}` -- unlike `SoftwareTokenMfaConfigType` it has no
+ * `Enabled` member, so the API has no way to carry a message template without
+ * enabling email OTP, nor to report one. That is read off the API's TYPE, not
+ * measured: a live probe needs a DEVELOPER email sender (a COGNITO_DEFAULT pool
+ * refuses the block outright), which the maintainer's account does not have.
+ * Both sides honor that: `buildMfaConfigRequest` sends the block for `EMAIL_OTP` OR a bare
+ * message/subject (announcing the second, since the template did not list the
+ * factor), and `readCurrentState` reads a present block back as `EMAIL_OTP`.
  */
 const MFA_FACTOR_SMS = 'SMS_MFA';
 const MFA_FACTOR_SOFTWARE_TOKEN = 'SOFTWARE_TOKEN_MFA';
 const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
+
+/**
+ * The one `WebAuthnConfiguration.FactorConfiguration` value AWS accepts beside
+ * `MfaConfiguration: ON` when `WEB_AUTHN` is an allowed first auth factor
+ * (issue #2064). Typed against the SDK enum so a rename upstream is a compile
+ * error rather than a silently never-matching comparison.
+ */
+const WEB_AUTHN_MULTI_FACTOR =
+  'MULTI_FACTOR_WITH_USER_VERIFICATION' satisfies WebAuthnFactorConfigurationType;
 
 /**
  * CFn path every `MfaConfiguration` shape refusal in this provider reports.
@@ -269,7 +290,8 @@ function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
     !!(properties['EmailAuthenticationMessage'] as string | undefined) ||
     !!(properties['EmailAuthenticationSubject'] as string | undefined) ||
     !!(properties['WebAuthnRelyingPartyID'] as string | undefined) ||
-    !!(properties['WebAuthnUserVerification'] as string | undefined)
+    !!(properties['WebAuthnUserVerification'] as string | undefined) ||
+    !!(properties['WebAuthnFactorConfiguration'] as string | undefined)
   );
 }
 
@@ -375,6 +397,11 @@ function buildMfaConfigRequest(
   const webAuthnRpId = (properties['WebAuthnRelyingPartyID'] as string | undefined) || undefined;
   const webAuthnUserVerification =
     (properties['WebAuthnUserVerification'] as UserVerificationType | undefined) || undefined;
+  // Issue #2064. Reachable since the SDK floor carries `FactorConfiguration`;
+  // it is what lets `WEB_AUTHN` sit beside `MfaConfiguration: ON`.
+  const webAuthnFactorConfiguration =
+    (properties['WebAuthnFactorConfiguration'] as WebAuthnFactorConfigurationType | undefined) ||
+    undefined;
 
   if (!hasMfaConfigProps(properties)) return undefined;
 
@@ -402,9 +429,12 @@ function buildMfaConfigRequest(
         : {}),
     };
   }
-  // The email-OTP factor and the email message/subject share one sub-block.
-  // Emit it when EMAIL_OTP is enabled OR a custom message/subject is supplied
-  // (the message/subject customization implies email-OTP usage).
+  // The email-OTP factor and the email message/subject share one sub-block,
+  // and the block IS the factor (the model at `MFA_FACTOR_EMAIL_OTP`). Emit it
+  // when EMAIL_OTP is enabled OR a custom message/subject is supplied; the
+  // second enables email OTP whether or not `EnabledMfas` lists it, which is
+  // announced below rather than changed (not sending the block would drop the
+  // declared message, and would flip the OPTIONAL default this block keeps).
   if (
     factors.has(MFA_FACTOR_EMAIL_OTP) ||
     emailMessage !== undefined ||
@@ -415,11 +445,18 @@ function buildMfaConfigRequest(
       ...(emailSubject !== undefined ? { Subject: emailSubject } : {}),
     };
   }
-  if (webAuthnRpId !== undefined || webAuthnUserVerification !== undefined) {
+  if (
+    webAuthnRpId !== undefined ||
+    webAuthnUserVerification !== undefined ||
+    webAuthnFactorConfiguration !== undefined
+  ) {
     request.WebAuthnConfiguration = {
       ...(webAuthnRpId !== undefined ? { RelyingPartyId: webAuthnRpId } : {}),
       ...(webAuthnUserVerification !== undefined
         ? { UserVerification: webAuthnUserVerification }
+        : {}),
+      ...(webAuthnFactorConfiguration !== undefined
+        ? { FactorConfiguration: webAuthnFactorConfiguration }
         : {}),
     };
   }
@@ -508,6 +545,26 @@ function buildMfaConfigRequest(
         `this shape. Nothing is enabled from it and MfaConfiguration is ` +
         `${request.MfaConfiguration}; declare the factor names as a list (e.g. ` +
         `["${MFA_FACTOR_SOFTWARE_TOKEN}"]) if a factor was intended.`
+    );
+  }
+
+  // Issue #1924: a bare message/subject sends the block, and the block IS the
+  // email-OTP factor, so this call enables EMAIL_OTP although `EnabledMfas`
+  // does not list it -- and `readCurrentState` will report it there. Say so,
+  // naming the edit that makes the template describe what AWS holds. Skipped
+  // for a MALFORMED `EnabledMfas`, whose own warning below already names it.
+  if (
+    request.EmailMfaConfiguration !== undefined &&
+    !factors.has(MFA_FACTOR_EMAIL_OTP) &&
+    !enabledMfasMalformed
+  ) {
+    warn(
+      `UserPool ${physicalId}: EmailAuthenticationMessage / EmailAuthenticationSubject is sent ` +
+        `in SetUserPoolMfaConfig's EmailMfaConfiguration block, which has no enable switch of ` +
+        `its own -- sending it ENABLES the ${MFA_FACTOR_EMAIL_OTP} MFA factor although EnabledMfas ` +
+        `does not list it, and a read-back reports EnabledMfas with ${MFA_FACTOR_EMAIL_OTP}. Add ` +
+        `${MFA_FACTOR_EMAIL_OTP} to EnabledMfas to declare it, or remove the message and subject ` +
+        `if email OTP is not wanted.`
     );
   }
 
@@ -825,7 +882,7 @@ const POLICIES_SUB_KEY_ANNOUNCEMENT: Record<PoliciesSubKey, { label: string; res
  * The PRE-FLIGHT: the reason this user-pool configuration cannot be applied at
  * all, or `undefined` when nothing is known to refuse it.
  *
- * Two rules, both for combinations AWS rejects 100% of the time, and both
+ * Three rules, all for combinations AWS rejects 100% of the time, and all
  * raised BEFORE the first AWS call on BOTH the create and the update path. The
  * ordering is what makes them worth refusing rather than warning about: on the
  * UPDATE path `UpdateUserPool` lands FIRST and `SetUserPoolMfaConfig` is
@@ -880,20 +937,33 @@ const POLICIES_SUB_KEY_ANNOUNCEMENT: Record<PoliciesSubKey, { label: string; res
  *
  * -- with NO WebAuthn block at all, with `UserVerification: preferred`, and with
  * `required`. The only accepted shape is
- * `WebAuthnConfiguration.FactorConfiguration = MULTI_FACTOR_WITH_USER_VERIFICATION`,
- * and the PINNED SDK (`@aws-sdk/client-cognito-identity-provider` 3.1018.0)
- * does not carry that field -- `WebAuthnConfigurationType` is exactly
- * `{RelyingPartyId?, UserVerification?}` -- so cdkd cannot reach it today.
- * Telling the user to switch to `WEB_AUTHN` would therefore be advice that
- * cannot be followed, which is why the remedy names removing the factor or
- * lowering `MfaConfiguration` instead.
+ * `WebAuthnConfiguration.FactorConfiguration = MULTI_FACTOR_WITH_USER_VERIFICATION`
+ * (the CFn `WebAuthnFactorConfiguration`), so switching to `WEB_AUTHN` is a
+ * two-property edit with its own rule -- rule 3 -- and the remedy names the
+ * one-property fix instead.
  *
- * That same measurement means `WEB_AUTHN` + ON reproduces this very
- * partial-apply shape while NOT being on the deny-list. Deliberately left
- * uncovered: the correct rule there is CONDITIONAL on
- * `WebAuthnConfiguration.FactorConfiguration`, which the pinned SDK cannot
- * express, so a flat deny-list entry would be an OVER-REFUSAL of the shape that
- * becomes valid the moment the SDK gains the field. Tracked as issue #2064.
+ * Rule 3 (issue #2064) -- the request resolves `MfaConfiguration` to ON while
+ * the allowed first auth factors include `WEB_AUTHN` and the request does not
+ * carry `FactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`. It cannot
+ * be a deny-list entry: the SAME factor is legal or illegal by that one field.
+ * MEASURED us-east-1 2026-09-23, on a pool allowing `[PASSWORD, WEB_AUTHN]`:
+ *
+ *   {ON,  SoftwareToken, FactorConfiguration: MULTI}                   -> ACCEPTED
+ *   {ON,  SoftwareToken, FactorConfiguration: MULTI, UV: preferred}    -> ACCEPTED
+ *   {OFF, FactorConfiguration: MULTI}                                  -> ACCEPTED
+ *   {ON,  SoftwareToken, FactorConfiguration: SINGLE_FACTOR}           -> rejected
+ *   {ON,  SoftwareToken, no WebAuthn block}, live value MULTI          -> rejected
+ *
+ * all rejections reading "Cannot set WebAuthn factor configuration to
+ * SINGLE_FACTOR if MFA is required and WebAuthn is an allowed first auth
+ * factor". The last line is what licenses reading the REQUEST rather than the
+ * pool: `SetUserPoolMfaConfig` is a full replace here too, so an omitted block
+ * is SINGLE_FACTOR whatever the pool held. It is the #1975 partial apply
+ * exactly -- measured from both an OFF and an OPTIONAL pool, `UpdateUserPool`
+ * adding `WEB_AUTHN` LANDED and the `SetUserPoolMfaConfig(ON)` after it was
+ * rejected. (From a pool already at ON, `UpdateUserPool` itself refuses to add
+ * `WEB_AUTHN` -- "WEB_AUTHN cannot be used as an auth factor when MFA is
+ * enabled if not configured for MFA" -- atomically.)
  *
  * SCOPE LIMIT, deliberate and load-bearing: rule 2 fires only when a
  * `SetUserPoolMfaConfig` request is actually BUILT (`hasMfaConfigProps`), i.e.
@@ -930,13 +1000,27 @@ const POLICIES_SUB_KEY_ANNOUNCEMENT: Record<PoliciesSubKey, { label: string; res
  * NO logger, so the pre-flight is silent and `applyMfaConfig`'s own warnings
  * still fire exactly once.
  *
- * WHAT THIS CANNOT SEE, stated because the message says "refuses it before
- * sending anything" and that reads as a completeness claim: the pre-flight
- * inspects the TEMPLATE, never the live pool, so two template edits reach the
- * same partial apply without tripping it -- DELETING the `SignInPolicy` block
- * while setting `MfaConfiguration: ON`, and OMITTING `MfaConfiguration` while
- * adding `EMAIL_OTP` to a pool whose live MFA is already ON. Both need a
- * live-state guard and are tracked in #2051.
+ * WHICH FACTOR LIST rules 2 and 3 read (issue #2051): the one the pool will
+ * hold when `SetUserPoolMfaConfig` runs. When the template SENDS
+ * `Policies.SignInPolicy.AllowedFirstAuthFactors` as a list that is the
+ * template's list; when it does not, it is the LIVE list, because an omitted
+ * sub-key -- or a sent `SignInPolicy` without the member -- is PRESERVED by
+ * `UpdateUserPool` (the ledger at `readLiveMfaConfiguration`;
+ * `sendsFirstAuthFactorList`). `update()` supplies that live
+ * list as `liveFirstAuthFactors`, read only when a rule could fire on it; on
+ * create, and when the read fails, it is absent and only the template is
+ * judged -- AWS's own default `[PASSWORD]` cannot trip either rule. MEASURED
+ * us-east-1 2026-09-23: a pool at `[PASSWORD, EMAIL_OTP]` + OPTIONAL took an
+ * `UpdateUserPool` omitting `Policies` (its `AutoVerifiedAttributes` canary
+ * landed, the factor list survived), then `SetUserPoolMfaConfig(ON)` was
+ * rejected -- the partial apply of DELETING `SignInPolicy` while setting ON.
+ *
+ * The OTHER #2051 path -- omitting `MfaConfiguration` while adding `EMAIL_OTP`
+ * to a pool whose live MFA is ON -- is NOT a partial apply and is not guarded:
+ * MEASURED the same day, `UpdateUserPool` itself rejects the added factor
+ * ("Only PASSWORD and WEB_AUTHN (if configured) can be enabled as an auth
+ * factor if MFA is enabled") and its co-sent `AutoVerifiedAttributes` did NOT
+ * land, so AWS answers it atomically before any second call.
  *
  * Deliberately UNCONDITIONAL -- no `CreateContext.replayingState` downgrade.
  * `.claude/rules/providers.md` says a create-path pre-flight refusal MUST
@@ -944,20 +1028,28 @@ const POLICIES_SUB_KEY_ANNOUNCEMENT: Record<PoliciesSubKey, { label: string; res
  * oversight, and the rule's own reasoning is what licenses it: the downgrade
  * exists because a refusal against a STATE record leaves a resource
  * un-rollbackable with no template-side remedy. That presupposes the replay
- * could otherwise SUCCEED. Here it cannot -- both combinations are rejected by
+ * could otherwise SUCCEED. Here it cannot -- every combination is rejected by
  * AWS 100% of the time (measured above, and CloudFormation rolls back on the
  * same templates), so downgrading would trade a clear cdkd-worded refusal for
  * the identical failure arriving later from AWS, on the create path with a
- * pool to roll back and on the update path with a partial apply. A state record
- * additionally cannot legitimately HOLD either combination: state is written
- * only after a SUCCESSFUL apply, and neither can be applied. Revisit this if
- * AWS ever starts accepting one of them.
+ * pool to roll back and on the update path with a partial apply. Revisit this
+ * if AWS ever starts accepting one of them.
+ *
+ * That argument is about the REPLAY failing either way, not about state being
+ * unable to hold the combination -- the live-list arm can meet a perfectly
+ * legitimate record. Example: a record at `ON` with no `SignInPolicy`, then a
+ * failed deploy that lowered MFA and added `EMAIL_OTP`; the rollback replays
+ * the `ON` record against a live `EMAIL_OTP` and is refused. It would have been
+ * rejected by AWS all the same, and in both cases the pool keeps the MFA value
+ * the failed deploy left -- a rollback cannot restore `ON` until the live
+ * factor list allows it, which the refusal text names.
  */
 function describeUnsupportedMfaCombination(
   properties: Record<string, unknown>,
-  declaredMfaConfiguration: string
+  declaredMfaConfiguration: string,
+  liveFirstAuthFactors?: readonly string[]
 ): string | undefined {
-  // ONE build, reused by both rules -- an earlier revision called
+  // ONE build, reused by every rule -- an earlier revision called
   // `resolveSentMfaConfiguration` for rule 2, which rebuilt the same request a
   // second (and, inside that helper, a third) time for the same bag.
   const request = buildMfaConfigRequest('', properties, undefined, declaredMfaConfiguration);
@@ -988,38 +1080,123 @@ function describeUnsupportedMfaCombination(
   // by ACCEPTING a pool whose sign-in policy allows EMAIL_OTP.
   //
   // Reading `request.MfaConfiguration` (the value that will be SENT) rather than
-  // `declaredMfaConfiguration` (what the template wrote) keeps this rule on the
-  // same footing as rule 1. The two agree for every input today -- the default
-  // resolves to OPTIONAL or OFF and never to ON, so only a declared ON reaches
-  // here -- and that is exactly why the SENT value is the right one to read: it
-  // stays correct if the default rule ever changes, and it cannot disagree with
-  // what `applyMfaConfig` puts on the wire.
-  if (request && request.MfaConfiguration === 'ON') {
-    // Widened to `readonly string[]` for the membership test ONLY: the constant
-    // is `as const satisfies AuthFactorType[]`, so the SDK-enum fence is applied
-    // at its declaration and this cast cannot weaken it. Without the widening
-    // `includes` demands an `AuthFactorType`, which is the one type this list
-    // deliberately does NOT accept -- every member of it is a candidate.
-    const denied: readonly string[] = MFA_INCOMPATIBLE_FIRST_AUTH_FACTORS;
-    const offending = readAllowedFirstAuthFactors(properties).filter((factor) =>
-      denied.includes(factor)
+  // `declaredMfaConfiguration` (what the template wrote) keeps rules 2 and 3 on
+  // the same footing as rule 1. The two agree for every input today -- the
+  // default resolves to OPTIONAL or OFF and never to ON, so only a declared ON
+  // reaches here -- and that is exactly why the SENT value is the right one to
+  // read: it stays correct if the default rule ever changes, and it cannot
+  // disagree with what `applyMfaConfig` puts on the wire.
+  if (!request || request.MfaConfiguration !== 'ON') return undefined;
+
+  // The list the pool will hold when SetUserPoolMfaConfig runs (issue #2051):
+  // the template's when it SENDS a factor list, otherwise the live one, which
+  // an omission preserves (see `sendsFirstAuthFactorList`).
+  const fromTemplate = sendsFirstAuthFactorList(properties);
+  const factors = fromTemplate
+    ? readAllowedFirstAuthFactors(properties)
+    : (liveFirstAuthFactors ?? []);
+  const where = fromTemplate
+    ? `Policies.SignInPolicy.AllowedFirstAuthFactors allows`
+    : `the pool's LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows`;
+  // Why the live list is the one that counts, for the live arm only.
+  const liveNote = fromTemplate
+    ? ''
+    : ` (this template does not declare Policies.SignInPolicy.AllowedFirstAuthFactors, and ` +
+      `UpdateUserPool PRESERVES an omitted sub-key, so the live list is what ` +
+      `SetUserPoolMfaConfig meets)`;
+  const partialApply =
+    `and on an update the rest of the change has already been applied by the time it does, ` +
+    `so cdkd refuses it before sending anything rather than leaving a partly-applied update ` +
+    `behind.`;
+
+  // Widened to `readonly string[]` for the membership test ONLY: the constant
+  // is `as const satisfies AuthFactorType[]`, so the SDK-enum fence is applied
+  // at its declaration and this cast cannot weaken it. Without the widening
+  // `includes` demands an `AuthFactorType`, which is the one type this list
+  // deliberately does NOT accept -- every member of it is a candidate.
+  const denied: readonly string[] = MFA_INCOMPATIBLE_FIRST_AUTH_FACTORS;
+  const offending = factors.filter((factor) => denied.includes(factor));
+  if (offending.length > 0) {
+    // The template arm's text is unchanged from #1975; the integ fixture greps
+    // its prefix.
+    return fromTemplate
+      ? `${MFA_CONFIGURATION_PATH} is ON while ` +
+          `Policies.SignInPolicy.AllowedFirstAuthFactors allows ` +
+          `${offending.join(', ')}. AWS rejects that combination ("Only PASSWORD and WEB_AUTHN ` +
+          `(if configured) can be enabled as an auth factor if MFA is enabled"), and on an ` +
+          `update the sign-in policy has already been applied by the time it does, so cdkd ` +
+          `refuses it before sending anything rather than leaving a partly-applied update ` +
+          `behind. Remove ${offending.join(', ')} from ` +
+          `Policies.SignInPolicy.AllowedFirstAuthFactors, leaving PASSWORD. (Setting ` +
+          `MfaConfiguration to OPTIONAL or OFF also clears the conflict, but weakens MFA.)`
+      : `${MFA_CONFIGURATION_PATH} is ON while ${where} ${offending.join(', ')}${liveNote}. ` +
+          `AWS rejects that combination ("Only PASSWORD and WEB_AUTHN (if configured) can be ` +
+          `enabled as an auth factor if MFA is enabled"), ${partialApply} Declare ` +
+          `Policies.SignInPolicy with AllowedFirstAuthFactors that leave out ` +
+          `${offending.join(', ')} (for example [PASSWORD]) -- removing the block cannot remove ` +
+          `a factor. (Setting MfaConfiguration to OPTIONAL or OFF also clears the conflict, but ` +
+          `weakens MFA.)`;
+  }
+
+  // Rule 3 (issue #2064). Reads the REQUEST's FactorConfiguration, never the
+  // pool's: an omitted block is SINGLE_FACTOR (measured, see the docstring).
+  if (
+    factors.includes('WEB_AUTHN') &&
+    request.WebAuthnConfiguration?.FactorConfiguration !== WEB_AUTHN_MULTI_FACTOR
+  ) {
+    return (
+      `${MFA_CONFIGURATION_PATH} is ON while ${where} WEB_AUTHN${liveNote} and ` +
+      `WebAuthnFactorConfiguration is not ${WEB_AUTHN_MULTI_FACTOR}. AWS rejects that ` +
+      `combination ("Cannot set WebAuthn factor configuration to SINGLE_FACTOR if MFA is ` +
+      `required and WebAuthn is an allowed first auth factor"), ${partialApply} Set ` +
+      `WebAuthnFactorConfiguration to ${WEB_AUTHN_MULTI_FACTOR}, which is the only value AWS ` +
+      `accepts beside MFA ON, or ${
+        fromTemplate
+          ? 'remove WEB_AUTHN from Policies.SignInPolicy.AllowedFirstAuthFactors'
+          : 'declare Policies.SignInPolicy with AllowedFirstAuthFactors that leave out WEB_AUTHN'
+      }. (Setting MfaConfiguration to OPTIONAL also clears the conflict, but weakens MFA.)`
     );
-    if (offending.length > 0) {
-      return (
-        `${MFA_CONFIGURATION_PATH} is ON while ` +
-        `Policies.SignInPolicy.AllowedFirstAuthFactors allows ` +
-        `${offending.join(', ')}. AWS rejects that combination ("Only PASSWORD and WEB_AUTHN ` +
-        `(if configured) can be enabled as an auth factor if MFA is enabled"), and on an ` +
-        `update the sign-in policy has already been applied by the time it does, so cdkd ` +
-        `refuses it before sending anything rather than leaving a partly-applied update ` +
-        `behind. Remove ${offending.join(', ')} from ` +
-        `Policies.SignInPolicy.AllowedFirstAuthFactors, leaving PASSWORD. (Setting ` +
-        `MfaConfiguration to OPTIONAL or OFF also clears the conflict, but weakens MFA.)`
-      );
-    }
   }
 
   return undefined;
+}
+
+/**
+ * Does this bag put `Policies.SignInPolicy.AllowedFirstAuthFactors` on the
+ * wire as a LIST? Only then does the pool's list change. MEASURED us-east-1
+ * 2026-09-23: an `UpdateUserPool` carrying `SignInPolicy: {}` landed (its
+ * `AutoVerifiedAttributes` canary applied) and left a live
+ * `[PASSWORD, EMAIL_OTP]` intact -- so a SENT sub-key without the member is,
+ * for the factor list, the same as an omitted one. The sub-key gate is the
+ * wire's own (`sendsPoliciesSubKey`); the member gate mirrors
+ * `readAllowedFirstAuthFactors`, which reads a non-list as nothing. A declared
+ * non-list takes the live arm, the side that can refuse (what AWS does with
+ * that shape is unmeasured). An EMPTY list counts as sent and judges nothing, which is safe:
+ * MEASURED the same day, `UpdateUserPool` rejects `AllowedFirstAuthFactors: []`
+ * ("Member must have length greater than or equal to 1") atomically -- its
+ * co-sent `AutoVerifiedAttributes` did not land.
+ */
+function sendsFirstAuthFactorList(properties: Record<string, unknown>): boolean {
+  if (!sendsPoliciesSubKey(properties, 'SignInPolicy')) return false;
+  const signInPolicy = (properties['Policies'] as Record<string, unknown>)[
+    'SignInPolicy'
+  ] as Record<string, unknown>;
+  return Array.isArray(signInPolicy['AllowedFirstAuthFactors']);
+}
+
+/**
+ * Does the pre-flight need the pool's LIVE first-auth-factor list (issue
+ * #2051)? Only when rules 2 / 3 can evaluate -- a `SetUserPoolMfaConfig`
+ * request resolving to ON -- AND the template does not send
+ * `Policies.SignInPolicy`, so the live list is what that call will meet. Every
+ * other update spends no extra read.
+ */
+function mfaPreflightNeedsLiveSignInPolicy(
+  properties: Record<string, unknown>,
+  declaredMfaConfiguration: string
+): boolean {
+  const request = buildMfaConfigRequest('', properties, undefined, declaredMfaConfiguration);
+  return request?.MfaConfiguration === 'ON' && !sendsFirstAuthFactorList(properties);
 }
 
 /**
@@ -1119,21 +1296,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         'EmailAuthenticationSubject',
         'WebAuthnRelyingPartyID',
         'WebAuthnUserVerification',
+        // Issue #2064: reachable since `WebAuthnConfigurationType` gained
+        // `FactorConfiguration` (the SDK floor in package.json carries it).
+        'WebAuthnFactorConfiguration',
       ]),
     ],
   ]);
 
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::Cognito::UserPool',
-      new Map<string, string>([
-        [
-          'WebAuthnFactorConfiguration',
-          'No wire path in the PINNED SDK (@aws-sdk/client-cognito-identity-provider 3.1018.0): WebAuthnConfigurationType is {RelyingPartyId?, UserVerification?} and no CreateUserPool/UpdateUserPool field accepts SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION. This is an SDK-VERSION limit, NOT an API one -- the live API does honour FactorConfiguration (measured us-east-1 2026-08-20: SetUserPoolMfaConfig(ON) on a pool allowing WEB_AUTHN as a first auth factor is rejected with "Cannot set WebAuthn factor configuration to SINGLE_FACTOR if MFA is required and WebAuthn is an allowed first auth factor", i.e. the service reads a field the SDK cannot send). RE-EVALUATE THIS ENTRY ON AN SDK BUMP: if WebAuthnConfigurationType gains FactorConfiguration, the property becomes handleable and this entry must go',
-        ],
-      ]),
-    ],
-  ]);
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>();
 
   /**
    * Warn when `MfaConfiguration` is declared as a BLANK string (issue #1925
@@ -1188,9 +1358,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     resourceType: string,
     target: string,
     properties: Record<string, unknown>,
-    declaredMfaConfiguration: string
+    declaredMfaConfiguration: string,
+    liveFirstAuthFactors?: readonly string[]
   ): void {
-    const reason = describeUnsupportedMfaCombination(properties, declaredMfaConfiguration);
+    const reason = describeUnsupportedMfaCombination(
+      properties,
+      declaredMfaConfiguration,
+      liveFirstAuthFactors
+    );
     if (reason === undefined) return;
     throw new ProvisioningError(reason, resourceType, logicalId, target);
   }
@@ -1740,6 +1915,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *
    * - `AutoVerifiedAttributes` — DOES reset when omitted (2026-08-18).
    * - `MfaConfiguration` — does NOT reset when omitted (2026-08-18, above).
+   * - `DeletionProtection` — does NOT reset when omitted (2026-09-23, issue
+   *   #2675): a pool created `ACTIVE` stayed `ACTIVE` through an
+   *   `UpdateUserPool` omitting it, whose co-sent `AutoVerifiedAttributes`
+   *   change landed (the call ran), and an explicit `INACTIVE` then applied
+   *   (the field is writable on this call rather than ignored).
+   * - `WebAuthnConfiguration.FactorConfiguration` (a `SetUserPoolMfaConfig`
+   *   field) — does NOT reset through an `UpdateUserPool` that omits every MFA
+   *   member (2026-09-23, issue #2064).
    * - `Policies` — neither sub-key resets, measured in BOTH directions
    *   (2026-08-19, issue #1968; details at `toSdkUserPoolPolicies`): a
    *   container sent without `SignInPolicy` left `SignInPolicy` intact, a
@@ -1760,6 +1943,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   rejected the same way (2026-08-19, issue #1968; the transcript lives at
    *   `describeUnsupportedMfaCombination`, which since issue #1977 REFUSES that
    *   combination before any call rather than warning about it).
+   * - `WebAuthnConfiguration.FactorConfiguration` — an omitted block is read as
+   *   SINGLE_FACTOR even on a pool holding MULTI_FACTOR_WITH_USER_VERIFICATION
+   *   (2026-09-23, issue #2064; transcript at `describeUnsupportedMfaCombination`).
    *
    * Nothing here licenses a claim about a field on neither list, or about one
    * API from the other's section. Measure it.
@@ -1809,6 +1995,44 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           `${describeAwsFailure(error).detail}`
       );
       return { failed: true };
+    }
+  }
+
+  /**
+   * The pool's live `Policies.SignInPolicy.AllowedFirstAuthFactors`, for the
+   * pre-flight (issue #2051), or `undefined` when it cannot be read.
+   *
+   * FAILS OPEN: an unreadable pool is judged on the template alone, which is
+   * the pre-#2051 behavior -- AWS then answers with its own rejection. Refusing
+   * on a failed read would block deploys over a question cdkd never answered.
+   * `update()` already needs `cognito-idp:DescribeUserPool` (its post-update
+   * attribute read), so this adds no permission. An ABSENT list (a pool with
+   * no sign-in policy) is AWS's default `[PASSWORD]`, which trips no rule, so
+   * it reads as empty.
+   */
+  private async readLiveAllowedFirstAuthFactors(
+    physicalId: string
+  ): Promise<readonly string[] | undefined> {
+    try {
+      // Transient errors are retried before failing open: a single blip would
+      // otherwise silently drop the guard this read exists for. The SDK's own
+      // retry already covers throttling.
+      const response = await this.retryOnTransientControlPlane(
+        () => this.getClient().send(new DescribeUserPoolCommand({ UserPoolId: physicalId })),
+        `DescribeUserPool(${physicalId}) before the MFA pre-flight`
+      );
+      const factors = response.UserPool?.Policies?.SignInPolicy?.AllowedFirstAuthFactors;
+      return Array.isArray(factors) ? factors : [];
+    } catch (error) {
+      // Debug, not warn: the AWS message can quote the account, role and
+      // session (see `readLiveMfaConfiguration`), and failing open loses
+      // nothing the deploy needs.
+      this.logger.debug(
+        `DescribeUserPool failed for UserPool ${physicalId} before the MFA pre-flight ` +
+          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `${describeAwsFailure(error).detail}`
+      );
+      return undefined;
     }
   }
 
@@ -1992,12 +2216,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // `update()` throws with no provider-side unwind -- leaving the pool with
     // the new sign-in policy and the OLD MFA state, i.e. the loosening half
     // applied and the tightening half not.
+    //
+    // The live sign-in policy is read first ONLY when the pre-flight could
+    // judge it (issue #2051): a template that omits `Policies.SignInPolicy`
+    // leaves the live list in place, and that list is what
+    // `SetUserPoolMfaConfig(ON)` then meets.
+    const liveFirstAuthFactors = mfaPreflightNeedsLiveSignInPolicy(properties, mfaConfiguration)
+      ? await this.readLiveAllowedFirstAuthFactors(physicalId)
+      : undefined;
     this.assertMfaCombinationApplicable(
       logicalId,
       resourceType,
       physicalId,
       properties,
-      mfaConfiguration
+      mfaConfiguration,
+      liveFirstAuthFactors
     );
 
     // Capture the live MFA configuration BEFORE `UpdateUserPool` can touch it
@@ -2163,19 +2396,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         // `tests/unit/provisioning/cognito-schema-replace-remedy.test.ts`
         // asserts the SENT input in all three arms.
         //
-        // The FALLBACK's other half is NOT measured, and the review of PR
-        // go-to-k/cdkd#2662 was right to separate them: whether AWS then KEEPS
-        // the recorded value depends on whether omitting `DeletionProtection`
-        // resets it, and this file's own ledger (`readLiveMfaConfiguration`)
-        // records that AWS's blanket "unspecified parameters are set to their
-        // default value" holds FIELD BY FIELD — `AutoVerifiedAttributes` does
-        // reset, `MfaConfiguration` and `Policies` do not — with no entry for
-        // this field. If it turns out to reset, this arm reports "protection is
-        // on" for a pool AWS has just unprotected. Tracked, with the two
-        // controls the measurement needs, as issue
-        // [#2675](https://github.com/go-to-k/cdkd/issues/2675); until then the
-        // recorded bag is the better of two unproved answers, because it is the
-        // one every other site in this issue uses.
+        // The FALLBACK's other half -- that AWS KEEPS the recorded value when
+        // the desired bag omits it -- is now MEASURED too (issue #2675; the
+        // entry is in `readLiveMfaConfiguration`'s ledger): omitting
+        // `DeletionProtection` from `UpdateUserPool` does NOT reset it, so the
+        // recorded `ACTIVE` is still what the pool holds when this fires.
         (properties['DeletionProtection']
           ? properties['DeletionProtection']
           : previousProperties['DeletionProtection']) === 'ACTIVE'
@@ -2341,22 +2566,18 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               // the backticks: prose inside a pasteable span is itself the
               // defect this issue is about.
               //
-              // The WEAKEST claim `readLiveMfaConfiguration`'s ledger supports.
-              // Two earlier spellings were both wrong: "RESETS every member the
-              // request omits" is AWS's blanket wording, which that ledger
-              // shows is per-field and false for at least two fields; and
-              // "is a full-replace API whose omission behaviour differs per
-              // field" contradicts itself, since "full-replace" IS the blanket
-              // claim the rest of the sentence withdraws. What survives is the
-              // per-field statement plus the honest admission that THIS field
-              // is unmeasured (issue [#2675]) -- and the advice a user needs is
-              // the same under every reading.
+              // What `readLiveMfaConfiguration`'s ledger supports, and no more:
+              // omission behaviour is per FIELD. `DeletionProtection` itself is
+              // measured NOT to reset (issue [#2675]), but the command below
+              // omits every other member, and `AutoVerifiedAttributes` is
+              // measured to RESET on omission -- which is why the advice to
+              // send the complete configuration stands.
               // ONE literal, not a concatenation: `'a' + 'b'` widens to
               // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
               // widened type by design. That is the cost of moving this fence
               // from a grep to the compiler, and it is worth paying.
               caveat:
-                "Note UpdateUserPool's behaviour on an omitted member differs per field, and is unmeasured for DeletionProtection, so send your complete pool configuration alongside that flag rather than the flag alone.",
+                'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
             },
           })
         : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
@@ -2600,12 +2821,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       const enabledMfas: string[] = [];
       if (mfa.SmsMfaConfiguration) enabledMfas.push(MFA_FACTOR_SMS);
       if (mfa.SoftwareTokenMfaConfiguration?.Enabled) enabledMfas.push(MFA_FACTOR_SOFTWARE_TOKEN);
+      // The block IS the factor -- the model at `MFA_FACTOR_EMAIL_OTP` (issue
+      // #1924): there is no enable flag to consult, so a block carrying only a
+      // message still reports EMAIL_OTP, which is what AWS enabled.
       if (mfa.EmailMfaConfiguration) enabledMfas.push(MFA_FACTOR_EMAIL_OTP);
       result['EnabledMfas'] = enabledMfas;
       result['EmailAuthenticationMessage'] = mfa.EmailMfaConfiguration?.Message ?? '';
       result['EmailAuthenticationSubject'] = mfa.EmailMfaConfiguration?.Subject ?? '';
       result['WebAuthnRelyingPartyID'] = mfa.WebAuthnConfiguration?.RelyingPartyId ?? '';
       result['WebAuthnUserVerification'] = mfa.WebAuthnConfiguration?.UserVerification ?? '';
+      // Issue #2064. MEASURED 2026-09-23: absent on a fresh pool (no
+      // WebAuthnConfiguration at all), hence the same '' placeholder as its
+      // two siblings -- but a pool with ANY WebAuthn block reads back an
+      // explicit value, `SINGLE_FACTOR` when only a relying party was set.
+      // Drift compares against the observed read-back, so that explicit
+      // default is on both sides of the comparison.
+      result['WebAuthnFactorConfiguration'] = mfa.WebAuthnConfiguration?.FactorConfiguration ?? '';
     } catch (mfaErr) {
       this.logger.debug(
         `GetUserPoolMfaConfig failed for ${physicalId}, skipping MFA-derived drift keys: ${describeAwsFailure(mfaErr).detail}`
