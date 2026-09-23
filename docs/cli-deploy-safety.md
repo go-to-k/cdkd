@@ -1023,14 +1023,13 @@ absolute spelling of the same path is accepted with a warning.
 The `cdkd local *` commands apply the same rule to SOME of the assembly they
 read — including a path the deploy side has no equivalent of, a Lambda's
 `Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
-before running it. **`cdkd local invoke` and `cdkd local start-api`** — those
-two, not the family — also refuse a **relative** escaping `aws:asset:path`
-before bind-mounting it into the container, and accept an **absolute** one with
-the same warning, for the same reason; the other `local` commands that mount
-Lambda code reach it through the bundled `cdk-local` engine and are unguarded,
-which [Local Execution](local-emulation.md) names. Others there are not covered
-yet; [Local Execution](local-emulation.md) states the trade and lists which are
-which.
+before running it. **`cdkd local invoke`, `cdkd local start-api`,
+`cdkd local start-alb` and `cdkd local start-cloudfront`** — every command that
+bind-mounts Lambda code — refuse a **relative** escaping `aws:asset:path`
+before mounting it into the container, and accept an **absolute** one with the
+same warning, for the same reason. Other assembly-supplied paths are not
+covered yet; [Local Execution](local-emulation.md) states the trade and lists
+which are which.
 
 One consequence of measuring against the app's output directory: pointing `-a`
 at a Stage SUB-assembly (`cdkd deploy -a cdk.out/assembly-MyStage`) refuses that
@@ -1062,9 +1061,9 @@ assembly *does* execute code from it, because a Docker asset may declare
 and `cdkd local invoke` runs it too. `cdkd local start-service` and
 `cdkd local start-alb` build their ECS container assets through the bundled
 emulator, which runs such an executable **without printing that line**; treat
-those two as executing assembly code as well. And a build secret, an SSH key or a cache
-directory is a host path the CloudFormation template never shows, so reading the
-template is not enough to know what a deploy will touch.
+those two as executing assembly code as well. And a build secret, an SSH key
+or a cache directory is a host path the CloudFormation template never shows,
+so reading the template is not enough to know what a deploy will touch.
 
 The destination check is a **name-shape** check, not a proof of ownership: a
 bucket named like a CDK bootstrap bucket for your account can still live in

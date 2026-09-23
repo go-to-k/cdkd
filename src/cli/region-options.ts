@@ -466,9 +466,15 @@ export function adoptDeprecatedRegionFlag(cmd: Command): Command {
       removeAllListeners(event: string): unknown;
     };
     emitter.removeAllListeners('option:region');
-    // `optionEnv:<name>` is a real commander 12.1.0 event
-    // (`command.js:1854/1858`), verified rather than guessed: `addOption`
-    // registers a listener for it whenever the option declares `.env()`.
+    // `optionEnv:<name>` is a real commander 14.0.3 event — `addOption`
+    // registers the listener (`command.js:726`) and `parseOptions` emits it
+    // (`command.js:1980/1984`) whenever the option declares `.env()`. Measured
+    // in the installed package rather than guessed, and re-measured when the
+    // package moved: the line numbers named commander 12.1.0's `1854/1858`
+    // until the 14 bump, which is the failure mode a citation invites. The
+    // other two in this function survived that bump unchanged (`:13` for the
+    // `EventEmitter` base, `:39` for `_optionValueSources`); re-measure all
+    // three on the next major, since a stale number here reads as verified.
     emitter.removeAllListeners('optionEnv:region');
     if (cmd.getOptionValueSource('region') === 'default') {
       // DELETE from both of commander's maps rather than calling

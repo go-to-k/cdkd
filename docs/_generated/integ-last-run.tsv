@@ -194,7 +194,7 @@ local-run-task-cdkd-assets	2026-09-05T14:04:48Z	PASS	15	verify.sh	rc 0, asset ma
 local-run-task-from-state	2026-08-26T18:06:59Z	PASS	400	verify.sh	gating PR 2296, RE-RUN after rebasing onto 9 commits of main. integ-local uses hash:files, so PR 2293 landing in tests/integration/local-* invalidated the earlier marker even though that change passed this same gate in its own PR -- integ-destroy (hash:diff) stayed fresh through the same rebase. rc 0; destroy 15 deleted / 0 errors; 0 surviving state object versions; docker sweep empty on ps -a + task nets + svc nets; no IAM orphans
 local-run-task-multi-container	2026-08-24T16:35:48Z	PASS	11	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a, leftover assertion added (checks cdkd own sync teardown), and the OUT_FILE EXIT trap no longer CLOBBERS the container-cleanup trap; sweep empty incl. stopped
 local-start-agentcore	2026-07-26T20:40:20Z	PASS	13	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-start-alb	2026-07-26T20:18:09Z	PASS	22	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
+local-start-alb	2026-09-23T06:13:56Z	PASS	90	verify.sh	commander 14 + cdk-local 0.149.0 bump (go-to-k/cdkd#3545); front-door routed, clean SIGTERM teardown, docker sweep clean
 local-start-alb-from-state	2026-09-05T17:30:08Z	PASS	213	verify.sh	rc 0, VPC+ALB+2 ECS deployed, destroy 29 deleted 0 errors; ECS arm only, no Lambda target group in any fixture (go-to-k/cdkd#2647)
 local-start-api	2026-09-05T05:27:12Z	PASS	20	verify.sh	rc 0, docker sweep clean
 local-start-api-container	2026-08-13T10:39:38Z	PASS	-	verify.sh	issue 1814 region-case boundary wrapper; rc 0, docker sweep clean
