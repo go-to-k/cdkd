@@ -790,18 +790,21 @@ export function resolveAssetCodeDirectory(
    * earlier revisions of this comment were wrong about the signature, in the
    * same direction each time, so state what is actually true:
    *
-   * - The dangerous mistake is not a SWAP, it is a DROP. A call site that
-   *   passes the outdir as the FOURTH argument and stops there —
+   * - A DROP is what THIS POSITION answers, and it is not the only hazard
+   *   here — `(manifestDir, assetPath)` is a live transposable pair on the
+   *   same decision (go-to-k/cdkd#3549). A call site that passes the outdir as
+   *   the FOURTH argument and stops there —
    *   `resolveAssetCodeDirectory(manifestDir, assetPath, wrapError,
-   *   assetOutdir)` — used to COMPILE while binding the
-   *   outdir string to `logicalId` and defaulting the bound to `manifestDir`.
-   *   (Two earlier revisions named the Docker twin's parameter list as the
-   *   source of that shape. Do not cite it again: it is now an options bag,
-   *   and this comment has been wrong about it three times. The hazard is a
-   *   property of THIS signature and needs no sibling to state.)
-   *   That silently reinstates go-to-k/cdkd#3493's B1 and names the Lambda
+   *   assetOutdir)` — used to COMPILE while binding the outdir string to
+   *   `logicalId` and defaulting the bound to `manifestDir`. That silently
+   *   reinstates go-to-k/cdkd#3493's B1 and names the Lambda
    *   `/path/to/cdk.out` in the refusal. Making this parameter required and
    *   fourth turns exactly that call into a compile error.
+   *
+   *   Two earlier revisions named the Docker twin's parameter list as where
+   *   that mis-call comes from. Do not cite it again: it is an options bag
+   *   now, and this comment has been wrong about it three times. The hazard is
+   *   a property of THIS signature and needs no sibling to state.
    * - `logicalId` moves LAST because it is only ever interpolated into a
    *   message: the least dangerous parameter belongs in the position a
    *   mistake is least costly.
