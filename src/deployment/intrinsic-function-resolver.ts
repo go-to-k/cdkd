@@ -4390,19 +4390,22 @@ export class IntrinsicFunctionResolver {
     // no retry rewrites, and the message interpolates a template-controlled
     // parameter NAME that the substring-matching retry classifiers can read as
     // transient (issue #1838).
-    // not-in-class(paramDef.Type): a TYPE name from the template or from AWS, not a value.
     //
     // `name` is a template-declared PARAMETER key, i.e. arbitrary JSON, so it
     // takes the builder like every other identifier this file renders
     // (go-to-k/cdkd#3435 review round 2). It appears TWICE in this message, so
-    // it is bound once.
+    // it is bound once. The declared `Type` takes it too (issue #3441): this
+    // arm is reached by any type the coercion SPLITS, and
+    // `isListParameterType` accepts every `List<...>` spelling, so the inner
+    // text is arbitrary template JSON.
     const loggedName = this.displayMasked(name);
+    const loggedType = this.displayMasked(paramDef.Type);
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Nested-stack parameter '${loggedName}' is declared 'Type: ${paramDef.Type}', but the ` +
+        `Nested-stack parameter '${loggedName}' is declared 'Type: ${loggedType}', but the ` +
           `parent stack resolved a SECRET dynamic reference into it. cdkd keeps a resolved ` +
           `secret out of persisted state by rewriting STRING leaves back to their ` +
-          `{{resolve:...}} expression; coercing this value to '${paramDef.Type}' destroys the ` +
+          `{{resolve:...}} expression; coercing this value to '${loggedType}' destroys the ` +
           `plaintext cdkd would have matched on, so the DECRYPTED secret would be left in the ` +
           `child stack's state.json with nothing to redact it back ` +
           `to. Declare '${loggedName}' as 'Type: String' in the nested stack's template (CDK does ` +
@@ -4819,8 +4822,12 @@ export class IntrinsicFunctionResolver {
         // The MARK is the remedy rather than a re-worded message, deliberately
         // -- see `rethrowStructuralSubFailure`, which must re-throw the error
         // OBJECT untouched, and marking rides the object.
-        // not-in-class(getAtt): the raw Fn::GetAtt argument as written in the template, echoed to show the malformed shape; pre-resolution by construction.
-        throw markNonRetryable(new Error(`Invalid Fn::GetAtt format: ${getAtt}`));
+        // Through the builder (issue #3441): the operand is RAW template text,
+        // so being pre-resolution answers the secret question but not the
+        // control-character one.
+        throw markNonRetryable(
+          new Error(`Invalid Fn::GetAtt format: ${this.displayMasked(getAtt, context)}`)
+        );
       }
       logicalId = split.logicalId;
       attributeName = split.attributeName;
@@ -5278,7 +5285,9 @@ export class IntrinsicFunctionResolver {
     // the retry classifiers match by substring, so an ordinary composite CDK
     // id can otherwise make a deterministic refusal look transient. See
     // `resolveSplit` for the nested-stack chain that makes this reachable.
-    // not-in-class(resource.resourceType): a TYPE name from the template or from AWS, not a value.
+    // not-in-class(resource.resourceType): reached only when the type is a KEY of
+    // REF_RETURNS_ARN_FROM_STATE (a whole-string `Map` lookup), so it is one of
+    // that map's literals and carries no control character (issue #3441).
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
@@ -5359,10 +5368,12 @@ export class IntrinsicFunctionResolver {
     outcome: StaleAttributeHealOutcome | undefined,
     context?: ResolverContext
   ): string {
-    // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+    // The type through the builder (issue #3441): `guardedPhysicalIdFallback`
+    // is the arm a type NO routing table matched lands on, so it is arbitrary
+    // template text here.
     const fileIssue =
       `Avoid this Fn::GetAtt, or file an issue at https://github.com/go-to-k/cdkd/issues ` +
-      `so cdkd can enrich ${resourceType}.${this.displayMasked(attributeName, context)}.`;
+      `so cdkd can enrich ${this.displayMasked(resourceType, context)}.${this.displayMasked(attributeName, context)}.`;
     if (outcome === undefined) {
       // The hint goes FIRST: the sentence ends on the attribute name, which
       // `intrinsic-resolver-name-argument-log-twin.test.ts` anchors on.
@@ -5571,12 +5582,13 @@ export class IntrinsicFunctionResolver {
       accountInfo
     );
     if (accountInfo.fabricated && embedsAccountId(value, accountInfo.accountId)) {
-      // not-in-class(resource.resourceType): a TYPE name from the template or from AWS, not a value.
       // not-in-class(accountInfo.accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
       throw new IntrinsicResolutionRefusalError(
         // `attributeName` masked for the reason its nested-stack sibling above
-        // states (issue #2827 review).
-        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resource.resourceType}: ` +
+        // states (issue #2827 review). The type too (issue #3441): this guard
+        // vets EVERY constructed value, and for a type no arm matched that
+        // value is the physical id, so the type is arbitrary template text.
+        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resource.resourceType, context)}: ` +
           `STS did not report this deploy's account id, so cdkd would build the value from the ` +
           `placeholder account ${accountInfo.accountId} — structurally valid, naming a different ` +
           `account, and indistinguishable downstream from a real one. Fix the AWS credentials ` +
@@ -6889,7 +6901,8 @@ export class IntrinsicFunctionResolver {
           context.staleAttributeHeal?.phase === 'settled'
             ? context.staleAttributeHeal.outcome
             : undefined;
-        // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+        // not-in-class(resourceType): the enclosing `if` compared it for EQUALITY
+        // with two literals, so it carries no control character (issue #3441).
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
             `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
@@ -6983,11 +6996,15 @@ export class IntrinsicFunctionResolver {
     remedy: string;
   }): never {
     const { logicalId, attributeName, resourceType, physicalId, context, observed, remedy } = site;
-    // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
     // not-in-class(observed): a cdkd-authored sentence built from an AWS state name or an error CLASS name; the raw AWS text stays at debug.
     // not-in-class(remedy): a cdkd-authored literal chosen by the calling arm.
+    //
+    // The type through the builder (issue #3441). Every CURRENT caller sits
+    // behind a `resourceType === '<literal>'` test, but this helper gates on
+    // nothing itself, so leaving it raw would make its safety a property of
+    // every future caller.
     throw new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
         `${observed}. The physical id "${this.displayMasked(physicalId, context)}" is not a usable ` +
         `${this.displayMasked(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
     );
@@ -7081,6 +7098,11 @@ export class IntrinsicFunctionResolver {
     // what "not enriched" means; `not-attempted` / no healer = nothing says
     // otherwise. Only a FAILED or NOT-FOUND read makes that sentence a guess.
     const recordMayBeStale = healOutcome?.kind === 'failed' || healOutcome?.kind === 'not-found';
+    // Every path below renders the type, and this helper is where a type NO
+    // routing table matched lands (the final `default` of
+    // `constructAttribute`), so it is arbitrary template text: through the
+    // builder once, for all four renders (issue #3441).
+    const loggedType = this.displayMasked(resourceType, context);
     const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
@@ -7090,10 +7112,9 @@ export class IntrinsicFunctionResolver {
       // the static "this type is not enriched" fact — none of which a retry
       // changes. Marked because the message interpolates `logicalId`; see
       // `rejectPlaceholderArnAttribute` for the full reasoning.
-      // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${loggedType}: ` +
             (recordMayBeStale
               ? `the state record holds no value for it, and the physical ID `
               : `attributes are not enriched for this resource type, and the physical ID `) +
@@ -7110,10 +7131,9 @@ export class IntrinsicFunctionResolver {
       // Terminal (issue #1838 / #1874 review): the verdict is a CLI FLAG plus
       // the same static enrichment fact. A flag cannot change mid-deploy, so no
       // retry of this resolution can ever take a different branch.
-      // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${loggedType}: ` +
             (recordMayBeStale
               ? `the state record holds no value for it, and --strict-getatt `
               : `attributes are not enriched for this resource type, and --strict-getatt `) +
@@ -7130,9 +7150,8 @@ export class IntrinsicFunctionResolver {
       // The same warn-and-return as below, but the "unknown attribute" wording
       // would be a guess: the record may simply be stale and the re-read that
       // would have said so did not complete. Say what was observed instead.
-      // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
       this.logger.warn(
-        `The state record for ${this.displayMasked(logicalId, context)} (${resourceType}) holds no ` +
+        `The state record for ${this.displayMasked(logicalId, context)} (${loggedType}) holds no ` +
           `${this.displayMasked(attributeName, context)}, returning physical ID. ` +
           this.staleRecordRemedy(healOutcome, context)
       );
@@ -7141,7 +7160,6 @@ export class IntrinsicFunctionResolver {
     // DEFAULT VERBOSITY, and the most reachable of the three (issue #2827
     // review round 2): the two throws above need a shape mismatch or a flag,
     // this fires on every unenriched attribute.
-    // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
     // A value the re-read reported but cdkd WITHHELD as masked is not an
     // "unknown attribute" the user can do nothing about: name the permission.
     const withheld =
@@ -7149,7 +7167,7 @@ export class IntrinsicFunctionResolver {
         ? `. ${this.withheldRemedy()}`
         : '';
     this.logger.warn(
-      `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${resourceType}, returning physical ID${withheld}`
+      `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
     );
     return physicalId;
   }
@@ -9367,13 +9385,17 @@ export class IntrinsicFunctionResolver {
     if ('RoleArn' in args && args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
       const raw = args['RoleArn'];
       if (typeof raw !== 'string' || raw === '') {
-        // not-in-class(typeof raw === 'object' ? ` (intrinsic shape: ${JSON.stringify(raw).slice(0, 80)})` : ''): the RAW intrinsic as written in the template, echoed to show the unrecognised shape; pre-resolution by construction.
+        // The shape through the builder (issue #3441), for the reason the
+        // `Invalid Fn::GetAtt format` echo takes it: being pre-resolution
+        // answers the secret question, not the control-character one, and
+        // `JSON.stringify` escapes C0 controls but passes `U+2028` / `U+2029`
+        // and the bidi overrides through as written.
         throw new Error(
           `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
             `Got ${
               raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-            }${typeof raw === 'object' ? ` (intrinsic shape: ${JSON.stringify(raw).slice(0, 80)})` : ''}.`
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
         );
       }
       roleArn = raw;
@@ -11809,7 +11831,9 @@ export class IntrinsicFunctionResolver {
           if (!param.secure) {
             // `secure` is false only for the two PUBLIC types the predicate
             // names, so `type` is a definitive `String` / `StringList` here.
-            // not-in-class(param.type): a TYPE name from the template or from AWS, not a value.
+            // not-in-class(param.type): `secure` is false only when AWS's `Type`
+            // EQUALS `String` or `StringList`, so it is one of those two literals
+            // and carries no control character (issue #3441).
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
                 // Masked for the reason the `ssm-secure` refusal above states.
@@ -12492,11 +12516,17 @@ export class IntrinsicFunctionResolver {
       // cost is the SECOND warning about a parameter silently persisting as
       // its expression.
       this.warnedUnrecognizedSsmTypes.add(injectiveKey(parameterName, String(paramType)));
-      const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
+      // Through the builder (issue #3441): this arm is reached precisely
+      // because the `Type` matched NONE of the names cdkd knows, so its text is
+      // unconstrained — being a type name answers the secret question, not
+      // the control-character one.
+      const reported =
+        paramType === undefined
+          ? '(absent)'
+          : `'${this.displayMasked(String(paramType), context)}'`;
       // Masked like the debug echo above (issue #2728), and per RAW VALUE
       // since issue #2827: the name may have been assembled from a value this
       // pass resolved out of a secret.
-      // not-in-class(reported): a TYPE name from the template or from AWS, not a value.
       // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
       this.logger.warn(
         `SSM parameter '${loggedParameterName}' reported an unrecognized Type ${reported} — treating ` +
