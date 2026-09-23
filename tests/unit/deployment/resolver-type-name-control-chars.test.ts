@@ -287,6 +287,30 @@ describe('a malformed string-form Fn::GetAtt operand is sanitized (#3441)', () =
     const control = await drive('NoDotHere');
     expect(control.error).toBe('Invalid Fn::GetAtt format: NoDotHere');
   });
+
+  it("sanitizes Fn::GetStackOutput's non-literal RoleArn echo, the same pre-resolution note one intrinsic over", async () => {
+    // `JSON.stringify` escapes ESC and CR on its own, so those two could never
+    // fail here; what it passes through as written is `U+2028` and the bidi
+    // override, which is what this case discriminates on.
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const template = { Resources: {} } as unknown as CloudFormationTemplate;
+    const drive = (roleArn: unknown): Promise<Captured> =>
+      capture(() =>
+        resolver.resolve(
+          { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Out', RoleArn: roleArn } },
+          { template, resources: {} } as ResolverContext
+        )
+      );
+
+    const got = await drive({ Ref: EVIL });
+    expect(got.error, `did not reach the arm: ${JSON.stringify(got)}`).toContain(
+      '(intrinsic shape: '
+    );
+    expectSanitized(got.error ?? '', 'the RoleArn shape echo');
+
+    const control = await drive({ Ref: 'RoleParam' });
+    expect(control.error).toContain('Got object (intrinsic shape: {"Ref":"RoleParam"}).');
+  });
 });
 
 describe('a hostile PARAMETER type is sanitized on the nested-stack secret-coercion refusal (#3441)', () => {

@@ -9385,13 +9385,17 @@ export class IntrinsicFunctionResolver {
     if ('RoleArn' in args && args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
       const raw = args['RoleArn'];
       if (typeof raw !== 'string' || raw === '') {
-        // not-in-class(typeof raw === 'object' ? ` (intrinsic shape: ${JSON.stringify(raw).slice(0, 80)})` : ''): the RAW intrinsic as written in the template, echoed to show the unrecognised shape; pre-resolution by construction.
+        // The shape through the builder (issue #3441), for the reason the
+        // `Invalid Fn::GetAtt format` echo takes it: being pre-resolution
+        // answers the secret question, not the control-character one, and
+        // `JSON.stringify` escapes C0 controls but passes `U+2028` / `U+2029`
+        // and the bidi overrides through as written.
         throw new Error(
           `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
             `Got ${
               raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-            }${typeof raw === 'object' ? ` (intrinsic shape: ${JSON.stringify(raw).slice(0, 80)})` : ''}.`
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
         );
       }
       roleArn = raw;
