@@ -37,11 +37,11 @@ paths:
   `resolveFileAssetSourcePath` keeps its leading positionals because its second
   parameter is a `FileAsset` and the swap does not typecheck — the invariant is
   "no transposable adjacent same-typed pair", not "both twins look alike".
-  That invariant is meant to hold everywhere and is ENFORCED only here:
-  `resolveAssetCodeDirectory` in `src/local/lambda-resolver.ts` still carries
-  the same pair, on the same decision, for a value that gets bind-mounted
-  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)) — a known gap, not an
-  exemption.
+  That invariant holds whole-program: `resolveAssetCodeDirectory` in
+  `src/local/lambda-resolver.ts` carried the same pair on the same decision,
+  for a value that gets bind-mounted, and took the whole call into an
+  `AssetCodeResolveOptions` bag
+  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)).
   The surviving `??` fallbacks IN THIS LAYER — two in `buildDockerImage`, one
   in `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers

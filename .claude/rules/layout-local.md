@@ -46,7 +46,17 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   local command against an assembly the user named. `resolveAssetCodeDirectory`
   in `lambda-resolver.ts` is THE one spelling, shared with
   `local-start-api.ts`'s resolver through a `wrapError` callback so each keeps
-  its own error class and command name; the absolute arm's verdict comes from
+  its own error class and command name. **It takes EVERY value in an
+  `AssetCodeResolveOptions` bag**
+  ([#3549](https://github.com/go-to-k/cdkd/issues/3549)): positionals left four
+  `string`s in a row with two transposable pairs — `(manifestDir, assetPath)`
+  decides which directory is resolved and which is contained for a value that
+  is then BIND-MOUNTED, and `(assetOutdir, logicalId)` made the bound
+  `path.resolve('<logicalId>')` under the cwd. Required-ness caught only a
+  DROP. Call-site fence: `asset-code-resolve-options-wiring.test.ts`, because
+  `manifestDir` and `assetOutdir` are the SAME directory for a top-level stack,
+  so a wrong or missing bound is invisible outside a Stage.
+  The absolute arm's verdict comes from
   `absoluteAssemblyPathEscape`, which lives beside `resolveAssemblyPath` so the
   containment rule is not re-spelled (`path.join` cannot answer for an absolute
   candidate — it folds one INTO the directory).

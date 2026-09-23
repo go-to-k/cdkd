@@ -2512,13 +2512,13 @@ function resolveAssetCodePath(
     );
   }
   const { manifestDir, assetOutdir } = assetPathDirs(stack);
-  return resolveAssetCodeDirectory(
+  return resolveAssetCodeDirectory({
     manifestDir,
     assetPath,
-    (message) => new Error(message),
+    wrapError: (message) => new Error(message),
     assetOutdir,
-    logicalId
-  );
+    logicalId,
+  });
 }
 
 /**
