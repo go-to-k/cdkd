@@ -835,8 +835,27 @@ export interface AssetCodeResolveOptions {
  * stopping there used to COMPILE while binding the outdir to `logicalId` and
  * defaulting the bound to `manifestDir`, silently reinstating
  * [#3493](https://github.com/go-to-k/cdkd/issues/3493)'s B1 and naming the
- * Lambda `/path/to/cdk.out` in the refusal. A bag answers both: a missing
- * member is an error, and a swapped one has nowhere to land.
+ * Lambda `/path/to/cdk.out` in the refusal.
+ *
+ * **What the bag does NOT do, because the first draft of this paragraph
+ * claimed it did**: it does not make a transposition inexpressible, only
+ * UNORDERABLE. `{ manifestDir: assetOutdir, assetOutdir: manifestDir }` still
+ * compiles, and it is still the defect. Measured: that spelling passes every
+ * source-level check and reds three cases in
+ * `local-asset-code-path-containment.test.ts`, which drives both call sites
+ * against a STAGE manifest where the two directories differ. The compiler now
+ * rejects the silent POSITIONAL swap; that suite is what catches the named
+ * one. Do not write a source scan that claims to cover this — one was written
+ * here and passed the real defect.
+ *
+ * Two conventions this comment has learned the hard way and keeps:
+ *
+ * - **No count of how often it has been wrong.** Such a tally ticks on the
+ *   very revision that fixes it, so it is stale the moment it is written —
+ *   which is how the previous one went stale.
+ * - **Do not cite the Docker twin's PARAMETER LIST.** Two revisions did, and
+ *   both were left describing a signature that had moved. Citing its SHAPE
+ *   (an options bag, as above) is stable; citing its arguments is not.
  */
 export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string {
   const { manifestDir, assetPath, wrapError, assetOutdir, logicalId } = opts;

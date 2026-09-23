@@ -37,11 +37,21 @@ paths:
   `resolveFileAssetSourcePath` keeps its leading positionals because its second
   parameter is a `FileAsset` and the swap does not typecheck — the invariant is
   "no transposable adjacent same-typed pair", not "both twins look alike".
-  That invariant holds whole-program: `resolveAssetCodeDirectory` in
-  `src/local/lambda-resolver.ts` carried the same pair on the same decision,
-  for a value that gets bind-mounted, and took the whole call into an
-  `AssetCodeResolveOptions` bag
+  **That invariant is stated for the RESOLVER BOUNDARY — the functions that
+  turn a manifest-supplied string into a real path — and it holds there**:
+  `resolveAssetCodeDirectory` in `src/local/lambda-resolver.ts` carried the
+  same pair on the same decision, for a value that gets bind-mounted, and took
+  the whole call into an `AssetCodeResolveOptions` bag
   ([#3549](https://github.com/go-to-k/cdkd/issues/3549)).
+  **It does NOT hold one layer down, and saying it did was wrong twice.**
+  `src/utils/assembly-path.ts` still has three:
+  `assemblyPathEscape(base, bound, candidate)` — where `(base, bound)` IS the
+  resolve-from / contain-within pair, and its own doc says the two "differ for
+  a Stage" — plus `resolveAssemblyPath(dir, candidate)` and
+  `absoluteAssemblyPathEscape(bound, absolutePath)`. Those are the shared
+  primitives the resolvers call, with ~20 call sites between them, so
+  converting them is its own change rather than a rider on a resolver's. Do
+  not restate the invariant as whole-program until they are done.
   The surviving `??` fallbacks IN THIS LAYER — two in `buildDockerImage`, one
   in `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers

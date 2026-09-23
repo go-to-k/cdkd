@@ -53,9 +53,13 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   decides which directory is resolved and which is contained for a value that
   is then BIND-MOUNTED, and `(assetOutdir, logicalId)` made the bound
   `path.resolve('<logicalId>')` under the cwd. Required-ness caught only a
-  DROP. Call-site fence: `asset-code-resolve-options-wiring.test.ts`, because
-  `manifestDir` and `assetOutdir` are the SAME directory for a top-level stack,
-  so a wrong or missing bound is invisible outside a Stage.
+  DROP. **A bag makes the swap UNORDERABLE, not inexpressible** — a caller can
+  still write `{ manifestDir: assetOutdir, assetOutdir: manifestDir }`, and
+  `local-asset-code-path-containment.test.ts` is what catches that, by driving
+  both call sites against a STAGE manifest where the two directories differ
+  (measured: it reds three cases; a source scan of the call sites passed).
+  `asset-code-resolve-options-shape.test.ts` pins only what no behavioural test
+  sees — the arity, and that the interface sits IMMEDIATELY above its function.
   The absolute arm's verdict comes from
   `absoluteAssemblyPathEscape`, which lives beside `resolveAssemblyPath` so the
   containment rule is not re-spelled (`path.join` cannot answer for an absolute
