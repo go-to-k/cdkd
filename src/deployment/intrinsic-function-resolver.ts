@@ -5771,6 +5771,12 @@ export class IntrinsicFunctionResolver {
             // removed from the dynamic-reference lookups.
             const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
             const maxAttempts = 15;
+            // Through the builder (issue #3479): the id is read off the STATE
+            // RECORD, which is not always AWS-assigned (`cdkd import --resource
+            // <id>=<physicalId>`, a record another binary or a hand edit
+            // wrote), so being an id answers the secret question, not the
+            // control-character one. Bound once for the five renders below.
+            const loggedId = this.displayMasked(physicalId, context);
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
               const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -5778,9 +5784,8 @@ export class IntrinsicFunctionResolver {
                 .filter((a) => a.Ipv6CidrBlockState?.State === 'associated')
                 .map((a) => a.Ipv6CidrBlock);
               if (blocks.length > 0) {
-                // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
                 this.logger.debug(
-                  `Resolved VPC Ipv6CidrBlocks for ${physicalId}: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(blocks, context)), context)}`
+                  `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(blocks, context)), context)}`
                 );
                 return blocks;
               }
@@ -5790,27 +5795,27 @@ export class IntrinsicFunctionResolver {
               );
               if (associating.length === 0) {
                 // No IPv6 CIDRs at all
-                // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
-                this.logger.debug(`No IPv6 CIDR associations found for VPC ${physicalId}`);
+                this.logger.debug(`No IPv6 CIDR associations found for VPC ${loggedId}`);
                 return [];
               }
-              // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
               // not-in-class(attempt): this loop's own counter, incremented by the `for` header — no template value can reach it.
               this.logger.debug(
-                `VPC ${physicalId} IPv6 CIDR still associating (attempt ${attempt}/${maxAttempts}), waiting...`
+                `VPC ${loggedId} IPv6 CIDR still associating (attempt ${attempt}/${maxAttempts}), waiting...`
               );
               await new Promise((resolve) => setTimeout(resolve, 2000));
             }
-            // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
             this.logger.warn(
-              `VPC ${physicalId} IPv6 CIDR did not reach 'associated' state after ${maxAttempts} attempts`
+              `VPC ${loggedId} IPv6 CIDR did not reach 'associated' state after ${maxAttempts} attempts`
             );
             return [];
           } catch (error) {
-            // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
-            // not-in-class(error instanceof Error ? error.message : String(error)): the caught SDK message; this request carries only a state-record physicalId, so no resolved reference is in play.
+            // The SDK message through the builder too: EC2's
+            // `InvalidVpcID.NotFound` ECHOES the requested id, so sanitizing
+            // only the id above would leave its copy in the message raw.
+            // Rebuilt here rather than reusing `loggedId`, which the `try`
+            // scopes away.
             this.logger.warn(
-              `Failed to fetch VPC Ipv6CidrBlocks for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return [];
           }
@@ -6224,10 +6229,11 @@ export class IntrinsicFunctionResolver {
             const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
             return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
           } catch (error) {
-            // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
-            // not-in-class(error instanceof Error ? error.message : String(error)): the caught SDK message; this request carries only a state-record physicalId, so no resolved reference is in play.
+            // Both through the builder (issue #3479), for the reasons the VPC
+            // `Ipv6CidrBlocks` arm gives: a state-record id is not always
+            // AWS-assigned, and `NamespaceNotFound` can echo it.
             this.logger.warn(
-              `Failed to fetch HostedZoneId for namespace ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
             );
             return undefined;
           }
@@ -6784,9 +6790,11 @@ export class IntrinsicFunctionResolver {
             return String(value);
           }
         } catch (err) {
-          // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
+          // The id through the builder (issue #3479), as the SDK message
+          // beside it already was: a state-record id is not always
+          // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
           this.logger.warn(
-            `DescribeLaunchTemplates(${physicalId}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+            `DescribeLaunchTemplates(${this.displayMasked(physicalId, context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
           );
         }
         // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -7772,15 +7780,21 @@ export class IntrinsicFunctionResolver {
     }
 
     if (index < 0 || index >= resolvedList.length) {
-      // not-in-class(index): a structural operand (an index, count, delimiter or property key).
+      // The index through the builder (issue #3479). It is the RAW template
+      // operand, never resolved, so nothing makes it a number: this arm is
+      // reached by any value the comparisons COERCE out of range, and
+      // `Number()` trims whitespace, so `"9\u2028..."` lands here at DEFAULT
+      // verbosity carrying its line terminator.
       this.logger.warn(
-        `Fn::Select: index ${index} out of bounds (array length: ${resolvedList.length})`
+        `Fn::Select: index ${this.displayMasked(String(index), context)} out of bounds (array length: ${resolvedList.length})`
       );
       return `{{Fn::Select:${index}:OutOfBounds}}`;
     }
 
     const result: unknown = resolvedList[index];
-    // not-in-class(index): a structural operand (an index, count, delimiter or property key).
+    // The index through the builder, as in the warn above: a string the
+    // comparisons coerce to `NaN` passes BOTH bounds checks and lands here
+    // verbatim, ESC and bidi overrides included.
     this.logger.debug(
       // LEAF-masked before the encoding, not after (issue
       // [#2759](https://github.com/go-to-k/cdkd/issues/2759)): `JSON.stringify`
@@ -7788,7 +7802,7 @@ export class IntrinsicFunctionResolver {
       // matches literally — so a mask over the ENCODED text misses exactly the
       // secrets that carry those bytes. Leaf-masking also reaches the
       // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-      `Resolved Fn::Select: index ${index} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
+      `Resolved Fn::Select: index ${this.displayMasked(String(index), context)} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
     );
     return result;
   }
@@ -8018,11 +8032,12 @@ export class IntrinsicFunctionResolver {
     // Issue #3100: a piece of a string an earlier write masked keeps its part
     // of that mask, on this line and on an outer Join over the pieces.
     const pieceTwins = this.splitLogTwins(resolvedValue, delimiter, result, context);
-    // not-in-class(delimiter): a structural operand (an index, count, delimiter or property key).
     this.logger.debug(
       // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
-      // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-      `Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
+      // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
+      // delimiter through the builder (issue #3479): it is raw template text,
+      // and a structural operand is still arbitrary JSON.
+      `Resolved Fn::Split: split by "${this.displayMasked(String(delimiter), context)}" -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
     );
     return result;
   }
@@ -12227,8 +12242,8 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    // not-in-class(count): a structural operand (an index, count, delimiter or property key).
-    // not-in-class(cidrBits): a structural operand (an index, count, delimiter or property key).
+    // not-in-class(count): a `Number()` result, so it renders as digits, `NaN` or `Infinity` (issue #3479).
+    // not-in-class(cidrBits): a `Number()` result, so it renders as digits, `NaN` or `Infinity` (issue #3479).
     this.logger.debug(
       // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
       // comes back from `resolveValue`.

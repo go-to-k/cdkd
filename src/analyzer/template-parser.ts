@@ -1,5 +1,6 @@
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
 
 /**
@@ -328,14 +329,19 @@ export class TemplateParser {
 
     // Validate each resource has a Type
     for (const [logicalId, resource] of Object.entries(resources)) {
+      // A `Resources` KEY is arbitrary template JSON — nothing upstream
+      // validates its characters — and both renders below print at `error`,
+      // DEFAULT verbosity (issue #3479).
       if (typeof resource !== 'object' || resource === null) {
-        this.logger.error(`Resource ${logicalId} is not an object`);
+        this.logger.error(`Resource ${displaySafe(logicalId)} is not an object`);
         return false;
       }
 
       const r = resource as Record<string, unknown>;
       if (!('Type' in r) || typeof r['Type'] !== 'string') {
-        this.logger.error(`Resource ${logicalId} missing Type or Type is not a string`);
+        this.logger.error(
+          `Resource ${displaySafe(logicalId)} missing Type or Type is not a string`
+        );
         return false;
       }
     }
@@ -417,7 +423,11 @@ export class TemplateParser {
         Object.hasOwn(conditions, conditionName) &&
         conditions[conditionName] === false
       ) {
-        this.logger.debug(`Excluding resource ${logicalId} — condition ${conditionName} is false`);
+        // Both are template text: the logical id is a `Resources` key and the
+        // condition name the resource's own `Condition` (issue #3479).
+        this.logger.debug(
+          `Excluding resource ${displaySafe(logicalId)} — condition ${displaySafe(conditionName)} is false`
+        );
         continue;
       }
       // The WRITE twin of the `resolveValue` bug this sweep fixes (issue #2767).
