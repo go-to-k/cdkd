@@ -109,7 +109,10 @@ describe('createLocalStartCloudFrontCommand', () => {
  * Issue [#2528](https://github.com/go-to-k/cdkd/issues/2528): the three cdkd
  * state-source flags declared above PARSE and do NOTHING on this command.
  *
- * Verified against the installed `cdk-local@0.147.7` bundle: all three
+ * Verified against the installed bundle, cited by symbol rather than by file
+ * and line — the chunk is content-hashed and the offsets move every release,
+ * so the previous citation named a file that no longer exists
+ * (go-to-k/cdkd#3551). Last verified against cdk-local 0.149.1: all three
  * consumers miss cdkd's registered provider — `resolveDeployedS3Origins` and
  * `attachKvsModules` both gate on `isCfnFlagPresent(options)` (i.e.
  * `--from-cfn-stack` specifically, not the "any state source is active"

@@ -426,8 +426,11 @@ describe('CfnLocalStateProvider comes from cdk-local, not from a cdkd fork (#252
  *
  * The claim: the provider these commands actually route through is cdk-local's
  * `CfnLocalStateProvider`, which calls the PAGINATED `ListStackResources`
- * (`node_modules/cdk-local/dist/local-studio-BBtUAVNy.js`, its only
- * CloudFormation import). `DescribeStackResources` returns at most one page and
+ * (its only CloudFormation import — cited by symbol, not by the content-hashed
+ * bundle chunk, which is regenerated every release and which the previous
+ * spelling named after it had stopped existing, go-to-k/cdkd#3551. Measured on
+ * cdk-local 0.149.1: two `ListStackResourcesCommand` references, zero
+ * `DescribeStackResourcesCommand`). `DescribeStackResources` returns at most one page and
  * is a different API with a different failure mode, so naming it sends a user
  * debugging a truncated read to the wrong AWS docs page and the wrong IAM
  * action.

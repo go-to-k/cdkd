@@ -86,18 +86,25 @@ function collectLambdaTargetLogicalIds(frontDoor: FrontDoorPlan | undefined): st
  * that command's path reads a host-registered state source. `start-alb` is
  * partial, not total, so the same remedy would delete a working capability:
  *
- * - **ECS service targets DO honor `--from-state`.** `bootOneTarget` /
- *   `rollOneTarget` (`cdk-local@0.147.7`, `dist/local-studio-BBtUAVNy.js`
- *   `:26474` / `:26422`) hand `createLocalStateProvider` the FULL options bag,
+ * Measured against the bundled engine, and cited by VERSION AND SYMBOL rather
+ * than by file and line: the chunk name is content-hashed and the offsets move
+ * on any upstream edit, so a citation naming them is born stale at the next
+ * release (go-to-k/cdkd#3551 — these lines named `cdk-local@0.147.7` and a
+ * chunk that no longer exists). Re-check with
+ * `grep -n 'function <symbol>' node_modules/cdk-local/dist/local-studio-*.js`.
+ * Last verified: **cdk-local 0.149.1**.
+ *
+ * - **ECS service targets DO honor `--from-state`.** `bootOneTarget` and
+ *   `rollOneTarget` hand `createLocalStateProvider` the FULL options bag,
  *   so cdkd's `fromState` factory is selected and the task containers'
  *   images / env / secrets / volumes resolve against S3 state.
- * - **Lambda target groups do NOT.** `resolveAlbLambdaTargetEnv` (`:26614`)
+ * - **Lambda target groups do NOT.** `resolveAlbLambdaTargetEnv`
  *   rebuilds the bag it hands the shared `resolveLambdaContainerEnv` as a
  *   SIX-KEY allow-list — `fromCfnStack` / `assumeRole` / `region` / `profile` /
- *   `stackRegion` / `envVars` (`:26619-26626`) — dropping `fromState` /
+ *   `stackRegion` / `envVars` — dropping `fromState` /
  *   `stateBucket` / `statePrefix`. It forwards `extraStateProviders` faithfully,
  *   but the dispatcher activates an extra provider only when `options[key]` is
- *   truthy (`:4894`), and the key it looks for is exactly the one the bag no
+ *   truthy, and the key it looks for is exactly the one the bag no
  *   longer carries. So cdkd's factory is registered and never selected, and the
  *   Lambda boots with its intrinsics dropped — one WARN per variable, none of
  *   which says the flag was the problem.
