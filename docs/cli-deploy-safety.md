@@ -38,7 +38,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
 | `--permissions-boundary <arn>` | deploy | Attach an IAM permissions boundary to every Role and User cdkd creates or updates, [overriding the template](#permissions-boundary-deploy). |
 
-## `--permissions-boundary <arn>` (deploy)
+## `--permissions-boundary` (deploy)
 
 Attaches the named IAM permissions boundary policy to every `AWS::IAM::Role`
 and `AWS::IAM::User` cdkd creates or updates, **overriding whatever the template

@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 23
+    "classesWithBlindSpots": 25
   },
   "classes": [
     {
@@ -12690,7 +12690,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "canonicalizePermissionsBoundary(...) in canonicalizeDesiredProperties()",
+        "withAppliedPermissionsBoundary(...) in create()"
+      ]
     },
     {
       "file": "iam-user-group-provider.ts",
@@ -12883,7 +12886,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "canonicalizePermissionsBoundary(...) in canonicalizeDesiredProperties()"
+      ]
     },
     {
       "file": "kinesis-provider.ts",

@@ -46,6 +46,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveCaptureObservedState: vi.fn(() => false),
   resolveAutoAssetStorage: vi.fn(() => false),
   resolveSkipPrefix: vi.fn(() => false),
+  resolvePermissionsBoundary: vi.fn(() => undefined),
   resolveStateBucketWithDefaultAndSource: vi.fn(async () => ({
     bucket: 'test-bucket',
     source: 'default',

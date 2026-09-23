@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
+import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
@@ -751,11 +752,15 @@ export function resolvePermissionsBoundary(
     if (value === undefined || value === null) continue;
     if (typeof value === 'string' && value.trim().length > 0) {
       const arn = value.trim();
-      logger.debug(`Forcing permissions boundary ${arn} (from ${source})`);
+      // The ARN comes from argv / env / cdk.json, so it is untrusted text
+      // bound for a terminal: render it as an untrusted IDENTIFIER.
+      logger.debug(`Forcing permissions boundary ${displayIdent(arn)} (from ${source})`);
       return arn;
     }
+    // cdkd-profile-display: the value is rendered through `displayIdent`, an
+    // untrusted-identifier renderer, not interpolated bare.
     logger.warn(
-      `Ignoring ${source}: expected a non-empty permissions boundary policy ARN, got ${JSON.stringify(value)}`
+      `Ignoring ${source}: expected a non-empty permissions boundary policy ARN, got ${displayIdent(value)}`
     );
   }
 
