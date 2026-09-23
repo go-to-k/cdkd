@@ -11,6 +11,18 @@ minimumReleaseAgeExclude:
   # before the tag, and the release is cut from a PR merged here — so the age
   # window buys nothing it does not already have, while costing a day on every
   # coupled change (measured: go-to-k/cdkd#3534 waited on exactly this).
+  #
+  # This SUPERSEDES a decision recorded when 0.147.7 landed, which kept the
+  # entry an exact pin "so the min-release-age bypass does not become
+  # standing". A per-version pin does avoid the day's wait just as well — that
+  # reasoning was sound, and it is not the reason for the change. The reason is
+  # that the pin has to be bumped in the same commit as `package.json` and
+  # nothing checks that it was: the entry below this block still read
+  # `cdk-local@0.148.4` after the 0.149.0 bump, which silently reinstates the
+  # wait it exists to avoid, and only a reviewer reading the file noticed.
+  # A standing exclude is honest about what is being traded; a stale exact pin
+  # claims a protection it is not providing.
+  #
   # It IS a real reduction in protection for this one dependency: a
   # compromised npm token publishing as `cdk-local` would install immediately.
   # Accepted deliberately, and it is the reason the entries below stay pinned
@@ -28,4 +40,3 @@ minimumReleaseAgeExclude:
   - '@aws-sdk/credential-provider-web-identity@3.972.66'
   - '@aws-sdk/nested-clients@3.997.34'
   - '@aws-sdk/token-providers@3.1092.0'
-  - cdk-local@0.148.4

@@ -195,8 +195,9 @@ Refused:
 - a Docker asset's `source.directory` under `cdkd local run-task`;
 - a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
   `source.directory` its `--watch` soft reload reads;
-- a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke` and
-  `cdkd local start-api`, when it is **relative** — both the function's own code
+- a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke`,
+  `cdkd local start-api`, `cdkd local start-alb` and
+  `cdkd local start-cloudfront`, when it is **relative** — both the function's own code
   directory and a same-stack layer's. The result is bind-mounted read-only at
   `/var/task` (a layer's at `/opt`) inside a container running handler code the
   same assembly supplies, and `cdkd local invoke` forwards your credentials into
@@ -234,11 +235,10 @@ Not refused today:
   `cdkd local start-alb`. `cdkd local run-task` is the exception — its image
   build is cdkd's own and IS contained.
 
-A Lambda's `Metadata['aws:asset:path']` is no longer on that list for any
-command: `cdkd local start-alb` and `cdkd local start-cloudfront` reach Lambda
-code through the bundled `cdk-local` engine, which now applies the same rule
-as `cdkd local invoke` and `cdkd local start-api` — a relative escape refused,
-an absolute one accepted with a warning naming the directory.
+A Lambda's `Metadata['aws:asset:path']` is on that list for no command. Reaching
+it through the bundled `cdk-local` engine — which is how `cdkd local start-alb`
+and `cdkd local start-cloudfront` reach it — no longer means reaching it
+unguarded: the engine applies the same rule cdkd's own resolver does.
 
 Until the rest land, a hand-modified assembly can still put a directory of its
 choosing in front of code it also supplies. Treat an assembly you did not
