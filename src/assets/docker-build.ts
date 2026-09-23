@@ -23,7 +23,7 @@ import { cacheOptionToFlag } from './docker-cache-option.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
- * The three values that decide what {@link resolveDockerContextDirectory}
+ * Every value that decides what {@link resolveDockerContextDirectory}
  * does, as a BAG rather than positionals (issue
  * [#3537](https://github.com/go-to-k/cdkd/issues/3537)).
  *
@@ -46,7 +46,7 @@ import { getLogger } from '../utils/logger.js';
 export interface DockerContextResolveOptions {
   /**
    * Where a RELATIVE `directory` resolves FROM — the manifest's own directory,
-   * which is assembly-derived. Distinct from {@link assetOutdir}, which is
+   * which is assembly-derived. Distinct from `assetOutdir`, which is
    * what the result must stay inside and comes from the user.
    */
   manifestDir: string;

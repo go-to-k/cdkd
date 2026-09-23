@@ -20,7 +20,8 @@ paths:
   directory but are CONTAINED within `StackInfo.assetOutdir`**: a Stage's
   assets sit in the app root, so `source.path` is `../asset.<hash>` by design
   and containing against the manifest directory refused every Stage asset.
-  **Both resolvers take their trailing values as an OPTIONS BAG**
+  **Both resolvers take an OPTIONS BAG — the file one its trailing values,
+  the Docker one EVERY parameter**
   (`FileAssetResolveOptions` / `DockerContextResolveOptions`), and
   `assetOutdir` is REQUIRED there and on `FileAssetPublisher.publish` /
   `DockerAssetPublisher.build`. Required catches a DROP; the bag catches a
@@ -35,7 +36,8 @@ paths:
   which contained ([#3544](https://github.com/go-to-k/cdkd/issues/3544)).
   `resolveFileAssetSourcePath` keeps its leading positionals because its second
   parameter is a `FileAsset` and the swap does not typecheck — the invariant is
-  "no transposable adjacent same-typed pair", not "both twins look alike". The surviving `??`
+  "no transposable adjacent same-typed pair", not "both twins look alike".
+  The surviving `??`
   fallbacks IN THIS LAYER — two in `buildDockerImage`, one in
   `AssetPublisher` — all NARROW onto the manifest directory and never open
   past it. `src/local/` holds two more that feed the same resolvers
