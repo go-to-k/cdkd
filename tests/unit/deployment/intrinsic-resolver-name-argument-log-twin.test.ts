@@ -149,6 +149,8 @@ const ec2Behaviour = vi.hoisted(() => ({
    * original message, so every pre-existing case is unaffected.
    */
   quoteRegion: false,
+  /** Text appended to the quoting rejection, for a recorded needle it does not send. */
+  extra: '',
 }));
 /**
  * go-to-k/cdkd#3171: the dynamic-reference lookups' SDK text. `ssmThrottles`
@@ -157,7 +159,15 @@ const ec2Behaviour = vi.hoisted(() => ({
  * quote the request's names back (an AccessDenied naming the secret id, and
  * the staging-label miss naming the stage).
  */
-const lookupBehaviour = vi.hoisted(() => ({ ssmThrottles: 0, secretsQuote: false }));
+const lookupBehaviour = vi.hoisted(() => ({
+  ssmThrottles: 0,
+  secretsQuote: false,
+  /**
+   * An ARN-form secret id fails as an unreachable ENDPOINT would, naming the
+   * ARN's region in the host (what the region-pinned sibling's client hits).
+   */
+  endpointFailure: false,
+}));
 /** STS: the real account, or an answer with no account (a FABRICATED id). */
 const stsBehaviour = vi.hoisted(() => ({ fabricated: false }));
 
@@ -181,7 +191,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
             ?.Filters;
           throw new Error(
             ec2Behaviour.quoteRegion
-              ? `The region '${String(filters?.[0]?.Values?.[0])}' is not subscribed`
+              ? `The region '${String(filters?.[0]?.Values?.[0])}' is not subscribed` +
+                (ec2Behaviour.extra === '' ? '' : ` (${ec2Behaviour.extra})`)
               : 'The region is not subscribed'
           );
         }
@@ -235,6 +246,14 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
               pinab: `${PIN}ab`,
             }),
           };
+        }
+        const requested = (command.input as { SecretId?: string }).SecretId ?? '';
+        if (lookupBehaviour.endpointFailure && requested.startsWith('arn:')) {
+          const unreachable = new Error(
+            `getaddrinfo ENOTFOUND secretsmanager.${requested.split(':')[3]}.amazonaws.com`
+          );
+          unreachable.name = 'Error';
+          throw unreachable;
         }
         if (lookupBehaviour.secretsQuote) {
           const input = command.input as {
@@ -395,7 +414,9 @@ beforeEach(() => {
   cfnBehaviour.outputKey = '';
   ec2Behaviour.mode = 'empty';
   ec2Behaviour.quoteRegion = false;
+  ec2Behaviour.extra = '';
   lookupBehaviour.ssmThrottles = 0;
+  lookupBehaviour.endpointFailure = false;
   lookupBehaviour.secretsQuote = false;
   stsBehaviour.fabricated = false;
   resetAccountInfoCache();
@@ -2560,7 +2581,8 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       expect(error.message).toBe('ParameterNotFound: missing-***');
       const retries = everyLine().filter((l) => l.includes('Retrying ssm:'));
       expect(retries).toHaveLength(1);
-      expect(retries[0]).toContain('Retrying ssm:missing-*** in ');
+      // `retry.ts`'s indent survives the mask, which trims.
+      expect(retries[0]).toMatch(/^ {2}⏳ Retrying ssm:missing-\*\*\* in /);
       expect(retries[0]).toMatch(/ - Rate exceeded for parameter missing-\*\*\*$/);
       expectNowhere(`missing-${PIN}`, ...everyTextOf(error));
     });
@@ -2634,6 +2656,31 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       expectNowhere(`ver-${PIN}`, ...everyTextOf(error));
     });
 
+    it("a region-pinned sibling's endpoint failure quoting the secret ARN's assembled region", async () => {
+      // No caller pair covers the region: the host names it alone, not the
+      // whole ARN the secret-id pair keys on. The guest's own region does.
+      lookupBehaviour.endpointFailure = true;
+      const error = await rejectionOf(
+        inline(
+          '{{resolve:secretsmanager:arn:aws:secretsmanager:us-north-${P}:210987654321:secret:other:SecretString:pin}}'
+        )
+      );
+      expect(error.message).toBe('getaddrinfo ENOTFOUND secretsmanager.us-north-***.amazonaws.com');
+      expectNowhere(`us-north-${PIN}`, ...everyTextOf(error));
+    });
+
+    it("CONTROL: a region-pinned sibling's unrecorded region prints verbatim", async () => {
+      lookupBehaviour.endpointFailure = true;
+      const error = await rejectionOf(
+        inlinePlain(
+          '{{resolve:secretsmanager:arn:aws:secretsmanager:us-north-${P}:210987654321:secret:other:SecretString:pin}}'
+        )
+      );
+      expect(error.message).toBe(
+        `getaddrinfo ENOTFOUND secretsmanager.us-north-${UNRECORDED}.amazonaws.com`
+      );
+    });
+
     it('CONTROL: an unrecorded version id prints verbatim', async () => {
       const error = await rejectionOf(
         inlinePlain('{{resolve:secretsmanager:other:SecretString:pin::ver-${P}}}')
@@ -2657,6 +2704,21 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
           "The region 'us-north-***' is not subscribed"
       );
       expectNowhere(`us-north-${PIN}`, message);
+    });
+
+    it('a recorded 4+ character secret the AWS text quotes apart from the name takes the needle mask', async () => {
+      // The positional pass keys on the names SENT; this secret is not one of
+      // them, so only the needle half of the message mask can reach it.
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const context = makeContext();
+      await resolver.resolve(ref('pinab'), context as never);
+      ec2Behaviour.extra = `${PIN}ab`;
+      const message = await messageOf({ 'Fn::GetAZs': sub('US-NORTH-${P}') }, context, resolver);
+      expect(message).toBe(
+        "Fn::GetAZs: failed to describe availability zones for region 'us-north-***': " +
+          "The region 'us-north-***' is not subscribed (***)"
+      );
+      expectNowhere(`${PIN}ab`, message);
     });
 
     it('CONTROL: an unrecorded region prints verbatim in both places', async () => {
