@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vite-plus/test';
 
 import { failedStageNote, stageScopedError } from '../../../src/synthesis/failed-stages.js';
 import { SynthesisError } from '../../../src/utils/error-handler.js';
+import { PATHOLOGICAL_PATTERN, withoutRegExp } from '../_without-regexp.js';
 
 const MY_STAGE = { stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' };
 const OTHER_STAGE = { stagePath: 'Other', reason: 'Unexpected token }' };
@@ -79,6 +80,31 @@ describe('failedStageNote', () => {
     // the user needed with a SyntaxError.
     expect(() => failedStageNote(['(*x/y*)'], [MY_STAGE])).not.toThrow();
     expect(failedStageNote(['(*x/y*)'], [MY_STAGE])).toContain('Possibly unrelated');
+  });
+
+  it('compares segments with every character but `*` literal (#3508)', () => {
+    // Each stage-level segment carries a `*`: the old expansion compiled only
+    // those, so a star-free segment was already compared literally.
+    // `.` is not "any character": the pattern names a different stage.
+    expect(
+      failedStageNote(['My.Stage*/*'], [{ stagePath: 'MyXStage1', reason: 'ENOENT' }])
+    ).toContain('Possibly unrelated');
+    // `(` is a character, not a RegExp that fails to compile -- the old
+    // expansion caught the SyntaxError and hedged a pattern naming this stage.
+    expect(
+      failedStageNote(['My(Stage*/*'], [{ stagePath: 'My(Stage1', reason: 'ENOENT' }])
+    ).not.toContain('Possibly unrelated');
+  });
+
+  it('attributes through a catastrophic-backtracking segment without executing any RegExp (#3508)', () => {
+    // The stage path is assembly-supplied; the old expansion caught whatever
+    // its RegExp raised, so the call count is what sees a RegExp here.
+    const stagePath = `${'a'.repeat(3000)}b`;
+    const result = withoutRegExp(() =>
+      failedStageNote([`${PATHOLOGICAL_PATTERN}/Api`], [{ stagePath, reason: 'ENOENT' }])
+    );
+    expect(result.regexCalls).toBe(0);
+    expect(result.value).not.toContain('Possibly unrelated');
   });
 
   it('hedges, rather than throwing, when the pattern has FEWER segments than the stage path', () => {

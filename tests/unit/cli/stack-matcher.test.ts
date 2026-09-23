@@ -5,6 +5,7 @@ import {
   describeStack,
   renderNoStackMatch,
 } from '../../../src/cli/stack-matcher.js';
+import { PATHOLOGICAL_PATTERN, withoutRegExp } from '../_without-regexp.js';
 
 const stacks = [
   { stackName: 'TopStack', displayName: 'TopStack' },
@@ -44,6 +45,30 @@ describe('stackMatchesPattern', () => {
     expect(stackMatchesPattern(stacks[2]!, 'MyStage/*')).toBe(true);
     expect(stackMatchesPattern(stacks[3]!, 'MyStage/*')).toBe(false);
     expect(stackMatchesPattern(stacks[0]!, 'MyStage/*')).toBe(false);
+  });
+
+  it('reads every character but `*` literally, on both routes (#3508)', () => {
+    // The old expansion compiled the pattern as a RegExp whenever it held a
+    // `*`, so `.` matched any character and `(` threw a SyntaxError.
+    expect(stackMatchesPattern({ stackName: 'MyXStage-1' }, 'My.Stage-*')).toBe(false);
+    expect(stackMatchesPattern({ stackName: 'My.Stage-1' }, 'My.Stage-*')).toBe(true);
+    const display = { stackName: 'phys', displayName: 'MyXStage/Api' };
+    expect(stackMatchesPattern(display, 'My.Stage/*')).toBe(false);
+    expect(
+      stackMatchesPattern({ stackName: 'phys', displayName: 'My(Stage/Api' }, 'My(Stage/*')
+    ).toBe(true);
+  });
+
+  it('answers a catastrophic-backtracking pattern without executing any RegExp (#3508)', () => {
+    const subject = 'a'.repeat(3000);
+    const miss = withoutRegExp(() =>
+      stackMatchesPattern({ stackName: subject }, PATHOLOGICAL_PATTERN)
+    );
+    expect(miss).toEqual({ value: false, regexCalls: 0 });
+    const hit = withoutRegExp(() =>
+      matchStacks([{ stackName: `${subject}b` }], [PATHOLOGICAL_PATTERN])
+    );
+    expect(hit).toEqual({ value: [{ stackName: `${subject}b` }], regexCalls: 0 });
   });
 
   it('falls back to stackName when displayName is missing', () => {
