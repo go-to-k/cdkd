@@ -26,7 +26,7 @@ description: "cdkd's layered architecture — CDK synthesis, asset publishing, a
 │  - assembly-reader.ts: manifest.json/template parser           │
 │  - synthesizer.ts: Context provider loop orchestrator          │
 │  - context-store.ts: cdk.context.json read/write               │
-│  - context-provider-registry.ts: Context provider registry     │
+│  - context-providers/index.ts: Context provider registry       │
 │  - context-providers/: Missing context resolution providers    │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
@@ -152,7 +152,7 @@ This iterative loop mirrors the behavior of the CDK CLI: when a CDK app encounte
 
 Reads and writes `cdk.context.json` for context caching. This file persists resolved context values across synthesis runs, avoiding redundant AWS API calls.
 
-#### `context-provider-registry.ts` - ContextProviderRegistry
+#### `context-providers/index.ts` - ContextProviderRegistry
 
 Registry of context providers that resolve missing context during synthesis. Each provider handles a specific context type.
 
