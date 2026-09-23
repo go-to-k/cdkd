@@ -49,6 +49,9 @@ cdkd list 'MyStage/*'               # every stack in a stage (quote the glob)
 cdkd list MyStage-Api MyStage-Db    # several, by physical name
 ```
 
+`*` is the only wildcard: it matches any run of characters, and every other
+character — `.`, `?`, `(` and the rest — matches only itself.
+
 Quote a wildcard, so the shell hands the pattern to cdkd rather than trying to
 resolve it itself — under zsh an unmatched glob aborts the command outright.
 

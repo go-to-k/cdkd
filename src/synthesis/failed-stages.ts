@@ -1,5 +1,6 @@
 import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
+import { globMatches } from '../utils/glob-match.js';
 
 /**
  * A CDK Stage (`cdk:cloud-assembly` artifact) whose own manifest could not be
@@ -207,28 +208,11 @@ function patternTargetsStage(pattern: string, stagePath: string): boolean {
   const stageSegments = stagePath.split('/');
   if (patternSegments.length < stageSegments.length) return false;
 
-  return stageSegments.every((segment, i) => segmentMatches(patternSegments[i]!, segment));
-}
-
-/**
- * Wildcard-aware comparison of ONE path segment, matching how
- * `stackMatchesPattern` expands `*` in `src/cli/stack-matcher.ts`. The pattern
- * is the USER's own input, not an assembly-supplied value, so it is expanded
- * there the same way — metacharacters and all, so the two cannot disagree
- * about what a pattern means.
- *
- * The construction is guarded because SPLITTING on `/` can make an invalid
- * segment out of a valid pattern (`'(*x/y*)'` splits into `'(*x'`), and this
- * helper runs when the stack list is EMPTY, which is exactly when
- * `stackMatchesPattern` never evaluates and therefore never raises first. An
- * unusable pattern is simply not attributed: the note still prints, hedged,
- * instead of a `SyntaxError` replacing the message the user needed.
- */
-function segmentMatches(patternSegment: string, segment: string): boolean {
-  if (!patternSegment.includes('*')) return patternSegment === segment;
-  try {
-    return new RegExp('^' + patternSegment.replace(/\*/g, '.*') + '$').test(segment);
-  } catch {
-    return false;
-  }
+  // Segment by segment through the same `globMatches` that
+  // `stackMatchesPattern` calls, so the two cannot disagree about what a
+  // pattern means (#3508). It builds no RegExp, so a segment that SPLITTING cut
+  // out of a valid pattern (`'(*x/y*)'` splits into `'(*x'`) compares
+  // literally instead of raising a `SyntaxError` over the message the user
+  // needed.
+  return stageSegments.every((segment, i) => globMatches(patternSegments[i]!, segment));
 }

@@ -13,12 +13,14 @@
  *   appear in a CloudFormation stack name, so this is unambiguous)
  * - Pattern contains no `/` → matched only against `stackName`
  *
- * Wildcards (`*`) are supported in either case. Results are de-duplicated by
+ * Wildcards (`*`) are supported in either case; every other character is
+ * literal. Results are de-duplicated by
  * `stackName`, so a pattern that incidentally matches the same stack via both
  * fields is returned only once.
  */
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { failedStageNote, type FailedStage } from '../synthesis/failed-stages.js';
+import { globMatches } from '../utils/glob-match.js';
 
 export interface StackLike {
   stackName: string;
@@ -120,11 +122,12 @@ export function renderNoStackMatch(
   return head + failedStageNote(patterns, assembly.failedStages);
 }
 
+/**
+ * `*` matches any run of characters and every other character is literal —
+ * `globMatches` owns that rule for this matcher and for the failed-Stage
+ * attribution alike ([#3508](https://github.com/go-to-k/cdkd/issues/3508)).
+ */
 export function stackMatchesPattern(stack: StackLike, pattern: string): boolean {
   const target = pattern.includes('/') ? (stack.displayName ?? stack.stackName) : stack.stackName;
-  if (pattern.includes('*')) {
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-    return regex.test(target);
-  }
-  return target === pattern;
+  return globMatches(pattern, target);
 }
