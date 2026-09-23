@@ -114,13 +114,12 @@ const FULL_BLOCK = {
  *
  * The third row is NOT parity, and an earlier revision of this file said it
  * was. The SDK ACCEPTS the partial nested struct and replaces it (a live
- * `rollback` went true -> false); only CloudFormation refuses the template,
- * via a `required`-list check cdkd performs NOWHERE. So cdkd deploys a
- * template CFn rejects — an accepted divergence in the PERMISSIVE direction,
- * tracked as issue #1802. The pass-through is still what these tests pin,
- * because the alternative (re-filling `Rollback` from the previous side)
- * would invent a value the template never declared; the fix belongs in
- * pre-flight, not here.
+ * `rollback` went true -> false); CloudFormation refuses the template via
+ * its `required`-list check. Issue #1802 moved that check into cdkd's deploy
+ * pre-flight (`nested-required.ts`), so the shape no longer reaches the
+ * provider from a template. The PROVIDER's pass-through is still what these
+ * tests pin, because the alternative (re-filling `Rollback` from the previous
+ * side) would invent a value the template never declared.
  *
  * These tests pin the pass-through so a future "helpful" normalization or
  * removal-reset cannot be added silently. Each assertion is written against
@@ -277,7 +276,7 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
     expect(sent).toEqual({ alarms: { enable: true } });
   });
 
-  it('nested block missing a required sub-field is forwarded verbatim (a DIVERGENCE, see #1802)', async () => {
+  it('nested block missing a required sub-field is forwarded verbatim by the provider (pre-flight refuses it first, #1802)', async () => {
     await update(
       { ...baseProps(), DeploymentConfiguration: { DeploymentCircuitBreaker: { Enable: false } } },
       { ...baseProps(), DeploymentConfiguration: FULL_BLOCK }
@@ -285,11 +284,10 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
 
     const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
 
-    // This shape DOES reach the provider — cdkd enforces no nested
-    // required-ness, so unlike CloudFormation (which refuses the template with
-    // "required key [Rollback] not found") cdkd forwards it, the SDK accepts
-    // it, and the nested struct is REPLACED: a live `rollback: true` becomes
-    // false. That divergence is issue #1802 and belongs in pre-flight.
+    // The deploy pre-flight now refuses this template as CloudFormation does
+    // (issue #1802, `nested-required.test.ts`), so it no longer reaches the
+    // provider from a template; were it to, the SDK would accept it and
+    // REPLACE the nested struct (a live `rollback: true` becomes false).
     //
     // What is pinned here is that cdkd does not try to hide it by re-filling
     // `rollback` from the previous side — that would invent a value the

@@ -558,6 +558,99 @@ export function extractDefinitionRequired(schemaJson) {
 }
 
 /**
+ * Extract, per NESTED property PATH, the `required` member list of the object
+ * found there — the data behind the deploy pre-flight refusal of a kept-but-
+ * partial nested block (issue #1802, `src/provisioning/nested-required.ts`).
+ *
+ * Keyed by the full dotted path INCLUDING the top-level property
+ * (`DeploymentConfiguration.DeploymentCircuitBreaker`), with arrays transparent
+ * exactly as in {@link extractNestedPropertyPaths}: a list of `Tag` objects
+ * yields `Tags`, and the runtime check applies the list to each element. The
+ * top-level `required` block is deliberately NOT included (the #1802 scope is
+ * the nested definition, whose API replaces the struct wholesale).
+ *
+ * Unlike {@link extractDefinitionRequired} this is keyed by WHERE the object
+ * sits, so a consumer can apply it to a template without re-resolving `$ref`s,
+ * and it also captures an INLINE nested object's `required`, which has no
+ * definition name to hang an entry on.
+ *
+ * The walk follows only `properties`, `$ref` and `items`, and that restriction
+ * is load-bearing — every other container would put a `required` list at a path
+ * where it does NOT hold:
+ *
+ * - a combinator arm (`oneOf` / `anyOf` / `allOf`) is an ALTERNATIVE, so an arm's
+ *   `required` recorded at the shared path would refuse a payload matching the
+ *   OTHER arm;
+ * - `additionalProperties` / `patternProperties` values sit under a
+ *   user-chosen KEY, so recording them at the map's own path would apply the
+ *   value's `required` to the map object itself.
+ *
+ * Skipping them under-refuses, which is the safe direction for a pre-flight
+ * refusal. Should one path ever be reached twice with different lists, the
+ * INTERSECTION is kept, for the same reason.
+ *
+ * The capture says what the SCHEMA requires, not what CloudFormation enforces:
+ * some types' `required` lists are not checked by CloudFormation at all
+ * (measured, see `CFN_ENFORCED_TYPES` in `src/provisioning/nested-required.ts`),
+ * and the runtime refuses only for types measured to enforce them.
+ *
+ * @param {string} schemaJson
+ * @returns {Record<string, string[]>}
+ */
+export function extractNestedRequired(schemaJson) {
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  if (!schema.properties || typeof schema.properties !== 'object') return {};
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /** @type {Map<string, Set<string>>} */
+  const out = new Map();
+  /**
+   * @param {unknown} node
+   * @param {readonly string[]} prefix
+   * @param {ReadonlySet<string>} ancestorRefs
+   */
+  function walk(node, prefix, ancestorRefs) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+    if (prefix.length >= MAX_NESTED_PATH_DEPTH) return;
+    const obj = /** @type {Record<string, unknown>} */ (node);
+    const ref = obj['$ref'];
+    if (typeof ref === 'string' && ref.startsWith('#/definitions/')) {
+      const defName = ref.slice('#/definitions/'.length);
+      if (!ancestorRefs.has(defName)) {
+        walk(definitions[defName], prefix, new Set([...ancestorRefs, defName]));
+      }
+    }
+    const required = obj['required'];
+    if (Array.isArray(required)) {
+      const members = new Set(required.filter((m) => typeof m === 'string'));
+      const key = prefix.join('.');
+      const seen = out.get(key);
+      out.set(key, seen ? new Set([...seen].filter((m) => members.has(m))) : members);
+    }
+    const props = obj['properties'];
+    if (props && typeof props === 'object' && !Array.isArray(props)) {
+      for (const [name, sub] of Object.entries(props)) walk(sub, [...prefix, name], ancestorRefs);
+    }
+    if (obj['items'] && typeof obj['items'] === 'object') {
+      walk(obj['items'], prefix, ancestorRefs);
+    }
+  }
+
+  for (const [topName, sub] of Object.entries(schema.properties)) {
+    walk(sub, [topName], new Set());
+  }
+  /** @type {Record<string, string[]>} */
+  const result = {};
+  for (const key of [...out.keys()].sort()) {
+    const members = [...(out.get(key) ?? [])].sort();
+    if (members.length > 0) result[key] = members;
+  }
+  return result;
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -626,6 +719,7 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
   const nestedPropertyPaths = extractNestedPropertyPaths(schemaJson, resourceType);
   const definitionShapes = extractDefinitionShapes(schemaJson);
   const definitionRequired = extractDefinitionRequired(schemaJson);
+  const nestedRequired = extractNestedRequired(schemaJson);
   return {
     resourceType,
     generatedAt,
@@ -649,6 +743,9 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
     // a type whose schema requires nothing anywhere legitimately has no
     // section at all.
     ...(Object.keys(definitionRequired).length > 0 ? { definitionRequired } : {}),
+    // The per-PATH twin (issue #1802), read by the deploy pre-flight through
+    // `scripts/gen-nested-required.ts`. Same omit-when-empty rule.
+    ...(Object.keys(nestedRequired).length > 0 ? { nestedRequired } : {}),
   };
 }
 

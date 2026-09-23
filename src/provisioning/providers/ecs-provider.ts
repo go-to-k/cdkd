@@ -1321,16 +1321,14 @@ export class ECSProvider implements ResourceProvider {
     //     UPDATE_ROLLBACK_COMPLETE with the live config intact), because the
     //     registry schema marks the `DeploymentCircuitBreaker` definition
     //     required [Enable, Rollback] and `DeploymentAlarms` (the `Alarms`
-    //     property) required [AlarmNames, Rollback, Enable]. cdkd enforces
-    //     NO nested required-ness anywhere — pre-flight covers top-level
-    //     properties (`property-coverage.ts`) and property COMBINATIONS
-    //     (`mutually-exclusive-properties.ts`), neither of which reads a
-    //     definition's `required` list — so cdkd DEPLOYS a template CFn
-    //     rejects and silently flips the live setting. This is an accepted
-    //     divergence in the PERMISSIVE direction, tracked as issue #1802;
-    //     it is deliberately NOT papered over here by re-filling `Rollback`
-    //     from the previous side, which would invent a value the template
-    //     never declared. Do NOT read this row as the ASG
+    //     property) required [AlarmNames, Rollback, Enable]. cdkd used to
+    //     DEPLOY that template and silently flip the live setting; the deploy
+    //     pre-flight now refuses it as CloudFormation does
+    //     (`nested-required.ts`, issue #1802), so a LITERAL partial block no
+    //     longer reaches this method (one behind `Fn::If`, or a member
+    //     resolving to `AWS::NoValue`, still can). It is deliberately NOT papered over
+    //     here by re-filling `Rollback` from the previous side, which would
+    //     invent a value the template never declared. Do NOT read this row as the ASG
     //     InstanceMaintenancePolicy disposition (#1227): there AWS ITSELF
     //     rejected the partial, so cdkd failed loudly too and pass-through
     //     really was parity.
@@ -1374,7 +1372,7 @@ export class ECSProvider implements ResourceProvider {
     //   - The shapes the rows ABOVE do not already cover split TWO ways (plus
     //     the array shape at the end of this bullet), so
     //     neither "the rest of the tree is fine" nor "the other blocks are
-    //     refused" is the takeaway, and `DeploymentAlarms` keeps the #1802
+    //     refused" is the takeaway, and `DeploymentAlarms` keeps the #1802 (now pre-flight-refused)
     //     disposition the row above gives it. Enumerated from
     //     the LIVE registry definitions (`describe-type`, us-east-1
     //     2026-08-13) rather than from the blocks #1806 names, and measured
@@ -1398,7 +1396,7 @@ export class ECSProvider implements ResourceProvider {
     //         failing rather than from agreeing on an end state. What decides
     //         the verdict is whether AWS ACCEPTS, not whether CFn refuses:
     //         `DeploymentCircuitBreaker` missing `Rollback` is refused by CFn
-    //         and ACCEPTED by AWS, which is exactly why that row is the #1802
+    //         and ACCEPTED by AWS, which is exactly why that row was the #1802
     //         divergence and this one is not.
     //       * AWS RETAINS the live value AND CLOUDFORMATION RESETS IT — the
     //         one DIVERGENT row this sweep found, opposite in polarity to

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::KinesisFirehose::DeliveryStream",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "AmazonOpenSearchServerlessDestinationConfiguration",
     "AmazonopensearchserviceDestinationConfiguration",
@@ -1570,6 +1570,289 @@
       "VpcEndpointServiceName"
     ],
     "Tag": [
+      "Key"
+    ]
+  },
+  "nestedRequired": {
+    "AmazonOpenSearchServerlessDestinationConfiguration": [
+      "IndexName",
+      "RoleARN",
+      "S3Configuration"
+    ],
+    "AmazonOpenSearchServerlessDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "AmazonOpenSearchServerlessDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "AmazonOpenSearchServerlessDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "AmazonOpenSearchServerlessDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "AmazonOpenSearchServerlessDestinationConfiguration.VpcConfiguration": [
+      "RoleARN",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration": [
+      "IndexName",
+      "RoleARN",
+      "S3Configuration"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.DocumentIdOptions": [
+      "DefaultDocumentIdFormat"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "AmazonopensearchserviceDestinationConfiguration.VpcConfiguration": [
+      "RoleARN",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "DatabaseSourceConfiguration": [
+      "DatabaseSourceAuthenticationConfiguration",
+      "DatabaseSourceVPCConfiguration",
+      "Databases",
+      "Endpoint",
+      "Port",
+      "SnapshotWatermarkTable",
+      "Tables",
+      "Type"
+    ],
+    "DatabaseSourceConfiguration.DatabaseSourceAuthenticationConfiguration": [
+      "SecretsManagerConfiguration"
+    ],
+    "DatabaseSourceConfiguration.DatabaseSourceAuthenticationConfiguration.SecretsManagerConfiguration": [
+      "Enabled"
+    ],
+    "DatabaseSourceConfiguration.DatabaseSourceVPCConfiguration": [
+      "VpcEndpointServiceName"
+    ],
+    "DeliveryStreamEncryptionConfigurationInput": [
+      "KeyType"
+    ],
+    "ElasticsearchDestinationConfiguration": [
+      "IndexName",
+      "RoleARN",
+      "S3Configuration"
+    ],
+    "ElasticsearchDestinationConfiguration.DocumentIdOptions": [
+      "DefaultDocumentIdFormat"
+    ],
+    "ElasticsearchDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "ElasticsearchDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "ElasticsearchDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "ElasticsearchDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "ElasticsearchDestinationConfiguration.VpcConfiguration": [
+      "RoleARN",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "ExtendedS3DestinationConfiguration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "ExtendedS3DestinationConfiguration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "ExtendedS3DestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "ExtendedS3DestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "ExtendedS3DestinationConfiguration.S3BackupConfiguration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "ExtendedS3DestinationConfiguration.S3BackupConfiguration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "HttpEndpointDestinationConfiguration": [
+      "EndpointConfiguration",
+      "S3Configuration"
+    ],
+    "HttpEndpointDestinationConfiguration.EndpointConfiguration": [
+      "Url"
+    ],
+    "HttpEndpointDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "HttpEndpointDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "HttpEndpointDestinationConfiguration.RequestConfiguration.CommonAttributes": [
+      "AttributeName",
+      "AttributeValue"
+    ],
+    "HttpEndpointDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "HttpEndpointDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "HttpEndpointDestinationConfiguration.SecretsManagerConfiguration": [
+      "Enabled"
+    ],
+    "IcebergDestinationConfiguration": [
+      "CatalogConfiguration",
+      "RoleARN",
+      "S3Configuration"
+    ],
+    "IcebergDestinationConfiguration.DestinationTableConfigurationList": [
+      "DestinationDatabaseName",
+      "DestinationTableName"
+    ],
+    "IcebergDestinationConfiguration.DestinationTableConfigurationList.PartitionSpec.Identity": [
+      "SourceName"
+    ],
+    "IcebergDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "IcebergDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "IcebergDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "IcebergDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "KinesisStreamSourceConfiguration": [
+      "KinesisStreamARN",
+      "RoleARN"
+    ],
+    "MSKSourceConfiguration": [
+      "AuthenticationConfiguration",
+      "MSKClusterARN",
+      "TopicName"
+    ],
+    "MSKSourceConfiguration.AuthenticationConfiguration": [
+      "Connectivity",
+      "RoleARN"
+    ],
+    "RedshiftDestinationConfiguration": [
+      "ClusterJDBCURL",
+      "CopyCommand",
+      "RoleARN",
+      "S3Configuration"
+    ],
+    "RedshiftDestinationConfiguration.CopyCommand": [
+      "DataTableName"
+    ],
+    "RedshiftDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "RedshiftDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "RedshiftDestinationConfiguration.S3BackupConfiguration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "RedshiftDestinationConfiguration.S3BackupConfiguration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "RedshiftDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "RedshiftDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "RedshiftDestinationConfiguration.SecretsManagerConfiguration": [
+      "Enabled"
+    ],
+    "S3DestinationConfiguration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "S3DestinationConfiguration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "SnowflakeDestinationConfiguration": [
+      "AccountUrl",
+      "Database",
+      "RoleARN",
+      "S3Configuration",
+      "Schema",
+      "Table"
+    ],
+    "SnowflakeDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "SnowflakeDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "SnowflakeDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "SnowflakeDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "SnowflakeDestinationConfiguration.SecretsManagerConfiguration": [
+      "Enabled"
+    ],
+    "SnowflakeDestinationConfiguration.SnowflakeVpcConfiguration": [
+      "PrivateLinkVpceId"
+    ],
+    "SplunkDestinationConfiguration": [
+      "HECEndpoint",
+      "HECEndpointType",
+      "S3Configuration"
+    ],
+    "SplunkDestinationConfiguration.ProcessingConfiguration.Processors": [
+      "Type"
+    ],
+    "SplunkDestinationConfiguration.ProcessingConfiguration.Processors.Parameters": [
+      "ParameterName",
+      "ParameterValue"
+    ],
+    "SplunkDestinationConfiguration.S3Configuration": [
+      "BucketARN",
+      "RoleARN"
+    ],
+    "SplunkDestinationConfiguration.S3Configuration.EncryptionConfiguration.KMSEncryptionConfig": [
+      "AWSKMSKeyARN"
+    ],
+    "SplunkDestinationConfiguration.SecretsManagerConfiguration": [
+      "Enabled"
+    ],
+    "Tags": [
       "Key"
     ]
   }

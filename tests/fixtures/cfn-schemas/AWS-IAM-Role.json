@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::Role",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "AssumeRolePolicyDocument",
@@ -77,6 +77,16 @@
       "PolicyName"
     ],
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Policies": [
+      "PolicyDocument",
+      "PolicyName"
+    ],
+    "Tags": [
       "Key",
       "Value"
     ]

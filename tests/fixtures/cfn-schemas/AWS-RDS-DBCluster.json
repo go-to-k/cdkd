@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBCluster",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-09-23",
   "properties": [
     "AllocatedStorage",
     "AssociatedRoles",
@@ -275,6 +275,14 @@
       "RoleArn"
     ],
     "Tag": [
+      "Key"
+    ]
+  },
+  "nestedRequired": {
+    "AssociatedRoles": [
+      "RoleArn"
+    ],
+    "Tags": [
       "Key"
     ]
   }

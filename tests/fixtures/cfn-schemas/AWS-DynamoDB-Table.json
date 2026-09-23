@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::Table",
-  "generatedAt": "2026-09-15",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -475,6 +475,91 @@
     ],
     "TimeToLiveSpecification": [
       "Enabled"
+    ]
+  },
+  "nestedRequired": {
+    "AttributeDefinitions": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "ContributorInsightsSpecification": [
+      "Enabled"
+    ],
+    "GlobalSecondaryIndexes": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "GlobalSecondaryIndexes.ContributorInsightsSpecification": [
+      "Enabled"
+    ],
+    "GlobalSecondaryIndexes.KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "GlobalSecondaryIndexes.ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "ImportSourceSpecification": [
+      "InputFormat",
+      "S3BucketSource"
+    ],
+    "ImportSourceSpecification.S3BucketSource": [
+      "S3Bucket"
+    ],
+    "KinesisStreamSpecification": [
+      "StreamArn"
+    ],
+    "LocalSecondaryIndexes": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "LocalSecondaryIndexes.KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "SSESpecification": [
+      "SSEEnabled"
+    ],
+    "StreamSpecification": [
+      "StreamViewType"
+    ],
+    "StreamSpecification.ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "StreamSpecification.Tags": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "TimeToLiveSpecification": [
+      "Enabled"
+    ],
+    "VectorIndexes": [
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "Projection",
+      "VectorAttribute"
+    ],
+    "VectorIndexes.SearchSchema": [
+      "AttributeName",
+      "SearchSchemaElementType"
+    ],
+    "VectorIndexes.VectorAttribute": [
+      "AttributeName"
     ]
   }
 }

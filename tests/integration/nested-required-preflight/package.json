@@ -1,0 +1,17 @@
+{
+  "name": "cdkd-integ-nested-required-preflight",
+  "version": "0.1.0",
+  "private": true,
+  "description": "cdkd nested required pre-flight refusal integ (issue #1802)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0",
+    "typescript": "^5.7.2"
+  },
+  "type": "module"
+}

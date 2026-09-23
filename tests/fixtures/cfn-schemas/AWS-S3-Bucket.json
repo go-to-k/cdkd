@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3::Bucket",
-  "generatedAt": "2026-09-11",
+  "generatedAt": "2026-09-23",
   "properties": [
     "AbacStatus",
     "AccelerateConfiguration",
@@ -1067,6 +1067,240 @@
     ],
     "AbortIncompleteMultipartUpload": [
       "DaysAfterInitiation"
+    ]
+  },
+  "nestedRequired": {
+    "AccelerateConfiguration": [
+      "AccelerationStatus"
+    ],
+    "AnalyticsConfigurations": [
+      "Id",
+      "StorageClassAnalysis"
+    ],
+    "AnalyticsConfigurations.StorageClassAnalysis.DataExport": [
+      "Destination",
+      "OutputSchemaVersion"
+    ],
+    "AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination": [
+      "BucketArn",
+      "Format"
+    ],
+    "AnalyticsConfigurations.TagFilters": [
+      "Key",
+      "Value"
+    ],
+    "BucketEncryption": [
+      "ServerSideEncryptionConfiguration"
+    ],
+    "BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault": [
+      "SSEAlgorithm"
+    ],
+    "CorsConfiguration": [
+      "CorsRules"
+    ],
+    "CorsConfiguration.CorsRules": [
+      "AllowedMethods",
+      "AllowedOrigins"
+    ],
+    "IntelligentTieringConfigurations": [
+      "Id",
+      "Status",
+      "Tierings"
+    ],
+    "IntelligentTieringConfigurations.TagFilters": [
+      "Key",
+      "Value"
+    ],
+    "IntelligentTieringConfigurations.Tierings": [
+      "AccessTier",
+      "Days"
+    ],
+    "InventoryConfigurations": [
+      "Destination",
+      "Enabled",
+      "Id",
+      "IncludedObjectVersions",
+      "ScheduleFrequency"
+    ],
+    "InventoryConfigurations.Destination": [
+      "BucketArn",
+      "Format"
+    ],
+    "LifecycleConfiguration": [
+      "Rules"
+    ],
+    "LifecycleConfiguration.Rules": [
+      "Status"
+    ],
+    "LifecycleConfiguration.Rules.AbortIncompleteMultipartUpload": [
+      "DaysAfterInitiation"
+    ],
+    "LifecycleConfiguration.Rules.NoncurrentVersionExpiration": [
+      "NoncurrentDays"
+    ],
+    "LifecycleConfiguration.Rules.NoncurrentVersionTransition": [
+      "StorageClass",
+      "TransitionInDays"
+    ],
+    "LifecycleConfiguration.Rules.NoncurrentVersionTransitions": [
+      "StorageClass",
+      "TransitionInDays"
+    ],
+    "LifecycleConfiguration.Rules.TagFilters": [
+      "Key",
+      "Value"
+    ],
+    "LifecycleConfiguration.Rules.Transition": [
+      "StorageClass"
+    ],
+    "LifecycleConfiguration.Rules.Transitions": [
+      "StorageClass"
+    ],
+    "MetadataConfiguration": [
+      "JournalTableConfiguration"
+    ],
+    "MetadataConfiguration.AnnotationTableConfiguration": [
+      "ConfigurationState"
+    ],
+    "MetadataConfiguration.AnnotationTableConfiguration.EncryptionConfiguration": [
+      "SseAlgorithm"
+    ],
+    "MetadataConfiguration.Destination": [
+      "TableBucketType"
+    ],
+    "MetadataConfiguration.InventoryTableConfiguration": [
+      "ConfigurationState"
+    ],
+    "MetadataConfiguration.InventoryTableConfiguration.EncryptionConfiguration": [
+      "SseAlgorithm"
+    ],
+    "MetadataConfiguration.JournalTableConfiguration": [
+      "RecordExpiration"
+    ],
+    "MetadataConfiguration.JournalTableConfiguration.EncryptionConfiguration": [
+      "SseAlgorithm"
+    ],
+    "MetadataConfiguration.JournalTableConfiguration.RecordExpiration": [
+      "Expiration"
+    ],
+    "MetadataTableConfiguration": [
+      "S3TablesDestination"
+    ],
+    "MetadataTableConfiguration.S3TablesDestination": [
+      "TableBucketArn",
+      "TableName"
+    ],
+    "MetricsConfigurations": [
+      "Id"
+    ],
+    "MetricsConfigurations.TagFilters": [
+      "Key",
+      "Value"
+    ],
+    "NotificationConfiguration.EventBridgeConfiguration": [
+      "EventBridgeEnabled"
+    ],
+    "NotificationConfiguration.LambdaConfigurations": [
+      "Event",
+      "Function"
+    ],
+    "NotificationConfiguration.LambdaConfigurations.Filter": [
+      "S3Key"
+    ],
+    "NotificationConfiguration.LambdaConfigurations.Filter.S3Key": [
+      "Rules"
+    ],
+    "NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules": [
+      "Name",
+      "Value"
+    ],
+    "NotificationConfiguration.QueueConfigurations": [
+      "Event",
+      "Queue"
+    ],
+    "NotificationConfiguration.QueueConfigurations.Filter": [
+      "S3Key"
+    ],
+    "NotificationConfiguration.QueueConfigurations.Filter.S3Key": [
+      "Rules"
+    ],
+    "NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules": [
+      "Name",
+      "Value"
+    ],
+    "NotificationConfiguration.TopicConfigurations": [
+      "Event",
+      "Topic"
+    ],
+    "NotificationConfiguration.TopicConfigurations.Filter": [
+      "S3Key"
+    ],
+    "NotificationConfiguration.TopicConfigurations.Filter.S3Key": [
+      "Rules"
+    ],
+    "NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules": [
+      "Name",
+      "Value"
+    ],
+    "OwnershipControls": [
+      "Rules"
+    ],
+    "ReplicationConfiguration": [
+      "Role",
+      "Rules"
+    ],
+    "ReplicationConfiguration.Rules": [
+      "Destination",
+      "Status"
+    ],
+    "ReplicationConfiguration.Rules.Destination": [
+      "Bucket"
+    ],
+    "ReplicationConfiguration.Rules.Destination.AccessControlTranslation": [
+      "Owner"
+    ],
+    "ReplicationConfiguration.Rules.Destination.EncryptionConfiguration": [
+      "ReplicaKmsKeyID"
+    ],
+    "ReplicationConfiguration.Rules.Destination.Metrics": [
+      "Status"
+    ],
+    "ReplicationConfiguration.Rules.Destination.Metrics.EventThreshold": [
+      "Minutes"
+    ],
+    "ReplicationConfiguration.Rules.Destination.ReplicationTime": [
+      "Status",
+      "Time"
+    ],
+    "ReplicationConfiguration.Rules.Destination.ReplicationTime.Time": [
+      "Minutes"
+    ],
+    "ReplicationConfiguration.Rules.Filter.And.TagFilters": [
+      "Key",
+      "Value"
+    ],
+    "ReplicationConfiguration.Rules.Filter.TagFilter": [
+      "Key",
+      "Value"
+    ],
+    "ReplicationConfiguration.Rules.SourceSelectionCriteria.ReplicaModifications": [
+      "Status"
+    ],
+    "ReplicationConfiguration.Rules.SourceSelectionCriteria.SseKmsEncryptedObjects": [
+      "Status"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "VersioningConfiguration": [
+      "Status"
+    ],
+    "WebsiteConfiguration.RedirectAllRequestsTo": [
+      "HostName"
+    ],
+    "WebsiteConfiguration.RoutingRules": [
+      "RedirectRule"
     ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::LayerVersion",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "CompatibleArchitectures",
     "CompatibleRuntimes",
@@ -61,6 +61,12 @@
     "#top": [
       "Content"
     ],
+    "Content": [
+      "S3Bucket",
+      "S3Key"
+    ]
+  },
+  "nestedRequired": {
     "Content": [
       "S3Bucket",
       "S3Key"

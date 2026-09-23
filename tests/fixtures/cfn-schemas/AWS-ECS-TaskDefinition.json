@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::TaskDefinition",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "ContainerDefinitions",
     "Cpu",
@@ -626,6 +626,55 @@
     "FSxWindowsFileServerVolumeConfiguration": [
       "FileSystemId",
       "RootDirectory"
+    ]
+  },
+  "nestedRequired": {
+    "ContainerDefinitions": [
+      "Image",
+      "Name"
+    ],
+    "ContainerDefinitions.LinuxParameters.Tmpfs": [
+      "Size"
+    ],
+    "ContainerDefinitions.LogConfiguration": [
+      "LogDriver"
+    ],
+    "ContainerDefinitions.LogConfiguration.SecretOptions": [
+      "Name",
+      "ValueFrom"
+    ],
+    "ContainerDefinitions.ResourceRequirements": [
+      "Type",
+      "Value"
+    ],
+    "ContainerDefinitions.Secrets": [
+      "Name",
+      "ValueFrom"
+    ],
+    "ContainerDefinitions.Ulimits": [
+      "HardLimit",
+      "Name",
+      "SoftLimit"
+    ],
+    "PlacementConstraints": [
+      "Type"
+    ],
+    "ProxyConfiguration": [
+      "ContainerName"
+    ],
+    "Volumes.EFSVolumeConfiguration": [
+      "FilesystemId"
+    ],
+    "Volumes.FSxWindowsFileServerVolumeConfiguration": [
+      "FileSystemId",
+      "RootDirectory"
+    ],
+    "Volumes.FSxWindowsFileServerVolumeConfiguration.AuthorizationConfig": [
+      "CredentialsParameter",
+      "Domain"
+    ],
+    "Volumes.S3FilesVolumeConfiguration": [
+      "FileSystemArn"
     ]
   }
 }

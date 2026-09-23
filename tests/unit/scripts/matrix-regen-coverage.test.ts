@@ -94,6 +94,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
         'gen:enrichment-coverage',
         'gen:handled-property-wiring',
         'gen:nested-key-coverage',
+        'gen:nested-required',
         'gen:property-coverage',
         'gen:sdk-attr-coverage',
         'gen:unsupported-types',

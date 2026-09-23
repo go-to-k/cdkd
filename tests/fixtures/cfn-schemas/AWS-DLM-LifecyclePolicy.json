@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DLM::LifecyclePolicy",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-09-23",
   "properties": [
     "Arn",
     "CopyTags",
@@ -415,6 +415,75 @@
       "RetentionArchiveTier"
     ],
     "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Exclusions.ExcludeTags": [
+      "Key",
+      "Value"
+    ],
+    "PolicyDetails.Actions": [
+      "CrossRegionCopy",
+      "Name"
+    ],
+    "PolicyDetails.Actions.CrossRegionCopy": [
+      "EncryptionConfiguration",
+      "Target"
+    ],
+    "PolicyDetails.Actions.CrossRegionCopy.EncryptionConfiguration": [
+      "Encrypted"
+    ],
+    "PolicyDetails.Actions.CrossRegionCopy.RetainRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
+    "PolicyDetails.EventSource": [
+      "Type"
+    ],
+    "PolicyDetails.EventSource.Parameters": [
+      "EventType",
+      "SnapshotOwner"
+    ],
+    "PolicyDetails.Exclusions.ExcludeTags": [
+      "Key",
+      "Value"
+    ],
+    "PolicyDetails.Parameters.ExcludeDataVolumeTags": [
+      "Key",
+      "Value"
+    ],
+    "PolicyDetails.Schedules.ArchiveRule": [
+      "RetainRule"
+    ],
+    "PolicyDetails.Schedules.ArchiveRule.RetainRule": [
+      "RetentionArchiveTier"
+    ],
+    "PolicyDetails.Schedules.CrossRegionCopyRules": [
+      "Encrypted"
+    ],
+    "PolicyDetails.Schedules.CrossRegionCopyRules.DeprecateRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
+    "PolicyDetails.Schedules.CrossRegionCopyRules.RetainRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
+    "PolicyDetails.Schedules.TagsToAdd": [
+      "Key",
+      "Value"
+    ],
+    "PolicyDetails.Schedules.VariableTags": [
+      "Key",
+      "Value"
+    ],
+    "PolicyDetails.TargetTags": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
       "Key",
       "Value"
     ]

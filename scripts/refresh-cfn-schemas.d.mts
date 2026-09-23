@@ -21,6 +21,7 @@ export declare function extractDefinitionShapes(
 export declare function extractDefinitionRequired(
   schemaJson: string
 ): Record<string, string[]>;
+export declare function extractNestedRequired(schemaJson: string): Record<string, string[]>;
 export declare function buildFixture(
   schemaJson: string,
   resourceType: string,

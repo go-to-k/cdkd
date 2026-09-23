@@ -52,6 +52,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **mutually-exclusive-properties.ts** - Pre-flight rejection of property COMBINATIONS AWS accepts only one of, reachable nowhere else: once the resource exists the diff says `NO_CHANGE` forever. **The presence predicate is load-bearing**: pre-flight runs BEFORE intrinsic resolution, so a key behind an unresolved intrinsic counts as UNKNOWN, never declared.
 
+- **nested-required.ts** + **.generated.ts** - Pre-flight rejection of a PRESENT nested block missing a schema-`required` member (issue [#1802](https://github.com/go-to-k/cdkd/issues/1802)). **A schema `required` list is not evidence CloudFormation enforces it**: `CFN_ENFORCED_TYPES` holds only types MEASURED to refuse, so a type joins it by measurement, never by reading its schema.
+
 - **interrupt-watch.ts** - The ONE SIGINT watch every bounded wait here uses, plus `InterruptedWaitError` and the cause-chain classifier (NO depth ceiling — the chain grows one error per nested-stack level). ONE error type: a bare `Error` from a provider reads as a resource failure and triggers an automatic ROLLBACK on Ctrl-C. ONE STICKY latch, cleared only by a COMMAND scope and armed only inside it — never on `process.listenerCount('SIGINT') > 0`, which a concurrent waiter's listener would arm permanently.
   - **A lock-holding command must release BEFORE unregistering its SIGINT handler.** `destroy-runner.ts` re-syncs `result.interrupted` GATED on `statePreserved`: **a stack whose state was deleted never reports `interrupted`**. Each signal has ONE owner: PER-STACK is `result.interrupted`, PER-RUN is the watch, and the exit code ORs in `stoppedEarly`.
 

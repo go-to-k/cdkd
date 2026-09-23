@@ -492,6 +492,15 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
       section: 'definitionRequired',
       mutate: (s) => ({ ...s, definitions: { Cfg: { ...s.definitions.Cfg, required: [] } } }),
     },
+    {
+      section: 'nestedRequired',
+      // An INLINE object's `required` is captured per PATH but has no named
+      // definition, so this moves `nestedRequired` alone.
+      mutate: (s) => ({
+        ...s,
+        properties: { ...s.properties, Obj: { ...s.properties.Obj, required: ['P1'] } },
+      }),
+    },
   ];
 
   const committed = serializeFixture(
@@ -529,6 +538,7 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
       'nestedPropertyPaths',
       'definitionShapes',
       'definitionRequired',
+      'nestedRequired',
     ]) {
       expect(built, `buildFixture emitted no ${key}`).toHaveProperty(key);
     }
@@ -563,7 +573,10 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
   it('buildFixture emits its keys in the committed canonical order', () => {
     const built = buildFixture(
       JSON.stringify({
-        properties: { A: { type: 'string' }, Obj: { type: 'object', properties: { P: {} } } },
+        properties: {
+          A: { type: 'string' },
+          Obj: { type: 'object', required: ['P'], properties: { P: {} } },
+        },
         readOnlyProperties: ['/properties/A'],
         createOnlyProperties: ['/properties/A'],
         primaryIdentifier: ['/properties/A'],
@@ -583,6 +596,7 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
       'nestedPropertyPaths',
       'definitionShapes',
       'definitionRequired',
+      'nestedRequired',
     ]);
   });
 });

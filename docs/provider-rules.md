@@ -1176,18 +1176,22 @@ Checklist when writing or reviewing an `update()`:
   front (`Model validation failed (... required key [Rollback] not found)`),
   because the registry schema marks the `DeploymentCircuitBreaker` definition
   required [Enable, Rollback] and `DeploymentAlarms` (the `Alarms` property)
-  required [AlarmNames, Rollback, Enable]. **cdkd enforces no nested
-  required-ness anywhere** — pre-flight covers top-level properties
-  (`property-coverage.ts`) and property COMBINATIONS
-  (`mutually-exclusive-properties.ts`), neither of which reads a definition's
-  `required` list — so cdkd DEPLOYS a template CFn rejects and silently flips
-  the live setting. That is an accepted divergence in the PERMISSIVE
-  direction, tracked as issue #1802, NOT a parity row. Do not file it under
+  required [AlarmNames, Rollback, Enable]. Until issue #1802 cdkd enforced
+  no nested required-ness, so it DEPLOYED that template and silently flipped
+  the live setting — a divergence in the PERMISSIVE direction, NOT a parity
+  row. The deploy pre-flight (`src/provisioning/nested-required.ts`) now
+  refuses a PRESENT nested block missing a required member, but only for the
+  types CloudFormation was MEASURED to enforce that on: a schema's `required`
+  list alone is not evidence (CFn accepts an `AWS::Logs::LogGroup` tag with
+  neither `Key` nor `Value`). Do not file the row under
   the ASG `InstanceMaintenancePolicy` disposition: there AWS ITSELF rejected
   the partial, so cdkd failed loudly too and pass-through really was parity.
   The generalizable check is therefore two questions, not one — does the API
   merge or replace the nested struct, and does anything on cdkd's side refuse
-  the shape the way CFn does?
+  the shape the way CFn does? For a PRESENT block missing a required member,
+  the answer is the pre-flight in `src/provisioning/nested-required.ts`, which
+  reads the fixtures' per-PATH `nestedRequired` section (inline nested objects
+  included) and refuses only for its measured `CFN_ENFORCED_TYPES`.
   Answering the second question no longer needs a live `describe-type`: since
   issue #1800 each `tests/fixtures/cfn-schemas/*.json` carries a
   `definitionRequired` section (per definition, its `required` list; the
@@ -1247,7 +1251,7 @@ Checklist when writing or reviewing an `update()`:
 
   The rest of the tree splits TWO ways, plus the array shape below — so neither "the other blocks are
   refused" nor "the rest is parity" is the thing to carry away, and
-  `DeploymentAlarms` keeps the permissive-divergence disposition above:
+  `DeploymentAlarms` keeps the disposition above (the permissive divergence, now refused at pre-flight):
   - **AWS ITSELF REFUSES** (the ASG `InstanceMaintenancePolicy` disposition —
     cdkd fails loudly, no nested required-ness check involved): a hook element
     missing `LifecycleStages`; a hook element missing `TargetType` (absent
@@ -1285,7 +1289,7 @@ Checklist when writing or reviewing an `update()`:
     comes from BOTH engines failing, not from agreeing on an end state. **What
     decides the verdict is whether AWS ACCEPTS, not whether CFn refuses**:
     `DeploymentCircuitBreaker` missing `Rollback` is refused by CFn and
-    ACCEPTED by AWS, which is precisely why that row is the permissive
+    ACCEPTED by AWS, which is precisely why that row was the permissive
     divergence (#1802) and this one is not.
   - **Members of ONE block can carry DIFFERENT semantics.** In
     `DeploymentCircuitBreaker`, the required `Rollback` reads as replaced while

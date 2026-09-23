@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Method",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-23",
   "properties": [
     "ApiKeyRequired",
     "AuthorizationScopes",
@@ -146,6 +146,17 @@
       "Type"
     ],
     "IntegrationResponse": [
+      "StatusCode"
+    ]
+  },
+  "nestedRequired": {
+    "Integration": [
+      "Type"
+    ],
+    "Integration.IntegrationResponses": [
+      "StatusCode"
+    ],
+    "MethodResponses": [
       "StatusCode"
     ]
   }

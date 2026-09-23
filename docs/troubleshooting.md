@@ -19,6 +19,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
+  - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Resource already exists" Error](#resource-already-exists-error)
   - [An unsupported resource type](#an-unsupported-resource-type)
   - [Replacing a resource, and the refusal that guards it](#replacing-a-resource-and-the-refusal-that-guards-it)
@@ -587,6 +588,43 @@ of the two survives resolution:
   "DestinationCidrBlock":     { "Fn::If": ["IsV4", "0.0.0.0/0", { "Ref": "AWS::NoValue" }] },
   "DestinationIpv6CidrBlock": { "Fn::If": ["IsV4", { "Ref": "AWS::NoValue" }, "::/0"] }
 }
+```
+
+### "The following resources declare a nested property block without a member it requires"
+
+**Symptoms:**
+
+```
+The following resources declare a nested property block without a member it requires:
+  - Service (AWS::ECS::Service): DeploymentConfiguration.DeploymentCircuitBreaker is missing required member Rollback
+```
+
+**Causes:**
+
+A nested block is present in the template but omits a member the resource
+type's schema marks required there. CloudFormation refuses the same template.
+Without the refusal the service
+API may accept the partial block and REPLACE the live one, silently resetting
+the omitted member — the circuit breaker above would switch a live rollback off.
+
+The check runs at pre-flight on every deploy, before any AWS call:
+
+- An absent block is never refused — only a present, incomplete one.
+- A block, element or member behind an unresolved intrinsic (`Fn::If`, `Ref`)
+  is not refused, since its resolved shape is not known yet.
+- It covers the resource types CloudFormation itself enforces these lists on.
+  Array elements are named by index (`Policies[1]`).
+
+**Solution:** declare the missing members. There is no `--allow-*` escape
+hatch, because CloudFormation rejects the template too.
+
+```typescript
+new ecs.CfnService(this, 'Service', {
+  // ...
+  deploymentConfiguration: {
+    deploymentCircuitBreaker: { enable: true, rollback: true },
+  },
+});
 ```
 
 ### "Resource already exists" Error
