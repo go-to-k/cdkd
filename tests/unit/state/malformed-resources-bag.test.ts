@@ -502,7 +502,7 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       expect(hasReadableOrphans(withOrphans(undefined))).toBe(true);
     });
 
-    it('says nothing about the ENTRIES, which are go-to-k/cdkd#3344 question', () => {
+    it('says nothing about the ENTRIES, which are unreadableOrphanRecords question', () => {
       // The container is a list; its rows are not this predicate's business.
       expect(hasReadableOrphans(withOrphans([null, 'x', 5]))).toBe(true);
     });

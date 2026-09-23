@@ -2907,8 +2907,9 @@ export function isReadableResourceEntry(entry: unknown): boolean {
  * and refusing would stop the command documented as the way to UNWIND a stack
  * whose state is already suspect. The other callers (`cdkd import`,
  * `cdkd orphan`, `cdkd scrub`) each owe their own classification; `cdkd orphan`
- * does still throw on an unreadable sibling, which is why that one is tracked on
- * go-to-k/cdkd#3202 rather than answered here by a shared refusal.
+ * answers through its own entry point on this class,
+ * {@link refuseMalformedResourceEntriesForOrphan}, scoped to the records its
+ * save keeps (go-to-k/cdkd#3350).
  *
  * So the entry rule is OPT-IN, taken by a flow that dereferences EVERY entry and
  * writes the record back.
