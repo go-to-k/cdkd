@@ -129,7 +129,7 @@ jobs:
       # and a WRONG file list here fails open (a diff that looks empty passes).
       # `--paginate` because the endpoint pages at 100 and a truncated list is
       # the same fail-open.
-      - name: "feat:/fix: title must be backed by a src/** change"
+      - name: "feat:/fix: title must be backed by src/** or a changelog fragment"
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
