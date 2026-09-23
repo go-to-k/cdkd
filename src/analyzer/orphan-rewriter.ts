@@ -10,6 +10,25 @@ import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
 import { injectiveKey } from '../state/record-keys.js';
+import { isReadableBag } from '../types/state.js';
+import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
+
+/**
+ * Why a reference to an orphaned record that is NOT a readable resource record
+ * is left in place rather than resolved (go-to-k/cdkd#3350).
+ *
+ * `cdkd orphan` may drop such a record — refusing to would close the way out of
+ * it — but it must not resolve THROUGH one. Measured before this guard: a
+ * string or number record made a sibling's `{"Ref": O}` resolve to `undefined`,
+ * which the save then dropped from the JSON, and its `Fn::Sub` `${O}` became
+ * the literal `x-undefined`. Reported as unresolvable instead, so a plain run
+ * aborts naming the site and `--force` leaves the intrinsic untouched — there
+ * is no cached value to fall back to either, since the cache lives inside the
+ * record that cannot be read.
+ */
+const UNREADABLE_ORPHAN_RECORD_REASON =
+  "the orphaned resource's state record is not a readable resource record (not an object, " +
+  'or no resource type), so nothing in it can be substituted';
 
 /**
  * One rewrite the orphan rewriter has applied (or wanted to apply but
@@ -176,11 +195,15 @@ class AttributeFetcher {
    * already does with a masked cached attribute; the two arms now agree.
    */
   ref(orphanLogicalId: string): { ok: true; value: string } | { ok: false; reason: string } {
-    const o = this.orphans[orphanLogicalId];
-    if (!o) {
+    if (!Object.hasOwn(this.orphans, orphanLogicalId)) {
       throw new Error(
         `Internal: Ref to '${orphanLogicalId}' has no orphan entry — should have been filtered out`
       );
+    }
+    const o = this.orphans[orphanLogicalId]!;
+    // Before any read of it, and whatever `--force` says: see the constant.
+    if (!isReadableResourceEntry(o)) {
+      return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
     }
     let maskedKey: string | undefined;
     const value = cfnRefValueFromPhysicalId(
@@ -257,12 +280,17 @@ class AttributeFetcher {
       return { ok: true, value: this.cache.get(cacheKey) };
     }
 
-    const orphan = this.orphans[orphanLogicalId];
-    if (!orphan) {
+    if (!Object.hasOwn(this.orphans, orphanLogicalId)) {
       return {
         ok: false,
         reason: `Internal: GetAtt to '${orphanLogicalId}' has no orphan entry`,
       };
+    }
+    const orphan = this.orphans[orphanLogicalId]!;
+    // ABOVE the provider lookup and the `--force` cache fallback alike: both
+    // read fields of the record, and the fallback would index its `attributes`.
+    if (!isReadableResourceEntry(orphan)) {
+      return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
     }
 
     let provider;
@@ -324,6 +352,26 @@ class AttributeFetcher {
       return { ok: false, reason };
     }
     const orphan = this.orphans[orphanLogicalId]!;
+    // An unreadable cache holds NOTHING, and is not indexed (go-to-k/cdkd#3345).
+    // `attribute` comes from the SURVIVING record's stored `Fn::GetAtt`, so
+    // indexing a list or a string answers for keys the cache does not hold —
+    // measured: `attributes: ["v"]` served `'v'` for attribute `0`, and
+    // `"abcdef"` served `'a'` for `0` and `6` for `length`, each spliced into
+    // the sibling's persisted properties for the next deploy to send to AWS.
+    // `null` already read as absent through the `?.`; it takes this arm now so
+    // the warning says why. The run still continues under `--force`: the
+    // intrinsic is left in place, the documented outcome of an empty cache.
+    const bag: unknown = orphan.attributes;
+    if (bag !== undefined && !isReadableBag(bag)) {
+      this.logger.warn(
+        `--force: state.attributes of '${orphanLogicalId}' is not a readable map, so it is not ` +
+          `consulted for '${attribute}'; leaving the original intrinsic in place.`
+      );
+      return {
+        ok: false,
+        reason: `${reason}; the state.attributes cache is not a readable map`,
+      };
+    }
     const stored = orphan.attributes?.[attribute];
     // The resolver's flat lookup and this fallback are the two readers of a
     // stored attribute; both read a value the resource can never hold (a
@@ -470,13 +518,17 @@ export async function rewriteResourceReferences(
   // Snapshot the orphan resources so multi-orphan circular refs (orphan A
   // references orphan B and vice versa) resolve against original state,
   // not against the in-flight rewrites.
-  const orphans: Record<string, ResourceState> = {};
+  //
+  // PRESENCE is `Object.hasOwn`, not truthiness: a `null` entry IS in the map,
+  // and `cdkd orphan` over it is the way out of it (go-to-k/cdkd#3350) — the
+  // falsy test threw this internal error instead. What the fetcher then does
+  // with a record it cannot read is `UNREADABLE_ORPHAN_RECORD_REASON`'s.
+  const orphans: Record<string, ResourceState> = Object.create(null);
   for (const id of orphanLogicalIds) {
-    const r = state.resources[id];
-    if (!r) {
+    if (!Object.hasOwn(state.resources, id)) {
       throw new Error(`rewriteResourceReferences: orphan '${id}' not found in state.resources`);
     }
-    orphans[id] = r;
+    orphans[id] = state.resources[id]!;
   }
 
   const fetcher = new AttributeFetcher(orphans, providerRegistry, options);

@@ -32,7 +32,10 @@ import {
 } from '../../analyzer/orphan-rewriter.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
+  refuseMalformedOrphansForOrphan,
   refuseMalformedOutputs,
+  refuseMalformedResourceAttributesForOrphan,
+  refuseMalformedResourceEntriesForOrphan,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
@@ -351,9 +354,17 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         );
       }
       const { state, etag, migrationPending } = stateData;
+      // EVERY refusal below takes `recordRegion`, not `targetRegion`: each
+      // text ends on commands or an object path the operator pastes, and those
+      // select by the region the record is LISTED under. For a single legacy
+      // record with no region in its body the two differ — `targetRegion` is
+      // the synthesized region `getState` falls back from — and a
+      // `--stack-region` naming it selects nothing (go-to-k/cdkd#3359 for the
+      // properties refusal, go-to-k/cdkd#3388 for the two above it).
+      //
       // `cdkd orphan` REWRITES and SAVES state, so a record whose resource map
       // cannot be read is refused rather than repaired (go-to-k/cdkd#3018).
-      refuseMalformedState(state, stackInfo.stackName, targetRegion);
+      refuseMalformedState(state, stackInfo.stackName, recordRegion, recovery);
       // And the same for the `outputs` bag (go-to-k/cdkd#3192), which the
       // refusal above does NOT cover — a record can be malformed in either
       // container alone. `rewriteResourceReferences` rebuilds the bag from
@@ -366,7 +377,20 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // exports index. AT THE LOAD, above every read: the rebuild is far
       // below, and a guard written there would sit under the reads the
       // `missing` check and the rewrite already made.
-      refuseMalformedOutputs(state, stackInfo.stackName, targetRegion);
+      refuseMalformedOutputs(state, stackInfo.stackName, recordRegion, recovery);
+      // A surviving ENTRY that is not a readable resource record
+      // (go-to-k/cdkd#3350) — the one container the rewrite RESHAPES rather
+      // than carries: it rebuilds each kept record as `{ ...resource, ... }`,
+      // so a string entry is saved as per-character keys and a number as a
+      // record with no physical id. Scoped to the survivors, like the
+      // properties refusal below and for its reason.
+      refuseMalformedResourceEntriesForOrphan(
+        state,
+        orphanLogicalIds,
+        stackInfo.stackName,
+        recordRegion,
+        recovery
+      );
       // And the per-ENTRY `properties` container (go-to-k/cdkd#3318), which
       // neither refusal above covers: `refuseMalformedState` answers a question
       // about the record ROOT, and `unreadableResourcePropertyBags` deliberately
@@ -385,13 +409,6 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // can never be exempted, and the message leads with the two remedies that
       // need no CDK app. AT THE LOAD, above the rewrite walk and above the
       // `--dry-run` return.
-      //
-      // `recordRegion`, not `targetRegion`: the text ends on commands the
-      // operator pastes, and those select by the region the record is LISTED
-      // under. For a single legacy record with no region in its body the two
-      // differ — `targetRegion` is the synthesized region `getState` falls back
-      // from — and a `--stack-region` naming it selects nothing
-      // (go-to-k/cdkd#3359).
       refuseMalformedResourcePropertiesForOrphan(
         state,
         orphanLogicalIds,
@@ -399,6 +416,21 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         recordRegion,
         recovery
       );
+      // The same survivors' `attributes` map (go-to-k/cdkd#3345), the
+      // `Fn::GetAtt` cache: carried into the save verbatim the way `properties`
+      // is, and a list walked into it.
+      refuseMalformedResourceAttributesForOrphan(
+        state,
+        orphanLogicalIds,
+        stackInfo.stackName,
+        recordRegion,
+        recovery
+      );
+      // And `state.orphans`, which the rewrite spreads through `carriedState`
+      // without reading at all (go-to-k/cdkd#3344): the list itself, and each
+      // rollback-orphan record's `ResourceState`. NOT scoped by the orphan set —
+      // those records are not in `resources`, so this command cannot name one.
+      refuseMalformedOrphansForOrphan(state, stackInfo.stackName, recordRegion, recovery);
 
       // Validate that every requested orphan exists in state — otherwise we
       // would silently no-op while the user expected a removal.
