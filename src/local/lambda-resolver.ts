@@ -1226,33 +1226,37 @@ export type LayerArnClassification =
  * is what the repo already does everywhere else it needs a partition, so the
  * list is not spelled a fourth time and cannot go stale here independently.
  *
- * **This fixes the PARSE only, and the download behind it is still commercial-
- * only.** `materializeLayerFromArn` (`src/local/layer-arn-materializer.ts`) is
- * a one-line shim over cdk-local, whose implementation rebuilds the ARN with a
- * hardcoded `aws`:
+ * **The download behind it is no longer commercial-only.** This paragraph used
+ * to say the opposite, citing a cdk-local build that rebuilt the ARN with a
+ * hardcoded `aws` — go-to-k/cdk-local#575, which CLOSED on 2026-08-27 and
+ * shipped in cdk-local 0.147.13 three minutes later. The text was wrong from
+ * that moment, for USERS TOO and not only about upstream: cdkd declares
+ * `cdk-local` as a plain runtime dependency with no `bundledDependencies`, so
+ * a consumer resolves the RANGE rather than this repo's lockfile, and the
+ * range then in effect (`^0.147.7`) already admitted 0.147.13. What lagged was
+ * this repo's own pinned tree — `pnpm-lock.yaml` stayed on 0.147.7 until the
+ * 0.148.4 bump on 2026-09-12 — so cdkd's CI ran the broken engine for sixteen
+ * more days than anyone installing cdkd did. The claim survived all of it
+ * because it cited a content-hashed bundle chunk and a line number, which
+ * nobody could check (go-to-k/cdkd#3551). Measured on cdk-local 0.149.1:
+ * `fetchLayerContentUrl` strips only the `:<version>` suffix from the ARN the
+ * caller supplied and hands the remainder to `GetLayerVersionCommand` as
+ * `LayerName`, so whatever partition the ARN names is preserved. Its own
+ * refusal message spells the expected shape `arn:<partition>:lambda:...`.
  *
- * ```js
- * // node_modules/cdk-local/dist/local-studio-BBtUAVNy.js:15214
- * const command = await buildGetLayerVersionCommand(
- *   `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}`, Number(layer.version));
- * ```
- *
- * So a layer in ANY of the seven non-commercial partitions still fails at
- * `lambda:GetLayerVersion`. That includes `aws-cn` and `aws-us-gov`, which the
- * old alternation ALREADY parsed and which therefore gain nothing here. What
- * this change moves is confined to the five that previously did not parse
- * (`aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc`): for them the
- * failure shifts from "cdkd cannot resolve locally" to an AWS-side error, so
- * the parse stops being the blocker and the message names the true one. That
- * is a real improvement and it is NOT end-to-end support; nothing in this repo
- * can make it so, and the remaining half is filed as go-to-k/cdk-local#575.
+ * So the parse fix and the download now agree, and a layer ARN in any of the
+ * eight partitions resolves as far as AWS itself allows. Re-check with
+ * `grep -n 'function fetchLayerContentUrl' node_modules/cdk-local/dist/local-studio-*.js`
+ * rather than by trusting this paragraph.
  *
  * Deriving also makes the pair SELF-CONSISTENT, which the alternation could
  * not: `arn:aws-cn:lambda:us-east-1:...` used to parse, pairing China's
  * partition with a commercial region. It is now REFUSED — a deliberate
- * behaviour break, asked for by issue #2143's own direction. Nothing is lost
- * by refusing early, since the commercial-ARN rebuild above means such a layer
- * could never have been fetched from the partition its ARN named.
+ * behaviour break, asked for by issue #2143's own direction. The refusal stands
+ * on its own terms rather than on the rebuild it used to lean on: a
+ * region-partition pair that cannot both be true names a region that does not
+ * exist in that partition, so the fetch could not have succeeded whatever the
+ * downstream does with the ARN.
  *
  * The fallback direction is worth stating, since `derivePartitionAndUrlSuffix`
  * answers `aws` for a region it does not recognise. A brand-new COMMERCIAL

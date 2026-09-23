@@ -155,7 +155,11 @@ describe('warnUnresolvedLambdaTargetEnv (issue #2602)', () => {
   // a `TargetType: lambda` target group's container env does not, because
   // cdk-local's `resolveAlbLambdaTargetEnv` hands the shared Lambda env
   // resolver a six-key allow-list that drops `fromState` / `stateBucket` /
-  // `statePrefix` (cdk-local@0.147.7 `dist/local-studio-BBtUAVNy.js:26619`).
+  // `statePrefix`. Cited by symbol, not by file and line: the bundle chunk is
+  // content-hashed and the offsets move every release, so the previous
+  // citation named a file that no longer exists (go-to-k/cdkd#3551). Last
+  // verified against cdk-local 0.149.1; re-check with `grep -n
+  // 'function resolveAlbLambdaTargetEnv' node_modules/cdk-local/dist/local-studio-*.js`.
   // The wrapper turns that silence into a boot warning naming the affected
   // functions. cdkd cannot make the path WORK -- that is upstream
   // go-to-k/cdk-local#707 -- so what is fenced here is the warning's TRIGGER

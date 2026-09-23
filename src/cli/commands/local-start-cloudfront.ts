@@ -35,18 +35,29 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  *
  * The `extraStateProviders` seam cdk-local's factory accepts (go-to-k/cdk-local#426)
  * is wired in below, and cdkd's S3-backed `--from-state` factory reaches it — but
- * NOTHING in this command's code path consults it. Verified against the installed
- * `cdk-local@0.147.7` bundle (`dist/local-studio-BBtUAVNy.js`), all three consumers
- * miss, for two independent reasons:
+ * NOTHING in this command's code path consults it. Verified against the
+ * installed bundle — cited by VERSION AND SYMBOL NAME, never by file and line: the
+ * chunk name is content-hashed and the offsets move on any upstream edit, so a
+ * citation naming them is born stale at the next release
+ * (go-to-k/cdkd#3551 — these lines named `cdk-local@0.147.7` and a chunk that
+ * no longer exists). Re-check with
+ * `grep -n 'function resolveDeployedS3Origins' node_modules/cdk-local/dist/local-studio-*.js`
+ * (and the same for each symbol named below).
+ * Last verified: **cdk-local 0.149.1**. All three consumers miss, for two
+ * independent reasons:
  *
- *   1. `resolveDeployedS3Origins` (`:30872`) and `attachKvsModules` (`:30680`)
+ *   1. `resolveDeployedS3Origins` and `attachKvsModules`
  *      both gate on `isCfnFlagPresent(options)` — i.e. `--from-cfn-stack`
- *      specifically — rather than on the "any state source is active" predicate
- *      `start-api` uses (`:15830`). With `--from-state` alone they return before
- *      a provider is constructed.
- *   2. `bootLambdaUrlOrigins` (`:30764`) and `bootLambdaEdgeFunctions` (`:30813`)
+ *      specifically. With `--from-state` alone they return BEFORE a provider
+ *      is constructed, so cdkd's registered factory is never consulted.
+ *      `start-api` has no such gate: it calls `createLocalStateProvider`
+ *      unconditionally and skips only on a falsy result, which is why the same
+ *      flags work there. (An earlier revision called that an "any state source
+ *      is active" PREDICATE — there is no such symbol; the difference is a
+ *      gate versus no gate.)
+ *   2. `bootLambdaUrlOrigins` and `bootLambdaEdgeFunctions`
  *      call `resolveLambdaContainerEnv` WITHOUT its fourth `extraStateProviders`
- *      parameter, and the `envOptions` bag they hand it (`:30982`) is an
+ *      parameter, and the `envOptions` bag they hand it is an
  *      allow-list of five keys that drops cdkd's state fields anyway.
  *
  * So the flags parse and do nothing, on exactly the command where a user is

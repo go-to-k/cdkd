@@ -109,11 +109,16 @@ describe('createLocalStartCloudFrontCommand', () => {
  * Issue [#2528](https://github.com/go-to-k/cdkd/issues/2528): the three cdkd
  * state-source flags declared above PARSE and do NOTHING on this command.
  *
- * Verified against the installed `cdk-local@0.147.7` bundle: all three
+ * Verified against the installed bundle, cited by symbol rather than by file
+ * and line — the chunk is content-hashed and the offsets move every release,
+ * so the previous citation named a file that no longer exists
+ * (go-to-k/cdkd#3551). Re-check with `grep -n 'function resolveDeployedS3Origins'
+ * node_modules/cdk-local/dist/local-studio-*.js`.
+ * Last verified against cdk-local 0.149.1: all three
  * consumers miss cdkd's registered provider — `resolveDeployedS3Origins` and
  * `attachKvsModules` both gate on `isCfnFlagPresent(options)` (i.e.
- * `--from-cfn-stack` specifically, not the "any state source is active"
- * predicate `start-api` uses), and the two Lambda boot paths call
+ * `--from-cfn-stack` specifically, where `start-api` has no such gate at all
+ * and skips only on a falsy provider), and the two Lambda boot paths call
  * `resolveLambdaContainerEnv` without its `extraStateProviders` argument at all.
  * A user emulating a cdkd-deployed distribution therefore got the same `502`
  * from an unresolved origin with the flag as without it, on exactly the command

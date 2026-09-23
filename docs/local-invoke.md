@@ -409,13 +409,12 @@ Pass `--layer-role-arn <arn>` to `sts:AssumeRole` before
 typically a cross-account one. AWS-published public layers are readable from
 every account and need no role.
 
-**Only a commercial-partition layer ARN downloads.** An ARN in any of the seven
-non-commercial partitions — `aws-cn`, `aws-us-gov`, `aws-eusc` and the four ISO
-partitions — passes cdkd's parse and then fails at the AWS call, because
-the download rebuilds the ARN with a hardcoded `aws` partition before calling
-`lambda:GetLayerVersion`.
+Any layer ARN that parses downloads in the partition it names. The ARN you
+wrote is the one `lambda:GetLayerVersion` is called with — only the
+`:<version>` suffix is stripped from it — so `aws-cn`, `aws-us-gov`,
+`aws-eusc` and the four ISO partitions reach AWS as themselves.
 
-The parse itself accepts all eight partitions — commercial, `aws-cn`,
+The parse accepts all eight partitions — commercial, `aws-cn`,
 `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` —
 because the partition is derived from the ARN's region rather than matched
 against a fixed list. The two segments must agree: `arn:aws-cn:lambda:us-east-1:...`
