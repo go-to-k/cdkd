@@ -192,14 +192,14 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.148.4
-        version: 0.148.4(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)
+        specifier: ^0.149.0
+        version: 0.149.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
       commander:
-        specifier: ^12.0.0
-        version: 12.1.0
+        specifier: ^14.0.3
+        version: 14.0.3
       graphlib:
         specifier: ^2.1.8
         version: 2.1.8
@@ -2766,9 +2766,9 @@ packages:
   cdk-from-cfn@0.302.0:
     resolution: {integrity: sha512-jbwwzl9yXhCpuOacrQ/jDXnsEnWE7n5UqhfnCdpGOvLhy2FqWlbk1Wd7mDwNsT/QfL3AYZqIyjYSsSLxYVjPlA==}
 
-  cdk-local@0.148.4:
-    resolution: {integrity: sha512-ZjAKGTQJLk6En3IDmMkp4s575a35JQjrZWut/IuktwKQjbsXAXSs1WkL2vHp0ZzzUmK2J/zgHW6C4o1VWVrNgg==}
-    engines: {node: '>=20.0.0'}
+  cdk-local@0.149.0:
+    resolution: {integrity: sha512-lDnhnFL/d4vFN3yjAciAaK9nYLpasUtTmLj+jdqFmpMndvhMtvFJkV1eOxz/lbzhxomh8DsAyGc3UXxB+3m2dw==}
+    engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
       aws-cdk-lib: ^2.0.0
@@ -2843,13 +2843,13 @@ packages:
     resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
     engines: {node: '>=14'}
 
-  commander@12.1.0:
-    resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
-    engines: {node: '>=18'}
-
   commander@13.1.0:
     resolution: {integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==}
     engines: {node: '>=18'}
+
+  commander@14.0.3:
+    resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
+    engines: {node: '>=20'}
 
   commander@2.20.3:
     resolution: {integrity: sha512-GpVkmM8vF2vQUkj2LvZmD35JxeJOLCwJ9cUkugyk2nuhbv3+mJvpLYYt+0+USMxE+oj+ey/lJEnhZw75x/OMcQ==}
@@ -7201,7 +7201,7 @@ snapshots:
 
   cdk-from-cfn@0.302.0: {}
 
-  cdk-local@0.148.4(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1):
+  cdk-local@0.149.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.24.0)
       '@aws-cdk/toolkit-lib': 1.28.0(@aws-cdk/cli-plugin-contract@2.182.2)
@@ -7231,7 +7231,7 @@ snapshots:
       agent-base: 9.0.0
       aws-cdk-lib: 2.270.0(constructs@10.8.1)
       chokidar: 5.0.0
-      commander: 12.1.0
+      commander: 14.0.3
       constructs: 10.8.1
       fflate: 0.8.3
       graphlib: 2.1.8
@@ -7309,9 +7309,9 @@ snapshots:
 
   commander@10.0.1: {}
 
-  commander@12.1.0: {}
-
   commander@13.1.0: {}
+
+  commander@14.0.3: {}
 
   commander@2.20.3: {}
 
