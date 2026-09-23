@@ -169,10 +169,16 @@ describe('synth stack selection (issue #3550)', () => {
     const selected = await runSynth(['GoodStack']);
     expect(selected.stdout).toContain('RGoodStack');
     expect(selected.stderr).not.toContain('boom');
+    // The count reports the selection AGAINST the assembly, so `Found 1
+    // stack(s)` on a two-stack app cannot be read as "the app has one".
+    expect(selected.stderr).toContain('Found 1 of 2 stack(s)');
 
-    // ...and the same assembly with no selection still fails on it.
+    // ...and the same assembly with no selection still FAILS on it. Asserting
+    // only that `boom` appears is satisfied by a run that printed the
+    // annotation and carried on, which is the opposite of the claim.
     const unselected = await runSynth([]);
     expect(unselected.stderr + unselected.stdout).toContain('boom');
+    expect(unselected.stderr).toContain('Found errors');
   });
 
   it('refuses a ZERO-stack assembly rather than reporting success', async () => {
@@ -181,7 +187,13 @@ describe('synth stack selection (issue #3550)', () => {
     mockSynthesize.mockResolvedValue({ stacks: [], assemblyDir: '/tmp/cdk.out' });
     const { stdout, stderr } = await runSynth([]);
     expect(stdout).not.toContain('Resources:');
-    expect(stderr).not.toBe('');
+    // The MESSAGE, and the absence of the success line. `not.toBe('')` was
+    // vacuous: `Synthesizing CDK app...` reaches stderr on every run before
+    // the refusal can be reached, so deleting the refusal left this green --
+    // the old path printed `Found 0 stack(s)` and wrote no `Resources:`, which
+    // satisfied both assertions.
+    expect(stderr).toContain('No stacks found in assembly');
+    expect(stderr).not.toContain('Synthesis complete');
   });
 
   it('keeps the bare-command behaviour: no template, hint listing everything', async () => {

@@ -9,7 +9,9 @@ Runs the CDK app and writes its CloudFormation templates to the assembly
 directory, printing one stack's template to stdout. Mirrors `cdk synth`.
 
 Name a stack to choose which template that is. Every stack is synthesized
-either way — the name selects what reaches stdout, not what gets built.
+either way — the name selects what reaches stdout and what cdkd checks, not
+what gets built. See
+[What a stack name narrows](#what-a-stack-name-narrows-and-what-it-does-not).
 
 It deploys nothing, but it is not offline. Synthesis resolves the account
 through STS and runs the app's context lookups, and on a template using
@@ -101,11 +103,12 @@ than regenerating.
 
 ## The stdout contract
 
-With exactly one stack, the template goes to stdout as YAML and everything
-cdkd's own logger prints — `Synthesizing CDK app...`, the `Synthesis complete!`
-summary, the CDK app's re-emitted stderr — goes to stderr. With several stacks,
-**stdout is empty**: the template is the payload or there is nothing, and the
-summary is never a payload.
+With a selection of exactly one stack — the app's only stack, or the one you
+named — the template goes to stdout as YAML and everything cdkd's own logger
+prints (`Synthesizing CDK app...`, the `Synthesis complete!` summary, the CDK
+app's re-emitted stderr) goes to stderr. With any other selection **stdout is
+empty**: the template is the payload or there is nothing, never two documents,
+and the summary is never a payload.
 
 The emitted YAML parses back deep-equal to the per-stack template JSON in the
 assembly directory — scalars keep their type, and the document starts at column
