@@ -1,16 +1,19 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
+import type {
+  AssetCodeResolveOptions,
+  resolveAssetCodeDirectory,
+} from '../../../src/local/lambda-resolver.js';
 
 /**
- * The DECLARATION SHAPE of `resolveAssetCodeDirectory` (issue
- * go-to-k/cdkd#3549). Source properties only — three of them, each invisible
- * to a behavioural test.
+ * TWO properties of `resolveAssetCodeDirectory`'s declaration (issue
+ * go-to-k/cdkd#3549), and this file is deliberately small.
  *
- * **What this file does NOT cover, stated first because the first revision of
- * it claimed the opposite.** It asserted that a wrong or dropped containment
- * bound "is invisible in every fixture that is not a Stage" and therefore
- * needed a source scan. That is false:
+ * **What it does NOT cover, stated first because the first revision claimed
+ * the opposite.** It asserted that a wrong or dropped containment bound "is
+ * invisible in every fixture that is not a Stage" and therefore needed a
+ * source scan. That is false:
  * `local-asset-code-path-containment.test.ts` already drives BOTH call sites
  * through their public entry points against a STAGE manifest, expressly so a
  * dropped bound (fails closed, refusing every Stage asset) and a widened one
@@ -20,38 +23,73 @@ import { describe, expect, it } from 'vite-plus/test';
  * Measured rather than argued: transposing the VALUES at the invoke call site
  * (`{ manifestDir: assetOutdir, assetOutdir: manifestDir }`) reds three cases
  * there and passed every case this file used to carry. So the behavioural
- * fence is that suite, the member-by-member scanning this file used to do was
- * both redundant and weaker, and it is gone.
+ * fence is that suite, and the member-by-member scanning this file used to do
+ * was both redundant and weaker.
  *
- * It also follows that the bag does not make a transposition INEXPRESSIBLE,
- * only unorderable — a caller can still write the wrong value under the right
- * name. What the bag removes is the silent positional swap, which the compiler
- * now rejects; what remains is the named swap, which that suite catches.
+ * It follows that the bag does not make a transposition INEXPRESSIBLE, only
+ * unorderable — a caller can still write the wrong value under the right name.
+ * What the bag removes is the silent positional swap, which the compiler now
+ * rejects; what remains is the named swap, which that suite catches.
+ *
+ * **Why only two cases are left.** Three hand-rolled regexes lived here across
+ * three review rounds and each was found to carry a false PASS: the member
+ * scan, the positional-call scan, and the first adjacency check. The constant
+ * was not any one case — it was the medium, a regex standing in for a parse.
+ * The surviving pair is chosen on one test: WHEN THIS CASE MISSES, AM I WORSE
+ * OFF THAN WITH NO CASE AT ALL?
+ *
+ * - A positional-call scan: yes, worse. `TS2554` already decides that exactly,
+ *   on every build, and an approximation of it adds only a coverage claim that
+ *   was twice untrue. Deleted; the arity check below subsumes its purpose.
+ * - Arity: kept, as a TYPE assertion rather than a regex. The type system
+ *   decides it precisely and cannot be fooled by a reflow, a renamed `opts` or
+ *   a mention in a comment.
+ * - Adjacency: kept, and it is the only property here with no other observer.
+ *   Neither the compiler nor any behavioural test can see a doc block detach
+ *   from its declaration, and it has happened four times in this repo. When it
+ *   misses, that is the status quo rather than a false claim of coverage.
  */
 
-const REPO = join(import.meta.dirname, '..', '..', '..');
+/**
+ * The arity, decided by the type system.
+ *
+ * **It fails under `vp run typecheck:test`, NOT under `vp run test`.** Vitest's
+ * in-run typecheck covers `*.test-d.ts` only, so a `.test.ts` run prints
+ * `Type Errors  no errors` whatever this says — measured, and it is why the
+ * first probe of this assertion read as a false pass. CI runs both.
+ *
+ * Measured against the three mutations it claims:
+ *
+ * - an added REQUIRED parameter — reds here AND at both call sites (`TS2554`);
+ * - an added OPTIONAL one — reds ONLY here. Every existing call still
+ *   typechecks, so this line is the whole signal for that shape;
+ * - a `...args` overload — its union `Parameters` fails the tuple check.
+ */
+type OneBagParameter =
+  Parameters<typeof resolveAssetCodeDirectory> extends [AssetCodeResolveOptions] ? true : never;
+const ARITY_IS_ONE_BAG: OneBagParameter = true;
+
 const RESOLVER = 'src/local/lambda-resolver.ts';
-const read = (p: string) => readFileSync(join(REPO, p), 'utf-8');
+const read = (p: string) =>
+  readFileSync(join(import.meta.dirname, '..', '..', '..', p), 'utf-8');
 
 describe('resolveAssetCodeDirectory declaration shape', () => {
   it('takes exactly one parameter, the options bag', () => {
-    // A pattern rather than the exact source line: renaming `opts` or
-    // reflowing the signature would red an exact-string assertion for nothing,
-    // and the property being pinned is the ARITY.
-    expect(read(RESOLVER)).toMatch(
-      /export function resolveAssetCodeDirectory\(\s*opts:\s*AssetCodeResolveOptions,?\s*\)/,
-    );
+    // The assertion is the TYPE above; typecheck is where it fails. This case
+    // exists so the constant is referenced — an unused type alias is erased
+    // and would be checked by nothing.
+    expect(ARITY_IS_ONE_BAG).toBe(true);
   });
 
   it('declares AssetCodeResolveOptions IMMEDIATELY above it', () => {
     // The hazard is a doc block DETACHING from its declaration because an edit
-    // inserted between the two — four times in this repo. Order alone does not
-    // catch it, and neither does looking only BELOW the interface: the
-    // previous revision asserted that the gap starts with `/**` and holds one
-    // `*/`, which an UNDOCUMENTED declaration inserted AFTER the doc block
-    // satisfies while the doc now documents that declaration. My own probe
-    // had inserted BEFORE the doc, so it tested the shape that was already
-    // caught. Both halves are needed.
+    // inserted between the two. Order alone does not catch it, and neither
+    // does looking only BELOW the interface: the second revision asserted that
+    // the gap starts with `/**` and holds one `*/`, which an UNDOCUMENTED
+    // declaration inserted AFTER the doc block satisfies while the doc now
+    // documents that declaration. My own probe had inserted BEFORE the doc, a
+    // shape the order check already caught, so it proved nothing. Both halves
+    // are needed.
     const src = read(RESOLVER);
     const iface = src.indexOf('export interface AssetCodeResolveOptions');
     expect(iface).toBeGreaterThan(-1);
@@ -66,41 +104,4 @@ describe('resolveAssetCodeDirectory declaration shape', () => {
     // so nothing can sit between the doc and what it documents.
     expect(src).toMatch(/\*\/\s*export function resolveAssetCodeDirectory\(/);
   });
-
-  it('has no positional call anywhere in src/', () => {
-    // Scans `src/**` rather than a hardcoded file list: a fence naming its own
-    // call sites goes silently incomplete the day a third one is added. The
-    // declaration is stripped first — the first revision of this case matched
-    // it and reported the declaration as a violation.
-    const files = listTs(join(REPO, 'src'));
-    // Tied to the subject, not to a round number: a floor of "> 50" proves the
-    // walk found FILES, not that it reached the one that matters, and the loop
-    // below can then iterate zero times while staying green.
-    expect(files).toContain(join(REPO, RESOLVER));
-    let scanned = 0;
-    for (const abs of files) {
-      const src = readFileSync(abs, 'utf-8');
-      if (!src.includes('resolveAssetCodeDirectory(')) continue;
-      scanned += 1;
-      const scrubbed = src.replace(/export function resolveAssetCodeDirectory\([^)]*\)/g, '');
-      // Flags anything whose first argument is NOT a `{` literal and NOT a
-      // lone identifier. The previous revision matched only a STRING literal
-      // first argument, which made it blind to the regression it exists for:
-      // a restored positional call passes identifiers, not literals.
-      expect(scrubbed, `${abs}: positional call`).not.toMatch(
-        /resolveAssetCodeDirectory\((?!\s*\{)(?!\s*[A-Za-z_$][\w$]*\s*\))/,
-      );
-    }
-    expect(scanned, 'no file mentioned the resolver — the identifier moved').toBeGreaterThan(0);
-  });
 });
-
-function listTs(dir: string): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...listTs(p));
-    else if (e.name.endsWith('.ts')) out.push(p);
-  }
-  return out;
-}
