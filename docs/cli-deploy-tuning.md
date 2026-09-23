@@ -395,7 +395,7 @@ the deploy, matching `cdk deploy`.
 `addWarning(...)` and `addInfo(...)` print as `[Warning at /path] ...` and
 `[Info at /path] ...`, and the run proceeds.
 
-`cdkd synth` checks every synthesized stack, since it has no stack selection.
+`cdkd synth` checks every synthesized stack unless you name one, in which case it checks that stack.
 Other synth-driven commands — `diff`, `list`, `import` and friends — do not fail
 on error annotations, matching the upstream CLI.
 

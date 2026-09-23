@@ -103,5 +103,6 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   `additionalMetadataFile` side file; an unreadable or wrong-shape side file
   THROWS, fail-closed. `processStackMessages` throws on an error annotation,
   `--strict` also throws on warnings, `--ignore-errors` never throws, and strict
-  WINS over ignoreErrors. Wired into `synth` (all stacks) and `deploy` (final
+  WINS over ignoreErrors. Wired into `synth` (the SELECTED stacks — the whole
+  app when no name is given, go-to-k/cdkd#3550) and `deploy` (final
   selection, before macro expansion and any AWS mutation) only.

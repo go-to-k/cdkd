@@ -134,15 +134,54 @@ describe('synth stack selection (issue #3550)', () => {
   });
 
   it('prints NO template and names the SELECTED ids when the selection is not one', async () => {
-    // Both halves were wrong in the first draft: the hint was gated on "no
-    // pattern given", so a wildcard matching three printed neither a template
-    // nor a way to get one; and it listed the whole assembly rather than the
-    // selection, which is the wrong set to narrow from.
-    const { stdout, stderr } = await runSynth(['*Stack']);
-    const all = stdout + stderr;
+    // A PROPER SUBSET, and the assertion reads the HINT LINE alone. The first
+    // revision selected `'*Stack'` -- all three -- so selection === assembly
+    // and the case could not tell "lists the selection" from "lists the
+    // assembly", which is exactly the bug it is named for. It also asserted
+    // over `stdout + stderr`, which the summary bullets satisfy on their own.
+    const { stdout, stderr } = await runSynth(['Data*', 'App*']);
     expect(stdout).not.toContain('Resources:');
-    expect(all).toContain(HINT);
-    for (const n of THREE) expect(all).toContain(n);
+    const hintLine = (stdout + stderr).split('\n').find((l) => l.includes(HINT));
+    expect(hintLine, 'no hint line emitted').toBeDefined();
+    expect(hintLine!).toContain('DataStack');
+    expect(hintLine!).toContain('AppStack');
+    expect(hintLine!).not.toContain('NetworkStack');
+  });
+
+  it('checks annotations for the SELECTED stacks only', async () => {
+    // A narrowing nothing else in this file sees, and it is a real behaviour
+    // change: an error annotation used to fail the run wherever it sat.
+    // Selecting first is `cdk` parity -- `throwIfValidationFailures` runs over
+    // the selection -- but it must be fenced rather than inferred.
+    const withError = makeStack('BadStack');
+    // `{ level, path, message }` -- the shape `processStackMessages` reads.
+    // The first revision invented a cx-api-looking `{ level, entry, id }`,
+    // which produced `[Error at undefined] undefined` and a red that named the
+    // fixture rather than the behaviour.
+    (withError as unknown as { messages: unknown[] }).messages = [
+      { level: 'error', path: '/BadStack/Thing', message: 'boom' },
+    ];
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('GoodStack'), withError],
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const selected = await runSynth(['GoodStack']);
+    expect(selected.stdout).toContain('RGoodStack');
+    expect(selected.stderr).not.toContain('boom');
+
+    // ...and the same assembly with no selection still fails on it.
+    const unselected = await runSynth([]);
+    expect(unselected.stderr + unselected.stdout).toContain('boom');
+  });
+
+  it('refuses a ZERO-stack assembly rather than reporting success', async () => {
+    // Previously `Found 0 stack(s)` at exit 0. `list` and `diff` both refuse;
+    // an app whose only stacks live in an unsynthesized Stage produces this.
+    mockSynthesize.mockResolvedValue({ stacks: [], assemblyDir: '/tmp/cdk.out' });
+    const { stdout, stderr } = await runSynth([]);
+    expect(stdout).not.toContain('Resources:');
+    expect(stderr).not.toBe('');
   });
 
   it('keeps the bare-command behaviour: no template, hint listing everything', async () => {
@@ -160,6 +199,28 @@ describe('synth stack selection (issue #3550)', () => {
     const { stdout } = await runSynth([]);
     expect(stdout).toContain('ROnlyStack');
     expect(stdout).not.toContain(HINT);
+  });
+
+  it('reaches renderNoStackMatch with THIS synthesis result, not an empty one', async () => {
+    // go-to-k/cdkd#3482's shape: a Stage that failed to load drops every stack
+    // under it, and selection then answers "no stacks matching" -- a different
+    // problem than the one that occurred. The argument being required fences
+    // only the SHAPE; `{ failedStages: [] }` typechecks just as well. `diff`
+    // has this case for the same reason (`diff-failed-stage-selection.test.ts`).
+    mockSynthesize.mockResolvedValue({
+      stacks: [],
+      assemblyDir: '/tmp/cdk.out',
+      // `{ stagePath, reason }` -- read off `src/synthesis/failed-stages.ts`.
+      // Inventing plausible member names is how the annotation fixture above
+      // failed too; both times the red named the fixture, not the behaviour.
+      failedStages: [{ stagePath: 'MyStage', reason: 'stage blew up' }],
+    });
+    const { stderr } = await runSynth(['MyStage/Api']);
+    // The REASON, not the stage path. Asserting on `'MyStage'` passed with
+    // `{ failedStages: [] }` substituted at the call site -- `renderNoStackMatch`
+    // echoes the user's own pattern back, so the assertion was satisfied by
+    // the input rather than by the threading. Probed.
+    expect(stderr).toContain('stage blew up');
   });
 
   it('refuses a pattern matching nothing, naming what IS available', async () => {
@@ -180,8 +241,12 @@ describe('synth stack selection (issue #3550)', () => {
       stacks: [makeStack('MyStage-Api', 'MyStage/Api'), makeStack('Other')],
       assemblyDir: '/tmp/cdk.out',
     });
-    const { stdout } = await runSynth(['MyStage/Api']);
+    const { stdout, stderr } = await runSynth(['MyStage/Api']);
+    expect(stderr).not.toContain('No stacks matching');
     expect(stdout).toContain('RMyStage-Api');
+    // The negative matters: a matcher that fell through to "everything" would
+    // satisfy the positive alone, and the selection would be two.
+    expect(stdout).not.toContain('ROther');
   });
 
   it('SYNTHESIZES THE WHOLE APP regardless of the selection', async () => {

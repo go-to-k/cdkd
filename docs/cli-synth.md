@@ -51,7 +51,7 @@ one template or nothing, so a pipe never receives two documents.
 | `-c`, `--context <key=value...>` | — | Context values, repeatable. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
-| `--verbose` | `false` | Debug-level logging. Also writes a `<stackName>.template.json` per stack into `--output`, alongside whatever the app wrote. |
+| `--verbose` | `false` | Debug-level logging. Also writes a `<stackName>.template.json` into `--output` for each SELECTED stack (every stack when you name none), alongside whatever the app wrote. |
 | `--region <region>` | `AWS_REGION`, then the profile | Deprecated and hidden, but honoured. Prefer `AWS_REGION` or the profile — see [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command). |
 | `-y`, `--yes` | `false` | Accepted for consistency with the other commands; `cdkd synth` asks no confirmation, so it changes nothing. |
 
@@ -60,19 +60,30 @@ the annotation categories they act on are described once, in
 [Deploy: tuning](cli-deploy-tuning.md). Given both, **`--strict` wins** — the
 same precedence the CDK CLI uses.
 
-## It has no stack selection
+## What a stack name narrows, and what it does not
 
-`cdkd synth` takes no stack argument. It synthesizes the whole app, and every
-stack's annotations are checked — so `--strict` on a multi-stack app fails when
-*any* stack carries a warning, not just the one you had in mind. Use
-[`cdkd list`](cli-list.md) to see what the app contains.
+Naming a stack always synthesizes the whole app — the CDK app runs once and
+every context lookup it needs is resolved, exactly as `cdk synth` does. What
+the name narrows is what cdkd then looks at:
+
+| | no name | `cdkd synth MyStack` |
+| --- | --- | --- |
+| Stacks synthesized | all | all |
+| Context lookups | all | all |
+| Template on stdout | only if the app has one stack | MyStack's |
+| Annotations checked | every stack | MyStack only |
+| `--verbose` template dump | every stack | MyStack only |
+
+So `--strict` on a multi-stack app fails when *any* stack carries a warning —
+unless you name one, which is how you scope it to the stack you had in mind.
+Use [`cdkd list`](cli-list.md) to see what the app contains.
 
 ## Where the templates go
 
 The **CDK app** writes its own templates into the assembly directory, one file
 per stack; cdkd's part is to point the app at that directory (`cdk.out` by
 default, `--output` to change it) and then read what appeared. The directory is
-the complete output; stdout is a convenience for the single-stack case.
+the complete output; stdout is a convenience for reading one template.
 
 Because the directory is a valid cloud assembly, it can be fed straight back
 through `--app` to the commands that take one — `deploy`, `diff`, `destroy`,
@@ -106,7 +117,7 @@ zero. Both properties are described in full on the CLI Reference page:
 ## CDK annotations
 
 The app's `Annotations` are surfaced with CDK CLI parity: informational and
-warning messages print, and an **error** annotation on any stack aborts with
+warning messages print, and an **error** annotation on any SELECTED stack aborts with
 `Found errors` — the same thing `cdk synth` does. `--strict` promotes warnings
 to that treatment (`Found warnings (--strict mode)`); `--ignore-errors` demotes
 everything, except that `--strict` overrides it when both are given.

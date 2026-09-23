@@ -10,7 +10,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
-import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
+import { describeStack, matchStacks, renderNoStackMatch } from '../stack-matcher.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption } from '../region-options.js';
@@ -226,12 +226,24 @@ export async function synthCommand(
     // "no pattern was given", so `cdkd synth 'My*'` matching three stacks
     // printed neither a template nor a way to get one, and it listed the
     // whole assembly, which is the wrong set to narrow from.
+    // `describeStack`, not a raw `stackName`: this prints on a NORMAL run, and
+    // `.claude/rules/layout-synthesis.md` requires an identifier in cdkd prose
+    // go through the display helper. It also renders the DISPLAY PATH, which
+    // is what upstream's own `Supply a stack id` lists and what the user has
+    // to type back.
     logger.info(
-      `Supply a stack id (${stacks.map((s) => s.stackName).join(', ')}) to display its template.`
+      `Supply a stack id (${stacks.map(describeStack).join(', ')}) to display its template.`
     );
   }
 
-  logger.info(`\n${green('✓')} ${bold('Synthesis complete!')} Found ${stacks.length} stack(s):`);
+  // Count the SELECTION against the assembly when a pattern narrowed it.
+  // `Found 1 stack(s)` on a three-stack app is false: every stack was
+  // synthesized, only one is being reported on.
+  const found =
+    stacks.length === allStacks.length
+      ? `Found ${stacks.length} stack(s):`
+      : `Found ${stacks.length} of ${allStacks.length} stack(s):`;
+  logger.info(`\n${green('✓')} ${bold('Synthesis complete!')} ${found}`);
 
   for (const stack of stacks) {
     const resourceCount = countDeployableResources(stack.template);
