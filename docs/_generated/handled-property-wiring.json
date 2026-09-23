@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1139,
-    "wiredProperties": 1137,
+    "declaredProperties": 1140,
+    "wiredProperties": 1138,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -4695,7 +4695,7 @@
       "file": "cognito-provider.ts",
       "className": "CognitoUserPoolProvider",
       "bucket": "wired",
-      "declaredCount": 29,
+      "declaredCount": 30,
       "properties": [
         {
           "name": "AccountRecoverySetting",
@@ -5089,6 +5089,24 @@
             "element-read"
           ],
           "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "WebAuthnFactorConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::Cognito::UserPool"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyMfaConfig",
+            "assertMfaCombinationApplicable",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]

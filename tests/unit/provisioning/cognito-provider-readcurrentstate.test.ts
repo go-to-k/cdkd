@@ -105,6 +105,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       EmailAuthenticationSubject: '',
       WebAuthnRelyingPartyID: '',
       WebAuthnUserVerification: '',
+      WebAuthnFactorConfiguration: '',
     });
   });
 
@@ -120,7 +121,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       SmsMfaConfiguration: { SmsConfiguration: { SnsCallerArn: 'arn:sms' } },
       SoftwareTokenMfaConfiguration: { Enabled: true },
       EmailMfaConfiguration: { Message: 'code {####}', Subject: 'Your code' },
-      WebAuthnConfiguration: { RelyingPartyId: 'auth.example.com', UserVerification: 'required' },
+      WebAuthnConfiguration: {
+        RelyingPartyId: 'auth.example.com',
+        UserVerification: 'required',
+        FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+      },
     });
 
     const result = (await provider.readCurrentState(
@@ -135,6 +140,47 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect(result['EmailAuthenticationSubject']).toBe('Your code');
     expect(result['WebAuthnRelyingPartyID']).toBe('auth.example.com');
     expect(result['WebAuthnUserVerification']).toBe('required');
+    expect(result['WebAuthnFactorConfiguration']).toBe('MULTI_FACTOR_WITH_USER_VERIFICATION');
+  });
+
+  // Issue #1924: the EmailMfaConfiguration block IS the email-OTP factor --
+  // `EmailMfaConfigType` has no enable flag -- so a block carrying only a
+  // message reads back as EMAIL_OTP, which is what the write side enabled by
+  // sending it for a bare EmailAuthenticationMessage.
+  it('reads a message-only EmailMfaConfiguration block back as the EMAIL_OTP factor', async () => {
+    mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abcd', Name: 'my-pool' } });
+    mockSend.mockResolvedValueOnce({
+      MfaConfiguration: 'OPTIONAL',
+      EmailMfaConfiguration: { Message: 'code {####}' },
+    });
+
+    const result = (await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    )) as Record<string, unknown>;
+
+    expect(result['EnabledMfas']).toEqual(['EMAIL_OTP']);
+    expect(result['EmailAuthenticationMessage']).toBe('code {####}');
+    expect(result['EmailAuthenticationSubject']).toBe('');
+  });
+
+  // The negative: no block, no factor -- and a present SoftwareToken block with
+  // Enabled false is not a factor either, since THAT type does carry a flag.
+  it('reports no EMAIL_OTP when the block is absent', async () => {
+    mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abcd', Name: 'my-pool' } });
+    mockSend.mockResolvedValueOnce({
+      MfaConfiguration: 'OFF',
+      SoftwareTokenMfaConfiguration: { Enabled: false },
+    });
+
+    const result = (await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    )) as Record<string, unknown>;
+
+    expect(result['EnabledMfas']).toEqual([]);
   });
 
   it('skips MFA-derived keys (still returns Describe fields) when GetUserPoolMfaConfig fails', async () => {
@@ -272,6 +318,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         'UsernameAttributes',
         'UsernameConfiguration',
         'VerificationMessageTemplate',
+        'WebAuthnFactorConfiguration',
         'WebAuthnRelyingPartyID',
         'WebAuthnUserVerification',
       ].sort()

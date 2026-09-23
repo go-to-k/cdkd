@@ -953,6 +953,15 @@ The AWS defaults, if that is what you are after, are
 with every character-class requirement enabled plus
 `TemporaryPasswordValidityDays: 7` for `PasswordPolicy`.
 
+If the same edit also sets `MfaConfiguration: ON` while the retained list still
+allows `EMAIL_OTP` or `SMS_OTP` (or `WEB_AUTHN` without
+`WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`), the deploy
+is refused before any change is sent (cdkd only reads the pool first), with a
+message naming the pool's LIVE `AllowedFirstAuthFactors`. AWS would reject the
+MFA change only after the rest of the update had already landed. The fix is the
+same explicit declaration; for `WEB_AUTHN`, declaring
+`WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION` also works.
+
 ---
 
 ### "cdkd stopped waiting for it" — a network outage during a Cloud Control operation

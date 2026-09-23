@@ -93,21 +93,23 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     expect(message).toContain('DeletionProtection: ACTIVE');
     expect(message).toContain('cdkd deploy has no --remove-protection flag');
     expect(message).toContain(`--user-pool-id ${POOL_ID} --deletion-protection INACTIVE`);
-    // The one-liner is not safe to paste alone: UpdateUserPool is a full
-    // replace. The caveat must sit OUTSIDE the backticks — prose inside a
+    // The one-liner is not safe to paste alone: it omits every other member,
+    // and UpdateUserPool RESETS some omitted members (AutoVerifiedAttributes,
+    // measured). The caveat must sit OUTSIDE the backticks — prose inside a
     // pasteable span is the same defect class this issue is about.
-    expect(message).toContain("behaviour on an omitted member differs per field");
-    expect(message).toContain('is unmeasured for DeletionProtection');
+    expect(message).toContain(
+      'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them)'
+    );
     expect(message).toContain('send your complete pool configuration');
-    // BOTH retired spellings, pinned as absent. The first was AWS's own blanket
-    // wording, which this file's measured ledger (`readLiveMfaConfiguration`)
-    // shows holds field by field and is FALSE for at least two — with no entry
-    // for `DeletionProtection`. The second was a self-contradiction:
-    // "full-replace API" IS the blanket claim the rest of that sentence
-    // withdrew. Issue go-to-k/cdkd#2675 measures the field; until then the
-    // message asserts neither.
+    // Every retired spelling, pinned as absent. The first was AWS's own blanket
+    // wording, which the provider's measured ledger (`readLiveMfaConfiguration`)
+    // shows holds field by field. The second was a self-contradiction:
+    // "full-replace API" IS the blanket claim. The third predates issue
+    // go-to-k/cdkd#2675, which measured the field: DeletionProtection does NOT
+    // reset on omission.
     expect(message).not.toContain('RESETS every member the request omits');
     expect(message).not.toContain('full-replace API');
+    expect(message).not.toContain('unmeasured for DeletionProtection');
     const spans = message.match(/`([^`]+)`/g) ?? [];
     expect(spans.some((s) => s.includes('omitted member'))).toBe(false);
     expect(message).toContain('cdkd deploy --replace --force-stateful-recreation');
@@ -115,7 +117,8 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
 
   it('falls back to the RECORDED bag when the desired value is absent', async () => {
     // Absent desired => `if (properties['DeletionProtection'])` never sends it
-    // => AWS still holds what the record says.
+    // => AWS still holds what the record says (omission does not reset it --
+    // measured, issue go-to-k/cdkd#2675).
     const message = await schemaRefusal({}, { DeletionProtection: 'ACTIVE' });
     expect(message).toContain('DeletionProtection: ACTIVE');
   });

@@ -210,7 +210,10 @@ cleanup() {
     for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}" \
       "cdkd-test-policy-removal-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-off-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}" \
-      "cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}"; do
+      "cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}" \
+      "cdkd-test-mfa-preflight-webauthn-on-${ACCOUNT_ID}" \
+      "cdkd-test-mfa-preflight-webauthn-single-${ACCOUNT_ID}" \
+      "cdkd-test-mfa-preflight-live-${ACCOUNT_ID}"; do
       stray="$(pool_id_by_name "${name}")"
       if [ -n "${stray}" ] && [ "${stray}" != "None" ]; then
         aws cognito-idp delete-user-pool --user-pool-id "${stray}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -722,13 +725,22 @@ OFF_POOL_NAME="cdkd-test-mfa-preflight-off-${ACCOUNT_ID}"
 SIGNIN_POOL_NAME="cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}"
 OPTIONAL_POOL_NAME="cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}"
 WEBAUTHN_POOL_NAME="cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}"
+WEBAUTHN_ON_POOL_NAME="cdkd-test-mfa-preflight-webauthn-on-${ACCOUNT_ID}"
+WEBAUTHN_SINGLE_POOL_NAME="cdkd-test-mfa-preflight-webauthn-single-${ACCOUNT_ID}"
+LIVE_POOL_NAME="cdkd-test-mfa-preflight-live-${ACCOUNT_ID}"
 
 OFF_POOL_ID="$(pool_id_by_name "${OFF_POOL_NAME}")"
 SIGNIN_POOL_ID="$(pool_id_by_name "${SIGNIN_POOL_NAME}")"
 OPTIONAL_POOL_ID="$(pool_id_by_name "${OPTIONAL_POOL_NAME}")"
 WEBAUTHN_POOL_ID="$(pool_id_by_name "${WEBAUTHN_POOL_NAME}")"
+WEBAUTHN_ON_POOL_ID="$(pool_id_by_name "${WEBAUTHN_ON_POOL_NAME}")"
+WEBAUTHN_SINGLE_POOL_ID="$(pool_id_by_name "${WEBAUTHN_SINGLE_POOL_NAME}")"
+LIVE_POOL_ID="$(pool_id_by_name "${LIVE_POOL_NAME}")"
 for pair in "${OFF_POOL_NAME}=${OFF_POOL_ID}" "${SIGNIN_POOL_NAME}=${SIGNIN_POOL_ID}" \
-  "${OPTIONAL_POOL_NAME}=${OPTIONAL_POOL_ID}" "${WEBAUTHN_POOL_NAME}=${WEBAUTHN_POOL_ID}"; do
+  "${OPTIONAL_POOL_NAME}=${OPTIONAL_POOL_ID}" "${WEBAUTHN_POOL_NAME}=${WEBAUTHN_POOL_ID}" \
+  "${WEBAUTHN_ON_POOL_NAME}=${WEBAUTHN_ON_POOL_ID}" \
+  "${WEBAUTHN_SINGLE_POOL_NAME}=${WEBAUTHN_SINGLE_POOL_ID}" \
+  "${LIVE_POOL_NAME}=${LIVE_POOL_ID}"; do
   if [ -z "${pair#*=}" ]; then
     echo "FAIL: no user pool named '${pair%%=*}' after the pre-flight base deploy" >&2
     exit 1
@@ -738,6 +750,9 @@ echo "    Arm A (#1977) pool: ${OFF_POOL_ID}"
 echo "    Arm B (#1975) pool: ${SIGNIN_POOL_ID}"
 echo "    Arm C2 (OPTIONAL + EMAIL_OTP) pool: ${OPTIONAL_POOL_ID}"
 echo "    Arm C3 (WEB_AUTHN) pool: ${WEBAUTHN_POOL_ID}"
+echo "    Arm C4 (WEB_AUTHN + ON + MULTI) pool: ${WEBAUTHN_ON_POOL_ID}"
+echo "    Arms D / F (#2064) pool: ${WEBAUTHN_SINGLE_POOL_ID}"
+echo "    Arm E (#2051) pool: ${LIVE_POOL_ID}"
 
 # --- Assertion 12: arm A baseline -------------------------------------
 # MFA really on, and the CANARY field genuinely absent. Both halves are
@@ -809,14 +824,9 @@ echo "    OK: negative control C2 deployed clean (EMAIL_OTP allowed under MfaCon
 
 # --- Assertion 15: negative control C3 --------------------------------
 # WEB_AUTHN must not be treated as a denied member. MfaConfiguration is
-# OPTIONAL rather than ON here, and that is an AWS limit, not a softened
-# assertion: MEASURED us-east-1 2026-08-20, a pool whose sign-in policy allows
-# WEB_AUTHN rejects SetUserPoolMfaConfig(ON) with "Cannot set WebAuthn factor
-# configuration to SINGLE_FACTOR if MFA is required and WebAuthn is an allowed
-# first auth factor" unless WebAuthnConfiguration.FactorConfiguration is
-# MULTI_FACTOR_WITH_USER_VERIFICATION -- a field the pinned SDK does not have
-# and the provider lists as unhandled-by-design. So ON + WEB_AUTHN is
-# undeployable through cdkd today for a reason unrelated to this pre-flight.
+# OPTIONAL here with the default SINGLE_FACTOR, which AWS ACCEPTS (measured
+# us-east-1 2026-08-20), so this is the fence on rule 3's `=== 'ON'` narrowing
+# (issue #2064); the ON arm is control C4 below.
 C3_FACTORS=$(aws cognito-idp describe-user-pool \
   --user-pool-id "${WEBAUTHN_POOL_ID}" --region "${REGION}" \
   --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
@@ -836,6 +846,65 @@ if [ "${C3_MFA}" != "OPTIONAL" ] || [ "${C3_WA_RP}" != "preflight.cdkd.example.c
   exit 1
 fi
 echo "    OK: negative control C3 deployed clean (WEB_AUTHN allowed alongside a real MFA factor)"
+
+# --- Assertion 15b: negative control C4 (issue #2064) -----------------
+# The ACCEPTING shape on the create path: WEB_AUTHN + MfaConfiguration ON +
+# WebAuthnFactorConfiguration MULTI_FACTOR_WITH_USER_VERIFICATION. Rule 3
+# evaluates here and must NOT fire. The SDK-route assertion is what makes this
+# arm specific to #2064: before it the property was an unhandled silent drop,
+# which routes the whole pool through Cloud Control instead.
+C4_MFA_JSON=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}" --output json)
+C4_MFA=$(echo "${C4_MFA_JSON}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+C4_FACTOR=$(echo "${C4_MFA_JSON}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("FactorConfiguration")) then .WebAuthnConfiguration.FactorConfiguration else "null" end')
+if [ "${C4_MFA}" != "ON" ] || [ "${C4_FACTOR}" != "MULTI_FACTOR_WITH_USER_VERIFICATION" ]; then
+  echo "FAIL: control C4 is MfaConfiguration='${C4_MFA}' / WebAuthn FactorConfiguration='${C4_FACTOR}', expected 'ON' / 'MULTI_FACTOR_WITH_USER_VERIFICATION'" >&2
+  echo "${C4_MFA_JSON}" | jq . >&2 || true
+  exit 1
+fi
+C4_FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${C4_FACTORS}" | jq -e 'index("WEB_AUTHN") != null' >/dev/null; then
+  echo "FAIL: control C4 AllowedFirstAuthFactors is ${C4_FACTORS}, expected to contain WEB_AUTHN" >&2
+  exit 1
+fi
+C4_PROVISIONED_BY=$(echo "${PREFLIGHT_STATE}" \
+  | jq -r '.resources.PreflightWebAuthnOnPool.provisionedBy // "sdk"')
+if [ "${C4_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: control C4 provisionedBy is '${C4_PROVISIONED_BY}', expected 'sdk' -- WebAuthnFactorConfiguration should be handled by the SDK provider (issue #2064)" >&2
+  exit 1
+fi
+echo "    OK: control C4 deployed clean on the SDK route (WEB_AUTHN + ON + MULTI_FACTOR_WITH_USER_VERIFICATION)"
+
+# --- Assertion 15c: arms D / F and E baselines ------------------------
+# D/F: MFA OPTIONAL (not ON -- from ON, UpdateUserPool refuses the WEB_AUTHN
+# addition by itself, atomically) and a PASSWORD-only sign-in policy.
+DF_FACTORS_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+DF_MFA_BEFORE=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if ! echo "${DF_FACTORS_BEFORE}" | jq -e '. == ["PASSWORD"]' >/dev/null || [ "${DF_MFA_BEFORE}" != "OPTIONAL" ]; then
+  echo "FAIL: arm D baseline is AllowedFirstAuthFactors ${DF_FACTORS_BEFORE} / MfaConfiguration '${DF_MFA_BEFORE}', expected [\"PASSWORD\"] / 'OPTIONAL'" >&2
+  exit 1
+fi
+# E: the live list the template will later stop declaring, and an empty canary.
+E_FACTORS_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${LIVE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+E_CANARY_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${LIVE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.AutoVerifiedAttributes' --output json)
+if ! echo "${E_FACTORS_BEFORE}" | jq -e 'index("EMAIL_OTP") != null' >/dev/null \
+  || ! echo "${E_CANARY_BEFORE}" | jq -e '(. // []) | length == 0' >/dev/null; then
+  echo "FAIL: arm E baseline is AllowedFirstAuthFactors ${E_FACTORS_BEFORE} / AutoVerifiedAttributes ${E_CANARY_BEFORE}, expected EMAIL_OTP present / none" >&2
+  exit 1
+fi
+echo "    OK: arms D/F and E baselines in place"
 
 # --- Phase 5: arm A (issue #1977) -- the update MUST be refused -------
 echo "==> Phase 5: arm A (#1977) -- MfaConfiguration OFF beside a declared factor must be REFUSED"
@@ -974,8 +1043,129 @@ echo "    OK: arm B MFA config untouched (ON)"
 rm -f "${PREFLIGHT_LOG}"
 PREFLIGHT_LOG=""
 
+# --- Phase 6b: arm D (issue #2064) -- the update MUST be refused ------
+echo "==> Phase 6b: arm D (#2064) -- WEB_AUTHN added under MfaConfiguration ON without MULTI_FACTOR_WITH_USER_VERIFICATION must be REFUSED"
+PREFLIGHT_LOG="$(mktemp -t cdkd-cognito-preflight.XXXXXX)"
+set +e
+CDKD_TEST_PREFLIGHT_ARM=D node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${PREFLIGHT_LOG}" 2>&1
+ARM_D_RC=$?
+set -e
+cat "${PREFLIGHT_LOG}"
+
+if [ "${ARM_D_RC}" -eq 0 ]; then
+  echo "FAIL: arm D deploy exited 0 -- WEB_AUTHN under MfaConfiguration ON without WebAuthnFactorConfiguration must be REFUSED (issue #2064)" >&2
+  exit 1
+fi
+if ! grep -q "Failed to update PreflightWebAuthnSinglePool: AWS::Cognito::UserPool MfaConfiguration is ON while Policies.SignInPolicy.AllowedFirstAuthFactors allows WEB_AUTHN and WebAuthnFactorConfiguration is not MULTI_FACTOR_WITH_USER_VERIFICATION" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm D did not produce cdkd's own pre-flight refusal for PreflightWebAuthnSinglePool" >&2
+  grep -i "PreflightWebAuthnSinglePool" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+if grep -q "InvalidParameterException" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm D log contains InvalidParameterException -- the request reached AWS instead of being refused before the first call" >&2
+  grep -n "InvalidParameterException" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+# THE CANARY: pre-fix, UpdateUserPool landed WEB_AUTHN (measured from an
+# OPTIONAL pool) and SetUserPoolMfaConfig(ON) was rejected after it.
+DF_FACTORS_AFTER_D=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+DF_MFA_AFTER_D=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if ! echo "${DF_FACTORS_AFTER_D}" | jq -e '. == ["PASSWORD"]' >/dev/null || [ "${DF_MFA_AFTER_D}" != "OPTIONAL" ]; then
+  echo "FAIL: arm D pool after the refused update is AllowedFirstAuthFactors ${DF_FACTORS_AFTER_D} / MfaConfiguration '${DF_MFA_AFTER_D}', expected the untouched [\"PASSWORD\"] / 'OPTIONAL' -- UpdateUserPool WENT OUT (issue #2064)" >&2
+  exit 1
+fi
+echo "    OK: arm D refused before any AWS call; sign-in policy still [PASSWORD], MFA still OPTIONAL"
+rm -f "${PREFLIGHT_LOG}"
+PREFLIGHT_LOG=""
+
+# --- Phase 6c: arm E (issue #2051) -- the update MUST be refused ------
+echo "==> Phase 6c: arm E (#2051) -- SignInPolicy deleted while MFA goes ON, with EMAIL_OTP still LIVE, must be REFUSED"
+PREFLIGHT_LOG="$(mktemp -t cdkd-cognito-preflight.XXXXXX)"
+set +e
+CDKD_TEST_PREFLIGHT_ARM=E node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${PREFLIGHT_LOG}" 2>&1
+ARM_E_RC=$?
+set -e
+cat "${PREFLIGHT_LOG}"
+
+if [ "${ARM_E_RC}" -eq 0 ]; then
+  echo "FAIL: arm E deploy exited 0 -- MfaConfiguration ON against a LIVE EMAIL_OTP sign-in factor must be REFUSED (issue #2051)" >&2
+  exit 1
+fi
+if ! grep -q "Failed to update PreflightLivePolicyPool: AWS::Cognito::UserPool MfaConfiguration is ON while the pool's LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm E did not produce cdkd's own live-state pre-flight refusal for PreflightLivePolicyPool" >&2
+  grep -i "PreflightLivePolicyPool" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+if grep -q "InvalidParameterException" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm E log contains InvalidParameterException -- the request reached AWS instead of being refused before the first mutating call" >&2
+  grep -n "InvalidParameterException" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+# THE CANARY: pre-fix, UpdateUserPool carried AutoVerifiedAttributes and landed
+# before SetUserPoolMfaConfig(ON) was rejected (measured 2026-09-23).
+E_CANARY_AFTER=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${LIVE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.AutoVerifiedAttributes' --output json)
+E_MFA_AFTER=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${LIVE_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if ! echo "${E_CANARY_AFTER}" | jq -e '(. // []) | length == 0' >/dev/null || [ "${E_MFA_AFTER}" != "OPTIONAL" ]; then
+  echo "FAIL: arm E pool after the refused update is AutoVerifiedAttributes ${E_CANARY_AFTER} / MfaConfiguration '${E_MFA_AFTER}', expected none / 'OPTIONAL' -- UpdateUserPool WENT OUT and the update partly applied (issue #2051)" >&2
+  exit 1
+fi
+echo "    OK: arm E refused on the LIVE sign-in policy; canary still empty, MFA still OPTIONAL"
+rm -f "${PREFLIGHT_LOG}"
+PREFLIGHT_LOG=""
+
+# --- Phase 6d: arm F (issue #2064) -- the accepting shape MUST deploy --
+echo "==> Phase 6d: arm F (#2064) -- the same edit with WebAuthnFactorConfiguration MULTI_FACTOR_WITH_USER_VERIFICATION must SUCCEED"
+CDKD_TEST_PREFLIGHT_ARM=F node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+DF_MFA_JSON_AFTER_F=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" --output json)
+DF_MFA_AFTER_F=$(echo "${DF_MFA_JSON_AFTER_F}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+DF_FACTOR_AFTER_F=$(echo "${DF_MFA_JSON_AFTER_F}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("FactorConfiguration")) then .WebAuthnConfiguration.FactorConfiguration else "null" end')
+DF_FACTORS_AFTER_F=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if [ "${DF_MFA_AFTER_F}" != "ON" ] || [ "${DF_FACTOR_AFTER_F}" != "MULTI_FACTOR_WITH_USER_VERIFICATION" ] \
+  || ! echo "${DF_FACTORS_AFTER_F}" | jq -e 'index("WEB_AUTHN") != null' >/dev/null; then
+  echo "FAIL: arm F pool is MfaConfiguration '${DF_MFA_AFTER_F}' / FactorConfiguration '${DF_FACTOR_AFTER_F}' / AllowedFirstAuthFactors ${DF_FACTORS_AFTER_F}, expected 'ON' / 'MULTI_FACTOR_WITH_USER_VERIFICATION' / WEB_AUTHN present" >&2
+  echo "${DF_MFA_JSON_AFTER_F}" | jq . >&2 || true
+  exit 1
+fi
+# The ROUTE is what makes arm F specific to #2064: pre-fix the property was a
+# silent drop, which would have moved this SDK-recorded pool to Cloud Control,
+# where the same shape also lands.
+DF_STATE_AFTER_F=$(aws s3 cp "s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY}" - 2>/dev/null)
+DF_PROVISIONED_BY=$(echo "${DF_STATE_AFTER_F}" \
+  | jq -r '.resources.PreflightWebAuthnSinglePool.provisionedBy // "sdk"')
+if [ -z "${DF_STATE_AFTER_F}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY} after arm F" >&2
+  exit 1
+fi
+if [ "${DF_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: arm F provisionedBy is '${DF_PROVISIONED_BY}', expected 'sdk' -- the update must go through the SDK provider, which now sends FactorConfiguration (issue #2064)" >&2
+  exit 1
+fi
+echo "    OK: arm F landed WEB_AUTHN + MFA ON + MULTI_FACTOR_WITH_USER_VERIFICATION on the SDK update path"
+
 # --- Phase 7: destroy the pre-flight stack ----------------------------
-# Two of the phases above END in a failed deploy, so this also exercises the
+# Four of the phases above END in a failed deploy, so this also exercises the
 # destroy path on a stack carrying a rollback journal.
 echo "==> Phase 7: destroy ${PREFLIGHT_STACK}"
 node "${LOCAL_DIST}" destroy "${PREFLIGHT_STACK}" \
@@ -987,16 +1177,19 @@ assert_gone "arm A UserPool ${OFF_POOL_ID} still exists after destroy" aws cogni
 assert_gone "arm B UserPool ${SIGNIN_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}"
 assert_gone "control C2 UserPool ${OPTIONAL_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${OPTIONAL_POOL_ID}" --region "${REGION}"
 assert_gone "control C3 UserPool ${WEBAUTHN_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${WEBAUTHN_POOL_ID}" --region "${REGION}"
-echo "    OK: all four pre-flight UserPools are gone"
+assert_gone "control C4 UserPool ${WEBAUTHN_ON_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}"
+assert_gone "arms D/F UserPool ${WEBAUTHN_SINGLE_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${WEBAUTHN_SINGLE_POOL_ID}" --region "${REGION}"
+assert_gone "arm E UserPool ${LIVE_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${LIVE_POOL_ID}" --region "${REGION}"
+echo "    OK: all seven pre-flight UserPools are gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PREFLIGHT_STATE_KEY}"
 echo "    OK: pre-flight state file is gone"
 
-# The journal is a state-file SIBLING written by the two failed deploys above,
+# The journal is a state-file SIBLING written by the failed deploys above,
 # and `cdkd destroy` is what sweeps it. Asserting it explicitly is what keeps
 # "the run left nothing behind" honest for a fixture that fails on purpose.
 assert_gone "rollback journal s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REGION}/rollback-journal.json still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${PREFLIGHT_STACK}/${REGION}/rollback-journal.json"
 echo "    OK: rollback journal is gone"
 
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / announced+retained Policies.SignInPolicy removal with fired-call companion #1979 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975, plus three negative controls / clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / announced+retained Policies.SignInPolicy removal with fired-call companion #1979 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975 + WEB_AUTHN without MULTI #2064 + live sign-in policy #2051, WEB_AUTHN + ON + MULTI accepted on create and update #2064, plus four negative controls / clean destroy)"

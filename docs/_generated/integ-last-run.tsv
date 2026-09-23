@@ -47,7 +47,7 @@ cloudwatch-anomaly-detector	2026-08-25T16:16:55Z	PASS	56	verify.sh	third and fin
 codebuild-project	2026-09-08T13:00:26Z	PASS	78	verify.sh	SDK 3.1126 bump: HostKernel now mapped both ways; destroy 3/0, orphans clean
 codecommit	2026-08-01T09:36:05Z	PASS	83	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
-cognito	2026-09-02T09:30:30Z	PASS	256	verify.sh	issue 1979 PolicyRemovalUserPool arm added; rc ok, 2 destroys 0 errors, orph clean
+cognito	2026-09-23T16:07:17Z	PASS	237	verify.sh	rc ok, orph clean; #2064/#2051 arms C4/D/E/F green
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
 cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
 cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph

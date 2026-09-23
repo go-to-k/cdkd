@@ -1348,6 +1348,8 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       it('withholds it for a mis-shaped EnabledMfas too (declaresFactor, no factor block)', async () => {
+        // ON + an MFA-routed property + no SignInPolicy: the #2051 live read.
+        mockSend.mockResolvedValueOnce({ UserPool: {} }); // DescribeUserPool (pre-flight)
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:gate-scalar' } }); // DescribeUserPool
@@ -1363,8 +1365,9 @@ describe('CognitoUserPoolProvider', () => {
         // `hasMfaConfigProps` counts a mis-shaped declaration, so the gate must
         // close here too — otherwise the loud SetUserPoolMfaConfig failure is
         // preceded by an UpdateUserPool rejection that names the wrong thing.
-        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
-        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('ON');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBeUndefined();
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('ON');
       });
 
       // The other polarity: with NO MFA-routed property there is no
@@ -2308,10 +2311,9 @@ describe('CognitoUserPoolProvider', () => {
         // us-east-1 2026-08-20: WEB_AUTHN as a first auth factor is ALSO
         // rejected under MfaConfiguration ON unless
         // WebAuthnConfiguration.FactorConfiguration is
-        // MULTI_FACTOR_WITH_USER_VERIFICATION -- a field the pinned SDK
-        // (3.1018.0) cannot send, so cdkd cannot reach that shape. Advice a
-        // user cannot follow is worse than no advice, and only the QUOTE may
-        // mention WEB_AUTHN.
+        // MULTI_FACTOR_WITH_USER_VERIFICATION -- a second property with its own
+        // rule (rule 3, issue #2064), so "switch to WEB_AUTHN" alone would be
+        // advice that still fails. Only the QUOTE may mention WEB_AUTHN.
         const remedy = error.message.slice(error.message.indexOf('Remove EMAIL_OTP'));
         expect(remedy).not.toContain('WEB_AUTHN');
         // The pre-flight refusal must NOT be re-wrapped by create()'s catch,
@@ -2404,8 +2406,9 @@ describe('CognitoUserPoolProvider', () => {
 
       // MUST-STILL-DEPLOY 1: the accepted pair. This is the exact combination
       // the AWS message names as allowed, so refusing it would block a working
-      // passkey-plus-MFA template.
-      it('still deploys PASSWORD + WEB_AUTHN under MfaConfiguration ON', async () => {
+      // passkey-plus-MFA template. It needs WebAuthnFactorConfiguration MULTI:
+      // without it AWS rejects the pair too (rule 3, issue #2064).
+      it('still deploys PASSWORD + WEB_AUTHN under MfaConfiguration ON with MULTI factor', async () => {
         mockSend.mockResolvedValueOnce({
           UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:allowed-factors' },
         });
@@ -2415,12 +2418,16 @@ describe('CognitoUserPoolProvider', () => {
           Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] } },
           EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
           MfaConfiguration: 'ON',
+          WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
         });
 
         expect(mockSend.mock.calls[0][0].input.Policies).toEqual({
           SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] },
         });
         expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('ON');
+        expect(mockSend.mock.calls[1][0].input.WebAuthnConfiguration).toEqual({
+          FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+        });
       });
 
       // MUST-STILL-DEPLOY 2: EMAIL_OTP with MFA OFF. Nothing about the sign-in
@@ -2557,6 +2564,460 @@ describe('CognitoUserPoolProvider', () => {
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateUserPoolCommand');
         expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('ON');
+      });
+    });
+
+    // Issue #2064. WEB_AUTHN beside MfaConfiguration ON is legal only when
+    // the request carries WebAuthnConfiguration.FactorConfiguration
+    // MULTI_FACTOR_WITH_USER_VERIFICATION (measured us-east-1 2026-09-23), so
+    // the rule is CONDITIONAL on that field rather than a deny-list entry.
+    describe('WEB_AUTHN sign-in factor beside MfaConfiguration ON (#2064)', () => {
+      const webAuthnPolicies = {
+        SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] },
+      };
+
+      it('refuses WEB_AUTHN + ON without WebAuthnFactorConfiguration on create, before any call', async () => {
+        const error = await rejectionOf(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            Policies: webAuthnPolicies,
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+            MfaConfiguration: 'ON',
+          })
+        );
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error.message).toContain(
+          'MfaConfiguration is ON while Policies.SignInPolicy.AllowedFirstAuthFactors allows WEB_AUTHN'
+        );
+        expect(error.message).toContain(
+          'WebAuthnFactorConfiguration is not MULTI_FACTOR_WITH_USER_VERIFICATION'
+        );
+        expect(error.message).toContain(
+          'Cannot set WebAuthn factor configuration to SINGLE_FACTOR if MFA is required'
+        );
+        expect(error.message).toContain(
+          'Set WebAuthnFactorConfiguration to MULTI_FACTOR_WITH_USER_VERIFICATION'
+        );
+        expect(error.message).toContain(
+          'or remove WEB_AUTHN from Policies.SignInPolicy.AllowedFirstAuthFactors'
+        );
+        expect(error.message).not.toContain('Failed to create Cognito User Pool');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('refuses an explicit SINGLE_FACTOR the same way', async () => {
+        const error = await rejectionOf(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            Policies: webAuthnPolicies,
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+            MfaConfiguration: 'ON',
+            WebAuthnFactorConfiguration: 'SINGLE_FACTOR',
+          })
+        );
+
+        expect(error.message).toContain('allows WEB_AUTHN');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // THE partial apply this closes: pre-fix, UpdateUserPool carried the
+      // WEB_AUTHN sign-in policy and LANDED (measured from both an OFF and an
+      // OPTIONAL pool), then SetUserPoolMfaConfig(ON) was rejected.
+      it('refuses on the update path before UpdateUserPool is sent', async () => {
+        const error = await rejectionOf(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { Policies: webAuthnPolicies, EnabledMfas: ['SOFTWARE_TOKEN_MFA'], MfaConfiguration: 'ON' },
+            { Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } } }
+          )
+        );
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error.message).toContain('allows WEB_AUTHN');
+        // The template SENDS SignInPolicy, so no live read either.
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // The ACCEPTING shape, now reachable (the SDK floor carries the field).
+      it('sends FactorConfiguration and deploys WEB_AUTHN + ON with MULTI on update', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:multi' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          {
+            Policies: webAuthnPolicies,
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+            MfaConfiguration: 'ON',
+            WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+          },
+          {}
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('ON');
+        expect(mfaCall.input.WebAuthnConfiguration).toEqual({
+          FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+        });
+      });
+
+      // The rule is keyed on ON: OPTIONAL + WEB_AUTHN + SINGLE_FACTOR is
+      // ACCEPTED by AWS (measured 2026-08-20; integ negative control C3).
+      it('does not refuse WEB_AUTHN under OPTIONAL', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:opt' } });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          Policies: webAuthnPolicies,
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          MfaConfiguration: 'OPTIONAL',
+        });
+
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      // WebAuthnFactorConfiguration is an MFA-routed property on its own: it
+      // builds the request (so the value is not dropped), and with no factor
+      // the OFF default applies -- {OFF, FactorConfiguration: MULTI} is
+      // ACCEPTED (measured 2026-09-23).
+      it('routes a lone WebAuthnFactorConfiguration through SetUserPoolMfaConfig under OFF', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:lone' } });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        expect(mfaCall.input.WebAuthnConfiguration).toEqual({
+          FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+        });
+      });
+    });
+
+    // Issue #2051: a template that does NOT send Policies.SignInPolicy leaves
+    // the LIVE list in place (UpdateUserPool preserves an omitted sub-key), so
+    // the pre-flight judges the live list. MEASURED us-east-1 2026-09-23: a
+    // pool at [PASSWORD, EMAIL_OTP] + OPTIONAL took an UpdateUserPool omitting
+    // Policies (its canary landed), then SetUserPoolMfaConfig(ON) was rejected.
+    describe('live sign-in policy under MfaConfiguration ON (#2051)', () => {
+      const onWithFactor = { EnabledMfas: ['SOFTWARE_TOKEN_MFA'], MfaConfiguration: 'ON' };
+      const livePool = (factors?: string[]) => ({
+        UserPool: factors ? { Policies: { SignInPolicy: { AllowedFirstAuthFactors: factors } } } : {},
+      });
+
+      it('refuses when the LIVE list allows EMAIL_OTP and the template dropped SignInPolicy', async () => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'EMAIL_OTP'])); // DescribeUserPool
+
+        const error = await rejectionOf(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { ...onWithFactor, AutoVerifiedAttributes: ['email'] },
+            {
+              Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] } },
+              EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+              MfaConfiguration: 'OPTIONAL',
+            }
+          )
+        );
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error.message).toContain(
+          "MfaConfiguration is ON while the pool's LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP"
+        );
+        expect(error.message).toContain('UpdateUserPool PRESERVES an omitted sub-key');
+        expect(error.message).toContain('removing the block cannot remove a factor');
+        // ONE call, the read. UpdateUserPool -- which would have landed the
+        // AutoVerifiedAttributes change -- never went out.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeUserPoolCommand');
+        expect(mockSend.mock.calls[0][0].input.UserPoolId).toBe('us-east-1_abc123');
+      });
+
+      // The read is GATED on the desired side, never on previousProperties: a
+      // factor added out of band (never declared) is refused the same way,
+      // because AWS rejects the call either way.
+      it('refuses a live EMAIL_OTP the previous record never declared', async () => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'EMAIL_OTP']));
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {})
+        );
+
+        expect(error.message).toContain('LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses a live WEB_AUTHN when the request does not carry MULTI (rule 3, live arm)', async () => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'WEB_AUTHN']));
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {})
+        );
+
+        expect(error.message).toContain('LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows WEB_AUTHN');
+        expect(error.message).toContain(
+          'or declare Policies.SignInPolicy with AllowedFirstAuthFactors that leave out WEB_AUTHN'
+        );
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('passes a live WEB_AUTHN when the request carries MULTI', async () => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'WEB_AUTHN'])); // pre-flight read
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:live-multi' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { ...onWithFactor, WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' },
+          {}
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        expect(mockSend.mock.calls[2][0].input.WebAuthnConfiguration).toEqual({
+          FactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+        });
+      });
+
+      it.each([
+        ['[PASSWORD]', livePool(['PASSWORD'])],
+        ['no sign-in policy at all', livePool()],
+        ['a factor cdkd does not know', livePool(['PASSWORD', 'FUTURE_AWS_FACTOR'])],
+      ])('passes a live list of %s', async (_label, live) => {
+        mockSend.mockResolvedValueOnce(live); // pre-flight read
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:live-ok' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {});
+
+        expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+          'DescribeUserPoolCommand',
+          'UpdateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+          'DescribeUserPoolCommand',
+        ]);
+      });
+
+      // FAILS OPEN: an unreadable pool is judged on the template alone (the
+      // pre-#2051 behavior), reported at debug without the AWS message's
+      // account / role text reaching a warning.
+      it('proceeds when the live read fails, saying so at debug only', async () => {
+        const denied = Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized'), {
+          name: 'AccessDeniedException',
+        });
+        mockSend.mockRejectedValueOnce(denied); // pre-flight read
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:read-failed' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {});
+
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const debugged = childLogger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(debugged).toContain('DescribeUserPool failed for UserPool us-east-1_abc123 before the MFA pre-flight (AccessDeniedException)');
+        // Every level above debug: moving the AWS-message line to info or
+        // error must fail this too.
+        for (const level of [childLogger.warn, childLogger.info, childLogger.error]) {
+          expect(level.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('123456789012');
+        }
+      });
+
+      // A transient blip is retried before failing open, so one throttle-like
+      // error does not silently drop the guard.
+      it('retries a transient live-read failure and still refuses', async () => {
+        vi.useFakeTimers();
+        try {
+          const transient = Object.assign(new Error('please retry'), {
+            name: 'ConcurrentModificationException',
+          });
+          mockSend.mockRejectedValueOnce(transient);
+          mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'EMAIL_OTP']));
+
+          const pending = rejectionOf(
+            provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {})
+          );
+          await vi.runAllTimersAsync();
+          const error = await pending;
+
+          expect(error.message).toContain('LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP');
+          expect(mockSend).toHaveBeenCalledTimes(2);
+          expect(mockSend.mock.calls.every((c) => c[0].constructor.name === 'DescribeUserPoolCommand')).toBe(
+            true
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      // MEASURED 2026-09-23: `SignInPolicy: {}` is sent and leaves the live
+      // list intact, and a PasswordPolicy-only container sends no SignInPolicy
+      // at all -- both must judge the LIVE list, not an empty template list.
+      it.each([
+        ['a SignInPolicy with no AllowedFirstAuthFactors', { Policies: { SignInPolicy: {} } }],
+        [
+          'a PasswordPolicy-only Policies container',
+          { Policies: { PasswordPolicy: { MinimumLength: 12 } } },
+        ],
+      ])('reads the live list for %s', async (_label, extra) => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'EMAIL_OTP']));
+
+        const error = await rejectionOf(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { ...onWithFactor, ...(extra as Record<string, unknown>) },
+            {}
+          )
+        );
+
+        expect(error.message).toContain('LIVE Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      // Rule 3 reads the REQUEST, never the pool: a pool recorded (and live)
+      // at MULTI is still refused when the template stops declaring it,
+      // because an omitted WebAuthn block is SINGLE_FACTOR (measured).
+      it('refuses when the template drops a previously-declared MULTI', async () => {
+        mockSend.mockResolvedValueOnce(livePool(['PASSWORD', 'WEB_AUTHN']));
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {
+            ...onWithFactor,
+            WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+          })
+        );
+
+        expect(error.message).toContain('allows WEB_AUTHN');
+        expect(error.message).toContain('WebAuthnFactorConfiguration is not MULTI_FACTOR_WITH_USER_VERIFICATION');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      // The template's list wins when it SENDS SignInPolicy: no read at all,
+      // even though the live pool would have tripped the rule.
+      it('does not read the live pool when the template sends SignInPolicy', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:template-wins' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { ...onWithFactor, Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } } },
+          { Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] } } }
+        );
+
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
+        expect(mockSend).toHaveBeenCalledTimes(3);
+      });
+
+      // Gated on the SENT value being ON: OPTIONAL (which AWS accepts beside
+      // EMAIL_OTP) spends no read, and neither does a bag with no MFA-routed
+      // property (no second call, so nothing to partly apply).
+      it.each([
+        [
+          'MfaConfiguration OPTIONAL',
+          { EnabledMfas: ['SOFTWARE_TOKEN_MFA'], MfaConfiguration: 'OPTIONAL' },
+          ['UpdateUserPoolCommand', 'SetUserPoolMfaConfigCommand', 'DescribeUserPoolCommand'],
+        ],
+        [
+          'no MFA-routed property',
+          { MfaConfiguration: 'ON' },
+          ['UpdateUserPoolCommand', 'DescribeUserPoolCommand'],
+        ],
+      ])('does not read the live pool for %s', async (_label, props, expected) => {
+        for (let i = 1; i < expected.length; i++) mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:no-read' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', props, {});
+
+        expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual(expected);
+      });
+
+      // The create path has no live pool: CreateUserPool is the first call.
+      it('never reads a live pool on create', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:create' } });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', onWithFactor);
+
+        expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+          'CreateUserPoolCommand',
+          'SetUserPoolMfaConfigCommand',
+        ]);
+      });
+    });
+
+    // Issue #1924: EmailMfaConfiguration has no enable switch, so sending it
+    // for a bare message/subject ENABLES email OTP. Announced, not changed.
+    describe('message-only email OTP block (#1924)', () => {
+      const announced = () =>
+        childLogger.warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((m) => m.includes('which has no enable switch'));
+
+      it('announces that a bare EmailAuthenticationMessage enables EMAIL_OTP', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:msg' } });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EmailAuthenticationMessage: 'code {####}',
+        });
+
+        // The wire is unchanged: the block is sent, carrying the message.
+        expect(mockSend.mock.calls[1][0].input.EmailMfaConfiguration).toEqual({
+          Message: 'code {####}',
+        });
+        const lines = announced();
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('sending it ENABLES the EMAIL_OTP MFA factor although EnabledMfas');
+        expect(lines[0]).toContain('Add EMAIL_OTP to EnabledMfas to declare it');
+      });
+
+      it('says nothing when EnabledMfas lists EMAIL_OTP', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:msg-ok' } });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['EMAIL_OTP'],
+          EmailAuthenticationSubject: 'Your code',
+        });
+
+        expect(announced()).toEqual([]);
+      });
+
+      // A malformed EnabledMfas already draws its own warning naming the
+      // entry; this one would be a second, vaguer line about the same bag.
+      it('defers to the malformed-EnabledMfas warning', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:msg-bad' } });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'EMAIL_OTP',
+          EmailAuthenticationMessage: 'code {####}',
+        });
+
+        expect(announced()).toEqual([]);
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('(not a list)');
       });
     });
 
@@ -2886,10 +3347,14 @@ describe('CognitoUserPoolProvider', () => {
       });
     });
 
-    describe('unhandledByDesign', () => {
-      it('declares WebAuthnFactorConfiguration as unhandled (no SDK wire path)', () => {
-        const map = provider.unhandledByDesign.get('AWS::Cognito::UserPool');
-        expect(map?.has('WebAuthnFactorConfiguration')).toBe(true);
+    // Issue #2064: the SDK floor now carries WebAuthnConfigurationType
+    // .FactorConfiguration, so the property moved from unhandled to handled.
+    describe('WebAuthnFactorConfiguration coverage (#2064)', () => {
+      it('declares WebAuthnFactorConfiguration as handled, and nothing as unhandled', () => {
+        expect(
+          provider.handledProperties.get('AWS::Cognito::UserPool')?.has('WebAuthnFactorConfiguration')
+        ).toBe(true);
+        expect(provider.unhandledByDesign.get('AWS::Cognito::UserPool')).toBeUndefined();
       });
     });
   });

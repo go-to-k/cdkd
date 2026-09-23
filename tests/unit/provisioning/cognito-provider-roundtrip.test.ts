@@ -207,6 +207,7 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
       EmailAuthenticationSubject: '',
       WebAuthnRelyingPartyID: '',
       WebAuthnUserVerification: '',
+      WebAuthnFactorConfiguration: '',
     };
 
     await expect(

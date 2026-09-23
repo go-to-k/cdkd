@@ -3,7 +3,7 @@ import { Construct } from 'constructs';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 
 /**
- * The MFA pre-flight refusal arms (issues #1975 and #1977).
+ * The MFA pre-flight refusal arms (issues #1975, #1977, #2064 and #2051).
  *
  * A SEPARATE stack from `CognitoStack` on purpose. Both refusal arms need an
  * UPDATE deploy that FAILS, while `CognitoStack`'s own `CDKD_TEST_UPDATE` phase
@@ -12,7 +12,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  * failure not having cancelled it.
  *
  * The refusing arms are selected ONE AT A TIME by `CDKD_TEST_PREFLIGHT_ARM`
- * (`A` or `B`), rather than mutating both in a single update deploy. That is
+ * (`A`, `B`, `D`, `E` or `F`), rather than mutating several in one update deploy. That is
  * load-bearing rather than tidiness: the deploy engine sets `interrupted` on
  * the FIRST resource failure and cancels pending siblings, so a single update
  * carrying both mutations could legitimately log one refusal and never reach
@@ -38,16 +38,31 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  * what pre-fix landed while the MFA half was refused. The pool must still
  * report `[PASSWORD]` afterwards.
  *
- * Arms C1..C3 -- the NEGATIVE controls, which exist to stop an over-broad
+ * Arms C1..C4 -- the NEGATIVE controls, which exist to stop an over-broad
  * refusal shipping. They are never mutated; they only have to deploy CLEANLY in
  * the base phase.
+ *
+ * Arm D (#2064) -- `WEB_AUTHN` added to the sign-in policy while MFA goes ON,
+ * WITHOUT `WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`.
+ * Same canary as arm B: the sign-in policy is the payload `UpdateUserPool`
+ * would land before `SetUserPoolMfaConfig(ON)` is rejected.
+ *
+ * Arm E (#2051) -- the LIVE-state arm. `Policies` is DELETED from the template
+ * (so `UpdateUserPool` preserves the live `[PASSWORD, EMAIL_OTP]`) while MFA
+ * goes ON, plus an `AutoVerifiedAttributes` canary as in arm A. Only a read of
+ * the live pool can see the conflict; the template alone carries none.
+ *
+ * Arm F (#2064) -- the ACCEPTING shape on arm D's pool, which must SUCCEED:
+ * the same edit plus `WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`.
+ * Run after D, so the pool it updates is the one D's refusal left untouched.
  */
 export class CognitoPreflightStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // `A` mutates the #1977 pool, `B` the #1975 pool, anything else (including
-    // unset) is the BASE arm that must deploy cleanly. Deliberately NOT keyed
+    // `A` mutates the #1977 pool, `B` the #1975 pool, `D` / `F` the #2064
+    // pool, `E` the #2051 pool; anything else (including unset) is the BASE arm
+    // that must deploy cleanly. Deliberately NOT keyed
     // on `CDKD_TEST_UPDATE`: `CognitoStack`'s update phase sets that variable
     // and synthesizes this app too, and an arm that reacted to it would flip
     // shape during a deploy that is not looking at it.
@@ -146,13 +161,9 @@ export class CognitoPreflightStack extends cdk.Stack {
     //   SetUserPoolMfaConfig(OPTIONAL, SoftwareTokenMfa, FactorConfiguration SINGLE_FACTOR)
     //     -> ACCEPTED  <- this arm
     //
-    // `FactorConfiguration` is on the live `SetUserPoolMfaConfig` API but NOT on
-    // the SDK version this repo pins (@aws-sdk/client-cognito-identity-provider
-    // 3.1018.0), and the provider lists `WebAuthnFactorConfiguration` as
-    // unhandled-by-design for exactly that reason. So `MfaConfiguration: ON`
-    // beside a WEB_AUTHN first-auth factor is UNDEPLOYABLE through cdkd today,
-    // for an AWS-side reason that has nothing to do with this pre-flight.
-    // Asserting it here would fence AWS's constraint, not cdkd's refusal.
+    // The ON arm is control C4 below, now that `WebAuthnFactorConfiguration`
+    // is sendable (issue #2064). This one stays at OPTIONAL: it is the fence
+    // on rule 3's `=== 'ON'` narrowing, since SINGLE_FACTOR is ACCEPTED here.
     const preflightWebAuthnPool = new cognito.CfnUserPool(this, 'PreflightWebAuthnPool', {
       userPoolName: `cdkd-test-mfa-preflight-webauthn-${cdk.Aws.ACCOUNT_ID}`,
       userPoolTier: 'ESSENTIALS',
@@ -168,12 +179,85 @@ export class CognitoPreflightStack extends cdk.Stack {
     });
     preflightWebAuthnPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // --- Negative control C4 (issue #2064) ----------------------------------
+    // The ACCEPTING shape on the CREATE path: WEB_AUTHN + MfaConfiguration ON +
+    // WebAuthnFactorConfiguration MULTI_FACTOR_WITH_USER_VERIFICATION. Rule 3
+    // evaluates and must NOT fire; before #2064 this property was not sendable
+    // at all, so the shape could not deploy through cdkd's SDK path.
+    const preflightWebAuthnOnPool = new cognito.CfnUserPool(this, 'PreflightWebAuthnOnPool', {
+      userPoolName: `cdkd-test-mfa-preflight-webauthn-on-${cdk.Aws.ACCOUNT_ID}`,
+      userPoolTier: 'ESSENTIALS',
+      enabledMfas: ['SOFTWARE_TOKEN_MFA'],
+      mfaConfiguration: 'ON',
+      webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+      policies: {
+        signInPolicy: {
+          allowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'],
+        },
+      },
+    });
+    preflightWebAuthnOnPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // --- Arms D and F (issue #2064) -----------------------------------------
+    // Base: MFA OPTIONAL with a real factor and a PASSWORD-only sign-in policy
+    // -- NOT ON, because from a pool already at ON `UpdateUserPool` refuses to
+    // add WEB_AUTHN by itself (measured), atomically, and there would be no
+    // partial apply to prevent. From OPTIONAL it LANDS (measured 2026-09-23).
+    //
+    // D: ON + WEB_AUTHN, no factor configuration -> refused, nothing sent.
+    // F: the same plus MULTI -> must deploy.
+    const webAuthnArm = arm === 'D' || arm === 'F';
+    const preflightWebAuthnSinglePool = new cognito.CfnUserPool(
+      this,
+      'PreflightWebAuthnSinglePool',
+      {
+        userPoolName: `cdkd-test-mfa-preflight-webauthn-single-${cdk.Aws.ACCOUNT_ID}`,
+        userPoolTier: 'ESSENTIALS',
+        enabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        mfaConfiguration: webAuthnArm ? 'ON' : 'OPTIONAL',
+        ...(arm === 'F' ? { webAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION' } : {}),
+        policies: {
+          signInPolicy: {
+            allowedFirstAuthFactors: webAuthnArm ? ['PASSWORD', 'WEB_AUTHN'] : ['PASSWORD'],
+          },
+        },
+      }
+    );
+    preflightWebAuthnSinglePool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // --- Arm E (issue #2051) ------------------------------------------------
+    // Base: the C2 shape (EMAIL_OTP allowed under OPTIONAL, which AWS accepts).
+    // E: `Policies` DELETED + MFA ON + an AutoVerifiedAttributes canary. The
+    // template then declares no factor at all, so only the live read can see
+    // that the pool still allows EMAIL_OTP -- an omitted sub-key is preserved.
+    const preflightLivePolicyPool = new cognito.CfnUserPool(this, 'PreflightLivePolicyPool', {
+      userPoolName: `cdkd-test-mfa-preflight-live-${cdk.Aws.ACCOUNT_ID}`,
+      userPoolTier: 'ESSENTIALS',
+      enabledMfas: ['SOFTWARE_TOKEN_MFA'],
+      mfaConfiguration: arm === 'E' ? 'ON' : 'OPTIONAL',
+      ...(arm === 'E'
+        ? { autoVerifiedAttributes: ['email'] }
+        : {
+            policies: {
+              signInPolicy: {
+                allowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'],
+              },
+            },
+          }),
+    });
+    preflightLivePolicyPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     new cdk.CfnOutput(this, 'PreflightOffPoolId', { value: preflightOffPool.ref });
     new cdk.CfnOutput(this, 'PreflightSignInPoolId', { value: preflightSignInPool.ref });
     new cdk.CfnOutput(this, 'PreflightOptionalEmailOtpPoolId', {
       value: preflightOptionalEmailOtpPool.ref,
     });
     new cdk.CfnOutput(this, 'PreflightWebAuthnPoolId', { value: preflightWebAuthnPool.ref });
+    new cdk.CfnOutput(this, 'PreflightWebAuthnOnPoolId', { value: preflightWebAuthnOnPool.ref });
+    new cdk.CfnOutput(this, 'PreflightWebAuthnSinglePoolId', {
+      value: preflightWebAuthnSinglePool.ref,
+    });
+    new cdk.CfnOutput(this, 'PreflightLivePolicyPoolId', { value: preflightLivePolicyPool.ref });
 
     cdk.Tags.of(this).add('Project', 'cdkd');
     cdk.Tags.of(this).add('Example', 'cognito');
