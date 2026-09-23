@@ -177,6 +177,8 @@ const IS_DOCS = (f: string) =>
 const IS_TESTS = (f: string) => f.startsWith('tests/');
 const IS_CLAUDE = (f: string) => f.startsWith('.claude/');
 const IS_DEPS = (f: string) => f === 'package.json' || f === 'pnpm-lock.yaml';
+/** A per-change changelog fragment. `changelog.d/_header.md` / `_archive.md` are NOT ones. */
+const IS_CHANGELOG_ENTRY = (f: string) => f.startsWith('changelog.d/entries/');
 
 /** Why a verdict came out the way it did. Every arm of the hooks' flow has one. */
 export type VerdictReason =
@@ -190,6 +192,13 @@ export type VerdictReason =
   | 'non-release-prefix'
   /** `feat:`/`fix:` backed by at least one `src/**` path. The allowed case. */
   | 'src-present'
+  /**
+   * `feat:`/`fix:` with no `src/**`, but carrying a `changelog.d/entries/**`
+   * fragment — the author's explicit claim that the change is user-visible.
+   * The other allowed case (issue
+   * [#3548](https://github.com/go-to-k/cdkd/issues/3548)).
+   */
+  | 'changelog-entry-present'
   /** Branch adds nothing over the merge base. Nothing to ship, nothing to mislabel. */
   | 'no-diff'
   /** THE VIOLATION: `feat:`/`fix:` with no `src/**` in the 3-dot diff. */
@@ -221,6 +230,45 @@ export function parseConventionalPrefix(title: string): string | null {
 /** True when any changed path lives under `src/`. */
 export function hasSrcFile(files: readonly string[]): boolean {
   return files.some(IS_SRC);
+}
+
+/**
+ * True when the branch adds or edits a changelog fragment.
+ *
+ * **Why this is a second sufficient condition for `feat:` / `fix:`**
+ * (issue [#3548](https://github.com/go-to-k/cdkd/issues/3548)). The `src/**`
+ * test encodes "no `src/**` ⇒ the change is internal", and that premise is
+ * FALSE for a bump to a runtime `dependencies` entry: cdkd bundles
+ * `cdk-local`, so a version bump changes what the shipped binary does with no
+ * `src/**` diff at all. Two PRs hit it in one session —
+ * [#3545](https://github.com/go-to-k/cdkd/issues/3545) (gained `aws:asset:path`
+ * containment under `start-alb` / `start-cloudfront`, plus a commander major
+ * that changed argument parsing on nineteen commands) and
+ * [#3553](https://github.com/go-to-k/cdkd/issues/3553) (`source.executable` is
+ * announced under `start-service` / `start-alb`). Both are user-facing, and
+ * the check's own failure text called them "internal (dev tooling / docs /
+ * tests / build)".
+ *
+ * `AGENTS.md` already draws exactly the line this check wants:
+ *
+ * > A user-visible behavior change writes one changelog entry under
+ * > `changelog.d/entries/`. Agent instructions, tests, CI, hooks and docs
+ * > write none.
+ *
+ * So the fragment IS the author's affirmative claim of user-visible behaviour,
+ * and it costs the CI job no new input — the file list already carries it.
+ * The case this check was built for is untouched: a docs-only, tests-only or
+ * `.claude/**` PR writes no fragment and still fails.
+ *
+ * It cannot stop an author who adds a fragment they do not mean, and it is not
+ * meant to. A wrong prefix is an ACCIDENT this catches; a false changelog
+ * entry is a deliberate claim, which no file-list test can see.
+ *
+ * Matches the DIRECTORY, not `changelog.d/` at large: `_header.md` and
+ * `_archive.md` live there and are not per-change fragments.
+ */
+export function hasChangelogEntry(files: readonly string[]): boolean {
+  return files.some(IS_CHANGELOG_ENTRY);
 }
 
 /**
@@ -273,6 +321,9 @@ export function checkPrTitlePrefixScope(
   if (hasSrcFile(list)) {
     return { ok: true, prefix, reason: 'src-present', files: list };
   }
+  if (hasChangelogEntry(list)) {
+    return { ok: true, prefix, reason: 'changelog-entry-present', files: list };
+  }
   return {
     ok: false,
     prefix,
@@ -301,9 +352,13 @@ export function formatFailure(v: PrefixScopeVerdict): string {
   return [
     `PR title prefix '${v.prefix}:' feeds a release-please version bump AND`,
     `lands in the user-facing CHANGELOG, but the branch diff against origin/main`,
-    `contains no file under src/**. The change is internal (dev tooling / docs /`,
-    `tests / build), not a cdkd CLI behavior change, and would mislead users`,
-    `reading the release notes.`,
+    `contains no file under src/** and no changelog.d/entries/** fragment, so`,
+    `nothing in it claims a user-visible behavior change. Under a release-`,
+    `triggering prefix it would mislead users reading the release notes.`,
+    ``,
+    `If the change IS user-visible without touching src/** -- a bump to a`,
+    `runtime dependency cdkd bundles is the live case -- write the changelog`,
+    `entry AGENTS.md already requires for one, and this check passes.`,
     ``,
     `Branch diff files (none in src/**):`,
     ...shown,

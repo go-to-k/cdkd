@@ -20,6 +20,7 @@ import {
   checkSquashSubsumption,
   formatFailure,
   formatSubsumptionFailure,
+  hasChangelogEntry,
   hasSrcFile,
   MAX_LISTED_FILES,
   parseConventionalPrefix,
@@ -196,6 +197,95 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: backed by src/**', () =>
     expect(v.ok).toBe(true);
     expect(v.reason).toBe('src-present');
     expect(v.suggestedPrefix).toBeUndefined();
+  });
+});
+
+describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: carrying a changelog fragment', () => {
+  // Issue #3548. The `src/**` test encodes "no `src/**` ⇒ internal", which is
+  // false for a bump to a runtime dependency cdkd BUNDLES: the shipped binary
+  // changes behaviour with no `src/**` diff. Both live cases below really
+  // happened, in one session, and the check called both "internal".
+  it.each([
+    [
+      'a cdk-local bump that changes what the shipped binary does (#3545)',
+      'fix(local): contain aws:asset:path under start-alb and start-cloudfront',
+      [
+        'changelog.d/entries/2026-09-23-3534-front-door-containment.md',
+        'package.json',
+        'pnpm-lock.yaml',
+        'docs/local-emulation.md',
+      ],
+    ],
+    [
+      'the same shape a second time (#3553)',
+      'fix(local): announce source.executable under start-service and start-alb',
+      [
+        'changelog.d/entries/2026-09-23-3540-executable-warning-everywhere.md',
+        'package.json',
+        'pnpm-lock.yaml',
+      ],
+    ],
+    [
+      'a fragment alone, with nothing else in the diff',
+      'fix: correct a user-visible message',
+      ['changelog.d/entries/2026-09-23-x.md'],
+    ],
+  ])('allows %s', (_label, title, files) => {
+    const v = checkPrTitlePrefixScope(title, files);
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('changelog-entry-present');
+    expect(v.suggestedPrefix).toBeUndefined();
+  });
+
+  it('prefers src-present when BOTH are in the diff, so the reason stays readable', () => {
+    const v = checkPrTitlePrefixScope('fix: thing', [
+      'src/cli/options.ts',
+      'changelog.d/entries/2026-09-23-x.md',
+    ]);
+    expect(v.reason).toBe('src-present');
+  });
+
+  it('does NOT open the door the check was built to close', () => {
+    // The whole point of the exemption is that AGENTS.md forbids these PRs
+    // from writing a fragment at all. If a docs-only diff started passing,
+    // the fix would have replaced one wrong verdict with another.
+    for (const files of [
+      ['docs/cli-reference.md', 'README.md'],
+      ['tests/unit/foo.test.ts'],
+      ['.claude/hooks/foo.sh'],
+      ['package.json', 'pnpm-lock.yaml'],
+    ]) {
+      const v = checkPrTitlePrefixScope('fix: thing', files);
+      expect(v.ok, files.join(',')).toBe(false);
+      expect(v.reason).toBe('no-src');
+    }
+  });
+
+  it('is the ENTRIES directory, not changelog.d at large', () => {
+    // `_header.md` and `_archive.md` live in `changelog.d/` and are not
+    // per-change fragments; editing one claims nothing about this branch.
+    for (const f of ['changelog.d/_header.md', 'changelog.d/_archive.md']) {
+      expect(hasChangelogEntry([f]), f).toBe(false);
+      expect(checkPrTitlePrefixScope('fix: thing', [f]).ok, f).toBe(false);
+    }
+    expect(hasChangelogEntry(['changelog.d/entries/2026-09-23-x.md'])).toBe(true);
+  });
+
+  it('anchors the prefix, so a lookalike path does not count', () => {
+    for (const f of [
+      'foo/changelog.d/entries/x.md',
+      'changelog.d/entriesfoo/x.md',
+      'changelog.dentries/x.md',
+    ]) {
+      expect(hasChangelogEntry([f]), f).toBe(false);
+    }
+  });
+
+  it('still blocks a non-release prefix question it never answered', () => {
+    // A fragment does not MAKE a title release-triggering: `chore:` carrying
+    // one is still `non-release-prefix`, not `changelog-entry-present`.
+    const v = checkPrTitlePrefixScope('chore: thing', ['changelog.d/entries/x.md']);
+    expect(v.reason).toBe('non-release-prefix');
   });
 });
 
