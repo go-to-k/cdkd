@@ -162,5 +162,60 @@ describe('ContextStore', () => {
         'utf-8'
       );
     });
+
+    // Issue #3522: a context key named `__proto__` is an ordinary own key in the
+    // `JSON.parse`d manifest, so the registry hands it over as one. Written with
+    // `existing[key] = value` it replaced the merge target's prototype instead,
+    // and the resolved value never reached the file.
+    describe('a context key named __proto__ (#3522)', () => {
+      /** What the registry returns for such a key: an OWN `__proto__` property. */
+      function protoKeyed(value: unknown): Record<string, unknown> {
+        return JSON.parse(JSON.stringify({ placeholder: value }).replace('placeholder', '__proto__'));
+      }
+
+      /** The single `cdk.context.json` write, parsed back (own keys survive `JSON.parse`). */
+      function writtenFile(): Record<string, unknown> {
+        expect(writeFileSync).toHaveBeenCalledTimes(1);
+        return JSON.parse(vi.mocked(writeFileSync).mock.calls[0]![1] as string) as Record<
+          string,
+          unknown
+        >;
+      }
+
+      it('writes it when cdk.context.json does not exist yet', () => {
+        vi.mocked(existsSync).mockReturnValue(false);
+        const updates = protoKeyed(['us-east-1a']);
+        expect(Object.keys(updates)).toEqual(['__proto__']); // the fixture's own premise
+
+        store.save(updates, '/project');
+
+        const written = writtenFile();
+        expect(Object.keys(written)).toEqual(['__proto__']);
+        expect(Object.getOwnPropertyDescriptor(written, '__proto__')?.value).toEqual([
+          'us-east-1a',
+        ]);
+      });
+
+      it('merges it into an existing file, beside the keys already there', () => {
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ existing: 'value' }));
+
+        store.save(protoKeyed(['us-east-1a']), '/project');
+
+        const written = writtenFile();
+        expect(Object.keys(written)).toEqual(['existing', '__proto__']);
+        expect(Object.getOwnPropertyDescriptor(written, '__proto__')?.value).toEqual([
+          'us-east-1a',
+        ]);
+      });
+
+      it('still skips it when the value is transient', () => {
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        store.save(protoKeyed({ $dontSaveContext: true, $providerError: 'failed' }), '/project');
+
+        expect(Object.keys(writtenFile())).toEqual([]);
+      });
+    });
   });
 });

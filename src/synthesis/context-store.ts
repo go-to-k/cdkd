@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getLogger } from '../utils/logger.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 
 const CDK_CONTEXT_FILE = 'cdk.context.json';
 
@@ -63,7 +64,12 @@ export class ContextStore {
         this.logger.debug(`Skipping transient context value for key: ${key}`);
         continue;
       }
-      existing[key] = value;
+      // `defineOwnKey`, not `existing[key] = value`: `existing` is the parsed
+      // file (or a `{}` literal), and a key named `__proto__` — ordinary in
+      // the `JSON.parse`d manifest it came from — would otherwise replace the
+      // record's prototype and vanish from the write (issue
+      // [#3522](https://github.com/go-to-k/cdkd/issues/3522)).
+      defineOwnKey(existing, key, value);
     }
 
     // Write back
