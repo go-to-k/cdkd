@@ -1062,9 +1062,9 @@ assembly *does* execute code from it, because a Docker asset may declare
 and `cdkd local invoke` runs it too. `cdkd local start-service` and
 `cdkd local start-alb` build their ECS container assets through the bundled
 emulator, which runs such an executable **without printing that line**; treat
-those two as executing assembly code as well. And a build secret, an SSH key or a cache
-directory is a host path the CloudFormation template never shows, so reading the
-template is not enough to know what a deploy will touch.
+those two as executing assembly code as well. And a build secret, an SSH key
+or a cache directory is a host path the CloudFormation template never shows,
+so reading the template is not enough to know what a deploy will touch.
 
 The destination check is a **name-shape** check, not a proof of ownership: a
 bucket named like a CDK bootstrap bucket for your account can still live in

@@ -225,15 +225,6 @@ Warned about, but accepted:
 
 Not refused today:
 
-- **a Lambda's `Metadata['aws:asset:path']` under `cdkd local start-alb` and
-  `cdkd local start-cloudfront`.** Those two reach Lambda code through the
-  bundled `cdk-local` engine's own copy of the resolution, which is unguarded,
-  so an assembly naming a directory outside the output directory has it
-  bind-mounted at `/var/task` with **no refusal and no warning** — while
-  `cdkd local invoke` and `cdkd local start-api` warn about the very same value.
-  `start-alb` reaches it through a Lambda target group, `start-cloudfront`
-  through a Function-URL origin or Lambda@Edge. The fix is the same change in
-  `cdk-local`;
 - every Docker build context that goes through the bundled `cdk-local` engine,
   which joins the path itself: a container-image Lambda under
   `cdkd local invoke` and `cdkd local start-api`; the image build of
@@ -243,7 +234,13 @@ Not refused today:
   `cdkd local start-alb`. `cdkd local run-task` is the exception — its image
   build is cdkd's own and IS contained.
 
-Until those land, a hand-modified assembly can still put a directory of its
+A Lambda's `Metadata['aws:asset:path']` is no longer on that list for any
+command: `cdkd local start-alb` and `cdkd local start-cloudfront` reach Lambda
+code through the bundled `cdk-local` engine, which now applies the same rule
+as `cdkd local invoke` and `cdkd local start-api` — a relative escape refused,
+an absolute one accepted with a warning naming the directory.
+
+Until the rest land, a hand-modified assembly can still put a directory of its
 choosing in front of code it also supplies. Treat an assembly you did not
 synthesize yourself as untrusted input.
 

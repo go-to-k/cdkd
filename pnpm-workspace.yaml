@@ -5,6 +5,17 @@ allowBuilds:
   # CI installs explicitly) — so skip puppeteer's per-install Chrome download.
   puppeteer: false
 minimumReleaseAgeExclude:
+  # Unversioned, unlike every entry below it, and the asymmetry is the point.
+  # `cdk-local` is this maintainer's own package: cdkd tracks it release by
+  # release, the code that ships in it is reviewed in its own repository
+  # before the tag, and the release is cut from a PR merged here — so the age
+  # window buys nothing it does not already have, while costing a day on every
+  # coupled change (measured: go-to-k/cdkd#3534 waited on exactly this).
+  # It IS a real reduction in protection for this one dependency: a
+  # compromised npm token publishing as `cdk-local` would install immediately.
+  # Accepted deliberately, and it is the reason the entries below stay pinned
+  # per version — they are third-party and get no such treatment.
+  - 'cdk-local'
   - '@aws-sdk/client-lambda-microvms@3.1092.0'
   - '@aws-sdk/core@3.976.0'
   - '@aws-sdk/credential-provider-env@3.972.60'
