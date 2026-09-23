@@ -1047,7 +1047,7 @@ about it:
 
 | Manifest value | What cdkd does with it | When it warns |
 | --- | --- | --- |
-| `source.executable` | **runs it on this machine** — an arbitrary command line | on `deploy`, `publish-assets`, `local invoke`, `local start-api`, `local run-task` and `local invoke-agentcore`, naming the command |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | on every command that builds a Docker asset, naming the command |
 | `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside the output directory; a path inside the build context is usually left quiet |
 | a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
 | `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
@@ -1057,13 +1057,16 @@ carrying a `dest=` is a write and a `cacheTo` carrying a `src=` is a read.
 
 **Two of those are worth stating plainly.** Deploying from a pre-synthesized
 assembly *does* execute code from it, because a Docker asset may declare
-`source.executable` instead of a Dockerfile — so an assembly is not only data,
-and `cdkd local invoke` runs it too. `cdkd local start-service` and
-`cdkd local start-alb` build their ECS container assets through the bundled
-emulator, which runs such an executable **without printing that line**; treat
-those two as executing assembly code as well. And a build secret, an SSH key
-or a cache directory is a host path the CloudFormation template never shows,
-so reading the template is not enough to know what a deploy will touch.
+`source.executable` instead of a Dockerfile — so an assembly is not only data.
+Every `cdkd local` command that builds such an asset runs it too, and every one
+of them prints the line first. And a build secret, an SSH key or a cache
+directory is a host path the CloudFormation template never shows, so reading
+the template is not enough to know what a deploy will touch.
+
+Each distinct command is announced once per run, not once per build: a
+long-running `cdkd local start-service` rebuilds per replica and again after a
+crash-loop restart, and repeating a paragraph that size would bury it. Repeats
+go to `--verbose`.
 
 The destination check is a **name-shape** check, not a proof of ownership: a
 bucket named like a CDK bootstrap bucket for your account can still live in
