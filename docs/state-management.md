@@ -1095,7 +1095,9 @@ exception to both commands above: `cdkd state orphan <stack>` without
 `--stack-region` is the form that selects it, and `cdkd state show` cannot read
 it at all, so read the object from the state bucket directly. The refusal
 prints those forms for that record, and names the object's path only when the
-stack name renders exactly.
+stack name renders exactly. `cdkd orphan`'s refusals of an unreadable
+`resources` or `outputs` map name the object the same way for such a record,
+instead of a `cdkd state show` command that cannot read it.
 
 The refusal prints its commands at the end, each on a line of its own after a
 label; copy the command after the label. For the legacy record, the object's
@@ -1124,10 +1126,21 @@ An **absent** `properties` map is a defect and is refused: every writer in cdkd
 records an object there, and `JSON.stringify` never drops an empty one. An
 empty `{}` is healthy — a resource can legitimately declare no properties.
 
-A resource record that is not an object at all (a `null` entry, a string) is a
-different defect, and it is **not yet guarded**: such an entry reads as absent,
-so `cdkd deploy` plans a `CREATE` for a resource it already manages. It is not
-reported by anything above. Tracked separately.
+A resource record that is not an object at all (a `null` entry, a string), or
+carries no `resourceType`, is a different defect. `cdkd orphan` refuses it on a
+record it would keep, scoped and with the same three ways out as above: its
+save rebuilds each kept record by copying fields, so a string entry would be
+saved as one key per character and a number as a record with no physical id. A
+reference from another resource to such a record you are orphaning, or to one
+with no physical id, is reported as unresolvable rather than substituted. `cdkd deploy` does **not yet guard**
+it: such an entry reads as absent, so deploy plans a `CREATE` for a resource it
+already manages. Tracked separately.
+
+The same scoped refusal covers a kept record's `attributes` map — the cache
+`Fn::GetAtt` of it is read from — when it is `null` or not an object; an absent
+one is healthy. Under `--force`, `cdkd orphan` never reads a value out of an
+orphaned record's unreadable `attributes` cache: the reference keeps its
+original intrinsic, as it does when the cache lacks the attribute.
 
 #### When `orphans` is not a list
 
@@ -1144,6 +1157,7 @@ admits all four.
 | `cdkd destroy` / `cdkd state destroy` | **Refuses**, at its first read and again at the re-read it takes under the lock — otherwise the run deletes every resource and then the record, having never reported the orphans it could not read |
 | `cdkd rollback` | **Refuses** before any replay — its own bookkeeping walks the container and saves the result |
 | `cdkd import` | **Refuses** — it carries the container into the record it writes, so importing over a damaged one would leave a record every other command then refuses |
+| `cdkd orphan` | **Refuses**, under `--dry-run` too — it carries the container into its save without reading it, so it would report success over a record the next deploy refuses |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
 | `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see |
 
@@ -1160,7 +1174,12 @@ empty one over it. An empty `[]` is healthy too.
 
 Damage INSIDE a readable list — a row that is not an object, or carries no
 `resourceType` — is a separate question. `cdkd diff` drops such rows before
-previewing an adoption and names them; other commands do not yet guard them.
+previewing an adoption and names them. `cdkd orphan` refuses them, along with a
+row whose `logicalId` is not a string or whose `state` holds an unreadable
+`properties` or `attributes` map. Such a row is not in `resources`, so
+`cdkd orphan` cannot remove it: repair the row by hand rather than deleting it,
+since it is the only record that its resource is still live in AWS. Other
+commands do not yet guard these rows.
 
 #### Example
 

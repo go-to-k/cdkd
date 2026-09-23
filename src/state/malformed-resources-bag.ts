@@ -333,15 +333,52 @@ export function repairMalformedResourcesForReadOnly(state: StackState): boolean 
  * documents `2` as "PARTIAL — journal kept, idempotent re-run", so a `2` here
  * would tell an operator to re-run a command that attempted nothing.
  */
-export function malformedStateRefusalMessage(rawStackName: string, rawRegion: string): string {
+export function malformedStateRefusalMessage(
+  rawStackName: string,
+  rawRegion: string | undefined,
+  /** See {@link inspectTail}; only the region-less legacy arm reads it. */
+  recovery?: LockRecoveryContext
+): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
-  return (
+  return inspectTail(
     `${malformedStateDiagnosis(stackName, region)} This command can WRITE state, so it refuses ` +
-    `rather than continuing: saving over a record whose resource map could not be read would ` +
-    `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
-    `remove the record first. Inspect it with: ${inspectCommand(stackName, region)}`
+      `rather than continuing: saving over a record whose resource map could not be read would ` +
+      `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
+      `remove the record first.`,
+    stackName,
+    region,
+    recovery
   );
+}
+
+/**
+ * How a READ-ONLY remedy ends a single-command message: on
+ * `Inspect it with: <inspectCommand>` — unless the record is a region-less
+ * LEGACY one, which that command cannot read (go-to-k/cdkd#3388).
+ *
+ * A KNOWN stack with NO region is what `cdkd orphan` hands for a legacy
+ * `<prefix>/<stack>/state.json` listed with no region, and `cdkd state show`
+ * refuses such a record with or without `--stack-region`, so ending on it hands
+ * the operator a dead end. That arm names the S3 object instead, through
+ * {@link orphanInspectClause}, which already owns the shape (the object path
+ * gated on the name rendering exactly, the real prefix and bucket when
+ * `recovery` carries them, one location per trailing line).
+ *
+ * Every other identity keeps the command, so a region-keyed record's text is
+ * byte-identical to what it was.
+ */
+function inspectTail(
+  prose: string,
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): string {
+  if (stackName === undefined || region !== undefined) {
+    return `${prose} Inspect it with: ${inspectCommand(stackName, region)}`;
+  }
+  const legacy = orphanInspectClause(stackName, undefined, recovery);
+  return [`${prose} ${legacy.sentence ?? ''}`.trimEnd(), ...(legacy.locations ?? [])].join('\n');
 }
 
 /**
@@ -396,19 +433,22 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
   // The REGION pair is load-bearing: `isPasteableIdent` measures against the
   // STACK cap (`STACK_REF_MAX_CODE_POINTS`), so on its own it admits a region
   // past a REGION's 128 — which `safeRegion` truncates, putting a cut value in
-  // the clause above the template. Measured: dropping `safeRegion(...)` here
-  // reddens the truncated-region withhold row, and dropping
+  // the clause above the template. Measured: dropping the region's exactness
+  // operand here reddens the truncated-region withhold row, and dropping
   // `isPasteableIdent(region)` reddens the forged-region row.
   //
   // The STACK pair OVERLAPS today: `isPasteableIdent`'s charset is a subset of
   // what `displaySafe(_, { asciiOnly: true })` passes unchanged and its
   // identity test forbids truncation at the same cap `safeStackName` uses, so
-  // `isPasteableIdent(stackName)` already implies `safeStackName(...) === ...`.
+  // `isPasteableIdent(stackName)` already implies `rendersExactly(stackName)`.
   // Kept per-kind anyway, so that widening either charset or either cap cannot
-  // silently drop the other's bound.
+  // silently drop the other's bound. Each exactness half is
+  // {@link rendersExactly} at the cap its kind renders at — the stack's
+  // default, and the region's `SHORT_NAME_MAX_CODE_POINTS`, which is what
+  // `safeRegion` cuts at (go-to-k/cdkd#3388).
   return (
-    safeStackName(stackName) === stackName &&
-    safeRegion(region) === region &&
+    rendersExactly(stackName) &&
+    rendersExactly(region, SHORT_NAME_MAX_CODE_POINTS) &&
     isPasteableIdent(stackName) &&
     isPasteableIdent(region)
   );
@@ -718,13 +758,13 @@ export function divergentRecordRegionRefusalMessage(
   //
   // Here that makes BOTH exactness operands subsumed, unlike the sibling: this
   // site's `cap` IS the bound `isPasteableIdent` measures at, so
-  // `isPasteableIdent(x)` already implies `safeIdentifier(x, cap) === x` and no
+  // `isPasteableIdent(x)` already implies `rendersExactly(x, cap)` and no
   // test can red on dropping them. Unfenceable rather than unfenced — do not
   // go looking for the per-operand case the sibling has. Kept so that changing
   // either bound cannot silently drop the other.
   const exact =
-    safeIdentifier(stackName, cap) === stackName &&
-    safeIdentifier(keyRegion, cap) === keyRegion &&
+    rendersExactly(stackName, cap) &&
+    rendersExactly(keyRegion, cap) &&
     isPasteableIdent(stackName) &&
     isPasteableIdent(keyRegion);
   const lists =
@@ -1171,7 +1211,18 @@ export function malformedOutputsWarning(rawStackName: string, rawRegion: string)
  * this names the stack, the region, the defect and the remedy, and exits on a
  * code rather than on a stack trace.
  */
-export function refuseMalformedState(state: StackState, stackName: string, region: string): void {
+export function refuseMalformedState(
+  state: StackState,
+  stackName: string,
+  /**
+   * `undefined` only from `cdkd orphan`, for a legacy record listed with no
+   * region — the region the remedy must select by (go-to-k/cdkd#3388). Every
+   * other caller holds a real one.
+   */
+  region: string | undefined,
+  /** See {@link malformedStateRefusalMessage}. */
+  recovery?: LockRecoveryContext
+): void {
   if (hasReadableResources(state)) return;
   // NOT `markNonRetryable`, and that is the DECISION rather than the omission
   // it reads as: its callers — `cdkd import`, `cdkd orphan`, `cdkd rollback`,
@@ -1183,7 +1234,10 @@ export function refuseMalformedState(state: StackState, stackName: string, regio
   // added; `tests/unit/state/malformed-resources-bag.test.ts` names all three
   // exemptions so another refusal cannot join them silently (review round 2 of
   // go-to-k/cdkd#3332).
-  throw new CdkdError(malformedStateRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
+  throw new CdkdError(
+    malformedStateRefusalMessage(stackName, region, recovery),
+    STATE_RESOURCES_MALFORMED
+  );
 }
 
 /**
@@ -1203,20 +1257,27 @@ export function refuseMalformedState(state: StackState, stackName: string, regio
  * Identifiers are sanitized and THEN shell-quoted and the command is emitted
  * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOutputsRefusalMessage(rawStackName: string, rawRegion: string): string {
+export function malformedOutputsRefusalMessage(
+  rawStackName: string,
+  rawRegion: string | undefined,
+  /** See {@link inspectTail}; only the region-less legacy arm reads it. */
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
-  return (
+  return inspectTail(
     `${stackClause(stackName, region)} has no readable 'outputs' map — the ` +
-    `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
-    `continuing: it REBUILDS the bag before saving, and 'Object.entries' walks a string or a ` +
-    `list as readily as a map, so a six-character value would be saved back as a well-formed ` +
-    `six-key map (a null one as an empty map). That replaces the only signal anything is wrong ` +
-    `with a legitimate-looking record, permanently — and the next deploy republishes it into ` +
-    `the shared exports index every other stack's Fn::ImportValue resolves against. Repair or ` +
-    `remove the record first. Inspect it with: ` +
-    inspectCommand(stackName, region)
+      `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
+      `continuing: it REBUILDS the bag before saving, and 'Object.entries' walks a string or a ` +
+      `list as readily as a map, so a six-character value would be saved back as a well-formed ` +
+      `six-key map (a null one as an empty map). That replaces the only signal anything is wrong ` +
+      `with a legitimate-looking record, permanently — and the next deploy republishes it into ` +
+      `the shared exports index every other stack's Fn::ImportValue resolves against. Repair or ` +
+      `remove the record first.`,
+    stackName,
+    region,
+    recovery
   );
 }
 
@@ -1326,7 +1387,10 @@ export function malformedExportNamesWarning(rawStackName: string, rawRegion: str
 export function refuseMalformedOutputs(
   state: Pick<StackState, 'outputs'>,
   stackName: string,
-  region: string
+  /** See {@link refuseMalformedState}'s `region`. */
+  region: string | undefined,
+  /** See {@link malformedOutputsRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableOutputs(state)) return;
   // `markNonRetryable` for the reason its three siblings carry it, which holds
@@ -1339,7 +1403,10 @@ export function refuseMalformedOutputs(
   // whose `resources` bag was damaged did not (review of go-to-k/cdkd#3161).
   // Issue #1838.
   throw markNonRetryable(
-    new CdkdError(malformedOutputsRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED)
+    new CdkdError(
+      malformedOutputsRefusalMessage(stackName, region, recovery),
+      STATE_RESOURCES_MALFORMED
+    )
   );
 }
 
@@ -1373,9 +1440,9 @@ export const UNREADABLE_ORPHANS_CONTAINER_ROW = '(orphans container)';
  * ones it cannot see.
  *
  * The ENTRIES are a separate question with a separate answer —
- * `orphans[<i>].properties` is go-to-k/cdkd#3344, and
- * {@link refuseMalformedResourcePropertiesForOrphan} is the guard there. This
- * one says only that the container is a list.
+ * {@link unreadableOrphanRecords}, which `cdkd orphan` refuses on through
+ * {@link refuseMalformedOrphansForOrphan} (go-to-k/cdkd#3344). This one says
+ * only that the container is a list.
  */
 export function hasReadableOrphans(state: Pick<StackState, 'orphans'>): boolean {
   return state.orphans === undefined || Array.isArray(state.orphans);
@@ -1933,16 +2000,27 @@ function dropRecordCommand(
  * drop command from a legacy record whose name merely needs quoting — the very
  * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
  * this command is the way out. Measured: `It's Legacy` loses it.
+ *
+ * **The ONE spelling of the exactness test in this module** (go-to-k/cdkd#3388).
+ * The two DESTROY gates measure through it too, each at the cap its own clause
+ * renders at: {@link mayNameTargetWithDestructiveRemedy} passes a region's
+ * `SHORT_NAME_MAX_CODE_POINTS`, and `divergentRecordRegionRefusalMessage`
+ * this default for both identities. `safeStackName(x) === x` and
+ * `safeRegion(x) === x` are this predicate at those two caps, so a site
+ * wanting either says so here instead of re-spelling the comparison —
+ * `tests/unit/state/malformed-resources-bag.test.ts` refuses a second inline
+ * spelling.
  */
-function rendersExactly(value: string): boolean {
-  return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
+function rendersExactly(value: string, maxCodePoints: number = STACK_REF_MAX_CODE_POINTS): boolean {
+  return safeIdentifier(value, maxCodePoints) === value;
 }
 
 /**
  * The remedy command a message ends ON — unless the message also offers the
  * destructive template, in which case it ends the READ's own LINE and
- * {@link DROP_RECORD_LINE} is last (go-to-k/cdkd#3516). Two of the eight call
- * sites are that shape; the rest close their string with it.
+ * {@link DROP_RECORD_LINE} is last (go-to-k/cdkd#3516) — the two DESTROY
+ * refusals; the rest close their string with it, directly or through
+ * {@link inspectTail}.
  */
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) {
@@ -2345,6 +2423,65 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
   // `--stack-region '<unrenderable>'`).
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
+      `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, ` +
+      `because the rewrite audit table a dry run prints is the wrong one. It is not that the save ` +
+      `would fabricate a map: an unreadable bag is carried through VERBATIM. It is that this ` +
+      `command exists to leave the record deployable by rewriting every reference to an orphaned ` +
+      `resource, and a map it cannot read hides whichever references it holds — a string or a ` +
+      `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
+      `container that is still not a map. Continuing would rewrite, save, and report success over ` +
+      `a record 'cdkd deploy' then REFUSES.`,
+    SURVIVOR_THIRD_WAY_OUT
+  );
+}
+
+/**
+ * The third way out every `cdkd orphan` refusal over a `resources` ENTRY
+ * offers, conditioned as {@link malformedOrphanResourcePropertiesRefusalMessage}'s
+ * note requires. One spelling for the three refusals scoped to the survivors
+ * (the entry, its `properties` and its `attributes`), which make the same
+ * promise for the same reason: each subtracts the orphan set.
+ */
+const SURVIVOR_THIRD_WAY_OUT =
+  `A third works only while the CDK app STILL DECLARES the ` +
+  `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
+  `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
+  `from the synthesized template, so a resource the app no longer declares has none and must ` +
+  `take one of the first two.`;
+
+/**
+ * What every `cdkd orphan` refusal shares after its own diagnosis: the two
+ * template-free ways out, the caller's third, and the pasteable lines.
+ *
+ * `lead` is the diagnosis AND the harm, which is what differs per container —
+ * the rule this module follows for every text. The remedy half does not
+ * differ, and a second copy of it is what would drift: it carries the
+ * substitution gate, the withheld-identity clause and the per-line commands
+ * go-to-k/cdkd#3363 settled. `thirdWayOut` is a full sentence; the ones naming
+ * a record outside `resources` cannot offer `cdkd orphan <construct path>` and
+ * say so instead.
+ *
+ * Takes identities ALREADY normalised by the exported builder's
+ * {@link absentIfEmpty}, which is where that floor lives.
+ */
+function orphanRefusal(
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery: LockRecoveryContext | undefined,
+  lead: string,
+  thirdWayOut: string,
+  /**
+   * Appended to the drop remedy for the two `orphans` texts: dropping the whole
+   * record discards the very list their third way out tells the operator not
+   * to delete, so the remedy must say so (review of go-to-k/cdkd#3568).
+   */
+  dropCaveat = ''
+): string {
   const inspect = orphanInspectClause(stackName, region, recovery);
   const listCommand = withheldIdentityListCommand(stackName, region, recovery);
   // Every PASTEABLE command goes LAST and UNWRAPPED, one per line — never inside
@@ -2365,23 +2502,11 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     ...(inspect.command === undefined ? [] : [`Inspect the record: ${inspect.command}`]),
   ];
   const prose =
-    `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
-    `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, ` +
-    `because the rewrite audit table a dry run prints is the wrong one. It is not that the save ` +
-    `would fabricate a map: an unreadable bag is carried through VERBATIM. It is that this ` +
-    `command exists to leave the record deployable by rewriting every reference to an orphaned ` +
-    `resource, and a map it cannot read hides whichever references it holds — a string or a ` +
-    `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
-    `container that is still not a map. Continuing would rewrite, save, and report success over ` +
-    `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
+    `${lead} No state was written. Two ways out need no CDK app: ` +
     `repair the record by hand, or drop it whole with the 'Drop the record' command below, ` +
-    `which leaves the live AWS resources standing` +
-    `${withheldIdentityClause(stackName, region)}${withheldRecoveryClause(recovery)}. A third works ` +
-    `only while the CDK app STILL DECLARES the ` +
-    `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
-    `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
-    `from the synthesized template, so a resource the app no longer declares has none and must ` +
-    `take one of the first two.` +
+    `which leaves the live AWS resources standing${dropCaveat}` +
+    `${withheldIdentityClause(stackName, region)}${withheldRecoveryClause(recovery)}. ` +
+    thirdWayOut +
     (inspect.sentence === undefined ? '' : ` ${inspect.sentence}`);
   return [prose, ...commands, ...(inspect.locations ?? [])].join('\n');
 }
@@ -2523,6 +2648,9 @@ function orphanInspectCommand(
  * With `recovery` the path carries the REAL prefix and names the bucket, the
  * way the drop remedy above it is qualified; without it the prefix is a
  * placeholder and the sentence says how to fill it.
+ *
+ * Its region-less arm is also {@link inspectTail}'s, for the state and outputs
+ * refusals `cdkd orphan` raises over the same legacy record (go-to-k/cdkd#3388).
  */
 function orphanInspectClause(
   stackName: string | undefined,
@@ -2643,34 +2771,18 @@ function orphanInspectClause(
  * cannot persist a record it is deleting, and because refusing on one would
  * break the recovery path the refusal is otherwise meant to preserve.
  *
- * **It covers `state.resources` ONLY, and the save keeps more than that.**
- * `rewriteResourceReferences` spreads `carriedState`, so `state.orphans[]` —
- * rollback-orphaned records each holding a whole `ResourceState`
- * (go-to-k/cdkd#2934) — rides through untouched, and
- * {@link unreadableResourcePropertyBags} never walks it. A torn bag parked
- * there is therefore still saved, and `computeStackDiff` splices those records
- * into `state.resources` on the next preview. Stated rather than implied,
- * because "the records the save would KEEP" reads wider than what this scans:
- * the gap is go-to-k/cdkd#3344, filed rather than folded in because the remedy
- * differs — an entry in that container has no construct path, so the message's
- * third way out is meaningless for it.
- *
- * **A surviving ENTRY that is not a map is the other gap, and it DOES launder.**
- * This scan asks whether a resource's `properties` is readable; it never asks
- * whether the resource RECORD is. `isReadableBag('abcdef')` is false, so a
- * string entry is skipped here, and then `rewriteResourceReferences`'s
- * `{ ...resource }` spreads it into per-character keys — the record is SAVED as
- * `{"0":"a",…,"dependencies":[]}` and the run reports success. A number entry
- * saves as `{"dependencies":[]}`, a record with no `physicalId`. So the
- * refusal's own text, which says a torn `properties` map is persisted verbatim
- * rather than reshaped, is true of the container it scans and NOT of the one
- * above it.
- *
- * That gap is NOT go-to-k/cdkd#3202's as filed — that issue records only the
- * `null`-entry `TypeError` — and NOT open PR go-to-k/cdkd#3226's, whose file
- * list carries neither `orphan.ts` nor `orphan-rewriter.ts`. A lane closing
- * either one leaves this open, which is why it is named here rather than
- * deferred to them by reference. Filed as go-to-k/cdkd#3350.
+ * **It covers the `properties` map of a `state.resources` entry ONLY, and the
+ * save keeps more than that.** Three siblings answer for the rest, each its
+ * own call because each is its own container with its own consequence:
+ * {@link refuseMalformedResourceEntriesForOrphan} for an entry that is not a
+ * record at all — the one shape the save RESHAPES rather than carries
+ * (go-to-k/cdkd#3350) — {@link refuseMalformedResourceAttributesForOrphan} for
+ * the entry's `attributes` map (go-to-k/cdkd#3345), and
+ * {@link refuseMalformedOrphansForOrphan} for `state.orphans[]`, which the
+ * rewrite spreads through `carriedState` without reading (go-to-k/cdkd#3344).
+ * This scan skips an entry that is not an object, which is why the first of
+ * them has to exist: its "carried through VERBATIM" sentence is true of the
+ * container it scans and false of the one above it.
  *
  * CALL IT AT THE LOAD, beside {@link refuseMalformedState} and
  * {@link refuseMalformedOutputs}, above `rewriteResourceReferences` — the
@@ -2801,8 +2913,9 @@ export function isReadableResourceEntry(entry: unknown): boolean {
  * and refusing would stop the command documented as the way to UNWIND a stack
  * whose state is already suspect. The other callers (`cdkd import`,
  * `cdkd orphan`, `cdkd scrub`) each owe their own classification; `cdkd orphan`
- * does still throw on an unreadable sibling, which is why that one is tracked on
- * go-to-k/cdkd#3202 rather than answered here by a shared refusal.
+ * answers through its own entry point on this class,
+ * {@link refuseMalformedResourceEntriesForOrphan}, scoped to the records its
+ * save keeps (go-to-k/cdkd#3350).
  *
  * So the entry rule is OPT-IN, taken by a flow that dereferences EVERY entry and
  * writes the record back.
@@ -3003,5 +3116,311 @@ export function malformedResourceEntriesRefusalMessage(
     `entries nothing could read, and would leave the next command to fail on them with no more ` +
     `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. Inspect it with: ` +
     inspectCommand(stackName, region)
+  );
+}
+
+/*
+ * `cdkd orphan`'s guards over what its save KEEPS beyond a survivor's
+ * `properties` map (go-to-k/cdkd#3350, go-to-k/cdkd#3345, go-to-k/cdkd#3344).
+ *
+ * The command rewrites and SAVES the record, so each is a refusal, raised at
+ * the load beside {@link refuseMalformedResourcePropertiesForOrphan} and above
+ * the `--dry-run` return, for the reasons that one's note records. Each shares
+ * that refusal's remedy half through {@link orphanRefusal} and states its own
+ * harm, measured through the real `rewriteResourceReferences`.
+ *
+ * NOT `markNonRetryable`, for the reason that sibling is not: the one caller
+ * raises from the command body, with no `withRetry` around it.
+ */
+
+/**
+ * For `cdkd orphan`: refuse a record whose SURVIVING `resources` entries are
+ * not readable resource records (go-to-k/cdkd#3350).
+ *
+ * The ENTRY class's predicate ({@link unreadableResourceEntries}), scoped to
+ * the survivors exactly as the `properties` refusal is: an entry this run
+ * DROPS is never saved, and `cdkd orphan` over the damaged record is the way
+ * out of it, so the orphan set is subtracted. The drop is safe because the
+ * rewriter will not RESOLVE a reference through an unreadable orphaned record —
+ * it reports the site as unresolvable instead (`src/analyzer/orphan-rewriter.ts`).
+ *
+ * A second entry point on the class rather than a widening of
+ * {@link refuseMalformedResourceEntries}, whose text says nothing was LOCKED —
+ * false here, where the lock is taken before the load — and names no way out.
+ */
+export function refuseMalformedResourceEntriesForOrphan(
+  state: StackState,
+  removedLogicalIds: readonly string[],
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): void {
+  const removed = new Set(removedLogicalIds);
+  const unreadable = unreadableResourceEntries(state).filter((id) => !removed.has(id));
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedOrphanResourceEntriesRefusalMessage(stackName, region, unreadable, recovery),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceEntriesForOrphan} raises.
+ *
+ * **This is the one container the save RESHAPES**, so the `properties`
+ * refusal's "carried through VERBATIM" must not be borrowed. Measured through
+ * the real rewrite, which rebuilds each kept record as
+ * `{ ...resource, properties, dependencies }`: `"abcdef"` saved as
+ * `{"0":"a",…,"5":"f","dependencies":[]}`, `5` and `true` as
+ * `{"dependencies":[]}` (no `physicalId` at all), `[{"Ref":"O"}]` as
+ * `{"0":{"Ref":"O"},"dependencies":[]}` with the reference to the orphan left
+ * UNREWRITTEN — the failure this command exists to prevent — and `null` threw
+ * `Cannot read properties of null`. An object with no `resourceType` is the
+ * one shape carried as it stands.
+ */
+export function malformedOrphanResourceEntriesRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[],
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${namedEntriesClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
+      `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, so ` +
+      `a dry run never prints a plan the real run refuses. The rewrite rebuilds each kept record ` +
+      `by copying its fields, and a value that is not an object does not survive the copy: a ` +
+      `string or a list is saved as one key per character or element — a list's references to ` +
+      `an orphaned resource left UNREWRITTEN — a number or a boolean as a record with no physical ` +
+      `id, and null stops the run on a bare TypeError. An object with no resource type is saved ` +
+      `as it stands. Continuing would save a record no cdkd command wrote and report success.`,
+    SURVIVOR_THIRD_WAY_OUT
+  );
+}
+
+/**
+ * Whether an ENTRY's `attributes` map — the `Fn::GetAtt` cache — can be read.
+ *
+ * ABSENT IS READABLE: the field is optional on `ResourceState` and plenty of
+ * records carry none. `null` is NOT, the split {@link hasReadableOutputs}
+ * draws for its own container: the resolver's cached-attribute read gates on
+ * `!== undefined` and then indexes the map, so a `null` passes the gate and a
+ * string or a list answers for keys it does not hold.
+ */
+function hasReadableAttributes(entry: unknown): boolean {
+  const attributes = (entry as { attributes?: unknown }).attributes;
+  return attributes === undefined || isReadableBag(attributes);
+}
+
+/**
+ * The logical ids whose `resources` entry carries an `attributes` map that
+ * cannot be read (go-to-k/cdkd#3345). Like {@link unreadableResourcePropertyBags}
+ * it skips an entry that is not an object — that is the ENTRY class's to name —
+ * and returns `[]` for an unreadable bag.
+ */
+export function unreadableResourceAttributeBags(state: StackState): readonly string[] {
+  if (!hasReadableResources(state)) return [];
+  return Object.entries(state.resources)
+    .filter(([, entry]) => isReadableBag(entry) && !hasReadableAttributes(entry))
+    .map(([logicalId]) => logicalId);
+}
+
+/**
+ * For `cdkd orphan`: refuse a record whose SURVIVING entries carry an
+ * unreadable `attributes` map (go-to-k/cdkd#3345). Scoped to the survivors for
+ * the reason {@link refuseMalformedResourceEntriesForOrphan} is; an ORPHANED
+ * entry's map is the `--force` cache, and the rewriter reads that one as
+ * holding nothing instead of indexing it.
+ */
+export function refuseMalformedResourceAttributesForOrphan(
+  state: StackState,
+  removedLogicalIds: readonly string[],
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): void {
+  const removed = new Set(removedLogicalIds);
+  const unreadable = unreadableResourceAttributeBags(state).filter((id) => !removed.has(id));
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedOrphanResourceAttributesRefusalMessage(stackName, region, unreadable, recovery),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceAttributesForOrphan} raises.
+ *
+ * Measured through the real rewrite: `"abcdef"`, `5`, `0`, `""`, `false` and
+ * `null` are carried into the save byte for byte (the falsy ones skip
+ * `rewriteValue` and survive through the spread), and `[{"Ref":"O"}]` is
+ * WALKED, coming back `["<physical id>"]` — a rewrite recorded into a container
+ * that is still not a map, the `properties` refusal's list case one field over.
+ */
+export function malformedOrphanResourceAttributesRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[],
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_ENTRIES)
+    .map((id) => displayLogicalId(id))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${stackClause(stackName, region)} holds ${logicalIds.length} resource record(s) whose ` +
+      `'attributes' map cannot be read — ${named}${more} — because it is null or not an object. ` +
+      `The record is malformed or truncated. 'cdkd orphan' REWRITES and SAVES every record it ` +
+      `keeps, so it refuses rather than continuing — under '--dry-run' too, so a dry run never ` +
+      `prints a plan the real run refuses. The map is carried into the save VERBATIM, and a list ` +
+      `is walked, so its rewrites are recorded into a container that is still not a map. It is ` +
+      `the cache a later 'cdkd deploy' reads another resource's 'Fn::GetAtt' of this one from, so ` +
+      `continuing would report success over the one map that read depends on.`,
+    SURVIVOR_THIRD_WAY_OUT
+  );
+}
+
+/**
+ * The `orphans[]` records a reader cannot use: a record that is not an object
+ * or has no string `logicalId`, whose `state` is not a readable resource entry,
+ * or whose `state` carries an unreadable `properties` or `attributes` map
+ * (go-to-k/cdkd#3344). The `logicalId` half is go-to-k/cdkd#3500's row
+ * predicate: rows with none all key one map entry, and `orphansAfterRollback`
+ * collapses them into one.
+ *
+ * Every `ResourceState` question the `resources` side answers in separate
+ * predicates, asked in ONE here: a rollback-orphan record is reached only as a
+ * whole — `computeStackDiff` and the deploy's adoption pass splice the record
+ * into `resources` — so which part of it is torn does not change what a caller
+ * can do with it. Returns `[]` for a container that is not a list, which is
+ * {@link hasReadableOrphans}'s to report. Each record is named by its
+ * `logicalId`, or `''` (rendered as the `UNRENDERABLE` stand-in) when it has
+ * no string one — the convention {@link malformedOrphanRecordsWarning} takes.
+ */
+export function unreadableOrphanRecords(state: Pick<StackState, 'orphans'>): readonly string[] {
+  if (!Array.isArray(state.orphans)) return [];
+  return (state.orphans as unknown[])
+    .filter((record) => {
+      if (!isReadableBag(record)) return true;
+      if (typeof (record as { logicalId?: unknown }).logicalId !== 'string') return true;
+      const entry = (record as { state?: unknown }).state;
+      return (
+        !isReadableResourceEntry(entry) ||
+        !isReadableBag((entry as { properties?: unknown }).properties) ||
+        !hasReadableAttributes(entry)
+      );
+    })
+    .map((record) => {
+      const id = isReadableBag(record) ? (record as { logicalId?: unknown }).logicalId : undefined;
+      return typeof id === 'string' ? id : '';
+    });
+}
+
+/**
+ * For `cdkd orphan`: refuse a record whose `orphans` list, or any record in
+ * it, cannot be read (go-to-k/cdkd#3344).
+ *
+ * A THIRD entry point on the `orphans` container, beside
+ * {@link refuseMalformedOrphans} and its destroy twin, because neither text is
+ * true here. The rewrite neither walks nor rebuilds this container — it
+ * spreads it through `carriedState` VERBATIM (measured: `"abc"` comes back
+ * `"abc"`, a record whose `state.properties` is `"abcdef"` comes back byte for
+ * byte) — so the rollback text's "written back as a list of character-shaped
+ * orphan records" would be false. What this command does is SAVE it, report
+ * success, and leave the damage for the next deploy or diff to meet.
+ *
+ * NOT scoped by the orphan set: these records are not in `resources`, so
+ * `cdkd orphan` cannot name one, and its save keeps every one of them.
+ */
+export function refuseMalformedOrphansForOrphan(
+  state: Pick<StackState, 'orphans'>,
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): void {
+  if (!hasReadableOrphans(state)) {
+    throw new CdkdError(
+      malformedOrphansForOrphanRefusalMessage(stackName, region, undefined, recovery),
+      STATE_RESOURCES_MALFORMED
+    );
+  }
+  const unreadable = unreadableOrphanRecords(state);
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedOrphansForOrphanRefusalMessage(stackName, region, unreadable, recovery),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/** See {@link orphanRefusal}'s `dropCaveat`. */
+const ORPHANS_DROP_CAVEAT =
+  `; it also discards the 'orphans' list, the only record of resources an earlier failed ` +
+  `deploy left live in AWS`;
+
+/**
+ * The text {@link refuseMalformedOrphansForOrphan} raises: the CONTAINER arm
+ * when `logicalIds` is `undefined`, the RECORDS arm otherwise.
+ *
+ * Its third way out is not {@link SURVIVOR_THIRD_WAY_OUT}: a record in
+ * `orphans` has no construct path, so `cdkd orphan` cannot remove it, and the
+ * hand repair that remains must not be a deletion — the record is the only
+ * evidence that an earlier failed deploy left its resource live in AWS.
+ */
+export function malformedOrphansForOrphanRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[] | undefined,
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  const verbatim =
+    `'cdkd orphan' carries it into the record it saves VERBATIM, without reading it, so it ` +
+    `refuses rather than continuing — under '--dry-run' too, so a dry run never prints a plan ` +
+    `the real run refuses.`;
+  if (logicalIds === undefined) {
+    return orphanRefusal(
+      stackName,
+      region,
+      recovery,
+      `${stackClause(stackName, region)} has no readable 'orphans' list — the record is ` +
+        `malformed or truncated. ${verbatim} The next 'cdkd deploy' refuses the same record, so ` +
+        `continuing would only report success over it and leave that refusal one command later.`,
+      `'cdkd orphan' cannot address this list at all, and rewriting it to [] by hand discards ` +
+        `the only record of resources an earlier failed deploy left live in AWS.`,
+      ORPHANS_DROP_CAVEAT
+    );
+  }
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_ENTRIES)
+    .map((id) => displayLogicalId(id))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
+      `'orphans' that cannot be read — ${named}${more} — because the record has no string ` +
+      `'logicalId', its 'state' is not an object or names no resource type, or that state's ` +
+      `'properties' or 'attributes' map is not one. The record is malformed or truncated. ${verbatim} Those records are not inert: they ` +
+      `are what the next 'cdkd deploy' may re-adopt into 'resources' and what 'cdkd diff' ` +
+      `previews for adoption, so continuing would report success over damage the next command meets.`,
+    `'cdkd orphan' cannot remove such a record itself: it is not in 'resources', so it has no ` +
+      `construct path. Repair the record by hand rather than deleting it — it is the only ` +
+      `record that an earlier failed deploy left its resource live in AWS.`,
+    ORPHANS_DROP_CAVEAT
   );
 }

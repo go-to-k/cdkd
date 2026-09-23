@@ -31,10 +31,17 @@ TEMPLATE-FREE ways out (hand repair, `cdkd state orphan <stack>`) and conditions
 the third. There is deliberately **no `--force`**: forcing still
 leaves a record `cdkd deploy` refuses.
 
-**It scans `state.resources` ONLY**: the rewrite spreads `carriedState`, so a
-torn bag under `state.orphans[]` is still saved
-([#3344](https://github.com/go-to-k/cdkd/issues/3344); `attributes` is
-[#3345](https://github.com/go-to-k/cdkd/issues/3345)).
+**It scans a survivor's `properties` ONLY.** Three siblings take the rest of
+what the save keeps, each its own call and text: the ENTRY, the one container
+the rewrite RESHAPES rather than carries
+([#3350](https://github.com/go-to-k/cdkd/issues/3350)); its `attributes`
+([#3345](https://github.com/go-to-k/cdkd/issues/3345)); and `state.orphans`,
+spread through `carriedState` unread
+([#3344](https://github.com/go-to-k/cdkd/issues/3344)) — NOT scoped by the
+orphan set, since those records have no construct path. All share
+`orphanRefusal`'s remedy half. The rewriter must not RESOLVE through an
+orphaned entry it cannot read, nor index an unreadable `--force` cache: both
+report the site unresolvable instead.
 
 The guard sits at the LOAD, above `rewriteResourceReferences`, and refuses under
 `--dry-run` too: a plausible audit table then a refusal once the flag drops is

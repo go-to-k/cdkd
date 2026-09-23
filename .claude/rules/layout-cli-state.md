@@ -43,10 +43,9 @@ references, leaving every other intrinsic alone.
   excludes `AWS::CDK::Metadata`, so `CDKMetadata/Default` is never orphanable.
 - Unresolvable references hard-fail; `--force` falls back to
   `state.attributes`.
-- WRITE-CAPABLE, so it refuses a record it could not read —
-  `refuseMalformedState`, `refuseMalformedOutputs` and
-  `refuseMalformedResourcePropertiesForOrphan` (SCOPED to records the save
-  keeps):
+- WRITE-CAPABLE, so it refuses a record it could not read — the root, `outputs`,
+  and the `...ForOrphan` refusals over what the save keeps, each passed the
+  LISTED `recordRegion`:
   [state-malformed-properties-orphan.md](state-malformed-properties-orphan.md).
 - Whole-stack `cdkd orphan <stack>` hard-fails, redirecting to
   `cdkd state orphan`.

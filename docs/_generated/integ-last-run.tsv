@@ -107,7 +107,7 @@ efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-ru
 efs-standalone	2026-09-02T11:29:58Z	PASS	163	verify.sh	go-to-k/cdkd#2080 re-run vs final code; AP created+deleted, 11 deleted 0 errors, 0 orphans
 elasticache-replicationgroup-getatt	2026-08-10T04:52:34Z	PASS	595	verify.sh	0810 sweep b4; CC GetAtt PrimaryEndPoint real hostname, 0 orph
 elbv2-same-name-replacement	2026-09-19T18:00:07Z	PASS	60	verify.sh	rc ok, orph clean; #2668 type-change routing
-emr-cluster	2026-09-05T23:15:19Z	PASS	644	verify.sh	PR2662 gate run; deploy+update+import round-trip+destroy 12 deleted 0 errors, 0 orphans
+emr-cluster	2026-09-23T18:58:37Z	PASS	700	verify.sh	rc ok, orph clean (#3568; cluster TERMINATED, no EC2/SG left)
 emr-instance-configs	2026-08-09T04:19:21Z	PASS	1250	verify.sh	#1383 standalone-group ConfigurationProperties asserted; destroy clean, 0 orphans
 emr-instance-fleets	2026-08-09T10:56:10Z	PASS	1003	verify.sh	rebased merge artifact re-verified; all 3 InstanceTypeConfigs sites + per-dimension resize wait; destroy 13 deleted 0 errors, 0 orphans
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -143,7 +143,7 @@ import-auto-mode	2026-09-20T10:06:22Z	PASS	87	verify.sh	rc ok, orph clean
 import-deployed-parameter-secret	2026-09-20T15:54:22Z	PASS	318	verify.sh	rc ok, orph clean, 52 assertions; #3468 stamp and import-carry probes red at redeploy and re-import plaintext assertions
 import-nested-stack	2026-09-20T15:54:22Z	PASS	146	verify.sh	rc ok, orph clean
 import-secret-observed	2026-09-20T11:44:15Z	PASS	137	verify.sh	rc ok, orph clean, 0 versions
-import-value-strong-ref	2026-09-21T18:40:21Z	PASS	137	verify.sh	rc ok, 5 deleted 0 errors, orph clean (PR #3492 deletion-gate verification)
+import-value-strong-ref	2026-09-23T18:52:52Z	PASS	148	verify.sh	rc ok, orph clean (#3568; stale 0810 Lambda log group removed)
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -269,7 +269,7 @@ schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-08-26T02:45:22Z	PASS	171	verify.sh	maintainer-side run at post-blocker-fix head; v8 shadow repro + v9 migration, 0 err 0 orphans
-schema-v9-to-v10-migration	2026-09-20T15:54:22Z	PASS	195	verify.sh	rc ok, orph clean
+schema-v9-to-v10-migration	2026-09-23T18:49:39Z	PASS	162	verify.sh	rc ok, orph clean (#3568; 54 assertions, 0 state versions)
 sdk-ccapi-crossref	2026-09-19T20:26:58Z	PASS	104	verify.sh	rc ok, orph clean; CC side rebuilt on AWS::Events::Archive + a flag-seeded Lambda after the DesiredShardLevelMetrics premise rotted
 sdk-to-cc-autoroute	2026-09-19T20:26:58Z	PASS	136	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion

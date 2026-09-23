@@ -805,6 +805,264 @@ describe('cdkd orphan (per-resource)', () => {
     });
   });
 
+  /**
+   * What the save KEEPS beyond a survivor's `properties` map: the survivor
+   * ENTRY itself (go-to-k/cdkd#3350), its `attributes` map (go-to-k/cdkd#3345)
+   * and `state.orphans` (go-to-k/cdkd#3344). Each is driven through the real
+   * guards and the real rewriter, with `Bucket` the orphan target and `Other`
+   * the survivor unless a case says otherwise.
+   */
+  describe('the rest of the kept record is refused when unreadable (#3350, #3345, #3344)', () => {
+    function arrange(
+      resources: Record<string, unknown>,
+      extra: Record<string, unknown> = {}
+    ): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ Bucket: 'MyStack/Bucket', Other: 'MyStack/Other' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 10,
+          stackName: 'MyStack',
+          region: 'us-east-1',
+          resources,
+          outputs: {},
+          lastModified: 0,
+          ...extra,
+        },
+        etag: '"e"',
+      });
+    }
+    const BUCKET = { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} };
+    const other = (fields: Record<string, unknown> = {}): Record<string, unknown> => ({
+      physicalId: 'o',
+      resourceType: 'AWS::S3::Bucket',
+      properties: {},
+      ...fields,
+    });
+    const refusal = (): string => String(errorSpy.mock.calls[0]?.[0] ?? '');
+    const printed = (): string => infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+
+    // Measured through the real rewrite before the guard, each saved and
+    // reported as a success: `"abcdef"` as `{"0":"a",…,"dependencies":[]}`,
+    // `5` / `true` as `{"dependencies":[]}`, a list as `{"0":…}` with its
+    // `Ref` to the orphan left UNREWRITTEN, `null` a bare TypeError, and a
+    // typeless object carried as it stands.
+    for (const [label, entry] of [
+      ['a string', 'abcdef'],
+      ['a number', 5],
+      ['a boolean', true],
+      ['a list', [{ Ref: 'Bucket' }]],
+      ['null', null],
+      ['an object with no resource type', { physicalId: 'o', properties: {} }],
+    ] as const) {
+      it(`#3350: refuses a surviving ENTRY that is ${label}, and writes NOTHING`, async () => {
+        arrange({ Bucket: BUCKET, Other: entry });
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        const message = refusal();
+        expect(message).toContain('holds 1 resource record(s) that cannot be read as resources');
+        expect(message).toContain('Other');
+        expect(message).toContain(`a record no cdkd command wrote`);
+        // Not the properties refusal's "carried VERBATIM", false for this one.
+        expect(message).not.toContain('carried through VERBATIM');
+        // Not the shared entry refusal's "Nothing was locked", false here.
+        expect(message).not.toContain('Nothing was locked');
+        expect(message).toMatch(/^Drop the record: cdkd state orphan MyStack --stack-region us-east-1/m);
+        expect(printed()).not.toContain('Orphaning 1 resource(s):');
+      });
+    }
+
+    it('#3350: RECOVERY — orphaning the unreadable entry itself still works', async () => {
+      for (const entry of ['abcdef', null]) {
+        mockSaveState.mockClear();
+        arrange({ Bucket: BUCKET, Other: entry });
+        await runOrphan(['MyStack/Other', '--app', 'noop', '--yes']);
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [[, , savedState]] = mockSaveState.mock.calls;
+        expect(Object.keys(savedState.resources)).toEqual(['Bucket']);
+      }
+    });
+
+    it('#3350: a reference THROUGH the dropped unreadable entry aborts, not fabricates', async () => {
+      // `Other` survives and references the torn `Bucket` being orphaned.
+      // Before the rewriter's guard its `Fn::Sub` saved as `x-undefined`.
+      arrange({
+        Bucket: 'abcdef',
+        Other: other({ properties: { Url: { 'Fn::Sub': 'x-${Bucket}' } } }),
+      });
+      await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(refusal()).toContain('1 reference(s) could not be resolved');
+    });
+
+    for (const [label, attributes] of [
+      ['a string', 'abcdef'],
+      ['null', null],
+      ['a list', [{ Ref: 'Bucket' }]],
+      ['a number', 0],
+    ] as const) {
+      it(`#3345: refuses a surviving 'attributes' map that is ${label}`, async () => {
+        arrange({ Bucket: BUCKET, Other: other({ attributes }) });
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        const message = refusal();
+        expect(message).toContain(`whose 'attributes' map cannot be read — Other —`);
+        expect(message).toContain('only while the CDK app STILL DECLARES');
+        expect(printed()).not.toContain('Orphaning 1 resource(s):');
+      });
+    }
+
+    it('a template logical id spelled `constructor` is reported missing, not an internal error', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ constructor: 'MyStack/constructor' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: { Other: other() }, outputs: {}, lastModified: 0 },
+        etag: '"e"',
+      });
+      await expect(runOrphan(['MyStack/constructor', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(refusal()).toContain('Resource(s) not in state');
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('#3345: the ORPHANED record\'s own torn attributes do not block dropping it', async () => {
+      arrange({ Bucket: { ...BUCKET, attributes: 'abcdef' }, Other: other() });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+    });
+
+    it('#3344: refuses an unreadable orphans LIST', async () => {
+      arrange({ Bucket: BUCKET, Other: other() }, { orphans: 'abc' });
+      await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      const message = refusal();
+      expect(message).toContain(`has no readable 'orphans' list`);
+      expect(message).toContain('carries it into the record it saves VERBATIM');
+      // The rollback text's mechanism is false here: nothing is walked.
+      expect(message).not.toContain('WALKED');
+    });
+
+    for (const [label, record] of [
+      ['a torn properties map', { logicalId: 'Gone', orphanedAt: 1, state: { ...BUCKET, properties: 'abcdef' } }],
+      ['a torn attributes map', { logicalId: 'Gone', orphanedAt: 1, state: { ...BUCKET, attributes: [1] } }],
+      ['a state with no resource type', { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'g', properties: {} } }],
+      ['a null state', { logicalId: 'Gone', orphanedAt: 1, state: null }],
+    ] as const) {
+      it(`#3344: refuses a rollback-orphan record with ${label}`, async () => {
+        arrange({ Bucket: BUCKET, Other: other() }, { orphans: [record] });
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        const message = refusal();
+        expect(message).toContain(`holds 1 rollback-orphan record(s) in 'orphans' that cannot be read — Gone —`);
+        // Its third way out is NOT `cdkd orphan <construct path>`.
+        expect(message).toContain('it has no construct path');
+        expect(message).not.toContain('only while the CDK app STILL DECLARES');
+      });
+    }
+
+    it('#3344: FLOOR — a readable orphans list is saved, verbatim', async () => {
+      const orphans = [{ logicalId: 'Gone', orphanedAt: 1, state: { ...BUCKET, attributes: { Arn: 'a' } } }];
+      arrange({ Bucket: BUCKET, Other: other({ attributes: { Arn: 'x' } }) }, { orphans });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [[, , savedState]] = mockSaveState.mock.calls;
+      expect(savedState.orphans).toEqual(orphans);
+      expect(savedState.resources.Other.attributes).toEqual({ Arn: 'x' });
+    });
+
+    it('each new refusal fires under --dry-run too, before the plan', async () => {
+      for (const [resources, extra] of [
+        [{ Bucket: BUCKET, Other: 'abcdef' }, {}],
+        [{ Bucket: BUCKET, Other: other({ attributes: 'abcdef' }) }, {}],
+        [{ Bucket: BUCKET, Other: other() }, { orphans: 'abc' }],
+      ] as const) {
+        errorSpy.mockClear();
+        infoSpy.mockClear();
+        arrange(resources, extra);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--dry-run'])).rejects.toThrow();
+        expect(refusal()).toContain('under \'--dry-run\' too');
+        expect(printed()).not.toContain('--dry-run: state will NOT be written');
+      }
+    });
+  });
+
+  /**
+   * go-to-k/cdkd#3388: the state and outputs refusals take the region the
+   * record is LISTED under, as the properties refusal does since
+   * go-to-k/cdkd#3359, and name the S3 object for a region-less legacy record.
+   */
+  describe('the state and outputs refusals name the LISTED region (go-to-k/cdkd#3388)', () => {
+    function arrange(container: 'resources' | 'outputs', listed: Array<Record<string, string>>): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ Bucket: 'MyStack/Bucket' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue(listed);
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 1,
+          stackName: 'MyStack',
+          resources:
+            container === 'resources'
+              ? 'abcdef'
+              : { Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} } },
+          outputs: container === 'outputs' ? 'abcdef' : {},
+          lastModified: 0,
+        },
+        etag: '"e"',
+      });
+    }
+
+    for (const container of ['resources', 'outputs'] as const) {
+      it(`${container}: a region-less legacy record gets the object path, not state show`, async () => {
+        arrange(container, [{ stackName: 'MyStack' }]);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        // The LOAD still uses the synthesized region.
+        expect(mockGetState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(`no readable '${container}' map`);
+        expect(message).not.toContain('us-east-1');
+        // `cdkd state show` refuses a region-less legacy record with or without
+        // the flag, so no command naming it may be offered.
+        expect(message).not.toMatch(/cdkd state show MyStack/);
+        expect(message).not.toContain('--json');
+        expect(message).toMatch(/^Object key: cdkd\/MyStack\/state\.json$/m);
+        expect(message).toMatch(/^State bucket: test-bucket$/m);
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it(`${container}: a region-keyed record keeps its --stack-region inspect command`, async () => {
+        arrange(container, [{ stackName: 'MyStack', region: 'us-east-1' }]);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+      });
+    }
+  });
+
   it('skips lock + save on --dry-run', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [

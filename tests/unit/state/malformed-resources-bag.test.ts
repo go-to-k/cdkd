@@ -17,7 +17,10 @@ import {
   malformedExportSourceWarning,
   malformedLocalOutputsWarning,
   malformedNestedChildOutputsRefusalMessage,
+  malformedOrphanResourceAttributesRefusalMessage,
+  malformedOrphanResourceEntriesRefusalMessage,
   malformedOrphanResourcePropertiesRefusalMessage,
+  malformedOrphansForOrphanRefusalMessage,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
@@ -499,7 +502,7 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       expect(hasReadableOrphans(withOrphans(undefined))).toBe(true);
     });
 
-    it('says nothing about the ENTRIES, which are go-to-k/cdkd#3344 question', () => {
+    it('says nothing about the ENTRIES, which are unreadableOrphanRecords question', () => {
       // The container is a list; its rows are not this predicate's business.
       expect(hasReadableOrphans(withOrphans([null, 'x', 5]))).toBe(true);
     });
@@ -2885,15 +2888,24 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(11);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
     // The ENTRY guard (go-to-k/cdkd#3018) is its own class: opt-in per flow, and
     // not a `resources` BAG refusal, so a dominance check keyed on the bag's
-    // spellings must not treat it as one.
+    // spellings must not treat it as one. TWO entry points since
+    // go-to-k/cdkd#3350, one predicate: `cdkd orphan`'s text says what ITS save
+    // does with such an entry and subtracts the records the save deletes.
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
-    expect(entries).toEqual(['refuseMalformedResourceEntries(']);
+    expect([...entries].sort()).toEqual([
+      'refuseMalformedResourceEntries(',
+      'refuseMalformedResourceEntriesForOrphan(',
+    ]);
+    // An entry's `attributes` map (go-to-k/cdkd#3345), its own container with
+    // one entry point: only `cdkd orphan` refuses on it today.
+    const attributes = exported.filter((n) => n.includes('ResourceAttributes'));
+    expect(attributes).toEqual(['refuseMalformedResourceAttributesForOrphan(']);
     // The `orphans` CONTAINER (go-to-k/cdkd#3379), its own class for the reason
     // the entry guard is: it is not a `resources` bag refusal, so a dominance
     // check keyed on the bag's spellings must not count it as one.
@@ -2901,13 +2913,21 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // MESSAGE, as it is for `outputs`: a destroy writes nothing back, so its
     // text cannot be the one that says the container would be rewritten.
     const orphans = exported.filter((n) => n.includes('Orphans'));
+    // A THIRD since go-to-k/cdkd#3344: `cdkd orphan` carries the container
+    // verbatim, so neither sibling's text is true of it, and it also answers
+    // for the records IN the list, which its save keeps unread.
     expect([...orphans].sort()).toEqual([
       'refuseMalformedOrphans(',
       'refuseMalformedOrphansForDestroy(',
+      'refuseMalformedOrphansForOrphan(',
     ]);
     const resources = exported.filter(
       (n) =>
-        !outputs.includes(n) && !properties.includes(n) && !entries.includes(n) && !orphans.includes(n)
+        !outputs.includes(n) &&
+        !properties.includes(n) &&
+        !entries.includes(n) &&
+        !attributes.includes(n) &&
+        !orphans.includes(n)
     );
     // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
     // copy of that triple is what drifts when a fourth outputs refusal lands.
@@ -2963,7 +2983,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   const FIRST_DEREF: Record<string, string> = {
     'src/cli/commands/scrub.ts': 'Object.entries(state.resources',
     'src/cli/commands/import.ts': 'hasOwnProperty.call(existingState.resources',
-    'src/cli/commands/orphan.ts': 'id in state.resources',
+    'src/cli/commands/orphan.ts': 'Object.hasOwn(state.resources, id)',
     'src/cli/commands/rollback.ts': '{ ...baseState.resources }',
     // go-to-k/cdkd#3161. Each anchor is the LOADED record's bag, which is what
     // the guard is about.
@@ -3699,6 +3719,18 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
       'the exempt sibling above — `rewriteResourceReferences` is called from nowhere else, so ' +
       'no withRetry encloses it and the marker would fence nothing. Revisit if a retrying ' +
       'caller is added.',
+    'refuseMalformedResourceEntriesForOrphan(':
+      'go-to-k/cdkd#3350. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
+      'refuseMalformedResourcePropertiesForOrphan, with no withRetry around it. Revisit if a ' +
+      'retrying caller is added.',
+    'refuseMalformedResourceAttributesForOrphan(':
+      'go-to-k/cdkd#3345. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
+      'refuseMalformedResourcePropertiesForOrphan, with no withRetry around it. Revisit if a ' +
+      'retrying caller is added.',
+    'refuseMalformedOrphansForOrphan(':
+      'go-to-k/cdkd#3344. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
+      'refuseMalformedResourcePropertiesForOrphan, with no withRetry around it. Revisit if a ' +
+      'retrying caller is added.',
     'refuseMalformedResourceEntries(':
       'its callers are `cdkd state refresh-observed` (the multi-stack pre-check and the per-stack ' +
       'refresh) and `cdkd drift --accept` / `--revert`, none of which wraps the call in withRetry ' +
@@ -3711,7 +3743,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(11);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6368,6 +6400,20 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
           (s: string | undefined, r: string | undefined) => string,
         ]
     ),
+    // go-to-k/cdkd#3350 / #3345 / #3344: `cdkd orphan`'s three further
+    // refusals, which normalise at their boundary like the properties one.
+    [
+      'malformedOrphanResourceEntriesRefusalMessage',
+      (s, r) => malformedOrphanResourceEntriesRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedOrphanResourceAttributesRefusalMessage',
+      (s, r) => malformedOrphanResourceAttributesRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedOrphansForOrphanRefusalMessage',
+      (s, r) => malformedOrphansForOrphanRefusalMessage(s, r, ['A']),
+    ],
     [
       'malformedRenderedContainersWarning',
       (s, r) => malformedRenderedContainersWarning(s as string, r as string, ['outputs']),
@@ -6472,9 +6518,12 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedNestedChildOutputs',
       'refuseMalformedOrphans',
       'refuseMalformedOrphansForDestroy',
+      'refuseMalformedOrphansForOrphan',
       'refuseMalformedOutputs',
       'refuseMalformedOutputsForDestroy',
+      'refuseMalformedResourceAttributesForOrphan',
       'refuseMalformedResourceEntries',
+      'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForOrphan',
       'refuseMalformedResourcesForDeploy',

@@ -19,7 +19,7 @@ and nothing inside, so a consumer reaches the bag as an unchecked cast.
 | --- | --- | --- | --- |
 | `resources` | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
 | `outputs` | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
-| `orphans` | `hasReadableOrphans` | `refuseMalformedOrphans` + a destroy sibling | `repairMalformedOrphansForReadOnly` |
+| `orphans` | `hasReadableOrphans` | `refuseMalformedOrphans` + destroy and `cdkd orphan` siblings | `repairMalformedOrphansForReadOnly` |
 
 **Each container has MORE THAN ONE refusal entry point and ONE predicate.** The split
 is about the MESSAGE, never the verdict — all of them delegate to the predicate,
