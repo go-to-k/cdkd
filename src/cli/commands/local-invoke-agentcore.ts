@@ -16,6 +16,7 @@ import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { foldRegionOption } from '../region-options.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
@@ -310,7 +311,14 @@ async function localInvokeAgentCoreCommand(
   // result too; without that, `--sigv4 --stack-region CN-NORTH-1` still reached
   // the signing scope, and `--assume-role` with an upper-cased `AWS_REGION`
   // still reached the AssumeRole STS client and the container's own env.
-  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  //
+  // Issue #3622: `foldRegionOption` folds the `AWS_REGION` /
+  // `AWS_DEFAULT_REGION` env vars as well. Folding only the flag left the SDK
+  // clients this command builds with NO region (the `--from-state` S3 client
+  // when `--region` is absent, `applyRoleArnIfSet`'s STS client, the
+  // `--profile` credential resolver) reading the raw env spelling through the
+  // SDK's own region chain, and the synth subprocess inheriting it.
+  foldRegionOption(options);
   // Issue #1836 folds `options.stackRegion` here too, which narrows the note
   // above: the two chains that fall through to it now receive a value that is
   // ALREADY canonical (their own folds stay, and are what cover the env-var and

@@ -128,6 +128,31 @@ echo "${RESULT_FROMSTATE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
   exit 1
 }
 
+# Step 4b — upper-cased AWS_REGION / AWS_DEFAULT_REGION with NO --region
+# (issue #3622). The handler folded only the flag, so the env spelling reached
+# the SDK clients cdkd builds with no region (the `--from-state` S3 client
+# among them), whose region the AWS SDK reads from AWS_REGION directly.
+UPPER_REGION="$(printf '%s' "${REGION}" | tr '[:lower:]' '[:upper:]')"
+[ "${UPPER_REGION}" != "${REGION}" ] || { echo "FAIL: region-case arm is vacuous for '${REGION}'"; exit 1; }
+echo "[verify] step 4b: AWS_REGION=${UPPER_REGION} --from-state (no --region)"
+RESULT_ENV_UPPER=$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" \
+  ${CLI} local invoke-agentcore "${TARGET}" --from-state \
+  --state-bucket "${STATE_BUCKET}" --no-pull 2>"${CLI_ERR}" | grep '"env":' | tail -1) || {
+  echo "FAIL: AWS_REGION=${UPPER_REGION} --from-state invoke exited non-zero or printed no \"env\" line; stderr tail:"
+  tail -20 "${CLI_ERR}"
+  exit 1
+}
+echo "    response: ${RESULT_ENV_UPPER}"
+echo "${RESULT_ENV_UPPER}" | grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" || {
+  echo "FAIL: AWS_REGION=${UPPER_REGION} must still read the ${REGION} state record — expected BUCKET_NAME=\"${BUCKET}\"; got: ${RESULT_ENV_UPPER}"
+  tail -20 "${CLI_ERR}"
+  exit 1
+}
+echo "${RESULT_ENV_UPPER}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" || {
+  echo "FAIL: AWS_REGION=${UPPER_REGION} — expected BUCKET_ARN=\"${BUCKET_ARN}\"; got: ${RESULT_ENV_UPPER}"
+  exit 1
+}
+
 echo "[verify] step 5: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 

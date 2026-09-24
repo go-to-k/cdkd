@@ -75,7 +75,7 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
 - **Every caller of `buildCrossStackResolver` must pass a state record's spelling**; the folded env chain is a fallback only when no record loaded, with `||` on the flag link so `--region ''` cannot become an empty key.
 - **`consumerRegion` stays RAW at the boundary, because its consumers want different spellings.** The exports-index key and rebuild filter take RAW (a spelling no record carries PUTs an EMPTY index); the index-miss scan and `resolveGetStackOutput` fold BOTH sides; `resolveStateBucketWithDefault` must be FOLDED, the legacy bucket name being lowercase-only.
 - `opts.region` folds at all three S3-client construction sites, ABSENT and blank staying absent so the SDK chain resolves the profile's region.
-- The bootstrap-marker read probes the CANONICAL key first, then the RAW spelling, and `readBootstrapMarkerBody` (`src/assets/asset-storage.ts`) returns `{ body, resolvedKey }`, so a caller deletes the key actually READ and cannot orphan the marker.
+- The bootstrap-marker read probes the CANONICAL key first, then the RAW spelling, and `readBootstrapMarkerBody` (`src/assets/asset-storage.ts`) returns `{ body, resolvedKey }`, so a caller deletes the key actually READ and cannot orphan the marker. `local run-task` folds `process.env` at entry (#3622), so it captures the raw env spelling FIRST and passes it as `rawEnvRegion`.
 
 ## The cdk-local boundary runs THROUGH this directory
 

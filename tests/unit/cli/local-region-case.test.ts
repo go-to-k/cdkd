@@ -768,22 +768,48 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   });
 
   /**
-   * Issue [#2103](https://github.com/go-to-k/cdkd/issues/2103): the per-read
-   * folds pinned below cover the chains cdkd writes, not the SDK clients this
-   * command builds with NO region (the `--profile` credential resolver, the
-   * `--from-state` S3 client without `--region`), whose region the SDK reads
-   * from `AWS_REGION` directly. Only folding the env var itself reaches those,
-   * and the per-read folds make the container env canonical on their own, so
-   * nothing else goes red if this call is dropped.
+   * Issues [#2103](https://github.com/go-to-k/cdkd/issues/2103) (start-api) and
+   * [#3622](https://github.com/go-to-k/cdkd/issues/3622) (the other three): the
+   * per-read folds cover the chains cdkd writes, not the SDK clients a command
+   * builds with NO region (the `--profile` credential resolver, the
+   * `--from-state` S3 client without `--region`, `applyRoleArnIfSet`'s STS
+   * client), whose region the SDK reads from `AWS_REGION` directly. Only
+   * folding the env var itself reaches those, and nothing else goes red if the
+   * call is dropped — so it is pinned here, before the first AWS call.
    */
-  it('local-start-api.ts folds the ENV half at its handler entry (issue #2103)', () => {
-    const lines = liveLinesOf('local-start-api.ts');
+  it.each([
+    'local-start-api.ts',
+    'local-invoke.ts',
+    'local-run-task.ts',
+    'local-invoke-agentcore.ts',
+  ])('%s folds the ENV half at its handler entry (issues #2103, #3622)', (file) => {
+    const lines = liveLinesOf(file);
     const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
     const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnIfSet('));
 
-    expect(foldAt, `live '${SHARED_FOLD}' not found in local-start-api.ts`).toBeGreaterThan(-1);
+    expect(foldAt, `live '${SHARED_FOLD}' not found in ${file}`).toBeGreaterThan(-1);
     expect(roleArnAt, 'applyRoleArnIfSet anchor drifted').toBeGreaterThan(-1);
     expect(foldAt).toBeLessThan(roleArnAt);
+  });
+
+  /**
+   * Issue #3622: `local run-task` is the one command that feeds the
+   * bootstrap-marker probe, whose second attempt needs the RAW env spelling.
+   * The capture reads `process.env`, which the fold overwrites, so it is only
+   * correct ABOVE the fold — swapped, it captures the folded value and the
+   * probe silently collapses onto its first key.
+   */
+  it('local-run-task.ts captures the RAW env region before folding it (issue #3622)', () => {
+    const lines = liveLinesOf('local-run-task.ts');
+    const captureAt = lines.findIndex((line) =>
+      line.includes("const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']")
+    );
+    const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
+    const forwardAt = lines.findIndex((line) => line.includes('rawEnvRegion: options.rawEnvRegion'));
+
+    expect(captureAt, 'raw env capture not found').toBeGreaterThan(-1);
+    expect(captureAt).toBeLessThan(foldAt);
+    expect(forwardAt, 'rawEnvRegion is never handed to loadBootstrapContainerRepo').toBeGreaterThan(-1);
   });
 
   /**
@@ -815,8 +841,17 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     const statements = liveLinesOf(file as string)
       .join('\n')
       .split(';');
+    // The deliberate unfolded capture for the bootstrap-marker probe (issue
+    // #3622), pinned on its own above. Exempt only when the WHOLE statement is
+    // exactly that capture: matching the binding name alone would also exempt a
+    // second raw chain written into the same statement.
+    const RAW_CAPTURE =
+      "const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']";
+    const isRawCapture = (s: string): boolean => s.replace(/\s+/g, ' ').trim() === RAW_CAPTURE;
     const chains = statements.filter(
-      (s) => s.includes("process.env['AWS_REGION']") || s.includes("process.env['AWS_DEFAULT_REGION']")
+      (s) =>
+        (s.includes("process.env['AWS_REGION']") || s.includes("process.env['AWS_DEFAULT_REGION']")) &&
+        !isRawCapture(s)
     );
 
     expect(chains.length).toBeGreaterThanOrEqual(floor as number);

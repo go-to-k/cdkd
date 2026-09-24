@@ -389,6 +389,99 @@ describe('loadBootstrapContainerRepo (issue #1025)', () => {
       expect(mocks.getRawObjectMock.mock.calls).toEqual([['cdkd-bootstrap/eu-west-1.json']]);
     });
 
+    /**
+     * Issue #3622: `local run-task` now folds `AWS_REGION` in `process.env` at
+     * its handler entry, so by the time this helper runs the env holds only the
+     * canonical spelling. `rawEnvRegion` carries the spelling captured before
+     * that fold, and the raw second probe must use it.
+     */
+    it('falls back to the RAW env spelling captured before the entry fold', async () => {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.getRawObjectMock
+        .mockResolvedValueOnce(null) // cdkd-bootstrap/us-east-1.json
+        .mockResolvedValueOnce(markerBody); // cdkd-bootstrap/US-EAST-1.json
+
+      // The state a real `AWS_REGION=US-EAST-1 cdkd local run-task` leaves:
+      // process.env already folded, the raw spelling on the option.
+      await withEnvRegion('us-east-1', async () => {
+        const repo = await loadBootstrapContainerRepo(undefined, {
+          statePrefix: 'cdkd',
+          rawEnvRegion: 'US-EAST-1',
+        });
+        expect(repo).toBe('my-custom-repo');
+      });
+
+      expect(mocks.getRawObjectMock.mock.calls).toEqual([
+        ['cdkd-bootstrap/us-east-1.json'],
+        ['cdkd-bootstrap/US-EAST-1.json'],
+      ]);
+    });
+
+    it('issues ONE probe when the captured env spelling was already canonical', async () => {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.getRawObjectMock.mockResolvedValue(null);
+
+      await withEnvRegion('us-east-1', async () => {
+        await loadBootstrapContainerRepo(undefined, {
+          statePrefix: 'cdkd',
+          rawEnvRegion: 'us-east-1',
+        });
+      });
+
+      expect(mocks.getRawObjectMock.mock.calls).toEqual([['cdkd-bootstrap/us-east-1.json']]);
+    });
+
+    it('keeps the raw env spelling BELOW the synth region', async () => {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.getRawObjectMock.mockResolvedValue(null);
+
+      await loadBootstrapContainerRepo('ap-northeast-1', {
+        statePrefix: 'cdkd',
+        rawEnvRegion: 'US-EAST-1',
+      });
+
+      expect(mocks.getRawObjectMock.mock.calls).toEqual([['cdkd-bootstrap/ap-northeast-1.json']]);
+    });
+
+    /**
+     * Issue #3622 review: a stack pinned to `CDK_DEFAULT_REGION` synthesizes the
+     * already-folded region, so the synth link decides the key and is canonical.
+     * `AWS_REGION=US-EAST-1 cdkd bootstrap` wrote its marker under the RAW
+     * spelling, so when the raw env spelling names the SAME region, the second
+     * probe must use it — otherwise it repeats the canonical key.
+     */
+    it('reaches the raw-env marker when the synth region is the same region, canonical', async () => {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.getRawObjectMock
+        .mockResolvedValueOnce(null) // cdkd-bootstrap/us-east-1.json
+        .mockResolvedValueOnce(markerBody); // cdkd-bootstrap/US-EAST-1.json
+
+      const repo = await loadBootstrapContainerRepo('us-east-1', {
+        statePrefix: 'cdkd',
+        rawEnvRegion: 'US-EAST-1',
+      });
+
+      expect(repo).toBe('my-custom-repo');
+      expect(mocks.getRawObjectMock.mock.calls).toEqual([
+        ['cdkd-bootstrap/us-east-1.json'],
+        ['cdkd-bootstrap/US-EAST-1.json'],
+      ]);
+    });
+
+    it('lets an explicit --stack-region keep its own raw spelling over the env one', async () => {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.getRawObjectMock.mockResolvedValue(null);
+
+      await loadBootstrapContainerRepo('us-east-1', {
+        statePrefix: 'cdkd',
+        stackRegion: 'us-east-1',
+        rawStackRegion: 'us-east-1',
+        rawEnvRegion: 'US-EAST-1',
+      });
+
+      expect(mocks.getRawObjectMock.mock.calls).toEqual([['cdkd-bootstrap/us-east-1.json']]);
+    });
+
     it('parses the marker under the KEY the probe actually hit', async () => {
       // Diagnostics-only, but it is the only place the second probe's identity is
       // visible: a parse failure names the object the user has to look at, and
