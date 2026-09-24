@@ -58,6 +58,18 @@ const SPAWN_TIMEOUT_MS = 90_000;
 const SRC = fileURLToPath(new URL('../../../src', import.meta.url));
 
 /**
+ * The repo root, passed as every spawn's `cwd`.
+ *
+ * The critic's default root is the RELATIVE `'src'`, so a spawned run inherits
+ * whatever directory the suite happens to start in — which is the cwd-dependence
+ * the file's own header records for the in-process scan and which review found
+ * still live for the CHILD: launching the absolute script path from `/tmp`
+ * dies with `ENOENT: scandir 'src'`. Pinning `cwd` is what makes every
+ * default-root case below attest to THIS tree.
+ */
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+
+/**
  * ONE scan of the real tree, shared by every case that needs it.
  *
  * Scanning 358 files parses 358 sources, which is seconds under load — three
@@ -230,6 +242,7 @@ describe('pasteable-command shape fence — the classifier sees its input', () =
       const run = spawnSync(process.execPath, [runner, JSON.stringify(corpus)], {
         encoding: 'utf8',
         timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
       });
       // A non-zero OR null status both count: the non-terminating mutant is
       // either killed by `timeout` or dies first exhausting the heap on its
@@ -300,13 +313,18 @@ describe('pasteable-command shape fence — it does not report everything', () =
     const script = fileURLToPath(
       new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
     );
-    const clean = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
+    const clean = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
+    });
     expect(clean.status, clean.stderr).toBe(0);
     expect(clean.stdout).toContain('0 findings');
 
     const forced = spawnSync(process.execPath, [script], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
       env: { ...process.env, CDKD_SELF_PROBE_FORCE_FAIL: '1' },
     });
     // Exit 2, not 1: "the critic is broken" and "the tree is dirty" are
@@ -327,6 +345,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
     const raised = spawnSync(process.execPath, [script], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
       env: { ...process.env, CDKD_PASTEABLE_FLOOR_FILES: '999999' },
     });
     expect(raised.status).toBe(2);
@@ -349,6 +368,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
       const raised = spawnSync(process.execPath, [script], {
         encoding: 'utf8',
         timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
         env: { ...process.env, [seam]: '999999' },
       });
       expect(raised.status, `${seam} did not fail the run: ${raised.stderr}`).toBe(2);
@@ -367,6 +387,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
     const bad = spawnSync(process.execPath, [script], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
       env: { ...process.env, CDKD_PASTEABLE_FLOOR_SPANS: 'lots' },
     });
     expect(bad.status, bad.stdout).not.toBe(0);
@@ -386,6 +407,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
     const injected = spawnSync(process.execPath, [script], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
       env: { ...process.env, CDKD_SELF_PROBE_INJECT_MISMATCH: '1' },
     });
     expect(injected.status, injected.stderr).toBe(2);
@@ -416,6 +438,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
       const dirty = spawnSync(process.execPath, [script, `--root=${root}`], {
         encoding: 'utf8',
         timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
       });
       // 2 would mean the FLOORS refused a one-file tree before the findings
       // were reached, so this also pins that the floors are not consulted in a
