@@ -49,7 +49,8 @@ parens-free `Closes #N`, or add a manual `gh issue close <N>` step.
 `pr-content-checks.yml` warns on it, but a warning reds nothing. The reverse
 trap closes: GitHub ignores negation, so "does not close #N" closes it
 (PR #3575). Diff the intended set against
-`gh api graphql -f query='{repository(owner:"go-to-k",name:"cdkd"){pullRequest(number:<N>){closingIssuesReferences(first:20){nodes{number}}}}}'`.
+`gh api graphql -f query='{repository(owner:"go-to-k",name:"cdkd"){pullRequest(number:<N>){closingIssuesReferences(first:20){nodes{number repository{nameWithOwner}}}}}}'`
+— it lags a body edit by seconds.
 
 ## 12. PR title + body freshness
 
