@@ -81,11 +81,10 @@
 #       project's reference made UNRESOLVABLE: the value map is then empty and
 #       only the offline array-descending path seed can mask the live array.
 #   2d. After phase 2, on the observed baseline. Its #2852 fail-closed mask at
-#       the anchor arm's refused positions cannot equal the live value, so the
-#       task definition does not read clean there; this stop asserts only what
-#       must hold whichever way that is reported — no plaintext from the
-#       report, `--json`, either dry-run plan or `--accept`, and the masked
-#       baseline left as it was.
+#       the anchor arm's refused positions cannot equal the live value; since
+#       issue #3595 that is reported as a not-compared position
+#       (`uncertifiedBaseline`, exit 2), never as drift, with no plaintext from
+#       any mode and `--accept` leaving the masked baseline byte-identical.
 #
 # SECURITY: the resolved secret value is never printed. Assertions compare
 # against a masked representation; only PASS/FAIL + a masked snippet is shown.
@@ -1263,45 +1262,41 @@ if [ "${DIFF_RC}" -ne 0 ]; then
 fi
 echo "    OK: no spurious change after redaction"
 
-# --- Phase 2d: `cdkd drift` over the MASKED observed baseline (issue #1947) --
+# --- Phase 2d: `cdkd drift` over the MASKED observed baseline (#1947, #3595) --
 # The task definition's baseline now holds `***` at the anchor arm's refused
-# EntryPoint positions (asserted above), which no live value equals. Whether
-# that reads `drifted` (today: the #2274 design, a mask is "cdkd does not know
-# the value here") or is reclassified as not-compared, the stack cannot exit
-# 0 -- that non-zero exit and the record's presence in the report are the
-# positive markers that the comparison REACHED the mask. Nothing else about
-# the disposition is pinned. What must hold either way: no plaintext out of
-# any mode, and `--accept` writing none over the mask.
-echo "==> Phase 2d: cdkd drift over the masked observed baseline (issue #1947)"
+# EntryPoint positions (asserted above), which no live value equals. That is
+# an UNKNOWN position, not drift (issue #3595): the mask is the only difference
+# there, so the resource is listed under `notCompared` with the cause
+# `uncertifiedBaseline`, nothing is drifted, and a detection-only run exits 2
+# -- exactly 2: 0 would mean the comparison never reached the mask, 1 that it
+# was still called drift. Both remediation modes then leave it alone.
+echo "==> Phase 2d: cdkd drift over the masked observed baseline (issues #1947 / #3595)"
 TD_LOGICAL_ID=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json \
   | jq -r '[.state.resources | to_entries[] | select(.value.resourceType=="AWS::ECS::TaskDefinition") | .key] | (.[0] // empty)')
 assert_read "the task definition's logical id" "${TD_LOGICAL_ID}"
 
 run_drift
-if [ "${DRIFT_RC}" -eq 0 ]; then
-  echo "FAIL: 'cdkd drift' exited 0 over a baseline holding the literal mask -- the comparison never reached it" >&2
+if [ "${DRIFT_RC}" -ne 2 ]; then
+  echo "FAIL: 'cdkd drift' over the masked baseline exited ${DRIFT_RC}, expected 2 (not compared, nothing drifted)" >&2
   diag_masked "${DRIFT_OUT}"
   exit 1
 fi
 assert_no_drift_plaintext "'cdkd drift' over the masked baseline" "${DRIFT_OUT}"
 run_drift_json
-TD_DISPOSITION=$(printf '%s' "${DRIFT_JSON}" | jq -r --arg id "${TD_LOGICAL_ID}" \
-  'if ([.[0].drifted[] | select(.logicalId==$id)] | length) > 0 then "drifted"
-   elif ([.[0].notCompared[] | select(.logicalId==$id)] | length) > 0 then "notCompared"
-   else "absent" end')
-if [ "${TD_DISPOSITION}" = "absent" ]; then
-  echo "FAIL: 'cdkd drift --json' reports the task definition neither drifted nor not-compared" >&2
-  diag_masked "${DRIFT_JSON}"
+TD_CAUSE=$(printf '%s' "${DRIFT_JSON}" | jq -r --arg id "${TD_LOGICAL_ID}" \
+  '[.[0].notCompared[] | select(.logicalId==$id) | .cause] | join(",")')
+DRIFTED_COUNT=$(printf '%s' "${DRIFT_JSON}" | jq -r '.[0].drifted | length')
+if [ "${TD_CAUSE}" != "uncertifiedBaseline" ] || [ "${DRIFTED_COUNT}" != "0" ]; then
+  # A cause name and a count -- safe to print.
+  echo "FAIL: expected the task definition not-compared as 'uncertifiedBaseline' and nothing drifted; got cause '${TD_CAUSE}', ${DRIFTED_COUNT} drifted" >&2
   exit 1
 fi
-echo "    task definition over the masked baseline: ${TD_DISPOSITION} (disposition deliberately not pinned -- #3595)"
+echo "    OK: the masked positions are reported not compared (uncertifiedBaseline), nothing drifted"
 assert_no_drift_plaintext "'cdkd drift --json' over the masked baseline" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
 
-# The two plans. Both exit 0 whatever they print, so an early failure is the
-# only thing rc can reveal; while the record is DRIFTED each plan must also
-# name the array, or "no plaintext" would be satisfied by a plan that printed
-# nothing about it.
+# The two plans, over a stack with nothing drifted. Both exit 0 whatever they
+# print, so an early failure is the only thing rc can reveal.
 for plan_mode in --accept --revert; do
   run_drift "${plan_mode}" --dry-run
   if [ "${DRIFT_RC}" -ne 0 ]; then
@@ -1309,31 +1304,17 @@ for plan_mode in --accept --revert; do
     diag_masked "${DRIFT_OUT}"
     exit 1
   fi
-  # The detection report printed ahead of the plan names the array too, so
-  # only the text from the plan's own header on counts.
-  PLAN_TEXT=$(printf '%s\n' "${DRIFT_OUT}" | sed -n "/^Plan (${plan_mode})/,\$p")
-  if [ "${TD_DISPOSITION}" = "drifted" ] && ! grep -qF "ContainerDefinitions" <<< "${PLAN_TEXT}"; then
-    echo "FAIL: the ${plan_mode} plan does not name the drifted ContainerDefinitions array" >&2
-    diag_masked "${DRIFT_OUT}"
-    exit 1
-  fi
   assert_no_drift_plaintext "'cdkd drift ${plan_mode} --dry-run' over the masked baseline" "${DRIFT_OUT}"
 done
 
+# --accept must leave the record EXACTLY as it was: a not-compared position is
+# never written, and a rewrite through the fail-closed redaction would put the
+# same `***` back, so the evidence is the whole observed bag, byte for byte.
+TD_OBSERVED_BEFORE=$(read_record AWS::ECS::TaskDefinition | jq -cS '.observedProperties')
+assert_read "the task definition's observed baseline before --accept" "${TD_OBSERVED_BEFORE}"
 run_drift --accept --yes
-# `--accept` exits 0 once it has run, whether it accepted, refused, or found
-# nothing comparable; anything else is an error, which must not pass as
-# "wrote no plaintext".
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --accept' failed over the masked baseline (rc=${DRIFT_RC})" >&2
-  diag_masked "${DRIFT_OUT}"
-  exit 1
-fi
-# While the record is DRIFTED the mask must be REFUSED, and saying so is the
-# direct evidence: a rewrite through the fail-closed redaction would put the
-# same `***` back and satisfy the baseline checks below just as well.
-if [ "${TD_DISPOSITION}" = "drifted" ] && ! grep -qF "not accepting 'ContainerDefinitions'" <<< "${DRIFT_OUT}"; then
-  echo "FAIL: --accept did not refuse the masked ContainerDefinitions array" >&2
   diag_masked "${DRIFT_OUT}"
   exit 1
 fi
@@ -1344,6 +1325,10 @@ assert_no_drift_plaintext "the task definition record after --accept" "${TD_RECO
 PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
 assert_read "the CodeBuild project record after --accept" "${PROJECT_RECORD}"
 assert_no_drift_plaintext "the CodeBuild project record after --accept" "${PROJECT_RECORD}"
+if [ "$(printf '%s' "${TD_RECORD}" | jq -cS '.observedProperties')" != "${TD_OBSERVED_BEFORE}" ]; then
+  echo "FAIL: --accept rewrote the task definition's observed baseline over a not-compared position" >&2
+  exit 1
+fi
 P2D_OBSERVED=$(printf '%s' "${TD_RECORD}" | jq -c '.observedProperties')
 P2D_EP=$(cd_field_of "${P2D_OBSERVED}" anchorprobe EntryPoint)
 assert_read "observedProperties anchorprobe EntryPoint after --accept" "${P2D_EP}"
@@ -1473,4 +1458,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
-echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, cdkd drift on the array shape is clean when fresh, masks a drifted array, refuses to --accept it and --reverts it RESOLVED, and leaks nothing over a masked baseline (issue #1947), clean destroy"
+echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, cdkd drift on the array shape is clean when fresh, masks a drifted array, refuses to --accept it and --reverts it RESOLVED, and reports a masked baseline position as not compared and leaks nothing over it (issues #1947 / #3595), clean destroy"

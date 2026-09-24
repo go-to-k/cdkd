@@ -313,6 +313,40 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+/**
+ * {@link deepEqual}, except that a `mask` STRING on the state side matches any
+ * STRING on the AWS side (issue
+ * [#3595](https://github.com/go-to-k/cdkd/issues/3595)).
+ *
+ * Answers "do these two differ ANYWHERE other than at a masked position?" —
+ * the question that separates a baseline cdkd could not certify from real
+ * drift beside it. Positional and shape-strict on purpose: an array whose
+ * length changed or whose elements AWS reordered is NOT equal, because a mask
+ * cannot say which element it stood for, and treating a reorder as equal would
+ * hide an edit. Only a string can match a mask, since the redaction masks
+ * string leaves alone.
+ */
+export function equalModuloMask(state: unknown, aws: unknown, mask: string): boolean {
+  const a = jsonForm(state);
+  const b = jsonForm(aws);
+  if (a === mask && typeof b === 'string') return true;
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a !== typeof b || typeof a !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => equalModuloMask(v, b[i], mask));
+  }
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const aKeys = Object.keys(aObj);
+  if (aKeys.length !== Object.keys(bObj).length) return false;
+  return aKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(bObj, key) && equalModuloMask(aObj[key], bObj[key], mask)
+  );
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

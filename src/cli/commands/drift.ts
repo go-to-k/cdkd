@@ -40,6 +40,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import {
   calculateResourceDrift,
+  equalModuloMask,
   undeclaredEmptyObservedKeys,
   type PropertyDrift,
 } from '../../analyzer/drift-calculator.js';
@@ -86,10 +87,13 @@ import {
   dynamicReferenceTokens,
   identityKeyFor,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
+  isUncertifiedBaselineMaskPosition,
+  pathCrossesDottedKey,
   maskSecretsInError,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
   recordMaskOnlyValue,
+  recordMaskOnlyValuesIn,
   redactSecretsForState,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
@@ -163,6 +167,14 @@ export type NotComparedCause =
   | 'unresolvedToken'
   | 'readFailed'
   | 'baselineRefused'
+  /**
+   * The observed baseline holds an issue #2852 fail-closed mask at a position
+   * the recording pass could not certify, and the ONLY difference found there
+   * is that mask (go-to-k/cdkd#3595). Everything else about the resource was
+   * compared. Exit 2 like `refused`: a deploy that changes the resource
+   * re-captures the baseline, so it is clearable.
+   */
+  | 'uncertifiedBaseline'
   /**
    * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018).
    *
@@ -272,6 +284,28 @@ export type DriftOutcome =
        * it can no longer name.
        */
       maskedPaths: SecretPathSet;
+      /**
+       * The comparator paths split off as uncertified-baseline positions
+       * (issue [#3595](https://github.com/go-to-k/cdkd/issues/3595)): the
+       * baseline holds a #2852 fail-closed mask there and that mask is the
+       * ONLY difference from AWS. Never in `changes`, so nothing prints or
+       * accepts them. Read by `runRevert` alone, which sends the LIVE subtree
+       * at each one: `buildRevertNewProperties` overlays whole TOP-LEVEL keys,
+       * so a real change beside the position would otherwise carry the mask
+       * into the send bag. Paths only — no value — so the field discloses
+       * nothing.
+       */
+      uncertifiedPaths: string[];
+      /**
+       * Can `secrets` NOT name every value this resource's positions hold? True
+       * when resolution was refused or a token survived it — the two cases
+       * where a live value cdkd never resolved can sit at a secret position.
+       * Carried as its own FACT rather than read off `notComparedCause`, which
+       * holds one cause: an `uncertifiedBaseline` outranks a surviving token
+       * there (issue #3595), and the map is still incomplete. Read by the
+       * revert plan, which withholds live-derived key lists it could not mask.
+       */
+      secretsIncomplete: boolean;
       /**
        * Why this resource's comparison was INCOMPLETE, or `undefined` when
        * every property was compared (issues #1914 / #2108 / #2135).
@@ -689,6 +723,12 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
     phrase:
       'only PARTIALLY compared: cdkd refused to resolve a dynamic reference their state records',
   },
+  uncertifiedBaseline: {
+    kind: 'unknown',
+    phrase:
+      'only PARTIALLY compared: their recorded baseline holds the redaction mask where cdkd ' +
+      'could not tell which live value a secret reference became',
+  },
   unresolvedToken: {
     kind: 'unknown',
     phrase:
@@ -733,6 +773,7 @@ export { UNREADABLE_RESOURCES_MAP_ROW };
 const ANY_OF_IT_COMPARED: Record<NotComparedCause, boolean> = {
   refused: true,
   unresolvedToken: true,
+  uncertifiedBaseline: true,
   readFailed: false,
   baselineRefused: false,
   unreadableRecord: false,
@@ -1583,6 +1624,10 @@ function notComparedReason(cause: NotComparedCause): string {
       'a `cdkd import` run refused to capture its observed baseline, so the only ' +
       'baseline available is the recorded properties that refusal already found ' +
       'untrustworthy (deploy a change to this resource to restore one)',
+    uncertifiedBaseline:
+      'its recorded baseline holds the redaction mask at a position cdkd could not pair ' +
+      'with the secret reference there, so that position was not compared — every other ' +
+      'property was (deploy a change to this resource to re-capture the baseline)',
   };
   return REASONS[cause];
 }
@@ -1967,6 +2012,66 @@ async function resolveStateSecretExpressions(
 }
 
 /**
+ * Split off the changes that exist ONLY because the observed baseline holds an
+ * uncertified-position mask (issue
+ * [#3595](https://github.com/go-to-k/cdkd/issues/3595)).
+ *
+ * Issue [#2852](https://github.com/go-to-k/cdkd/issues/2852) writes
+ * {@link SECRET_MASK} into `observedProperties` at every position the readback
+ * walk could not pair with a dynamic reference in the source. No live value
+ * equals the mask, so before this every such resource read `drifted` on every
+ * run — a change nobody made, which `--accept` refused and no no-change deploy
+ * cleared. The position is not drifted; it is UNKNOWN, and is reported that
+ * way (`uncertifiedBaseline`, exit 2) instead.
+ *
+ * A change qualifies only when all three hold:
+ *
+ * - its state side carries a mask;
+ * - the mask is the fail-closed class, not a `NoEcho` one
+ *   ({@link isUncertifiedBaselineMaskPosition}) — a `NoEcho` mask keeps the
+ *   issue #2274 disposition;
+ * - the two sides are equal once each masked string is allowed to match any
+ *   live string ({@link equalModuloMask}). Anything else — a length change, a
+ *   reorder, an edit beside the mask — stays real drift.
+ *
+ * Runs on the COMPARISON values, before {@link redactDriftChanges}: after it
+ * the AWS side is itself a mask or an expression and the equality means
+ * nothing. The split-off changes reach no printer, no `--json` payload and
+ * neither remediation path; nothing about them is persisted or pushed.
+ *
+ * Accepted residuals, both inherent to a position cdkd cannot name: a secret
+ * rotated (or edited) AT a masked position is not seen, and a masked element of
+ * a declared-unordered array is sorted apart from its live counterpart and so
+ * stays `drifted`.
+ */
+function partitionUncertifiedBaselineChanges(
+  changes: PropertyDrift[],
+  properties: Record<string, unknown>,
+  baseline: Record<string, unknown>
+): { kept: PropertyDrift[]; uncertifiedPaths: string[] } {
+  // No separate "observed baseline only" gate: on the `properties` fallback a
+  // mask in the state side is a mask IN `properties`, which the discriminator
+  // already reads as the `NoEcho` class.
+  const kept: PropertyDrift[] = [];
+  const uncertifiedPaths: string[] = [];
+  for (const change of changes) {
+    if (
+      carriesSecretMask(change.stateValue) &&
+      isUncertifiedBaselineMaskPosition(properties, change.path) &&
+      // ...and the coordinate is unambiguous in the BASELINE too: a
+      // readback-only key containing a dot is invisible to `properties`.
+      !pathCrossesDottedKey(baseline, change.path) &&
+      equalModuloMask(change.stateValue, change.awsValue, SECRET_MASK)
+    ) {
+      uncertifiedPaths.push(change.path);
+      continue;
+    }
+    kept.push(change);
+  }
+  return { kept, uncertifiedPaths };
+}
+
+/**
  * Is a drift reported at `path` positioned on, or above, a known secret?
  *
  * The PREFIX direction is the one that matters: a secret sits at a leaf (or at
@@ -2098,10 +2203,17 @@ function acceptRefusalReason(
     // there the state side is a plaintext the map could not recognise — so the
     // wording names the shared fact (cdkd cannot say what belongs here) rather
     // than asserting one mechanism.
+    //
+    // The remedy names what ACTUALLY re-captures the baseline (issue #3595): a
+    // bare "re-deploy" read as though any deploy would, and a no-change deploy
+    // re-captures nothing here. A `NoEcho` value additionally needs its handler
+    // to run again, which only an update of the custom resource itself does.
     return (
       'cdkd does not know the value that belongs at this position — the baseline holds only the ' +
       'redaction mask, so accepting would write AWS-held plaintext over a deliberate redaction. ' +
-      'Re-deploy to refresh it'
+      'A `cdkd deploy` that CHANGES this resource re-captures the baseline (a deploy that changes ' +
+      'nothing does not); where the value came from a `NoEcho` custom resource, that custom ' +
+      'resource must update too, so its handler supplies the value again'
     );
   }
   return (
@@ -2958,8 +3070,16 @@ async function runDriftForStack(
         // unknown, not drift), and deciding on the raw list first produced a
         // `drifted` outcome with an empty change list — a report that says drift
         // was detected and then shows nothing.
-        const reported = redactDriftChanges(
+        // Issue #3595: a change that exists only because the baseline holds an
+        // uncertified-position mask is UNKNOWN, not drift. Split off before
+        // redaction, which would turn the AWS side into the mask too.
+        const partitioned = partitionUncertifiedBaselineChanges(
           changes,
+          resource.properties ?? {},
+          baseline
+        );
+        const reported = redactDriftChanges(
+          partitioned.kept,
           secrets,
           secretResolutionFailed ? seededSecretPaths : secretPaths,
           maskSecretPaths
@@ -2968,11 +3088,17 @@ async function runDriftForStack(
         // ordering is what the old `comparisonRefused = secretResolutionFailed`
         // said: a resource that BOTH threw and kept a surviving token is
         // `refused`, the wider of the two signals. See `NotComparedCause`.
+        // `uncertifiedBaseline` (issue #3595) ranks ABOVE `unresolvedToken`:
+        // the outcome carries one cause, and that one is excluded from the exit
+        // code, so ranking it first would let a permanent token hide a
+        // position cdkd did not compare.
         const notComparedCause: NotComparedCause | undefined = secretResolutionFailed
           ? 'refused'
-          : unresolvedTokens.size > 0
-            ? 'unresolvedToken'
-            : undefined;
+          : partitioned.uncertifiedPaths.length > 0
+            ? 'uncertifiedBaseline'
+            : unresolvedTokens.size > 0
+              ? 'unresolvedToken'
+              : undefined;
         if (reported.changes.length === 0) {
           if (notComparedCause !== undefined) {
             // Issue #2135: its OWN variant rather than a `clean` carrying a flag.
@@ -3000,6 +3126,8 @@ async function runDriftForStack(
             ...reported,
             awsProperties: aws,
             secrets,
+            uncertifiedPaths: partitioned.uncertifiedPaths,
+            secretsIncomplete: secretResolutionFailed || unresolvedTokens.size > 0,
             notComparedCause,
           });
         }
@@ -4739,6 +4867,153 @@ function corroboratedLeafCount(
 }
 
 /**
+ * Send AWS's OWN value at every uncertified-baseline position (issue
+ * [#3595](https://github.com/go-to-k/cdkd/issues/3595)).
+ *
+ * Detection split those positions off because the baseline's `***` was the
+ * only difference there, so there is nothing to revert at them. But
+ * {@link buildRevertNewProperties} overlays whole TOP-LEVEL keys: a real change
+ * elsewhere under the same key carries the baseline subtree — masks included —
+ * into the send bag, and {@link preserveLiveValuesAtMaskedLeaves} then cannot
+ * pair an anchor-less list and refuses the whole resource. Detection already
+ * certified the alignment ({@link equalModuloMask} held on these very
+ * positions), so the live subtree is copied in wholesale.
+ *
+ * Every live STRING standing where the baseline held the mask is registered as
+ * a mask-only needle — at EVERY uncertified path, overlaid or not — as the mask
+ * walk does for the leaves it copies: the value cdkd could not name may be a
+ * secret, and the send bag is what the provider's log lines see. Registration
+ * is POSITIONAL where the two sides line up, and covers every live string under
+ * the path where they do not (over-masking fails safe). It is only the OVERLAY
+ * that leaves a non-aligned path untouched, so the mask walk after this one
+ * still refuses rather than guesses. The #1644 narrowing write does not rely on
+ * the needles alone: {@link keepBaselineAtUncertifiedPaths} keeps the masked
+ * baseline value at these paths whatever the value's length.
+ */
+export function overlayLiveAtUncertifiedPaths(
+  send: Record<string, unknown>,
+  uncertifiedPaths: readonly string[],
+  awsProperties: Record<string, unknown>,
+  baseline: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  overlaidTopLevelKeys: ReadonlySet<string>
+): Record<string, unknown> {
+  if (uncertifiedPaths.length === 0) return send;
+  let out = send;
+  for (const path of uncertifiedPaths) {
+    const live = getAtPath(awsProperties, path);
+    const masked = getAtPath(baseline, path);
+    const aligned = live !== undefined && equalModuloMask(masked, live, SECRET_MASK);
+    // A top-level key no kept change touches already holds AWS's value in the
+    // send bag (`buildRevertNewProperties` copies it from the snapshot), so
+    // there is nothing to OVERLAY there — but its live values still reach the
+    // provider, whose echo the #1644 narrowing write persists into the
+    // baseline. With nothing registered, a value today's resolution cannot
+    // name (a rotated-away or edited secret) would be written into
+    // `state.json` verbatim: the value scan has no needle for it and the
+    // position source holds `***`, not a reference, so the fail-closed walk
+    // never fires there. So REGISTRATION runs for every uncertified path;
+    // only the overlay is limited to the keys a kept change carried in.
+    if (!aligned) {
+      // No alignment to register by position, so register every live string
+      // under the path: over-masking fails safe, and for an overlaid key the
+      // mask walk after this one still refuses rather than guesses.
+      if (live !== undefined) recordMaskOnlyValuesIn(live, secrets);
+      continue;
+    }
+    const needles: string[] = [];
+    const collect = (b: unknown, l: unknown): void => {
+      if (b === SECRET_MASK && typeof l === 'string') {
+        needles.push(l);
+        return;
+      }
+      if (Array.isArray(b) && Array.isArray(l)) {
+        b.forEach((item, i) => collect(item, l[i]));
+        return;
+      }
+      if (b !== null && typeof b === 'object' && l !== null && typeof l === 'object') {
+        for (const key of Object.keys(b)) {
+          if (hasOwnKey(l, key)) {
+            collect(
+              (b as Record<string, unknown>)[key],
+              ownValue(l as Record<string, unknown>, key)
+            );
+          }
+        }
+      }
+    };
+    collect(masked, live);
+    for (const needle of needles) recordMaskOnlyValue(secrets, needle);
+    const topLevelKey = path.split('.', 1)[0] ?? '';
+    if (overlaidTopLevelKeys.has(topLevelKey)) out = withValueAtPath(out, path, live);
+  }
+  return out;
+}
+
+/**
+ * Put the BASELINE's own value back at every uncertified-baseline path of a
+ * #1644 narrowing delta (issue [#3595](https://github.com/go-to-k/cdkd/issues/3595)).
+ *
+ * The delta is the provider's echo of what it delivered, and at such a path
+ * that is a live value cdkd could not name: the position source holds `***`
+ * rather than a reference, so the fail-closed walk never fires there, and a
+ * needle shorter than the substitution floor is never registered. Keeping the
+ * masked baseline value there persists nothing new — the position was unknown
+ * before the revert and stays unknown — whatever the value's length. A path
+ * the delta does not reach (its top-level key was not narrowed, or was
+ * dropped) is left alone. The WHOLE baseline subtree comes back, so a real
+ * narrowing of an unmasked neighbour inside it is undone too; the next run
+ * then reports that as drift (the comparison is shape-strict), which is the
+ * safe side of persisting a value cdkd cannot name.
+ */
+function keepBaselineAtUncertifiedPaths(
+  delta: Record<string, unknown>,
+  uncertifiedPaths: readonly string[],
+  baseline: Record<string, unknown>
+): Record<string, unknown> {
+  let out = delta;
+  for (const path of uncertifiedPaths) {
+    // Only where the delta HOLDS a value at the path. A key the provider
+    // DROPPED is an own key holding `undefined`, which the write loop turns
+    // into a delete — restoring over it would resurrect a key AWS no longer
+    // has, and a drop persists no value to protect.
+    if (getAtPath(out, path) === undefined) continue;
+    const kept = getAtPath(baseline, path);
+    if (kept === undefined) continue;
+    out = withValueAtPath(out, path, kept);
+  }
+  return out;
+}
+
+/**
+ * `bag` with `value` at the dotted `path`, rebuilding each ancestor rather than
+ * writing into it, so the caller's bag — shared with the detection outcome —
+ * is never mutated. Own keys throughout, for `getAtPath`'s reason. A path whose
+ * ancestor is not a plain object returns `bag` unchanged.
+ */
+function withValueAtPath(
+  bag: Record<string, unknown>,
+  path: string,
+  value: unknown
+): Record<string, unknown> {
+  const [head, ...rest] = path.split('.');
+  if (head === undefined) return bag;
+  // A plain `{}` (the bag goes to `provider.update`), keyed through
+  // `defineOwnKey` so an own `__proto__` key stays a key.
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(bag)) defineOwnKey(out, k, v);
+  if (rest.length === 0) {
+    defineOwnKey(out, head, value);
+    return out;
+  }
+  const child = hasOwnKey(bag, head) ? ownValue(bag, head) : undefined;
+  if (child === null || typeof child !== 'object' || Array.isArray(child)) return bag;
+  if (!hasPlainPrototype(child)) return bag;
+  defineOwnKey(out, head, withValueAtPath(child as Record<string, unknown>, rest.join('.'), value));
+  return out;
+}
+
+/**
  * Keep `cdkd drift --revert` from pushing a REDACTION MASK to AWS (issue
  * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
  *
@@ -5572,6 +5847,18 @@ async function runRevert(
             outcome.awsProperties,
             { preserveUntemplated: stateResource.observedProperties === undefined }
           );
+          // Issue #3595: nothing is reverted at an uncertified-baseline
+          // position — AWS's own value goes back — and this runs FIRST, so the
+          // mask walk below never meets those masks. Identity when there are
+          // none.
+          const certifiedOverlay = overlayLiveAtUncertifiedPaths(
+            overlaid,
+            outcome.uncertifiedPaths,
+            outcome.awsProperties,
+            desiredProperties,
+            secrets,
+            new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? ''))
+          );
           // Issue #1914: a token cdkd could not resolve must never be WRITTEN
           // over whatever AWS holds — see the helper for why the "it is already
           // there" premise holds only for a record cdkd deployed. Skipped
@@ -5579,15 +5866,19 @@ async function runRevert(
           // byte-identical.
           const tokenPreserved =
             unresolvedTokens.size > 0
-              ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties)
-              : overlaid;
+              ? preserveLiveValuesAtUnresolvedTokens(certifiedOverlay, outcome.awsProperties)
+              : certifiedOverlay;
           // Issue #2274: a REDACTION MASK in the baseline must never be written
           // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
           // this hazard is decided by the send bag alone, and `unresolvedTokens`
           // says nothing about it. The helper returns its input by identity when
           // there is no mask, so an ordinary revert is unaffected.
           //
-          // `overlaid` — the PRE-token bag — is the corroboration source, and
+          // `certifiedOverlay` — the post-#3595-overlay, PRE-token bag — is the
+          // corroboration source. The live values that overlay copied in do not
+          // reopen the hole below: they sit only at paths `equalModuloMask`
+          // certified at detection, each replaced WHOLE, so no mask survives
+          // beneath one for the walk to pair against it. The PRE-token bag, and
           // passing `tokenPreserved` there instead re-opens the round-4 #2884
           // hole: the token pass copies live values in (by certified pairing
           // since issue #2893, by index before it — the distinction does not
@@ -5598,7 +5889,7 @@ async function runRevert(
             tokenPreserved,
             outcome.awsProperties,
             secrets,
-            overlaid
+            certifiedOverlay
           );
           if (maskPreserved.unpreservablePaths.length > 0) {
             // REFUSE the resource rather than send the mask. `totalUnresolvable`
@@ -5900,13 +6191,17 @@ async function runRevert(
                   // are discarded by the loop below, so the non-failing
                   // constant there changes nothing and is kept for symmetry
                   // with `--accept`.
-                  redactSecretsForState(
-                    delta,
-                    secrets,
-                    revertBaseline,
-                    stateResource.observedProperties !== undefined
-                      ? STATE_SOURCED_BASELINE_RULES
-                      : STATE_SOURCED_READBACK_RULES
+                  keepBaselineAtUncertifiedPaths(
+                    redactSecretsForState(
+                      delta,
+                      secrets,
+                      revertBaseline,
+                      stateResource.observedProperties !== undefined
+                        ? STATE_SOURCED_BASELINE_RULES
+                        : STATE_SOURCED_READBACK_RULES
+                    ),
+                    outcome.uncertifiedPaths,
+                    revertBaseline
                   )
                 );
               }
@@ -6300,7 +6595,11 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
         // that still cannot mask the survivor's position. BOTH causes withhold
         // — the question here is whether the map can name what the position
         // holds, which a refusal and a surviving token answer the same way.
-        const cannotMaskKeys = o.notComparedCause !== undefined;
+        //
+        // Keyed on the carried FACT, not on the single `notComparedCause`: an
+        // `uncertifiedBaseline` outranks a surviving token there (issue #3595),
+        // while its own map is complete — see `secretsIncomplete`.
+        const cannotMaskKeys = o.secretsIncomplete;
         if (cannotMaskKeys && preserved.length > 0) {
           out.write(
             `    ! ${preserved.length} AWS-authored tag(s) will be preserved, but cdkd could not ` +
@@ -6350,7 +6649,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           stateResource.properties ?? {},
           o.awsProperties
         );
-        if (o.notComparedCause !== undefined && unbaselined.length > 0) {
+        if (o.secretsIncomplete && unbaselined.length > 0) {
           // Same withholding as the tag list above, and it must say something:
           // silently skipping the block left the user with no signal at all.
           out.write(
@@ -6787,6 +7086,30 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // population does not have.
       const notComparedAtAll = notCompared.filter((n) => !ANY_OF_IT_COMPARED[n.cause]).length;
       const referenceCaused = notCompared.length - notComparedAtAll;
+      // The partial clause names only the causes PRESENT (issue #3595): an
+      // `uncertifiedBaseline` resolved every reference, so the reference
+      // wording would be false for it. A run holding only the reference causes
+      // keeps the long-standing wording byte for byte.
+      const partialCauses = new Set(
+        notCompared.filter((n) => ANY_OF_IT_COMPARED[n.cause]).map((n) => n.cause)
+      );
+      const hasReferencePartial =
+        partialCauses.has('refused') || partialCauses.has('unresolvedToken');
+      const hasUncertified = partialCauses.has('uncertifiedBaseline');
+      const partialClause =
+        hasReferencePartial && !hasUncertified
+          ? `cdkd could not, or refused to, resolve a dynamic reference their state records, ` +
+            `so their secret-bearing properties were NOT compared`
+          : hasUncertified && !hasReferencePartial
+            ? `their recorded baseline holds the redaction mask at a position cdkd could not ` +
+              `certify, so that position was NOT compared`
+            : `some of their properties were NOT compared; each entry below names why`;
+      const partialClauseShort =
+        hasReferencePartial && !hasUncertified
+          ? 'a dynamic reference cdkd could not, or refused to, resolve'
+          : hasUncertified && !hasReferencePartial
+            ? 'a baseline position cdkd could not certify'
+            : 'see each entry';
       // Names only the causes actually PRESENT, so a refused-baseline-only
       // stack no longer reads `the read or comparison failed`. DERIVED from
       // the two exhaustive records rather than listed by hand: which causes
@@ -6826,9 +7149,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
             // moves for a stack containing none of the new population would
             // have made this lane's diff look like a rendering change to every
             // reader and every test, hiding the one case that actually changed.
-            `\n  ${notCompared.length} resource(s) only PARTIALLY compared — cdkd could not, ` +
-              `or refused to, resolve a dynamic reference their state records, so their ` +
-              `secret-bearing properties were NOT compared:\n`
+            `\n  ${notCompared.length} resource(s) only PARTIALLY compared — ${partialClause}:\n`
           : // With a `readFailed` entry present the old heading is FALSE, not
             // merely incomplete: none of that resource's properties were
             // compared, so calling it "only PARTIALLY compared" understates it in
@@ -6838,8 +7159,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
             `\n  ${notCompared.length} resource(s) NOT fully compared — ${notComparedAtAll} not ` +
               `compared AT ALL (${atAllCause})` +
               (referenceCaused > 0
-                ? `, ${referenceCaused} only PARTIALLY compared (a dynamic reference cdkd ` +
-                  `could not, or refused to, resolve)`
+                ? `, ${referenceCaused} only PARTIALLY compared (${partialClauseShort})`
                 : '') +
               `:\n`
       );

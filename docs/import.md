@@ -320,8 +320,10 @@ worth knowing before you read a report:
   the record cannot be lined up at such a position, cdkd writes the mask `***`
   there instead — it cannot tell a resolved secret from an ordinary literal
   once the pairing is gone, and the alternative is a decrypted secret in
-  `state.json`. Those positions report as drifted on every run and
-  `cdkd drift --accept` refuses them. The shapes that reach it are listed under
+  `state.json`. `cdkd drift` reports those positions as not compared (exit
+  `2`) while the mask is the only difference there, and as drift that
+  `--accept` refuses if anything else there changed. The shapes that reach it
+  are listed under
   [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 - **Some resources get no baseline at all.** Where the recorded properties no
   longer spell the template's dynamic reference — or the resolution had to

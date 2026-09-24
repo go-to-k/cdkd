@@ -728,8 +728,9 @@ position — AWS restructured the property, normalised a list element's identity
 field, reordered a list, or the record holds a raw `Fn::Join` object where the
 readback holds a string — cdkd cannot tell a resolved secret from an ordinary
 literal, so it writes the mask `***` at that position rather than the value AWS
-reported. Such a position then reports as drifted on every `cdkd drift` run and
-is refused by `--accept`; a `cdkd deploy` of the resource repairs it. See
+reported. `cdkd drift` then reports that position as not compared (exit `2`)
+while the mask is the only difference there, and as drift if anything else
+there changed; a `cdkd deploy` that changes the resource repairs it. See
 [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
 Resources whose provider cannot read current state, and resources AWS reports
