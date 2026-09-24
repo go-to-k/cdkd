@@ -47,7 +47,6 @@ import { collectStackMessages } from '../../../src/synthesis/stack-messages.js';
 import { resolveFileAssetSourcePath } from '../../../src/assets/asset-manifest-loader.js';
 import { resolveDockerContextDirectory } from '../../../src/assets/docker-build.js';
 import { resolveVerboseTemplatePath } from '../../../src/cli/commands/synth.js';
-import { engineAssemblyRoot } from '../../../src/cli/commands/emulator-docker-context.js';
 import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import { indexNestedTemplatePaths } from '../../../src/cli/commands/export.js';
@@ -544,29 +543,5 @@ describe('every other refusal subject keeps a forging value inside one boundary'
     const abs = join(outdir, assetPath);
     expect(message).toContain(`asset directory ${JSON.stringify(abs)} does not exist`);
     expect(outsideOf(message, abs)).not.toContain('Contained and healthy');
-  });
-
-  it("the emulator's Stage-root warning names both directories inside their boundaries", () => {
-    const root = join(tmp(), FORGED);
-    const sub = join(root, 'assembly-MyStage');
-    mkdirSync(sub, { recursive: true });
-    writeFileSync(
-      join(root, 'manifest.json'),
-      JSON.stringify({
-        version: '54.0.0',
-        artifacts: {
-          'assembly-MyStage': {
-            type: 'cdk:cloud-assembly',
-            properties: { directoryName: 'assembly-MyStage' },
-          },
-        },
-      })
-    );
-
-    expect(engineAssemblyRoot(sub)).toBe(root);
-    const said = warns.find((w) => w.includes('is a cdk.Stage sub-assembly'));
-    expect(said).toContain(`${JSON.stringify(sub)} is a cdk.Stage sub-assembly`);
-    expect(said).toContain(`its parent ${JSON.stringify(root)} as the assembly root`);
-    expect(outsideOf(said!, sub, root)).not.toContain('Contained and healthy');
   });
 });

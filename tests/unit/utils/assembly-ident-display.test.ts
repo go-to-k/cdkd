@@ -29,7 +29,6 @@ import { resolveDockerContextDirectory } from '../../../src/assets/docker-build.
 import { resolveVerboseTemplatePath } from '../../../src/cli/commands/synth.js';
 import { AssetManifestLoader } from '../../../src/assets/asset-manifest-loader.js';
 import { resolveAssetCodeDirectory } from '../../../src/local/lambda-resolver.js';
-import { assertEmulatorDockerContextsContained } from '../../../src/cli/commands/emulator-docker-context.js';
 import {
   displayStackName,
   STACK_REF_MAX_CODE_POINTS,
@@ -532,46 +531,5 @@ describe('every other identifier site keeps a forging value inside one boundary'
     );
     expect(message).toContain(`Child stack state ${SHOWN} not found after deploy`);
     expect(outside(message)).not.toContain('Contained and healthy');
-  });
-
-  it("the emulator's asset-manifest refusal and build refusal name the stack and asset", () => {
-    const dir = join(tmp(), 'cdk.out');
-    mkdirSync(dir);
-    const escaping = messageOf(() =>
-      assertEmulatorDockerContextsContained([
-        {
-          stackName: `../${FORGED}`,
-          assetManifestPath: join(dir, 'x.assets.json'),
-          assetOutdir: dir,
-        } as never,
-      ])
-    );
-    expect(escaping).toContain(`the asset manifest for stack ${JSON.stringify(`../${FORGED}`)} `);
-    expect(escaping.split(JSON.stringify(`../${FORGED}`)).join('').split(JSON.stringify(join(dir, `../${FORGED}.assets.json`))).join('')).not.toContain('Contained and healthy');
-
-    writeFileSync(
-      join(dir, `${FORGED}.assets.json`),
-      JSON.stringify({
-        version: '54.0.0',
-        files: {},
-        dockerImages: {
-          [FORGED]: {
-            source: { directory: '../../victim' },
-            destinations: { d: { repositoryName: 'r', imageTag: 't' } },
-          },
-        },
-      })
-    );
-    const build = messageOf(() =>
-      assertEmulatorDockerContextsContained([
-        {
-          stackName: FORGED,
-          assetManifestPath: join(dir, `${FORGED}.assets.json`),
-          assetOutdir: dir,
-        } as never,
-      ])
-    );
-    expect(build).toContain(`Refusing to build container image asset ${SHOWN} of stack ${SHOWN}: `);
-    expect(outside(build)).not.toContain('Contained and healthy');
   });
 });

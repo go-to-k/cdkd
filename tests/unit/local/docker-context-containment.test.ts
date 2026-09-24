@@ -1,35 +1,32 @@
 /**
- * Issue go-to-k/cdkd#3503: the Docker build context of every image cdkd hands
- * to cdk-local's OWN builder is contained within the app's outdir.
+ * Issues go-to-k/cdkd#3503 / #3597: every image cdkd hands to cdk-local's OWN
+ * builder is contained within the app's outdir, by the ENGINE, against the
+ * bound cdkd forwards. cdkd carries no copy of the check since cdk-local
+ * 0.149.4 renders its refusals display-safe (go-to-k/cdkd#3652);
+ * `engine-docker-context.test.ts` runs the real engine over every escape
+ * shape. This file stubs the engine and pins what that one cannot isolate,
+ * the WIRING:
  *
- * cdkd refuses an escaping `source.directory` in its shim
- * (`src/local/docker-image-builder.ts`) before the engine runs, and each call
- * site must hand it the right BOUND, which the shim forwards to the engine's
- * own check (go-to-k/cdkd#3597; `engine-docker-context.test.ts` runs the real
- * engine). Two halves:
- *
- * - the shim itself, against real directories (an absolute value and a
- *   symlink are both judged by the engine's own spelling);
- * - each of the three call sites, driven end to end over a real Stage-shaped
- *   assembly with only cdk-local's builder stubbed. A Stage is the shape that
+ * - the shim hands the engine the asset, the manifest directory and the bound
+ *   unchanged;
+ * - each of the three call sites hands it the APP outdir as the bound, driven
+ *   end to end over a real Stage-shaped assembly. A Stage is the shape that
  *   tells the bound apart: its manifest sits in `assembly-<Stage>/` and its
- *   asset one level up, so `../asset.<hash>` is ACCEPTED only when the bound is
- *   the app outdir, and a site passing the manifest directory (or nothing)
- *   refuses it.
+ *   asset one level up, so a site passing the manifest directory (or nothing)
+ *   makes the engine refuse `../asset.<hash>`.
  */
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const warns: string[] = [];
 // Spread the real module so everything else it exports stays live; only the
-// warn channel is captured, since the SINK clause is visible only there.
+// channels are silenced.
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   const quiet = {
     debug: () => {},
     info: () => {},
-    warn: (m: string) => warns.push(m),
+    warn: () => {},
     error: () => {},
   };
   return {
@@ -55,11 +52,9 @@ const { resolveContainerImageForStartApi } = await import(
 const { resolveAgentCoreImage } = await import(
   '../../../src/cli/commands/local-invoke-agentcore.js'
 );
-const { LocalInvokeBuildError } = await import('../../../src/utils/error-handler.js');
 
 afterEach(() => {
   builtWith.mockReset();
-  warns.length = 0;
 });
 
 const HASH = 'b'.repeat(64);
@@ -71,11 +66,9 @@ function tmp(): string {
 
 /**
  * `<outer>/cdk.out/assembly-MyStage/StageStack.assets.json`, naming one Docker
- * image asset whose `source.directory` is `directory`. `<outer>/victim` exists
- * beside the assembly, so an escape has somewhere real to land.
+ * image asset whose `source.directory` is `directory`.
  */
 function stageAssembly(directory: string): {
-  outer: string;
   assemblyDir: string;
   manifestDir: string;
   manifestPath: string;
@@ -84,7 +77,6 @@ function stageAssembly(directory: string): {
   const assemblyDir = join(outer, 'cdk.out');
   const manifestDir = join(assemblyDir, 'assembly-MyStage');
   mkdirSync(manifestDir, { recursive: true });
-  mkdirSync(join(outer, 'victim'));
   const manifestPath = join(manifestDir, 'StageStack.assets.json');
   writeFileSync(
     manifestPath,
@@ -99,60 +91,10 @@ function stageAssembly(directory: string): {
       },
     })
   );
-  return { outer, assemblyDir, manifestDir, manifestPath };
+  return { assemblyDir, manifestDir, manifestPath };
 }
 
 describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
-  it('refuses a relative source.directory escaping the bound, before the builder runs', async () => {
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    const run = buildContainerImage({ source: { directory: '../victim' } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    await expect(run).rejects.toBeInstanceOf(LocalInvokeBuildError);
-    await expect(run).rejects.toThrow(
-      /Refusing to build the container image: asset source\.directory=\.\.\/victim which/
-    );
-    expect(builtWith).not.toHaveBeenCalled();
-  });
-
-  it('warns, naming the build context as the sink, when source.directory names the bound itself', async () => {
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    await buildContainerImage({ source: { directory: '.' } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain(
-      'cdkd will send that directory to docker build as the context of an image cdkd then runs locally'
-    );
-    expect(builtWith).toHaveBeenCalledTimes(1);
-  });
-
-  it("names the executable's working directory as the sink when source.executable is set", async () => {
-    // The engine takes the executable arm first, and there the directory is a
-    // cwd for a manifest-supplied argv, not a build context.
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    await buildContainerImage({ source: { directory: '.', executable: ['./build.sh'] } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    const whole = warns.filter((w) => w.includes('naming the output directory ITSELF'));
-    expect(whole).toHaveLength(1);
-    expect(whole[0]).toContain(
-      "cdkd will run this asset's source.executable with that directory as its working directory"
-    );
-  });
-
   it('delegates an ordinary asset unchanged, forwarding the bound to the engine', async () => {
     const cdkOut = join(tmp(), 'cdk.out');
     mkdirSync(join(cdkOut, 'asset.abc'), { recursive: true });
@@ -175,135 +117,6 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
       assetOutdir: cdkOut,
     });
     expect(builtWith.mock.calls[0]![0]).toBe(asset);
-  });
-
-  it('names the build context as the sink for an EMPTY source.executable', async () => {
-    // The engine takes the directory arm for `executable: []`, so the sink must
-    // follow it rather than the field's mere presence.
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    await buildContainerImage({ source: { directory: '.', executable: [] } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    expect(warns.join('\n')).toContain('send that directory to docker build as the context');
-  });
-
-  it('refuses `<link>/..`, which the kernel resolves AFTER following the link', async () => {
-    // Lexically `sub/link/..` is `sub`, inside the assembly; the kernel
-    // follows `link` first and then climbs from its target — out of it. The
-    // engine opens the lexical result, and cdkd refuses the spelling outright.
-    const outer = tmp();
-    const cdkOut = join(outer, 'cdk.out');
-    mkdirSync(join(cdkOut, 'sub'), { recursive: true });
-    mkdirSync(join(outer, 'victim', 'secret'), { recursive: true });
-    symlinkSync(join(outer, 'victim', 'secret'), join(cdkOut, 'sub', 'link'));
-
-    await expect(
-      buildContainerImage({ source: { directory: 'sub/link/..' } }, cdkOut, {
-        architecture: 'x86_64',
-        assetOutdir: cdkOut,
-      })
-    ).rejects.toThrow(
-      new RegExp(`source\\.directory=sub/link/\\.\\. which .*${join(outer, 'victim')}, outside`)
-    );
-    expect(builtWith).not.toHaveBeenCalled();
-  });
-
-  it('keeps a forging `<link>/..` value inside one boundary (go-to-k/cdkd#3590)', async () => {
-    const forged = "x'. Contained and healthy. Nothing 'y";
-    const outer = tmp();
-    const cdkOut = join(outer, 'cdk.out');
-    mkdirSync(join(cdkOut, 'sub'), { recursive: true });
-    mkdirSync(join(outer, 'victim', 'secret'), { recursive: true });
-    symlinkSync(join(outer, 'victim', 'secret'), join(cdkOut, 'sub', forged));
-    const value = `sub/${forged}/..`;
-
-    const message = await buildContainerImage({ source: { directory: value } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    }).then(
-      () => '',
-      (e: unknown) => (e as Error).message
-    );
-
-    expect(message).toContain(`source.directory=${JSON.stringify(value)} which `);
-    const rest = [value, `${cdkOut}/${value}`].reduce(
-      (t, v) => t.split(JSON.stringify(v)).join(''),
-      message
-    );
-    expect(rest).not.toContain('Contained and healthy');
-    expect(builtWith).not.toHaveBeenCalled();
-  });
-
-  it("refuses `<link>/..` whose physical result is the assembly's own PARENT", async () => {
-    // The widest shape: the link points at a sibling of `cdk.out`, so `..`
-    // from its target lands on `<outer>` itself (a relative path of exactly
-    // `..` from the bound), not below it.
-    const outer = tmp();
-    const cdkOut = join(outer, 'cdk.out');
-    mkdirSync(join(cdkOut, 'sub'), { recursive: true });
-    mkdirSync(join(outer, 'victim'));
-    symlinkSync(join(outer, 'victim'), join(cdkOut, 'sub', 'link'));
-
-    await expect(
-      buildContainerImage({ source: { directory: 'sub/link/..' } }, cdkOut, {
-        architecture: 'x86_64',
-        assetOutdir: cdkOut,
-      })
-    ).rejects.toThrow(new RegExp(`leads through a symbolic link to ${outer}, outside`));
-    expect(builtWith).not.toHaveBeenCalled();
-  });
-
-  it('delegates an executable-only asset (no directory to judge)', async () => {
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    await buildContainerImage({ source: { executable: ['./build.sh'] } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    expect(builtWith).toHaveBeenCalledTimes(1);
-  });
-
-  it('judges an ABSOLUTE value as the engine joins it: folded under the manifest directory', async () => {
-    // `${cdkOutDir}/${'/etc'}` is `<cdk.out>//etc`, inside the assembly, so it
-    // is not an escape and is not refused (the engine then fails to find it,
-    // as it always has).
-    const cdkOut = join(tmp(), 'cdk.out');
-    mkdirSync(cdkOut);
-
-    await buildContainerImage({ source: { directory: '/etc' } }, cdkOut, {
-      architecture: 'x86_64',
-      assetOutdir: cdkOut,
-    });
-
-    expect(builtWith).toHaveBeenCalledTimes(1);
-    // ...and the honour-and-warn arm, which would claim a build from `/etc`
-    // itself, was not taken.
-    expect(warns).toEqual([]);
-  });
-
-  it('refuses an ABSOLUTE value that the engine join would carry out through a symlink', async () => {
-    // Judged as the honour-and-warn arm, `/link` would be "honoured" as the
-    // real root-level `/link`; the engine instead opens `<cdk.out>/link`, which
-    // leads out of the assembly. The stripped spelling is what catches it.
-    const outer = tmp();
-    const cdkOut = join(outer, 'cdk.out');
-    mkdirSync(cdkOut);
-    mkdirSync(join(outer, 'victim'));
-    symlinkSync(join(outer, 'victim'), join(cdkOut, 'link'));
-
-    await expect(
-      buildContainerImage({ source: { directory: '/link' } }, cdkOut, {
-        architecture: 'x86_64',
-        assetOutdir: cdkOut,
-      })
-    ).rejects.toThrow(/Refusing to build the container image/);
-    expect(builtWith).not.toHaveBeenCalled();
   });
 });
 
@@ -367,14 +180,5 @@ describe('the three call sites hand the shim the APP outdir as the bound', () =>
     // the relative value onto, with the APP outdir as the engine's bound.
     expect(builtWith.mock.calls[0]![1]).toBe(a.manifestDir);
     expect(builtWith.mock.calls[0]![2]).toMatchObject({ assetOutdir: a.assemblyDir });
-  });
-
-  it.each(sites)('$name REFUSES a source.directory escaping the app outdir', async ({ run }) => {
-    const a = stageAssembly('../../victim');
-
-    await expect(run(a)).rejects.toThrow(
-      /Refusing to build the container image: asset source\.directory=\.\.\/\.\.\/victim which/
-    );
-    expect(builtWith).not.toHaveBeenCalled();
   });
 });

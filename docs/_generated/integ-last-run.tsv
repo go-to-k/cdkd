@@ -180,11 +180,11 @@ launchtemplate-asg-inplace	2026-09-23T23:57:53Z	PASS	105	verify.sh	rc ok, orph c
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-09-24T13:18:12Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke	2026-09-24T15:24:57Z	PASS	30	verify.sh	rc ok, docker clean (#3658)
-local-invoke-agentcore	2026-09-24T15:24:57Z	PASS	95	verify.sh	rc ok, docker clean (#3658)
+local-invoke	2026-09-24T15:32:04Z	PASS	40	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-invoke-agentcore	2026-09-24T15:26:43Z	PASS	115	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-invoke-agentcore-from-state	2026-09-24T13:25:51Z	PASS	91	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-buildkit	2026-09-24T13:15:21Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-container	2026-09-24T13:16:20Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-invoke-container	2026-09-24T15:33:55Z	PASS	25	verify.sh	rc ok on 3rd run; runs 1-2 hit the known amd64 RIE Go crash after the build, docker clean
 local-invoke-dotnet	2026-09-24T13:37:22Z	PASS	50	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-from-cfn-stack	2026-09-24T13:33:28Z	PASS	110	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-from-cfn-stack-multi-stack	2026-09-24T13:35:38Z	PASS	130	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
@@ -199,16 +199,16 @@ local-run-task-awsvpc	2026-09-24T13:17:26Z	PASS	15	verify.sh	rc ok, docker clean
 local-run-task-cdkd-assets	2026-09-24T13:17:11Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-run-task-from-state	2026-09-24T14:14:22Z	PASS	190	verify.sh	rc ok, destroy 0 errors, state versions swept; #1855 PR 3651 final (rebased on cdk-local 0.149.3): dual-stack + FIPS pull arms green; DOCKER_CONFIG seeded-auths override
 local-run-task-multi-container	2026-09-24T13:17:42Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-agentcore	2026-09-24T13:06:31Z	PASS	25	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-alb	2026-09-24T13:14:10Z	PASS	25	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-start-agentcore	2026-09-24T15:26:58Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-start-alb	2026-09-24T15:27:48Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb-from-state	2026-09-24T13:31:37Z	PASS	206	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-api	2026-09-24T15:24:57Z	PASS	15	verify.sh	rc ok, docker clean (#3658)
-local-start-api-container	2026-09-24T13:10:38Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-start-api	2026-09-24T15:32:24Z	PASS	20	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-start-api-container	2026-09-24T15:24:47Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-api-rest-v1-non-proxy	2026-09-24T13:18:27Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-start-api-websocket	2026-09-24T13:38:27Z	FAIL	65	verify.sh	amd64 RIE SIGSEGV under emulation (wirep: already in go); same failure on origin/main at cdk-local 0.149.2 -- pre-existing/environmental, not #3654
-local-start-cloudfront	2026-09-24T13:15:50Z	PASS	10	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-service	2026-09-24T13:13:44Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-service-watch-fast	2026-09-24T13:10:08Z	PASS	205	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-start-cloudfront	2026-09-24T15:31:24Z	PASS	10	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-start-service	2026-09-24T15:27:23Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-start-service-watch-fast	2026-09-24T15:31:14Z	PASS	205	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
 loggroup-class-guard	2026-09-24T03:51:15Z	PASS	95	verify.sh	rc ok, orph clean (#3269)
 loggroup-kms-associate	2026-09-24T03:51:15Z	PASS	60	verify.sh	rc ok, orph clean (#3269)
