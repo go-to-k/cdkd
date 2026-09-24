@@ -510,8 +510,11 @@ export class ProviderRegistry {
       // UnsupportedActionException. Throw the clear error here instead.
       // (`isNonProvisionable` additionally covers the mid-transition window
       // where a provider is registered but the Tier 3 regen hasn't run.)
-      if (isNonProvisionable(resourceType) || specificProvider.disableCcApiFallback === true) {
-        throw new Error(this.buildUnroutableSilentDropMessage(resourceType, actionableDrops));
+      const unroutable = this.ccRouteUnavailableReason(resourceType);
+      if (unroutable !== undefined) {
+        throw new Error(
+          this.buildUnroutableSilentDropMessage(resourceType, actionableDrops, unroutable)
+        );
       }
       // Silent drops exist that the user has NOT opted into via the override
       // → auto-route through Cloud Control (which forwards the full property
@@ -551,10 +554,28 @@ export class ProviderRegistry {
   }
 
   /**
+   * Why the Cloud Control auto-route cannot serve `resourceType`, or
+   * `undefined` when it can. The ONE predicate both refusal sites
+   * (`getProviderFor` and `reportSilentDropDecisions`) and the accepted-drop
+   * warn read, so the warn that predicts what a flag-less deploy does cannot
+   * disagree with the refusal that deploy then hits (issue #2792).
+   */
+  private ccRouteUnavailableReason(resourceType: string): string | undefined {
+    if (isNonProvisionable(resourceType)) {
+      return 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it';
+    }
+    if (this.providers.get(resourceType)?.disableCcApiFallback === true) {
+      return "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)";
+    }
+    return undefined;
+  }
+
+  /**
    * Error message for a resource whose template uses SDK-provider-unhandled
    * properties on a type where the Cloud Control auto-route (issue #614) is
    * NOT viable — `ProvisioningType: NON_PROVISIONABLE` (no CC handlers) or a
-   * provider-level `disableCcApiFallback` opt-out. Includes each property's
+   * provider-level `disableCcApiFallback` opt-out; `reason` is
+   * {@link ccRouteUnavailableReason}'s answer. Includes each property's
    * `unhandledByDesign` rationale so the user sees WHY it is unhandled, plus
    * the `--allow-unsupported-properties` escape hatch (which forces the SDK
    * path and accepts the drop — the provider may still reject the resource
@@ -562,13 +583,11 @@ export class ProviderRegistry {
    */
   private buildUnroutableSilentDropMessage(
     resourceType: string,
-    drops: ReadonlyArray<{ property: string; rationale: string }>
+    drops: ReadonlyArray<{ property: string; rationale: string }>,
+    reason: string
   ): string {
     const details = drops.map((d) => `  - ${d.property}: ${d.rationale}`).join('\n');
     const overrideHint = drops.map((d) => `${resourceType}:${d.property}`).join(',');
-    const reason = isNonProvisionable(resourceType)
-      ? 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it'
-      : "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)";
     return (
       `${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
       `this type cannot fall back to Cloud Control API (${reason}):\n` +
@@ -886,12 +905,13 @@ export class ProviderRegistry {
         // manage the type. For a NON_PROVISIONABLE type (or a provider that
         // opted out of CC fallback) the route would fail at provisioning
         // time with an opaque error — reject pre-flight with the clear one.
-        const provider = this.providers.get(resourceType);
-        if (isNonProvisionable(resourceType) || provider?.disableCcApiFallback === true) {
+        const unroutable = this.ccRouteUnavailableReason(resourceType);
+        if (unroutable !== undefined) {
           throw new Error(
             `${logicalId}: ${this.buildUnroutableSilentDropMessage(
               resourceType,
-              drops.filter((d) => autoRouted.includes(d.property))
+              drops.filter((d) => autoRouted.includes(d.property)),
+              unroutable
             )}`
           );
         }
@@ -987,15 +1007,28 @@ export class ProviderRegistry {
         // deploy-safety docs carry the remedy with its conditions, and this
         // line carries only what is true unconditionally.
         //
-        // The reroutable sentence has its OWN third condition, pre-dating this
-        // change and left alone: for a provider declaring
-        // `disableCcApiFallback` removing the override makes the drop
-        // actionable and rule 4 THROWS instead of routing. Issue
-        // [#2792](https://github.com/go-to-k/cdkd/issues/2792).
+        // And BOTH sentences are false for a type with no Cloud Control route
+        // (NON_PROVISIONABLE, or a provider declaring `disableCcApiFallback`;
+        // issue [#2792](https://github.com/go-to-k/cdkd/issues/2792)): with the
+        // override gone the drop is actionable, so the next deploy REFUSES at
+        // pre-flight rather than routing, and a recreate lands on the same SDK
+        // provider that drops it. That type gets one sentence saying what
+        // removing the override does, and no remedy: none applies the property.
         const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
-        const reroutable = overridden.filter((p) => createOnly?.has(p) !== true);
-        const needsRecreate = overridden.filter((p) => createOnly?.has(p) === true);
+        const unroutable = this.ccRouteUnavailableReason(resourceType);
+        const reroutable =
+          unroutable === undefined ? overridden.filter((p) => createOnly?.has(p) !== true) : [];
+        const needsRecreate =
+          unroutable === undefined ? overridden.filter((p) => createOnly?.has(p) === true) : [];
         const remedies: string[] = [];
+        if (unroutable !== undefined) {
+          remedies.push(
+            `This type cannot be routed via Cloud Control API (${unroutable}), so ` +
+              `removing the override makes the deploy refuse at pre-flight instead of ` +
+              `rerouting; cdkd has no route that applies ` +
+              `${overridden.length === 1 ? 'it' : 'them'} to this type.`
+          );
+        }
         if (reroutable.length > 0) {
           remedies.push(
             `Remove the override for ${reroutable.join(', ')} to route this ` +
