@@ -2886,21 +2886,25 @@ export class EC2Provider implements ResourceProvider {
         //   2. Authorize{Ingress,Egress} accept an `IpPermissions` ARRAY, so
         //      N rules become ONE call instead of N.
         //
-        // Failure semantics are unchanged, but ONLY because this is
-        // allSettled and not all. `Promise.all` rejects the moment the first
-        // branch does, while the other two are still in flight -- so the
-        // outer catch would issue DeleteSecurityGroup concurrently with a
-        // pending Authorize / Revoke / CreateTags on the same group. That
-        // delete comes back DependencyViolation or InvalidGroup.NotFound,
-        // the cleanup only warns, and the half-wired SG leaks: exactly the
-        // orphan the cleanup exists to prevent. Serially this could not
-        // happen, because nothing was in flight at cleanup time.
+        // Failure semantics are unchanged, but ONLY because every branch is
+        // drained first. A bare `Promise.all` over the three branches rejects
+        // the moment the first one does, while the other two are still in
+        // flight -- so the outer catch would issue DeleteSecurityGroup
+        // concurrently with a pending Authorize / Revoke / CreateTags on the
+        // same group. That delete comes back DependencyViolation or
+        // InvalidGroup.NotFound, the cleanup only warns, and the half-wired SG
+        // leaks: exactly the orphan the cleanup exists to prevent. Serially
+        // this could not happen, because nothing was in flight at cleanup time.
         //
-        // allSettled waits for all three to settle before anything is thrown,
-        // so the group is quiescent when the delete goes out. The first
-        // rejection is rethrown so the caller sees the original cause; the
-        // remaining rejections are already handled by allSettled and cannot
-        // surface as unhandled.
+        // The drain waits for all three to settle before anything is thrown,
+        // so the group is quiescent when the delete goes out. Of several
+        // rejections, the one rethrown is the one that FAILED FIRST IN TIME
+        // (issue #2804) -- not the first by array position, which is what a
+        // scan of `Promise.allSettled`'s results would pick: each branch gets
+        // its own `catch`, so the callbacks run in rejection order and the
+        // first to fire wins. That choice is visible: the retry classifiers
+        // read the message. Every branch is `catch`-ed, so the rejections not
+        // rethrown cannot surface as unhandled.
         const ingressRules = properties['SecurityGroupIngress'] as
           | Array<Record<string, unknown>>
           | undefined;
@@ -2908,14 +2912,20 @@ export class EC2Provider implements ResourceProvider {
           | Array<Record<string, unknown>>
           | undefined;
 
-        const wiring = await Promise.allSettled([
-          this.applyTags(groupId, properties, logicalId),
-          this.authorizeInlineIngress(groupId, ingressRules),
-          this.applyInlineEgress(groupId, egressRules),
+        // Wrapped, so a branch rejecting with `undefined` still counts as a
+        // rejection.
+        let firstRejection: { readonly error: unknown } | undefined;
+        const recordRejection = (branch: Promise<unknown>): Promise<unknown> =>
+          branch.catch((error: unknown) => {
+            firstRejection ??= { error };
+          });
+        await Promise.all([
+          recordRejection(this.applyTags(groupId, properties, logicalId)),
+          recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
+          recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
-        const firstRejection = wiring.find((r) => r.status === 'rejected');
-        if (firstRejection) {
-          throw (firstRejection as PromiseRejectedResult).reason;
+        if (firstRejection !== undefined) {
+          throw firstRejection.error;
         }
       } catch (innerError) {
         try {
