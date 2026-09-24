@@ -41,7 +41,7 @@ function modulePathOf(handler: string): string {
   return handler.substring(0, handler.lastIndexOf('.'));
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 describe('resolveInlineCodeFilePath', () => {
   it('refuses a Handler whose module path escapes, and creates nothing', () => {

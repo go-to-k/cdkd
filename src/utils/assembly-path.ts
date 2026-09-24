@@ -497,6 +497,40 @@ export function assemblyPathEscape(
 }
 
 /**
+ * What a path may contain and still render WITHOUT a boundary: anything but
+ * whitespace (JS `\s` is Unicode-aware, so NBSP and U+3000 count) and the
+ * characters that read as a quote. Whitespace is what lets a bare value read as
+ * a clause of its own, and a quote character is what would let it fake a
+ * boundary around one.
+ */
+const BARE_PATH = /^[^\s'"`\u2018-\u201f]+$/u;
+
+/**
+ * Render a filesystem path that an assembly chose, or that embeds a value it
+ * chose, into cdkd's own prose (go-to-k/cdkd#3509). The caller writes NO
+ * quotes around the result.
+ *
+ * `displaySafe` alone is not enough inside quotes of cdkd's: it is a denylist
+ * of control characters and passes `'`, so a value carrying one closed cdkd's
+ * quote and wrote a clause of its own into the refusal. This keeps a plain path
+ * bare, and puts any other one inside a JSON string, whose escaping means an
+ * embedded `"` cannot close the boundary it adds.
+ *
+ * Deliberately NOT `displayIdent`, which go-to-k/cdkd#3506 used for a Stage
+ * path: that one is ASCII-only and capped at 255 code points, and a legitimate
+ * path is neither — a non-ASCII directory name would render as spaces, naming
+ * a path that does not exist. Here nothing is truncated and non-ASCII survives;
+ * a path with a space (`/Users/me/My Project/cdk.out`) renders quoted, which
+ * is the one visible change for a legitimate value.
+ */
+export function displayAssemblyPath(value: string): string {
+  const clean = displaySafe(value);
+  // `clean === value`: a value `displaySafe` altered (padding trimmed, a
+  // control character blanked) did not arrive plain, so it gets the boundary.
+  return clean === value && BARE_PATH.test(clean) ? clean : JSON.stringify(clean);
+}
+
+/**
  * The shared tail of every containment refusal: what the value resolved to,
  * what it escaped, and why that means the assembly is not CDK-generated. Each
  * call site supplies its own subject ("Stack 'X' has templateFile='...' which
@@ -505,12 +539,12 @@ export function assemblyPathEscape(
  * other than loading the file — `renderNestedTemplateTreeDefect` says "deploy"
  * or "diff", matching its own sibling refusals.
  *
- * Every interpolation goes through `displaySafe` for the reason
- * `AssemblyReader`'s own refusals give (go-to-k/cdkd#3277): this text exists
- * FOR a hand-modified assembly, so the candidate, the resolved path and even
- * `dir` (below a Stage it derives from the manifest's `directoryName`) are all
- * attacker-chosen, and `formatError` sanitizes only an error's `cause`, never
- * its own `message`.
+ * Every path goes through {@link displayAssemblyPath}, with no quotes of this
+ * function's own, for the reason `AssemblyReader`'s own refusals give
+ * (go-to-k/cdkd#3277): this text exists FOR a hand-modified assembly, so the
+ * candidate, the resolved path and even `dir` (below a Stage it derives from
+ * the manifest's `directoryName`) are all attacker-chosen, and `formatError`
+ * sanitizes only an error's `cause`, never its own `message`.
  */
 export function renderAssemblyPathEscape(
   escape: Extract<ResolvedAssemblyPath, { contained: false }>,
@@ -534,32 +568,31 @@ export function renderAssemblyPathEscape(
   // The SYMLINK arm compares against the base as the KERNEL sees it, because
   // that is what `escape.realPath` is. With `-a /tmp/cdk.out` on macOS
   // (`/tmp -> /private/tmp`) a link to the directory itself otherwise printed
-  // "outside '/tmp/cdk.out'", a false clause about a path that IS the
+  // "outside /tmp/cdk.out", a false clause about a path that IS the
   // directory.
   const realBase = resolveThroughLinks(base) ?? base;
+  const shownPath = displayAssemblyPath(escape.path);
+  const shownBase = displayAssemblyPath(base);
   if (escape.escape === 'symlink') {
     // A link pointing AT the directory reaches here with `realPath === base`,
     // where the "outside" clause below would be a false statement — the same
     // correction the lexical branch carries.
     if (escape.realPath === realBase) {
       return (
-        `resolves to '${displaySafe(escape.path)}', a symbolic link to the directory ` +
-        `'${displaySafe(base)}' itself rather than to a file inside it. ${provenance}`
+        `resolves to ${shownPath}, a symbolic link to the directory ` +
+        `${shownBase} itself rather than to a file inside it. ${provenance}`
       );
     }
     return (
-      `resolves to '${displaySafe(escape.path)}', which leads through a symbolic link to ` +
-      `'${displaySafe(escape.realPath)}', outside '${displaySafe(base)}'. ${provenance}`
+      `resolves to ${shownPath}, which leads through a symbolic link to ` +
+      `${displayAssemblyPath(escape.realPath)}, outside ${shownBase}. ${provenance}`
     );
   }
   // `.`, `./` and `sub/..` are refused because a directory is never a file to
   // read — but they resolve TO the base, so the "outside" clause below would
   // be a false statement about them.
   if (escape.path === base) {
-    return (
-      `names the directory '${displaySafe(base)}' itself rather than a file inside it. ` +
-      `${provenance}`
-    );
+    return `names the directory ${shownBase} itself rather than a file inside it. ${provenance}`;
   }
-  return `resolves to '${displaySafe(escape.path)}', outside '${displaySafe(base)}'. ${provenance}`;
+  return `resolves to ${shownPath}, outside ${shownBase}. ${provenance}`;
 }

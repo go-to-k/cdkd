@@ -74,7 +74,7 @@ describe('cdkd synth --verbose write wiring', () => {
     synthesize.mockResolvedValue({ stacks: [stack('../../escaped')], assemblyDir: out });
 
     await expect(run(out, '../../escaped')).rejects.toThrow(
-      /would write its template to a path that resolves to '.*escaped\.template\.json', outside/
+      /would write its template to a path that resolves to .*escaped\.template\.json, outside/
     );
 
     expect(existsSync(join(dirname(outer), 'escaped.template.json'))).toBe(false);

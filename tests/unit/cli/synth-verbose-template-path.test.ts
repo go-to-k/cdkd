@@ -40,7 +40,7 @@ describe('resolveVerboseTemplatePath', () => {
     const { out } = outdir();
 
     expect(() => resolveVerboseTemplatePath(out, '../../evil')).toThrow(
-      /Stack '\.\.\/\.\.\/evil' would write its template to a path that resolves to '.*evil\.template\.json', outside/
+      /Stack '\.\.\/\.\.\/evil' would write its template to a path that resolves to .*evil\.template\.json, outside/
     );
   });
 
@@ -56,7 +56,7 @@ describe('resolveVerboseTemplatePath', () => {
     symlinkSync(join(outer, 'elsewhere'), join(out, 'link'), 'dir');
 
     expect(() => resolveVerboseTemplatePath(out, 'link/Stack')).toThrow(
-      /leads through a symbolic link to '.*elsewhere\/Stack\.template\.json', outside/
+      /leads through a symbolic link to .*elsewhere\/Stack\.template\.json, outside/
     );
   });
 
@@ -70,7 +70,7 @@ describe('resolveVerboseTemplatePath', () => {
     symlinkSync(join(outer, 'victim', 'authorized_keys'), join(out, 'Foo.template.json'), 'file');
 
     expect(() => resolveVerboseTemplatePath(out, 'Foo')).toThrow(
-      /leads through a symbolic link to '.*victim\/authorized_keys', outside/
+      /leads through a symbolic link to .*victim\/authorized_keys, outside/
     );
   });
 

@@ -46,7 +46,7 @@ function template(assetPath: string): CloudFormationTemplate {
   } as unknown as CloudFormationTemplate;
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 /**
  * The two indexers take their base differently — import derives it from the
@@ -81,7 +81,7 @@ for (const site of SITES) {
 
       expect(() => site.index('../outside.json', child, dir)).toThrow(site.subject);
       expect(() => site.index('../outside.json', child, dir)).toThrow(
-        /Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to '.*outside\.json', outside/
+        /Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
       );
     });
 
@@ -90,7 +90,7 @@ for (const site of SITES) {
       symlinkSync(dirname(dir), join(dir, 'link'), 'dir');
 
       expect(() => site.index('link/outside.json', child, dir)).toThrow(
-        /leads through a symbolic link to '.*outside\.json', outside/
+        /leads through a symbolic link to .*outside\.json, outside/
       );
     });
 
