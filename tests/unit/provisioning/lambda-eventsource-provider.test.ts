@@ -3,6 +3,7 @@ import {
   CreateEventSourceMappingCommand,
   DeleteEventSourceMappingCommand,
   GetEventSourceMappingCommand,
+  ResourceNotFoundException,
   UpdateEventSourceMappingCommand,
 } from '@aws-sdk/client-lambda';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
@@ -60,12 +61,29 @@ describe('LambdaEventSourceMappingProvider', () => {
       };
     }
 
-    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+    // Issue #3627: `EventSourceMappingArn` cannot be built from the UUID, so
+    // import reads it back, as `create()` records it.
+    it('records EventSourceMappingArn read back from GetEventSourceMapping', async () => {
       const uuid = 'abcdef12-3456-7890-abcd-ef1234567890';
+      const esmArn = `arn:aws:lambda:us-east-1:123456789012:event-source-mapping:${uuid}`;
+      mockSend.mockResolvedValueOnce({ UUID: uuid, EventSourceMappingArn: esmArn });
       const result = await provider.import(makeInput({ knownPhysicalId: uuid }));
 
-      expect(result).toEqual({ physicalId: uuid, attributes: { Id: uuid } });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toStrictEqual({
+        physicalId: uuid,
+        attributes: { Id: uuid, EventSourceMappingArn: esmArn },
+      });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]![0].input).toEqual({ UUID: uuid });
+    });
+
+    it('returns null when no mapping exists behind knownPhysicalId', async () => {
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+      const result = await provider.import(makeInput({ knownPhysicalId: 'gone' }));
+
+      expect(result).toBeNull();
     });
 
     it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {

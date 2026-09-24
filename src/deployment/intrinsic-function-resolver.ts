@@ -6485,13 +6485,16 @@ export class IntrinsicFunctionResolver {
     // SNS Topic
     if (resourceType === 'AWS::SNS::Topic') {
       switch (attributeName) {
+        // `SNSTopicProvider` and Cloud Control both record the topic ARN as
+        // the physical id; a bare NAME is kept for any record that holds one.
+        // Reading an ARN as a name served a doubled ARN and an ARN-valued
+        // `TopicName`, with no warning (issue #3627).
         case 'TopicArn':
-          return `arn:${partition}:sns:${region}:${accountId}:${physicalId}`;
+          return physicalId.startsWith('arn:')
+            ? physicalId
+            : `arn:${partition}:sns:${region}:${accountId}:${physicalId}`;
         case 'TopicName':
-          // The physical id IS the topic name (the TopicArn case above is
-          // constructed from it) — a known-correct fallback, so it must
-          // not route through the unknown-attribute guard.
-          return physicalId;
+          return physicalId.startsWith('arn:') ? physicalId.split(':').pop() : physicalId;
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,

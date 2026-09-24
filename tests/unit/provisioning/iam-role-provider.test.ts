@@ -700,11 +700,19 @@ describe('IAMRoleProvider', () => {
     });
 
     it('explicit override: verifies via GetRole and returns the physicalId', async () => {
-      mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // A non-`/` Path: the resolver's `Arn` arm would build `role/my-role`
+      // and lose it, and its `RoleId` arm returns `undefined` (issue #3627).
+      const arn = 'arn:aws:iam::123456789012:role/service/my-role';
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'my-role', Path: '/service/', Arn: arn, RoleId: 'AROAEXAMPLE' },
+      });
 
       const result = await provider.import(importInput({ knownPhysicalId: 'my-role' }));
 
-      expect(result).toEqual({ physicalId: 'my-role', attributes: {} });
+      expect(result).toStrictEqual({
+        physicalId: 'my-role',
+        attributes: { Arn: arn, RoleId: 'AROAEXAMPLE' },
+      });
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRoleCommand);
     });
 

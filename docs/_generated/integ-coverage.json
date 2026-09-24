@@ -941,6 +941,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "glue-update-hardening",
+        "import-attribute-readback",
         "lambda",
         "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
@@ -1004,6 +1005,10 @@
         ],
         "glue-update-hardening": [
           "l2"
+        ],
+        "import-attribute-readback": [
+          "l2",
+          "literal"
         ],
         "lambda": [
           "l2"
@@ -3716,6 +3721,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
+        "import-attribute-readback",
         "import-deployed-parameter-secret",
         "infra-security",
         "intrinsic-functions",
@@ -3861,6 +3867,10 @@
           "literal"
         ],
         "iam-role-prefixed-name-update": [
+          "l2",
+          "literal"
+        ],
+        "import-attribute-readback": [
           "l2",
           "literal"
         ],
@@ -4175,6 +4185,7 @@
         "dynamodb-streams",
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
+        "import-attribute-readback",
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
@@ -4188,6 +4199,10 @@
           "literal"
         ],
         "fifo-sqs-event-source": [
+          "literal"
+        ],
+        "import-attribute-readback": [
+          "l1",
           "literal"
         ],
         "lambda-esm-self-managed-kafka": [
@@ -4234,6 +4249,7 @@
         "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "import-attribute-readback",
         "import-deployed-parameter-secret",
         "import-lambda-url-attributes",
         "kinesis-esm-filter",
@@ -4419,6 +4435,9 @@
           "l2"
         ],
         "iam-role-policies-drift-clean": [
+          "l2"
+        ],
+        "import-attribute-readback": [
           "l2"
         ],
         "import-deployed-parameter-secret": [
@@ -5359,6 +5378,7 @@
         "export",
         "full-stack-demo",
         "iam-propagation-stress",
+        "import-attribute-readback",
         "importvalue-chain",
         "intrinsics-torture",
         "intrinsics-torture-2",
@@ -5437,6 +5457,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "import-attribute-readback": [
+          "l2",
+          "literal"
         ],
         "importvalue-chain": [
           "l2"
@@ -5796,6 +5820,7 @@
         "export-nested-stack",
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
+        "import-attribute-readback",
         "import-attributes",
         "import-deployed-parameter-secret",
         "import-lambda-url-attributes",
@@ -5916,6 +5941,9 @@
         ],
         "getstackoutput-crossregion": [
           "l1",
+          "l2"
+        ],
+        "import-attribute-readback": [
           "l2"
         ],
         "import-attributes": [
