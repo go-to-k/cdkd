@@ -5089,8 +5089,8 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
  *
  * Site 1's block clears that bar by holding exactly two values, both gated by
  * the same `rendersExactly`. The other three blocks carry a property path, a
- * resource type or an AWS readback value, so they keep their command in prose —
- * go-to-k/cdkd#3436's class, recorded there.
+ * resource type, a state-write error message or an AWS readback value, so they
+ * keep their command in prose — go-to-k/cdkd#3436's class, recorded there.
  */
 describe('site 1 prints its command on a labelled line and names no unsafe key (go-to-k/cdkd#3307)', () => {
   // Restored (M16 of the go-to-k/cdkd#3486 review): these cases moved here from

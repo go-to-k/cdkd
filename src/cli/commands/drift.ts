@@ -986,14 +986,16 @@ async function driftCommand(
         // The command is BUILT by the gate and printed LAST on a labelled line,
         // and the identity rides one of its own — never inside the sentence.
         // Pasting a prose `'...'` span WITH its quotes is what ran an
-        // interpolated value (go-to-k/cdkd#3363), and `displayIdent` would not
-        // have closed it either: double quotes do not stop command
-        // substitution.
+        // interpolated value (go-to-k/cdkd#3363), and `displayIdent` would
+        // have closed only half of it: it collapses a newline, so the FORGING
+        // half goes, but a `$(...)` name comes back inside its JSON quotes
+        // intact — double quotes do not stop command substitution.
         //
         // This is the ONLY site here that prints a labelled command line. The
-        // other three carry a property path, a resource type or an AWS
-        // readback value in the same block, and those cannot be gated for
-        // exactness and still printed — so a labelled line there would be a
+        // other three carry a property path, a resource type, a state-write
+        // error message or an AWS readback value in the same block, and those
+        // cannot be gated for exactness and still printed — so a labelled line
+        // there would be a
         // trusted shape beside an untrusted value. They keep their command in
         // prose, and the class is go-to-k/cdkd#3436's.
         const migrate = stackCommandFor('cdkd deploy', ref.stackName, { patternMatched: true });
@@ -6934,7 +6936,8 @@ function rendersExactly(value: string): boolean {
  * USED BY SITE 1 ALONE, deliberately. A labelled command line is only safe in
  * a block whose OTHER values are gated too, and site 1's block carries exactly
  * two: this identity and the command beside it. The blocks that also carry a
- * property path, a resource type or an AWS readback value cannot meet that bar
+ * property path, a resource type, a state-write error message or an AWS
+ * readback value cannot meet that bar
  * by sanitizing — an arbitrary value cannot be gated for exactness and still
  * printed — so they keep their command in prose and the whole class is
  * [#3436](https://github.com/go-to-k/cdkd/issues/3436)'s.
@@ -6942,11 +6945,13 @@ function rendersExactly(value: string): boolean {
 function stackIdentityLine(
   stackName: string,
   /**
-   * No production caller passes this — site 1 renders at column 0. Kept, with
-   * its hazard-matrix cases, as go-to-k/cdkd#3436's landing place, where a
-   * nested block will want the line indented. Documented HERE rather than only
-   * in `stackCommandFor`'s docblock, which is where round 5 found it
-   * (optional): a dead parameter's justification belongs on the parameter.
+   * No production caller passes this, and NOTHING exercises it — this function
+   * is private and its one caller omits the parameter, so deleting `${indent}`
+   * reds nothing. Kept as go-to-k/cdkd#3436's landing place, where a nested
+   * block will want the line indented; read it as a placeholder, not as a
+   * tested path. Documented HERE rather than only in `stackCommandFor`'s
+   * docblock, which is where round 5 found it: a dead parameter's
+   * justification belongs on the parameter.
    */
   indent = ''
 ): string | undefined {
