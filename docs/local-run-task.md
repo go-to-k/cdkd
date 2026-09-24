@@ -351,9 +351,19 @@ So when `CDK_DOCKER` names finch on macOS or Windows:
   containers' secrets and credentials reach that command line without notice.
 - **The AWS credentials cdkd hands a container** (and the metadata-endpoint
   sidecar) are still forwarded, with a warning naming the variables but not
-  their values. finch places the credentials of its own environment on that
-  command line for every command anyway, so refusing them would disable finch
-  without removing the exposure.
+  their values. Forwarding them is what puts them on that command line, which
+  matters most for credentials that are not in cdkd's own environment:
+  `--assume-task-role` session credentials (served by the metadata sidecar;
+  `--assume-role` for `invoke-agentcore`) and credentials resolved from
+  `--profile` (including SSO). They are warned about rather than refused so
+  that finch stays usable for containers that need AWS access. To keep them off
+  the command line, use a client other than finch on macOS or Windows.
+- **The AWS credentials in cdkd's own environment** — your shell's, or the role
+  `--role-arn` assumed — reach that command line on every finch command,
+  including pulls, builds and network setup. finch does that by itself, and on
+  Windows with its `ecr-login` credential helper configured it also adds the
+  credentials `aws configure export-credentials` returns. cdkd does not refuse
+  or warn about either.
 
 finch is recognised by the file name `CDK_DOCKER` resolves to: `finch`, or
 `finch.exe`, in any case. A wrapper script or a symlink under another name is
