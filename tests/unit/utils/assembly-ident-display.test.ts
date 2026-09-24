@@ -409,20 +409,24 @@ describe('cdkd synth --verbose: the stack name in the refusal subject', () => {
 describe('every other identifier site keeps a forging value inside one boundary', () => {
   it('file asset warnings: absolute path, absolute outdir and relative outdir', () => {
     const dir = tmp();
-    const run = (path: string): string => {
+    const run = (path: string, displayName: string): string => {
       warns.length = 0;
       resolveFileAssetSourcePath(
         dir,
-        { displayName: FORGED, source: { path, packaging: 'zip' }, destinations: {} } as never,
+        { displayName, source: { path, packaging: 'zip' }, destinations: {} } as never,
         { assetOutdir: dir, sink: 'upload it' }
       );
       expect(warns).toHaveLength(1);
       return warns[0]!;
     };
     for (const path of ['/abs/elsewhere', dir, '.']) {
-      const said = run(path);
+      const said = run(path, FORGED);
       expect(said.startsWith(`File asset ${SHOWN} has `)).toBe(true);
       expect(outside(said)).not.toContain('Contained and healthy');
+      // A non-ASCII construct id stays readable in every warning arm too.
+      expect(run(path, 'MyStack/\u8cc7\u7523').startsWith('File asset MyStack/\u8cc7\u7523 has ')).toBe(
+        true
+      );
     }
   });
 
