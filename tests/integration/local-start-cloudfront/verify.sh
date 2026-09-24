@@ -183,7 +183,7 @@ TAMPER_RC=0
 wait "${CDKD_PID}" || TAMPER_RC=$?
 CDKD_PID=""
 [[ "${TAMPER_RC}" -ne 0 ]] || fail "start-cloudfront exited 0 on an assembly whose S3 origin escapes it"
-grep -Eq "BucketDeployment source asset for bucket .* has source\.path='\.\./victim' which resolves to .*victim', outside" "${OUT_FILE}" \
+grep -Eq "BucketDeployment source asset for bucket .* has source\.path=\.\./victim which resolves to [^ ]*victim, outside" "${OUT_FILE}" \
   || fail "start-cloudfront did not name the escaping S3 origin in its refusal"
 
 echo "PASS: cdkd local start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, and a --watch reload, and refused an escaping S3 origin."

@@ -6,8 +6,7 @@ import {
   runDockerStreaming,
   spawnStreaming,
 } from '../utils/docker-cmd.js';
-import { realpathSync } from 'fs';
-import { isAbsolute, relative, resolve, sep } from 'path';
+import { isAbsolute, resolve } from 'path';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
@@ -245,100 +244,6 @@ export function resolveDockerContextDirectory(opts: DockerContextResolveOptions)
 /** One spelling of the warning subject, so the two arms cannot drift. */
 function dockerSubject(assetId: string | undefined): string {
   return assetId === undefined ? 'A Docker asset' : `Docker asset ${displayIdent(assetId)}`;
-}
-
-/** Every value {@link assertCdkLocalDockerContextContained} decides on, as a bag. */
-export interface CdkLocalDockerContextOptions {
-  /**
-   * The directory the bundled engine joins `source.directory` onto — the
-   * manifest's own directory, which it calls `cdkOutDir`.
-   */
-  manifestDir: string;
-  /** The manifest entry's `source`, as the engine will read it. */
-  source: DockerImageAssetSource;
-  /**
-   * The containment bound: the app's outdir (`StackInfo.assetOutdir`, or the
-   * assembly root `Synthesizer.synthesize` reported). Never the manifest
-   * directory for a Stage stack, whose assets sit one level above it.
-   */
-  assetOutdir: string;
-  /** Wrap the refusal in the call site's own typed error class. */
-  wrapError: (message: string) => Error;
-}
-
-/**
- * Refuse a Docker asset whose build context the bundled `cdk-local` engine
- * would take from outside the assembly (issue
- * [#3503](https://github.com/go-to-k/cdkd/issues/3503)).
- *
- * Since cdk-local 0.149.3 the engine's own `buildDockerImage` refuses the same
- * escapes and opens the path it judged (go-to-k/cdkd#3597). This copy stays in
- * FRONT of it because the engine's refusal quotes the assembly-chosen value in
- * a boundary the value can close (go-to-k/cdk-local#758), while this one
- * renders it through `displayAssemblyPath`; go-to-k/cdkd#3652 removes it once
- * that ships. It judges the path the engine's `${cdkOutDir}/${source.directory}`
- * spelling names, before the engine runs, through the same
- * {@link resolveDockerContextDirectory} cdkd's own build uses.
- *
- * An ABSOLUTE value is judged by the engine's spelling, not honoured: the
- * concatenation folds it UNDER the manifest directory, so its leading
- * separators are stripped and the remainder takes the relative arm. That
- * keeps a symlink inside the assembly from becoming an escape through an
- * absolute spelling, and keeps the honour-and-warn arm, which describes a
- * build this engine never performs, out of these paths.
- */
-export function assertCdkLocalDockerContextContained(opts: CdkLocalDockerContextOptions): void {
-  const { manifestDir, source, assetOutdir, wrapError } = opts;
-  const directory = source.directory;
-  // No directory: the executable arm runs from the manifest directory itself,
-  // and the directory arm is refused by the engine before it reads anything.
-  if (!directory) return;
-  const asEngineJoinsIt = isAbsolute(directory) ? directory.replace(/^[/\\]+/, '') : directory;
-  resolveDockerContextDirectory({
-    manifestDir,
-    directory: asEngineJoinsIt,
-    wrapError,
-    assetOutdir,
-    // The engine takes the `executable` arm first when both fields are set,
-    // exactly as `buildDockerImage` below does, so the sink follows it.
-    sink:
-      source.executable && source.executable.length > 0
-        ? "run this asset's source.executable with that directory as its working directory"
-        : 'send that directory to docker build as the context of an image cdkd then runs locally',
-  });
-  // The kernel applies `..` AFTER following a link: `sub/link/..` lands in the
-  // link target's parent, while every lexical model (including
-  // `resolveAssemblyPath`, which folds `..` before it resolves links) reads it
-  // as `sub`. The engine now opens the lexical result, which is inside; this
-  // copy still refuses the spelling, the stricter of the two readings. A
-  // spelling that does not resolve is left to the engine.
-  const engineSpelled = `${manifestDir}/${asEngineJoinsIt}`;
-  const physical = tryRealpathNative(engineSpelled);
-  if (physical === undefined) return;
-  const bound = tryRealpathNative(assetOutdir) ?? resolve(assetOutdir);
-  const rel = relative(bound, physical);
-  if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return;
-  throw wrapError(
-    `asset source.directory=${displayAssemblyPath(directory)} which ` +
-      renderAssemblyPathEscape(
-        { contained: false, escape: 'symlink', path: engineSpelled, realPath: physical },
-        assetOutdir,
-        'build it'
-      )
-  );
-}
-
-/**
- * `realpath(3)`, or `undefined` when the path does not resolve. `.native` is
- * load-bearing: the JavaScript `realpathSync` folds `..` lexically first,
- * which is the very reading the check above exists to avoid.
- */
-function tryRealpathNative(p: string): string | undefined {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return undefined;
-  }
 }
 
 /**

@@ -11,7 +11,6 @@ import {
   type PlannedAction,
 } from './ecs-service-emulator.js';
 import { cdkdExtraStateProviders } from './local-state-source.js';
-import { containEmulatorDockerContexts } from './emulator-docker-context.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
@@ -185,8 +184,7 @@ export function warnUnresolvedLambdaTargetEnv(
 
 /**
  * The `EmulatorStrategy` `cdkd local start-alb` runs with: cdk-local's ALB
- * strategy, decorated by {@link warnUnresolvedLambdaTargetEnv} and then by
- * `containEmulatorDockerContexts` (issue go-to-k/cdkd#3503).
+ * strategy, decorated by {@link warnUnresolvedLambdaTargetEnv}.
  *
  * Extracted from the command's action for ONE reason, and it is the finding
  * that produced it: with the composition written inline in the `.action(...)`
@@ -206,12 +204,7 @@ export function warnUnresolvedLambdaTargetEnv(
  * can satisfy reads as coverage while providing none.
  */
 export function buildAlbEmulatorStrategy(options: LocalStartAlbOptions): EmulatorStrategy {
-  // Outermost, so the check runs whatever the inner decorators return, and
-  // unconditionally: the engine builds images with or without `--from-state`
-  // (issue go-to-k/cdkd#3503).
-  return containEmulatorDockerContexts(
-    warnUnresolvedLambdaTargetEnv(albStrategy(options), options)
-  );
+  return warnUnresolvedLambdaTargetEnv(albStrategy(options), options);
 }
 
 /**

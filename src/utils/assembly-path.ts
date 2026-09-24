@@ -504,7 +504,9 @@ export function assemblyPathEscape(
  * Modifier Letters block (U+02BA reads as `"`, U+02BC as `'`) plus the ones
  * outside it (U+0374, U+0559, U+07F4-U+07F5, U+A78B-U+A78C, and the halfwidth
  * sound marks U+FF9E-U+FF9F). Not all of `\p{Lm}`: U+30FC is in it, and it is
- * an ordinary character of a Japanese directory name.
+ * an ordinary character of a Japanese directory name. `classify` tests
+ * {@link DEFAULT_IGNORABLE} first, so that carve-out is a backstop here, kept
+ * so the class matches cdk-local's `displayUntrustedValue`.
  */
 const VISIBLE_LETTER = new RegExp(
   String.raw`^(?![\p{Default_Ignorable_Code_Point}\u02b0-\u02ff\u0374\u0559\u07f4\u07f5\ua78b\ua78c\uff9e\uff9f])[\p{L}\p{N}]$`,
@@ -517,6 +519,15 @@ const VISIBLE_LETTER = new RegExp(
  * and U+030B / U+030E there look like a quote.
  */
 const COMBINING_MARK = /^\p{M}$/u;
+
+/**
+ * A default-ignorable code point, which draws as NOTHING. Tested before the
+ * mark rule, because some are combining marks (U+034F, U+17B4, U+180B, the
+ * variation selectors U+FE00-U+FE0F and U+E0100-U+E01EF): after a letter they
+ * would otherwise pass as bare, and `/home/me/.ss\u034fh` would print exactly
+ * like `.ssh` while naming a different path (go-to-k/cdkd#3656).
+ */
+const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
 
 /**
  * The ASCII a bare path may carry besides letters and digits. Everything else —
@@ -539,6 +550,10 @@ const BARE_PUNCTUATION = /^[/\\._~+@:=-]$/;
 function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'> {
   let afterLetter = false;
   return chars.map((ch) => {
+    if (DEFAULT_IGNORABLE.test(ch)) {
+      afterLetter = false;
+      return 'escaped';
+    }
     if (COMBINING_MARK.test(ch)) return afterLetter ? 'bare' : 'escaped';
     afterLetter = VISIBLE_LETTER.test(ch);
     if (afterLetter || BARE_PUNCTUATION.test(ch)) return 'bare';

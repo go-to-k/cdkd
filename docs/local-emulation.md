@@ -201,11 +201,16 @@ Refused:
   service's image, and a container-image Lambda behind the ALB), and a
   container-image Lambda behind a function URL origin of
   `cdkd local start-cloudfront`. A relative value that leaves the app's output
-  directory, through `..` or a symbolic link, is refused before anything is
-  spawned. An absolute value is placed UNDER the manifest's directory, which is
-  how the build has always joined it. For `start-service` / `start-alb`, cdkd
-  also checks every stack in the assembly before any image is built, when the
-  run starts and again on every `--watch` reload;
+  directory, through `..` or a symbolic link, is refused before the image is
+  built or the script runs. An absolute value is placed UNDER the manifest's
+  directory, which is how the build has always joined it. `sub/<link>/..` is
+  built from `sub`, as the path is written, which stays inside. Each image is
+  checked as it is built, so `start-service` / `start-alb` create their
+  network and metadata container (and `start-alb` its front door) first, and
+  check again on every `--watch` rebuild. `--no-build` reuses a cached image and opens no directory, so there
+  is nothing to check. The refusal prints the value bare when it is a plain
+  path and as one quoted string otherwise, so a crafted value cannot add words
+  of its own to it;
 - the directory a `--watch` soft reload copies into a running container
   (`start-service`, `start-alb`, `invoke-agentcore`, `start-agentcore`): a
   relative escape, and ANY absolute value outside the output directory. The
