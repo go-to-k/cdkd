@@ -351,7 +351,7 @@ export class ProviderRegistry {
   /**
    * Escape hatch for the `--allow-unsupported-properties` CLI flag. Each entry
    * is a `<ResourceType>:<PropertyName>` token (e.g.
-   * `AWS::Lambda::Function:RuntimeManagementConfig`). As of issue
+   * `AWS::ApiGatewayV2::Api:Body`). As of issue
    * [#614](https://github.com/go-to-k/cdkd/issues/614), the flag now means
    * "force the SDK Provider path and accept the silent drop" — the default
    * for an un-flagged silent-drop property is to auto-route the resource
@@ -1119,7 +1119,7 @@ export class ProviderRegistry {
    * `--allow-unsupported-properties` allow set — i.e. every resource that
    * {@link getProviderFor} would auto-route via Cloud Control. Returned
    * entries carry the silent-drop property names so plan / diff renderers
-   * can show `[via CC API: RuntimeManagementConfig]`.
+   * can show `[via CC API: Body]`.
    *
    * Does NOT log or throw. Use {@link reportSilentDropDecisions} for the
    * side-effecting info / warn surface.

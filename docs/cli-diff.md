@@ -90,11 +90,11 @@ instead of a block.
 ### Routing annotation
 
 Every CREATE / UPDATE line whose template uses a top-level CloudFormation
-property cdkd's SDK provider does not yet wire is tagged with the properties
+property cdkd's SDK provider does not (yet) wire is tagged with the properties
 that force the fallback:
 
 ```text
-  [~] ApiFunction (AWS::Lambda::Function) [via CC API: RuntimeManagementConfig]
+  [~] HttpApi (AWS::ApiGatewayV2::Api) [via CC API: Body]
 ```
 
 This is the same auto-fallback the deploy engine applies, surfaced at plan time
