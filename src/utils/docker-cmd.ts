@@ -430,6 +430,69 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   // `aws ecr get-login-password` wrappers). `ENV` is interactive-only and is
   // deliberately absent.
   'BASH_ENV',
+  // bash imports `SHELLOPTS` at startup, even as `/bin/sh`, and `xtrace`
+  // expands `PS4` before every command, so the pair runs a command
+  // substitution in any helper written as a shell script (`docker-credential-
+  // gcloud` is one) (#3599). Exported functions (`BASH_FUNC_<name>%%`) are
+  // caught by PREFIX in `isDockerClientEnvKey`: one named after a command
+  // the script calls replaces it. `BASHOPTS` is absent, because no shopt
+  // option runs code by itself.
+  'SHELLOPTS',
+  'PS4',
+  // Interpreter variables of a credential helper written in a scripting
+  // language (#3599). The template chooses the image, so it chooses the
+  // registry, and so which `credHelpers` entry docker execs. Exact names, not
+  // `PYTHON` / `NODE_` / `RUBY` / `PERL` prefixes: those families carry
+  // realistic secrets (`NODE_AUTH_TOKEN`, `RUBYGEMS_API_KEY`), and each
+  // runtime's code-loading set is small and documented. Interactive-only vars
+  // (`PYTHONSTARTUP`, `PYTHONINSPECT`) stay off, as `ENV` does: a helper's
+  // stdin is docker's pipe, not a terminal.
+  // Python: the module search path and prefixes it loads code from.
+  // `PYTHONWARNINGS` imports the module a warning category names, and
+  // `antigravity` then opens `BROWSER`, which runs a command even under `-S`.
+  'PYTHONPATH',
+  'PYTHONHOME',
+  'PYTHONUSERBASE',
+  'PYTHONPYCACHEPREFIX',
+  'PYTHONPLATLIBDIR',
+  'PYTHONWARNINGS',
+  'BROWSER',
+  // CA bundles that Python's `requests` (gcloud keeps `trust_env` on) and
+  // gcloud's bundled httplib2 read: WHAT IT TRUSTS.
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HTTPLIB2_CA_CERTS',
+  // Where gcloud fetches the operator's credentials on GCE: the metadata-server
+  // twin of `AWS_EC2_METADATA_SERVICE_ENDPOINT` below. The rest of gcloud's
+  // env surface is the `CLOUDSDK_` prefix family.
+  'GCE_METADATA_HOST',
+  'GCE_METADATA_ROOT',
+  'GCE_METADATA_IP',
+  // Node: `NODE_OPTIONS` takes `--import=data:...`, which runs code with no file
+  // on disk; the other two decide which code and which CAs it trusts.
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  // Ruby and Perl: `PERL5OPT=-d` plus `PERL5DB` runs code with no file on disk.
+  // `GEM_PATH` / `GEM_HOME` are where RubyGems resolves a `require`, the
+  // `NODE_PATH` class.
+  'RUBYOPT',
+  'RUBYLIB',
+  'GEM_PATH',
+  'GEM_HOME',
+  'PERL5OPT',
+  'PERL5LIB',
+  'PERLLIB',
+  'PERL5DB',
+  // OpenSSL 3 as linked by Python (and so gcloud) reads `OPENSSL_CONF` when
+  // it builds a TLS context, and a config there can activate a provider
+  // module, a shared object it dlopens: the `GCONV_PATH` class.
+  // `OPENSSL_MODULES` / `OPENSSL_ENGINES` are the directories it loads those
+  // from.
+  'OPENSSL_CONF',
+  'OPENSSL_MODULES',
+  'OPENSSL_ENGINES',
   // SSH — the `ssh://`-context connection helper's exec/trust-bearing vars,
   // enumerated EXACTLY rather than by an `SSH_` prefix (#2186 review round 3):
   // the client-side exec/trust set is CLOSED (last addition
@@ -587,9 +650,14 @@ const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
  * family aws-sdk-go-v2 (and so `docker-credential-ecr-login`) honours — a
  * secret named `AWS_ENDPOINT_URL_ECR` walks around the exact
  * `AWS_ENDPOINT_URL` entry and redirects a request signed with the operator's
- * real credentials (#2186 round 4). No plausible secret name collides with
- * any of the three. Matched by prefix rather than enumerated (issue #2183
- * review). `SSH_` was a prefix here and was demoted to an EXACT enumeration
+ * real credentials (#2186 round 4). `CLOUDSDK_` is gcloud's (#3599): every
+ * gcloud property is settable as `CLOUDSDK_<SECTION>_<NAME>`, which covers
+ * its token host, API endpoint overrides, proxy, CA bundle and account, and
+ * the `docker-credential-gcloud` wrapper execs `$CLOUDSDK_PYTHON
+ * $CLOUDSDK_PYTHON_ARGS`. `BASH_FUNC_` is bash's exported-function family.
+ * No plausible secret name collides with these, apart from the one listed in
+ * {@link DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS}. Matched by prefix rather than
+ * enumerated (issue #2183 review). `SSH_` was a prefix here and was demoted to an EXACT enumeration
  * in {@link DOCKER_CLIENT_ENV_KEYS} (#2186 review round 3): the family is not
  * uniformly dangerous and is not growing, while the prefix broke realistic,
  * currently-working secrets (`SSH_PRIVATE_KEY`, GitLab CI's canonical
@@ -597,19 +665,44 @@ const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
  * contents — a hardcoded copy in the test made the anti-shadowing fence
  * one-directional (#2186 round 4 finding 2).
  */
-export const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = ['LD_', 'DYLD_', 'AWS_ENDPOINT_URL_'];
+export const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = [
+  'LD_',
+  'DYLD_',
+  'AWS_ENDPOINT_URL_',
+  'CLOUDSDK_',
+  'BASH_FUNC_',
+];
+
+/**
+ * Exact names inside a {@link DOCKER_CLIENT_ENV_PREFIXES} family that are still
+ * delivered. An entry must be a realistic secret name AND harmless to the
+ * helper that reads it. `CLOUDSDK_AUTH_ACCESS_TOKEN` is gcloud's own variable
+ * for a caller-supplied access token (#3599). Given to `docker-credential-gcloud`,
+ * it only changes which token gcloud hands docker, with no network call of its
+ * own. gcloud's `auth docker-helper` answers only for a registry in its own
+ * supported list unless `artifacts/allow_unrecognized_registry` is set, and
+ * that property, the token host, the universe domain and every other variable
+ * that could redirect or weaken the exchange stay refused by the `CLOUDSDK_`
+ * prefix. Stored upper-case and matched case-insensitively. Never exempt an
+ * exact {@link DOCKER_CLIENT_ENV_KEYS} member: the exact list wins.
+ */
+export const DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS: ReadonlySet<string> = new Set([
+  'CLOUDSDK_AUTH_ACCESS_TOKEN',
+]);
 
 /**
  * Is `key` the name of a var the docker client reads? Case-INSENSITIVE, because
  * Windows environment lookups are, so a lowercase `docker_host` must be caught
  * too (issue #2183). Matches the exact denylist OR a prefixed family — the
  * prefix families are fail-closed on the whole prefix, so an unlisted `LD_*` /
- * `DYLD_*` / `AWS_ENDPOINT_URL_*` secret is dropped (with a rename warning)
- * rather than reaching the client.
+ * `DYLD_*` / `AWS_ENDPOINT_URL_*` / `CLOUDSDK_*` / `BASH_FUNC_*` secret is
+ * dropped (with a rename warning) rather than reaching the client, except for
+ * a name in {@link DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS}.
  */
 export function isDockerClientEnvKey(key: string): boolean {
   const upper = key.toUpperCase();
   if (DOCKER_CLIENT_ENV_KEYS_UPPER.has(upper)) return true;
+  if (DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS.has(upper)) return false;
   return DOCKER_CLIENT_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
 

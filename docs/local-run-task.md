@@ -297,12 +297,14 @@ process arguments. The secret's **name** decides whether it is forwarded at all.
 Two name shapes are dropped entirely — no `-e` flag and no spawn-environment
 entry:
 
-- **A name that collides with a variable the container client itself reads**,
-  matched case-insensitively. The client is the Docker CLI, or the podman,
-  nerdctl or finch binary `CDK_DOCKER` names. Forwarding such a name would let a
+- **A name that collides with a variable the container client reads**, or that
+  a credential helper the client runs for an image pull reads, matched
+  case-insensitively. The client is the Docker CLI, or the podman, nerdctl or
+  finch binary `CDK_DOCKER` names. Forwarding such a name would let a
   template-controlled secret name redirect that client — a secret named
   `DOCKER_HOST` (or `CONTAINER_HOST` under podman) could point it at a
-  different daemon. The families covered are listed in the table below.
+  different daemon — or run code in the helper. The families covered are
+  listed in the table below.
 - **A malformed name** — empty, or containing `=` or NUL. The `=` case is the
   dangerous one: the OS parses an environment entry's name as everything before
   the first `=`, so a secret named `PATH=/tmp/evil:` would land as `PATH`, a
@@ -314,6 +316,8 @@ entry:
 | Process, loader and trust variables | `PATH`, `HOME`, `GCONV_PATH`, `SSL_CERT_FILE`; the `LD_` / `DYLD_` prefixes |
 | SSH helper variables | `SSH_AUTH_SOCK`, `SSH_ASKPASS` |
 | AWS variables `docker-credential-ecr-login` reads | `AWS_PROFILE`, `AWS_ECR_CACHE_DIR`; the `AWS_ENDPOINT_URL_` prefix |
+| gcloud variables `docker-credential-gcloud` reads | `GCE_METADATA_HOST`; the `CLOUDSDK_` prefix, except `CLOUDSDK_AUTH_ACCESS_TOKEN`, which is forwarded |
+| Interpreter variables of a credential helper written in a scripting language | `SHELLOPTS`, `PS4`, `PYTHONPATH`, `PYTHONWARNINGS`, `BROWSER`, `REQUESTS_CA_BUNDLE`, `NODE_OPTIONS`, `RUBYOPT`, `PERL5OPT`, `OPENSSL_CONF`; the `BASH_FUNC_` prefix |
 | podman connection and config files | `CONTAINER_HOST`, `CONTAINERS_CONF`, `REGISTRY_AUTH_FILE` |
 | nerdctl connection, config and CNI | `CONTAINERD_ADDRESS`, `NERDCTL_TOML`, `CNI_PATH` |
 | finch's Lima layer | `SSH` |

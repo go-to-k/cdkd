@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   DOCKER_CLIENT_ENV_KEYS,
   DOCKER_CLIENT_ENV_PREFIXES,
+  DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS,
   dockerSpawnEnvWithSensitive,
   isDockerClientEnvKey,
   isMalformedEnvKey,
@@ -335,6 +336,39 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'GLIBC_TUNABLES',
     'GCONV_PATH',
     'BASH_ENV',
+    // Scripting-language credential helpers (#3599): bash's xtrace pair, then
+    // the Python / Node / Ruby / Perl interpreter vars, the CA bundles gcloud's
+    // Python transports read, and gcloud's metadata-server overrides.
+    'SHELLOPTS',
+    'PS4',
+    'PYTHONPATH',
+    'PYTHONHOME',
+    'PYTHONUSERBASE',
+    'PYTHONPYCACHEPREFIX',
+    'PYTHONPLATLIBDIR',
+    'PYTHONWARNINGS',
+    'BROWSER',
+    'REQUESTS_CA_BUNDLE',
+    'CURL_CA_BUNDLE',
+    'HTTPLIB2_CA_CERTS',
+    'GCE_METADATA_HOST',
+    'GCE_METADATA_ROOT',
+    'GCE_METADATA_IP',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'NODE_EXTRA_CA_CERTS',
+    'NODE_TLS_REJECT_UNAUTHORIZED',
+    'RUBYOPT',
+    'RUBYLIB',
+    'GEM_PATH',
+    'GEM_HOME',
+    'PERL5OPT',
+    'PERL5LIB',
+    'PERLLIB',
+    'PERL5DB',
+    'OPENSSL_CONF',
+    'OPENSSL_MODULES',
+    'OPENSSL_ENGINES',
     // SSH is an EXACT enumeration, not a prefix (#2186 review round 3): the
     // client-side exec/trust set is closed, and an `SSH_` prefix broke
     // realistic secrets like GitLab CI's `SSH_PRIVATE_KEY`.
@@ -454,6 +488,17 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'AWS_ENDPOINT_URL_ECR', // per-service endpoint form aws-sdk-go-v2 honours
     'AWS_ENDPOINT_URL_STS', // worse still: redirects where the OIDC token is posted
     'aws_endpoint_url_ecr', // lowercase
+    // gcloud's property family (#3599): every property is `CLOUDSDK_<SECTION>_<NAME>`.
+    'CLOUDSDK_PYTHON', // the interpreter the docker-credential-gcloud wrapper execs
+    'CLOUDSDK_PYTHON_ARGS', // expanded UNQUOTED onto that exec
+    'CLOUDSDK_AUTH_TOKEN_HOST', // where the operator's refresh token is exchanged
+    'CLOUDSDK_API_ENDPOINT_OVERRIDES_IAMCREDENTIALS', // unlisted: one of many overrides
+    'CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE',
+    'CLOUDSDK_CONFIG', // the wrapper sources `virtenv/bin/activate` under it
+    'cloudsdk_python_args', // lowercase
+    'BASH_FUNC_which%%', // bash exported function: replaces `which` in the wrapper
+    'BASH_FUNC_docker%%',
+    'BASH_FUNC_which()', // the other post-Shellshock spelling some distros patch in
   ])('treats prefixed client var %s as a docker-client var and drops it', (key) => {
     expect(isDockerClientEnvKey(key)).toBe(true);
     expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).toBe(process.env[key]);
@@ -483,6 +528,18 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'NERDCTL_PASSWORD',
     'CONTAINERS_TOKEN',
     'SSH_KEY', // `SSH` is an exact entry, not a prefix
+    // #3599: the interpreter additions are exact names too, and the one
+    // `CLOUDSDK_` exemption is delivered.
+    'NODE_AUTH_TOKEN', // setup-node's npm token spelling; not a `NODE_` prefix
+    'RUBYGEMS_API_KEY', // not a `RUBY` prefix
+    'PYTHONANYWHERE_API_TOKEN', // not a `PYTHON` prefix
+    'BROWSERSTACK_ACCESS_KEY', // `BROWSER` is exact
+    'GOOGLE_APPLICATION_CREDENTIALS', // docker-credential-gcloud does not read it
+    'CLOUDSDK_AUTH_ACCESS_TOKEN', // the prefix exemption
+    'cloudsdk_auth_access_token', // ...matched case-insensitively
+    'BASH_FUNCTIONS_TOKEN', // `BASH_FUNC_` needs the underscore
+    'NETRC', // requests reads it as a netrc PATH, but it is a realistic secret spelling
+    'OPENSSL_API_KEY', // `OPENSSL_CONF` and friends are exact, not an `OPENSSL_` prefix
   ])('still delivers the neighbouring secret name %s', (key) => {
     expect(isDockerClientEnvKey(key)).toBe(false);
     const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
@@ -502,8 +559,33 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     // hardcoded copy caught a new exact entry under an existing prefix but not
     // a new prefix swallowing existing exact entries.
     expect([...DOCKER_CLIENT_ENV_PREFIXES].sort()).toEqual(
-      ['LD_', 'DYLD_', 'AWS_ENDPOINT_URL_'].sort()
+      ['LD_', 'DYLD_', 'AWS_ENDPOINT_URL_', 'CLOUDSDK_', 'BASH_FUNC_'].sort()
     );
+  });
+
+  it('fences exactly the documented prefix exemptions, each inside a prefix family (#3599)', () => {
+    // Literal for the same deletion-and-widening reason as the tables above.
+    expect([...DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS].sort()).toEqual(['CLOUDSDK_AUTH_ACCESS_TOKEN']);
+    for (const key of DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS) {
+      // An exemption outside every prefix family is dead, and one that is also
+      // an exact member is overruled by it: both mean the table says something
+      // the predicate does not do.
+      expect(DOCKER_CLIENT_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))).toBe(true);
+      // Against the upper-cased view, which is what the predicate consults.
+      expect([...DOCKER_CLIENT_ENV_KEYS].map((k) => k.toUpperCase())).not.toContain(key);
+      // Stored upper-case, because the predicate compares the upper-cased key.
+      expect(key).toBe(key.toUpperCase());
+    }
+  });
+
+  it('an exemption spares only its exact name, not longer names in the family (#3599)', () => {
+    // `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` is the gcloud property that repoints
+    // which token file it reads: it shares the exemption's spelling as a
+    // prefix and must still be refused.
+    for (const key of ['CLOUDSDK_AUTH_ACCESS_TOKEN_FILE', 'CLOUDSDK_AUTH_ACCESS_TOKENX']) {
+      expect(isDockerClientEnvKey(key)).toBe(true);
+      expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).collisions).toEqual([key]);
+    }
   });
 
   it('no exact denylist entry is shadowed by a prefix family', () => {
