@@ -59,6 +59,10 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return { ...actual, SSMClient: makeFakeClientClass('ssm') };
 });
+vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  return { ...actual, SecretsManagerClient: makeFakeClientClass('secretsmanager') };
+});
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return { ...actual, EC2Client: makeFakeClientClass('ec2') };
@@ -210,6 +214,30 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId, A.accessKeyId]);
     });
 
+    it('files an operator AWS_ACCOUNT_ID fallback under the identity whose STS call failed', async () => {
+      // The catch arm's non-fabricated branch: STS failed for A, and the
+      // operator-supplied id is cached as A's REAL answer. It must be A's
+      // alone, or B would never ask STS for its own account.
+      process.env['AWS_ACCOUNT_ID'] = '333333333333';
+      answer('sts', A, () => {
+        throw new Error('sts down for A');
+      });
+      primeSts(B);
+
+      setAwsClients(clientsFor(A));
+      const fallbackA = await getAccountInfo();
+      expect(fallbackA.accountId).toBe('333333333333');
+      expect(fallbackA.fabricated).toBeUndefined();
+
+      setAwsClients(clientsFor(B));
+      expect((await getAccountInfo()).accountId).toBe(ACCOUNT[B.accessKeyId]);
+
+      // A is served its cached fallback without a second call.
+      setAwsClients(clientsFor(A));
+      expect((await getAccountInfo()).accountId).toBe('333333333333');
+      expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId]);
+    });
+
     it("opens A's fabricated window even while B holds a real cached answer", async () => {
       // The catch arm refuses to open a window over a real answer, and that
       // check is per identity: B's cached account must not stop A's window,
@@ -299,6 +327,25 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       expect(results).toEqual(['value-read-by-a', 'value-read-by-b', 'value-read-by-a']);
       // A's second lookup is a cache hit: two GetParameter calls, one per identity.
       expect(sends.filter((s) => s.service === 'ssm').map((s) => s.keyId)).toEqual([
+        A.accessKeyId,
+        B.accessKeyId,
+      ]);
+    });
+
+    it('keys a secretsmanager value by identity too', async () => {
+      answer('secretsmanager', A, () => ({ SecretString: 'secret-read-by-a' }));
+      answer('secretsmanager', B, () => ({ SecretString: 'secret-read-by-b' }));
+      const resolver = new IntrinsicFunctionResolver(REGION);
+      const expression = '{{resolve:secretsmanager:shared/db:SecretString}}';
+      const lookup = (credentials: typeof A): Promise<unknown> =>
+        runWithStackAwsClients(clientsFor(credentials), () =>
+          resolver.resolveDynamicReferences(expression, emptyContext)
+        );
+
+      const results = [await lookup(A), await lookup(B), await lookup(A)];
+
+      expect(results).toEqual(['secret-read-by-a', 'secret-read-by-b', 'secret-read-by-a']);
+      expect(sends.filter((s) => s.service === 'secretsmanager').map((s) => s.keyId)).toEqual([
         A.accessKeyId,
         B.accessKeyId,
       ]);

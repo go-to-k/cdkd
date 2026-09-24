@@ -3459,8 +3459,8 @@ const CONFLICTING_PLAINTEXT = Symbol('conflicting plaintext');
  * no bag can equal, which refuses it exactly as the scan did.
  *
  * The branch is HARD to reach from the resolver — one resolver's
- * `cachedDynamicReferences` yields one plaintext per expression, so a single
- * pass cannot produce two — but it is no longer unreachable from there since
+ * `cachedDynamicReferences` yields one plaintext per expression and credential
+ * identity (issue #3660), so a single pass cannot produce two — but it is no longer unreachable from there since
  * that cache became per-resolver (issue #1933): two resolvers in two regions
  * legitimately resolve one expression to two different plaintexts, and a caller
  * merging their maps lands exactly here. It is reachable through this module's
