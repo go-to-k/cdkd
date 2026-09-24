@@ -7,8 +7,10 @@ import {
 } from '@aws-sdk/client-s3';
 
 /**
- * Issue #1748: the notification ARN aliases and the lifecycle transition
- * aliases were recorded in a spelling `readCurrentState` never emits.
+ * Issue #1748: the notification `Events` list and the lifecycle transition
+ * aliases were recorded in a spelling `readCurrentState` never emits. (The
+ * notification ARN and `NoncurrentDays` aliases the issue also covered are now
+ * refused pre-flight and no longer read — issue #3585, pinned below.)
  *
  * The class (`.claude/rules/providers.md` records it as the #1686
  * never-emitted-KEY class, reached through the SHAPE rather than through a
@@ -75,6 +77,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { findNestedRequiredViolations } from '../../../src/provisioning/nested-required.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'never-emitted-spellings-bucket';
@@ -166,7 +169,11 @@ async function update(properties: Record<string, unknown>): Promise<{
   };
 }
 
-describe('issue #1748: notification ARN aliases', () => {
+describe('issue #3585: the notification ARN SDK spellings are refused, not read', () => {
+  // `Topic` / `Queue` / `Function` are schema-required members and
+  // `AWS::S3::Bucket` is in `CFN_ENFORCED_TYPES`, so a template spelling the
+  // ARN the SDK way is refused pre-flight. The provider's `?? t['TopicArn']`
+  // alias reads (and their #1748 folds) were unreachable and were dropped.
   const families = [
     {
       listKey: 'TopicConfigurations',
@@ -189,144 +196,73 @@ describe('issue #1748: notification ARN aliases', () => {
   ] as const;
 
   for (const { listKey, emitted, tolerated, arn } of families) {
-    it(`records ${emitted}, the spelling readNotification emits, for a declared ${tolerated}`, async () => {
-      const properties = {
-        BucketName: BUCKET,
-        NotificationConfiguration: {
-          [listKey]: [{ [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
+    it(`refuses a ${tolerated}-spelled item pre-flight: ${emitted} is required`, () => {
+      expect(
+        findNestedRequiredViolations(RESOURCE_TYPE, {
+          NotificationConfiguration: {
+            [listKey]: [{ [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
+          },
+        })
+      ).toEqual([
+        {
+          resourceType: RESOURCE_TYPE,
+          path: `NotificationConfiguration.${listKey}[0]`,
+          missing: [emitted],
         },
-      };
-
-      const { effective, notificationInput } = await update(properties);
-
-      // The right ARN went on the wire — the tolerance itself is unchanged.
-      const sent = at(notificationInput, 'NotificationConfiguration') as Record<string, unknown>;
-      expect(JSON.stringify(sent)).toContain(arn);
-
-      // ...and the record now carries the spelling the readback emits.
-      const item = at(effective, 'NotificationConfiguration', listKey, 0) as Record<
-        string,
-        unknown
-      >;
-      expect(item[emitted]).toBe(arn);
-      // REMOVED, not `undefined` — a present-but-undefined key survives a
-      // structuredClone and the drift walk still sees two key sets.
-      expect(tolerated in item).toBe(false);
-
-      // The fence that matters: the recorded item is what `readCurrentState`
-      // ACTUALLY emits for the configuration that was just sent.
-      const readback = await readbackOf('notification', sent);
-      expect(at(readback, listKey, 0)).toEqual(item);
+      ]);
     });
 
-    it(`folds the template side identically for a declared ${tolerated}`, () => {
-      const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
-        NotificationConfiguration: {
-          [listKey]: [{ [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
-        },
-      });
-
-      const item = at(canonical, 'NotificationConfiguration', listKey, 0) as Record<
-        string,
-        unknown
-      >;
-      expect(item[emitted]).toBe(arn);
-      expect(tolerated in item).toBe(false);
-    });
-
-    it(`prefers the DECLARED ${emitted} when both spellings are present, exactly as the wire does`, async () => {
-      const other = `${arn}-other`;
+    it(`no longer reads ${tolerated}: the ARN does not reach the wire`, async () => {
+      // Reachable only past the refusal (an unresolved intrinsic on the path
+      // skips the pre-flight walk), so pin that the alias is really gone.
       const { effective, notificationInput } = await update({
         BucketName: BUCKET,
         NotificationConfiguration: {
-          [listKey]: [{ [emitted]: arn, [tolerated]: other, Event: 's3:ObjectCreated:*' }],
+          [listKey]: [{ [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
         },
       });
 
-      expect(JSON.stringify(at(notificationInput, 'NotificationConfiguration'))).toContain(arn);
+      expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
       expect(JSON.stringify(at(notificationInput, 'NotificationConfiguration'))).not.toContain(
-        other
+        arn
       );
-      const item = at(effective, 'NotificationConfiguration', listKey, 0) as Record<
-        string,
-        unknown
-      >;
-      expect(item[emitted]).toBe(arn);
-      expect(tolerated in item).toBe(false);
+      expect(effective).toBeUndefined();
     });
 
-    it(`falls through a NULLISH ${emitted} to ${tolerated}, exactly as the wire's alias read does`, () => {
-      // The one place `??` is licensed in these folds: it supplies no DEFAULT,
-      // it picks between two spellings of one declared value. A presence test
-      // here would record `null` while the wire sent the ARN.
+    it(`does not fold a declared ${tolerated} onto ${emitted} on the template side`, () => {
       const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
         NotificationConfiguration: {
-          [listKey]: [{ [emitted]: null, [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
+          [listKey]: [{ [tolerated]: arn, Event: 's3:ObjectCreated:*' }],
         },
       });
 
-      const item = at(canonical, 'NotificationConfiguration', listKey, 0) as Record<
-        string,
-        unknown
-      >;
-      expect(item[emitted]).toBe(arn);
-      expect(tolerated in item).toBe(false);
+      expect(at(canonical, 'NotificationConfiguration', listKey, 0)).toEqual({
+        [tolerated]: arn,
+        Event: 's3:ObjectCreated:*',
+      });
     });
 
-    it(`leaves an ordinary ${emitted}-spelled template completely alone`, async () => {
-      const { effective } = await update({
+    it(`sends and records an ordinary ${emitted}-spelled template unchanged`, async () => {
+      const properties = {
         BucketName: BUCKET,
         NotificationConfiguration: {
           [listKey]: [{ [emitted]: arn, Event: 's3:ObjectCreated:*' }],
         },
-      });
+      };
+      expect(findNestedRequiredViolations(RESOURCE_TYPE, properties)).toEqual([]);
 
-      // The Put FIRED — without this, "no effective bag" is also satisfied by
-      // an applier that never ran at all, which is a different (and worse) bug.
+      const { effective, notificationInput } = await update(properties);
+
+      // The Put FIRED and carried the ARN — without this, "no effective bag" is
+      // also satisfied by an applier that never ran at all.
       expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
+      expect(JSON.stringify(at(notificationInput, 'NotificationConfiguration'))).toContain(arn);
       expect(effective).toBeUndefined();
     });
   }
-
-  it('records the fold on a template-path CREATE too', async () => {
-    // A never-emitted SPELLING carries no malformed value and no downgrade, so
-    // unlike the rest of this provider's create-path overrides it is reachable
-    // from an ORDINARY create, not only from the rollback replay.
-    const result = await provider.create('L', RESOURCE_TYPE, {
-      BucketName: BUCKET,
-      NotificationConfiguration: {
-        TopicConfigurations: [{ TopicArn: TOPIC_ARN, Event: 's3:ObjectCreated:*' }],
-      },
-    });
-
-    const item = at(
-      result.effectiveProperties,
-      'NotificationConfiguration',
-      'TopicConfigurations',
-      0
-    ) as Record<string, unknown>;
-    expect(item['Topic']).toBe(TOPIC_ARN);
-    expect('TopicArn' in item).toBe(false);
-  });
-
-  it('does not mutate the caller’s own property bag', async () => {
-    const properties = {
-      BucketName: BUCKET,
-      NotificationConfiguration: {
-        TopicConfigurations: [{ TopicArn: TOPIC_ARN, Event: 's3:ObjectCreated:*' }],
-      },
-    };
-    await update(properties);
-    expect(properties.NotificationConfiguration.TopicConfigurations[0]).toEqual({
-      TopicArn: TOPIC_ARN,
-      Event: 's3:ObjectCreated:*',
-    });
-  });
 });
 
 describe('issue #1748: the notification Event / Events spelling', () => {
-  // The WIDER half of the same item, and the one the round-trip fence above is
-  // what surfaced: `TopicArn` is a cdkd-only tolerance almost nobody uses, while
   // `Event` is the member the CFn schema declares and therefore the one EVERY
   // template carries — so the readback's unconditional `Events` disagreed with
   // every notification-configured bucket's record.
@@ -350,6 +286,28 @@ describe('issue #1748: the notification Event / Events spelling', () => {
     const item = at(readback, 'TopicConfigurations', 0) as Record<string, unknown>;
     expect(item['Events']).toEqual(['s3:ObjectCreated:*', 's3:ObjectRemoved:*']);
     expect('Event' in item).toBe(false);
+  });
+
+  it('records the Events -> Event fold on the CREATE path too (readback-shaped bag)', async () => {
+    // The create path has its own `recordEffectiveFold` call, which no update
+    // row reaches. An `Events`-only item reaches it as a readback-shaped bag
+    // (a replay create); a template must declare the required `Event`.
+    const result = await provider.create('L', RESOURCE_TYPE, {
+      BucketName: BUCKET,
+      NotificationConfiguration: {
+        TopicConfigurations: [{ Topic: TOPIC_ARN, Events: ['s3:ObjectCreated:*'] }],
+      },
+    });
+
+    expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
+    const item = at(
+      result.effectiveProperties,
+      'NotificationConfiguration',
+      'TopicConfigurations',
+      0
+    ) as Record<string, unknown>;
+    expect(item['Event']).toBe('s3:ObjectCreated:*');
+    expect('Events' in item).toBe(false);
   });
 
   it('records Event for a declared single-element Events tolerance', async () => {
@@ -438,13 +396,6 @@ describe('issue #1748: lifecycle transition aliases', () => {
       tolerated: 'Date',
       value: TRANSITION_DATE,
     },
-    {
-      name: 'NoncurrentVersionTransitions[].NoncurrentDays',
-      listKey: 'NoncurrentVersionTransitions',
-      emitted: 'TransitionInDays',
-      tolerated: 'NoncurrentDays',
-      value: 45,
-    },
   ] as const;
 
   for (const { name, listKey, emitted, tolerated, value } of cases) {
@@ -510,17 +461,19 @@ describe('issue #1748: lifecycle transition aliases', () => {
     expect(effective).toBeUndefined();
   });
 
-  it('folds BOTH aliases on one transition rather than only the first', async () => {
-    // The issue named the `Date` alias; the mechanical audit found three in two
-    // item shapes. A fold that stops at the first match leaves its sibling
-    // broken — the "diff the WHOLE blob, not the reported key" rule.
+  it('folds every aliased transition item rather than only the first', async () => {
+    // The issue named the `Date` alias; the mechanical audit found its `Days`
+    // sibling. A fold that stops at the first match leaves the sibling broken —
+    // the "diff the WHOLE blob, not the reported key" rule.
     const { effective } = await update({
       BucketName: BUCKET,
       LifecycleConfiguration: {
         Rules: [
           rule({
-            Transitions: [{ Days: 30, StorageClass: 'GLACIER' }],
-            NoncurrentVersionTransitions: [{ NoncurrentDays: 45, StorageClass: 'GLACIER' }],
+            Transitions: [
+              { Days: 30, StorageClass: 'GLACIER' },
+              { Date: TRANSITION_DATE, StorageClass: 'DEEP_ARCHIVE' },
+            ],
           }),
         ],
       },
@@ -530,9 +483,12 @@ describe('issue #1748: lifecycle transition aliases', () => {
       TransitionInDays: 30,
       StorageClass: 'GLACIER',
     });
-    expect(
-      at(effective, 'LifecycleConfiguration', 'Rules', 0, 'NoncurrentVersionTransitions', 0)
-    ).toEqual({ TransitionInDays: 45, StorageClass: 'GLACIER' });
+    const second = at(effective, 'LifecycleConfiguration', 'Rules', 0, 'Transitions', 1) as Record<
+      string,
+      unknown
+    >;
+    expect(second['TransitionDate']).toBe(TRANSITION_DATE);
+    expect('Date' in second).toBe(false);
   });
 
   it('does NOT fold a SKIPPED lifecycle Put — the previous value is what AWS holds', async () => {
@@ -567,16 +523,80 @@ describe('issue #1748: lifecycle transition aliases', () => {
   });
 });
 
+describe('issue #3585: NoncurrentVersionTransitions[].NoncurrentDays is refused, not read', () => {
+  // `TransitionInDays` is schema-required on both the plural and the legacy
+  // singular form, so the SDK spelling is refused pre-flight and the provider's
+  // `?? nvt['NoncurrentDays']` alias read (and its #1748 fold) were dropped.
+  const nvtRule = (nvt: Record<string, unknown>) => ({
+    Id: 'r1',
+    Status: 'Enabled',
+    Prefix: '',
+    NoncurrentVersionTransitions: [nvt],
+  });
+
+  it('refuses a NoncurrentDays-spelled transition pre-flight', () => {
+    expect(
+      findNestedRequiredViolations(RESOURCE_TYPE, {
+        LifecycleConfiguration: {
+          Rules: [nvtRule({ NoncurrentDays: 45, StorageClass: 'GLACIER' })],
+        },
+      })
+    ).toEqual([
+      {
+        resourceType: RESOURCE_TYPE,
+        path: 'LifecycleConfiguration.Rules[0].NoncurrentVersionTransitions[0]',
+        missing: ['TransitionInDays'],
+      },
+    ]);
+  });
+
+  it('no longer sends NoncurrentDays from the alias', async () => {
+    const { lifecycleInput } = await update({
+      BucketName: BUCKET,
+      LifecycleConfiguration: {
+        Rules: [nvtRule({ NoncurrentDays: 45, StorageClass: 'GLACIER' })],
+      },
+    });
+
+    expect(lifecycleInput).toBeDefined();
+    expect(
+      at(
+        lifecycleInput,
+        'LifecycleConfiguration',
+        'Rules',
+        0,
+        'NoncurrentVersionTransitions',
+        0,
+        'NoncurrentDays'
+      )
+    ).toBeUndefined();
+  });
+
+  it('does not fold a declared NoncurrentDays onto TransitionInDays on the template side', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: {
+        Rules: [nvtRule({ NoncurrentDays: 45, StorageClass: 'GLACIER' })],
+      },
+    });
+
+    expect(
+      at(canonical, 'LifecycleConfiguration', 'Rules', 0, 'NoncurrentVersionTransitions', 0)
+    ).toEqual({ NoncurrentDays: 45, StorageClass: 'GLACIER' });
+  });
+});
+
 describe('issue #1748: the fold and its twin converge', () => {
   // The point of shipping the twin: after one deploy, the RECORD and the
   // canonicalized TEMPLATE must be equal, or the next `cdkd diff` reports a
-  // change nobody made and re-issues the same Put forever.
+  // change nobody made and re-issues the same Put forever. The notification
+  // `Events` lists stand in for a readback-shaped bag (`drift --revert`): a
+  // template must declare the required `Event`, so pre-flight refuses them.
   it('a redeploy of the unchanged template is a no-op on both sides', async () => {
     const template = {
       BucketName: BUCKET,
       NotificationConfiguration: {
-        TopicConfigurations: [{ TopicArn: TOPIC_ARN, Event: 's3:ObjectCreated:*' }],
-        QueueConfigurations: [{ QueueArn: QUEUE_ARN, Event: 's3:ObjectRemoved:*' }],
+        TopicConfigurations: [{ Topic: TOPIC_ARN, Events: ['s3:ObjectCreated:*'] }],
+        QueueConfigurations: [{ Queue: QUEUE_ARN, Events: ['s3:ObjectRemoved:*'] }],
       },
       LifecycleConfiguration: {
         Rules: [
@@ -585,7 +605,7 @@ describe('issue #1748: the fold and its twin converge', () => {
             Status: 'Enabled',
             Prefix: '',
             Transitions: [{ Days: 30, Date: undefined, StorageClass: 'GLACIER' }],
-            NoncurrentVersionTransitions: [{ NoncurrentDays: 45, StorageClass: 'GLACIER' }],
+            NoncurrentVersionTransitions: [{ TransitionInDays: 45, StorageClass: 'GLACIER' }],
           },
         ],
       },
@@ -684,17 +704,14 @@ describe('issue #1748: the arms the update path does not reach', () => {
   });
 
   it('falls through a NULLISH TransitionInDays to the Days alias, as the wire does', () => {
-    // The notification family pins this; the lifecycle aliases run the same
-    // helper and are pinned here so a per-family regression cannot hide.
+    // The one row pinning the nullish fall-through of `foldToleratedAliases`:
+    // a presence test would record `null` while the wire sent the alias value.
     const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
       LifecycleConfiguration: {
         Rules: [
           {
             ...aliasRule,
             Transitions: [{ TransitionInDays: null, Days: 30, StorageClass: 'GLACIER' }],
-            NoncurrentVersionTransitions: [
-              { TransitionInDays: null, NoncurrentDays: 45, StorageClass: 'GLACIER' },
-            ],
           },
         ],
       },
@@ -706,16 +723,6 @@ describe('issue #1748: the arms the update path does not reach', () => {
     >;
     expect(t['TransitionInDays']).toBe(30);
     expect('Days' in t).toBe(false);
-    const nvt = at(
-      canonical,
-      'LifecycleConfiguration',
-      'Rules',
-      0,
-      'NoncurrentVersionTransitions',
-      0
-    ) as Record<string, unknown>;
-    expect(nvt['TransitionInDays']).toBe(45);
-    expect('NoncurrentDays' in nvt).toBe(false);
   });
 });
 

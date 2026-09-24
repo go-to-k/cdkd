@@ -253,15 +253,15 @@ rollback-replay-cc-generated-name	2026-09-19T18:00:07Z	PASS	144	verify.sh	rc ok,
 rollback-replay-effective-props	2026-09-23T21:27:56Z	PASS	688	verify.sh	CDKD_INTEG_MULTI_REGION=1 cross-region arm (#1741/#3569); drift bounded on #3573; 0 orphans us-east-1+eu-west-1
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-09-24T02:40:00Z	PASS	348	verify.sh	rc ok, orph clean; #3578 fixture fix (GeoProximityLocation via property override)
-s3-analytics-inventory	2026-09-24T03:51:15Z	PASS	145	verify.sh	rc ok, orph clean (#3269)
+s3-analytics-inventory	2026-09-24T06:20:48Z	PASS	145	verify.sh	rc ok, orph clean (#3585)
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
-s3-cloudfront	2026-09-14T21:21:26Z	PASS	252	verify.sh	#3125 gating: CloudFront DomainName arm consumer; 5 deleted 0 err 0 orph
+s3-cloudfront	2026-09-24T06:28:51Z	PASS	275	verify.sh	rc ok, orph clean (#3585)
 s3-directory-bucket	2026-09-23T23:54:27Z	PASS	83	verify.sh	rc ok, orph clean (#1981 lane)
-s3-event-notification	2026-09-09T10:40:58Z	PASS	420	verify.sh	rc ok, orph clean
-s3-lifecycle	2026-09-24T03:51:15Z	FAIL	40	verify.sh	pre-flight nested-required refusal of alias spellings, pre-existing on main since #3567; tracked #3585; orph clean
-s3-object-lock	2026-09-11T16:46:29Z	PASS	54	verify.sh	rc ok, orph clean; DefaultEventHold live-asserted (PR 3002)
-s3-replication-and-filter	2026-08-11T15:11:16Z	PASS	110	verify.sh	issue #1605 versioning+logging replay downgrade; 7 del/0 err, 0 orph
-s3-subconfig-removal	2026-09-24T03:51:15Z	PASS	85	verify.sh	rc ok, orph clean (#3269)
+s3-event-notification	2026-09-24T06:18:07Z	PASS	90	verify.sh	rc ok, orph clean (#3585)
+s3-lifecycle	2026-09-24T06:13:17Z	PASS	305	verify.sh	rc ok, orph clean (#3585)
+s3-object-lock	2026-09-24T06:23:46Z	PASS	60	verify.sh	rc ok, orph clean (#3585)
+s3-replication-and-filter	2026-09-24T06:16:12Z	PASS	110	verify.sh	rc ok, orph clean (#3585)
+s3-subconfig-removal	2026-09-24T06:22:25Z	PASS	80	verify.sh	rc ok, orph clean (#3585)
 s3-tables	2026-09-23T23:23:49Z	PASS	55	verify.sh	rc ok, orph clean (#1981 lane)
 s3-vectors	2026-09-23T23:47:09Z	PASS	61	verify.sh	rc ok, orph clean (#1981 lane)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean

@@ -637,14 +637,17 @@ function foldToleratedAliases(
 /** The transition date member, held in a CONST so the fold writes it COMPUTED. */
 const TRANSITION_DATE_KEY = 'TransitionDate';
 
-/** The lifecycle `Transitions[]` aliases the applier accepts (issue #1748). */
+/**
+ * The lifecycle `Transitions[]` aliases the applier accepts (issue #1748).
+ *
+ * `NoncurrentVersionTransitions[]` has none: its `TransitionInDays` is a
+ * schema-required member, so a template spelling it `NoncurrentDays` is refused
+ * pre-flight by `nested-required.ts` and the alias was dropped (issue #3585).
+ */
 const TRANSITION_ALIASES = [
   ['TransitionInDays', 'Days'],
   ['TransitionDate', 'Date'],
 ] as const;
-
-/** The lifecycle `NoncurrentVersionTransitions[]` alias (issue #1748). */
-const NONCURRENT_VERSION_TRANSITION_ALIASES = [['TransitionInDays', 'NoncurrentDays']] as const;
 
 /** The refusal path for the notification EventBridge boolean (issue #1759). */
 const EVENTBRIDGE_CONFIG_PATH =
@@ -723,30 +726,25 @@ function dropEmptyNotificationFamilies(config: Record<string, unknown>): Record<
   return out ?? config;
 }
 
-/** The `NotificationConfiguration` ARN aliases, per family (issue #1748). */
-const NOTIFICATION_ARN_ALIASES: ReadonlyArray<
-  readonly [listKey: string, aliases: ReadonlyArray<readonly [string, string]>]
-> = [
-  ['TopicConfigurations', [['Topic', 'TopicArn']]],
-  ['QueueConfigurations', [['Queue', 'QueueArn']]],
-  ['LambdaConfigurations', [['Function', 'LambdaFunctionArn']]],
-];
-
 /**
- * The `Event` / `Events` half of the same item (issue #1748).
+ * The `Event` / `Events` spelling on a notification item (issue #1748).
  *
- * The ARN alias is not the only never-emitted spelling on a notification item,
- * and this one is the WIDER of the two: `TopicArn` is a cdkd-only tolerance
- * almost no template uses, while `Event` is the member the CFn registry schema
- * declares (`TopicConfiguration` is `{Event, Filter, Topic}` — there is no
- * `Events`) and therefore the one EVERY template carries. The applier accepts
- * both (`t['Event'] !== undefined ? [t['Event']] : t['Events']`).
+ * `Event` is the member the CFn registry schema declares (`TopicConfiguration`
+ * is `{Event, Filter, Topic}` — there is no `Events`) and therefore the one
+ * EVERY template carries. The applier accepts both
+ * (`t['Event'] !== undefined ? [t['Event']] : t['Events']`), because the
+ * readback emits `Events` for a multi-event live configuration and
+ * `drift --revert` sends a readback-shaped bag.
  *
- * Unlike the ARN pair this is not a pure rename — the SDK member is a LIST — so
- * it folds by ARITY: a single-element list is the CFn `Event`, and a longer one
- * has no CFn spelling at all and is left as `Events`, which is what the readback
- * emits for it. That asymmetry is why it is a separate step rather than another
- * {@link foldToleratedAliases} entry.
+ * This is not a pure rename — the SDK member is a LIST — so it folds by ARITY:
+ * a single-element list is the CFn `Event`, and a longer one has no CFn
+ * spelling at all and is left as `Events`, which is what the readback emits for
+ * it.
+ *
+ * The destination ARN has no alias: `Topic` / `Queue` / `Function` are
+ * schema-required members, so the SDK spellings (`TopicArn`, …) are refused
+ * pre-flight by `nested-required.ts` and the applier no longer reads them
+ * (issue #3585).
  *
  * `readNotification` was emitting `Events` unconditionally, so the record and
  * the readback disagreed on every notification-configured bucket; it now
@@ -773,20 +771,12 @@ function foldNotificationEvents(item: Record<string, unknown>): Record<string, u
  * `readNotification` emits (issue #1748) — the never-emitted-KEY class of issue
  * #1686 reached through the SHAPE rather than through a value.
  *
- * `applyNotificationConfiguration` accepts the SDK spelling of each destination
- * ARN alongside the CFn one (`t['Topic'] ?? t['TopicArn']`, and the two
- * siblings), while `readNotification` emits only `Topic` / `Queue` /
- * `Function` — the spellings the live CFn registry schema declares
- * (`TopicConfiguration` is `{Event, Filter, Topic}`, with no `TopicArn`
- * member at all, so the SDK spellings are cdkd-only tolerances). A record
- * written in the tolerated spelling therefore can never match the readback:
- * `cdkd drift` re-reports it forever and `--revert` re-issues the same Put,
- * with NO warning anywhere, because nothing is malformed and nothing is
- * substituted.
- *
- * This NORMALIZES rather than retracting the tolerance, per #1686's third
- * generalization: refusing the SDK spelling would break templates that deploy
- * today, and buys nothing the normalization does not.
+ * `applyNotificationConfiguration` accepts a single-element `Events` list
+ * alongside the CFn scalar `Event` ({@link foldNotificationEvents}), while
+ * `readNotification` emits `Event` for it. A record written in the list
+ * spelling therefore can never match the readback: `cdkd drift` re-reports it
+ * forever and `--revert` re-issues the same Put, with NO warning anywhere,
+ * because nothing is malformed and nothing is substituted.
  *
  * The Put is a FULL REPLACE with no skip arm, so there is no
  * previous-value-retained case to distinguish — whenever it succeeds, this is
@@ -799,10 +789,8 @@ function foldNotificationEvents(item: Record<string, unknown>): Record<string, u
 function effectiveNotificationConfiguration(config: unknown): unknown {
   if (!isPlainObject(config)) return config;
   let out = config;
-  for (const [listKey, aliases] of NOTIFICATION_ARN_ALIASES) {
-    out = canonicalizeItemList(out, listKey, (item) =>
-      foldNotificationEvents(foldToleratedAliases(item, aliases))
-    );
+  for (const listKey of NOTIFICATION_LIST_KEYS) {
+    out = canonicalizeItemList(out, listKey, foldNotificationEvents);
   }
   out = dropEmptyNotificationFamilies(out);
   return foldEventBridgeConfiguration(out);
@@ -1379,18 +1367,13 @@ function foldLifecycleScope(
  * `readLifecycle` emits (issue #1748) — the lifecycle half of the same class.
  *
  * `applyLifecycleConfiguration` accepts the SDK day/date spellings alongside the
- * CFn ones on both transition families (`t['TransitionInDays'] ?? t['Days']`,
- * `t['TransitionDate'] ?? t['Date']`, `nvt['TransitionInDays'] ??
- * nvt['NoncurrentDays']`) while `readLifecycle` emits only `TransitionInDays` /
- * `TransitionDate` — again the only spellings the registry schema declares
- * (`Transition` is `{StorageClass, TransitionDate, TransitionInDays}`,
- * `NoncurrentVersionTransition` is `{StorageClass, TransitionInDays,
- * NewerNoncurrentVersions}`).
- *
- * The issue named the `Date` alias; the mechanical audit it asks for (match the
- * `(a['X'] ?? a['Y'])` ALIAS form, not a plain bracket read) found all THREE in
- * the same two item shapes, so fixing only the reported one would have left its
- * siblings broken — the "diff the WHOLE blob, not the reported key" rule.
+ * CFn ones on `Transitions` (`t['TransitionInDays'] ?? t['Days']`,
+ * `t['TransitionDate'] ?? t['Date']`) while `readLifecycle` emits only
+ * `TransitionInDays` / `TransitionDate` — again the only spellings the registry
+ * schema declares (`Transition` is `{StorageClass, TransitionDate,
+ * TransitionInDays}`). `NoncurrentVersionTransitions` has no alias to fold: its
+ * `TransitionInDays` is schema-required, so the `NoncurrentDays` spelling is
+ * refused pre-flight and the applier no longer reads it (issue #3585).
  *
  * Issues #1754 / #1755 finished the block, so the "still differs on those keys"
  * caveat this doc carried is gone: the legacy SINGULAR `Transition` /
@@ -1460,9 +1443,6 @@ function effectiveLifecycleRule(
   let out = foldLegacySingularTransitions(rule);
   out = canonicalizeItemList(out, 'Transitions', (t) =>
     foldTransitionDate(foldToleratedAliases(t, TRANSITION_ALIASES))
-  );
-  out = canonicalizeItemList(out, 'NoncurrentVersionTransitions', (nvt) =>
-    foldToleratedAliases(nvt, NONCURRENT_VERSION_TRANSITION_ALIASES)
   );
   out = dropEmptyTransitionLists(out);
   out = foldLifecycleExpiration(out);
@@ -2478,10 +2458,10 @@ export class S3BucketProvider implements ResourceProvider {
         // `NoncurrentVersionTransitions[]`; the SDK member is `NoncurrentDays`.
         // Reading only the SDK spelling meant the day count was `undefined` for
         // every real template, so a CDK `noncurrentVersionTransitions` lost its
-        // schedule. The `?? nvt['NoncurrentDays']` fallback keeps SDK-shaped /
-        // imported input working, exactly as the `Transitions` mapping below
-        // already does with `TransitionInDays ?? Days` (issue #1388).
-        NoncurrentDays: (nvt['TransitionInDays'] ?? nvt['NoncurrentDays']) as number | undefined,
+        // schedule (issue #1388). There is no `NoncurrentDays` fallback:
+        // `TransitionInDays` is schema-required here, so that spelling is
+        // refused pre-flight by `nested-required.ts` (issue #3585).
+        NoncurrentDays: nvt['TransitionInDays'] as number | undefined,
         StorageClass: nvt['StorageClass'] as string | undefined,
         NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
       });
@@ -2948,7 +2928,10 @@ export class S3BucketProvider implements ResourceProvider {
       if (topics && Array.isArray(topics) && topics.length > 0) {
         cfg.TopicConfigurations = topics.map((t) => ({
           Id: t['Id'] as string | undefined,
-          TopicArn: (t['Topic'] ?? t['TopicArn']) as string,
+          // No `TopicArn` / `QueueArn` / `LambdaFunctionArn` fallback on these
+          // three: the CFn member is schema-required, so the SDK spelling is
+          // refused pre-flight by `nested-required.ts` (issue #3585).
+          TopicArn: t['Topic'] as string,
           Events: t['Event'] !== undefined ? [t['Event'] as string] : (t['Events'] as string[]),
           Filter: this.cfnNotifFilterToSdk(t['Filter']),
         }));
@@ -2959,7 +2942,7 @@ export class S3BucketProvider implements ResourceProvider {
       if (queues && Array.isArray(queues) && queues.length > 0) {
         cfg.QueueConfigurations = queues.map((q) => ({
           Id: q['Id'] as string | undefined,
-          QueueArn: (q['Queue'] ?? q['QueueArn']) as string,
+          QueueArn: q['Queue'] as string,
           Events: q['Event'] !== undefined ? [q['Event'] as string] : (q['Events'] as string[]),
           Filter: this.cfnNotifFilterToSdk(q['Filter']),
         }));
@@ -2970,7 +2953,7 @@ export class S3BucketProvider implements ResourceProvider {
       if (lambdas && Array.isArray(lambdas) && lambdas.length > 0) {
         cfg.LambdaFunctionConfigurations = lambdas.map((l) => ({
           Id: l['Id'] as string | undefined,
-          LambdaFunctionArn: (l['Function'] ?? l['LambdaFunctionArn']) as string,
+          LambdaFunctionArn: l['Function'] as string,
           Events: l['Event'] !== undefined ? [l['Event'] as string] : (l['Events'] as string[]),
           Filter: this.cfnNotifFilterToSdk(l['Filter']),
         }));
