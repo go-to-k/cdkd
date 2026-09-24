@@ -2521,7 +2521,7 @@ describe('cdkd drift', () => {
         // here — `main`'s shape — reddened nothing.
         expect(warned).toContain(`re-run 'cdkd drift --revert' for this stack`);
         expect(warned).not.toContain('cdkd drift TestStack');
-        expect(warned).not.toMatch(/cdkd drift \S+ --revert/);
+        expect(warned).not.toMatch(/cdkd drift (?:\S+ --revert|--revert \S)/);
         // The lock is still released.
         expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
       });
@@ -4993,8 +4993,15 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
   });
 
   it('withholds a name the COMMAND would read as an option or a pattern', () => {
-    // A leading `-` is an option to all four commands: a key named `--all`
-    // survives sanitizing, the cap AND quoting, and then addresses every stack.
+    // The gate is `startsWith('-')`, and it is deliberately WIDER than the
+    // parse: `--all` and `-x` really are options to Commander — a key named
+    // `--all` survives sanitizing, the cap AND quoting, and then addresses
+    // every stack — while a bare `-` Commander takes as an OPERAND (measured
+    // against the repo's 12.1.0) and this refuses it anyway. The earlier
+    // wording here said "an option to all four commands"; both halves were
+    // false, and `stackCommandFor`'s docblock was corrected to say so in round
+    // 4. The loop below keeps three commands because the OPTION half is not
+    // command-specific — only the pattern half is.
     for (const command of ['cdkd deploy', 'cdkd drift', 'cdkd state refresh-observed']) {
       expect(stackCommandFor(command, '--all'), command).toBeUndefined();
       expect(stackCommandFor(command, '-x'), command).toBeUndefined();
@@ -5195,7 +5202,10 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // No identity line at all — neither the real one nor the forged sibling the
     // newline would open.
     expect(message).not.toMatch(/^Stack: /m);
-    expect(message).not.toMatch(/^b$/m);
+    // `/^b/m`, not `/^b$/m`: the forged second line would be `b'` — the closing
+    // shell quote rides with it — so the anchored form cannot fail under this
+    // code or under the natural mutant, and was dead (round 5, optional).
+    expect(message).not.toMatch(/^b/m);
     // ...and the command is withheld too: the same predicate gates both.
     expect(message).not.toMatch(/Migrate with: cdkd deploy/);
     expect(message).toContain('List records as stored');

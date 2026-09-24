@@ -6873,13 +6873,11 @@ function formatScalar(value: unknown): string {
 }
 
 /**
- * Why site 1's `cdkd deploy` command was withheld — every reason that gate has,
- * since naming one tells the operator something false about the others (m4 /
- * m10 of the go-to-k/cdkd#3486 review).
- */
-/**
  * Why a command is not printed, phrased as the RULE rather than as a claim
- * about the name (m19 of the go-to-k/cdkd#3486 review).
+ * about the name (m19 of the go-to-k/cdkd#3486 review). This SUPERSEDES the
+ * m4 / m10 wording, which said the constant should name every reason the gate
+ * has "since naming one tells the operator something false about the others" —
+ * the enumeration is what round 4 measured as the defect.
  *
  * The earlier wording was a four-way disjunction — "does not render exactly, is
  * empty, is too long, or ... an option or a pattern" — which is true, but three
@@ -6941,7 +6939,17 @@ function rendersExactly(value: string): boolean {
  * printed — so they keep their command in prose and the whole class is
  * [#3436](https://github.com/go-to-k/cdkd/issues/3436)'s.
  */
-function stackIdentityLine(stackName: string, indent = ''): string | undefined {
+function stackIdentityLine(
+  stackName: string,
+  /**
+   * No production caller passes this — site 1 renders at column 0. Kept, with
+   * its hazard-matrix cases, as go-to-k/cdkd#3436's landing place, where a
+   * nested block will want the line indented. Documented HERE rather than only
+   * in `stackCommandFor`'s docblock, which is where round 5 found it
+   * (optional): a dead parameter's justification belongs on the parameter.
+   */
+  indent = ''
+): string | undefined {
   return rendersExactly(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
 }
 

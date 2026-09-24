@@ -679,7 +679,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // that the NAME is not in it.
     expect(refusal).toContain(`Run 'cdkd drift --revert' for this stack`);
     expect(refusal).not.toContain('cdkd drift TestStack');
-    expect(refusal).not.toMatch(/cdkd drift \S+ --revert/);
+    expect(refusal).not.toMatch(/cdkd drift (?:\S+ --revert|--revert \S)/);
   });
 
   it('--accept still records the NON-secret paths in the same run', async () => {
