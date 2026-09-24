@@ -50,6 +50,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
@@ -70,6 +71,52 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
  * `Pending` -> terminal transition takes without stalling a failed deploy.
  */
 const LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS = 3;
+
+/**
+ * Refuse `CodeSigningConfigArn` / `RuntimeManagementConfig` on a
+ * container-image function (`PackageType: Image`), BEFORE any Lambda call.
+ * AWS rejects both there with `InvalidParameterValueException`: the image
+ * carries its own runtime, so there are no runtime-management controls, and
+ * Lambda code signing does not apply to images (issue
+ * [#1894](https://github.com/go-to-k/cdkd/issues/1894)). The READ side skips
+ * the matching `Get*` calls for the same reason (see `readCurrentState`). Without it the create either
+ * fails on `CreateFunction` (code signing) or creates the function, fails the
+ * post-create `PutRuntimeManagementConfig` and deletes it again; the update
+ * fails part-way through on the Put.
+ *
+ * Unconditional, including on a rollback replay (`replayingState`): AWS
+ * rejects the combination every time, so no state record can carry it and a
+ * downgraded warning could only report success over a call that then fails
+ * (the `.claude/rules/provider-replay-and-refusals.md` exception).
+ */
+function refuseImageFunctionUnsupported(
+  logicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  physicalId?: string
+): void {
+  if (properties['PackageType'] !== 'Image') return;
+  // Literal reads, not a loop over a name table: the handled-property wiring
+  // walk records a computed key as a whole-bag blind spot.
+  const declared = [
+    properties['CodeSigningConfigArn'] !== undefined ? 'CodeSigningConfigArn' : undefined,
+    properties['RuntimeManagementConfig'] !== undefined ? 'RuntimeManagementConfig' : undefined,
+  ].filter((key): key is string => key !== undefined);
+  if (declared.length === 0) return;
+  // `markNonRetryable`: the message interpolates the user-chosen logical id,
+  // which the substring retry table must not be able to match.
+  throw markNonRetryable(
+    new ProvisioningError(
+      `Lambda function ${logicalId} is a container-image function (PackageType: Image), ` +
+        `and AWS rejects ${declared.join(' and ')} on one: an image carries its own runtime ` +
+        `and Lambda code signing does not apply to images. Remove ` +
+        `${declared.length === 1 ? 'it' : 'them'} from the function's properties.`,
+      resourceType,
+      logicalId,
+      physicalId
+    )
+  );
+}
 
 /**
  * Pick the inline-code filename for a Lambda runtime.
@@ -251,6 +298,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
         logicalId
       );
     }
+
+    refuseImageFunctionUnsupported(logicalId, resourceType, properties);
 
     try {
       // Build tags map from CDK tag format [{Key, Value}]
@@ -602,6 +651,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     const debug = (message: string): void => this.logger.debug(mask(message));
 
     this.logger.debug(`Updating Lambda function ${logicalId}: ${physicalId}`);
+
+    refuseImageFunctionUnsupported(logicalId, resourceType, properties, physicalId);
 
     try {
       // Check for configuration changes
@@ -1859,9 +1910,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // Runtime-management controls and code signing apply to managed-runtime
       // ZIP functions only. Container-image functions own their runtime in the
       // image and do not support Lambda code signing, so AWS rejects both
-      // secondary reads. Skip them when GetFunction already identified the
-      // package as Image; otherwise those expected rejections become warnings
-      // and can make drift look like a property removal.
+      // secondary reads with `InvalidParameterValueException` (the write side
+      // refuses the same two properties: `refuseImageFunctionUnsupported`).
+      // Skipping them when GetFunction already identified the package as Image
+      // saves two calls per readback and the two spurious `... failed`
+      // warnings (neither rejection is a `ResourceNotFoundException`) each
+      // drift snapshot of an image function printed. It prevents no false removal: AWS never
+      // accepted either property on an image, so no baseline can carry them.
       if (cfg.PackageType !== 'Image') {
         // RuntimeManagementConfig: a SEPARATE control-plane read
         // (GetRuntimeManagementConfig), emit-when-present. AWS returns the

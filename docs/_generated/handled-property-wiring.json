@@ -13895,6 +13895,7 @@
             "AWS::Lambda::Function"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -14090,10 +14091,12 @@
             "AWS::Lambda::Function"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -14159,6 +14162,7 @@
             "AWS::Lambda::Function"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [

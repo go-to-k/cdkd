@@ -84,11 +84,16 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # digest form, so the tag is what reliably identifies the image WE pushed.
 ECR_REPO=""
 IMAGE_TAG=""
+# Scratch files of the issue #1894 phases, removed by `cleanup` on every exit.
+DRIFT_JSON=""
+DRIFT_ERR=""
+RMC_OUT=""
 
 cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_JSON}" "${DRIFT_ERR}" "${RMC_OUT}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -269,6 +274,97 @@ echo "${RESPONSE}" | jq -e '.echoed.ping == "pong"' >/dev/null || {
   exit 1
 }
 echo "    OK: Lambda invoke returned the expected payload (the pushed image runs)"
+
+# --- Phase 1c: drift on the image function (issue #1894) --------------------
+# `readCurrentState` skips GetRuntimeManagementConfig / GetFunctionCodeSigningConfig
+# for an image function: AWS rejects both reads for a container image, and each
+# rejection used to print a warning on every drift snapshot. The report is read
+# from `--json` (the function must be in the `clean` bucket BY TYPE, which also
+# proves the readback ran), and stderr must carry neither API's warning. The
+# stderr needle is deliberately wide -- either API name, or the shared
+# `omitted from the drift snapshot` tail -- so a reworded warning still trips it.
+echo "==> Phase 1c: cdkd drift on the image function (clean, no ZIP-only read warnings)"
+DRIFT_JSON=$(mktemp)
+DRIFT_ERR=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json >"${DRIFT_JSON}" 2>"${DRIFT_ERR}"
+DRIFT_RC=$?
+set -e
+if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' "${DRIFT_JSON}" 2>/dev/null)" != "yes" ]; then
+  echo "FAIL: cdkd drift --json produced no stack report (rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" "${DRIFT_ERR}" >&2
+  exit 1
+fi
+FN_CLEAN=$(jq '[.[].clean[] | select(.type == "AWS::Lambda::Function")] | length' "${DRIFT_JSON}")
+FN_DRIFTED=$(jq '[.[].drifted[] | select(.type == "AWS::Lambda::Function")] | length' "${DRIFT_JSON}")
+if [ "${FN_CLEAN}" != "1" ] || [ "${FN_DRIFTED}" != "0" ] || [ "${DRIFT_RC}" != "0" ]; then
+  echo "FAIL: expected the image function CLEAN (clean=${FN_CLEAN} drifted=${FN_DRIFTED} rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" "${DRIFT_ERR}" >&2
+  exit 1
+fi
+if grep -qE 'GetRuntimeManagementConfig|GetFunctionCodeSigningConfig|omitted from the drift snapshot' "${DRIFT_ERR}"; then
+  echo "FAIL (issue #1894): drift printed a readback warning -- a ZIP-only read on the image function if it names GetRuntimeManagementConfig / GetFunctionCodeSigningConfig, else another resource's:" >&2
+  cat "${DRIFT_ERR}" >&2
+  exit 1
+fi
+echo "    OK: image function reported CLEAN, no GetRuntimeManagementConfig / GetFunctionCodeSigningConfig warning"
+
+# --- Phase 1d: RuntimeManagementConfig on an image function is refused -------
+# AWS rejects runtime-management controls on a container image, so cdkd must
+# refuse the redeploy that adds one BEFORE any Lambda call (issue #1894). The
+# refusal names the function as `... is a container-image function (PackageType:
+# Image)`. SENTINEL: a failure that mentions RuntimeManagementConfig WITHOUT that
+# marker is AWS's own rejection reaching the user (the pre-fix behaviour) or a
+# reworded refusal -- either way this arm must fail rather than pass blind.
+echo "==> Phase 1d: redeploy adding RuntimeManagementConfig must be refused by cdkd"
+# PREMISE first: the refusal is unconditional because AWS rejects runtime
+# management on a container image for EVERY mode. Ask AWS directly, for the
+# default `Auto` and for the `FunctionUpdate` the redeploy below declares; if
+# either is ever accepted, the refusal is too broad and must be narrowed.
+for mode in Auto FunctionUpdate; do
+  PUT_ERR=$(aws lambda put-runtime-management-config --function-name "${FN_NAME}" \
+    --update-runtime-on "${mode}" --region "${REGION}" 2>&1 >/dev/null || true)
+  if ! printf '%s' "${PUT_ERR}" | grep -q 'InvalidParameterValueException'; then
+    echo "FAIL (issue #1894 premise): AWS did not reject PutRuntimeManagementConfig(${mode}) on the image function -- got: ${PUT_ERR:-success}" >&2
+    exit 1
+  fi
+  echo "    premise: AWS rejects PutRuntimeManagementConfig(${mode}) on an image function: ${PUT_ERR}"
+done
+RMC_OUT=$(mktemp)
+set +e
+CDKD_TEST_IMAGE_RMC=1 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${RMC_OUT}" 2>&1
+RMC_RC=$?
+set -e
+if [ "${RMC_RC}" = "0" ]; then
+  echo "FAIL (issue #1894): the redeploy adding RuntimeManagementConfig to an image function succeeded:" >&2
+  cat "${RMC_OUT}" >&2
+  exit 1
+fi
+if ! grep -q 'is a container-image function (PackageType: Image)' "${RMC_OUT}"; then
+  if grep -q 'RuntimeManagementConfig' "${RMC_OUT}"; then
+    echo "FAIL (issue #1894): the redeploy failed on RuntimeManagementConfig WITHOUT cdkd's refusal -- AWS's rejection reached the user, or the refusal was reworded:" >&2
+  else
+    echo "FAIL: the redeploy failed for a reason unrelated to RuntimeManagementConfig:" >&2
+  fi
+  tail -40 "${RMC_OUT}" >&2
+  exit 1
+fi
+STATE_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+RECORDED_RMC=$(printf '%s' "${STATE_AFTER}" \
+  | jq -r '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | (.properties.RuntimeManagementConfig // "absent")] | first // "no-function"')
+if [ "${RECORDED_RMC}" = "no-function" ]; then
+  echo "FAIL: the state after the refused redeploy holds no AWS::Lambda::Function record" >&2
+  exit 1
+fi
+if [ "${RECORDED_RMC}" != "absent" ]; then
+  echo "FAIL (issue #1894): the refused redeploy recorded RuntimeManagementConfig in state: ${RECORDED_RMC}" >&2
+  exit 1
+fi
+echo "    OK: cdkd refused the redeploy before any Lambda call; state unchanged"
 
 # --- Phase 2: destroy (clean) -----------------------------------------------
 echo "==> Phase 2: destroy"
