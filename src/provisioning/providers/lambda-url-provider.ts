@@ -14,6 +14,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -173,12 +174,12 @@ export class LambdaUrlProvider implements ResourceProvider {
         break;
       }
     }
+    // No `attributes` key: the deploy engine carries the recorded
+    // `FunctionUrl` / `FunctionArn` forward only when it is ABSENT, and an
+    // empty map replaced them, leaving a sibling's `Fn::GetAtt` unresolvable
+    // (found while fixing issue #3624).
     if (!changed) {
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {},
-      };
+      return { physicalId, wasReplaced: false };
     }
 
     // `|| 'NONE'` turned a blank / null AuthType into a PUBLIC function URL
@@ -493,13 +494,33 @@ export class LambdaUrlProvider implements ResourceProvider {
    * Users adopting an existing function URL should pass
    * `--resource <logicalId>=<functionArnOrName>` (matching the physical id
    * format returned by `create()`).
+   *
+   * The override is read back with `GetFunctionUrlConfig` so the record gets
+   * the same `FunctionUrl` / `FunctionArn` attributes `create()` records
+   * (issue #3624). Neither can be built from the physical id, so without them
+   * a sibling's `Fn::GetAtt [<Url>, FunctionUrl]` (a CloudFront
+   * `FunctionUrlOrigin`) stays an unresolved intrinsic in its imported record.
+   * The deploy-time stale-attribute heal (#1852) re-reads through this method
+   * too. Returns `null` when no URL config exists behind the id.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: {} };
+    if (!input.knownPhysicalId) return null;
+    let resp;
+    try {
+      resp = await this.lambdaClient.send(
+        new GetFunctionUrlConfigCommand({ FunctionName: input.knownPhysicalId })
+      );
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return null;
+      throw err;
     }
-    return null;
+    return {
+      physicalId: input.knownPhysicalId,
+      attributes: definedAttributes({
+        FunctionUrl: resp.FunctionUrl,
+        FunctionArn: resp.FunctionArn,
+      }),
+    };
   }
 
   /**

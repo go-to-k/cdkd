@@ -55,12 +55,56 @@ describe('LambdaUrlProvider', () => {
       };
     }
 
-    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+    // Issue #3624: without these attributes a sibling's
+    // `Fn::GetAtt [<Url>, FunctionUrl]` stayed an unresolved intrinsic in its
+    // imported record.
+    it('records FunctionUrl / FunctionArn read back from GetFunctionUrlConfig', async () => {
       const arn = 'arn:aws:lambda:us-east-1:123456789012:function:my-function';
+      mockSend.mockResolvedValueOnce({
+        FunctionArn: arn,
+        FunctionUrl: 'https://abc123.lambda-url.us-east-1.on.aws/',
+      });
       const result = await provider.import(makeInput({ knownPhysicalId: arn }));
 
-      expect(result).toEqual({ physicalId: arn, attributes: {} });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        physicalId: arn,
+        attributes: {
+          FunctionArn: arn,
+          FunctionUrl: 'https://abc123.lambda-url.us-east-1.on.aws/',
+        },
+      });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]![0].input).toEqual({ FunctionName: arn });
+    });
+
+    it('omits an attribute the read-back did not report', async () => {
+      // `attributes` REPLACES the record's map, so an `undefined` member must
+      // be absent rather than recorded.
+      const arn = 'arn:aws:lambda:us-east-1:123456789012:function:my-function';
+      mockSend.mockResolvedValueOnce({ FunctionArn: arn });
+      const result = await provider.import(makeInput({ knownPhysicalId: arn }));
+
+      expect(result?.attributes).toStrictEqual({ FunctionArn: arn });
+    });
+
+    it('returns null when no URL config exists behind knownPhysicalId', async () => {
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: 'arn:aws:lambda:us-east-1:123456789012:function:gone' })
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it('propagates any other GetFunctionUrlConfig failure', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDeniedException'));
+      await expect(
+        provider.import(
+          makeInput({ knownPhysicalId: 'arn:aws:lambda:us-east-1:123456789012:function:f' })
+        )
+      ).rejects.toThrow('AccessDeniedException');
     });
 
     it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {
@@ -156,7 +200,10 @@ describe('LambdaUrlProvider', () => {
         { ...props }
       );
 
-      expect(result).toEqual({ physicalId: 'my-fn', wasReplaced: false, attributes: {} });
+      // No `attributes` key at all: an empty map would REPLACE the recorded
+      // FunctionUrl / FunctionArn, which the engine carries forward only when
+      // the key is absent (issue #3624).
+      expect(result).toStrictEqual({ physicalId: 'my-fn', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
 

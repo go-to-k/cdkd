@@ -4235,6 +4235,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "import-deployed-parameter-secret",
+        "import-lambda-url-attributes",
         "kinesis-esm-filter",
         "lambda",
         "lambda-alias-provisioned-concurrency",
@@ -4422,6 +4423,9 @@
         ],
         "import-deployed-parameter-secret": [
           "l1"
+        ],
+        "import-lambda-url-attributes": [
+          "l2"
         ],
         "kinesis-esm-filter": [
           "l2"
@@ -4740,10 +4744,14 @@
       "resourceType": "AWS::Lambda::Url",
       "integs": [
         "composite-stack",
+        "import-lambda-url-attributes",
         "lambda-url-authtype-replay"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "import-lambda-url-attributes": [
           "literal"
         ],
         "lambda-url-authtype-replay": [
@@ -5790,6 +5798,7 @@
         "getstackoutput-crossregion",
         "import-attributes",
         "import-deployed-parameter-secret",
+        "import-lambda-url-attributes",
         "import-nested-stack",
         "import-secret-observed",
         "import-value-strong-ref",
@@ -5914,6 +5923,9 @@
         ],
         "import-deployed-parameter-secret": [
           "l1"
+        ],
+        "import-lambda-url-attributes": [
+          "l2"
         ],
         "import-nested-stack": [
           "l2",
