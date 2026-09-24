@@ -30,7 +30,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -158,7 +158,7 @@ export class NeptuneProvider implements ResourceProvider {
   private getClient(): NeptuneClient {
     if (!this.neptuneClient) {
       this.neptuneClient = new NeptuneClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

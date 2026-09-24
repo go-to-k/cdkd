@@ -80,6 +80,9 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  // The account-lookup STS client reads the ambient credential configuration
+  // (issue #3588); an ambient with none degrades to plain awsClientDefaults().
+  getAwsClients: vi.fn(() => ({})),
 }));
 
 // Logger — silence during tests. `error` is a SHARED spy: `withErrorHandling`

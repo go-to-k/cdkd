@@ -25,7 +25,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -92,7 +92,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
   private getClient(): RDSClient {
     if (!this.rdsClient) {
       this.rdsClient = new RDSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

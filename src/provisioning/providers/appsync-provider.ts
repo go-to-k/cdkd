@@ -87,7 +87,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -260,7 +260,7 @@ export class AppSyncProvider implements ResourceProvider {
   private getClient(): AppSyncClient {
     if (!this.client) {
       this.client = new AppSyncClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -563,7 +563,7 @@ export class AppSyncProvider implements ResourceProvider {
   private getS3Client(): S3Client {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

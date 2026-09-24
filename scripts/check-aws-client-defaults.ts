@@ -67,6 +67,19 @@ const ALLOW_LIST_PATH = join(REPO_ROOT, 'tests/aws-client-defaults-allowlist.jso
 /** The helper every SDK client config must open with. */
 export const DEFAULTS_HELPER = 'awsClientDefaults';
 
+/**
+ * Every call that satisfies "opens with the defaults": {@link DEFAULTS_HELPER}
+ * itself, and the two `src/utils/ambient-client-defaults.ts` wrappers that
+ * return `{ ...awsClientDefaults(...), <credential config> }` (issue #3588).
+ * Both call the helper AFRESH per call, so each client still gets its own
+ * `requestHandler` — the shared-bag rule below applies to them unchanged.
+ */
+export const DEFAULTS_HELPERS: ReadonlySet<string> = new Set([
+  DEFAULTS_HELPER,
+  'ambientClientDefaults',
+  'clientDefaultsFor',
+]);
+
 /** Its own module, which is the one file that legitimately does not call it. */
 export const HELPER_MODULE = join(REPO_ROOT, 'src/utils/aws-client-defaults.ts');
 
@@ -222,12 +235,12 @@ export function sdkClientIdentifiers(source: ts.SourceFile): Set<string> {
   return names;
 }
 
-/** Is this expression a call to {@link DEFAULTS_HELPER}? */
+/** Is this expression a call to one of {@link DEFAULTS_HELPERS}? */
 function isDefaultsCall(node: ts.Expression): boolean {
   return (
     ts.isCallExpression(node) &&
     ts.isIdentifier(node.expression) &&
-    node.expression.text === DEFAULTS_HELPER
+    DEFAULTS_HELPERS.has(node.expression.text)
   );
 }
 
@@ -336,6 +349,8 @@ function mentionsDefaults(
     return inner !== undefined && mentionsDefaults(inner, source, depth + 1);
   });
 }
+
+export { resolveObjectLiteral };
 
 export function classifyConfigArgument(
   argument: ts.Expression | undefined,

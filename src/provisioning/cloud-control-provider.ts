@@ -72,7 +72,7 @@ import type {
   UpdateContext,
   IndeterminateGuard,
 } from '../types/resource.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
 /**
  * AWS Cloud Control API Provider
@@ -2640,7 +2640,7 @@ export class CloudControlProvider implements ResourceProvider {
           // CC API client uses the cdkd-resolved region; the RDSClient
           // inherits via env / profile, same as DynamoDB / API Gateway
           // enrichment branches above.
-          const rdsClient = new RDSClient({ ...awsClientDefaults() });
+          const rdsClient = new RDSClient({ ...ambientClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBClustersCommand({ DBClusterIdentifier: physicalId })
           );
@@ -2687,7 +2687,7 @@ export class CloudControlProvider implements ResourceProvider {
         try {
           // The RDSClient inherits the cdkd-resolved region via env / profile,
           // same as the DBCluster / DynamoDB / API Gateway branches.
-          const rdsClient = new RDSClient({ ...awsClientDefaults() });
+          const rdsClient = new RDSClient({ ...ambientClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBInstancesCommand({ DBInstanceIdentifier: physicalId })
           );
@@ -3085,7 +3085,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and must not fail the deploy.
         try {
-          const elastiCacheClient = new ElastiCacheClient({ ...awsClientDefaults() });
+          const elastiCacheClient = new ElastiCacheClient({ ...ambientClientDefaults() });
           const describeResponse = await elastiCacheClient.send(
             new DescribeReplicationGroupsCommand({ ReplicationGroupId: physicalId })
           );
@@ -3159,7 +3159,7 @@ export class CloudControlProvider implements ResourceProvider {
         // unlike ElastiCache). Best-effort: a failed Describe leaves the CC-API
         // attribute shape unchanged and never fails the deploy.
         try {
-          const redshiftClient = new RedshiftClient({ ...awsClientDefaults() });
+          const redshiftClient = new RedshiftClient({ ...ambientClientDefaults() });
           const describeResponse = await redshiftClient.send(
             new DescribeClustersCommand({ ClusterIdentifier: physicalId })
           );
@@ -3203,7 +3203,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and never fails the deploy.
         try {
-          const openSearchClient = new OpenSearchClient({ ...awsClientDefaults() });
+          const openSearchClient = new OpenSearchClient({ ...ambientClientDefaults() });
           const describeResponse = await openSearchClient.send(
             new DescribeDomainCommand({ DomainName: physicalId })
           );

@@ -36,7 +36,7 @@ import {
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 interface PublishAssetsOptions {
   app?: string;
@@ -156,7 +156,7 @@ async function publishAssetsCommand(
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).
   const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const stsClient = new STSClient({ ...awsClientDefaults(), region: baseRegion });
+  const stsClient = new STSClient({ ...ambientClientDefaults(), region: baseRegion });
   const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
   const accountId = callerIdentity.Account!;
   stsClient.destroy();

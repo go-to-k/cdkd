@@ -33,7 +33,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -508,7 +508,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
       this.wafv2Client = new WAFV2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

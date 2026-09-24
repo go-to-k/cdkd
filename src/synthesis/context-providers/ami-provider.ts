@@ -1,7 +1,7 @@
 import { EC2Client, DescribeImagesCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
  * AMI context provider
@@ -24,7 +24,7 @@ export class AmiContextProvider implements ContextProvider {
 
     this.logger.debug(`Looking up AMI (region: ${region})`);
 
-    const client = new EC2Client({ ...awsClientDefaults(), ...(region && { region }) });
+    const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
     try {
       const ec2Filters = filters

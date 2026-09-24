@@ -559,6 +559,24 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
         });
       });
 
+      it('builds a separate client per credential identity on ONE resolver (#3588)', async () => {
+        prime(STACK_REGION, 'GetNamespaceCommand', {
+          Namespace: { Properties: { DnsProperties: { HostedZoneId: 'Z03588' } } },
+        });
+        const resolver = new IntrinsicFunctionResolver(STACK_REGION);
+        const lookup = (physicalId: string) =>
+          getAtt(resolver, 'Ns', 'AWS::ServiceDiscovery::PrivateDnsNamespace', physicalId, 'HostedZoneId');
+        const A = { accessKeyId: 'AKIDSDA3588', secretAccessKey: 'sd-secret-a' };
+        const B = { accessKeyId: 'AKIDSDB3588', secretAccessKey: 'sd-secret-b' };
+
+        setAwsClients(new AwsClients({ region: AMBIENT_REGION, credentials: A }));
+        await expect(lookup('ns-a3588')).resolves.toBe('Z03588');
+        setAwsClients(new AwsClients({ region: AMBIENT_REGION, credentials: B }));
+        await expect(lookup('ns-b3588')).resolves.toBe('Z03588');
+
+        expect(serviceDiscoveryInstances.map((i) => i.ctorConfig.credentials)).toEqual([A, B]);
+      });
+
       it('follows the AMBIENT region when the resolver was given none, not the us-east-1 guess', async () => {
         // Same fail-open as the VPC sibling, with a worse degradation: this
         // branch returns `undefined` on a miss, which is a `Fn::GetAtt` that

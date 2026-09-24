@@ -37,7 +37,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -93,7 +93,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   private getClient(): BudgetsClient {
     if (!this.client) {
       this.client = new BudgetsClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

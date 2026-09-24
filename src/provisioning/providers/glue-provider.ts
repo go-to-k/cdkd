@@ -104,7 +104,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
@@ -450,7 +450,7 @@ export class GlueProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2272,7 +2272,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2510,7 +2510,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     if (this.cachedAccountId) return this.cachedAccountId;
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2565,7 +2565,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3163,7 +3163,7 @@ export class GlueJobProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3173,7 +3173,7 @@ export class GlueJobProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3718,7 +3718,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3728,7 +3728,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4214,7 +4214,7 @@ export class GlueConnectionProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4510,7 +4510,7 @@ export class GlueTriggerProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4520,7 +4520,7 @@ export class GlueTriggerProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

@@ -60,7 +60,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -221,7 +221,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private getClient(): ApiGatewayV2Client {
     if (!this.client) {
       this.client = new ApiGatewayV2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
