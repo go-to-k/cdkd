@@ -98,7 +98,7 @@ import type {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -353,7 +353,7 @@ export class ECSProvider implements ResourceProvider {
   private getClient(): ECSClient {
     if (!this.ecsClient) {
       this.ecsClient = new ECSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

@@ -28,7 +28,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -67,7 +67,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   private getClient(): SFNClient {
     if (!this.sfnClient) {
       this.sfnClient = new SFNClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -77,7 +77,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   private getS3Client(): S3Client {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

@@ -45,7 +45,7 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -282,7 +282,7 @@ export class Route53Provider implements ResourceProvider {
   private getClient(): Route53Client {
     if (!this.route53Client) {
       this.route53Client = new Route53Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

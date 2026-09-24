@@ -5,7 +5,7 @@ import {
 } from '@aws-sdk/client-cloudcontrol';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
  * Cloud Control API context provider
@@ -41,7 +41,10 @@ export class CcApiContextProvider implements ContextProvider {
       `CC API lookup: ${typeName}${exactIdentifier ? ` (id: ${exactIdentifier})` : ''} (region: ${region})`
     );
 
-    const client = new CloudControlClient({ ...awsClientDefaults(), ...(region && { region }) });
+    const client = new CloudControlClient({
+      ...ambientClientDefaults(),
+      ...(region && { region }),
+    });
 
     try {
       let resources: ResourceModel[];

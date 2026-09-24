@@ -97,6 +97,12 @@ import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import {
+  ambientCredentialConfig,
+  clientDefaultsFor,
+  credentialFingerprint,
+  type CredentialConfig,
+} from '../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../state/record-keys.js';
 
 /**
@@ -2213,6 +2219,19 @@ async function allSettledKeepingFirstRejection<T>(
 }
 
 /**
+ * The key for the resolver's per-region SDK client caches ({@link
+ * IntrinsicFunctionResolver}'s `cfnClients`, `regionScopedClients` and
+ * `serviceDiscoveryClients`): the region PLUS the credential fingerprint of the
+ * configuration the cached client was built from (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). Encoded through
+ * {@link injectiveKey}, so no region or profile spelling can forge another
+ * pair's key.
+ */
+function clientCacheKey(region: string, credentialConfig: CredentialConfig): string {
+  return injectiveKey(region, credentialFingerprint(credentialConfig));
+}
+
+/**
  * Is `region` safe to build an AWS SDK client from?
  *
  * This is a SECURITY gate, not an AWS region registry, and the distinction
@@ -2915,15 +2934,22 @@ export class IntrinsicFunctionResolver {
    * foreign region per resolver, versus the ambient clients which are already
    * created and destroyed per stack by `deploy.ts`.
    *
-   * KEYED BY REGION ALONE, which means an entry also pins the CREDENTIAL
-   * configuration of whichever ambient instance was current at the first
-   * mismatch for that region. That is sound today because the credential half
-   * is process-wide rather than per-stack: `--profile` comes from one CLI
-   * option and `--role-arn` lands in `process.env`, so every ambient instance
-   * a run installs carries the same one. Widen the key to include
-   * {@link AwsClients.credentialConfig} the moment that stops being true —
-   * per-stack credentials would otherwise let one stack's lookups run under
-   * another's identity, which is a worse bug than the one this cache serves.
+   * KEYED BY REGION AND CREDENTIAL FINGERPRINT ({@link clientCacheKey}, issue
+   * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). An entry pins the
+   * credential configuration of the ambient instance it was derived from, and
+   * that half is process-wide only for the CLI (one `--profile`, one
+   * `--role-arn`): a LIBRARY caller can drive one resolver across two
+   * `setAwsClients` installs (or cdkd's per-stack scopes) with different
+   * explicit credentials, and keyed by region alone the second's lookups ran under the first's
+   * identity. {@link cfnClients} and {@link serviceDiscoveryClients} share the
+   * key for the same reason, and the two CloudFormation fallback memos
+   * ({@link cfnExportsPromises}, {@link cfnStackOutputsCache}) carry the
+   * fingerprint too.
+   *
+   * THE CLIENT HALF IS CLOSED, NOT THE WHOLE CLASS: {@link cachedDynamicReferences}
+   * (keyed by the expression alone) and the PROCESS-GLOBAL account identity
+   * behind `getAccountInfo` still assume one identity per resolver and per
+   * process respectively — a value one identity read is served to the next.
    */
   private readonly regionScopedClients = new Map<string, AwsClients>();
   /**
@@ -2991,9 +3017,10 @@ export class IntrinsicFunctionResolver {
   /**
    * Per-region CloudFormation clients for the cross-stack fallback
    * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
-   * may target a region different from the consumer's deploy region.
+   * may target a region different from the consumer's deploy region, and by
+   * the credential fingerprint for {@link regionScopedClients}' reason.
    */
-  private readonly cfnClients: Record<string, CloudFormationClient> = {};
+  private readonly cfnClients = new Map<string, CloudFormationClient>();
   /**
    * Memoized full `ListExports` listing for the `Fn::ImportValue`
    * fallback (issue #1697 review). Without it, EVERY cdkd-miss import
@@ -3005,14 +3032,18 @@ export class IntrinsicFunctionResolver {
    * deploys. FAILED fetches are not cached (the rejection handler
    * clears the slot) so a transient throttle does not poison the rest
    * of the deploy's lookups.
+   *
+   * Keyed by the credential fingerprint (issue #3588): a listing is an answer
+   * one identity was allowed to read, so it is never handed to another.
    */
-  private cfnExportsPromise: Promise<CfnExport[]> | undefined;
+  private readonly cfnExportsPromises = new Map<string, Promise<CfnExport[]>>();
   /**
    * Memoized per-(region, stack) `DescribeStacks` outputs for the
    * `Fn::GetStackOutput` fallback (issue #1697 review) — a stack
    * referencing the same CFn producer N times pays one call. Successful
    * lookups (including the definitive "stack does not exist" miss) are
-   * cached; lookup FAILURES are evicted so they are retried.
+   * cached; lookup FAILURES are evicted so they are retried. Keyed by the
+   * credential fingerprint as well, for {@link cfnExportsPromises}' reason.
    */
   private readonly cfnStackOutputsCache = new Map<
     string,
@@ -3305,7 +3336,8 @@ export class IntrinsicFunctionResolver {
     // questions below, and asking would be the TypeError this arm prevents.
     if (typeof ambient.withRegion !== 'function') return ambient;
 
-    const cached = this.regionScopedClients.get(target);
+    const cacheKey = clientCacheKey(target, ambient.credentialConfig ?? {});
+    const cached = this.regionScopedClients.get(cacheKey);
     if (cached) return cached;
 
     // ONLY a CONFIGURED ambient can be reused — see the note above on why a
@@ -3313,7 +3345,7 @@ export class IntrinsicFunctionResolver {
     if (canonicalizeRegion(ambient.configuredRegion) === target) return ambient;
 
     const scoped = ambient.withRegion(target);
-    this.regionScopedClients.set(target, scoped);
+    this.regionScopedClients.set(cacheKey, scoped);
     // SANITIZED (go-to-k/cdkd#3426), and this site was the one the issue's own
     // list did not carry: `isClientSafeRegion` gated `target`, never
     // `loggedTarget`, which is the LOG TEXT of a possibly different string — a
@@ -3352,14 +3384,17 @@ export class IntrinsicFunctionResolver {
    * `getAccountInfo`'s in-flight promise and reach here one at a time, which
    * the case says out loud. A REJECTED import is evicted
    * so a transient failure does not poison the rest of the deploy, mirroring
-   * `cfnExportsPromise`. Lifetime is the resolver's own, like
+   * `cfnExportsPromises`. Lifetime is the resolver's own, like
    * {@link regionScopedClients} and {@link cfnClients}: at most one per region
    * per resolver, versus the one-per-CALL this replaces.
    */
   private async serviceDiscoveryClient(): Promise<ServiceDiscoveryClient> {
     const scoped = this.clientsForRegion(this.explicitRegion);
     const region = scoped.configuredRegion;
-    const key = region ?? '';
+    // The scoped bag's OWN credential configuration, read once for both the
+    // key and the construction (issue #3588).
+    const credentialConfig: CredentialConfig = scoped.credentialConfig ?? {};
+    const key = clientCacheKey(region ?? '', credentialConfig);
     const cached = this.serviceDiscoveryClients.get(key);
     if (cached) return cached;
 
@@ -3369,8 +3404,7 @@ export class IntrinsicFunctionResolver {
         // The profile is passed rather than left to the `AWS_PROFILE` mirror
         // `program.ts` sets: `credentialConfig` can carry one, and relying on
         // the mirror made this the only site whose correctness depended on it.
-        ...awsClientDefaults({ profile: scoped.credentialConfig?.profile }),
-        ...(scoped.credentialConfig ?? {}),
+        ...clientDefaultsFor(credentialConfig),
         ...(region ? { region } : {}),
       });
     })();
@@ -9146,14 +9180,20 @@ export class IntrinsicFunctionResolver {
     exportName: string,
     context?: ResolverContext
   ): Promise<{ value: string; exportingStackId?: string } | undefined> {
-    let listing = this.cfnExportsPromise;
+    // The SAME reading `fetchAllCfnExports` builds its client from: it reads
+    // the ambient configuration synchronously, before its first `await`.
+    const listingKey = credentialFingerprint(ambientCredentialConfig());
+    let listing = this.cfnExportsPromises.get(listingKey);
     if (!listing) {
-      listing = this.fetchAllCfnExports();
-      this.cfnExportsPromise = listing;
+      const fetched = this.fetchAllCfnExports();
+      listing = fetched;
+      this.cfnExportsPromises.set(listingKey, fetched);
       // Do not cache failures: a transient throttle / permission fix should
       // be retried by the next lookup, not poison the whole deploy.
-      listing.catch(() => {
-        if (this.cfnExportsPromise === listing) this.cfnExportsPromise = undefined;
+      fetched.catch(() => {
+        if (this.cfnExportsPromises.get(listingKey) === fetched) {
+          this.cfnExportsPromises.delete(listingKey);
+        }
       });
     }
     try {
@@ -9272,7 +9312,13 @@ export class IntrinsicFunctionResolver {
     // would cost if that gate moved is the reason to encode anyway: this cache
     // serves a RESOLVED OUTPUT BAG, so a hit answers one stack's
     // `Fn::GetStackOutput` with another stack's outputs.
-    const cacheKey = injectiveKey(region, stackName);
+    // The credential half is the reading `fetchCfnStackOutputs` builds its
+    // client from, before its first `await` (issue #3588).
+    const cacheKey = injectiveKey(
+      region,
+      stackName,
+      credentialFingerprint(ambientCredentialConfig())
+    );
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
     if (!fetch) {
       fetch = this.fetchCfnStackOutputs(stackName, region);
@@ -9404,19 +9450,16 @@ export class IntrinsicFunctionResolver {
    * Not routed through {@link clientsForRegion}: the region here is always
    * the one the caller named, never the ambient's, and a test double without
    * `credentialConfig` degrades to the default chain rather than throwing.
-   * Keyed by region alone for the reason {@link regionScopedClients} gives:
-   * the credential half is process-wide.
+   * Keyed by region AND credential fingerprint for the reason
+   * {@link regionScopedClients} gives (issue #3588).
    */
   private getCfnClient(region: string): CloudFormationClient {
-    let client = this.cfnClients[region];
+    const credentialConfig = ambientCredentialConfig();
+    const key = clientCacheKey(region, credentialConfig);
+    let client = this.cfnClients.get(key);
     if (!client) {
-      const credentialConfig = getAwsClients().credentialConfig ?? {};
-      client = new CloudFormationClient({
-        ...awsClientDefaults({ profile: credentialConfig.profile }),
-        ...credentialConfig,
-        region,
-      });
-      this.cfnClients[region] = client;
+      client = new CloudFormationClient({ ...clientDefaultsFor(credentialConfig), region });
+      this.cfnClients.set(key, client);
     }
     return client;
   }

@@ -56,7 +56,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -1434,7 +1434,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private getClient(): CognitoIdentityProviderClient {
     if (!this.cognitoClient) {
       this.cognitoClient = new CognitoIdentityProviderClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

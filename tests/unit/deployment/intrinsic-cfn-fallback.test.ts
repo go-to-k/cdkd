@@ -607,3 +607,84 @@ describe('CloudFormation fallback client - explicit credentials (#1983)', () => 
     expect(cfnClientConfigs[0]).toMatchObject({ credentials: EXPLICIT });
   });
 });
+
+describe('per-resolver client and lookup caches are keyed by identity too (#3588)', () => {
+  const A = { accessKeyId: 'AKIDSCOPEA3588', secretAccessKey: 'secret-a' };
+  const B = { accessKeyId: 'AKIDSCOPEB3588', secretAccessKey: 'secret-b' };
+  const clientsFor = (credentials: typeof A): AwsClients =>
+    new AwsClients({ region: 'us-east-1', credentials });
+
+  afterEach(() => {
+    resetAwsClients();
+  });
+
+  function getStackOutput(resolver: IntrinsicFunctionResolver): Promise<unknown> {
+    return resolver.resolve(
+      {
+        'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'ApiUrl', Region: 'eu-west-1' },
+      },
+      buildContext({ stateBackend: makeBackend([]) })
+    );
+  }
+
+  it('Fn::GetStackOutput under two identities builds two clients and asks twice', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      describeStacks: async () => ({
+        Stacks: [{ Outputs: [{ OutputKey: 'ApiUrl', OutputValue: 'https://eu' }] }],
+      }),
+    });
+
+    await runWithStackAwsClients(clientsFor(A), () => getStackOutput(resolver));
+    await runWithStackAwsClients(clientsFor(B), () => getStackOutput(resolver));
+    await runWithStackAwsClients(clientsFor(A), () => getStackOutput(resolver));
+
+    expect(cfnClientConfigs.map((c) => (c as { credentials?: unknown }).credentials)).toEqual([
+      A,
+      B,
+    ]);
+    expect(cfnMockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('Fn::ImportValue never serves one identity the listing another read', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      listExports: async () => ({ Exports: [{ Name: 'SharedArn', Value: 'arn:x' }] }),
+    });
+    const importValue = () =>
+      resolver.resolve(
+        { 'Fn::ImportValue': 'SharedArn' },
+        buildContext({ stateBackend: makeBackend([]) })
+      );
+
+    setAwsClients(clientsFor(A));
+    await importValue();
+    setAwsClients(clientsFor(B));
+    await importValue();
+    // Back to A: its listing is still memoized, so no third walk.
+    setAwsClients(clientsFor(A));
+    await importValue();
+
+    expect(cfnMockSend).toHaveBeenCalledTimes(2);
+    expect(cfnClientConfigs.map((c) => (c as { credentials?: unknown }).credentials)).toEqual([
+      A,
+      B,
+    ]);
+  });
+
+  it('region-scoped client bags are derived per identity', () => {
+    const resolver = new IntrinsicFunctionResolver('eu-west-1');
+    const scoped = (): AwsClients =>
+      (resolver as unknown as { clientsForRegion(r: string): AwsClients }).clientsForRegion(
+        'eu-west-1'
+      );
+
+    const underA = runWithStackAwsClients(clientsFor(A), scoped);
+    const underB = runWithStackAwsClients(clientsFor(B), scoped);
+    const underAAgain = runWithStackAwsClients(clientsFor(A), scoped);
+
+    expect(underA.credentialConfig).toEqual({ credentials: A });
+    expect(underB.credentialConfig).toEqual({ credentials: B });
+    expect(underAAgain).toBe(underA);
+  });
+});

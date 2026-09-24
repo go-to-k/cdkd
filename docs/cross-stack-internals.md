@@ -471,7 +471,8 @@ When `RoleArn` is set, cdkd's resolver:
    up front with a clear error.
 2. **Calls `sts:AssumeRole`** via
    [`assumeRoleForCrossAccountStateRead`](https://github.com/go-to-k/cdkd/blob/main/src/utils/role-arn.ts).
-   Credentials are cached per-RoleArn for the deploy lifetime, so a
+   Credentials are cached per RoleArn (and per source identity, #3588)
+   for the deploy lifetime, so a
    stack with many `Fn::GetStackOutput` sites against the same producer
    pays exactly one STS hop. Concurrent first-time callers collapse to
    the same in-flight promise.
@@ -544,9 +545,11 @@ run is issuing calls as, to `sts:AssumeRole`. Standard cross-account
 trust-policy setup applies, with one thing to get right: that principal is the
 `--role-arn` / `CDKD_ROLE_ARN` role when the consumer run passes one, and the
 consumer account's own principal (or a specific consumer role) otherwise. This
-hop is built from `awsClientDefaults()` like every other client, so it inherits
-the assumed role rather than the profile that answered the original
-`AssumeRole`. A trust policy still naming the profile's principal fails here
+hop is built from the active `AwsClients`' credential configuration on top of
+`awsClientDefaults()`, like every other client, so it inherits the assumed role
+rather than the profile that answered the original `AssumeRole` (a library
+caller's explicit `AwsClientConfig.credentials` outranks both, and the assumed
+credentials are cached per role AND per that source identity). A trust policy still naming the profile's principal fails here
 with `AccessDenied`.
 
 #### A redacted secret output is refused, not resolved

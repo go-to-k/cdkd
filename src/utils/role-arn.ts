@@ -1,6 +1,11 @@
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
 import {
+  ambientCredentialConfig,
+  clientDefaultsFor,
+  credentialFingerprint,
+} from './ambient-client-defaults.js';
+import {
   awsClientDefaults,
   getAssumedRoleCredentials,
   setAssumedRoleCredentials,
@@ -30,7 +35,8 @@ export interface AwsCredentials {
 }
 
 /**
- * Process-lifetime cache of assumed credentials keyed by RoleArn.
+ * Process-lifetime cache of assumed credentials keyed by RoleArn AND the
+ * SOURCE identity the `sts:AssumeRole` hop runs as.
  *
  * Storing the in-flight `Promise` (rather than the resolved value) collapses
  * concurrent first-time callers into a single `sts:AssumeRole` request. After
@@ -38,10 +44,19 @@ export interface AwsCredentials {
  * stack that references the same producer N times via `Fn::GetStackOutput`
  * only pays the STS hop once.
  *
- * The cache is keyed by RoleArn alone (not RoleArn + region) because STS
- * credentials are global — assumed credentials work against any region's
- * service endpoint. The downstream S3 client built from these credentials
- * picks its own region via `GetBucketLocation`.
+ * Not keyed by region, because STS credentials are global — assumed
+ * credentials work against any region's service endpoint. The downstream S3
+ * client built from these credentials picks its own region via
+ * `GetBucketLocation`.
+ *
+ * KEYED BY THE SOURCE IDENTITY TOO (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588)): the hop runs as the
+ * ACTIVE `AwsClients`' credential configuration, and a library caller can
+ * install (`setAwsClients`) two different explicit credentials in one process,
+ * as can cdkd's own per-stack scopes. Keyed by RoleArn alone, the second would be handed
+ * credentials the FIRST identity obtained — a role the second one may not even
+ * be trusted to assume. The source half is `credentialFingerprint`'s (profile +
+ * access key id, never secret material).
  *
  * **Expiration handling**: on every cache hit, the cached credentials'
  * `expiration` is compared against `Date.now()` with a 60-second safety
@@ -110,7 +125,7 @@ export function parseIamRoleArn(roleArn: string): { partition: string; accountId
  * the consumer account's normal credentials). Threading the credentials
  * through a fresh `S3Client` via this helper keeps the scope narrow.
  *
- * **Why cache per-RoleArn for the process lifetime.** A multi-resource
+ * **Why cache per RoleArn (and source identity) for the process lifetime.** A multi-resource
  * stack typically references `Fn::GetStackOutput` from many template sites
  * (every IAM policy / Lambda env / ALB listener that pulls a shared VPC ID
  * from a platform stack). Assuming the role once per deploy is sufficient;
@@ -133,7 +148,12 @@ export function parseIamRoleArn(roleArn: string): { partition: string; accountId
  * uniformly), but the next caller after rejection gets a clean slate.
  */
 export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promise<AwsCredentials> {
-  const cached = crossAccountCredentialsCache.get(roleArn);
+  // ONE reading of the source identity, used for both the cache key and the
+  // STS client below, so the entry is always filed under the identity that
+  // actually obtained it.
+  const sourceConfig = ambientCredentialConfig();
+  const cacheKey = JSON.stringify([credentialFingerprint(sourceConfig), roleArn]);
+  const cached = crossAccountCredentialsCache.get(cacheKey);
   if (cached) {
     // Concurrent callers MUST share the same in-flight promise —
     // including its rejection. We propagate cached.then's outcome
@@ -157,7 +177,7 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     }
     // Expired (or within the safety buffer) — evict and fall through
     // to the fresh AssumeRole path below.
-    crossAccountCredentialsCache.delete(roleArn);
+    crossAccountCredentialsCache.delete(cacheKey);
   }
 
   const promise = (async (): Promise<AwsCredentials> => {
@@ -178,7 +198,10 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     const displayRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
     logger.debug(`Assuming role for cross-account state read: ${displayRoleArn}`);
 
-    const sts = new STSClient({ ...awsClientDefaults() });
+    // The SOURCE identity of the hop is the active `AwsClients`' (issue
+    // #3588): an explicit `AwsClientConfig.credentials` has no environment
+    // path, so `awsClientDefaults()` alone took this hop as the default chain.
+    const sts = new STSClient({ ...clientDefaultsFor(sourceConfig) });
     try {
       let response;
       try {
@@ -252,13 +275,13 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     // concurrent caller has already started a fresh AssumeRole after
     // detecting expiration — in that case we don't want to clobber the
     // new entry.
-    if (crossAccountCredentialsCache.get(roleArn) === promise) {
-      crossAccountCredentialsCache.delete(roleArn);
+    if (crossAccountCredentialsCache.get(cacheKey) === promise) {
+      crossAccountCredentialsCache.delete(cacheKey);
     }
     throw err;
   });
 
-  crossAccountCredentialsCache.set(roleArn, promise);
+  crossAccountCredentialsCache.set(cacheKey, promise);
   return promise;
 }
 

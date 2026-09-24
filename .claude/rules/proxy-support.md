@@ -14,7 +14,8 @@ Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
 ## `aws-client-defaults.ts`
 
 `awsClientDefaults(...)` is the partial config EVERY AWS SDK client under
-`src/**` must spread FIRST, so a site's explicit `credentials` wins.
+`src/**` must spread FIRST, so a site's explicit `credentials` wins — through
+`ambientClientDefaults()` outside `AwsClients` ([#3588](https://github.com/go-to-k/cdkd/issues/3588)).
 
 - No proxy and no role assumed: it returns `{}`. Otherwise a `requestHandler`
   from `proxy-routing-agent.ts` PLUS an injected `defaultProvider` chain
@@ -28,6 +29,8 @@ Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
   no-op, since the chain then re-reads the `AWS_*` triple the helper overwrote.
 - `resetAwsClientDefaults()` also drops the published role and pre-assume caller
   snapshot ([local-caller-identity.md](local-caller-identity.md)).
+- `ambientClientDefaults()` adds the ACTIVE clients' explicit `credentials`,
+  which bare `awsClientDefaults()` drops; caches key on `credentialFingerprint`.
 
 ## `proxy-routing-agent.ts`
 

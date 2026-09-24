@@ -510,7 +510,11 @@ drop answer, ask what your readback emits for the UNCONFIGURED resource.
 ## Provider Implementation Examples
 
 **Clients and region.** Take AWS clients from `getAwsClients()`, or build your
-own SDK client with `awsClientDefaults()` spread first, and read the region
+own SDK client with `ambientClientDefaults()`
+(`src/utils/ambient-client-defaults.ts`) spread first — it adds the active
+`AwsClients`' profile and explicit credentials to `awsClientDefaults()`, which
+alone would drop them (issue
+[#3588](https://github.com/go-to-k/cdkd/issues/3588)) — and read the region
 through `ambientRegion()` (`src/utils/stack-aws-scope.ts`) — never
 `process.env.AWS_REGION` directly. `cdkd deploy` runs stacks in several regions
 concurrently, each inside its own stack AWS scope, and those three are the reads

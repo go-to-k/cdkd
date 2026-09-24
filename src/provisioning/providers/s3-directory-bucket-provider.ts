@@ -37,7 +37,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -144,7 +144,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private getEc2Client(): EC2Client {
     if (!this.ec2Client) {
       this.ec2Client = new EC2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -161,7 +161,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private getS3ControlClient(): S3ControlClient {
     if (!this.s3ControlClient) {
       this.s3ControlClient = new S3ControlClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

@@ -47,7 +47,7 @@ import type {
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -172,7 +172,7 @@ export class ASGProvider implements ResourceProvider {
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
       this.asgClient = new AutoScalingClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -182,7 +182,7 @@ export class ASGProvider implements ResourceProvider {
   private getEc2Client(): EC2Client {
     if (!this.ec2Client) {
       this.ec2Client = new EC2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

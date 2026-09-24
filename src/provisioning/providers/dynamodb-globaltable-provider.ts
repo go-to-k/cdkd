@@ -107,7 +107,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
 
 /**
@@ -340,7 +340,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private getRegionalClient(region: string): DynamoDBClient {
     const cached = this.regionalClientCache.get(region);
     if (cached) return cached;
-    const client = new DynamoDBClient({ ...awsClientDefaults(), region });
+    const client = new DynamoDBClient({ ...ambientClientDefaults(), region });
     this.regionalClientCache.set(region, client);
     return client;
   }
@@ -359,7 +359,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private getRegionalAutoScalingClient(region: string): ApplicationAutoScalingClient {
     const cached = this.regionalAutoScalingClientCache.get(region);
     if (cached) return cached;
-    const client = new ApplicationAutoScalingClient({ ...awsClientDefaults(), region });
+    const client = new ApplicationAutoScalingClient({ ...ambientClientDefaults(), region });
     this.regionalAutoScalingClientCache.set(region, client);
     return client;
   }
@@ -376,7 +376,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (this.localAutoScalingClient) return this.localAutoScalingClient;
     const region = (await this.dynamoDBClient.config.region()) ?? '';
     this.localAutoScalingClient = new ApplicationAutoScalingClient({
-      ...awsClientDefaults(),
+      ...ambientClientDefaults(),
       region,
     });
     return this.localAutoScalingClient;
@@ -5740,7 +5740,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const asClient =
         client ??
         new ApplicationAutoScalingClient({
-          ...awsClientDefaults(),
+          ...ambientClientDefaults(),
           region: (await this.dynamoDBClient.config.region()) ?? '',
         });
 
