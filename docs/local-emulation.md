@@ -192,9 +192,16 @@ Refused:
 - a Lambda's `Handler`, for an inline `Code.ZipFile` — cdkd materializes it as
   a file before running it, so an escaping module path would have written the
   assembly's own bytes to a path of its choosing;
-- a Docker asset's `source.directory` under `cdkd local run-task`;
-- a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
-  `source.directory` its `--watch` soft reload reads;
+- a Docker asset's `source.directory` — the directory an image is built
+  from — under `cdkd local run-task`, `cdkd local invoke` and
+  `cdkd local start-api` (a container-image Lambda),
+  `cdkd local invoke-agentcore` (its container arm, both the image build and
+  the directory its `--watch` soft reload reads), and
+  `cdkd local start-service` / `cdkd local start-alb` (an ECS service's image,
+  and a container-image Lambda behind the ALB). The last two are checked,
+  across every stack in the assembly, before any image is built — when the run
+  starts and again on every `--watch` reload;
+- a code asset's `source.path` under `cdkd local invoke-agentcore`;
 - a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke`,
   `cdkd local start-api`, `cdkd local start-alb` and
   `cdkd local start-cloudfront`, when it is **relative** — both the function's
@@ -237,14 +244,13 @@ Warned about, but accepted:
 
 Not refused today:
 
-- every Docker build context that goes through the bundled `cdk-local` engine,
-  which joins the path itself: a container-image Lambda under
-  `cdkd local invoke` and `cdkd local start-api`; the image build of
-  `cdkd local invoke-agentcore`'s container arm (so that command contains the
-  `source.directory` its watcher classifies against, but not the one it
-  builds); and the ECS image build reached by `cdkd local start-service` and
-  `cdkd local start-alb`. `cdkd local run-task` is the exception — its image
-  build is cdkd's own and IS contained.
+- the Docker build context of a container image built inside a command the
+  bundled `cdk-local` engine runs end to end, which joins the path itself:
+  `cdkd local start-agentcore`'s container arm, and a container-image Lambda
+  behind a function URL origin of `cdkd local start-cloudfront`;
+- the source directory a `--watch` soft reload of `cdkd local start-service` /
+  `cdkd local start-alb` copies into a running replica: the engine looks it up
+  separately from the image build, and takes an absolute value as given.
 
 A Lambda's `Metadata['aws:asset:path']` is on that list for no command. Reaching
 it through the bundled `cdk-local` engine — which is how `cdkd local start-alb`

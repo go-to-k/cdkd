@@ -1,6 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname } from 'node:path';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -27,6 +26,7 @@ import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider } from './local-state-source.js';
 import {
+  assetPathDirs,
   resolveLambdaTarget,
   type ResolvedImageLambda,
   type ResolvedLambda,
@@ -1102,6 +1102,8 @@ export async function resolveContainerImagePlan(
   let imageRef: string;
   if (localBuild) {
     imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
+      // The containment bound for `source.directory` (go-to-k/cdkd#3503).
+      assetOutdir: localBuild.assetOutdir,
       architecture: lambda.architecture,
       // `options.build === false` triggers the no-build path: skip
       // `docker build` and verify the deterministic tag is already
@@ -1165,15 +1167,19 @@ export async function resolveContainerImagePlan(
  * (and the single-asset fallback in `getDockerImageBySourceHash` did not
  * apply either) — the caller falls back to the ECR-pull path.
  */
-async function resolveLocalBuildPlan(
-  lambda: ResolvedImageLambda
-): Promise<
-  | { asset: { source: import('../../types/assets.js').DockerImageAssetSource }; cdkOutDir: string }
+async function resolveLocalBuildPlan(lambda: ResolvedImageLambda): Promise<
+  | {
+      asset: { source: import('../../types/assets.js').DockerImageAssetSource };
+      cdkOutDir: string;
+      assetOutdir: string;
+    }
   | undefined
 > {
   const manifestPath = lambda.stack.assetManifestPath;
   if (!manifestPath) return undefined;
-  const cdkOutDir = dirname(manifestPath);
+  // BASE from the manifest, BOUND from the app outdir -- the pair every other
+  // asset path in this command is judged against (go-to-k/cdkd#3489).
+  const { manifestDir: cdkOutDir, assetOutdir } = assetPathDirs(lambda.stack);
 
   const loader = new AssetManifestLoader();
   const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
@@ -1181,7 +1187,7 @@ async function resolveLocalBuildPlan(
 
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
-  return { asset: entry.asset, cdkOutDir };
+  return { asset: entry.asset, cdkOutDir, assetOutdir };
 }
 
 /**
