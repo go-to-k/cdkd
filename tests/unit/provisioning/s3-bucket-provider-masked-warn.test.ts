@@ -187,7 +187,7 @@ describe('create(): the destination refusal masks a resolved secret (issue #2178
       })
     );
 
-    expect(message).toContain('carries neither a bucket');
+    expect(message).toContain('has no destination bucket (BucketArn)');
     expect(message).toContain(`an object with keys [${SECRET_MASK}]`);
     expect(message).not.toContain(SECRET_PLAINTEXT);
   });

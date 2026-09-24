@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd S3 analytics + inventory DESTINATION integ (issue #1493 items 2/3).
 #
-# Both `applyAnalyticsConfigurations` and `applyInventoryConfigurations` pick
-# between the CFn FLATTENED destination shape and the SDK NESTED one by probing
-# member presence. Before the fix a `Destination` that was a string / array /
-# unresolved intrinsic indexed every probe to `undefined`, fell through to an
-# equally-`undefined` `S3BucketDestination`, and the caller's
-# `s3Dest ? ... : undefined` omitted the whole block from the Put — the
-# configuration deployed with NO destination and no error anywhere. The fix
-# refuses that on the template-borne create path, warns on the replay-reachable
-# update path, and widened the branch probe to include `Bucket`.
+# Before the fix, a `Destination` that was a string / array / unresolved
+# intrinsic in `applyAnalyticsConfigurations` / `applyInventoryConfigurations`
+# indexed every probe to `undefined`, and the caller's `s3Dest ? ... : undefined`
+# omitted the whole block from the Put — the configuration deployed with NO
+# destination and no error anywhere. The fix refuses that on the template-borne
+# create path and warns on the replay-reachable update path.
 #
 # Nothing in the integ tree exercised either configuration at all before this
-# fixture, so this is the live proof that the rewritten branch selection still
-# delivers a real destination to AWS.
+# fixture, so this is the live proof that the destination guard still delivers
+# a real destination to AWS.
 #
-# Only the FLATTENED shape is covered live — it is the only one a CDK template
-# can express (see the stack's header for why the SDK nested spelling stays
-# unit-covered).
+# Only the CFn destination shape is read (the SDK nested spelling and a
+# `Bucket` alias are refused pre-flight, issue #3602 — see the stack's header).
 #
 # Phases 2-4 are the live coverage for issue #1670 (the warn-and-SUBSTITUTE
 # arms of the same two appliers). #1670's own Scope bullet 3 asks for it, and
@@ -29,7 +25,7 @@
 #   1. Deploy; assert BOTH configurations reached AWS carrying the declared
 #      destination bucket, format and prefix. Against the pre-fix binary this
 #      phase still passes — a correct template was never the broken case — so
-#      the value here is regression protection for the rewritten branch pick.
+#      the value here is regression protection for the destination guard.
 #   2. (#1670) Re-deploy with CDKD_TEST_UPDATE=malformed-substitute: three
 #      fields are BLANK, so each read warns and SENDS its default. Assert the
 #      deploy succeeds, that it WARNED (the anti-vacuity guard), that AWS holds
