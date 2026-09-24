@@ -270,6 +270,25 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
     expect(notices[0]).toContain(` ${arns}, `);
   });
 
+  it('BOUNDS an unroutable-type error that echoes an oversized value', async () => {
+    const huge = `Unsupported resource type: ${'y'.repeat(5000)}`;
+    const { notices } = await planOrphanAdoption({
+      records: [hostileRecord()],
+      managedLogicalIds: new Set(),
+      template: declaring,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      getProvider: () => {
+        throw new Error(huge);
+      },
+      nameProperties: () => ['RoleName'],
+      readSiblingClaims: async () => new Set(),
+      logger: { debug: vi.fn() },
+    });
+    expect(notices[0]).toMatch(/\[cut: \d+ more characters withheld\]\) — cdkd is not adopting/);
+    expect(notices[0]).not.toContain(huge);
+  });
+
   it('BOUNDS a provider error that echoes an oversized value, marking the cut', async () => {
     // `displayAwsMessage`, not `displaySafe`: an error that quotes a submitted
     // value back has a caller-chosen length, and the notice would carry all of it.
@@ -359,6 +378,53 @@ describe('makeSiblingClaimReader debug lines render display-safe (#3642)', () =>
       debug.mock.calls[0]?.[0] as string,
       `orphan adoption: skipping unreadable state for "Sib  [2Kling" — ${SHOWN_ERROR}`
     );
+  });
+});
+
+describe('makeSiblingClaimReader debug lines are BOUNDED where their grammar allows (#3642)', () => {
+  const huge = `AccessDenied: ${'y'.repeat(5000)}`;
+
+  it('the failed-listing line cuts an oversized error', async () => {
+    const debug = vi.fn();
+    await makeSiblingClaimReader({
+      stateBackend: {
+        listStacks: async () => {
+          throw new Error(huge);
+        },
+        getState: async () => null,
+      },
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    const line = debug.mock.calls[0]?.[0] as string;
+    expect(line).toMatch(/\[cut: \d+ more characters withheld\]$/);
+    expect(line).not.toContain(huge);
+  });
+
+  it('the unreadable-sibling line keeps a long NESTED stack name whole and cuts the error', async () => {
+    // A nested child's record name is `Parent~Child~...`, legitimately past
+    // 255 — `displayStackName`'s cap, not `displayIdent`'s default, is the one
+    // that names it.
+    const nested = ['Root', 'A'.repeat(120), 'B'.repeat(120), 'C'.repeat(40)].join('~');
+    const debug = vi.fn();
+    await makeSiblingClaimReader({
+      stateBackend: {
+        listStacks: async () => [{ stackName: nested, region: 'us-east-1' }],
+        getState: async () => {
+          throw new Error(huge);
+        },
+      },
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    const line = debug.mock.calls[0]?.[0] as string;
+    expect(nested.length).toBeGreaterThan(255);
+    expect(line.startsWith(`orphan adoption: skipping unreadable state for ${nested} — `)).toBe(
+      true
+    );
+    expect(line).toMatch(/\[cut: \d+ more characters withheld\]$/);
   });
 });
 
