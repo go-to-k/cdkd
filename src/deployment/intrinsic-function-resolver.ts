@@ -989,16 +989,18 @@ function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): str
 
 /**
  * The array position a RESOLVED `Fn::Select` index names, or `undefined` when
- * it names none (issue #3574): a non-negative safe integer, or a string of
- * decimal digits denoting one (CloudFormation accepts `"1"`, and a `Ref` to a
- * parameter the resolver did not coerce is still a string). No `Number()` on
- * anything else: it trims whitespace and maps `""` / `null` / `[]` to `0`.
+ * it names none (issue #3574): a non-negative safe integer, or its canonical
+ * decimal string (CloudFormation accepts `"1"`, and a `Ref` to a parameter the
+ * resolver did not coerce is still a string). No `Number()` on anything else:
+ * it trims whitespace and maps `""` / `null` / `[]` to `0`. No leading zero
+ * either, so `String(position)` IS the resolved text and masks like it — the
+ * same shape `import.ts`'s `isStaticSelectIndex` vouches for.
  */
 function selectIndexPosition(value: unknown): number | undefined {
   const n =
     typeof value === 'number'
       ? value
-      : typeof value === 'string' && /^[0-9]+$/.test(value)
+      : typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)
         ? Number(value)
         : undefined;
   return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
@@ -4441,8 +4443,8 @@ export class IntrinsicFunctionResolver {
    *
    * - `Object.hasOwn`, never a bare read (issue #2767): the logical id is
    *   template text, and a plain-object read walks the prototype chain.
-   * - A record whose `physicalId` is not a string is REFUSED here, above every
-   *   reader (issue #3576). Nothing in `src/state/` checks the type, so a hand
+   * - A record whose `physicalId` is not a string, or that is not an object at
+   *   all, is REFUSED here, above every reader (issue #3576). Nothing in `src/state/` checks the type, so a hand
    *   edit or a foreign writer can leave a number, and the arms below call
    *   `.startsWith` / `.replace` on it (a bare `TypeError`) or build an ARN
    *   from it. cdkd never writes such a record, so no answer derived from it
@@ -4459,15 +4461,23 @@ export class IntrinsicFunctionResolver {
       ? context.resources[logicalId]
       : undefined;
     if (!resource) return undefined;
-    const physicalId: unknown = (resource as { physicalId?: unknown }).physicalId;
+    const isObject = typeof resource === 'object' && !Array.isArray(resource);
+    const physicalId: unknown = isObject
+      ? (resource as { physicalId?: unknown }).physicalId
+      : undefined;
     if (typeof physicalId !== 'string') {
+      const loggedId = this.displayMasked(logicalId, context);
       const got = physicalId === null ? 'null' : typeof physicalId;
+      const what = isObject
+        ? `the state record's physical id is ${got}, not a string`
+        : `the state record is ${Array.isArray(resource) ? 'an array' : typeof resource}, not an object`;
+      const remedy = isObject
+        ? `Set the resource's "physicalId" in the stack's state.json back to the id AWS knows the resource by.`
+        : `Restore the resource's record in the stack's state.json, or remove it and re-import the resource.`;
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `${via} ${this.displayMasked(logicalId, context)}: the state record's physical id ` +
-            `is ${got}, not a string. cdkd always records a string id, so this record was ` +
-            `edited by hand or written by another tool. Set the resource's "physicalId" ` +
-            `in the stack's state.json back to the id AWS knows the resource by.`,
+          `${via} ${loggedId}: ${what}. cdkd always records an object with a string id, so ` +
+            `this record was edited by hand or written by another tool. ${remedy}`,
           undefined,
           'STATE_PHYSICAL_ID_NOT_STRING'
         )
@@ -7840,7 +7850,7 @@ export class IntrinsicFunctionResolver {
       // object is not iterable) or, for a STRING operand, silently reads its
       // first two characters as the index and the list.
       throw markNonRetryable(
-        new Error(
+        new IntrinsicResolutionRefusalError(
           `Fn::Select takes a two-element list [index, list], got ${this.describeOperandShape(selectArgs, context)}`
         )
       );
@@ -7863,7 +7873,7 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
-            `(a number, or a string of decimal digits), got ${this.describeOperandShape(resolvedIndex, context)}. ` +
+            `(a number, or its decimal string with no leading zero), got ${this.describeOperandShape(resolvedIndex, context)}. ` +
             `CloudFormation rejects any other index too; use a literal, a Ref to a ` +
             `parameter or an Fn::FindInMap that yields one.`
         )
@@ -7873,12 +7883,31 @@ export class IntrinsicFunctionResolver {
     const resolvedList = await this.resolveValue(list, context);
 
     if (!Array.isArray(resolvedList)) {
+      // A plain `Error`, unlike the two refusals above, and deliberately left
+      // so: the LIST is often a resolution product (`Fn::GetAtt`, a
+      // parameter), and a best-effort pass abandons a plain error and keeps the
+      // raw intrinsic, where a refusal class would fail the whole pass.
       throw new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`);
     }
 
+    // The position through the builder: a resolved index can come from a
+    // parameter carrying a SECRET (a nested-stack child's inherited one), and
+    // `displayMasked` masks it where the bare integer would not be.
+    const loggedPosition = this.displayMasked(String(position), context);
     if (position >= resolvedList.length) {
+      if (loggedPosition !== String(position)) {
+        // The placeholder is a PROPERTY VALUE sent to AWS and persisted, so a
+        // masked position cannot go into it.
+        throw markNonRetryable(
+          new IntrinsicResolutionRefusalError(
+            `Fn::Select: the index ${loggedPosition} is out of bounds (array length: ` +
+              `${resolvedList.length}), and it resolves from a secret value, so cdkd will ` +
+              `not write it into the OutOfBounds placeholder.`
+          )
+        );
+      }
       this.logger.warn(
-        `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length})`
+        `Fn::Select: index ${loggedPosition} out of bounds (array length: ${resolvedList.length})`
       );
       return `{{Fn::Select:${position}:OutOfBounds}}`;
     }
@@ -7891,7 +7920,7 @@ export class IntrinsicFunctionResolver {
       // matches literally — so a mask over the ENCODED text misses exactly the
       // secrets that carry those bytes. Leaf-masking also reaches the
       // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-      `Resolved Fn::Select: index ${position} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
+      `Resolved Fn::Select: index ${loggedPosition} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
     );
     return result;
   }
@@ -7910,6 +7939,21 @@ export class IntrinsicFunctionResolver {
       if (key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) return `<${key}>`;
     }
     return '<intrinsic>';
+  }
+
+  /**
+   * Name a malformed operand's type, and its value when that is a scalar, for
+   * a refusal message. The value is template text or a resolution product, so
+   * it goes through the builder (issue #3479).
+   */
+  private describeOperandShape(value: unknown, context: ResolverContext): string {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return `an array of ${value.length}`;
+    if (typeof value === 'string') return `string "${this.displayMasked(value, context)}"`;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return `${typeof value} ${this.displayMasked(String(value), context)}`;
+    }
+    return typeof value;
   }
 
   /**
@@ -7938,21 +7982,6 @@ export class IntrinsicFunctionResolver {
    * reader whose `Fn::Split` was that bug's workaround) is irrelevant and
    * confusing for a parameter reference or a hand-written literal.
    */
-  /**
-   * Name a malformed operand's type, and its value when that is a scalar, for
-   * a refusal message. The value is template text or a resolution product, so
-   * it goes through the builder (issue #3479).
-   */
-  private describeOperandShape(value: unknown, context: ResolverContext): string {
-    if (value === null) return 'null';
-    if (Array.isArray(value)) return `an array of ${value.length}`;
-    if (typeof value === 'string') return `string "${this.displayMasked(value, context)}"`;
-    if (typeof value === 'number' || typeof value === 'boolean') {
-      return `${typeof value} ${this.displayMasked(String(value), context)}`;
-    }
-    return typeof value;
-  }
-
   private describeSplitValueSource(
     value: unknown
   ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {

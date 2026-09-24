@@ -140,6 +140,7 @@ describe('an index that names no element is REFUSED (#3574)', () => {
     ['"1.5"', 'undefined', '1.5'],
     ['""', 'undefined', ''],
     ['" 1"', 'undefined', ' 1'],
+    ['"01"', 'undefined', '01'],
     ['NaN', 'undefined', Number.NaN],
     ['Infinity', 'the OutOfBounds placeholder', Number.POSITIVE_INFINITY],
     ['true', 'undefined', true],
@@ -174,6 +175,61 @@ describe('a malformed Fn::Select operand is refused, not destructured', () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     const pending = resolver.resolve({ 'Fn::Select': operand }, context());
     await expect(pending).rejects.toThrow(/^Fn::Select takes a two-element list \[index, list\]/);
-    await pending.catch((e: unknown) => expect(isMarkedNonRetryable(e)).toBe(true));
+    await pending.catch((e: unknown) => {
+      expect(e).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(isMarkedNonRetryable(e)).toBe(true);
+    });
+  });
+});
+
+describe('an index resolved from a SECRET never reaches a log line or the placeholder raw', () => {
+  // A nested-stack child holds its parent's resolved secret only in
+  // `inheritedSecrets`; the `Ref` line masks it, and so must every later
+  // render of the index it becomes.
+  function secretContext(plaintext: string): ResolverContext {
+    return {
+      ...context(),
+      parameters: { SecretIdx: plaintext },
+      inheritedSecrets: new Map([[plaintext, '{{resolve:secretsmanager:idx-secret}}']]),
+    } as ResolverContext;
+  }
+
+  function selectSecret(plaintext: string, list: unknown[]): Promise<unknown> {
+    return new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false }).resolve(
+      { 'Fn::Select': [{ Ref: 'SecretIdx' }, list] },
+      secretContext(plaintext)
+    );
+  }
+
+  it.each(['987654', '42'])(
+    'out of bounds (secret %s): refused, never written into the placeholder',
+    async (plaintext) => {
+      const pending = selectSecret(plaintext, ['a', 'b']);
+      await expect(pending).rejects.toThrow(
+        'Fn::Select: the index *** is out of bounds (array length: 2), and it resolves from a secret value'
+      );
+      await pending.catch((e: unknown) => {
+        expect(e).toBeInstanceOf(IntrinsicResolutionRefusalError);
+        expect(isMarkedNonRetryable(e)).toBe(true);
+        expect(String((e as Error).message)).not.toContain(plaintext);
+      });
+      expect(logs.warn.join('\n')).not.toContain(plaintext);
+    }
+  );
+
+  it('in bounds: selects, and the debug line masks the index', async () => {
+    const list = Array.from({ length: 50 }, (_, i) => `v${i}`);
+    expect(await selectSecret('42', list)).toBe('v42');
+    expect(logs.debug).toContain('Resolved Fn::Select: index *** -> "v42"');
+    expect(logs.debug.join('\n')).not.toContain('index 42');
+  });
+
+  it('CONTROL: the same index from a NON-secret parameter renders and yields the placeholder', async () => {
+    const plain = await new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false }).resolve(
+      { 'Fn::Select': [{ Ref: 'SecretIdx' }, ['a', 'b']] },
+      { ...context(), parameters: { SecretIdx: '987654' } } as ResolverContext
+    );
+    expect(plain).toBe('{{Fn::Select:987654:OutOfBounds}}');
+    expect(logs.warn).toContain('Fn::Select: index 987654 out of bounds (array length: 2)');
   });
 });

@@ -111,9 +111,9 @@ function expectPhysicalIdRefusal(outcome: Outcome, via: string, got: string): vo
   expect(isMarkedNonRetryable(error)).toBe(true);
   expect(error.message).toBe(
     `${via} Thing: the state record's physical id is ${got}, not a string. cdkd always ` +
-      `records a string id, so this record was edited by hand or written by another tool. ` +
-      `Set the resource's "physicalId" in the stack's state.json back to the id AWS knows ` +
-      `the resource by.`
+      `records an object with a string id, so this record was edited by hand or written by ` +
+      `another tool. Set the resource's "physicalId" in the stack's state.json back to the id ` +
+      `AWS knows the resource by.`
   );
 }
 
@@ -148,6 +148,29 @@ describe('every non-string id type is refused at the record read (#3576)', () =>
       value: 'vpc-0abc',
     });
     expect(await resolveAgainst({ Ref: 'Thing' }, 'AWS::EC2::VPC', '')).toEqual({ value: '' });
+  });
+
+  it.each<[string, unknown]>([
+    ['number', 5],
+    ['string', 'vpc-0abc'],
+    ['an array', [{ physicalId: 'vpc-0abc' }]],
+  ])('a record that is not an object (%s) is refused as a RECORD, not as its id', async (got, record) => {
+    const outcome = await new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false })
+      .resolve({ Ref: 'Thing' }, {
+        template: { Resources: {} } as unknown as CloudFormationTemplate,
+        resources: { Thing: record },
+      } as unknown as ResolverContext)
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+    expect(outcome.error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(errorMessage(outcome)).toBe(
+      `Ref Thing: the state record is ${got}, not an object. cdkd always records an object ` +
+        `with a string id, so this record was edited by hand or written by another tool. ` +
+        `Restore the resource's record in the stack's state.json, or remove it and re-import ` +
+        `the resource.`
+    );
   });
 
   it('CONTROL: a NULL record still misses like an absent one', async () => {
