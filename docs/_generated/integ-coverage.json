@@ -606,6 +606,7 @@
     {
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
+        "custom-resource-noecho-nested",
         "export-nested-stack",
         "import-nested-stack",
         "nested-stack",
@@ -615,6 +616,9 @@
         "recreate-nested-logical-id-collision"
       ],
       "signals": {
+        "custom-resource-noecho-nested": [
+          "literal"
+        ],
         "export-nested-stack": [
           "literal"
         ],
@@ -4258,6 +4262,7 @@
         "cognito-lambda-triggers",
         "composite-stack",
         "custom-resource-getatt-data",
+        "custom-resource-noecho-nested",
         "custom-resource-provider",
         "data-pipeline",
         "deep-getatt-chains",
@@ -4403,6 +4408,10 @@
         ],
         "custom-resource-getatt-data": [
           "l2"
+        ],
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
         ],
         "custom-resource-provider": [
           "l2"
@@ -5838,6 +5847,7 @@
         "cross-stack-references",
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
+        "custom-resource-noecho-nested",
         "deep-getatt-chains",
         "deletion-policy-retain",
         "deployment-events",
@@ -5938,6 +5948,10 @@
         ],
         "custom-resource-getatt-data": [
           "l2"
+        ],
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
         ],
         "deep-getatt-chains": [
           "l1"

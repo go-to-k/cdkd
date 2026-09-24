@@ -5010,15 +5010,35 @@ export class IntrinsicFunctionResolver {
           typeof flatValue === 'string'
         ) {
           const nameServers = flatValue === '' ? [] : flatValue.split(',');
-          this.logger.debug(
-            `Normalized legacy Fn::GetAtt attribute: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
-          );
           // Issue #2274 review: this branch ALSO serves a value out of the
           // PERSISTED `attributes` bag, so it takes the note like the two
           // below. It shipped without one, which is why this method's doc no
           // longer claims the pass-through shape makes a skip impossible.
-          return this.noteAttributeSecrecy(logicalId, attributeName, nameServers, context);
+          // Noted BEFORE the log line, as every serving branch here is
+          // (go-to-k/cdkd#3659): see `noteAttributeSecrecy`'s ORDERING note.
+          const notedNameServers = this.noteAttributeSecrecy(
+            logicalId,
+            attributeName,
+            nameServers,
+            context
+          );
+          this.logger.debug(
+            `Normalized legacy Fn::GetAtt attribute: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
+          );
+          return notedNameServers;
         }
+        // The nested-stack dynamic-reference arm below re-resolves instead of
+        // taking the note, so the predicate is bound once for both uses.
+        const reresolvesNestedReference =
+          resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
+          attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX) &&
+          carriesDynamicReference(flatValue);
+        // Noted BEFORE the log line (go-to-k/cdkd#3659): the note is what puts
+        // a `NoEcho` value into the CONSUMER's bag, and the line masks against
+        // that bag, so logging first printed the plaintext at `--verbose`.
+        const notedFlatValue = reresolvesNestedReference
+          ? flatValue
+          : this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context)}`
         );
@@ -5031,8 +5051,13 @@ export class IntrinsicFunctionResolver {
         // out, so it takes the same helper rather than a fourth copy of the
         // walk.
         //
-        // The log line above stays AHEAD of this call on purpose (the #1934
-        // ordering rule): it prints the token, never the resolved value.
+        // The log line above stays AHEAD of this re-resolution (the #1934
+        // ordering rule), which is sound ONLY on this arm: here the value IS a
+        // `{{resolve:...}}` token, so the line prints the token, never the
+        // resolved value. Every other value served from this bag can be
+        // plaintext -- a child output the #2274 in-run recovery handed back is
+        // one -- which is why it takes the note BEFORE the line above
+        // (go-to-k/cdkd#3659).
         //
         // The producer region is the CHILD's, read off the synthesized
         // `arn:cdkd-local:<childRegion>:...` physicalId `NestedStackProvider`
@@ -5061,11 +5086,7 @@ export class IntrinsicFunctionResolver {
         // A leaf the key function refuses — a non-literal attribute name, an
         // arity the resolver would not accept — still yields `undefined` and
         // still inherits today's behaviour.
-        if (
-          resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
-          attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX) &&
-          carriesDynamicReference(flatValue)
-        ) {
+        if (reresolvesNestedReference) {
           return await this.reresolveCrossStackValue(
             flatValue,
             nestedStackChildRegionFromLocalArn(resource.physicalId),
@@ -5074,7 +5095,7 @@ export class IntrinsicFunctionResolver {
             crossStackSourceKey({ 'Fn::GetAtt': getAtt })
           );
         }
-        return this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
+        return notedFlatValue;
       }
 
       // Issue #381: nested-path fallback. CC API providers store CFn nested
@@ -5108,6 +5129,8 @@ export class IntrinsicFunctionResolver {
           }
         }
         if (cursor !== undefined) {
+          // Noted BEFORE the log line (go-to-k/cdkd#3659); see the flat read.
+          const notedCursor = this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
           this.logger.debug(
             `Resolved Fn::GetAtt from nested attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context)}`
           );
@@ -5126,7 +5149,7 @@ export class IntrinsicFunctionResolver {
           // handler answering `{"Data": {"Endpoint": {"Password": "..."}}}`
           // lands a sensitive leaf on exactly this walk. Serving one branch and
           // not the other is how a redaction ships half-applied.
-          return this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
+          return notedCursor;
         }
       }
     }
@@ -5249,6 +5272,11 @@ export class IntrinsicFunctionResolver {
    *
    * A context supplying NEITHER field — the diff / no-op resolver, `cdkd
    * scrub`, `cdkd import` — pays two undefined checks and gets its value back.
+   *
+   * ORDERING: call it BEFORE any log line that prints the value
+   * (go-to-k/cdkd#3659). Note 1 is what puts a `NoEcho` value into the bag
+   * `displayMasked` masks against, so a line logged first prints the plaintext
+   * at `--verbose`.
    */
   private noteAttributeSecrecy(
     logicalId: string,
@@ -5535,15 +5563,17 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     context: ResolverContext
   ): unknown {
-    this.logger.debug(
-      `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
-    );
     // Through the same note as every value served from the recorded bag. A
     // healer is contracted to drop masked keys and `usableHealedAttribute`
     // refuses one here too, so this is the third layer, not the first: a mask
     // that still got through is RECORDED as a redacted read and the engine
-    // refuses the consumer rather than sending `***` to AWS.
-    return this.noteAttributeSecrecy(logicalId, attributeName, value, context);
+    // refuses the consumer rather than sending `***` to AWS. Noted BEFORE the
+    // log line (go-to-k/cdkd#3659), as every serving branch is.
+    const noted = this.noteAttributeSecrecy(logicalId, attributeName, value, context);
+    this.logger.debug(
+      `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
+    );
+    return noted;
   }
 
   /**
