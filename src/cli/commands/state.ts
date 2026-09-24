@@ -93,6 +93,7 @@ import {
   watchCommandInterrupt,
 } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
+import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -2796,14 +2797,7 @@ function createStateDestroyCommand(): Command {
     .option(
       '--remove-protection',
       'Bypass deletion protection on protected resources by flipping the per-resource ' +
-        'protection flag off in-place before delete. Covers AWS::Logs::LogGroup, ' +
-        'AWS::RDS::DBInstance, AWS::RDS::DBCluster, AWS::DocDB::DBCluster, ' +
-        'AWS::Neptune::DBCluster, AWS::Neptune::DBInstance, AWS::DynamoDB::Table, ' +
-        'AWS::EC2::Instance, AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
-        'AWS::ElasticLoadBalancingV2::LoadBalancer, AWS::DSQL::Cluster, ' +
-        'AWS::NeptuneGraph::Graph, AWS::SMSVOICE::ProtectConfiguration, ' +
-        'AWS::VerifiedPermissions::PolicyStore, AWS::EKS::Cluster, ' +
-        'AWS::RDS::GlobalCluster, and AWS::DocDB::GlobalCluster.',
+        `protection flag off in-place before delete. Covers ${removeProtectionTypeList()}.`,
       false
     )
     .addOption(stackRegionOption())
