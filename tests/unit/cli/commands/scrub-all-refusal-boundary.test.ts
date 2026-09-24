@@ -1047,6 +1047,49 @@ describe('cdkd scrub: an unreadable orphans container reaches the VERDICT (go-to
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
   });
 
+  it('a ROW no reader can use reaches the same verdict as the container (go-to-k/cdkd#3500)', async () => {
+    // The command-level half for the ROW finding. `scrubStack` reports
+    // `malformedOrphanRows`, and this is what proves the field is wired into the
+    // verdict rather than merely set: without the feed, `--dry-run --fail` exits
+    // through the silent ScrubNeededError over a record it could not fully read.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      (state as { orphans?: unknown }).orphans = [
+        {
+          logicalId: 'Keep',
+          orphanedAt: 1,
+          state: { physicalId: 'live-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+        5,
+      ];
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
+      (e: unknown) => e
+    );
+
+    expect((err as { code?: string }).code).toBe('STATE_RESOURCES_MALFORMED');
+    expect((err as { code?: string }).code).not.toBe('SCRUB_NEEDED');
+    expect((err as { exitCode?: number }).exitCode).toBe(2);
+    // The audited-record sentence covers both shapes of orphan damage, so it
+    // names the stack either way — and the WIDENED wording is pinned here rather
+    // than by the substring the two versions share. go-to-k/cdkd#3500 changed
+    // this arm from "an EMPTY orphan list" to an INCOMPLETE one that also covers a
+    // readable list holding an unusable ROW; reverting it to the pre-image reddened
+    // nothing, because both assertions were `toContain('orphan list')`
+    // (go-to-k/cdkd#3641 test review).
+    const message = String((err as { message?: string }).message);
+    expect(message).toContain('an INCOMPLETE orphan list');
+    expect(message, 'the sentence no longer covers the ROW shape').toContain(
+      'a record inside it that no reader can use'
+    );
+    expect(message, 'the sentence no longer says which diagnosis to look for').toContain(
+      'Whichever it was, the warning above names it per stack'
+    );
+    expect(message).toContain('Damaged');
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('FLOOR: a readable and an ABSENT container reach the ordinary verdict', async () => {
     // Without this the two cases above are satisfied by a guard that refused
     // everything. The ABSENT row is the ordinary record — a stack that never

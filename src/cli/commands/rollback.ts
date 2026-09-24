@@ -46,6 +46,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import {
+  refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
@@ -503,6 +504,11 @@ export async function rollbackCommand(
       // characters and this command SAVES it — a damaged container rewritten
       // into a differently damaged one, silently.
       refuseMalformedOrphans(baseState, stackName, region);
+      // The ROWS (go-to-k/cdkd#3500). This command is where the collapse is
+      // observable: `orphansAfterRollback` keys on `entry.logicalId`, so rows
+      // MISSING one all write the SAME `undefined` entry and the record saved
+      // below keeps one of them. Two distinct numeric ids do not collide.
+      refuseMalformedOrphanRecords(baseState, stackName, region);
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
       // `DeletionPolicy: Retain` (issue #2934). Declared beside

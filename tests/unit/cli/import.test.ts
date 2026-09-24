@@ -2549,6 +2549,66 @@ describe('cdkd import', () => {
       });
     }
 
+    /**
+     * The ROWS of a readable list (issue go-to-k/cdkd#3500), through the command.
+     * `orphansCarriedFrom` copies them verbatim, so unguarded `cdkd import`
+     * writes a record holding a row the next deploy cannot read.
+     */
+    for (const [label, row] of [
+      ['null', null],
+      ['a number', 5],
+      ['no `state`', { logicalId: 'Gone', orphanedAt: 1 }],
+      ['a non-string `logicalId`', { logicalId: 5, orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} } }],
+      // Added by go-to-k/cdkd#3641 item o7: the shapes every other command's table
+      // carried and this one did not, so no predicate clause is fenced at one
+      // command and unfenced at another.
+      ['an empty object', {}],
+      [
+        'a torn `properties` map',
+        { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: 'abcdef' } },
+      ],
+      [
+        'a torn `attributes` map',
+        { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {}, attributes: 5 } },
+      ],
+      [
+        'no `physicalId`',
+        { logicalId: 'Gone', orphanedAt: 1, state: { resourceType: 'AWS::SQS::Queue', properties: {} } },
+      ],
+    ] as const) {
+      it(`refuses an existing record whose orphans list holds a row that is ${label}`, async () => {
+        const usable = {
+          logicalId: 'Keep',
+          orphanedAt: 1,
+          state: { physicalId: 'live-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+        };
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          // A usable row beside it, so the guard has to refuse a list it could
+          // partly read rather than a uniformly broken one.
+          state: { ...existingState(), orphans: [usable, row] as unknown as [] },
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // The ROW text: the field here is a list, so the container refusal would
+        // send the operator to rewrite a field that is already the right shape.
+        expect(message).toContain('rollback-orphan record(s)');
+        expect(message).not.toContain("has no readable 'orphans' list");
+        expect(
+          mockSaveState,
+          'cdkd import saved a record holding a row it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
     it('FLOOR: a populated, an empty and an ABSENT orphans container are all still imported', async () => {
       // The one-sidedness guard for the four cases above, and the ABSENT row
       // is the load-bearing one: a stack that never had a failed deploy has no

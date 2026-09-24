@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
+import { orphansAfterRollback } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = {
@@ -194,5 +195,125 @@ describe('rollbackCommand refuses a malformed `orphans` container (go-to-k/cdkd#
       ).toHaveBeenCalled();
       expect(replayProvider.delete, 'the control never replayed anything').toHaveBeenCalled();
     }
+  });
+});
+
+/**
+ * Issue go-to-k/cdkd#3500, rollback half — a READABLE list holding a row no
+ * reader can use. The container guard above cannot see this: the field IS a
+ * list.
+ *
+ * This command is where the loss is observable rather than merely possible.
+ * `orphansAfterRollback` merges by `byLogicalId.set(entry.logicalId, entry)`, so
+ * two rows MISSING a `logicalId` write the SAME `undefined` key and the record
+ * `cdkd rollback` saves keeps one of them — silently, with no error and nothing
+ * in the output. The surviving row is the evidence that a resource is still live
+ * in AWS; the other one is gone. Two rows carrying DISTINCT non-string ids do
+ * not collide: the map keys on the raw value, so `5` and `7` are two entries.
+ */
+describe('rollbackCommand refuses an unusable orphan ROW (go-to-k/cdkd#3500)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** A row that IS usable, so a fixture can hold both kinds at once. */
+  const healthy = (logicalId: string) => ({
+    logicalId,
+    orphanedAt: 1,
+    state: { physicalId: `p-${logicalId}`, resourceType: 'AWS::SQS::Queue', properties: {} },
+  });
+
+  const UNUSABLE: Array<[string, unknown]> = [
+    ['a null row', null],
+    ['a number row', 5],
+    ['a string row', 'abc'],
+    ['a row with no `state`', { logicalId: 'Gone', orphanedAt: 1 }],
+    ['a row whose `logicalId` is not a string', { logicalId: 5, orphanedAt: 1, state: healthy('X').state }],
+    ['an empty-object row', {}],
+    [
+      'a row whose `state.attributes` is not an object',
+      {
+        logicalId: 'Gone',
+        orphanedAt: 1,
+        state: {
+          physicalId: 'p',
+          resourceType: 'AWS::SQS::Queue',
+          properties: {},
+          attributes: 5,
+        },
+      },
+    ],
+    [
+      'a row whose `state` names no resource type',
+      { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'p', properties: {} } },
+    ],
+    [
+      'a row whose `state.properties` is not an object',
+      {
+        logicalId: 'Gone',
+        orphanedAt: 1,
+        state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: 'abcdef' },
+      },
+    ],
+  ];
+
+  for (const [label, row] of UNUSABLE) {
+    it(`refuses ${label} before any replay, saving nothing`, async () => {
+      // Beside a HEALTHY row, so the case cannot pass because the list was
+      // uniformly broken: the guard has to refuse a list it could partly read.
+      const h = install([healthy('Keep'), row]);
+      const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      // The ROW text, not the container's: the field here IS a list, so a
+      // refusal saying it has none would send the operator to rewrite a field
+      // that is already the right shape.
+      expect((thrown as CdkdError).message).toContain('rollback-orphan record(s)');
+      expect((thrown as CdkdError).message).not.toContain("has no readable 'orphans' list");
+      expect(
+        h.saveState,
+        'rollback saved the record before refusing, so the merge already dropped a row'
+      ).not.toHaveBeenCalled();
+      expect(replayProvider.delete).not.toHaveBeenCalled();
+    });
+  }
+
+  it('THE LOSS: two rows MISSING `logicalId` would collapse into one saved row', async () => {
+    // The case the issue exists for, and the one a count-only assertion passes
+    // vacuously. Both rows carry DISTINCT physical ids, so the survivor is
+    // identifiable: without the guard the saved record holds exactly one of
+    // them, which is why "the rollback did not throw" is not the property to
+    // assert — "nothing was saved" is.
+    const rowA = { orphanedAt: 1, state: { physicalId: 'live-A', resourceType: 'AWS::SQS::Queue', properties: {} } };
+    const rowB = { orphanedAt: 2, state: { physicalId: 'live-B', resourceType: 'AWS::SQS::Queue', properties: {} } };
+    const h = install([rowA, rowB]);
+    const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(CdkdError);
+    expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+    // BOTH are named, so the operator can see it is not one damaged row.
+    expect((thrown as CdkdError).message).toContain('2 rollback-orphan record(s)');
+    expect(h.saveState).not.toHaveBeenCalled();
+
+    // THE PREMISE, asserted rather than named in the title: the loss is a
+    // property of `orphansAfterRollback`'s merge map, and with the guard in
+    // place no rollback run can exhibit it any more. So call the merge directly
+    // on the same two rows — one survivor is what this case exists to refuse,
+    // and if the merge ever stops keying on `logicalId` this assertion is what
+    // says the title now credits a mechanism that is gone.
+    const merged = orphansAfterRollback(
+      { orphans: [rowA, rowB] } as unknown as StackState,
+      []
+    ).orphans;
+    expect(merged, 'the merge no longer collapses two id-less rows').toHaveLength(1);
+  });
+
+  it('CONTROL: a list whose every row is usable replays and SAVES', async () => {
+    const h = install([healthy('Keep'), healthy('AlsoKeep')]);
+    const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);
+    const message = thrown instanceof Error ? thrown.message : '';
+    expect(message).not.toContain('rollback-orphan record(s)');
+    expect(
+      h.saveState,
+      'the control never saved, so it proves nothing about the row guard'
+    ).toHaveBeenCalled();
+    expect(replayProvider.delete, 'the control never replayed anything').toHaveBeenCalled();
   });
 });

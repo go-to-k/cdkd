@@ -3036,22 +3036,37 @@ export function malformedResourceEntriesWarning(
 export function malformedOrphanRecordsWarning(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /**
+   * Does the CALLER also reject a torn `properties` / `attributes` map? Its two
+   * callers take different predicates (go-to-k/cdkd#3500): `cdkd scrub
+   * --dry-run` takes the writers' full one and passes `true`, while `cdkd diff`
+   * takes {@link isPreviewableOrphanRecord} and keeps such a row for the
+   * `properties` repair that names it. A diagnosis listing causes its caller does
+   * not act on tells the operator to repair a map that was not why the row was
+   * dropped.
+   */
+  alsoRejectsTornMaps: boolean
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
-  const named = logicalIds
-    .slice(0, NAMED_UNREADABLE_ENTRIES)
-    .map((id) => displayLogicalId(id))
-    .join(', ');
-  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
-  const more = rest > 0 ? ` and ${rest} more` : '';
   return (
     `${stackClause(stackName, region)} holds ${logicalIds.length} ` +
     `rollback-orphan record(s) in 'orphans' that cannot be read as resources — ` +
-    `${named}${more} — because they are not objects, or carry no resource type. Continuing ` +
-    `WITHOUT them: they are not previewed for adoption. These ids were read from 'orphans'; ` +
+    `${namedOrphanRows(logicalIds)} — because they are not objects, have no string 'logicalId', ` +
+    `or their 'state' is not an object, names no resource type${
+      alsoRejectsTornMaps
+        ? `, has no non-empty string 'physicalId', or holds a 'properties' or 'attributes' map ` +
+          `that is not an object`
+        : ` or has no non-empty string 'physicalId'`
+    }. Continuing ` +
+    `WITHOUT them: ${
+      alsoRejectsTornMaps
+        ? `they are excluded from the secret scan, so nothing this run does can certify them`
+        : `they are not previewed for adoption, and 'cdkd deploy' refuses the record over them ` +
+          `rather than dropping them as this command does`
+    }. These ids were read from 'orphans'; ` +
     `the 'resources' map carries its own warning when it is damaged too. See the ` +
     `stored values with: ` +
     inspectCommand(stackName, region)
@@ -3292,12 +3307,118 @@ export function malformedOrphanResourceAttributesRefusalMessage(
 }
 
 /**
+ * Is ONE `orphans[]` record PREVIEWABLE — the narrow half of
+ * {@link isReadableOrphanRecord}, for `cdkd diff` alone (go-to-k/cdkd#3500).
+ *
+ * An object, a string `logicalId`, and a `state` that is a readable resource
+ * entry with a non-empty string `physicalId`: everything the adoption preview
+ * dereferences, and nothing more. The `physicalId` half is NOT inherited from
+ * {@link isReadableResourceEntry} — see {@link hasStringPhysicalId} for why that
+ * one stops at `resourceType` and why a ROW cannot. It
+ * deliberately does not ask about that entry's `properties`, because `cdkd diff`
+ * has a LATER answer for that one — `computeStackDiff` runs the `properties`
+ * repair a second time over the adopted records and names what it emptied, which
+ * `docs/cli-diff.md` and `.claude/rules/state-malformed-properties.md` both
+ * describe. Dropping such a row here instead would make that repair unreachable
+ * and silently retire a documented report. A torn `attributes` map rides through
+ * for the same reason and gets NO later answer: stated rather than solved, and
+ * the same residual `cdkd diff` had before this predicate existed.
+ *
+ * Every WRITER takes the full predicate: none of them has a second answer, and
+ * a torn `properties` map reaching a save is go-to-k/cdkd#3344's defect.
+ */
+export function isPreviewableOrphanRecord(record: unknown): boolean {
+  if (!isReadableBag(record)) return false;
+  if (typeof (record as { logicalId?: unknown }).logicalId !== 'string') return false;
+  const entry = (record as { state?: unknown }).state;
+  return isReadableResourceEntry(entry) && hasStringPhysicalId(entry);
+}
+
+/**
+ * Does this resource entry carry a NON-EMPTY string `physicalId`?
+ *
+ * Its own helper rather than a clause spelled in each row predicate, so the two
+ * cannot drift on it, and deliberately NOT folded into
+ * {@link isReadableResourceEntry}: that one answers for a `resources` ENTRY,
+ * where stopping at `resourceType` is a recorded decision — a row with a type and
+ * no physical id fails per-resource where it is used and is reported by that
+ * command in its own terms.
+ *
+ * An `orphans` ROW has no such second report, which is why it asks for more
+ * (go-to-k/cdkd#3641 review). The record names a resource cdkd deliberately LEFT
+ * LIVE in AWS, so the physical id is the only handle on it: `cdkd destroy`'s
+ * pre-confirmation listing is the operator's only notice before the record is
+ * deleted, and it rendered an absent id as an EMPTY field in the row they
+ * approve. `planOrphanAdoption` dereferences it eight times over — including
+ * `knownPhysicalId` on the provider call and `claims().has(...)` for a
+ * cross-stack collision — so a row without one decides an adoption from
+ * `undefined`.
+ */
+function hasStringPhysicalId(entry: unknown): boolean {
+  const physicalId = (entry as { physicalId?: unknown }).physicalId;
+  // NON-EMPTY, not merely a string (go-to-k/cdkd#3641 item o6). An empty id is
+  // the same operator-facing outcome the check exists to close: `cdkd destroy`
+  // lists the row with a blank field and deletes the record once approved, and
+  // `planOrphanAdoption` resolves `''` against AWS and against other stacks'
+  // claims. Nothing cdkd writes can produce it — a provider returns the real id —
+  // so this refuses only a hand-damaged record.
+  return typeof physicalId === 'string' && physicalId !== '';
+}
+
+/**
+ * The `orphans[]` records {@link isPreviewableOrphanRecord} rejects, named the
+ * way {@link unreadableOrphanRecords} names its own.
+ */
+export function unpreviewableOrphanRecords(state: Pick<StackState, 'orphans'>): readonly string[] {
+  if (!Array.isArray(state.orphans)) return [];
+  return (state.orphans as unknown[])
+    .filter((record) => !isPreviewableOrphanRecord(record))
+    .map((record) => {
+      const id = isReadableBag(record) ? (record as { logicalId?: unknown }).logicalId : undefined;
+      return typeof id === 'string' ? id : '';
+    });
+}
+
+/**
+ * Is ONE `orphans[]` record usable by a reader (go-to-k/cdkd#3500)?
+ *
+ * Split out of {@link unreadableOrphanRecords} rather than written a second
+ * time, so the five WRITE-capable readers that take a row's fields off the cast
+ * and the `cdkd orphan` refusal that predates them cannot disagree about which
+ * rows are usable. `cdkd diff` deliberately disagrees for one class — see
+ * {@link isPreviewableOrphanRecord}, which is the narrower half it takes. The two shapes answer different questions and share this verdict:
+ * this one decides ONE record, that one names every record a state fails on.
+ *
+ * A reader needs all of it to hold, because it reaches the record as a WHOLE:
+ * the record is an object, its `logicalId` is a string (a row with none keys
+ * `orphansAfterRollback`'s merge map on `undefined`, so several of them collapse
+ * into one), its `state` is a readable resource entry carrying a NON-EMPTY string
+ * `physicalId` ({@link hasStringPhysicalId} carries why that is asked here and
+ * not for a `resources` entry), and that entry's `properties` and `attributes`
+ * maps are readable.
+ */
+export function isReadableOrphanRecord(record: unknown): boolean {
+  // COMPOSED from the narrow half rather than re-spelling its four checks
+  // (go-to-k/cdkd#3641, maintainer item o2): the two predicates are a SPLIT, and
+  // the only difference that may ever exist between them is the maps below. Two
+  // copies of the object / `logicalId` / entry / `physicalId` tests could drift
+  // apart in the direction that matters — `cdkd diff` previewing an adoption a
+  // writer would refuse, which is the defect this lane opened with.
+  if (!isPreviewableOrphanRecord(record)) return false;
+  const entry = (record as { state?: unknown }).state;
+  return (
+    isReadableBag((entry as { properties?: unknown }).properties) && hasReadableAttributes(entry)
+  );
+}
+
+/**
  * The `orphans[]` records a reader cannot use: a record that is not an object
- * or has no string `logicalId`, whose `state` is not a readable resource entry,
- * or whose `state` carries an unreadable `properties` or `attributes` map
+ * or has no string `logicalId`, or whose `state` is not a readable resource entry,
+ * carries no non-empty string `physicalId`, or carries an unreadable `properties`
+ * or `attributes` map
  * (go-to-k/cdkd#3344). The `logicalId` half is go-to-k/cdkd#3500's row
- * predicate: rows with none all key one map entry, and `orphansAfterRollback`
- * collapses them into one.
+ * predicate: rows MISSING one all key the same map entry, and
+ * `orphansAfterRollback` collapses those into one.
  *
  * Every `ResourceState` question the `resources` side answers in separate
  * predicates, asked in ONE here: a rollback-orphan record is reached only as a
@@ -3311,20 +3432,173 @@ export function malformedOrphanResourceAttributesRefusalMessage(
 export function unreadableOrphanRecords(state: Pick<StackState, 'orphans'>): readonly string[] {
   if (!Array.isArray(state.orphans)) return [];
   return (state.orphans as unknown[])
-    .filter((record) => {
-      if (!isReadableBag(record)) return true;
-      if (typeof (record as { logicalId?: unknown }).logicalId !== 'string') return true;
-      const entry = (record as { state?: unknown }).state;
-      return (
-        !isReadableResourceEntry(entry) ||
-        !isReadableBag((entry as { properties?: unknown }).properties) ||
-        !hasReadableAttributes(entry)
-      );
-    })
+    .filter((record) => !isReadableOrphanRecord(record))
     .map((record) => {
       const id = isReadableBag(record) ? (record as { logicalId?: unknown }).logicalId : undefined;
       return typeof id === 'string' ? id : '';
     });
+}
+
+/**
+ * Refuse a readable `orphans` list holding a record no reader can use, on a
+ * path that can WRITE state (go-to-k/cdkd#3500).
+ *
+ * The CONTAINER pair beside this one ({@link refuseMalformedOrphans} and its
+ * destroy twin) answers "is the field a list"; this answers "is every row in it
+ * usable", and a list can fail the second while passing the first. One
+ * predicate for both questions would be wrong in the direction that loses
+ * evidence: `cdkd diff` repairs the container and must DROP a row, which is not
+ * the same verdict.
+ *
+ * Marked non-retryable for {@link refuseMalformedOrphans}'s reason: a retry
+ * cannot change a persisted record, and a nested child's deploy runs inside a
+ * `withRetry`.
+ *
+ * It takes NO `LockRecoveryContext`, matching its container twin
+ * {@link refuseMalformedOrphans}: no caller on these paths holds one, and a
+ * parameter every call site omits renders nothing. The message builder keeps its
+ * own `recovery` parameter, and its arms are pinned by calling it directly —
+ * `refuseMalformedOrphansForOrphan` is NOT that route, since it raises a
+ * different text ({@link malformedOrphansForOrphanRefusalMessage}).
+ */
+export function refuseMalformedOrphanRecords(
+  state: Pick<StackState, 'orphans'>,
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const unreadable = unreadableOrphanRecords(state);
+  if (unreadable.length === 0) return;
+  throw markNonRetryable(
+    new CdkdError(
+      malformedOrphanRecordsRefusalMessage(stackName, region, unreadable),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The DESTROY twin of {@link refuseMalformedOrphanRecords}, carrying its own
+ * text for the reason the container pair splits: a destroy neither walks the
+ * record back into `resources` nor writes a reshaped one, so the writer text's
+ * mechanism would be false here. What it does instead is REPORT the rows — the
+ * operator's only notice that those resources stop being tracked — from fields
+ * it never validates, and then remove the record.
+ */
+export function refuseMalformedOrphanRecordsForDestroy(
+  state: Pick<StackState, 'orphans'>,
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const unreadable = unreadableOrphanRecords(state);
+  if (unreadable.length === 0) return;
+  throw markNonRetryable(
+    new CdkdError(
+      malformedOrphanRecordsForDestroyRefusalMessage(stackName, region, unreadable),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The WRITER text {@link refuseMalformedOrphanRecords} raises.
+ *
+ * Its mechanism clause names THREE outcomes rather than one, because a reader
+ * meets a different one per shape: a row MISSING its `logicalId` keys
+ * `orphansAfterRollback`'s merge map on `undefined`, so rows missing it collapse
+ * to one saved survivor (distinct NUMERIC ids do not — they stay distinct keys);
+ * a row whose `state` is absent or null aborts wherever it is first
+ * dereferenced; and a `state` that is a primitive or names no resource type
+ * reads as `undefined` and is carried or reported as though it were a record.
+ */
+export function malformedOrphanRecordsRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[],
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
+      `'orphans' that cannot be read — ${namedOrphanRows(logicalIds)} — because the record has ` +
+      `no string 'logicalId', or its 'state' is not an object, names no resource type, has no ` +
+      `non-empty string 'physicalId', or holds a 'properties' or 'attributes' map that is not an ` +
+      `object. This command can WRITE ` +
+      `state, and ` +
+      `what it would do with such a row is not one thing: 'cdkd rollback' merges by 'logicalId', ` +
+      `so rows MISSING one all key the same entry and only one survives into the record it ` +
+      `saves; a row whose 'state' is absent or null aborts wherever it is first dereferenced, ` +
+      `with an error naming neither the field nor the stack; and the quietest shape is neither — ` +
+      `a 'state' that is a primitive, or an object naming no resource type, reads as 'undefined' ` +
+      `and is carried or reported as if it were a record. It refuses rather than pick one of ` +
+      `those outcomes.`,
+    `Repair the record by hand rather than deleting it — it is the only record that an earlier ` +
+      `failed deploy left its resource live in AWS.`,
+    ORPHANS_DROP_CAVEAT
+  );
+}
+
+/** The DESTROY text {@link refuseMalformedOrphanRecordsForDestroy} raises. */
+export function malformedOrphanRecordsForDestroyRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[],
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return orphanRefusal(
+    stackName,
+    region,
+    recovery,
+    `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
+      `'orphans' that cannot be read — ${namedOrphanRows(logicalIds)} — because the record has ` +
+      `no string 'logicalId', or its 'state' is not an object, names no resource type, has no ` +
+      `non-empty string 'physicalId', or holds a 'properties' or 'attributes' map that is not an ` +
+      `object. This command DELETES ` +
+      `state, and the record is the only evidence that those resources are live in AWS — so it ` +
+      `refuses over any part of a row it cannot read rather than removing evidence it could not ` +
+      `fully report. What the DAMAGE costs the report depends on which part is torn: the listing ` +
+      `that tells you which resources stop being tracked prints the row's own 'logicalId', ` +
+      `resource type and physical id, from fields nothing else validates, so it can abort before ` +
+      `the confirmation naming nothing, or print a row with a field missing and let you approve ` +
+      `the delete. A torn 'properties' or 'attributes' map the listing never reads is refused too, ` +
+      `because what is discarded is the whole record.`,
+    `Repair the record by hand rather than deleting it — it is the only record that an earlier ` +
+      `failed deploy left its resource live in AWS.`,
+    ORPHANS_DROP_CAVEAT
+  );
+}
+
+/**
+ * The READ-ONLY disposition for the same rows: DROP them and return their
+ * names, for a command that never writes the record back — `cdkd scrub
+ * --dry-run` today.
+ *
+ * Returns the dropped names rather than a boolean because its caller reports
+ * them: `cdkd scrub --dry-run` warns with them by name, and the stack joins the
+ * audited-record refusal's list. `cdkd diff` does NOT call this — it needs the
+ * narrower {@link isPreviewableOrphanRecord} and keeps the survivors itself. An
+ * empty return means nothing was dropped and the list is untouched.
+ */
+export function repairMalformedOrphanRecordsForReadOnly(
+  state: Pick<StackState, 'orphans'>
+): readonly string[] {
+  const unreadable = unreadableOrphanRecords(state);
+  if (unreadable.length === 0) return [];
+  // The `?? []` arm is UNREACHABLE and kept for the TYPE, which is worth saying
+  // rather than leaving a reader to decide it is dead code (go-to-k/cdkd#3641
+  // review): a non-empty `unreadable` proves the field is an array, but that proof
+  // lives inside `unreadableOrphanRecords`, so nothing here narrows the optional
+  // field and TS18048 is the result of dropping it. Re-spelling `Array.isArray`
+  // beside the call would be the second copy this module exists to avoid.
+  state.orphans = (state.orphans ?? []).filter((record) =>
+    isReadableOrphanRecord(record)
+  ) as NonNullable<StackState['orphans']>;
+  return unreadable;
 }
 
 /**
@@ -3361,6 +3635,109 @@ export function refuseMalformedOrphansForOrphan(
     malformedOrphansForOrphanRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
+}
+
+/**
+ * The `--fail` / exit-3 reason `cdkd diff` reports for an `orphans` row it KEEPS
+ * in the preview and `cdkd deploy` REFUSES (go-to-k/cdkd#3641 maintainer review,
+ * M1).
+ *
+ * The two predicates disagree on exactly one class — a row whose `properties` or
+ * `attributes` map is torn — and that disagreement is deliberate: `cdkd diff`
+ * keeps such a row so the second `properties` repair can name it. What was
+ * missing is the OTHER half of keeping it: the deploy refuses the whole record
+ * over that same row, so a preview that says nothing lets `cdkd diff --fail`
+ * exit 0 and the deploy the operator runs next refuse. That is the contract
+ * `cdkd diff` states for the adoption preview, and this PR is what made it
+ * false. Precisely which shapes: a torn `attributes` map, and a torn `properties`
+ * map on a row the adoption did NOT take — an ADOPTED torn-`properties` row was
+ * already refused at deploy through `calculateDiff` before this lane
+ * (go-to-k/cdkd#3641 item o5), and it is the one the sibling arm reports.
+ *
+ * Homed HERE rather than in `diff-recursive.ts` for the reason every text in
+ * this module is: it renders untrusted logical ids, so it needs
+ * {@link namedOrphanRows} — the same cap, the same `displayLogicalId`, the same
+ * `UNRENDERABLE` stand-in. It NAMES the rows as well as counting them, unlike
+ * {@link deployRefusesPropertiesReason}'s count-only line in that file. It keeps
+ * the names even though {@link malformedOrphanRowsKeptWarning} now names them
+ * too: this reason ships in the `--json` payload, where "see the warning above"
+ * has no referent — the same argument that sibling's doc makes for its own
+ * shape.
+ */
+export function deployRefusesOrphanRowsReason(logicalIds: readonly string[]): string {
+  return (
+    `${logicalIds.length} rollback-orphan record(s) in 'orphans' — ${namedOrphanRows(logicalIds)} — ` +
+    `carry a 'properties' or 'attributes' map that cannot be read. This preview KEEPS them, so ` +
+    `any adoption shown for them is one 'cdkd deploy' will not perform: it refuses the record ` +
+    `over the same rows, and the deploy this previews will not start.`
+  );
+}
+
+/**
+ * The WARNING `cdkd diff` prints for an `orphans` row it KEEPS and a writer
+ * refuses (go-to-k/cdkd#3641 maintainer round 2, M1 continued).
+ *
+ * At every node the RUN REACHES with an adoption preview, which is narrower than
+ * "every node" and the difference is not pedantry (round 4): a non-recursive run —
+ * the default — returns before visiting any child, a state-only child being
+ * DELETED is built with no `previewOrphanAdoption` so the whole row pass is
+ * skipped, and any other caller omitting that option skips it too.
+ *
+ * The exit-3 reason beside this one is TOP-LEVEL only, which is
+ * go-to-k/cdkd#3335's scope decision and right: the deploy skips an unchanged
+ * nested-stack row, so a reason there would report a refusal over a deploy that
+ * succeeds. What made that split SAFE for every other class is that each one
+ * still warns at every node — and this class had no warning at all, because the
+ * row is KEPT and {@link malformedOrphanRecordsWarning} speaks only for rows that
+ * were DROPPED. So a changed nested child holding such a row printed nothing and
+ * its deploy refused.
+ *
+ * It says what the row IS and what the deploy will do, and makes no claim about
+ * what else happens to the row — which is where the first two spellings went
+ * wrong (go-to-k/cdkd#3641 rounds 3 and 4). One said the map "is repaired and
+ * named again over the records an adoption takes", false for every row that
+ * survives the caller's subtraction; the next said nothing else repairs or
+ * previews these rows, false for an ADOPTED row whose `properties` are healthy and
+ * whose `attributes` are torn — the subtraction removes adopted torn-`properties`
+ * names, not every adopted row, and `planOrphanAdoption` rebuilds that row's
+ * attributes and previews the adopted resource. The row's disposition beyond
+ * "kept" is the caller's business, not this sentence's.
+ *
+ * It says the deploy of THIS stack refuses, not that "the deploy this previews"
+ * will not start (round 4 again): under `--recursive` this warning can name a row
+ * in an UNCHANGED nested child, whose parent deploy skips that child and
+ * succeeds. The stack the message already names is the one whose deploy refuses.
+ */
+export function malformedOrphanRowsKeptWarning(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[]
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
+    `'orphans' — ${namedOrphanRows(logicalIds)} — whose 'properties' or 'attributes' map is not ` +
+    `an object. This preview KEEPS them. 'cdkd deploy' of THIS stack does NOT: it refuses the ` +
+    `whole record over these rows and will not start until they are repaired. See the stored ` +
+    `values with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
+ * The `<ids> and N more` fragment every `orphans` ROW text shares — the three
+ * refusals and the warning — so a fifth cannot spell the cap differently
+ * (go-to-k/cdkd#3500). Derive the list with
+ * `grep -n "namedOrphanRows(" src/state/malformed-resources-bag.ts`.
+ */
+function namedOrphanRows(logicalIds: readonly string[]): string {
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_ENTRIES)
+    .map((id) => displayLogicalId(id))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
+  return `${named}${rest > 0 ? ` and ${rest} more` : ''}`;
 }
 
 /** See {@link orphanRefusal}'s `dropCaveat`. */
@@ -3402,20 +3779,15 @@ export function malformedOrphansForOrphanRefusalMessage(
       ORPHANS_DROP_CAVEAT
     );
   }
-  const named = logicalIds
-    .slice(0, NAMED_UNREADABLE_ENTRIES)
-    .map((id) => displayLogicalId(id))
-    .join(', ');
-  const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
-  const more = rest > 0 ? ` and ${rest} more` : '';
   return orphanRefusal(
     stackName,
     region,
     recovery,
     `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
-      `'orphans' that cannot be read — ${named}${more} — because the record has no string ` +
-      `'logicalId', its 'state' is not an object or names no resource type, or that state's ` +
-      `'properties' or 'attributes' map is not one. The record is malformed or truncated. ${verbatim} Those records are not inert: they ` +
+      `'orphans' that cannot be read — ${namedOrphanRows(logicalIds)} — because the record has no ` +
+      `string 'logicalId', or its 'state' is not an object, names no resource type, has no ` +
+      `non-empty string 'physicalId', or holds a 'properties' or 'attributes' map that is not an ` +
+      `object. The record is malformed or truncated. ${verbatim} Those records are not inert: they ` +
       `are what the next 'cdkd deploy' may re-adopt into 'resources' and what 'cdkd diff' ` +
       `previews for adoption, so continuing would report success over damage the next command meets.`,
     `'cdkd orphan' cannot remove such a record itself: it is not in 'resources', so it has no ` +

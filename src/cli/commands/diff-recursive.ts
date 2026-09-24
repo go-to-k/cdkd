@@ -50,7 +50,11 @@ import {
   malformedOrphanRecordsWarning,
   malformedResourcePropertiesWarning,
   malformedResourcesWarning,
-  isReadableResourceEntry,
+  deployRefusesOrphanRowsReason,
+  malformedOrphanRowsKeptWarning,
+  isPreviewableOrphanRecord,
+  isReadableOrphanRecord,
+  unpreviewableOrphanRecords,
   malformedOrphansWarning,
   repairMalformedOrphansForReadOnly,
   repairMalformedOutputsForReadOnly,
@@ -957,15 +961,33 @@ export async function computeStackDiff(
     // records. A record whose `logicalId` is not a string renders through
     // `displayLogicalId`'s existing `<unrenderable>` stand-in rather than a new
     // literal, which would re-open go-to-k/cdkd#3339's ambiguity.
-    const readableOrphans = currentState.orphans.filter((record) => {
-      if (isReadableResourceEntry(record?.state)) return true;
-      const id = (record as { logicalId?: unknown } | undefined)?.logicalId;
-      unreadableOrphans.push(typeof id === 'string' ? id : '');
-      return false;
-    });
+    // The verdict comes from the module rather than a local re-spelling
+    // (go-to-k/cdkd#3500). The local test asked only about `state`, so a row with
+    // a healthy `state` and a non-string `logicalId` previewed as an adoption
+    // here while every writer now refuses it.
+    //
+    // The PREVIEWABLE half, not the writers' full predicate: a row whose
+    // `properties` map is torn stays, because `computeStackDiff` repairs and
+    // names THAT below (only `properties` — the later pass does not touch
+    // `attributes`). Dropping it here would retire a report `docs/cli-diff.md`
+    // and `.claude/rules/state-malformed-properties.md` both describe.
+    // Pushed one at a time, never spread: `push(...ids)` passes each element as an
+    // ARGUMENT, so a record holding ~130k unusable rows aborts `cdkd diff` with a
+    // bare `RangeError` naming no field, container or stack — on the command a
+    // user runs BECAUSE the record is suspect (go-to-k/cdkd#3500 security review;
+    // measured 100k OK, 130k over). The pre-image pushed per row and was immune.
+    for (const id of unpreviewableOrphanRecords(currentState)) unreadableOrphans.push(id);
+    const readableOrphans = currentState.orphans.filter((record) =>
+      isPreviewableOrphanRecord(record)
+    );
     if (unreadableOrphans.length > 0) {
-      logger.warn(malformedOrphanRecordsWarning(stackName, region, unreadableOrphans));
+      // `false`: this command took the PREVIEWABLE predicate, so the diagnosis
+      // must not name a torn map as a reason a row was dropped here.
+      logger.warn(malformedOrphanRecordsWarning(stackName, region, unreadableOrphans, false));
     }
+    // Names the `tornAdopted` arm below reports, so the arm after it does not say
+    // the same thing about the same row twice (see that arm for why).
+    let reportedByTheAdoptedPropertiesArm: readonly string[] = [];
     const plan = await options.previewOrphanAdoption(
       { ...currentState, orphans: readableOrphans },
       effectiveTemplate,
@@ -995,6 +1017,7 @@ export async function computeStackDiff(
       // The mutation lands on `plan.adopted`'s own records, never on
       // `state.orphans`, so the stored evidence survives for `cdkd state show`.
       const tornAdopted = repairMalformedResourcePropertiesForReadOnly(stateForDiff);
+      reportedByTheAdoptedPropertiesArm = tornAdopted;
       if (tornAdopted.length > 0) {
         logger.warn(malformedResourcePropertiesWarning(stackName, region, tornAdopted));
         // The same deploy refusal the load's arm reports (go-to-k/cdkd#3335),
@@ -1012,6 +1035,58 @@ export async function computeStackDiff(
         // it is a change to go-to-k/cdkd#2943's contract, not to this one.
         deployRefusals.push(deployRefusesPropertiesReason(tornAdopted));
       }
+    }
+
+    // The OTHER half of KEEPING a row the writers refuse (go-to-k/cdkd#3641,
+    // maintainer item M1). The two predicates disagree on one class — a torn
+    // `properties` or `attributes` map — and keeping such a row is right: the arm
+    // above names a torn `properties` map on an ADOPTED record. What was missing
+    // is the deploy's verdict: `cdkd deploy` refuses the whole record over that
+    // same row, so a preview that keeps the row and says nothing lets
+    // `cdkd diff --fail` exit 0 and the deploy the operator runs next refuse. The
+    // shapes that were NOT already refused at deploy are a torn `attributes` map
+    // and a torn `properties` map on a row the adoption did not take — an ADOPTED
+    // torn-`properties` row reached the deploy's refusal through `calculateDiff`
+    // before this lane (go-to-k/cdkd#3641 item o5), which is why the arm above
+    // reports it and this one subtracts it.
+    //
+    // Which rows, computed from the ROWS and not by subtracting the two NAME
+    // lists: a name is not an identity here (two rows can share one —
+    // go-to-k/cdkd#3643 — and a row with no string id is named `''`), so a set
+    // difference over names would drop a row whose id another row also carries.
+    //
+    // MINUS what the arm above already reported, which is the half a first cut
+    // got wrong: for an adopted torn-`properties` row that arm already says the
+    // deploy refuses the record, so a second reason is the same sentence about the
+    // same row and it broke go-to-k/cdkd#3335's count contract (measured: that
+    // fence pins `countBlocking` at 1 for exactly this shape, and the duplicate
+    // made it 2). What this arm is FOR is the two cases nothing else covers: a
+    // torn `attributes` map, which no pass repairs or names, and a torn
+    // `properties` map on a row the adoption did NOT take — the likelier case,
+    // since the deploy refuses before it would adopt anything.
+    //
+    // The exclusion is BY NAME, which the identity note above says is not exact:
+    // where two rows share an id and only one was adopted, this reports neither.
+    // The operator is still told the deploy refuses over that id, by the arm
+    // above, which is what M1 asks for; a count that says "one row" for two is the
+    // residual, and it is go-to-k/cdkd#3643's shape rather than a new one.
+    const alreadyReported = new Set(reportedByTheAdoptedPropertiesArm);
+    const previewedRowsTheDeployRefuses = readableOrphans
+      .filter((record) => !isReadableOrphanRecord(record))
+      .map((record) => (record as { logicalId: string }).logicalId)
+      .filter((logicalId) => !alreadyReported.has(logicalId));
+    if (previewedRowsTheDeployRefuses.length > 0) {
+      // The WARNING fires at every node THIS RUN REACHES with an adoption preview
+      // — a plain run visits no child, and a state-only child being DELETED is
+      // built without the preview — while the exit-3 reason is top-level only
+      // (go-to-k/cdkd#3641 round 2). That split is go-to-k/cdkd#3335's and it is
+      // right — the deploy skips an unchanged nested-stack row, so a reason there
+      // would report a refusal over a deploy that succeeds — but it is only SAFE
+      // because every other class still warns at every node. This one did not:
+      // the row is KEPT, so the drop warning above never speaks for it, and a
+      // changed nested child printed nothing while its own deploy refused.
+      logger.warn(malformedOrphanRowsKeptWarning(stackName, region, previewedRowsTheDeployRefuses));
+      deployRefusals.push(deployRefusesOrphanRowsReason(previewedRowsTheDeployRefuses));
     }
   }
 

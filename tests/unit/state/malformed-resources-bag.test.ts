@@ -27,16 +27,27 @@ import {
   malformedResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
   malformedOrphanRecordsWarning,
+  deployRefusesOrphanRowsReason,
+  malformedOrphanRowsKeptWarning,
   malformedResourcePropertiesRefusalMessage,
   malformedResourcePropertiesWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedNestedChildOutputs,
   hasReadableOrphans,
+  repairMalformedOrphanRecordsForReadOnly,
+  isPreviewableOrphanRecord,
+  isReadableOrphanRecord,
+  unpreviewableOrphanRecords,
+  unreadableOrphanRecords,
   malformedDestroyOrphansRefusalMessage,
+  malformedOrphanRecordsForDestroyRefusalMessage,
+  malformedOrphanRecordsRefusalMessage,
   malformedOrphansRefusalMessage,
   malformedOrphansWarning,
   refuseMalformedOrphans,
+  refuseMalformedOrphanRecords,
+  refuseMalformedOrphanRecordsForDestroy,
   refuseMalformedOrphansForDestroy,
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
@@ -483,6 +494,129 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
     ['null', null],
     ['a boolean', true],
   ];
+
+  describe('repairMalformedOrphanRecordsForReadOnly leaves a clean list alone', () => {
+    const usable = {
+      logicalId: 'Keep',
+      orphanedAt: 1,
+      state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+    };
+
+    it('does not MATERIALIZE an absent field, and returns nothing', () => {
+      // Skipping the early return would write `orphans: []` over a record that
+      // simply has none — the ordinary shape for a stack that never failed a
+      // deploy — and a later reader could not tell the two apart.
+      const state = withOrphans(undefined);
+      expect(repairMalformedOrphanRecordsForReadOnly(state)).toEqual([]);
+      expect(state.orphans, 'an absent container was materialized').toBeUndefined();
+    });
+
+    it('keeps the SAME array when every row is usable', () => {
+      // Identity, not deep equality: the guard exists so a clean list is not
+      // rebuilt, and a rebuild is invisible to a `toEqual` (proxy pass, round 4).
+      const rows = [usable];
+      const state = withOrphans(rows);
+      expect(repairMalformedOrphanRecordsForReadOnly(state)).toEqual([]);
+      expect(state.orphans, 'a clean list was rebuilt').toBe(rows);
+    });
+
+    it('drops only the unusable rows, and names them', () => {
+      const rows = [usable, 5, { logicalId: 'Gone', orphanedAt: 1 }];
+      const state = withOrphans(rows);
+      expect(repairMalformedOrphanRecordsForReadOnly(state)).toEqual(['', 'Gone']);
+      expect(state.orphans).toEqual([usable]);
+    });
+  });
+
+  describe('the ROW predicates (go-to-k/cdkd#3500)', () => {
+    const usable = {
+      logicalId: 'Keep',
+      orphanedAt: 1,
+      state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+    };
+
+    it('BOTH refuse a row with no string `physicalId` — the one field a row alone owes', () => {
+      // The `resources` ENTRY predicate stops at `resourceType` by a recorded
+      // decision, so neither row predicate inherits this and both had to ask for
+      // it (go-to-k/cdkd#3641 security + code review). It belongs to the NARROW
+      // predicate too, whose contract is "everything the adoption preview
+      // dereferences": `planOrphanAdoption` reads `state.physicalId` for
+      // `knownPhysicalId` and for `claims().has(...)`, so a row without one
+      // decides an adoption from `undefined` — and `cdkd destroy` printed it as an
+      // EMPTY field in the row the operator approves.
+      for (const physicalId of [undefined, 5, {}, null] as const) {
+        const row = {
+          ...usable,
+          state: { ...usable.state, physicalId: physicalId as unknown as string },
+        };
+        const label = JSON.stringify(physicalId ?? null);
+        expect(isReadableOrphanRecord(row), `readable: ${label}`).toBe(false);
+        expect(isPreviewableOrphanRecord(row), `previewable: ${label}`).toBe(false);
+      }
+      // ...and an EMPTY string is refused too (go-to-k/cdkd#3641 item o6). The
+      // first cut accepted it as "a string is a string", which left the exact
+      // operator-facing outcome the check exists to close: `cdkd destroy` lists the
+      // row with a blank field and deletes the record once approved. Nothing cdkd
+      // writes can produce it, so this refuses only a hand-damaged record.
+      const empty = { ...usable, state: { ...usable.state, physicalId: '' } };
+      expect(isReadableOrphanRecord(empty), 'an empty physicalId is not a handle').toBe(false);
+      expect(isPreviewableOrphanRecord(empty)).toBe(false);
+    });
+
+    it('agree on every shape EXCEPT a torn `properties` / `attributes` map', () => {
+      // The one difference is the whole reason there are two: `cdkd diff` keeps
+      // such a row, and every writer refuses it. Only the `properties` half gets
+      // a later answer there — the second repair names that map; a torn
+      // `attributes` map rides through unreported, which is the residual this
+      // lane leaves as it found it.
+      const tornProperties = {
+        ...usable,
+        state: { ...usable.state, properties: 'abcdef' as unknown as Record<string, unknown> },
+      };
+      expect(isPreviewableOrphanRecord(tornProperties)).toBe(true);
+      expect(isReadableOrphanRecord(tornProperties)).toBe(false);
+      // BOTH maps, separately: a case naming `properties / attributes` that tests
+      // only the first lets an `attributes` check be added to the narrow
+      // predicate unnoticed (maintainer proxy pass, round 4).
+      const tornAttributes = {
+        ...usable,
+        state: { ...usable.state, attributes: 5 as unknown as Record<string, unknown> },
+      };
+      expect(isPreviewableOrphanRecord(tornAttributes)).toBe(true);
+      expect(isReadableOrphanRecord(tornAttributes)).toBe(false);
+      for (const shape of [null, 5, 'abc', {}, { logicalId: 5, orphanedAt: 1, state: usable.state }]) {
+        expect(isPreviewableOrphanRecord(shape), `previewable: ${JSON.stringify(shape)}`).toBe(
+          false
+        );
+        expect(isReadableOrphanRecord(shape), `readable: ${JSON.stringify(shape)}`).toBe(false);
+      }
+      expect(isPreviewableOrphanRecord(usable)).toBe(true);
+      expect(isReadableOrphanRecord(usable)).toBe(true);
+    });
+
+    it('both name a state that is not a list as NOTHING, which is the container guard\'s job', () => {
+      // The `Array.isArray` guard in each list-shaped helper, which no reader
+      // case reaches: `cdkd diff` repairs the container first and `cdkd scrub`
+      // refuses it, so both callers only ever hand these a real array. Dropping
+      // either guard is inert everywhere else (maintainer proxy pass, round 3).
+      for (const container of ['abc', 5, {}, null, undefined]) {
+        expect(
+          unreadableOrphanRecords(withOrphans(container)),
+          `unreadable: ${String(container)}`
+        ).toEqual([]);
+        expect(
+          unpreviewableOrphanRecords(withOrphans(container)),
+          `unpreviewable: ${String(container)}`
+        ).toEqual([]);
+      }
+    });
+
+    it('name the rows they reject, with the UNRENDERABLE stand-in for an unusable id', () => {
+      const rows = [usable, { logicalId: 'Named', orphanedAt: 1 }, 5];
+      expect(unpreviewableOrphanRecords(withOrphans(rows))).toEqual(['Named', '']);
+      expect(unreadableOrphanRecords(withOrphans(rows))).toEqual(['Named', '']);
+    });
+  });
 
   describe('hasReadableOrphans', () => {
     it.each(UNREADABLE)('rejects %s', (_label, value) => {
@@ -1201,7 +1335,11 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     ['the orphans refusal', malformedOrphansRefusalMessage('MyStack', 'us-east-1')],
     [
       'the orphan-records WARNING',
-      malformedOrphanRecordsWarning('MyStack', 'us-east-1', ['A']),
+      malformedOrphanRecordsWarning('MyStack', 'us-east-1', ['A'], false),
+    ],
+    [
+      'the KEPT-row WARNING',
+      malformedOrphanRowsKeptWarning('MyStack', 'us-east-1', ['A']),
     ],
     [
       'the entries WARNING',
@@ -1910,29 +2048,162 @@ describe('the entry-level text', () => {
     expect(message.length).toBeLessThan(1200);
   });
 
+  it('each ROW refusal raises ITS OWN text, not its twin\'s', () => {
+    // The whole reason there are two builders, and it was unpinned: swapping the
+    // WRITER refusal to raise the DESTROY text reddened nothing across the suite,
+    // because every writer-path case asserted only the fragment the two share
+    // (go-to-k/cdkd#3641 test review). So `cdkd deploy` / `rollback` / `import` /
+    // `scrub` could all have told the operator "This command DELETES state".
+    //
+    // Asserted through the REFUSALS rather than the builders, which is where the
+    // wiring lives — a builder-only case stays green when a refusal calls the
+    // wrong one.
+    const state = { orphans: [5] as unknown as StackState['orphans'] };
+    const writer = (() => {
+      try {
+        refuseMalformedOrphanRecords(state, 'S', 'us-east-1');
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      throw new Error('the writer refusal did not throw, so this case pins nothing');
+    })();
+    const destroy = (() => {
+      try {
+        refuseMalformedOrphanRecordsForDestroy(state, 'S', 'us-east-1');
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      throw new Error('the destroy refusal did not throw, so this case pins nothing');
+    })();
+    // Each names what ITS command does, and neither claims the other's.
+    expect(writer, 'the writer text lost its verdict clause').toContain('This command can WRITE state');
+    expect(writer, 'the writer text tells the operator the command DELETES state').not.toContain(
+      'DELETES state'
+    );
+    expect(destroy, 'the destroy text lost its verdict clause').toContain('This command DELETES');
+    expect(destroy, "the destroy text claims it can WRITE the container back").not.toContain(
+      'can WRITE state'
+    );
+    // ...and the writer's three-outcome mechanism paragraph, which its JSDoc calls
+    // the reason the text exists apart from its twin.
+    expect(writer).toContain("'cdkd rollback' merges by 'logicalId'");
+    expect(writer).toContain('the quietest shape is neither');
+  });
+
+  it('the KEPT-row warning and the exit-3 reason say what they now say, and not what they said', () => {
+    // o15 (go-to-k/cdkd#3641 round 4): nothing watched these two texts' CONTENT, so
+    // restoring either retired phrasing stayed green — including the two sentences
+    // the warning's own JSDoc now records as FALSE. A doc that says "this wording
+    // was wrong" with no assertion behind it is an invitation to write it again.
+    const warning = malformedOrphanRowsKeptWarning('S', 'us-east-1', ['Torn']);
+    const reason = deployRefusesOrphanRowsReason(['Torn']);
+
+    // What the warning must say: kept here, refused by THIS stack's deploy.
+    expect(warning).toContain('This preview KEEPS them');
+    expect(warning, 'the warning no longer says whose deploy refuses').toContain(
+      "'cdkd deploy' of THIS stack does NOT"
+    );
+    // ...and the two retired phrasings, each false for a row it can name:
+    // the first for every row surviving the caller's subtraction, the second for an
+    // ADOPTED row whose `properties` are healthy and whose `attributes` are torn.
+    expect(warning, 'the round-2 wording is back: false for every row this names').not.toContain(
+      'because the map is repaired'
+    );
+    expect(warning, 'the round-3 wording is back: false for an adopted torn-`attributes` row')
+      .not.toContain('not repaired, previewed or');
+    // ...and the claim that scoped it to one stack in round 4.
+    expect(warning, 'the unqualified deploy claim is back').not.toContain(
+      'the deploy this previews will not start'
+    );
+
+    // The reason keeps its own clause, which is what `--fail` renders — and its
+    // REFUSAL half, which the diagnosis alone does not pin: deleting everything
+    // from "any adoption shown" onward kept both assertions above green
+    // (round-4 Codex delta pass, measured in-memory).
+    expect(reason).toContain("'properties' or 'attributes' map that cannot be read");
+    expect(reason, 'the reason no longer says the deploy refuses').toContain(
+      "'cdkd deploy' will not perform: it refuses the record over the same rows"
+    );
+    expect(reason, 'the reason stopped naming the rows the --json payload needs').toContain('Torn');
+  });
+
+  it('both ROW refusals thread the recovery flags into every command they print', () => {
+    // The `recovery` parameter both builders take, which no CALLER passes today —
+    // so nothing else in the suite renders these arms, and replacing the forwarded
+    // value with `undefined` was invisible (round-8 proxy pass). Called directly
+    // here, which is what the parameter's own JSDoc claims is the pin.
+    // TWO contexts, and a no-context call per builder. One context plus a
+    // string-strip was not enough (round-9 proxy pass): hard-coding the fixture
+    // context inside a builder kept every assertion green, because nothing called
+    // it WITHOUT one, and the "bare" text was derived by stripping the same flags
+    // back out of the context-bearing output.
+    const recovery = { profile: 'prod', stateBucket: 'b', statePrefix: 'custom' };
+    const other = { profile: 'stage', stateBucket: 'b2', statePrefix: 'alt' };
+    const BUILDERS = [
+      ['writer', malformedOrphanRecordsRefusalMessage],
+      ['destroy', malformedOrphanRecordsForDestroyRefusalMessage],
+    ] as const;
+    for (const [label, build] of BUILDERS) {
+      // WITHOUT a context: no flag anywhere, which is what makes the assertions
+      // below statements about the argument rather than about a constant.
+      const none = build('S', 'us-east-1', ['A']);
+      expect(none, `${label}: a flag appeared with no recovery context`).not.toContain('--profile');
+      expect(none, label).not.toContain('--state-bucket');
+      expect(none, label).not.toContain('--state-prefix');
+      // ...and the SECOND context renders ITS OWN values, which a hard-coded
+      // fixture context cannot satisfy.
+      const second = build('S', 'us-east-1', ['A'], other);
+      expect(second, `${label}: the second context's values were not forwarded`).toContain(
+        '--profile stage --state-bucket b2 --state-prefix alt'
+      );
+      expect(second, `${label}: the first context's values leaked in`).not.toContain('--profile prod');
+    }
+    for (const [label, build] of BUILDERS) {
+      const text = build('S', 'us-east-1', ['A'], recovery);
+      {
+      // EVERY command line in the message, not the first: these texts print a read
+      // AND a destructive template, and a flag set threaded into one of them only
+      // aims the other at a different bucket.
+      const commands = text
+        .split('\n')
+        .filter((line) => line.includes('cdkd state '))
+        .map((line) => line.slice(line.indexOf('cdkd state ')));
+      expect(commands.length, `${label}: no commands found, so this pins nothing`).toBeGreaterThan(
+        1
+      );
+      for (const command of commands) {
+        expect(command, `${label}: ${command}`).toContain('--profile prod');
+        expect(command, `${label}: ${command}`).toContain('--state-bucket b');
+        expect(command, `${label}: ${command}`).toContain('--state-prefix custom');
+      }
+      }
+    }
+  });
+
   it("the ORPHAN warning caps, counts and sanitizes its ids like its `resources` sibling", () => {
     // The clauses the new text does not inherit by being a copy: the five-name
     // cap, the overflow suffix and `displayLogicalId`. Each was a surviving
     // mutant until this case (round-5 proxy pass).
-    const six = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']);
+    const six = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5', 'F6'], false);
     expect(six).toContain('A1, B2, C3, D4, E5 and 1 more');
     // Dropping the `.slice` prints the sixth name; this is the assertion that
     // sees it.
     expect(six).not.toContain('F6');
 
     // EXACTLY at the cap: no overflow suffix, so `rest >= 0` reds here.
-    const five = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5']);
+    const five = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5'], false);
     expect(five).toContain('A1, B2, C3, D4, E5 —');
     expect(five).not.toContain('more');
 
     // The ids go through `displayLogicalId`, not a bare interpolation: a
     // padded id is QUOTED so it cannot imitate a healthy sibling, a control
     // byte never reaches the terminal, and a long one is cut with the marker.
-    const hostile = malformedOrphanRecordsWarning('S', 'r', [
-      'Bucket ',
-      'E\u001b[31mvil',
-      'q'.repeat(IDENT_MAX_CODE_POINTS + 50),
-    ]);
+    const hostile = malformedOrphanRecordsWarning(
+      'S',
+      'r',
+      ['Bucket ', 'E\u001b[31mvil', 'q'.repeat(IDENT_MAX_CODE_POINTS + 50)],
+      false
+    );
     // Trimmed by the sanitizer and then QUOTED, which is what keeps it
     // visibly distinct from a healthy `Bucket`.
     expect(hostile).toContain('"Bucket"');
@@ -1940,7 +2211,7 @@ describe('the entry-level text', () => {
     expect(hostile).toContain('characters withheld');
     expect(hostile).not.toContain('q'.repeat(IDENT_MAX_CODE_POINTS + 1));
     // ...and an id-less record renders as the stand-in rather than empty.
-    expect(malformedOrphanRecordsWarning('S', 'r', [''])).toContain(UNRENDERABLE);
+    expect(malformedOrphanRecordsWarning('S', 'r', [''], false)).toContain(UNRENDERABLE);
   });
 
   it('EVERY message builder caps a stack by the stack rule and a region by the region rule', () => {
@@ -1972,7 +2243,11 @@ describe('the entry-level text', () => {
         malformedRenderedContainersWarning(STACK, REGION, ['outputs']),
       ],
       ['malformedResourceEntriesWarning', malformedResourceEntriesWarning(STACK, REGION, ['X'])],
-      ['malformedOrphanRecordsWarning', malformedOrphanRecordsWarning(STACK, REGION, ['X'])],
+      ['malformedOrphanRecordsWarning', malformedOrphanRecordsWarning(STACK, REGION, ['X'], false)],
+      [
+        'malformedOrphanRowsKeptWarning',
+        malformedOrphanRowsKeptWarning(STACK, REGION, ['X']),
+      ],
       [
         'malformedResourceEntriesRefusalMessage',
         malformedResourceEntriesRefusalMessage(STACK, REGION, ['X']),
@@ -2569,6 +2844,21 @@ describe('the user-facing text', () => {
   });
 });
 
+/**
+ * Shared by the container fence below and the ROW fence under it: a row is
+ * reachable only through the container, so the two populations are the SAME
+ * files by construction and a second hand-kept list would be the only way for
+ * them to disagree (go-to-k/cdkd#3500).
+ */
+const ORPHAN_READER_FILES = [
+  'src/deployment/deploy-engine.ts',
+  'src/cli/commands/destroy-runner.ts',
+  'src/cli/commands/rollback.ts',
+  'src/cli/commands/scrub.ts',
+  'src/cli/commands/import.ts',
+  'src/cli/commands/diff-recursive.ts',
+] as const;
+
 describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)', () => {
   /**
    * Presence is not the property: the defect this container had was that every
@@ -2642,6 +2932,9 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       return /[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
+    // ...and the shared population is that same set, so the ROW fence under
+    // this one inherits this tree-derived check instead of re-deriving it.
+    expect(Object.keys(ANCHORS).sort()).toEqual([...ORPHAN_READER_FILES].sort());
   });
 
   it('pins the two exclusions the derivation above makes', () => {
@@ -2664,6 +2957,180 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'deploy-engine.ts reads the container above its guard somewhere other than ' +
         'redactStateForPersist, so the save anchor no longer covers every read.'
     ).toBe(1);
+  });
+});
+
+describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', () => {
+  /**
+   * The container fence one describe up answers "is the field a list"; this one
+   * answers the level below it, and needs its OWN anchors because the two
+   * questions are read at different points. `diff-recursive.ts` is the case that
+   * proves they cannot share: its container anchor is
+   * `currentState.orphans?.length`, which sits ABOVE the row filter, so folding
+   * the row spellings into that fence would red on correct code.
+   *
+   * Each anchor is the first expression that walks a ROW — dereferences a
+   * record's `logicalId` / `state`, or hands the records to something that does.
+   * A guard below one protects nothing, which is the shape go-to-k/cdkd#3018's
+   * round 1 shipped.
+   */
+  const ROW_ANCHORS: Record<string, string> = {
+    // The adoption pass, which dereferences each row's `state`. Its
+    // `redactStateForPersist` row walk sits textually higher and is the SAME
+    // measured exception the container fence pins: reachable only from the save
+    // path below the guard.
+    'src/deployment/deploy-engine.ts': 'this.adoptRollbackOrphans(',
+    // The pre-confirmation listing, the one thing a destroy does with the rows.
+    'src/cli/commands/destroy-runner.ts': 'displaySafe(entry.logicalId)',
+    // The merge that keys on each row's `logicalId`.
+    'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
+    // The spread that copies every row verbatim into the saved record.
+    'src/cli/commands/import.ts': 'orphansCarriedFrom(',
+    // The per-row secret scan, which dereferences `record.state`.
+    'src/cli/commands/scrub.ts': 'record.state.properties',
+    // The adoption PREVIEW, which dereferences each surviving row's `state`.
+    'src/cli/commands/diff-recursive.ts': 'options.previewOrphanAdoption(',
+  };
+  /**
+   * Both dispositions plus the narrow predicate, because the fence must accept
+   * the answer each file is entitled to: a writer refuses, `cdkd scrub
+   * --dry-run` repairs, `cdkd diff` filters. The `(` is what makes each a CALL —
+   * without it the import statement at the top of every file matches and the
+   * dominance check passes over nothing.
+   */
+  const ROW_SPELLINGS = [
+    'refuseMalformedOrphanRecords(',
+    'refuseMalformedOrphanRecordsForDestroy(',
+    'repairMalformedOrphanRecordsForReadOnly(',
+    'unreadableOrphanRecords(',
+    'unpreviewableOrphanRecords(',
+    'isPreviewableOrphanRecord(',
+  ];
+
+  /**
+   * Where ONE file owes MORE THAN ONE call, name each — dominance alone cannot
+   * see one of them go, because `Math.max` still finds a surviving sibling above
+   * the anchor. Two files owe two calls, for different reasons (round-2 and
+   * round-3 proxy passes, each measured by deleting one of them):
+   *
+   * - `cdkd scrub` answers on two ARMS: `--dry-run` REPAIRS, the real run
+   *   REFUSES, and deleting either left the other's position satisfying the check.
+   * - `cdkd diff` splits GUARD from DIAGNOSIS: the filter is what keeps an
+   *   unusable row out of the adoption preview, while
+   *   `unpreviewableOrphanRecords` only NAMES the rows. Replacing the filter with
+   *   a bare `currentState.orphans` kept the fence green while every unusable row
+   *   went back into the preview — reporting accepted as guarding.
+   * `cdkd destroy` needs MORE than presence and is handled by
+   * {@link ROW_PER_CALL_ANCHORS} instead — see that comment.
+   */
+  const ROW_BOTH_ARMS: Record<string, readonly string[]> = {
+    'src/cli/commands/scrub.ts': [
+      'repairMalformedOrphanRecordsForReadOnly(',
+      'unreadableOrphanRecords(',
+    ],
+    'src/cli/commands/diff-recursive.ts': [
+      'isPreviewableOrphanRecord(',
+      'unpreviewableOrphanRecords(',
+    ],
+  };
+
+  /**
+   * `cdkd destroy` guards TWO READS of two different objects through ONE
+   * function, so neither presence nor a single `Math.max` can speak for both: the
+   * calls are told apart by ARGUMENT, and each is anchored on the operation IT
+   * protects (round-3 and round-5 proxy passes, each measured).
+   *
+   * - Presence alone let the entry guard be deleted, because the under-lock
+   *   re-read's identical call sat above the listing — on a path that never runs
+   *   for a record with resources still in it.
+   * - A shared anchor let the entry guard be MOVED BELOW the listing, because
+   *   `indexOf` found the re-read's call first.
+   *
+   * The CONTAINER fence one describe up shares both weaknesses and is
+   * deliberately not widened here: it belongs to go-to-k/cdkd#3379's lane, and
+   * the behavioural cases in `destroy-runner-malformed-orphans.test.ts` cover
+   * both of its reads.
+   */
+  const ROW_PER_CALL_ANCHORS: Record<string, ReadonlyArray<readonly [string, string]>> = {
+    'src/cli/commands/destroy-runner.ts': [
+      // The entry read guards the pre-confirmation listing.
+      ['refuseMalformedOrphanRecordsForDestroy(state,', 'displaySafe(entry.logicalId)'],
+      // The under-lock re-read guards the count `stillEmpty` and `deleteState`
+      // act on — a DIFFERENT object, which a concurrent writer can supply.
+      [
+        'refuseMalformedOrphanRecordsForDestroy(recheck.state,',
+        '(recheck.state.orphans ?? []).length',
+      ],
+    ],
+  };
+
+  it.each(Object.keys(ROW_ANCHORS))('%s guards above its first ROW walk', (file) => {
+    const src = code(file);
+    const positions = ROW_SPELLINGS.map((call) => src.indexOf(call)).filter((at) => at > -1);
+    expect(
+      positions.length,
+      `${file} contains none of the ROW guard spellings this fence knows about, so it would ` +
+        `pass over nothing. Add the spelling to ROW_SPELLINGS, or this file stopped guarding ` +
+        `the rows.`
+    ).toBeGreaterThan(0);
+    const guardAt = Math.max(...positions);
+    const anchor = ROW_ANCHORS[file]!;
+    const anchorAt = src.indexOf(anchor);
+    expect(
+      anchorAt,
+      `${file} no longer contains \`${anchor}\`; this fence's anchor is stale and it is no ` +
+        `longer checking dominance.`
+    ).toBeGreaterThan(-1);
+    expect(
+      guardAt,
+      `${file} reaches \`${anchor}\` BEFORE its orphan-ROW guard, so a record no reader can use ` +
+        `is walked, reported or written on a path the guard never covered ` +
+        `(go-to-k/cdkd#3500).`
+    ).toBeLessThan(anchorAt);
+  });
+
+  it.each(Object.keys(ROW_BOTH_ARMS))('%s keeps EVERY row call it owes', (file) => {
+    const src = code(file);
+    for (const call of ROW_BOTH_ARMS[file]!) {
+      expect(
+        src.includes(call),
+        `${file} no longer calls \`${call}\`. It owes more than one row call — two dispositions, ` +
+          `or a GUARD plus its DIAGNOSIS — and the dominance check above cannot see one of them ` +
+          `go, since a sibling's position satisfies it. See ROW_BOTH_ARMS for which pair and why.`
+      ).toBe(true);
+    }
+  });
+
+  it.each(Object.keys(ROW_PER_CALL_ANCHORS))('%s guards each row read separately', (file) => {
+    const src = code(file);
+    for (const [call, anchor] of ROW_PER_CALL_ANCHORS[file]!) {
+      const callAt = src.indexOf(call);
+      expect(
+        callAt,
+        `${file} no longer contains \`${call}\`. Each of its row reads owes its own guard — the ` +
+          `other one's call cannot stand in for it, since they read different objects on ` +
+          `different paths.`
+      ).toBeGreaterThan(-1);
+      const anchorAt = src.indexOf(anchor);
+      expect(
+        anchorAt,
+        `${file} no longer contains \`${anchor}\`; this fence's anchor is stale.`
+      ).toBeGreaterThan(-1);
+      expect(
+        callAt,
+        `${file} reaches \`${anchor}\` BEFORE the guard that protects it, so that read is ` +
+          `walked or acted on unguarded (go-to-k/cdkd#3500).`
+      ).toBeLessThan(anchorAt);
+    }
+  });
+
+  it('the ROW population is exactly the CONTAINER population', () => {
+    // Not a coincidence worth leaving implicit: a row can only be reached
+    // through the container, so any file reading one reads the other. Deriving
+    // the row set independently would be a second list to keep in step; pinning
+    // the EQUALITY means the container fence's own tree-derived population
+    // (which fails when a new reader appears) fences this one too.
+    expect([...Object.keys(ROW_ANCHORS)].sort()).toEqual([...ORPHAN_READER_FILES].sort());
   });
 });
 
@@ -2888,7 +3355,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(16);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -2912,11 +3379,21 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // TWO entry points on this container, one predicate — the split is the
     // MESSAGE, as it is for `outputs`: a destroy writes nothing back, so its
     // text cannot be the one that says the container would be rewritten.
-    const orphans = exported.filter((n) => n.includes('Orphans'));
+    // ANCHORED at the start, not `includes('Orphan')` (go-to-k/cdkd#3500): the
+    // ROW refusals have to join this class rather than fall through to the
+    // `resources` leftover set, while `refuseMalformedResource*ForOrphan` — the
+    // `cdkd orphan`-scoped variants of the properties, entries and attributes
+    // classes — must NOT, and a substring test takes all three.
+    const orphans = exported.filter((n) => n.startsWith('refuseMalformedOrphan'));
     // A THIRD since go-to-k/cdkd#3344: `cdkd orphan` carries the container
     // verbatim, so neither sibling's text is true of it, and it also answers
-    // for the records IN the list, which its save keeps unread.
+    // for the records IN the list, which its save keeps unread. The last two are
+    // the ROW pair (go-to-k/cdkd#3500): one question per call, because a list
+    // that IS a list can still hold a row no reader can use, and the split
+    // between them is the same writer-vs-destroy split the container pair takes.
     expect([...orphans].sort()).toEqual([
+      'refuseMalformedOrphanRecords(',
+      'refuseMalformedOrphanRecordsForDestroy(',
       'refuseMalformedOrphans(',
       'refuseMalformedOrphansForDestroy(',
       'refuseMalformedOrphansForOrphan(',
@@ -3407,7 +3884,12 @@ describe('write-capable commands refuse; read-only ones repair', () => {
           builder,
           'the audited-record refusal no longer has an orphans sentence, so a run that audited ' +
             'a record with an unreadable orphans container reports it clean.'
-        ).toContain('EMPTY orphan list');
+          // Keyed on `orphan list` rather than the adjective: go-to-k/cdkd#3500
+          // widened the sentence from EMPTY to INCOMPLETE, because the same arm
+          // now also covers a readable list holding an unusable ROW. The phrase
+          // appears nowhere else in this builder, so deleting the sentence still
+          // reds this.
+        ).toContain('orphan list');
         expect(
           builder,
           'the orphans list is not a parameter of the audited-record refusal, so its sentence ' +
@@ -3695,6 +4177,10 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
     ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
+    // The ROW pair (go-to-k/cdkd#3500). The fixture is a READABLE list holding
+    // one unusable row, which is the shape the container arm above cannot reach.
+    ['orphan rows', () => refuseMalformedOrphanRecords({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
+    ['destroy orphan rows', () => refuseMalformedOrphanRecordsForDestroy({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
   ] as const;
 
   /**
@@ -3743,7 +4229,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(16);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6343,6 +6829,15 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
   const BUILDERS: ReadonlyArray<
     readonly [string, (s: string | undefined, r: string | undefined) => string]
   > = [
+    // The ROW pair (go-to-k/cdkd#3500), each taking the logicalIds it names.
+    [
+      'malformedOrphanRecordsRefusalMessage',
+      (s, r) => malformedOrphanRecordsRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedOrphanRecordsForDestroyRefusalMessage',
+      (s, r) => malformedOrphanRecordsForDestroyRefusalMessage(s, r, ['A']),
+    ],
     ['malformedStateRefusalMessage', (s, r) => malformedStateRefusalMessage(s as string, r as string)],
     [
       'malformedDeployResourcesRefusalMessage',
@@ -6371,7 +6866,14 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     ],
     [
       'malformedOrphanRecordsWarning',
-      (s, r) => malformedOrphanRecordsWarning(s as string, r as string, ['A']),
+      (s, r) => malformedOrphanRecordsWarning(s as string, r as string, ['A'], false),
+    ],
+    // go-to-k/cdkd#3641 round 2: the KEPT-row warning `cdkd diff` prints at every
+    // node. It reached this fence by the derivation rather than by being
+    // remembered, which is the property that fence exists for.
+    [
+      'malformedOrphanRowsKeptWarning',
+      (s, r) => malformedOrphanRowsKeptWarning(s as string, r as string, ['A']),
     ],
     [
       'malformedResourceEntriesRefusalMessage',
@@ -6521,6 +7023,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedOrphansForOrphan',
       'refuseMalformedOutputs',
       'refuseMalformedOutputsForDestroy',
+      // The ROW pair (go-to-k/cdkd#3500): they take the identifiers and hand them
+      // straight to the two builders fenced above, rendering nothing themselves.
+      'refuseMalformedOrphanRecords',
+      'refuseMalformedOrphanRecordsForDestroy',
       'refuseMalformedResourceAttributesForOrphan',
       'refuseMalformedResourceEntries',
       'refuseMalformedResourceEntriesForOrphan',
