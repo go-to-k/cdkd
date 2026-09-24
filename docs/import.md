@@ -568,6 +568,10 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::EC2::SecurityGroup
 - AWS::EC2::NatGateway
 - AWS::EC2::EIP (accepts an `eipalloc-...` allocation id, a public IP, or the composite `<publicIp>|<allocationId>`; cdkd normalizes and stores the composite)
+- AWS::EC2::InternetGateway (the `igw-...` id)
+- AWS::EC2::RouteTable (the `rtb-...` id)
+- AWS::EC2::NetworkAcl (the `acl-...` id)
+- AWS::EC2::Instance (the `i-...` id; a terminated or shutting-down instance is not adopted)
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBProxy
@@ -662,6 +666,7 @@ and match on — no name, no tags, nothing to look it up by. Use
 - AWS::IAM::AccessKey (keys are not taggable and the template carries no property equal to the key id; pass the `AKIA...` id via `--resource`, which cdkd verifies with `GetAccessKeyLastUsed`. Note: the imported record has no cached `SecretAccessKey` — IAM returns it only from `CreateAccessKey` — so `Fn::GetAtt [<key>, SecretAccessKey]` cannot resolve for an imported key; mint a new key via replacement if the secret is needed)
 - AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
 - AWS::CloudFormation::WaitConditionHandle (no AWS-queryable resource exists behind a handle; an explicit `--resource` id — or CloudFormation's pre-signed-URL physical id during `--migrate-from-cloudformation` — is recorded verbatim, and a synthesized placeholder is used otherwise)
+- AWS::ApiGateway::Account (the API Gateway settings are one per account and region, with no id of their own; any `--resource` id is recorded as given without an AWS call, and a `cdkd deploy` CREATE records `ApiGatewayAccount`. `cdkd destroy` clears the region's `CloudWatchRoleArn`)
 - AWS::CloudFront::OriginAccessControl (OACs are not taggable and the config's `Name` is a display field AWS does not accept as a lookup key; pass the `E...` id via `--resource`, which cdkd verifies with `GetOriginAccessControl`)
 
 ### Override-only — sub-resources without a standalone identity
@@ -691,6 +696,8 @@ name or list API cdkd can resolve them by, so provide the physical id via
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
 - AWS::RDS::DBProxyTargetGroup
+- AWS::EC2::Route (composite: `--resource <logicalId>=<routeTableId>|<destination>`, where `<destination>` is the IPv4 CIDR, IPv6 CIDR or prefix-list id; CloudFormation's own id for a route has the same shape)
+- AWS::EC2::NetworkAclEntry (cdkd records the composite `<networkAclId>|<ruleNumber>|<egress>`, and `--resource` accepts it. CloudFormation's id for an entry is a generated name carrying no AWS information, so with that id the entry is located from the template's `NetworkAclId`, `RuleNumber` and `Egress` — which needs the parent ACL's id resolved too: pass the ACL's own `--resource` as well, or add `--auto` so a same-named CloudFormation stack supplies it)
 - AWS::EC2::SecurityGroupIngress (pass the `sgr-...` rule id — CloudFormation's own identifier for the type and the id the EC2 console shows. cdkd verifies it with `DescribeSecurityGroupRules`, declines an EGRESS rule id, and records its own composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>` as the physical id plus the rule id as the `Id` attribute. The composite itself is deliberately NOT accepted here: the same tuple can name several rules)
 
 ### Override-only — attachments
@@ -709,6 +716,9 @@ taggable identity either, so provide the physical id via `--resource`.
 - AWS::Lambda::Url
 - AWS::Lambda::EventInvokeConfig (composite: `--resource <logicalId>=<functionName>|<qualifier>`; a bare function name is read as qualifier `$LATEST`)
 - AWS::CloudFormation::CustomResource
+- AWS::EC2::SubnetRouteTableAssociation (the `rtbassoc-...` association id)
+- AWS::EC2::SubnetNetworkAclAssociation (the `aclassoc-...` association id)
+- AWS::EC2::VPCGatewayAttachment (internet gateways only; cdkd records the composite `<internetGatewayId>|<vpcId>`, and `--resource` accepts it. CloudFormation's `IGW|<vpcId>` is accepted too: the gateway then comes from the template's `InternetGatewayId`, or else from the one gateway attached to that VPC. A VPN gateway attachment is not adopted)
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (adopt by ARN via `--resource`)
 - AWS::BedrockAgentCore::Evaluator (accepts the evaluator ARN or bare id; an id is resolved to the canonical ARN via `GetEvaluator`)
