@@ -6561,11 +6561,6 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
 }
 
 /**
- * Print the planned `provider.update` calls for `--revert` (no AWS calls).
- * One line per resource summarising how many property paths will be
- * overwritten on the AWS side.
- */
-/**
  * The gated `cdkd drift ... --revert` line for a block that also carries
  * untrusted values, or `undefined` when either identifier cannot be named.
  *
@@ -6611,6 +6606,11 @@ function revertCommandLine(stackName: string, region: string): string | undefine
   return `${built.command} --revert`;
 }
 
+/**
+ * Print the planned `provider.update` calls for `--revert` (no AWS calls).
+ * One line per resource summarising how many property paths will be
+ * overwritten on the AWS side.
+ */
 function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
@@ -6803,7 +6803,11 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           // finding; stating the subsumption is better than keeping a
           // belt-and-braces check nothing can check.
           if (refresh !== undefined) {
-            out.write(`Populate with: ${refresh.command}\n`);
+            // Six spaces, matching the block's other lines. The labelled
+            // line was flush-left while everything around it was indented
+            // (go-to-k/cdkd#3613's M3), which reads as belonging to the outer
+            // report rather than to this resource's arm.
+            out.write(`      Populate with: ${refresh.command}\n`);
           }
         }
       }

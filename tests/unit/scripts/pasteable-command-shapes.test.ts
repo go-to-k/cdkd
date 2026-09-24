@@ -18,12 +18,13 @@ import { describe, expect, it } from 'vite-plus/test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript-v6';
 import {
   EXEMPTIONS,
+  sourceFiles,
   FLOORS,
   blankInertText,
   SELF_PROBE_CASES,
@@ -530,8 +531,12 @@ describe('pasteable-command shape fence — concatenated literals are FOLDED', (
       "const m = `Repair with 'cdkd import <stack> --resource ` + `${id}=<physicalId> --force';`;";
     const single = "const m = `Repair with 'cdkd import <stack> --resource ${id}=<physicalId> --force';`;";
 
-    // Same command, written two ways, and now the SAME verdict. The hole is
-    // inside the prose quotes, so it is `quoted-command` and not `open-hole`.
+    // Same command, written two ways, and the SAME verdict either way — which
+    // is the whole point of the fold. It is `quoted-command` alone: the hole
+    // sits inside the prose quotes, which this fence treats as taken WITH the
+    // span (see `blankInertText`'s single-quote arm for the disagreement that
+    // model has with M7, and the three measured false positives that stopped
+    // me approximating around it).
     expect(shapesOf(single)).toEqual(['quoted-command']);
     expect(shapesOf(concatenated)).toEqual(['quoted-command']);
   });
@@ -660,7 +665,11 @@ describe('pasteable-command shape fence — real code, not only fixtures', () =>
 describe('pasteable-command shape fence — the tree is CLEAN, and stays clean', () => {
   it('reports ZERO findings across src/', () => {
     // This is the assertion that makes the fence a fence rather than a report.
-    // Every site it found is fixed in this PR, so any new one reds here by
+    // Every site it found is fixed in this PR except ONE, which is EXEMPT
+    // rather than fixed -- an `export.ts` own-copy gate the maintainer asked
+    // to land in a follow-up PR. `findings` is what survives the exemptions,
+    // so this asserts zero NON-EXEMPT findings; the case below is what keeps
+    // the exempt one honest. Any new site reds here by
     // name — which is the whole point of keying on a SHAPE: nobody has to know
     // what the next author calls their gate.
     const report = realTree();
@@ -672,13 +681,33 @@ describe('pasteable-command shape fence — the tree is CLEAN, and stays clean',
 });
 
 describe('pasteable-command shape fence — exemptions cannot go stale', () => {
-  it('the LIVE list is empty, so nothing is exempt today', () => {
-    // Asserted on the LIST, not on `staleExemptions`. Review's finding: a
-    // non-empty list whose entries all MATCH also reports no stale ones, so the
-    // `[]` comparison was satisfied by two different worlds and advertised only
-    // one of them. A fence with no exemptions is the state this PR ships, and
-    // this is the assertion that says so.
-    expect(EXEMPTIONS).toEqual([]);
+  it('every LIVE exemption names a file the scan reads, and none is stale', () => {
+    // Asserted on the LIST, not only on `staleExemptions`: a non-empty list
+    // whose entries all MATCH also reports no stale ones, so the `[]`
+    // comparison alone was satisfied by two different worlds.
+    //
+    // The list is no longer empty. Each entry is a go-to-k/cdkd#3436 own-copy
+    // gate the maintainer asked to land in a follow-up PR rather than widen
+    // this one, and an exemption is how that decision stays on the record
+    // instead of becoming a blind spot — when the gate lands the entry goes
+    // STALE and the run refuses until it is deleted.
+    // TWO assertions this case used to carry are gone, both for the same
+    // reason: they pinned something other than what they claimed.
+    //
+    // No assertion on the `why` PROSE — a minimum length plus a substring,
+    // which the repo's "no fences on prose" rule forbids and which padding
+    // passed anyway. And no CARDINALITY assertion: requiring a non-empty list
+    // would make the documented cleanup (fix the deferred site, delete its
+    // entry) fail a test, which is a fence holding a defect in place.
+    //
+    // What is left is BEHAVIOUR about each entry that EXISTS — it names a file
+    // the scan actually reads, and it is not stale — and zero entries
+    // satisfies it.
+    const scanned = new Set(sourceFiles(SRC).map((f) => relative(SRC, f).split(sep).join('/')));
+    for (const e of EXEMPTIONS) {
+      expect(scanned.has(e.file), `${e.file} is exempt but the scan never reads it`).toBe(true);
+    }
+    // ...and none of them is stale against the tree as it ships.
     expect(realTree().staleExemptions).toEqual([]);
   }, 60_000);
 

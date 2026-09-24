@@ -779,7 +779,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     // held in several regions is ambiguous. The command is now gated and on a
     // labelled line of its own, carrying BOTH.
     expect(stderr).toMatch(
-      /^Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+      /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
     );
     // ...and the prose points at it rather than naming a command inline, so a
     // pasted sentence carries nothing runnable.
@@ -854,7 +854,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     // satisfied by an empty or unrelated message.
     expect(stderr).toContain('this resource has no observed-capture baseline');
     // No command line at all, and no hole standing in for one.
-    expect(stderr).not.toMatch(/^Populate with: /m);
+    expect(stderr).not.toMatch(/^ *Populate with: /m);
     expect(stderr).not.toContain('cdkd state refresh-observed');
     // And the SENTENCE moved with it. A first cut printed `with the command
     // below` unconditionally, so this arm pointed at a line it had just

@@ -1,5 +1,9 @@
 import * as readline from 'node:readline/promises';
-import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -2072,7 +2076,7 @@ async function stateOrphanCommand(
   if (options.verbose) logger.setLevel('debug');
 
   if (stackArgs.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd state orphan <stacks...>');
+    throw new Error(`Stack name is required. Usage: cdkd state orphan ${commandHole('stacks...')}`);
   }
 
   const setup = await setupStateBackend(options);
@@ -2368,7 +2372,9 @@ async function stateDestroyCommand(
   setResolvedResourceTimeouts(options.resourceTimeout);
 
   if (!options.all && stackArgs.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd state destroy [stacks...] | --all');
+    throw new Error(
+      `Stack name is required. Usage: cdkd state destroy ${commandHole('stacks...')} | --all`
+    );
   }
 
   const setup = await setupStateBackend(options);
@@ -3293,7 +3299,7 @@ async function stateRefreshObservedCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      'Stack name is required. Usage: cdkd state refresh-observed [stacks...] | --all'
+      `Stack name is required. Usage: cdkd state refresh-observed ${commandHole('stacks...')} | --all`
     );
   }
 

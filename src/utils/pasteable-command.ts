@@ -1,10 +1,13 @@
 /**
  * The way cdkd builds a `cdkd ...` command it tells an operator to PASTE.
  *
- * Thirteen message modules route through it today. The CATEGORIES it does not
- * cover yet are at the end of this header — categories, not a census: the
- * population is what go-to-k/cdkd#3436's greps return against the tree of the
- * day, and a list here would be read as complete and go stale.
+ * DERIVE its callers rather than reading a number here — `grep -rln
+ * 'pasteableCommand(' src/` is the census, and the one this sentence used to
+ * carry went stale twice in one PR, most recently when a site moved to
+ * `commandHole`. The CATEGORIES it does not cover yet are at the end of this
+ * header — categories, not a census, for the same reason: the population is
+ * what go-to-k/cdkd#3436's greps return against the tree of the day, and a
+ * list here would be read as complete.
  *
  * go-to-k/cdkd#3363 measured the class this module closes, and
  * [#3436](https://github.com/go-to-k/cdkd/issues/3436) records it repo-wide.
@@ -67,11 +70,18 @@
  *   migrated here — `provisioning/providers/**` (S3 Tables, Route 53, DynamoDB),
  *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
  *   today.
- * - **The `cdkd drift` sites of
- *   [#3307](https://github.com/go-to-k/cdkd/issues/3307)**, which take their own
- *   gate in that PR. Note a `cdkd drift` command also appears OUTSIDE that file.
- * - **A spelled-out template or usage synopsis printing a BARE `<hole>`**, and
- *   the source fence that would find them.
+ * - **A spelled-out template or usage synopsis printing a BARE `<hole>`.**
+ *
+ * Two entries left this list in go-to-k/cdkd#3613 and saying so is the point:
+ * the `cdkd drift` sites of
+ * [#3307](https://github.com/go-to-k/cdkd/issues/3307) ALL build through this
+ * function now and `drift.ts`'s own `stackCommandFor` is gone, and the source
+ * fence that would find the bare-hole shape EXISTS —
+ * `scripts/check-pasteable-command-shapes.ts`, whose unit test is its
+ * enforcement. A list of what is not yet covered goes stale the moment
+ * something is, so derive it rather than reading it: the fence reports the
+ * shapes, and its `EXEMPTIONS` name the sites deliberately left for a
+ * follow-up PR.
  */
 
 import { displaySafe, STACK_REF_MAX_CODE_POINTS, truncateCodePoints } from './display-safe.js';

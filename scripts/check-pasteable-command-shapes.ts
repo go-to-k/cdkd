@@ -152,12 +152,36 @@ export interface PasteableReport {
 const HOLE = '\u0000';
 
 /**
- * Sites that are USAGE TEXT rather than a remedy an operator pastes, by
- * `file:shape:excerpt-prefix`. Each needs a reason, and a stale entry is a
- * REFUSAL — an exemption outliving its target is how a fence goes quiet.
+ * Sites deliberately not fixed, by `file:shape:excerpt-prefix`. Each needs a
+ * reason, and a stale entry is a REFUSAL — an exemption outliving its target is
+ * how a fence goes quiet without anyone editing it.
+ *
+ * NOT empty. Its one entry is a go-to-k/cdkd#3436 own-copy gate the maintainer
+ * asked to land in a follow-up PR rather than widen go-to-k/cdkd#3613, so the
+ * exemption is how that decision stays on the record instead of becoming a
+ * blind spot.
  */
-export const EXEMPTIONS: ReadonlyArray<{ file: string; shape: PasteableShape; contains: string; why: string }> =
-  [];
+export const EXEMPTIONS: ReadonlyArray<{
+  file: string;
+  shape: PasteableShape;
+  contains: string;
+  why: string;
+}> = [
+  {
+    file: 'cli/commands/export.ts',
+    shape: 'quoted-command',
+    contains: 'cdkd import <stack> --resource',
+    why:
+      "buildImportPlan's redaction-mask refusal, the twin of the site " +
+      'maskedIdentifierAttributeReason fixes in the same PR. Gating it is a ' +
+      'one-line change and it is NOT done here: the maintainer asked this PR ' +
+      'to stop widening, and the remaining go-to-k/cdkd#3436 own-copy gates ' +
+      '(export.ts among them) are follow-up PRs. Tracked by go-to-k/cdkd#3436, ' +
+      'which stays open until they land. This entry is what keeps the decision ' +
+      'on the record instead of leaving a blind spot: when the gate lands the ' +
+      'entry goes STALE and the run refuses until it is deleted.',
+  },
+];
 
 /** A `cdkd` verb, as it appears at the head of a pasteable command. */
 const CDKD_VERB = /\bcdkd\s+[a-z][a-z-]*/;
@@ -168,8 +192,17 @@ const CDKD_VERB = /\bcdkd\s+[a-z][a-z-]*/;
  * The trailing `[^\s'"\`]` is what makes this about what FOLLOWS: a hole ENDING
  * the command is only a syntax error when pasted, and `commandHole`'s `'<x>'`
  * form is quoted and inert. Both are correct and must not be reported.
+ *
+ * **DOTS are part of the name.** The charset omitted them until review (M7),
+ * which made `<stacks...>` -- Commander's own rendering of a variadic
+ * argument, and the spelling this very PR wrote into four USAGE messages --
+ * invisible. Measured under bash with a file named `stacks...` present:
+ * `cdkd state orphan <stacks...> --all` exits 0 and CREATES a file called
+ * `--all`, exactly as the dotless form does. An earlier round of this PR
+ * claimed the dots "leave no redirection"; they do not, and that claim was
+ * reasoned rather than run.
  */
-const OPEN_HOLE = /<[A-Za-z][A-Za-z0-9_-]*>\s+[^\s'"`]/;
+const OPEN_HOLE = /<[A-Za-z][A-Za-z0-9_.-]*>\s+[^\s'"`]/;
 
 /**
  * Whether the quote character at `i` is a DELIMITER rather than English.
@@ -361,6 +394,28 @@ export function blankInertText(text: string): string {
       continue;
     }
     if (r.delimiter === "'") {
+      // EVERY single-quoted span blanks, including one that holds a `cdkd`
+      // verb -- and NOT reporting the hole inside a prose-quoted command is a
+      // known disagreement with go-to-k/cdkd#3613's M7, recorded here rather
+      // than papered over.
+      //
+      // M7 is right that `Re-run 'cdkd drift <stack> --revert'` redirects when
+      // an operator selects the INNER text. Three attempts to report it
+      // without reporting inert shapes each failed on a case a critic
+      // measured: keying on the span holding a verb reported
+      // `cdkd deploy 'a \`cdkd events <stack>\` b'`, an ARGUMENT bash passes
+      // literally; adding "no unquoted verb precedes it" still reported
+      // `echo 'cdkd drift <stack> --revert'` and went SILENT on a remedy
+      // whenever any earlier line mentioned a command, because the flag never
+      // reset at a sentence boundary. The distinction M7 needs is PROSE versus
+      // a command word, which is not a shell property and not one a source
+      // shape can read.
+      //
+      // So the model stays the defensible one -- the operator takes the span
+      // WITH its quotes, which is also shape A's premise -- and the SITE M7
+      // named is fixed in `drift.ts` regardless. Widening this is a decision
+      // for the maintainer with those measurements in hand, not a heuristic to
+      // keep guessing at.
       out += FILL.repeat(span.length);
       continue;
     }
@@ -771,9 +826,11 @@ export function scanSource(
     // sharpened the quote model this was a stated bound and nothing more -- the
     // classification was lost, the site still reported as `open-hole`. Once a
     // quoted run stopped being scanned for holes, the bound got WORSE than
-    // stated: `export.ts:2205`'s shape, a prose-quoted command whose opening
-    // quote is in one literal and whose interpolation is in the next, reported
-    // NOTHING at all. A bound that hides the shape the fence exists for is not
+    // stated: a prose-quoted command whose opening quote is in one literal and
+    // whose interpolation is in the next reported NOTHING at all. (The header
+    // used to cite `export.ts:2205` as the live instance; that site was fixed
+    // by this PR, so the shape is described and no line number is given --
+    // go-to-k/cdkd#3613's M8.) A bound that hides the shape the fence exists for is not
     // a bound to record, so the fold the header named as the remedy is done.
     //
     // A non-literal operand becomes a HOLE, which is exactly what it is: the
@@ -1279,13 +1336,34 @@ export const SELF_PROBE_CASES: readonly ProbeCase[] = [
     expect: [],
   },
   {
+    // M7's OTHER two shapes, one case each; both returned [] before this round.
+    // The third -- a bare hole inside a prose-quoted command -- is NOT here,
+    // and `blankInertText`'s single-quote arm says why: three attempts to
+    // report it each reported an inert shape a critic then measured, so the
+    // disagreement is recorded rather than approximated.
+    //
+    // First: a hole followed by a QUOTED hole. The trailing-character test used
+    // to reject it, so the first hole's redirection went unseen.
+    label: 'a bare hole followed by a QUOTED hole is still a redirection',
+    source: "const m = `Run cdkd force-unlock <a> '<b>'`;",
+    expect: ['open-hole'],
+  },
+  {
+    // Second: DOTS in the name. `<stacks...>` is Commander's own variadic
+    // rendering and redirects exactly as `<stack>` does -- measured under bash,
+    // where it creates the file named by the next word.
+    label: 'a DOTTED hole followed by a flag redirects like any other',
+    source: 'const m = `Run cdkd state orphan <stacks...> --all`;',
+    expect: ['open-hole'],
+  },
+  {
     // The single-quote arm of the blanking, and its only discriminator: inside
     // `'...'` a backtick is a LITERAL, so the substitution never happens and
     // the hole is inert. Without this case, deleting that arm reds nothing
     // (measured) -- the sibling arm would preserve the backtick run and the
     // fence would report a line a shell cannot execute.
     label: 'a backtick run inside SINGLE quotes is literal, so its hole is inert',
-    source: 'const m = "Run cdkd deploy \'a `cdkd events <stack> --all` b\'";',
+    source: 'const m = "Run cdkd deploy \'a `<stack> --all` b\'";',
     expect: [],
   },
   {
@@ -1370,10 +1448,11 @@ export function runSelfProbes(): string[] {
  * Match findings against exemptions, returning what survives and what has gone
  * STALE.
  *
- * Exported and taking its list as a PARAMETER because `EXEMPTIONS` is empty
- * today, so a test asserting `staleExemptions` over the real tree compares `[]`
- * against `[]` and pins nothing — review's finding. With the list supplied, the
- * mechanism is exercised in both directions against a non-empty one.
+ * Exported and taking its list as a PARAMETER so the mechanism can be exercised
+ * in BOTH directions against a list a test controls. It was written when
+ * `EXEMPTIONS` was empty and a `staleExemptions` assertion over the real tree
+ * compared `[]` against `[]`, pinning nothing; the live list is no longer
+ * empty, and the seam is still the only way to drive a near-miss per term.
  */
 export function applyExemptions(
   findings: readonly PasteableFinding[],

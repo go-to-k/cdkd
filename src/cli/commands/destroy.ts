@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
@@ -966,14 +966,41 @@ export function createDestroyCommand(): Command {
         'those keys survive and stay readable with GetObject and a VersionId. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
-        // `[stacks...]`, the spelling Commander itself prints for this
-        // argument, rather than `<stack>`. A bare `<stack>` followed by a flag
-        // is the redirection shape go-to-k/cdkd#3436 measured: pasted with a
-        // file named `stack` present, the `>` takes `--all` as an output
-        // TARGET and creates it, at exit 0. This is `--help` text, so it
-        // states the grammar rather than offering a command to run — which is
-        // why the fix is Commander's own rendering and not a quoted hole.
-        'Equivalent for an already-destroyed stack: cdkd events prune [stacks...] --all.',
+        // TWO corrections here, and the second overturned the first.
+        //
+        // The ARITY is `<stack>`: `createEventsPruneCommand` declares
+        // `.argument('<stack>', ...)` -- exactly one stack, and REQUIRED. An
+        // earlier round of this PR wrote `[stacks...]` and claimed in the
+        // comment, the body and the changelog that it agreed with `--help`. It
+        // did not (review measured it, M2), and `[...]` is a bracket GLOB when
+        // pasted. Derive the spelling from the command, never from a sibling
+        // that happens to be variadic.
+        //
+        // The HOLE is quoted. A bare `<stack>` followed by a flag is the
+        // redirection shape go-to-k/cdkd#3436 measured: pasted where a file
+        // named `stack` exists, the `>` takes `--all` as an output TARGET and
+        // creates it, at exit 0. The earlier comment argued this is `--help`
+        // text stating a grammar, so Commander's bare rendering was the fix --
+        // but that argument does not survive measurement, and BOTH spellings I
+        // reached for first are worse than they look. Under bash:
+        // `cdkd state orphan <stacks...> --all` exits 0 and creates a file
+        // called `--all` -- the dots are part of the redirect's word, not an
+        // escape from it. And `[stacks...]` is not inert either: it is a
+        // bracket EXPRESSION matching ONE character drawn from `s t a c k .`,
+        // so in a directory holding a file named `s` it expands to `s` and
+        // silently retargets the command rather than failing. (Two earlier
+        // versions of this comment got that wrong in opposite directions --
+        // "matches nothing", then "matches any one-character filename".)
+        //
+        // `state.ts`'s three `Usage:` lines are quoted now for the same reason.
+        // A third wrong claim of mine held that their `| --all` made them
+        // unrunnable; a pipeline's right-hand failure does not stop the LEFT
+        // side, so `cdkd state destroy <expansion>` would still have run.
+        // `commandHole` prints
+        // `'<stack>'`: same grammar, same arity, and a shell strips the quotes
+        // rather than passing them, so a reader who types the line verbatim
+        // gets what they meant.
+        `Equivalent for an already-destroyed stack: cdkd events prune ${commandHole('stack')} --all.`,
       false
     )
     .action(withErrorHandling(destroyCommand));

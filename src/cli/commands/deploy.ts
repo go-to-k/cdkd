@@ -335,10 +335,13 @@ async function deployCommand(
           // The holes are QUOTED, and on a labelled line of their own. A bare
           // `<stackName>` is two shell redirections: `<stackName` reads stdin
           // from a file and the `>` takes the next word as an output TARGET
-          // and creates it (measured on go-to-k/cdkd#3436). This one ends on
-          // its second hole, so bash refuses the line rather than running it —
-          // inert by where the command happens to stop, not by design, and one
-          // appended flag from being silent.
+          // and creates it (measured on go-to-k/cdkd#3436). `commandHole`
+          // prints `'<stackName>'`, so this line is inert BY DESIGN and stays
+          // inert if a flag is appended. An earlier version of this comment
+          // described the unquoted text it replaced — "inert by where the
+          // command happens to stop ... one appended flag from being silent" —
+          // which is true of a BARE trailing hole and not of what this prints
+          // (go-to-k/cdkd#3613's M8).
           `\nRelease with: cdkd force-unlock ${commandHole('stackName')} ` +
           `--stack-region ${commandHole('region')}\n`
       );

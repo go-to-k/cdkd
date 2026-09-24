@@ -2131,7 +2131,7 @@ describe('cdkd drift', () => {
       // `isPasteableIdent` in conjunction with the command gate. `for this
       // stack` named neither, which is the harm the issue states.
       expect(output).toMatch(
-        /^Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+        /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
       );
       expect(output).toContain('Populate observedProperties with the command below');
       // Nothing runnable left inside a prose quoted span.
@@ -2478,12 +2478,6 @@ describe('cdkd drift', () => {
         expect(observed).toEqual({ DestinationCidrBlock: '10.0.0.0/16' });
       });
 
-      /**
-       * The state write is a SECONDARY convergence step — AWS has already been
-       * reverted by the time it runs — so a failure must not abort the command.
-       * Under `--all` a throw here would skip every later stack's revert, a
-       * regression against the pre-#1644 behavior of never writing at all.
-       */
       it('WITHHOLDS the revert command in that warning when the target cannot be named', async () => {
         // The withheld direction of go-to-k/cdkd#3307's site-3 remedy, on the
         // same `mayNameTarget` predicate as sites 2 and 4. It reuses the
@@ -2526,6 +2520,12 @@ describe('cdkd drift', () => {
         expect(warned).toContain(`re-run 'cdkd drift --revert' for this stack`);
       });
 
+      /**
+       * The state write is a SECONDARY convergence step — AWS has already been
+       * reverted by the time it runs — so a failure must not abort the command.
+       * Under `--all` a throw here would skip every later stack's revert, a
+       * regression against the pre-#1644 behavior of never writing at all.
+       */
       it('warns instead of failing the run when the state write fails', async () => {
         // The drift MUST come from a key other than IpProtocol (issue #1643):
         // `6` and `tcp` are two spellings of ONE protocol — AWS renames the

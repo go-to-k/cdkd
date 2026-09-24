@@ -38,7 +38,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 
 /** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
 const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
@@ -1521,17 +1521,33 @@ export class S3TablesProvider implements ResourceProvider {
     if (!resourceArn) {
       throw new ProvisioningError(
         // The command is NOT inside the prose `'...'` span: an operator
-        // selects that span WITH its quotes, and a `logicalId` carrying `'`
-        // then closes the wrapper so the rest runs as shell (go-to-k/cdkd#3363
-        // measured it; go-to-k/cdkd#3436 owns the class). It goes on its own
-        // labelled line, built by the one gate, which names the id only when
-        // it renders exactly and prints a quoted hole otherwise.
+        // selects that span WITH its quotes, and an interpolated value carrying
+        // `'` then closes the wrapper so the rest runs as shell
+        // (go-to-k/cdkd#3363 measured it; go-to-k/cdkd#3436 owns the class).
+        //
+        // It names `cdkd orphan`, and the COMMAND was wrong before review
+        // caught it (M1 of the go-to-k/cdkd#3613 review): the line passed this
+        // TABLE's logical id to `cdkd state orphan`, which declares
+        // `<stacks...>` and drops a WHOLE stack's record -- in every region
+        // when no `--stack-region` is given. Moving a command out of the
+        // injection class says nothing about whether it MEANS anything, and a
+        // shape fence cannot see the difference; only reading it can. It is the
+        // same defect as the `cdkd import` positional this PR fixes one file
+        // over.
+        //
+        // The per-resource command is `cdkd orphan <paths...>`, which takes
+        // CONSTRUCT PATHS. This provider has a logical id and a physical id and
+        // no construct path, so the target is a quoted HOLE rather than a value
+        // it would have to invent -- inert when pasted, and the sentence says
+        // where to read it. It names the template's `aws:cdk:path` Metadata and
+        // NOT `cdkd list`: that command lists STACKS, so its paths cannot
+        // supply a resource target (review caught the first wording).
         `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone ` +
           `or state is out-of-sync. Refusing to silently drop the tag update. If the table was ` +
-          `deleted out-of-band, clean up the record with the command below.` +
-          `\nClean up with: ${
-            pasteableCommand('cdkd state orphan', [{ value: logicalId, hole: 'stack' }]).command
-          }`,
+          `deleted out-of-band, drop just this resource's record with the command below, ` +
+          `filling in the construct path the CDK app gave this resource — its aws:cdk:path ` +
+          `Metadata entry in the synthesized template.` +
+          `\nClean up with: cdkd orphan ${commandHole('constructPath')}`,
         resourceType,
         logicalId,
         physicalId

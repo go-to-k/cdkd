@@ -2251,16 +2251,22 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
 }
 
 /**
- * The `cdkd import` line both redaction-mask refusals tell the operator to run,
- * in ONE spelling.
+ * The `cdkd import` line `maskedIdentifierAttributeReason` tells the operator
+ * to run.
  *
- * Two sites print it — this file's `maskedIdentifierAttributeReason` and
- * `buildImportPlan`'s resolved-identifier refusal — and they were written
- * independently, which is how the second kept go-to-k/cdkd#3363's shape for
- * three PRs after the first was gated: a prose `'...'` span holding a `cdkd`
- * verb AND an interpolation, its opening quote in one concatenated literal and
- * its interpolation in the next. The source fence found it only once its `+`
- * runs were folded; a grep for the gate's name never would have.
+ * It is a named helper for ONE caller on purpose. A SECOND site prints the same
+ * remedy — `buildImportPlan`'s resolved-identifier refusal — written
+ * independently, and it still carries go-to-k/cdkd#3363's shape: a prose
+ * `'...'` span holding a `cdkd` verb AND an interpolation, its opening quote in
+ * one concatenated literal and its interpolation in the next. The source fence
+ * found it only once its `+` runs were folded; a grep for the gate's name never
+ * would have.
+ *
+ * That site is NOT routed here, deliberately: `export.ts` is one of the
+ * go-to-k/cdkd#3436 own-copy gates the maintainer asked to land in a follow-up
+ * PR rather than widen go-to-k/cdkd#3613. The fence carries an EXEMPTION naming
+ * it, so this helper gains its second caller in the PR that closes the site —
+ * and the exemption goes stale in the same commit.
  *
  * The POSITIONAL is a hole on purpose, and the load-bearing half is what it is
  * NOT: an earlier cut passed the LOGICAL ID there, producing a command that
@@ -2268,13 +2274,11 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
  * check can see that — both spellings are equally well-formed to one — and only
  * reading the command can.
  *
- * It is a hole rather than a name because ONE of the two callers,
+ * It is a hole rather than a name because its caller,
  * {@link maskedIdentifierAttributeReason}, has no stack name in scope at all.
- * `buildImportPlan` does have one, so filling it there would be possible — an
- * earlier version of this comment said neither did, which review corrected.
- * Doing it would mean two different commands from one helper, so it is left as
- * a single spelling; naming the stack at the site that can is a separate change
- * with its own gating question.
+ * (`buildImportPlan` does have one, so when that site joins this helper it
+ * could fill it — a separate change with its own gating question, and not a
+ * reason to grow two spellings here.)
  */
 function importRepairCommand(logicalId: string): string {
   return `${
@@ -4435,9 +4439,14 @@ export async function buildImportPlan(
           'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
-          'Repair the record that HOLDS the mask ' +
-          `(\`cdkd import ${commandHole('stack')} --resource ` +
-          `${commandHole('logicalId')}=${commandHole('physicalId')} --force\`, granting ` +
+          // NO backtick wrapper. Pasted WITH its wrapper a backtick span is
+          // command SUBSTITUTION -- a worse wrapper than `'...'`, and one the
+          // source fence could not see until go-to-k/cdkd#3613's M8 named it.
+          // Every placeholder here is a hole, so nothing untrusted ran; the
+          // shape is the point.
+          'Repair the record that HOLDS the mask with ' +
+          `cdkd import ${commandHole('stack')} --resource ` +
+          `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
           'schema), then re-run whichever command wrote this property. Either way you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
@@ -4581,23 +4590,27 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
-        // The command moves OUT of the sentence and onto a labelled line of
-        // its own, built by the shared gate (go-to-k/cdkd#3436). It was a prose
-        // `'...'` span holding a `cdkd` verb and an interpolated logical id —
-        // go-to-k/cdkd#3363's measured shape, where the operator selects the
-        // span WITH its quotes and a value carrying `'` inverts the wrapper.
-        // Its twin in `maskedIdentifierAttributeReason` was gated first and
-        // this one was missed, which is why both now share one spelling.
+        // NOT gated here, DELIBERATELY. This is go-to-k/cdkd#3363's shape --
+        // a prose `'...'` span holding a `cdkd` verb and an interpolated
+        // logical id, the twin of the site `maskedIdentifierAttributeReason`
+        // fixes above -- and gating it is a one-line change. It is left alone
+        // because the maintainer asked this PR to stop widening: the remaining
+        // go-to-k/cdkd#3436 own-copy gates, `export.ts` among them, are
+        // follow-up PRs, and each push that widens the diff re-opens a review
+        // round. It stays tracked by go-to-k/cdkd#3436 itself, which is the
+        // umbrella for the remaining own-copy gates and is still open, and the
+        // fence carries an EXEMPTION naming this site so the tree's "0
+        // findings" is a decision on the record rather than a blind spot.
         reason:
           'the CloudFormation import identifier cdkd resolved for this resource is the redaction ' +
           "mask ('***'), so the exported template would declare the mask as the resource's " +
           'identity — CloudFormation would either refuse it at IMPORT or write it onto the live ' +
           'resource at the next update. cdkd state holds only the mask where the identifier ' +
-          'should be (a masked attribute, or a masked physical id). Repair the record with the ' +
-          'command below, granting cloudformation:DescribeType first if the import warned that ' +
-          'it could not read the schema — or export the stack without this resource and adopt ' +
-          'it into CloudFormation by hand. See https://github.com/go-to-k/cdkd/issues/2932.' +
-          `\nRepair with: ${importRepairCommand(logicalId)}`,
+          "should be (a masked attribute, or a masked physical id). Repair the record ('cdkd " +
+          `import <stack> --resource ${logicalId}=<physicalId> --force', granting ` +
+          'cloudformation:DescribeType first if the import warned that it could not read the ' +
+          'schema), or export the stack without this resource and adopt it into CloudFormation ' +
+          'by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
       });
       continue;
     }

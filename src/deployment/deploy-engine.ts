@@ -2106,12 +2106,20 @@ export class DeployEngine {
       }
       if (withheld.length > 0) {
         parts.push(
+          // NO backtick wrapper around the command. Pasted WITH its wrapper a
+          // backtick span is command SUBSTITUTION -- a worse wrapper than
+          // `'...'`, and one the source fence could not see until
+          // go-to-k/cdkd#3613's M8 named it. Every placeholder here is a hole,
+          // so nothing untrusted ran, but the shape is the one this class is
+          // about and it should not be modelled in a message that exists to
+          // explain the class. The command is DESCRIBED rather than offered,
+          // because this arm's whole point is that it is withheld.
           `Re-import the record that HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
-            `the command is withheld: that is not a plain CloudFormation logical id, so a pasted ` +
-            `\`cdkd import ${commandHole('stack')} --resource ` +
-            `${commandHole('id')}=${commandHole('physicalId')} --force\` could be reshaped by the ` +
-            `shell or name a different resource. Read the id from 'cdkd state show' and quote it ` +
-            `yourself.`
+            `the command is withheld: that is not a plain CloudFormation logical id, so a ` +
+            `pasted cdkd import line could be reshaped by the shell or name a different ` +
+            `resource. Read the id from 'cdkd state show' and quote it yourself, in ` +
+            `cdkd import ${commandHole('stack')} --resource ` +
+            `${commandHole('id')}=${commandHole('physicalId')} --force.`
         );
       }
     }
