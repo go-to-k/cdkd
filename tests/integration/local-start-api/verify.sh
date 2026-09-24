@@ -80,8 +80,21 @@ trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
-echo "==> Starting cdkd local start-api on port ${PORT} (with --watch: watch-source model)"
-${CDKD} local start-api \
+# Issues #2103 / #1843: the server runs under an UPPER-CASED AWS_REGION and
+# AWS_DEFAULT_REGION, and the region-case arm below asserts the Lambda
+# container received the canonical spelling. `cdkd local start-api` folded
+# `--region` only, so the env spelling reached every container verbatim, and
+# AWS SDK endpoint resolution inside the handler is case-sensitive. The upper
+# spelling must DIFFER from the canonical one, or the arm proves nothing.
+CANONICAL_REGION="$(printf '%s' "${AWS_REGION:-us-east-1}" | tr '[:upper:]' '[:lower:]')"
+UPPER_REGION="$(printf '%s' "${CANONICAL_REGION}" | tr '[:lower:]' '[:upper:]')"
+if [[ "${UPPER_REGION}" == "${CANONICAL_REGION}" ]]; then
+  echo "FAIL: region-case arm is vacuous: '${UPPER_REGION}' has no letters to fold."
+  exit 1
+fi
+
+echo "==> Starting cdkd local start-api on port ${PORT} (with --watch: watch-source model; AWS_REGION=${UPPER_REGION})"
+AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" ${CDKD} local start-api \
   --port "${PORT}" \
   --container-host "${CONTAINER_HOST}" \
   --no-pull \
@@ -236,6 +249,29 @@ echo "==> Smoke-testing routes via curl"
 curl_assert "GET /items/42" "http://127.0.0.1:${PORT_HTTP}/items/42" '"id":"42"'
 curl_assert "POST /items" "http://127.0.0.1:${PORT_HTTP}/items" '"body"' \
   -X POST -H 'Content-Type: application/json' -d '{"x":1}'
+
+# Issues #2103 / #1843: the container's own region env is the canonical
+# spelling even though the server was started under an upper-cased one.
+# `ItemsHandler` has no `--assume-role` mapping, so this is the
+# `forwardAwsEnv` path.
+echo "==> Asserting the Lambda container's AWS_REGION is canonical (#2103 / #1843)"
+curl_assert "container AWS_REGION canonical" "http://127.0.0.1:${PORT_HTTP}/items/region" \
+  "\"awsRegion\":\"${CANONICAL_REGION}\""
+curl_assert "container AWS_DEFAULT_REGION canonical" "http://127.0.0.1:${PORT_HTTP}/items/region" \
+  "\"awsDefaultRegion\":\"${CANONICAL_REGION}\""
+REGION_RESPONSE=$(curl -sf "http://127.0.0.1:${PORT_HTTP}/items/region" 2>&1) || REGION_RESPONSE=""
+# An empty response would pass the negative grep below without testing anything.
+if [[ -z "${REGION_RESPONSE}" ]]; then
+  echo "FAIL: GET /items/region returned nothing, so the raw-spelling check cannot run."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if echo "${REGION_RESPONSE}" | grep -qF "${UPPER_REGION}"; then
+  echo "FAIL: the container still carries the raw '${UPPER_REGION}' spelling. Response: ${REGION_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [container region env canonical] OK"
 # PR 8c: REST v1 stage variables — the prod Stage carries
 # Variables: { STAGE: 'prod', LOG_LEVEL: 'info' }. Note this lives on
 # the dedicated REST v1 server (own port, per PR #341).

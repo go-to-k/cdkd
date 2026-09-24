@@ -294,53 +294,12 @@ describe('no CLI command resolves a region without folding it', () => {
     expect(scan(source as string).violations).toHaveLength(expected as number);
   });
 
-  /**
-   * The one file that still carries the shape, PINNED rather than exempted.
-   *
-   * `local-start-api.ts` folds `--region` at its entry but not the ENV half, so
-   * three chains fall through to a raw `AWS_REGION` and ship it into every
-   * Lambda container it starts (issue
-   * [#2103](https://github.com/go-to-k/cdkd/issues/2103)). It is a real
-   * instance of exactly this defect class, found by this scanner. It is not
-   * fixed here because `src/cli/commands/local-*.ts` is local-execution code,
-   * so folding it owes a real-Docker `local-start-api` run on a PR in a
-   * different command family.
-   *
-   * A path allow-list would go inert the moment the file is renamed or the
-   * count changes, so this pins the COUNT and asserts it can only SHRINK. A new
-   * violation in this file fails; a violation in any other file fails; fixing
-   * #2103 fails this test until the entry is deleted, which is the reminder.
-   */
-  const KNOWN_VIOLATIONS: Record<string, number> = { 'local-start-api.ts': 3 };
-
+  // No file is exempt. `local-start-api.ts` was pinned here as a known
+  // violation until issue [#2103](https://github.com/go-to-k/cdkd/issues/2103)
+  // folded its chains.
   it.each(files)('%s folds every region it resolves', (file) => {
     const found = scan(sources.get(file)!).violations;
-    const allowed = KNOWN_VIOLATIONS[file] ?? 0;
-    expect(
-      found.length,
-      allowed === 0
-        ? `${file} has unfolded region resolutions:\n${found.join('\n')}`
-        : `${file} is pinned at ${allowed} known violation(s) (issue #2103). ` +
-            `Found ${found.length}. If you FIXED them, delete the entry; if this GREW, ` +
-            `the new one is a regression:\n${found.join('\n')}`
-    ).toBe(allowed);
-  });
-
-  it('the known-violations pin names only files that really still violate', () => {
-    // Guard-the-guard: an entry left behind after its file was fixed would
-    // silently re-permit the shape there. Every pinned file must still have at
-    // least one violation, and every pinned count must be exact (asserted
-    // above), so the list cannot outlive what it describes.
-    for (const file of Object.keys(KNOWN_VIOLATIONS)) {
-      expect(sources.has(file), `${file} is pinned but no longer exists`).toBe(true);
-      // Assert against the TREE, not against the literal beside it. An earlier
-      // cut asserted `count > 0` on the hardcoded number, which is a tautology
-      // that can never fail and so verified nothing about the file.
-      expect(
-        scan(sources.get(file)!).violations.length,
-        `${file} is pinned but no longer violates - delete its entry`
-      ).toBeGreaterThan(0);
-    }
+    expect(found, `${file} has unfolded region resolutions:\n${found.join('\n')}`).toEqual([]);
   });
 });
 

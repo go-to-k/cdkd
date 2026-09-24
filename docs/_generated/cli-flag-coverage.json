@@ -828,6 +828,7 @@
         "local-invoke-from-cfn-stack-multi-stack",
         "local-run-task-from-state",
         "local-start-alb-from-state",
+        "local-start-api",
         "loggroup-class-guard",
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
