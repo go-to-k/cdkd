@@ -7,9 +7,10 @@
  * question — "a structural operand", "an AWS-assigned PHYSICAL ID" — while the
  * live question was CONTROL CHARACTERS:
  *
- *  - The `Fn::Select` index and the `Fn::Split` delimiter are the RAW template
- *    operands, never resolved and never type-checked, so a string reaches the
- *    render verbatim.
+ *  - The `Fn::Split` delimiter is the RAW template operand, never resolved and
+ *    never type-checked, so a string reaches the render verbatim. The
+ *    `Fn::Select` index is validated since issue #3574, so a hostile one now
+ *    reaches only the REFUSAL, which renders it.
  *  - A physical id is read off the STATE RECORD, which is not always
  *    AWS-assigned (`cdkd import --resource <id>=<physicalId>`, a record another
  *    binary or a hand edit wrote). Where the AWS SDK message is rendered beside
@@ -136,6 +137,23 @@ function resolveValue(value: unknown): Promise<string[]> {
   );
 }
 
+/** The message of the refusal an `Fn::Select` over `index` throws. */
+async function selectRefusal(index: unknown): Promise<string> {
+  let message = '';
+  await capture(async () => {
+    try {
+      await resolver().resolve({ 'Fn::Select': [index, ['a', 'b']] }, {
+        template: { Resources: {} } as unknown as CloudFormationTemplate,
+        resources: {},
+      } as ResolverContext);
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+  });
+  expect(message, 'the Fn::Select did not refuse').toMatch(/^Fn::Select: the index /);
+  return message;
+}
+
 /** Drive `Fn::GetAtt [Thing, attribute]` against a record of `resourceType`. */
 function getAtt(resourceType: string, attribute: string, physicalId: string): Promise<string[]> {
   const template = {
@@ -173,25 +191,23 @@ afterEach(() => {
 });
 
 describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', () => {
-  it('sanitizes the out-of-bounds WARN, reached by an index Number() coerces with a line terminator', async () => {
-    // `Number()` trims whitespace, `U+2028` and CR included, so this compares
-    // as 9 and lands on the default-verbosity warn carrying both.
-    const got = await resolveValue({ 'Fn::Select': [`${CR}9${LS}`, ['a', 'b']] });
-    const warn = line(got, 'Fn::Select: index ');
-    expectClean(warn, 'the out-of-bounds warn');
-    expect(warn).toBe('Fn::Select: index 9 out of bounds (array length: 2)');
+  it('sanitizes the index REFUSAL, reached by an index carrying a line terminator (#3574)', async () => {
+    // `Number()` trims whitespace, `U+2028` and CR included, so before #3574
+    // this compared as 9 and reached the out-of-bounds warn; the digit-only
+    // rule now refuses it, and the refusal renders the value.
+    const error = await selectRefusal(`${CR}9${LS}`);
+    expectClean(error, 'the index refusal');
+    expect(error).toContain('got string "9"');
 
-    // CONTROL: an ordinary index renders verbatim.
+    // CONTROL: an ordinary out-of-range index still reaches the warn.
     const control = await resolveValue({ 'Fn::Select': [9, ['a', 'b']] });
     expect(control).toContain('Fn::Select: index 9 out of bounds (array length: 2)');
   });
 
-  it('sanitizes the resolved DEBUG line, reached by an index that coerces to NaN', async () => {
-    // A NaN index fails BOTH bounds comparisons, so it passes the guard.
-    const got = await resolveValue({ 'Fn::Select': [EVIL, ['a', 'b']] });
-    const debug = line(got, 'Resolved Fn::Select: index ');
-    expectSanitized(debug, 'the Fn::Select debug line');
-    expect(renders(debug)).toBe(1);
+  it('sanitizes the index REFUSAL, reached by an index that is not a number (#3574)', async () => {
+    const error = await selectRefusal(EVIL);
+    expectSanitized(error, 'the index refusal');
+    expect(renders(error)).toBe(1);
 
     const control = await resolveValue({ 'Fn::Select': [1, ['a', 'b']] });
     expect(control).toContain('Resolved Fn::Select: index 1 -> "b"');
@@ -364,70 +380,5 @@ describe('the Ref renders of a state-record id and a pseudo-parameter value are 
 
     const control = await ref('AWS::StackName', { stackName: 'MyStack' } as Partial<ResolverContext>);
     expect(control).toContain('Resolved Ref to pseudo parameter: AWS::StackName -> MyStack');
-  });
-});
-
-describe('a NON-STRING state-record physical id still warns and degrades, instead of throwing (PR #3575 security review)', () => {
-  async function getAttValue(
-    resourceType: string,
-    attribute: string
-  ): Promise<{ lines: string[]; value: unknown; error?: unknown }> {
-    let value: unknown;
-    let error: unknown;
-    const lines = await capture(async () => {
-      try {
-        value = await resolver().resolve({ 'Fn::GetAtt': ['Thing', attribute] }, {
-          template: { Resources: { Thing: { Type: resourceType } } } as unknown as CloudFormationTemplate,
-          resources: {
-            // A hand-edited record: nothing in src/state/ enforces a string id.
-            Thing: { physicalId: 123, resourceType, properties: {}, dependencies: [] },
-          },
-        } as unknown as ResolverContext);
-      } catch (e) {
-        error = e;
-      }
-    });
-    return { lines, value, error };
-  }
-
-  it('VPC Ipv6CidrBlocks: the failure warn is emitted and the arm returns []', async () => {
-    aws.ec2 = async (command) => {
-      throw echoing((command.input?.['VpcIds'] as unknown[] | undefined)?.[0]);
-    };
-    const got = await getAttValue('AWS::EC2::VPC', 'Ipv6CidrBlocks');
-    expect(got.error, String(got.error)).toBeUndefined();
-    expect(got.value).toEqual([]);
-    expect(got.lines).toContain(
-      "Failed to fetch VPC Ipv6CidrBlocks for 123: The ID '123' does not exist"
-    );
-  });
-
-  it('VPC Ipv6CidrBlocks: a successful read renders the numeric id too', async () => {
-    aws.ec2 = async () => ({ Vpcs: [{ Ipv6CidrBlockAssociationSet: [] }] });
-    const got = await getAttValue('AWS::EC2::VPC', 'Ipv6CidrBlocks');
-    expect(got.error, String(got.error)).toBeUndefined();
-    expect(got.lines).toContain('No IPv6 CIDR associations found for VPC 123');
-  });
-
-  it('ServiceDiscovery HostedZoneId: the failure warn is emitted and the arm returns undefined', async () => {
-    aws.sd = async (command) => {
-      throw echoing(command.input?.['Id']);
-    };
-    const got = await getAttValue('AWS::ServiceDiscovery::PrivateDnsNamespace', 'HostedZoneId');
-    expect(got.lines).toContain(
-      "Failed to fetch HostedZoneId for namespace 123: The ID '123' does not exist"
-    );
-  });
-
-  it('LaunchTemplate: the failure warn is emitted and the arm falls back to $Latest', async () => {
-    aws.ec2 = async (command) => {
-      throw echoing((command.input?.['LaunchTemplateIds'] as unknown[] | undefined)?.[0]);
-    };
-    const got = await getAttValue('AWS::EC2::LaunchTemplate', 'LatestVersionNumber');
-    expect(got.error, String(got.error)).toBeUndefined();
-    expect(got.value).toBe('$Latest');
-    expect(got.lines).toContain(
-      "DescribeLaunchTemplates(123) failed for LatestVersionNumber: The ID '123' does not exist"
-    );
   });
 });

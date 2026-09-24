@@ -80,7 +80,8 @@ cleanup() {
   echo "==> Cleanup (errors during this block are tolerated)"
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   # Best-effort direct SSM cleanup in case a partial deploy left parameters.
-  for n in select-getazs select-split findinmap-refkey findinmap-default \
+  for n in select-getazs select-split select-ref-index select-findinmap-index \
+           findinmap-refkey findinmap-default \
            getatt-refattr sub-escape base64-intrinsic nested-if-sub-join \
            cidr-ipv6 cidr-ipv4; do
     aws ssm delete-parameter --region "${AWS_REGION}" --name "${NAME_PREFIX}/${n}" >/dev/null 2>&1 || true
@@ -135,6 +136,15 @@ echo "    select-getazs   -> ${EXPECT_SELECT_GETAZS}"
 # 1b) Fn::Select[0, Fn::Split(',', 'alpha,bravo,charlie')] -> alpha
 EXPECT_SELECT_SPLIT="alpha"
 echo "    select-split    -> ${EXPECT_SELECT_SPLIT}"
+
+# 1c/1d) Fn::Select whose INDEX is an intrinsic (issue #3574): a Ref to the
+#     Number parameter SelectIndexParam (default 2) and an Fn::FindInMap
+#     yielding '1'. The pre-fix resolver never resolved the index, so both
+#     values were undefined and the SSM create failed the deploy.
+EXPECT_SELECT_REF_INDEX="index-two"
+EXPECT_SELECT_FINDINMAP_INDEX="index-one"
+echo "    select-ref-index-> ${EXPECT_SELECT_REF_INDEX}"
+echo "    select-findinmap-index-> ${EXPECT_SELECT_FINDINMAP_INDEX}"
 
 # 2a) FindInMap[RegionMap, {Ref: AWS::Region}, theKey] in us-east-1 -> hit.
 #     The map only carries us-east-1 + ap-northeast-1 entries, so this is a
@@ -220,6 +230,8 @@ fi
 
 assert_eq "Fn::Select[1, Fn::GetAZs('')]"            "${EXPECT_SELECT_GETAZS}"  "$(getp select-getazs)"
 assert_eq "Fn::Select[0, Fn::Split(',', Ref)]"       "${EXPECT_SELECT_SPLIT}"   "$(getp select-split)"
+assert_eq "Fn::Select[{Ref: Number param}, list]"   "${EXPECT_SELECT_REF_INDEX}" "$(getp select-ref-index)"
+assert_eq "Fn::Select[{Fn::FindInMap}, list]"       "${EXPECT_SELECT_FINDINMAP_INDEX}" "$(getp select-findinmap-index)"
 if [[ "${EXPECT_FINDINMAP_REFKEY}" != "__MISS__" ]]; then
   assert_eq "Fn::FindInMap[Map, {Ref: AWS::Region}, k]" "${EXPECT_FINDINMAP_REFKEY}" "$(getp findinmap-refkey)"
 else
@@ -249,7 +261,8 @@ fi
 echo ""
 echo "==> Step 3b: Verify SSM parameters gone"
 STILL_THERE=0
-for n in select-getazs select-split findinmap-default getatt-refattr \
+for n in select-getazs select-split select-ref-index select-findinmap-index \
+         findinmap-default getatt-refattr \
          sub-escape base64-intrinsic nested-if-sub-join cidr-ipv6 cidr-ipv4; do
   if ! gone_probe aws ssm get-parameter --region "${AWS_REGION}" --name "${NAME_PREFIX}/${n}"; then
     fail "SSM parameter ${n} survived destroy (orphan)"

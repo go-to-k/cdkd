@@ -239,14 +239,20 @@ function formatDuration(ms: number): string {
  *    the attribute and the live read finds nothing or fails), plus the
  *    read-less `AWS::RDS::DBProxy` / `DBProxyEndpoint` `VpcId` refusal beside
  *    them — each replacing a physical id the attribute's value type can never
- *    accept.
+ *    accept; and `lookupResourceRecord`'s refusal of a state record whose
+ *    `physicalId` is not a string
+ *    ([#3576](https://github.com/go-to-k/cdkd/issues/3576)), which both `Ref`
+ *    and `Fn::GetAtt` reach, and so both `${...}` forms.
  * 2. NOT reachable from it, and thrown as this class only so that "deliberate
  *    refusal" is a property of the THROW rather than of the one catch that
  *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874),
+ *    `resolveSelect`'s refusal of an index that does not resolve to a
+ *    non-negative integer ([#3574](https://github.com/go-to-k/cdkd/issues/3574)),
  *    and `refuseCoercedInheritedSecret`, which refuses an already-resolved
  *    value whose type cannot be coerced. Their non-reachability has two
- *    DIFFERENT reasons, so do not collapse them: `Fn::Sub` cannot syntactically
- *    contain an `Fn::Split`, while `refuseCoercedInheritedSecret` runs in the
+ *    DIFFERENT reasons, so do not collapse them: a `${...}` placeholder cannot
+ *    syntactically contain an `Fn::Split` or `Fn::Select`, while
+ *    `refuseCoercedInheritedSecret` runs in the
  *    nested-stack PARAMETER pre-pass, before any `Fn::Sub` is resolved. Neither
  *    changes behavior by being this class.
  * 3. PERMANENT — the one site where no user action and no re-run can make the
@@ -256,7 +262,8 @@ function formatDuration(ms: number): string {
  *    {@link CrossAccountSecretRefusalError} rather than this class, because
  *    every site in groups 1 and 2 is USER-FIXABLE (correct the stale
  *    placeholder ARN, deploy the producer so STS resolves, enrich the
- *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split`,
+ *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split` or
+ *    `Fn::Select` index, repair the record's `physicalId`,
  *    correct the nested stack's output name, declare the nested-stack parameter
  *    `Type: String`) and a
  *    consumer that treats "permanent" as a property of the CLASS silently
