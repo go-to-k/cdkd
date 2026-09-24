@@ -2989,6 +2989,7 @@
         "ecr",
         "ecr-scanning",
         "local-run-task-from-state",
+        "local-start-service",
         "migrate-from-cfn",
         "stage-assets"
       ],
@@ -3010,6 +3011,9 @@
         "local-run-task-from-state": [
           "l2",
           "literal"
+        ],
+        "local-start-service": [
+          "l2"
         ],
         "migrate-from-cfn": [
           "l2",
