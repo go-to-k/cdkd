@@ -61,8 +61,12 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   displayAwsMessage,
   displayIdent,
+  displaySafe,
   ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
+import { shellQuote } from '../../state/lock-contention-message.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -979,10 +983,37 @@ async function driftCommand(
       if (!ref.region) {
         // Legacy `version: 1` records have no region in their key — same
         // gap surfaced by `state show`. Tell the user how to migrate.
+        // The command is BUILT by the gate and printed LAST on a labelled line,
+        // and the identity rides one of its own — never inside the sentence.
+        // Pasting a prose `'...'` span WITH its quotes is what ran an
+        // interpolated value (go-to-k/cdkd#3363), and `displayIdent` would
+        // have closed only half of it: it collapses a newline, so the FORGING
+        // half goes, but a `$(...)` name comes back inside its JSON quotes
+        // intact — double quotes do not stop command substitution.
+        //
+        // This is the ONLY site here that prints a labelled command line. The
+        // other three carry a property path, a resource type, a state-write
+        // error message or an AWS readback value in the same block, and those
+        // cannot be gated for exactness and still printed — so a labelled line
+        // there would be a
+        // trusted shape beside an untrusted value. They keep their command in
+        // prose, and the class is go-to-k/cdkd#3436's.
+        const migrate = stackCommandFor('cdkd deploy', ref.stackName, { patternMatched: true });
+        const identity = stackIdentityLine(ref.stackName);
         throw new Error(
-          `Stack '${ref.stackName}' has only a legacy state record without a region. ` +
-            `Run 'cdkd deploy ${ref.stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
-            `then re-run drift detection.`
+          `A state record for this stack is a legacy one with no region, which drift cannot ` +
+            `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
+            `detection after it.` +
+            (identity === undefined
+              ? `\nThe stack name is not printed here: a name is printed only when it renders ` +
+                `exactly, is non-empty and fits the reference cap — this one fails at least ` +
+                `one of those.`
+              : `\n${identity}`) +
+            (migrate === undefined
+              ? `\nThe migrate command is not printed here: ${WITHHELD_COMMAND_REASON} List ` +
+                `records as stored with 'cdkd state list --json' and migrate the one whose key ` +
+                `matches.`
+              : `\nMigrate with: ${migrate}`)
         );
       }
       const report = await runDriftForStack(
@@ -3511,7 +3542,14 @@ async function runAccept(
             logger.warn(
               `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                 `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
-                `state. Run 'cdkd drift ${report.stackName} --revert' to push the referenced ` +
+                // The command names no stack: this block carries a property
+                // path and a resource type that cannot be gated for exactness
+                // and still printed, so it has not earned a pasteable line
+                // (go-to-k/cdkd#3486 round 3). The NAME is the row's first
+                // field, which go-to-k/cdkd#3232 owns; what this change
+                // removes is the name from INSIDE the quoted command, where a
+                // pasted span ran it.
+                `state. Run 'cdkd drift --revert' for this stack to push the referenced ` +
                 `value back to AWS, or re-deploy if the reference changed.`
             );
             continue;
@@ -6003,7 +6041,14 @@ async function runRevert(
             `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
               `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
               `The next 'cdkd drift' will report the same difference — re-run ` +
-              `'cdkd drift ${report.stackName} --revert' once the state write can succeed.`
+              // No stack inside the quoted command, for site 2's reason: this
+              // block carries the STATE-WRITE error message (the provider
+              // update already succeeded; this is `saveState` failing after
+              // it), which cannot be gated
+              // for exactness and still printed, so it has not earned a
+              // pasteable line (go-to-k/cdkd#3486 round 3). The NAME is in the
+              // sentence's first clause, which go-to-k/cdkd#3232 owns.
+              `'cdkd drift --revert' for this stack once the state write can succeed.`
           );
         }
       }
@@ -6327,7 +6372,12 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
-              `Run 'cdkd state refresh-observed ${report.stackName}' (or re-deploy) to populate ` +
+              // Same as sites 2 and 3: this block lists PROPERTY PATHS, so it
+              // carries no pasteable line and the stack name stays out of the
+              // quoted command. go-to-k/cdkd#3307 also asks this site for a
+              // `--stack-region`; that needs a gated command, so it lands with
+              // the rest of the site in go-to-k/cdkd#3436.
+              `Run 'cdkd state refresh-observed' for this stack (or re-deploy) to populate ` +
               `observedProperties if you want them reverted too.\n`
           );
         }
@@ -6822,6 +6872,166 @@ function formatScalar(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return JSON.stringify(value);
+}
+
+/**
+ * Why a command is not printed, phrased as the RULE rather than as a claim
+ * about the name (m19 of the go-to-k/cdkd#3486 review). This SUPERSEDES the
+ * m4 / m10 wording, which said the constant should name every reason the gate
+ * has "since naming one tells the operator something false about the others" —
+ * the enumeration is what round 4 measured as the defect.
+ *
+ * The earlier wording was a four-way disjunction — "does not render exactly, is
+ * empty, is too long, or ... an option or a pattern" — which is true, but three
+ * of the four disjuncts are visibly FALSE of a name printed on the `Stack:`
+ * line right above it: `--all` renders exactly, is non-empty and is short. A
+ * reader checking the sentence against what they can see concludes the tool is
+ * guessing.
+ *
+ * The leading-`-` clause is stated as the GATE rather than as a parse, because
+ * the gate is wider than Commander: `--all` really is parsed as the flag, while
+ * a BARE `-` Commander takes positionally (measured) and this refuses it
+ * anyway. Writing "would be read as an option" would be false of that one name.
+ *
+ * Naming the ACTUAL reason needs the gate to return it, and deriving it here
+ * from a second copy of the predicates is the exact defect go-to-k/cdkd#3499
+ * closed one file over. So this states the rule and leaves the reason to the
+ * go-to-k/cdkd#3436 fold-in, where `pasteableCommand` supplies it.
+ */
+const WITHHELD_COMMAND_REASON =
+  'a name is printed in a command only when it renders exactly, is non-empty, ' +
+  "fits the reference cap, does not begin with '-', and is not a 'cdkd deploy' " +
+  'pattern — this one fails at least one of those.';
+
+/**
+ * Does `value` reach the terminal as itself — sanitizing changes nothing, and
+ * the state-reference cap does not cut it?
+ *
+ * Module-private and shared by {@link stackCommandFor} and
+ * {@link stackIdentityLine}: the identity line and the command it sits above
+ * must agree about which names are safe to print, and two spellings of this
+ * predicate is how they would come to disagree.
+ */
+function rendersExactly(value: string): boolean {
+  // EMPTY is not exact: an empty `--stack-region ''` is not "not supplied" to
+  // every reader, and an empty identity line names nothing — the same call
+  // `buildForceUnlockCommand` makes one directory over.
+  if (value === '') return false;
+  const safe = displaySafe(value, { asciiOnly: true });
+  return safe === value && !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
+}
+
+/**
+ * The `Stack: '<name>'` line that carries a record's identity NEXT TO a
+ * pasteable command, or `undefined` when the name cannot be printed at all.
+ *
+ * A labelled command line is a trusted-looking shape, and a stack name is an
+ * S3 key segment `listStacks` validates only for non-emptiness — so a name
+ * carrying a newline printed ABOVE one forges a second labelled line that the
+ * operator has every reason to trust. The same gate as the command, on its own
+ * line, shell-quoted: inside a sentence a `$(...)` name executes when the
+ * phrase is pasted, and `displayIdent`'s JSON quotes would not stop that —
+ * double quotes do not close command substitution.
+ *
+ * USED BY SITE 1 ALONE, deliberately. A labelled command line is only safe in
+ * a block whose OTHER values are gated too, and site 1's block carries exactly
+ * two: this identity and the command beside it. The blocks that also carry a
+ * property path, a resource type, a state-write error message or an AWS
+ * readback value cannot meet that bar
+ * by sanitizing — an arbitrary value cannot be gated for exactness and still
+ * printed — so they keep their command in prose and the whole class is
+ * [#3436](https://github.com/go-to-k/cdkd/issues/3436)'s.
+ */
+function stackIdentityLine(
+  stackName: string,
+  /**
+   * No production caller passes this, and NOTHING exercises it — this function
+   * is private and its one caller omits the parameter, so deleting `${indent}`
+   * reds nothing. Kept as go-to-k/cdkd#3436's landing place, where a nested
+   * block will want the line indented; read it as a placeholder, not as a
+   * tested path. Documented HERE rather than only in `stackCommandFor`'s
+   * docblock, which is where round 5 found it: a dead parameter's
+   * justification belongs on the parameter.
+   */
+  indent = ''
+): string | undefined {
+  return rendersExactly(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
+}
+
+/**
+ * A pasteable `cdkd ...` command addressing ONE state record, or `undefined`
+ * when this stack name cannot be named safely — in which case the caller names
+ * the command in prose and leaves the operator to supply the name.
+ *
+ * Every name these messages carry comes out of an S3 KEY (`listStacks`, and the
+ * `report.stackName` derived from it), so it is as untrusted as a state record's
+ * body (issue [#3307](https://github.com/go-to-k/cdkd/issues/3307)). Four gates,
+ * and each closes a different failure:
+ *
+ * - SANITIZE, then compare against the RAW value. `displaySafe` drops the
+ *   forgery class (C0 + DEL, `U+0085` and C1, `U+2028`/`U+2029`, the bidi
+ *   overrides), so a name carrying one is never NAMED IN A COMMAND; and a name
+ *   it ALTERED addresses a DIFFERENT record, the misdirection
+ *   `malformedDestroyResourcesRefusalMessage` and `orphanCommandFor` already
+ *   gate for. `asciiOnly` here rather than the denylist, because a stack name's
+ *   charset is the S3 key's. What this does NOT do is sanitize the identity the
+ *   surrounding prose prints: `report.stackName` reaches ~20 message sites in
+ *   this file raw, which is the DISPLAY class go-to-k/cdkd#3232 records, not
+ *   this gate's.
+ * - CAP at `STACK_REF_MAX_CODE_POINTS`, the state-reference grammar, so a
+ *   multi-kilobyte planted name cannot grow the pasted payload without bound,
+ *   while a legitimate multi-level nested child (`Parent~Child~...`) still
+ *   renders. It bounds the PAYLOAD and nothing more — a name at the cap still
+ *   wraps across a terminal, which is `display-safe.ts`'s own caveat on the
+ *   constant (go-to-k/cdkd#3179).
+ * - SHELL-QUOTE, and print the command LAST and UNWRAPPED on its own labelled
+ *   line. `shellQuote` is only as good as the quote context around it: inside
+ *   prose `'...'` a quoted value turns the quoting inside out and a pasted span
+ *   RUNS (measured in go-to-k/cdkd#3363; the class is go-to-k/cdkd#3436).
+ * - REFUSE a name the COMMAND would read as something other than a name. A
+ *   leading `-` is refused CONSERVATIVELY: `--all` survives sanitizing, the cap
+ *   and quoting and is then parsed by Commander as the flag, addressing every
+ *   stack. (A BARE `-` Commander takes positionally, so the refusal is wider
+ *   than the parse — the gate is "starts with `-`", not "parses as an option".)
+ *   And `cdkd deploy` matches its argument as a PATTERN
+ *   (`src/cli/stack-matcher.ts`), where `*` is a wildcard and `/` selects by
+ *   display path. `patternMatched` asks for the last two; `/` cannot arrive
+ *   through a key (`listStacks` splits keys on it), so that half is defensive.
+ *
+ * **`region` and `flags` have NO production caller today, and neither does
+ * `stackIdentityLine`'s `indent`** (M16 / m17 of the go-to-k/cdkd#3486 review;
+ * the one call site is the legacy region-less refusal, which has no region by
+ * definition and passes only `patternMatched`). They are kept, with their
+ * cases, as the landing place for the three `cdkd drift` sites
+ * go-to-k/cdkd#3436 owns — the `--stack-region` requirement go-to-k/cdkd#3307
+ * states for `:6139` is exactly what `region` exists to satisfy. Read their
+ * hazard-matrix cases as a SPECIFICATION for that landing, not as coverage of
+ * a live path. `region` takes the same gates as the NAME — sanitize,
+ * exactness, the cap, emptiness and the leading `-` — because a region is a
+ * key SEGMENT, no more trusted than the name.
+ *
+ * Exported for `tests/unit/cli/drift.test.ts`, which drives the hazard matrix
+ * through it directly; the one call site is driven through the CLI separately,
+ * since what a site PASSES is not something a helper test can see.
+ */
+export function stackCommandFor(
+  command: string,
+  stackName: string,
+  opts: { region?: string | undefined; flags?: '--revert'; patternMatched?: boolean } = {}
+): string | undefined {
+  if (!rendersExactly(stackName) || stackName.startsWith('-')) return undefined;
+  if (opts.patternMatched && (stackName.includes('*') || stackName.includes('/'))) return undefined;
+  // m3: the REGION takes the option and emptiness gates too, not just the
+  // exactness pair. `shellQuote('--profile')` emits bare, and commander shifts
+  // the next argument unconditionally, so `--stack-region --profile` would ship
+  // a command that reads its own next flag as the region.
+  if (opts.region !== undefined && (!rendersExactly(opts.region) || opts.region.startsWith('-'))) {
+    return undefined;
+  }
+  const parts = [command, shellQuote(stackName)];
+  if (opts.flags !== undefined) parts.push(opts.flags);
+  if (opts.region !== undefined) parts.push(`--stack-region ${shellQuote(opts.region)}`);
+  return parts.join(' ');
 }
 
 /**
