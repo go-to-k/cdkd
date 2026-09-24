@@ -117,6 +117,10 @@ export function canonicalizeRegion<T extends string | undefined>(region: T): T {
  * the COMMERCIAL suffix, so `parseEcrRegistryHost` (`src/utils/ecr-uri.ts`)
  * rejected it under the strict host check issue #1758 added and the image was
  * classified `public` — anonymous pull, no `docker login`, opaque failure.
+ * `parseEcrRegistryHost` is stricter than this fallback (issue #3670): a
+ * region whose PREFIX no partition row knows (`nz-north-1`) is refused there,
+ * and reported by `looksLikeEcrHostWithForeignSuffix`, until its partition's
+ * `regionRegex` is added to `AWS_REGION_ID` in `src/utils/ecr-uri.ts`.
  *
  * The region is CANONICALIZED through {@link canonicalizeRegion} before the
  * prefix tests (issue [#1795](https://github.com/go-to-k/cdkd/issues/1795)),
