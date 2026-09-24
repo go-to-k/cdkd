@@ -1200,11 +1200,12 @@ and repair the row rather than deleting the record: no command removes a single
 `orphans` row — the per-resource commands act on `resources` — and the record is
 the only evidence that an earlier failed deploy left its resource live in AWS.
 
-Two records sharing a `logicalId` are never written by cdkd — every save merges
-by that id and keeps one record per id — so they come from a hand edit or a
-damaged file. Each of them is named, since nothing in the record says which is
-the resource the stack should re-adopt; the repair is to keep ONE record for
-that id, and the other resource is then no longer tracked by cdkd.
+Two records sharing a `logicalId` are never written by cdkd — the rollback save
+merges by that id and every other save carries the list unchanged — so they come
+from a hand edit or a damaged file. Each of them is named, since nothing in the
+record says which is the resource the stack should re-adopt; the repair is to
+keep ONE record for that id, and the other resource is then no longer tracked by
+cdkd.
 
 #### Example
 

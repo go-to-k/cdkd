@@ -750,7 +750,8 @@ physical id, and validates none of them, so without the refusal the damage
 decides what you see: a row can abort the listing before the confirmation, or be
 printed with a field missing from it and approved. Two records sharing one
 `logicalId` are refused too, though the listing would print both: no cdkd
-command writes that, so the record is damaged, and deleting it would discard it
+command writes that (the rollback save merges by id, and every other save
+carries the list unchanged), so the record is damaged, and deleting it would discard it
 before anyone decides which of the two resources the stack still owns. Every field the listing
 prints is sanitized, so a stored value cannot forge a row or redraw the lines
 above it — and so is the list of resources to be deleted above it.

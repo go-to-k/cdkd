@@ -447,8 +447,8 @@ that is not an object, has no string `logicalId` or shares it with another
 record, or whose `state` is not a
 readable resource entry with a NON-EMPTY string `physicalId`, including that entry's
 `properties` and `attributes` maps. The adoption pass dereferences every record it walks,
-and keys what it adopts by `logicalId`, so of two records sharing one only the
-last would be adopted.
+and keys what it adopts by `logicalId`, so of two records sharing one only one
+would be adopted.
 
 `cdkd diff` previews such a record rather than refusing it, and warns either
 way — but what it EXITS depends on the shape. A row it cannot preview at all (not

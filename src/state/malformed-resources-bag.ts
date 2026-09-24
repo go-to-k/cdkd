@@ -3391,6 +3391,10 @@ export function malformedOrphanResourceAttributesRefusalMessage(
  * for the same reason and gets NO later answer: stated rather than solved, and
  * the same residual `cdkd diff` had before this predicate existed.
  *
+ * It CANNOT see rows sharing a `logicalId` (go-to-k/cdkd#3643), a LIST-level
+ * defect — never filter a list with it alone; take
+ * {@link previewableOrphanRecords} / {@link unpreviewableOrphanRecords}.
+ *
  * Every WRITER takes the full predicate: none of them has a second answer, and
  * a torn `properties` map reaching a save is go-to-k/cdkd#3344's defect.
  */
@@ -3728,8 +3732,9 @@ export function malformedOrphanRecordsForDestroyRefusalMessage(
       `the confirmation naming nothing, or print a row with a field missing and let you approve ` +
       `the delete. A torn 'properties' or 'attributes' map the listing never reads is refused too, ` +
       `because what is discarded is the whole record. So are rows sharing one 'logicalId', though ` +
-      `the listing would print each: no cdkd command writes such a record — every save keeps one ` +
-      `row per id — so it was damaged or edited by hand, and deleting it would discard it before ` +
+      `the listing would print each: no cdkd command writes such a record — the rollback save ` +
+      `merges by id and every other save carries the list unchanged — so it was damaged or ` +
+      `edited by hand, and deleting it would discard it before ` +
       `anyone decides which of those resources the stack still owns.`,
     `Repair the record by hand rather than deleting it — it is the only record that an earlier ` +
       `failed deploy left its resource live in AWS.`,
