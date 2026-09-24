@@ -23,6 +23,8 @@ import {
 } from '@aws-sdk/client-cloudwatch-logs';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -485,27 +487,36 @@ export class LogsLogGroupProvider implements ResourceProvider {
           try {
             await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName }));
             this.logger.debug(
-              `Cleaned up partially-created log group ${logicalId} (${logGroupName}) after wiring failure`
+              `Cleaned up partially-created log group ${displaySafe(logicalId)} (${displaySafe(logGroupName)}) after wiring failure`
             );
           } catch (cleanupError) {
             // The same-file sibling of the #2669 remedy: a pasteable command
             // naming a TEMPLATE-chosen name, hand-quoted until that issue.
             // Rendered through the shared sanitize / quote / suppress, so the
-            // COMMAND never carries a quote or a control byte raw. The prose
-            // `(${logGroupName})` beside it is still interpolated as-is: this
-            // line takes only the pasteable half, and display-sanitizing the
-            // prose of provider warnings is a class no issue holds yet
-            // (#3136 covers the COMMAND half across providers, not prose).
+            // COMMAND never carries a quote or a control byte raw. The PROSE
+            // copy of the name goes through `displaySafe` (issue #3269).
+            //
+            // Masked like the SSM and S3 twins of this arm: `logGroupName` is
+            // a RESOLVED property value and a provider's own `logger.warn`
+            // reaches no engine sink. The name is masked BEFORE `displaySafe`,
+            // which rewrites characters a literal-occurrence masker matches
+            // on, and the masker is threaded into the renderer so a
+            // secret-bearing name suppresses the command rather than reaching
+            // it through `shellQuote`'s escaping.
+            const mask = maskerOrIdentity(context?.maskSecrets);
             const deleteCommand = renderDisableCommand({
               before: 'aws logs delete-log-group --log-group-name',
               identifier: logGroupName,
+              maskSecrets: mask,
             });
             const manualStep = deleteCommand
               ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
               : 'Manual deletion may be required before the next deploy, via the console: the log ' +
                 'group name cannot be reproduced safely on a command line.';
             this.logger.warn(
-              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
+              mask(
+                `Failed to clean up partially-created log group ${displaySafe(logicalId)} (${displaySafe(mask(logGroupName))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
+              )
             );
           }
         }
