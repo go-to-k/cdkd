@@ -130,6 +130,22 @@ describe('ambientClientDefaults', () => {
     expect(ambientClientDefaults().credentials).toEqual(role);
   });
 
+  it('keeps the proxy handler beside the explicit credentials', () => {
+    const saved = process.env['HTTPS_PROXY'];
+    process.env['HTTPS_PROXY'] = 'http://proxy.example:8080';
+    resetAwsClientDefaults();
+    try {
+      setAwsClients(new AwsClients({ region: 'us-east-1', credentials: EXPLICIT }));
+      const built = ambientClientDefaults();
+      expect(built.requestHandler).toBeDefined();
+      expect(built.credentials).toEqual(EXPLICIT);
+    } finally {
+      if (saved === undefined) delete process.env['HTTPS_PROXY'];
+      else process.env['HTTPS_PROXY'] = saved;
+      resetAwsClientDefaults();
+    }
+  });
+
   it('hands each call its own copy of the credentials', () => {
     const config = { credentials: { ...EXPLICIT } };
     const built = clientDefaultsFor(config);

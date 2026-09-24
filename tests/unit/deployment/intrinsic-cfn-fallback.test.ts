@@ -661,6 +661,9 @@ describe('per-resolver client and lookup caches are keyed by identity too (#3588
     await importValue();
     setAwsClients(clientsFor(B));
     await importValue();
+    // Back to A: its listing is still memoized, so no third walk.
+    setAwsClients(clientsFor(A));
+    await importValue();
 
     expect(cfnMockSend).toHaveBeenCalledTimes(2);
     expect(cfnClientConfigs.map((c) => (c as { credentials?: unknown }).credentials)).toEqual([

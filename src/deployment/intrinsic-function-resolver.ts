@@ -2938,9 +2938,9 @@ export class IntrinsicFunctionResolver {
    * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). An entry pins the
    * credential configuration of the ambient instance it was derived from, and
    * that half is process-wide only for the CLI (one `--profile`, one
-   * `--role-arn`): a LIBRARY caller can drive one resolver under two
-   * `runWithStackAwsClients` scopes with different explicit credentials, and
-   * keyed by region alone the second scope's lookups ran under the first's
+   * `--role-arn`): a LIBRARY caller can drive one resolver across two
+   * `setAwsClients` installs (or cdkd's per-stack scopes) with different
+   * explicit credentials, and keyed by region alone the second's lookups ran under the first's
    * identity. {@link cfnClients} and {@link serviceDiscoveryClients} share the
    * key for the same reason, and the two CloudFormation fallback memos
    * ({@link cfnExportsPromises}, {@link cfnStackOutputsCache}) carry the

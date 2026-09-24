@@ -6,12 +6,18 @@
  * a published `--role-arn` role, the proxy handler, a stack scope's region — but
  * not an explicit `AwsClientConfig.credentials` object, which has no
  * environment path at all. A LIBRARY caller that installs
- * `new AwsClients({ credentials })` (`setAwsClients` / `runWithStackAwsClients`
- * are public exports) therefore had every client a provider, context provider,
+ * `new AwsClients({ credentials })` (`AwsClients` / `setAwsClients` are public
+ * exports) therefore had every client a provider, context provider,
  * asset publisher or the cross-account STS hop built for itself signing with
  * the default credential chain: a different identity from the one it
  * configured. {@link ambientClientDefaults} closes that for every site at once
  * by reading the ACTIVE clients' {@link AwsClients.credentialConfig}.
+ *
+ * BOUND: a site that caches its client (every SDK provider's lazy
+ * `getClient()`) captures the identity active at its FIRST call. cdkd builds a
+ * provider registry per stack inside that stack's scope, so this is the stack's
+ * identity; a library caller that reuses one registry across `setAwsClients`
+ * switches keeps the first identity's clients.
  *
  * SPREAD IT FIRST, exactly where `awsClientDefaults()` was spread:
  *

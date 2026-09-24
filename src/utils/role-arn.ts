@@ -51,9 +51,9 @@ export interface AwsCredentials {
  *
  * KEYED BY THE SOURCE IDENTITY TOO (issue
  * [#3588](https://github.com/go-to-k/cdkd/issues/3588)): the hop runs as the
- * ACTIVE `AwsClients`' credential configuration, and a library caller can run
- * two `runWithStackAwsClients` scopes with different explicit credentials in
- * one process. Keyed by RoleArn alone, the second scope would be handed
+ * ACTIVE `AwsClients`' credential configuration, and a library caller can
+ * install (`setAwsClients`) two different explicit credentials in one process,
+ * as can cdkd's own per-stack scopes. Keyed by RoleArn alone, the second would be handed
  * credentials the FIRST identity obtained — a role the second one may not even
  * be trusted to assume. The source half is `credentialFingerprint`'s (profile +
  * access key id, never secret material).
