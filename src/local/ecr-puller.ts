@@ -95,7 +95,26 @@ export function canonicalizeImageUriHost(imageUri: string): string {
   if (slash < 0) return imageUri;
   const host = imageUri.slice(0, slash);
   if (!isRegistryHostComponent(host)) return imageUri;
-  return host.toLowerCase() + imageUri.slice(slash);
+  return foldAsciiUpperCase(host) + imageUri.slice(slash);
+}
+
+/**
+ * Lower-case ONLY the ASCII letters `A`-`Z`, leaving every other code point
+ * as written.
+ *
+ * `String.prototype.toLowerCase` performs full Unicode case folding, so the
+ * Kelvin sign U+212A folds to a plain ASCII `k`. Folding with it here, BEFORE
+ * `parseEcrRegistryHost`, handed that parser an already-ASCII host and defeated
+ * the raw-capture charset guard it applies to the region and suffix (see
+ * `CANONICAL_REGION_SEGMENT` in `src/utils/ecr-uri.ts`):
+ * `<acct>.dkr.ecr-fips.us-<U+212A>east-1.amazonaws.com/...` parsed as the
+ * region `us-keast-1`, a region the host does not name, and a Kelvin sign in
+ * the LABELS resolved to the plain form. An ASCII-only fold keeps the case
+ * fold the #1801 login / pull agreement needs (DNS case-insensitivity is
+ * ASCII-only) while leaving any other code point for that guard to refuse.
+ */
+function foldAsciiUpperCase(value: string): string {
+  return value.replace(/[A-Z]+/g, (run) => run.toLowerCase());
 }
 
 /** Docker's rule for "component 1 is a registry, not a repository segment". */
@@ -235,7 +254,9 @@ function isCredentialFresh(creds: TempCredentials): boolean {
  * the same one the DERIVED `docker login` endpoint names — an
  * AWS-reported `proxyEndpoint` still wins over that fallback (it can be
  * a VPC-endpoint host), which is correct: AWS names the endpoint its own
- * token authenticates, and it reports it lower-cased.
+ * token authenticates, and it reports it lower-cased. That precedence holds
+ * only for the PLAIN host form: a FIPS or dual-stack pull logs in to its own
+ * host, since `proxyEndpoint` always names the plain one (issue #1855).
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
   const logger = getLogger().child('ecr-puller');
@@ -375,7 +396,15 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     ...(assumed && { credentials: assumed }),
   });
   try {
-    await ecrLogin(ecr, parsed.accountId, parsed.region);
+    await ecrLogin(ecr, {
+      accountId: parsed.accountId,
+      region: parsed.region,
+      // The host `docker pull` below targets, taken off the SAME string it
+      // pulls (issue #1855). `canonicalUri` passed `parseEcrRegistryHost`, so
+      // its first component is a registry host whose every segment is
+      // charset-constrained and whose suffix is an AWS-owned one.
+      registryHost: canonicalUri.slice(0, canonicalUri.indexOf('/')),
+    });
   } finally {
     ecr.destroy();
   }
@@ -452,10 +481,24 @@ async function assumeRoleForEcr(
  * Authenticate the local docker daemon against the target ECR registry.
  * Mirrors `DockerAssetPublisher.ecrLogin` but stays in this module so the
  * local-invoke path doesn't depend on the publisher's larger surface area.
+ *
+ * The login endpoint must name the host the PULL targets (issue #1855):
+ * docker's credential store is keyed on the hostname verbatim, so a login to
+ * the plain host followed by a pull from a FIPS or dual-stack host sends no
+ * credentials (`no basic auth credentials`). `GetAuthorizationToken` reports
+ * the PLAIN host as its `proxyEndpoint`, so that value, and the derived
+ * fallback, are used only when the pull targets the plain form; every other
+ * form logs in to `registryHost` itself. The token is registry-scoped, not
+ * host-scoped: measured against real ECR, one token authenticated `/v2/` on
+ * all four host forms `ECR_REGISTRY_HOST_FORMS` lists.
  */
-async function ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
+async function ecrLogin(
+  client: ECRClient,
+  target: { accountId: string; region: string; registryHost: string }
+): Promise<void> {
+  const { accountId, region, registryHost } = target;
   const logger = getLogger().child('ecr-puller');
-  logger.debug(`ECR login (account=${accountId}, region=${region})`);
+  logger.debug(`ECR login (account=${accountId}, region=${region}, host=${registryHost})`);
 
   const response = await client.send(new GetAuthorizationTokenCommand({}));
   const authData = response.authorizationData?.[0];
@@ -474,8 +517,11 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
   // `amazonaws.com` here handed `docker login` a hostname that does not
   // resolve outside the commercial partition whenever AWS reported no
   // `proxyEndpoint`. Commercial output is byte-identical.
+  const plainHost = `${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
   const endpoint =
-    authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
+    registryHost === plainHost
+      ? authData.proxyEndpoint || `https://${plainHost}`
+      : `https://${registryHost}`;
 
   const loginArgs = ['login', '--username', username, '--password-stdin', endpoint];
   try {

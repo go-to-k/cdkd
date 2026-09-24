@@ -153,24 +153,23 @@ error that tells you to pass the ARN explicitly.
 
 ### Which registry hosts count as ECR
 
-**Only the plain `<account>.dkr.ecr.<region>.<urlSuffix>` host pulls end to
-end.** A FIPS or dual-stack ECR host is recognized as ECR, but the pull fails
-with `no basic auth credentials`: ECR's `GetAuthorizationToken` issues its
-credential against the plain host, the pull targets the host the template names,
-and Docker's credential store is keyed on the hostname verbatim. Point the
-template at the plain host to run the task locally.
+Every recognized ECR host form pulls end to end. cdkd runs `docker login`
+against the same host the `docker pull` targets, so a FIPS or dual-stack image
+authenticates on its own endpoint. Docker's credential store is keyed on the
+hostname verbatim, so logging in to any other spelling would send no
+credentials.
 
-The rest of this section is the recognition rule behind that. A URI is treated
-as ECR only when its host suffix is the one its own region actually uses; a
-look-alike host carrying another region's suffix is deliberately not treated as
-ECR. Three endpoint shapes are recognized — the plain
-`<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
+A URI is treated as ECR only when its host suffix is the one its own region
+actually uses; a look-alike host carrying another region's suffix is
+deliberately not treated as ECR. Three endpoint shapes are recognized — the
+plain `<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
 `<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
 `<account>.dkr-ecr[-fips].<region>.on.aws`, whose fixed `on.aws` suffix replaces
 the region's partition suffix. A host spelled with the other family's suffix is
-refused. Host matching is case-insensitive, since DNS is;
-Docker accepts an upper-cased registry host but requires a lower-case repository
-path, so cdkd folds only the host.
+refused. Host matching ignores ASCII letter case, since DNS does; a non-ASCII
+character in the host is refused rather than folded. Docker accepts an
+upper-cased registry host but requires a lower-case repository path, so cdkd
+folds only the host.
 
 The same region-to-partition mapping drives `${AWS::Partition}` and
 `${AWS::URLSuffix}` wherever cdkd substitutes them.

@@ -53,12 +53,16 @@ STACK="CdkdLocalRunTaskFromStateFixture"
 #   - NginxTaskDefL2 : Fn::Join-shape Image (L2 fromEcrRepository)       → port 18083
 #   - EnvTaskDef     : intrinsic env vars + Ref secret (busybox printer) → no port (echoes)
 #   - JsonKeyTaskDef : `:json-key:` ref to a NON-JSON secret (issue #2189)  → refuses, never starts
-# The first two share the deployed ECR repository (single deploy + push);
+#   - NginxTaskDefDualStack / NginxTaskDefFips : the same image through the
+#     dual-stack / FIPS registry host (issue #1855) → ports 18084 / 18085
+# The Nginx TaskDefs share the deployed ECR repository (single deploy + push);
 # EnvTaskDef uses busybox to focus on the env/secret resolver path (#291).
 TASK_PATH_SUB="${STACK}/NginxTaskDef"
 TASK_PATH_JOIN="${STACK}/NginxTaskDefL2"
 TASK_PATH_ENV="${STACK}/EnvTaskDef"
 TASK_PATH_JSONKEY="${STACK}/JsonKeyTaskDef"
+TASK_PATH_DUALSTACK="${STACK}/NginxTaskDefDualStack"
+TASK_PATH_FIPS="${STACK}/NginxTaskDefFips"
 # Issue #2189: the literal this fixture's PlainSecret holds. verify.sh greps
 # for its ABSENCE from the refusal output, and for the absence of the 10-char
 # prefix V8 actually emitted -- asserting only the whole value passes WITHOUT
@@ -67,6 +71,8 @@ PLAIN_SECRET_VALUE="cdkd2189plaintextnotjson-abcdefghijklmnop"
 PLAIN_SECRET_PREFIX="${PLAIN_SECRET_VALUE:0:10}"
 HOST_PORT_SUB=18082
 HOST_PORT_JOIN=18083
+HOST_PORT_DUALSTACK=18084
+HOST_PORT_FIPS=18085
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
@@ -121,6 +127,10 @@ docker pull "${BUSYBOX_IMAGE}"
 # cdkd destroy, then docker rm orphan containers + networks. Runs on
 # every exit path (including SIGINT and FAIL).
 DEPLOYED_REPO=""
+# Issue #1855: the non-plain-host arm's private docker config. It receives the
+# ECR token cdkd's login writes, unencrypted, so cleanup removes it on every
+# exit path.
+PULL_DOCKER_CONFIG=""
 # NOTE: `docker ps -a`, not `docker ps`. The step-4c env/secret container is a
 # busybox that prints and EXITS, so by teardown time it is already `Exited` and
 # a running-only `docker ps` never lists it — it survived every run until the
@@ -133,6 +143,9 @@ cleanup() {
   # Sweep local docker containers + networks first (cheap, low-risk).
   docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  if [ -n "${PULL_DOCKER_CONFIG}" ]; then
+    rm -rf "${PULL_DOCKER_CONFIG}"
+  fi
 
   # Empty the ECR repository so cdkd destroy can remove it. If we never
   # resolved the deployed repo name (stack failed before step 2b), best
@@ -245,6 +258,107 @@ run_and_curl_task "${TASK_PATH_SUB}" "${HOST_PORT_SUB}" "Fn::Sub"
 
 echo "[verify] step 4b: Tier 2 via Fn::Join shape (L2 ContainerImage.fromEcrRepository)"
 run_and_curl_task "${TASK_PATH_JOIN}" "${HOST_PORT_JOIN}" "Fn::Join"
+
+# ─── Issue #1855: pull through a NON-PLAIN registry host ──────────────
+#
+# The two arms above pass `--no-pull`, so `pullEcrImage` only probes the local
+# cache and never reaches `ecrLogin`. These run WITHOUT it, so cdkd itself does
+# `docker login` + `docker pull`. `GetAuthorizationToken` reports the PLAIN host
+# as `proxyEndpoint`; before the fix the login went there while the pull went
+# to the dual-stack / FIPS host, and docker -- whose credential store is keyed
+# on the hostname verbatim -- sent no credentials (`no basic auth credentials`).
+#
+# Each arm gets a FRESH `DOCKER_CONFIG` with no `credsStore`, no leftover auth
+# from step 3's plain-host login and no host credential helper, so the only
+# credentials docker holds are the ones cdkd's own login writes. That is what
+# makes the arm discriminate: with the operator's real config a stale entry for
+# the pull host would authenticate the pull regardless.
+#
+# The seed is NOT `{}`: docker falls back to a DETECTED platform store
+# (`osxkeychain` on macOS) for a config holding no auth at all, which would put
+# the token in the operator's keychain, outliving this run. One placeholder
+# `auths` entry (an unresolvable `.invalid` name) keeps it in this file, which
+# cleanup deletes; the check after the run asserts that is where it landed.
+run_pull_and_curl_task() {
+  local task_path="$1"
+  local host_port="$2"
+  local pull_host="$3"
+  local label="$4"
+
+  rm -rf "${PULL_DOCKER_CONFIG}"
+  PULL_DOCKER_CONFIG="$(mktemp -d)"
+  printf '{"auths":{"cdkd-verify.invalid":{}}}\n' >"${PULL_DOCKER_CONFIG}/config.json"
+  # The pull must reach the registry, not a local tag left by an earlier arm.
+  docker image rm -f "${pull_host}/${DEPLOYED_REPO}:latest" >/dev/null 2>&1 || true
+
+  echo "[verify] cdkd local run-task --from-state ${task_path} (${label}, pulls ${pull_host})"
+  local run_out
+  if ! run_out="$(DOCKER_CONFIG="${PULL_DOCKER_CONFIG}" ${CDKD} local run-task "${task_path}" \
+    --from-state \
+    --detach \
+    --container-host 127.0.0.1 \
+    --state-bucket "${STATE_BUCKET}" 2>&1)"; then
+    echo "${run_out}"
+    echo "[verify] FAIL (${label}): run-task exited non-zero pulling through ${pull_host}"
+    exit 1
+  fi
+  echo "${run_out}"
+
+  # The login must have been issued against the PULL host, and its token must
+  # sit in THIS file: an exact key match (docker stores the host with or without
+  # `https://`), a non-empty `auth`, no `credsStore` diverting it elsewhere, and
+  # -- the sentinel -- nothing stored for the PLAIN host, which would mean the
+  # login went there and something else authenticated the pull.
+  if ! node -e '
+    const [file, pullHost, plainHost] = process.argv.slice(1);
+    const j = require(file);
+    const auths = j.auths || {};
+    const entry = (h) => auths[h] || auths["https://" + h];
+    const problems = [];
+    if ("credsStore" in j) problems.push("credsStore=" + j.credsStore);
+    if (!(entry(pullHost) && entry(pullHost).auth)) problems.push("no stored token for " + pullHost);
+    if (entry(plainHost)) problems.push("an entry for the PLAIN host " + plainHost);
+    if (problems.length) {
+      console.log(problems.join("; ") + " -- keys: " + JSON.stringify(Object.keys(auths)));
+      process.exit(1);
+    }
+  ' "${PULL_DOCKER_CONFIG}/config.json" "${pull_host}" "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"; then
+    echo "[verify] FAIL (${label}): the docker login did not store its token for ${pull_host} in the arm's config"
+    exit 1
+  fi
+
+  echo "[verify]   curl http://127.0.0.1:${host_port}/ (allow ~5s for nginx to listen)"
+  sleep 5
+  local http_code
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${host_port}/" || true)
+  echo "[verify]   HTTP code: ${http_code}"
+  if [ "${http_code}" != "200" ]; then
+    echo "[verify] FAIL (${label}): expected 200, got ${http_code}"
+    exit 1
+  fi
+
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  docker image rm -f "${pull_host}/${DEPLOYED_REPO}:latest" >/dev/null 2>&1 || true
+  rm -rf "${PULL_DOCKER_CONFIG}"
+  PULL_DOCKER_CONFIG=""
+}
+
+echo "[verify] step 4b-dualstack: ECR pull through the dual-stack host (issue #1855)"
+run_pull_and_curl_task "${TASK_PATH_DUALSTACK}" "${HOST_PORT_DUALSTACK}" \
+  "${ACCOUNT_ID}.dkr-ecr.${REGION}.on.aws" "dual-stack"
+
+# AWS serves the FIPS registry endpoint in these six regions only.
+case "${REGION}" in
+  us-east-1 | us-east-2 | us-west-1 | us-west-2 | us-gov-east-1 | us-gov-west-1)
+    echo "[verify] step 4b-fips: ECR pull through the FIPS host (issue #1855)"
+    run_pull_and_curl_task "${TASK_PATH_FIPS}" "${HOST_PORT_FIPS}" \
+      "${ACCOUNT_ID}.dkr.ecr-fips.${REGION}.amazonaws.com" "FIPS"
+    ;;
+  *)
+    echo "[verify] step 4b-fips: SKIPPED -- ${REGION} has no FIPS ECR endpoint"
+    ;;
+esac
 
 # ─── Issue #291: env vars + secret substitution via state ─────────────
 #
