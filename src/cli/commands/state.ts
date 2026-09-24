@@ -1,6 +1,5 @@
 import * as readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
-import type { PasteableCommand } from '../../utils/pasteable-command.js';
+import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -3220,131 +3219,6 @@ function createStateInfoCommand(): Command {
  */
 const STACK_HOLE = 'stack';
 
-/**
- * The sentence for a name `pasteableCommand` would not print, rendered from the
- * REASON it gave rather than from a predicate of this site's own — M11 of the
- * go-to-k/cdkd#3499 review. Keying it on a second predicate got both directions
- * wrong at once: `Old;Stack` renders exactly, so a rendering-based clause called
- * a command that names it "not exact", and `--all` also renders exactly, so the
- * same clause said nothing above a hole the operator was then invited to fill
- * with the name printed beside it.
- *
- * THREE of the five reasons are reachable from this call site, and the other
- * two are bounded out by where the name comes from — an S3 key segment:
- *
- * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
- *   planted key can spell a name any of those ways in a handful of bytes.
- * - `empty` is not. `listStacks` drops a key whose stack segment is empty
- *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
- *   is non-empty by the time the refusal is built.
- * - `too-long` is not either, and the bound is not obvious: the cap is
- *   `STACK_REF_MAX_CODE_POINTS` (1152), while S3 caps the WHOLE key at 1024
- *   bytes, leaving at most 1008 for the name inside `cdkd/<name>/state.json`.
- *   A multi-byte character only lowers the code-point count further, so a name
- *   arriving through `listStacks` can never reach the cap.
- *
- * Both unreachable arms stay, and are covered, because the REASON is the
- * gate's and not this site's: `pasteableCommand` can return either to a caller
- * whose value comes from somewhere else. A missing arm is no longer a silent
- * fall-through — the `switch` below is exhaustive over `WithholdReason`, so
- * dropping one is a compile error (M13). What the cases buy on top of that is
- * the SENTENCE: the type checker knows an arm exists, not that it says the
- * right thing, and substituting one arm's text for another's is exactly the
- * disagreement M11 closed.
- */
-function withheldNameClause(built: PasteableCommand): string {
-  // Keyed on the hole NAME the call site passes, which couples the two (m22 of
-  // the go-to-k/cdkd#3499 review). Renaming the hole there would drop this
-  // sentence while the hole itself still printed — silently, since the message
-  // stays well-formed. `STACK_HOLE` is the one spelling both sites use, and
-  // `state-refresh-observed.test.ts` pins the PAIRING per REASON — not per
-  // case: each of the five reasons has at least one case asserting both the
-  // hole in the command and the sentence about it, so a lookup that stopped
-  // matching cannot leave the suite green. (The hostile-name loop asserts the
-  // hole alone; it is about the gate, not about the sentence.)
-  const reason = built.withheld.find((w) => w.hole === STACK_HOLE)?.reason;
-  if (reason === undefined) return '';
-  // A `switch` with a `never` default, not a ternary chain with a catch-all
-  // (M13 of the go-to-k/cdkd#3499 review). A sixth `WithholdReason` member
-  // typechecks fine against a catch-all and then silently renders whatever
-  // sentence the catch-all holds — the header above used to describe that as
-  // a hazard it had identified and left undefended. Here it is a COMPILE
-  // error, which is the enforcement this change is about: the reason comes
-  // from one predicate, and every reason that predicate can return has to be
-  // answered on purpose.
-  let why: string;
-  switch (reason) {
-    case 'altered':
-      why = `does NOT render exactly, so another record may render identically`;
-      break;
-    case 'empty':
-      why = `is empty`;
-      break;
-    case 'too-long':
-      why = `is too long to print`;
-      break;
-    case 'option-shaped':
-      why =
-        `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
-        `name like '--all' is parsed as the FLAG and targets every stack`;
-      break;
-    case 'pattern-shaped':
-      why = `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
-      break;
-    default: {
-      // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499
-      // review). TypeScript proves this is unreachable, and the assignment is
-      // what proves it — but a sixth reason arriving from JS or through a cast
-      // would have spliced the raw token in as the WHOLE clause, so the one
-      // path that can only be reached when the type system was bypassed would
-      // have failed by printing something plausible. It fails loudly instead.
-      const _exhaustive: never = reason;
-      throw new Error(`withheldNameClause: unhandled WithholdReason ${String(_exhaustive)}`);
-    }
-  }
-  return (
-    ` This record's name ${why} — so it is not named in the command below; ` +
-    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
-    `matches.`
-  );
-}
-
-/**
- * `cdkd state refresh-observed <stack>` command implementation.
- *
- * Walks every resource in the given stack(s) and refreshes its
- * `observedProperties` field by calling the matching provider's
- * `readCurrentState`. The result is the same baseline that a fresh
- * `cdkd deploy` would produce — but without re-deploying anything.
- *
- * Why this exists: state schema `version: 3` (`observedProperties`)
- * shipped after many users had already deployed stacks under v2.
- * `cdkd deploy` only populates `observedProperties` on resources that
- * actually go through CREATE / UPDATE — `NO_CHANGE`-skipped resources
- * stay with `observedProperties: undefined` indefinitely after the
- * upgrade, and `cdkd drift` falls back to `properties` baseline for
- * those (= the pre-v3 behavior, missing console-side changes to keys
- * the user did not template). This command lets users opt into the
- * richer drift baseline for the whole stack in one shot.
- *
- * Behavior:
- *  - Acquires a per-stack lock (scope: `state-refresh-observed`).
- *  - Calls every resource's `provider.readCurrentState` in parallel
- *    (Promise.all). Errors are swallowed per-resource and logged at
- *    debug — drift falls back to `properties` for that resource until
- *    the next call succeeds.
- *  - Writes state with optimistic locking (`expectedEtag`).
- *  - Prints a per-stack summary: `N refreshed, M unsupported, K failed`.
- *
- * Flag set mirrors `state destroy`:
- *  - `--all` — refresh every stack in the state bucket.
- *  - `--stack-region <region>` — disambiguate when the same stackName
- *    has state in multiple regions.
- *  - `--dry-run` — print the planned refresh count per stack and exit
- *    without acquiring a lock or writing state.
- *  - `-y` / `--yes` — skip the confirmation prompt.
- *  - Standard state options + `--profile` / `--role-arn` / `--verbose`.
- */
 async function stateRefreshObservedCommand(
   stackArgs: string[],
   options: {
@@ -3533,7 +3407,7 @@ async function stateRefreshObservedCommand(
             // admits — rendered bare and authoritative above an unexplained
             // hole, inviting the operator to type the name that deploys every
             // stack in the app.
-            withheldNameClause(migrate) +
+            withheldTargetClause(migrate, STACK_HOLE) +
             `\nMigrate with: ${migrate.command}`
         );
       }
