@@ -497,33 +497,54 @@ export function assemblyPathEscape(
 }
 
 /**
- * A letter, digit or combining mark that neither draws as a blank nor reads as
- * a quote. Two carve-outs, because `\p{L}` alone admits both: Hangul fillers
- * (U+3164, U+FFA0) are letters that draw as a blank, hence the default-ignorable
- * class, and the Spacing Modifier Letters block (U+02B0-U+02FF) holds letters
- * that ARE quote marks to the eye (U+02BA reads as `"`, U+02BC as `'`).
+ * A letter or digit that neither draws as a blank nor reads as a quote.
+ * `\p{L}` alone admits both, so two classes are carved out: the
+ * default-ignorables, which hold letters that draw as a blank (the Hangul
+ * fillers U+3164 and U+FFA0), and the quote-shaped letters — the Spacing
+ * Modifier Letters block (U+02BA reads as `"`, U+02BC as `'`) plus the ones
+ * outside it (U+0374, U+0559, U+07F4-U+07F5, U+A78B-U+A78C, and the halfwidth
+ * sound marks U+FF9E-U+FF9F). Not all of `\p{Lm}`: U+30FC is in it, and it is
+ * an ordinary character of a Japanese directory name.
  */
-const VISIBLE_WORD_CHAR = String.raw`(?![\p{Default_Ignorable_Code_Point}\u02b0-\u02ff])[\p{L}\p{N}\p{M}]`;
-
-/**
- * What a path may contain and still render WITHOUT a boundary. An ALLOWLIST: a
- * denylist has to enumerate every character that draws as a blank or reads as
- * a quote, and JS `\s` alone already misses U+2800 and U+3164. Anything else —
- * any whitespace, any quote, any other symbol — takes the boundary, which
- * costs a legitimate path nothing but a pair of quotes.
- *
- * It tests ONE character and the caller walks the value — never `^(...)+$`
- * over the whole of it: the two alternatives overlap on ASCII letters, and a
- * quantified group over overlapping alternatives backtracks exponentially on a
- * long path that fails near its end, which hangs the process uncatchably.
- */
-const BARE_PATH_CHAR = new RegExp(
-  String.raw`^(?:[A-Za-z0-9/\\._~+@:=-]|${VISIBLE_WORD_CHAR})$`,
+const VISIBLE_LETTER = new RegExp(
+  String.raw`^(?![\p{Default_Ignorable_Code_Point}\u02b0-\u02ff\u0374\u0559\u07f4\u07f5\ua78b\ua78c\uff9e\uff9f])[\p{L}\p{N}]$`,
   'u'
 );
 
-/** Shown as itself inside the boundary; every other character is `\u`-escaped. */
-const SHOWN_IN_BOUNDARY = new RegExp(String.raw`^(?:[ -~]|${VISIBLE_WORD_CHAR})$`, 'u');
+/**
+ * A combining mark, which counts only DIRECTLY after a visible letter (or a
+ * mark that itself counted): on a space or on punctuation it draws on its own,
+ * and U+030B / U+030E there look like a quote.
+ */
+const COMBINING_MARK = /^\p{M}$/u;
+
+/**
+ * The ASCII a bare path may carry besides letters and digits. Everything else —
+ * any whitespace, any quote, any other symbol — takes the boundary, which
+ * costs a legitimate path nothing but a pair of quotes.
+ */
+const BARE_PUNCTUATION = /^[/\\._~+@:=-]$/;
+
+/**
+ * Classify each code point: `bare` (allowed in a bare path), `shown` (shown as
+ * itself inside the boundary), or `escaped`. An ALLOWLIST, because a denylist
+ * has to enumerate every character that draws as a blank or reads as a quote,
+ * and JS `\s` alone already misses U+2800 and U+3164.
+ *
+ * Each test is ONE character and this walks the value — never `^(...)+$` over
+ * the whole of it: alternatives that overlap (ASCII letters are in both
+ * classes) under a quantifier backtrack exponentially on a long path that
+ * fails near its end, which hangs the process uncatchably.
+ */
+function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'> {
+  let afterLetter = false;
+  return chars.map((ch) => {
+    if (COMBINING_MARK.test(ch)) return afterLetter ? 'bare' : 'escaped';
+    afterLetter = VISIBLE_LETTER.test(ch);
+    if (afterLetter || BARE_PUNCTUATION.test(ch)) return 'bare';
+    return ch >= ' ' && ch <= '~' ? 'shown' : 'escaped';
+  });
+}
 
 /**
  * Render a filesystem path that an assembly chose, or that embeds a value it
@@ -544,29 +565,30 @@ const SHOWN_IN_BOUNDARY = new RegExp(String.raw`^(?:[ -~]|${VISIBLE_WORD_CHAR})$
  * path: that one is ASCII-only and capped at 255 code points, and a legitimate
  * path is neither — a non-ASCII directory name would render as spaces, naming
  * a path that does not exist. Here nothing is truncated and a non-ASCII letter
- * is shown as itself; a path with a space (`/Users/me/My Project/cdk.out`)
- * renders quoted, which is the one visible change for a legitimate value.
+ * is shown as itself. A legitimate path with a space or any symbol outside
+ * `/ \ . _ ~ + @ : = -` (`/Users/me/My Project/cdk.out`,
+ * `C:\Program Files (x86)\app`) renders quoted, and a non-letter non-ASCII
+ * character in it (an emoji, `©`) is shown as its `\u` escape.
  */
 export function displayAssemblyPath(value: string): string {
   const clean = displaySafe(value);
+  // `Array.from` walks CODE POINTS, so a lone surrogate arrives alone and is
+  // escaped rather than shown.
+  const chars = Array.from(clean);
+  const kinds = classify(chars);
   // `clean === value`: a value `displaySafe` altered (padding trimmed, a
   // control character blanked) did not arrive plain, so it gets the boundary.
-  // `Array.from` walks CODE POINTS, so a lone surrogate arrives alone
-  // and is escaped below rather than shown.
-  const chars = Array.from(clean);
-  if (clean === value && chars.length > 0 && chars.every((ch) => BARE_PATH_CHAR.test(ch))) {
-    return clean;
-  }
+  if (clean === value && chars.length > 0 && kinds.every((k) => k === 'bare')) return clean;
   let body = '';
-  for (const ch of chars) {
+  chars.forEach((ch, i) => {
     if (ch === '"' || ch === '\\') body += `\\${ch}`;
-    else if (SHOWN_IN_BOUNDARY.test(ch)) body += ch;
+    else if (kinds[i] !== 'escaped') body += ch;
     else {
-      for (let i = 0; i < ch.length; i++) {
-        body += `\\u${ch.charCodeAt(i).toString(16).padStart(4, '0')}`;
+      for (let u = 0; u < ch.length; u++) {
+        body += `\\u${ch.charCodeAt(u).toString(16).padStart(4, '0')}`;
       }
     }
-  }
+  });
   return `"${body}"`;
 }
 

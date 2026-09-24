@@ -621,6 +621,23 @@ describe('renderAssemblyPathEscape', () => {
     expect(outsideOf(outside, dir)).not.toContain('Contained and healthy');
   });
 
+  it('escapes an embedded backslash, so an escaped-looking quote still cannot close the boundary', () => {
+    // Were `\` shown raw, `\"` in the value would render as `\\"`: an escaped
+    // backslash followed by a quote that CLOSES the JSON string.
+    const value = '/tmp/x\\", outside nowhere. Loaded. \\"y';
+    const text = renderAssemblyPathEscape(
+      { contained: false, escape: 'lexical', path: value },
+      '/tmp/cdk.out'
+    );
+
+    expect(text.startsWith(`resolves to ${JSON.stringify(value)}, outside /tmp/cdk.out. `)).toBe(
+      true
+    );
+    expect(outsideOf(text, value)).not.toContain('Loaded.');
+    const windows = 'C:\\Users\\My Project\\cdk.out';
+    expect(JSON.parse(displayAssemblyPath(windows))).toBe(windows);
+  });
+
   it('escapes an embedded double quote rather than letting it close the boundary', () => {
     const value = '/tmp/x", outside nowhere. Loaded. "y';
     const text = renderAssemblyPathEscape(
@@ -665,7 +682,10 @@ describe('renderAssemblyPathEscape', () => {
   it('decides a long path in linear time', () => {
     // The bare test walks characters; a `^(a|a)+$`-shaped regex over the whole
     // value backtracks exponentially on a path that fails at its last character.
-    const value = `/${'a'.repeat(40)}'`;
+    // 24 characters: long enough that the exponential shape takes seconds, short
+    // enough that it still TERMINATES and goes red rather than hanging the
+    // worker, which no timeout can interrupt.
+    const value = `/${'a'.repeat(24)}'`;
     const started = performance.now();
     expect(displayAssemblyPath(value)).toBe(JSON.stringify(value));
     expect(performance.now() - started).toBeLessThan(500);
@@ -730,6 +750,8 @@ describe('displayAssemblyPath', () => {
       '/tmp/\uff02fullwidth\uff07',
       '/tmp/\u02bcmodifier\u02ba',
       '/tmp/\u2032prime\u2033',
+      '/tmp/\u0374\u0559\u07f4\u07f5\ua78b\ua78c',
+      '/tmp/\uff9ehalfwidth\uff9f',
     ]) {
       expectOneBoundary(displayAssemblyPath(value), value);
     }
@@ -767,6 +789,15 @@ describe('displayAssemblyPath', () => {
     expectOneBoundary(displayAssemblyPath('/tmp/a;b'), '/tmp/a;b');
     expectOneBoundary(displayAssemblyPath('/tmp/a\u{1f600}b'), '/tmp/a\u{1f600}b');
     expect(displayAssemblyPath('/tmp/a\u{1f600}b')).toBe('"/tmp/a\\ud83d\\ude00b"');
+  });
+
+  it('shows a combining mark only on a letter, escaping one that would draw on its own', () => {
+    // On a letter it is part of the name; on a space or on punctuation it draws
+    // alone, and U+030B / U+030E there read as a quote.
+    expect(displayAssemblyPath('/Users/Jose\u0301/x y')).toBe('"/Users/Jose\u0301/x y"');
+    expect(displayAssemblyPath('/x \u030ey')).toBe('"/x \\u030ey"');
+    expect(displayAssemblyPath('/\u030bx')).toBe('"/\\u030bx"');
+    expectOneBoundary(displayAssemblyPath('/x \u030ey'), '/x \u030ey');
   });
 
   it('shows a letter as itself inside the boundary', () => {
