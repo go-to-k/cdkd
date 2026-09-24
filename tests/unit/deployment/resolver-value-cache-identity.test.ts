@@ -210,6 +210,24 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId, A.accessKeyId]);
     });
 
+    it("opens A's fabricated window even while B holds a real cached answer", async () => {
+      // The catch arm refuses to open a window over a real answer, and that
+      // check is per identity: B's cached account must not stop A's window,
+      // or every A caller re-issues GetCallerIdentity for the whole outage.
+      primeSts(B);
+      answer('sts', A, () => {
+        throw new Error('sts down for A');
+      });
+
+      setAwsClients(clientsFor(B));
+      await getAccountInfo();
+      setAwsClients(clientsFor(A));
+      expect((await getAccountInfo()).fabricated).toBe(true);
+      expect((await getAccountInfo()).fabricated).toBe(true);
+
+      expect(stsCalls()).toEqual([B.accessKeyId, A.accessKeyId]);
+    });
+
     it('shares one in-flight lookup within an identity, never across identities', async () => {
       let releaseA!: () => void;
       const gateA = new Promise<void>((r) => {
