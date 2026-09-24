@@ -150,6 +150,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
       recursive: true,
       stateBackend: fakeBackend(states),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
   }
 
@@ -211,6 +212,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
       recursive: true,
       stateBackend: fakeBackend(states),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
   }
 
@@ -289,6 +291,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
       recursive: true,
       stateBackend: fakeBackend(states),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
   }
 
@@ -401,6 +404,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
       recursive: true,
       stateBackend: fakeBackend(freshStates()),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -476,6 +480,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -535,6 +540,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
       recursive: true,
       stateBackend: fakeBackend(freshStates()),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -601,6 +607,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -678,6 +685,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -738,6 +746,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -796,6 +805,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -844,6 +854,7 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
         }),
       }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.children[0]!.changes.get('ChildRes')!.changeType).toBe('NO_CHANGE');

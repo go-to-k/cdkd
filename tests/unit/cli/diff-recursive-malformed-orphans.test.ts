@@ -70,6 +70,7 @@ async function diff(state: StackState, previewOrphanAdoption?: () => never) {
       getState: async (name: string) => (name === STACK ? { state, etag: 'fake' } : null),
     } as unknown as S3StateBackend,
     diffCalculator: new DiffCalculator(),
+    isNestedChild: false,
     ...(previewOrphanAdoption && {
       previewOrphanAdoption:
         previewOrphanAdoption as unknown as Parameters<typeof buildDiffTree>[0]['previewOrphanAdoption'],

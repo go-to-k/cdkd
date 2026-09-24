@@ -988,7 +988,7 @@ deploy that applies it to a live system:
 | `cdkd import` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it carries the bag into a save |
 | A nested stack's child record | **Refuses** the parent's deploy AND its destroy (`STATE_RESOURCES_MALFORMED`, exit `1`) — the parent's `Outputs.<Key>` attributes are rebuilt from the child's bag and persisted into the parent's record, and the parent's destroy reaches the child through `runDestroyForStack`, which carries the same refusal |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
-| `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
 | `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record, so the run continues with no outputs from that record |
 | An `Fn::GetStackOutput` read of that record | **Refuses the reference** — the deploy fails rather than resolving a fabricated value into the consumer's template |
@@ -1046,7 +1046,7 @@ act on. A string map adds one fabricated change per character on top.
 | `cdkd deploy` | **Refuses** before any resource is created, updated or deleted (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
 | `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison, so it would show the replacement as though the template asked for it |
 | `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) for a map on a record it would **keep**, under `--dry-run` and `--force` too — but never for one on a record you are orphaning, which it removes as usual |
-| `cdkd diff` | **Repairs** those maps to empty in memory and warns, naming the same records — it writes nothing, and a preview of the rest of the stack is worth more than an abort |
+| `cdkd diff` | **Repairs** those maps to empty in memory and warns, naming the same records — it writes nothing, and a preview of the rest of the stack is worth more than an abort; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3` |
 
 Reading the map as empty is **not** the safe answer here, which is why deploy
 refuses rather than repairing: an empty map declares nothing either, so it

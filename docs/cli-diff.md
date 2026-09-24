@@ -448,8 +448,10 @@ renders is followed by a refusal from either of those commands — see
 [when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
 The `outputs` warning costs this preview's Outputs
 section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
-refuse a record whose `outputs` map is unreadable rather than deciding from it,
-so a diff that previews cleanly is followed by a refusal. See
+refuse a record whose `outputs` map is unreadable rather than deciding from it.
+On the stack you named, the preview says so itself: the refusal is reported
+under `Blocking` and the command exits `3`. On a nested child it is the warning
+alone. See
 [when `outputs` is not an object](state-management.md#when-outputs-is-not-an-object).
 
 The `orphans` warning costs this preview's rollback-orphan adoption, and it
@@ -470,7 +472,9 @@ one renders as a replacement; where the template no longer declares it — a
 removed nested child under `--recursive` is diffed against an empty template —
 the `DELETE` row shows an empty previous side instead of what the record holds.
 So that warning says explicitly not to act on the preview, and that `cdkd
-deploy` refuses the record rather than performing those replacements. See
+deploy` refuses the record rather than performing those replacements. On the
+stack you named, that refusal is also reported under `Blocking` and exits `3`.
+See
 [when a resource `properties` map is not an object](state-management.md#when-a-resource-properties-map-is-not-an-object).
 
 The same repair runs a second time on a stack that adopts a rollback orphan:
@@ -522,8 +526,9 @@ the wrong field.
 `--fail` exits `1` when any change is detected, matching `cdk diff --fail`. An
 Outputs-only change counts, and so does a state record row the diff could not
 read (described under [when the state record is malformed](#when-the-state-record-is-malformed)) — the preview is not
-complete for such a stack. Without the flag, `cdkd diff` always exits `0` even
-when changes are present, which is `cdk diff`'s default too.
+complete for such a stack. Without the flag, `cdkd diff` exits `0` when changes
+are present, which is `cdk diff`'s default too — but not when the preview found
+a condition that would make `cdkd deploy` refuse, which exits `3` either way.
 
 With `--recursive`, `--fail` considers the whole nested-stack tree, so CI can
 gate on tree-wide drift with a single command:
@@ -818,13 +823,37 @@ condition — but it stops because there is nothing left for it to do, while a
 preview that died before printing would be a preview you could not use to
 decide anything.
 
-Today there is one such condition: a rollback left a `DeletionPolicy: Retain`
-resource behind, cdkd recorded it so the next deploy could re-adopt it, and the
-physical name in that record is one ANOTHER cdkd stack's state already claims.
-Adopting it would put one physical id in two state files, and either stack's
-`cdkd destroy` would then delete the other's live resource, so cdkd refuses.
-Resolve the ownership conflict — usually by removing the resource from
-whichever stack should not own it — and the next `cdkd diff` exits normally.
+Two conditions raise it.
+
+**A rollback-orphan adoption cdkd refuses.** A rollback left a
+`DeletionPolicy: Retain` resource behind, cdkd recorded it so the next deploy
+could re-adopt it, and the physical name in that record is one ANOTHER cdkd
+stack's state already claims. Adopting it would put one physical id in two
+state files, and either stack's `cdkd destroy` would then delete the other's
+live resource, so cdkd refuses. Resolve the ownership conflict — usually by
+removing the resource from whichever stack should not own it — and the next
+`cdkd diff` exits normally.
+
+**A container this command repaired and `cdkd deploy` refuses.** A resource's
+unreadable `properties` map, or an unreadable `outputs` bag, is repaired to
+empty for the preview (see [when the state record is
+malformed](#when-the-state-record-is-malformed)) while `cdkd deploy` refuses
+the record outright. A rollback-orphan record this diff adopted counts the same
+way, since its `properties` map is repaired after it is spliced in. The
+preview is therefore honest about the rows and wrong about what happens next,
+and this is the exit code that says so — including when the template declares
+nothing in the damaged container, where the repaired `{}` produces no change
+rows at all and `--fail` alone would exit `0`. Repair the record, or let the
+deploy's own refusal name it.
+
+Only the TOP-LEVEL stack raises this second condition, as a conservative
+choice: a deploy skips an unchanged nested-stack row, and an `UPDATE` that
+moves only `DeletionPolicy` / `UpdateReplacePolicy` never diffs the child
+either, so a reason on a nested node would report a refusal over a deploy that
+succeeds. A nested child still gets the warning naming its repaired container.
+For a resource `properties` map that warning also tells you the deploy refuses
+the record; for an `outputs` bag it describes the repair only, so on a nested
+child a torn `outputs` bag is reported without any statement about the deploy.
 
 It is deliberately NOT `1`. `--fail` uses `1` to mean "something changed", and
 a refusal is not a change: a CI job gating on drift must be able to tell "there

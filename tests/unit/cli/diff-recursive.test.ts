@@ -723,6 +723,7 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
       recursive: false,
       stateBackend: fakeBackend({ S: st('S', { R: res(ROUTE, narrowedRoute) }) }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalize,
     });
 
@@ -757,6 +758,7 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
           'S~Child': st('S~Child', { R: res(ROUTE, narrowedRoute) }),
         }),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
         canonicalizeProperties: canonicalize,
       });
 
@@ -839,6 +841,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
       recursive: false,
       stateBackend: fbBackend({ S: resolvedState() }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     expect(on.changes.get('P')!.changeType).toBe('NO_CHANGE');
     expect(cfnMockSend).toHaveBeenCalled();
@@ -853,6 +856,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
       recursive: false,
       stateBackend: fbBackend({ S: resolvedState() }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       cfnFallback: false,
     });
     expect(off.changes.get('P')!.changeType).toBe('UPDATE');
@@ -897,6 +901,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
         recursive: true,
         stateBackend: fbBackend(states()),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       });
       const onChild = on.children.find((c) => c.stackName === 'S~Child');
       expect(onChild).toBeDefined();
@@ -913,6 +918,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
         recursive: true,
         stateBackend: fbBackend(states()),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
         cfnFallback: false,
       });
       const offChild = off.children.find((c) => c.stackName === 'S~Child');
@@ -1219,6 +1225,7 @@ describe('computeStackDiff', () => {
         recursive: false,
         stateBackend: backend,
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       });
       expect(root.changes.get('A')!.changeType).toBe('NO_CHANGE');
       expect(root.changes.has('ProdOnly')).toBe(false);
@@ -1319,6 +1326,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.children).toHaveLength(1);
@@ -1396,6 +1404,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       assetRedirect,
     });
 
@@ -1417,6 +1426,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.children).toEqual([]);
@@ -1443,6 +1453,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(nodeHasChanges(root)).toBe(false); // parent unchanged
@@ -1472,6 +1483,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     // Parent's own diff: the Child nested-stack row is in state but not template -> DELETE.
@@ -1526,6 +1538,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.ccApiRoutes.get('SilentDropLambda')).toEqual(['FunctionScalingConfig']);
@@ -1590,6 +1603,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.ccApiRoutes.get('StickyLambda')).toEqual(['sticky']);
@@ -1619,6 +1633,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.children).toEqual([]);
@@ -1641,6 +1656,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
         recursive: true,
         stateBackend: backend,
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       })
     ).rejects.toThrow(/Nested template file not found/);
   });
@@ -1731,6 +1747,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       recursive: true,
       stateBackend: fakeBackend({}),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     }).then(
       () => undefined,
       (e: unknown) => e as Error
@@ -1765,6 +1782,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
         recursive: true,
         stateBackend: fakeBackend({}),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       })
     ).rejects.toThrow(/Nested stack 'ToA' under stack 'Parent~Child~ToB' resolves/);
   });
@@ -1809,6 +1827,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       recursive: true,
       stateBackend: fakeBackend({}),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     }).then(
       () => undefined,
       (e: unknown) => e as Error
@@ -1861,6 +1880,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
         recursive: true,
         stateBackend: fakeBackend({}),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       })
       // Assert the path CONTENT here too, not just the owning stack.
       //
@@ -1897,6 +1917,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       recursive: true,
       stateBackend: fakeBackend({}),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     // Walk with an EXPLICIT stack: a recursive walk here would hit the same
@@ -1927,6 +1948,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       recursive: true,
       stateBackend: fakeBackend({}),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const fork = root.children[0]!;
@@ -2036,6 +2058,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     expect(root.children).toHaveLength(1);
@@ -2065,6 +2088,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const child = root.children[0]!;
@@ -2199,6 +2223,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     // Without the #1921 arm both are false and `cdkd diff` prints
     // "No changes detected" while `--fail` exits 0.
@@ -2217,6 +2242,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     expect(treeHasChanges(node)).toBe(false);
   });
@@ -2248,6 +2274,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     const lines: string[] = [];
     renderDiffTree(node, true, (m) => lines.push(m));
@@ -2476,6 +2503,7 @@ describe('Outputs-only change (issue #1921)', () => {
         recursive: true,
         stateBackend: backend,
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       });
       expect(node.outputChanges).toEqual([]);
       expect(node.children[0]!.outputChanges).toEqual([
@@ -2502,6 +2530,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     expect(node.children[0]!.outputChanges).toEqual([
       { name: 'OldOut', changeType: 'REMOVE', oldValue: 'v', isExport: false },
@@ -2539,6 +2568,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const rows = node.children[0]!.outputChanges;
@@ -2568,6 +2598,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     expect(node.children[0]!.outputChanges).toEqual([
       { name: 'ApiUrl', changeType: 'REMOVE', oldValue: 'https://old.example.com', isExport: false },
@@ -2598,6 +2629,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const grandchild = node.children[0]!.children[0]!;
@@ -2646,6 +2678,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
 
     const deletedGrandchild = node.children[0]!.children[0]!;
@@ -2760,6 +2793,7 @@ describe('Outputs-only change (issue #1921)', () => {
         recursive: false,
         stateBackend: fakeBackend({ S: stateWith({ Out: 'stored' }) }),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
       });
       expect(treeHasChanges(node)).toBe(true);
     });
@@ -3582,6 +3616,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     const json = diffTreeToJson(node);
     expect(json.outputChanges).toEqual([
@@ -3605,6 +3640,7 @@ describe('Outputs-only change (issue #1921)', () => {
       recursive: false,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
     });
     expect(diffTreeToJson(node).outputChanges).toEqual([]);
   });
@@ -3955,6 +3991,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
         recursive: true,
         stateBackend: fakeBackend({ S: broken }),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
         canonicalizeProperties: canonicalizeIdentity,
       });
 
@@ -3983,6 +4020,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4036,6 +4074,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: false,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4063,6 +4102,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4093,6 +4133,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4123,6 +4164,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4155,6 +4197,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4190,6 +4233,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: false,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
     const lines: string[] = [];
@@ -4217,6 +4261,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ P: st('P', { Gone: res(NESTED, {}) }), 'P~Gone': child }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4243,6 +4288,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4270,6 +4316,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) }) }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4307,6 +4354,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       recursive: true,
       stateBackend: fakeBackend({ S: broken }),
       diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
       canonicalizeProperties: canonicalizeIdentity,
     });
 
@@ -4350,6 +4398,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
         recursive: true,
         stateBackend: fakeBackend({ S: st('S', { Child: res(NESTED, {}) }), 'S~Child': child }),
         diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
         canonicalizeProperties: canonicalizeIdentity,
       });
 
