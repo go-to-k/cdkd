@@ -314,36 +314,6 @@ describe('UPDATE: the destination records in the FLATTENED CFn spelling (#1707)'
     ).toBe('CSV');
   });
 
-  it('analytics, NESTED destination — the SDK wrapper is normalized away', async () => {
-    const properties = {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [
-        analyticsItem({
-          OutputSchemaVersion: 'V_1',
-          Destination: { S3BucketDestination: { BucketArn: DEST_ARN, Format: null } },
-        }),
-      ],
-    };
-
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-    });
-
-    const recordedDest = at(
-      result.effectiveProperties?.['AnalyticsConfigurations'],
-      0,
-      'StorageClassAnalysis',
-      'DataExport',
-      'Destination'
-    ) as Record<string, unknown>;
-    // Recorded in the ONLY spelling `analyticsSdkToCfn` can emit...
-    expect(recordedDest).toEqual({ BucketArn: DEST_ARN, Format: 'CSV' });
-    // ...with the SDK-only wrapper gone, so nothing is left carrying the
-    // malformed value at a key the readback never produces.
-    expect('S3BucketDestination' in recordedDest).toBe(false);
-  });
-
   it('inventory, FLATTENED destination', async () => {
     const properties = {
       BucketName: BUCKET,
@@ -366,61 +336,62 @@ describe('UPDATE: the destination records in the FLATTENED CFn spelling (#1707)'
       recordedInventoryItem({ BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' }),
     ]);
   });
+});
 
-  it('inventory, NESTED destination — the SDK wrapper is normalized away', async () => {
-    const properties = {
-      BucketName: BUCKET,
-      InventoryConfigurations: [
-        inventoryItem({ S3BucketDestination: { BucketArn: DEST_ARN, Format: '   ' } }),
-      ],
-    };
+describe('UPDATE: the SDK destination spellings are no longer read (#3602)', () => {
+  // `BucketArn` / `Format` are schema-required, so a template using the nested
+  // `S3BucketDestination` wrapper or the `Bucket` alias is refused pre-flight.
+  // What still reaches update() with one (a replayed pre-#1707 state record) is
+  // a bucket-less block: WARN and skip the item, leaving AWS as it was, rather
+  // than folding it or sending a Put.
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    [
+      'analytics, NESTED destination',
+      {
+        AnalyticsConfigurations: [
+          analyticsItem({
+            OutputSchemaVersion: 'V_1',
+            Destination: { S3BucketDestination: { BucketArn: DEST_ARN, Format: 'CSV' } },
+          }),
+        ],
+      },
+      { AnalyticsConfigurations: [LIVE_ANALYTICS] },
+    ],
+    [
+      'inventory, NESTED destination',
+      {
+        InventoryConfigurations: [
+          inventoryItem({ S3BucketDestination: { BucketArn: DEST_ARN, Format: 'CSV' } }),
+        ],
+      },
+      { InventoryConfigurations: [LIVE_INVENTORY] },
+    ],
+    [
+      'inventory, the `Bucket` alias',
+      { InventoryConfigurations: [inventoryItem({ Bucket: DEST_ARN, Format: 'ORC' })] },
+      { InventoryConfigurations: [LIVE_INVENTORY] },
+    ],
+  ];
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
+  for (const [label, desired, previous] of cases) {
+    it(`${label}: warns and sends no Put`, async () => {
+      await provider.update(
+        'B',
+        BUCKET,
+        RESOURCE_TYPE,
+        { BucketName: BUCKET, ...desired },
+        { BucketName: BUCKET, ...previous }
+      );
+
+      expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+      expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
+      expect(
+        childLogger.warn.mock.calls
+          .map((c) => String(c[0]))
+          .some((m) => m.includes('has no destination bucket (BucketArn)'))
+      ).toBe(true);
     });
-
-    const recordedDest = at(
-      result.effectiveProperties?.['InventoryConfigurations'],
-      0,
-      'Destination'
-    ) as Record<string, unknown>;
-    expect(recordedDest).toEqual({ BucketArn: DEST_ARN, Format: 'CSV' });
-    expect('S3BucketDestination' in recordedDest).toBe(false);
-  });
-
-  it('inventory, the `Bucket` ALIAS is normalized to BucketArn', async () => {
-    // The other cdkd-only tolerance in the same block: the readers accept
-    // `BucketArn ?? Bucket`, while `inventorySdkToCfn` only ever emits
-    // `BucketArn`. No refusal fires here — the item is entirely well-formed by
-    // cdkd's own rules — so an implementation keying the normalization off the
-    // substitution arm (the obvious one) misses this row's whole population.
-    const properties = {
-      BucketName: BUCKET,
-      InventoryConfigurations: [inventoryItem({ Bucket: DEST_ARN, Format: 'ORC' })],
-    };
-
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
-    });
-
-    expect(at(result.effectiveProperties?.['InventoryConfigurations'], 0, 'Destination')).toEqual({
-      BucketArn: DEST_ARN,
-      Format: 'ORC',
-    });
-    // ...and the wire is unchanged by the normalization: the SDK member is
-    // still `Bucket`, so this is a RECORDING fold, not a re-shaped request.
-    expect(
-      at(
-        sentCommands(PutBucketInventoryConfigurationCommand)[0]!.input,
-        'InventoryConfiguration',
-        'Destination',
-        'S3BucketDestination',
-        'Bucket'
-      )
-    ).toBe(DEST_ARN);
-  });
+  }
 });
 
 describe('UPDATE: two substitutions in ONE item are both recorded', () => {
@@ -931,11 +902,11 @@ describe('the canonicalizeDesiredProperties twin', () => {
           Enabled: true,
           IncludedObjectVersions: 'All',
           Schedule: { Frequency: 'Daily' },
-          Destination: { S3BucketDestination: { Bucket: DEST_ARN, Format: 'CSV' } },
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
         },
       ],
     };
-    // What the applier RECORDS for that template (the #1686 / #1707 folds).
+    // What the applier RECORDS for that template (the #1686 fold).
     const recorded = {
       BucketName: BUCKET,
       InventoryConfigurations: [
@@ -976,11 +947,13 @@ describe('the canonicalizeDesiredProperties twin', () => {
     ]);
   });
 
-  it('folds the analytics data-export destination and schema version', () => {
+  it('folds the analytics data-export schema version and destination Format defaults', () => {
+    // Both are defaulted-but-SENT members: omitted here, sent as `V_1` / `CSV`,
+    // and read back — so the twin must supply them on the analytics side too.
     const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
       AnalyticsConfigurations: [
         analyticsItem({
-          Destination: { S3BucketDestination: { Bucket: DEST_ARN, Format: 'ORC' } },
+          Destination: { BucketArn: DEST_ARN },
         }),
       ],
     });
@@ -988,7 +961,7 @@ describe('the canonicalizeDesiredProperties twin', () => {
     expect(canonical['AnalyticsConfigurations']).toEqual([
       analyticsItem({
         OutputSchemaVersion: 'V_1',
-        Destination: { BucketArn: DEST_ARN, Format: 'ORC' },
+        Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
       }),
     ]);
   });
@@ -1461,13 +1434,12 @@ function isPlainObjectWithFrequency(v: unknown): v is { Frequency: string } {
 }
 
 /**
- * The `BucketArn ?? Bucket` ALIAS read — the one `??` inside the folds, and NOT
- * an exception to the presence rule: it supplies no default, it picks between
- * two spellings of the same declared value exactly as the applier's own read
- * does. These rows pin that reading rather than leaving it as a comment.
+ * Issue #3602: the `Bucket` alias is no longer folded onto `BucketArn`.
+ * `BucketArn` is schema-required, so a template spelling it `Bucket` is
+ * refused pre-flight, and the provider refuses the bucket-less block too.
  */
-describe('the destination bucket ALIAS read', () => {
-  it('falls through a nullish BucketArn to the Bucket alias, like the wire', () => {
+describe('the destination Bucket alias is no longer read', () => {
+  it('leaves a Bucket-spelled block unfolded (the wire refuses it)', () => {
     const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
       InventoryConfigurations: [
         {
@@ -1475,18 +1447,18 @@ describe('the destination bucket ALIAS read', () => {
           Enabled: true,
           IncludedObjectVersions: 'All',
           ScheduleFrequency: 'Daily',
-          Destination: { BucketArn: null, Bucket: DEST_ARN, Format: 'CSV' },
+          Destination: { Bucket: DEST_ARN, Format: 'CSV' },
         },
       ],
     });
 
     expect(at(canonical, 'InventoryConfigurations', 0, 'Destination')).toEqual({
-      BucketArn: DEST_ARN,
+      Bucket: DEST_ARN,
       Format: 'CSV',
     });
   });
 
-  it('omits the key entirely when NEITHER spelling carries a bucket', () => {
+  it('omits BucketArn entirely when the block carries no bucket', () => {
     // The applier refuses such a block outright (`resolveS3BucketDestination`
     // drops it and the item is skipped), so the fold must not invent a
     // `BucketArn: undefined` that the readback could never match.
@@ -1516,7 +1488,7 @@ describe('the destination bucket ALIAS read', () => {
  * cannot quietly re-open them (round-3 review).
  */
 describe('the fold declines where the WIRE declines', () => {
-  it('a destination with NEITHER BucketArn nor Bucket is left alone', () => {
+  it('a destination with no BucketArn is left alone', () => {
     // `resolveS3BucketDestination` requires a bucket and drops the block, so the
     // item is SKIPPED. Folding it would invent a `Format: 'CSV'` describing a
     // call that never went out — the same mirror-the-wire rule the schedule fold
@@ -1545,7 +1517,7 @@ describe('the fold declines where the WIRE declines', () => {
           Enabled: true,
           IncludedObjectVersions: 'All',
           ScheduleFrequency: 'Daily',
-          Destination: { BucketAccountId: '123456789012', Bucket: DEST_ARN },
+          Destination: { BucketAccountId: '123456789012', BucketArn: DEST_ARN },
         },
       ],
     });

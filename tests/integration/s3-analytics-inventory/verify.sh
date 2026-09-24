@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd S3 analytics + inventory DESTINATION integ (issue #1493 items 2/3).
 #
-# Both `applyAnalyticsConfigurations` and `applyInventoryConfigurations` pick
-# between the CFn FLATTENED destination shape and the SDK NESTED one by probing
-# member presence. Before the fix a `Destination` that was a string / array /
-# unresolved intrinsic indexed every probe to `undefined`, fell through to an
-# equally-`undefined` `S3BucketDestination`, and the caller's
-# `s3Dest ? ... : undefined` omitted the whole block from the Put — the
-# configuration deployed with NO destination and no error anywhere. The fix
-# refuses that on the template-borne create path, warns on the replay-reachable
-# update path, and widened the branch probe to include `Bucket`.
+# Before the fix, a `Destination` that was a string / array / unresolved
+# intrinsic in `applyAnalyticsConfigurations` / `applyInventoryConfigurations`
+# indexed every probe to `undefined`, and the caller's `s3Dest ? ... : undefined`
+# omitted the whole block from the Put — the configuration deployed with NO
+# destination and no error anywhere. The fix refuses that on the template-borne
+# create path and warns on the replay-reachable update path.
 #
 # Nothing in the integ tree exercised either configuration at all before this
-# fixture, so this is the live proof that the rewritten branch selection still
-# delivers a real destination to AWS.
+# fixture, so this is the live proof that the destination guard still delivers
+# a real destination to AWS.
 #
-# Only the FLATTENED shape is covered live — it is the only one a CDK template
-# can express (see the stack's header for why the SDK nested spelling stays
-# unit-covered).
+# Only the CFn destination shape is read (the SDK nested spelling and a
+# `Bucket` alias are refused pre-flight, issue #3602 — see the stack's header).
 #
 # Phases 2-4 are the live coverage for issue #1670 (the warn-and-SUBSTITUTE
 # arms of the same two appliers). #1670's own Scope bullet 3 asks for it, and
@@ -29,7 +25,7 @@
 #   1. Deploy; assert BOTH configurations reached AWS carrying the declared
 #      destination bucket, format and prefix. Against the pre-fix binary this
 #      phase still passes — a correct template was never the broken case — so
-#      the value here is regression protection for the rewritten branch pick.
+#      the value here is regression protection for the destination guard.
 #   2. (#1670) Re-deploy with CDKD_TEST_UPDATE=malformed-substitute: three
 #      fields are BLANK, so each read warns and SENDS its default. Assert the
 #      deploy succeeds, that it WARNED (the anti-vacuity guard), that AWS holds
@@ -379,20 +375,16 @@ assert_no_diff_on_configs() { # usage: assert_no_diff_on_configs <run label>
 assert_no_diff_on_configs "run 1"
 assert_no_diff_on_configs "run 2"
 
-echo "==> Phase 3b: a NESTED-spelled record must now CONVERGE (issue #1707)"
-# This block asserted the OPPOSITE until issue #1707, and the reversal is the
-# fix rather than a regression. It used to rewrite the RECORDED destination
-# into the SDK-nested shape and require `cdkd diff --fail` to report it, as
-# proof that the flattening assertions above were not vacuous.
+echo "==> Phase 3b: a NESTED-spelled record is no longer folded (issue #3602)"
+# From issue #1707 until #3602 this block asserted the OPPOSITE: the
+# `canonicalizeDesiredProperties` twin folded a record written in the SDK-nested
+# `S3BucketDestination` spelling onto the CFn block, so it compared EQUAL.
 #
-# #1707 makes that spelling converge on purpose: `analyticsSdkToCfn` /
-# `inventorySdkToCfn` emit ONLY the flattened CFn block, so a record written in
-# the tolerated nested spelling could never match the readback —
-# permanent phantom drift with no warning anywhere, since nothing is malformed
-# and nothing is substituted. `canonicalizeDesiredProperties` folds BOTH
-# comparison sides, and folding both is precisely what HEALS a record written
-# by an older binary: an item whose value never changes is never re-Put, so the
-# recording side alone can never reach it. THIS block is that heal, live.
+# #3602 dropped that spelling: `BucketArn` / `Format` are schema-required, so a
+# template using it is refused pre-flight, and the only records carrying it
+# came from such templates. So the fold no longer applies, and the nested
+# record must report the difference — a one-time update that rewrites the record
+# in the CFn spelling. Against the pre-#3602 binary this assertion is RED.
 STATE_FLAT="$(mktemp)"
 STATE_NESTED="$(mktemp)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_FLAT}"
@@ -408,15 +400,25 @@ assert_eq "the seeded record dropped the flattened spelling" "null" \
   "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.BucketArn' \
      "${STATE_NESTED}")"
 aws s3 cp "${STATE_NESTED}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+NESTED_DIFF=""
 if NESTED_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)"; then
-  echo "  ok: the pre-#1707 nested record now compares EQUAL to the flattened template"
-else
-  echo "FAIL: a nested-spelled record still reports a difference — #1707 does not heal" >&2
-  echo "      the already-deployed population" >&2
+  echo "FAIL: a nested-spelled record compared EQUAL — the #3602 removal of the" >&2
+  echo "      S3BucketDestination fold did not reach the comparator" >&2
   printf '%s\n' "${NESTED_DIFF}" >&2
   exit 1
 fi
+# A non-zero exit alone is not enough (any diff-time error is non-zero): require
+# the report to name the property AND the nested key it no longer folds.
+case "${NESTED_DIFF}" in
+  *AnalyticsConfigurations*S3BucketDestination*)
+    echo "  ok: the nested-spelled record reports the difference" ;;
+  *)
+    echo "FAIL: diff exited non-zero but never named the nested destination:" >&2
+    printf '%s\n' "${NESTED_DIFF}" >&2
+    exit 1
+    ;;
+esac
 aws s3 cp "${STATE_FLAT}" "s3://${STATE_BUCKET}/${STATE_KEY}"
 rm -f "${STATE_NESTED}"
 
@@ -458,18 +460,19 @@ rm -f "${STATE_SDK_SCHEDULE}"
 echo "==> Phase 3d: the twin must NOT blind the comparator to a real change"
 # The teeth the old negative twin provided, kept: canonicalizing both sides
 # makes two SPELLINGS of one value compare equal, and must not make two
-# different VALUES compare equal. Same nested seed as phase 3b, pointed at a
-# bucket the template does not name.
+# different VALUES compare equal. The CFn-spelled record, pointed at a bucket
+# the template does not name (a nested seed would differ by SPELLING alone
+# since #3602, which proves nothing about values).
 STATE_WRONG="$(mktemp)"
 jq '(.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination)
-      |= { S3BucketDestination: (. + { BucketArn: "arn:aws:s3:::cdkd-ai-not-the-report-bucket" }) }' \
+      |= (. + { BucketArn: "arn:aws:s3:::cdkd-ai-not-the-report-bucket" })' \
   "${STATE_FLAT}" > "${STATE_WRONG}"
 # Same seed guard as 3b / 3c: without it a mistyped path leaves the record
 # UNCHANGED and the row below can still exit non-zero for an unrelated reason,
 # reporting "a real change is still reported" when nothing was changed at all.
 assert_eq "the seeded record names a DIFFERENT bucket" \
   "arn:aws:s3:::cdkd-ai-not-the-report-bucket" \
-  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.S3BucketDestination.BucketArn' \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.BucketArn' \
      "${STATE_WRONG}")"
 aws s3 cp "${STATE_WRONG}" "s3://${STATE_BUCKET}/${STATE_KEY}"
 WRONG_DIFF=""

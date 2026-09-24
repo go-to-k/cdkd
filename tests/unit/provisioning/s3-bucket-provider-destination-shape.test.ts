@@ -7,15 +7,12 @@ import {
 /**
  * Issue #1493 items 2 and 3, on the analytics / inventory `Destination` block.
  *
- * **Item 2 — the silent DROP.** Both appliers picked between the CFn FLATTENED
- * shape (`Destination: { BucketArn, Format }`) and the SDK NESTED one
- * (`Destination: { S3BucketDestination: { ... } }`) by probing member presence.
- * A `Destination` that is a STRING / array / unresolved intrinsic indexed every
- * probe to `undefined`, fell through to an equally-`undefined`
- * `S3BucketDestination`, and the caller's `s3Dest ? … : undefined` omitted the
- * whole block from the Put — a configuration deployed with no destination and
- * no error anywhere. Unlike the sibling defaulting class (#1471 / #1471's `??`
- * spelling) nothing is DEFAULTED here, so `readConfigString` never covered it.
+ * **Item 2 — the silent DROP.** A `Destination` that is a STRING / array /
+ * unresolved intrinsic indexed every probe to `undefined`, and the caller's
+ * `s3Dest ? … : undefined` omitted the whole block from the Put — a
+ * configuration deployed with no destination and no error anywhere. Unlike
+ * the sibling defaulting class (#1471 / #1471's `??` spelling) nothing is
+ * DEFAULTED here, so `readConfigString` never covered it.
  *
  * The decision, per #1513's precedent: REFUSE on the template-borne create
  * path, WARN on the update path — `rollback-executor.ts` and `drift --revert`
@@ -23,10 +20,13 @@ import {
  * a refusal there would strand the resource with no template-side remedy.
  *
  * **Item 3 — the misnamed refusal.** The `containerPath` handed to
- * `readConfigString` hardcoded `…Destination.S3BucketDestination` even on the
- * FLATTENED branch, where the bag IS `dest` itself — so a refusal named a key
- * the user's template does not contain. Harmless to behavior, actively
- * misleading in the message.
+ * `readConfigString` hardcoded `…Destination.S3BucketDestination`, a key the
+ * user's template does not contain.
+ *
+ * **Issue #3602.** The SDK NESTED shape (`{ S3BucketDestination: { ... } }`)
+ * and a `Bucket` alias for `BucketArn` are no longer read: `BucketArn` and
+ * `Format` are schema-required, so a template using either is refused
+ * pre-flight by `nested-required.ts`. Pinned in the last block below.
  */
 
 const { mockSend, childLogger } = vi.hoisted(() => ({
@@ -60,6 +60,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { findNestedRequiredViolations } from '../../../src/provisioning/nested-required.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'analytics-source-bucket';
@@ -136,15 +137,9 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
     });
   }
 
-  it('refuses a malformed NESTED S3BucketDestination, naming the nested path', async () => {
-    await expect(
-      provider.create('B', RESOURCE_TYPE, analyticsProps({ S3BucketDestination: 'arn:aws:s3:::r' }))
-    ).rejects.toThrow(`${ANALYTICS_PATH}.S3BucketDestination must be an object`);
-  });
-
-  it('refuses an object carrying neither shape, rather than dropping it', async () => {
+  it('refuses an empty object, rather than dropping it', async () => {
     await expect(provider.create('B', RESOURCE_TYPE, inventoryProps({}))).rejects.toThrow(
-      `${INVENTORY_PATH} carries neither a bucket`
+      `${INVENTORY_PATH} has no destination bucket (BucketArn)`
     );
   });
 
@@ -170,16 +165,12 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
     expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeDefined();
   });
 
-  it('refuses a bag carrying no destination bucket, in either shape', async () => {
-    // `{ Format }` alone and `{ S3BucketDestination: {} }` both used to reach
-    // the SDK as `Bucket: undefined`. The bucket is the one member neither
-    // branch can default, so it is checked on the PICKED bag.
+  it('refuses a block carrying no destination bucket', async () => {
+    // `{ Format }` alone used to reach the SDK as `Bucket: undefined`. The
+    // bucket is the one member that cannot be defaulted.
     await expect(
       provider.create('B', RESOURCE_TYPE, inventoryProps({ Format: 'CSV' }))
-    ).rejects.toThrow('has no destination bucket');
-    await expect(
-      provider.create('B', RESOURCE_TYPE, inventoryProps({ S3BucketDestination: {} }))
-    ).rejects.toThrow(`${INVENTORY_PATH}.S3BucketDestination has no destination bucket`);
+    ).rejects.toThrow(`${INVENTORY_PATH} has no destination bucket (BucketArn)`);
   });
 
   it('downgrades to a warning when create() is replaying a STATE record', async () => {
@@ -200,21 +191,6 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
     expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeUndefined();
   });
 
-  it('keeps a falsy-but-defined flat key on the NESTED branch (no regression)', async () => {
-    // `{ BucketAccountId: '', S3BucketDestination: {...} }` worked before this
-    // change by falling to the nested branch. A presence-based probe would
-    // re-route it to the flat bag and send `Bucket: undefined`.
-    await update(
-      inventoryProps({
-        BucketAccountId: '',
-        S3BucketDestination: { Bucket: 'arn:aws:s3:::reports', Format: 'CSV' },
-      })
-    );
-    expect(
-      sentCommand(PutBucketInventoryConfigurationCommand)?.input.InventoryConfiguration?.Destination
-        ?.S3BucketDestination?.Bucket
-    ).toBe('arn:aws:s3:::reports');
-  });
 });
 
 describe('item 2: the same value only WARNS on the update path', () => {
@@ -264,8 +240,8 @@ describe('item 2: the same value only WARNS on the update path', () => {
   });
 });
 
-describe('item 3: a refusal names the branch the template actually used', () => {
-  it('FLATTENED branch: names Destination, not Destination.S3BucketDestination', async () => {
+describe('item 3: a refusal names the key the template actually used', () => {
+  it('names Destination, not Destination.S3BucketDestination', async () => {
     // `Format: 42` is refused by `readConfigString`; before the fix the path it
     // was handed hardcoded the nested spelling, so the message pointed at a key
     // this template does not contain.
@@ -277,19 +253,9 @@ describe('item 3: a refusal names the branch the template actually used', () => 
     await expect(promise).rejects.toThrow(`${ANALYTICS_PATH}.Format`);
     await expect(promise).rejects.not.toThrow(`${ANALYTICS_PATH}.S3BucketDestination.Format`);
   });
-
-  it('NESTED branch: still names Destination.S3BucketDestination', async () => {
-    await expect(
-      provider.create(
-        'B',
-        RESOURCE_TYPE,
-        inventoryProps({ S3BucketDestination: { Bucket: 'arn:aws:s3:::reports', Format: 42 } })
-      )
-    ).rejects.toThrow(`${INVENTORY_PATH}.S3BucketDestination.Format`);
-  });
 });
 
-describe('both legitimate shapes keep working', () => {
+describe('the CFn shape keeps working', () => {
   it('analytics: FLATTENED (the CFn schema shape)', async () => {
     await update(
       analyticsProps({
@@ -310,28 +276,74 @@ describe('both legitimate shapes keep working', () => {
     });
   });
 
-  it('inventory: NESTED (the SDK shape a state record can carry)', async () => {
+  it('inventory: the full CFn block reaches the wire', async () => {
     await update(
       inventoryProps({
-        S3BucketDestination: { Bucket: 'arn:aws:s3:::reports', Format: 'ORC', Prefix: 'inv/' },
+        BucketArn: 'arn:aws:s3:::reports',
+        BucketAccountId: '111122223333',
+        Format: 'ORC',
+        Prefix: 'inv/',
       })
     );
 
     expect(
       sentCommand(PutBucketInventoryConfigurationCommand)?.input.InventoryConfiguration?.Destination
         ?.S3BucketDestination
-    ).toMatchObject({ Bucket: 'arn:aws:s3:::reports', Format: 'ORC', Prefix: 'inv/' });
+    ).toMatchObject({
+      Bucket: 'arn:aws:s3:::reports',
+      AccountId: '111122223333',
+      Format: 'ORC',
+      Prefix: 'inv/',
+    });
   });
+});
 
-  it('inventory: a FLATTENED block spelled `Bucket` is used, not dropped', async () => {
-    // The readers accept `BucketArn ?? Bucket`, but `Bucket` was missing from
-    // the branch probe — so a `{ Bucket }`-only block took the nested branch,
-    // found nothing, and dropped. Same silent drop, one shape over.
-    await update(inventoryProps({ Bucket: 'arn:aws:s3:::reports' }));
+describe('issue #3602: the SDK nested shape and the Bucket alias are refused, not read', () => {
+  const families = [
+    {
+      name: 'inventory',
+      props: inventoryProps,
+      path: 'InventoryConfigurations[0].Destination',
+      tablePath: INVENTORY_PATH,
+    },
+    {
+      name: 'analytics',
+      props: analyticsProps,
+      path: 'AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination',
+      tablePath: ANALYTICS_PATH,
+    },
+  ] as const;
+  const shapes: Array<[string, Record<string, unknown>, string[]]> = [
+    [
+      'the nested S3BucketDestination shape',
+      { S3BucketDestination: { Bucket: 'arn:aws:s3:::reports', Format: 'CSV' } },
+      ['BucketArn', 'Format'],
+    ],
+    ['the Bucket alias', { Bucket: 'arn:aws:s3:::reports', Format: 'CSV' }, ['BucketArn']],
+  ];
 
-    expect(
-      sentCommand(PutBucketInventoryConfigurationCommand)?.input.InventoryConfiguration?.Destination
-        ?.S3BucketDestination?.Bucket
-    ).toBe('arn:aws:s3:::reports');
-  });
+  for (const { name, props, path, tablePath } of families) {
+    for (const [label, destination, missing] of shapes) {
+      it(`${name}: refuses ${label} pre-flight`, () => {
+        // Narrowed to the destination: the helper omits other required item
+        // members (inventory `IncludedObjectVersions`) that are not the subject.
+        expect(
+          findNestedRequiredViolations(RESOURCE_TYPE, props(destination)).filter(
+            (v) => v.path === path
+          )
+        ).toEqual([{ resourceType: RESOURCE_TYPE, path, missing }]);
+      });
+
+      it(`${name}: ${label} is no longer read — the provider refuses it too`, async () => {
+        // Reachable past the pre-flight only through an unresolved intrinsic
+        // on the path or a replayed pre-#1707 state record; either way it is a
+        // bucket-less block now, never a Put.
+        await expect(provider.create('B', RESOURCE_TYPE, props(destination))).rejects.toThrow(
+          `${tablePath} has no destination bucket (BucketArn)`
+        );
+        expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeUndefined();
+        expect(sentCommand(PutBucketAnalyticsConfigurationCommand)).toBeUndefined();
+      });
+    }
+  }
 });

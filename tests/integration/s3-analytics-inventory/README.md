@@ -3,9 +3,7 @@
 Live coverage for the `AWS::S3::Bucket` **analytics** and **inventory**
 destination blocks (issue #1493 items 2/3).
 
-Both appliers pick between the CFn FLATTENED destination shape and the SDK
-NESTED one by probing member presence. A `Destination` that is a string /
-array / unresolved intrinsic used to index every probe to `undefined` and the
+A `Destination` that is a string / array / unresolved intrinsic used to index every probe to `undefined` and the
 whole block was omitted from the Put — the configuration deployed with no
 destination and no error anywhere. Nothing in the integ tree exercised either
 configuration before this fixture.
@@ -56,10 +54,9 @@ does not declare, so no CDK template can carry the second source. It stays
 unit-covered in
 `tests/unit/provisioning/s3-bucket-provider-substituted-properties.test.ts`.
 
-Only the FLATTENED shape is covered live: it is the only one a CDK template can
-express. `S3BucketDestination` is the SDK spelling cdkd additionally accepts for
-state records and hand-written templates, and aws-cdk-lib's L1 renderer drops a
-member it does not declare — that branch is unit-covered in
+Only the CFn destination shape (`{ BucketArn, Format, ... }`) is read. The SDK
+nested `S3BucketDestination` spelling and a `Bucket` alias are refused
+pre-flight by the nested required-member check (issue #3602), pinned in
 `tests/unit/provisioning/s3-bucket-provider-destination-shape.test.ts`.
 
 The report bucket carries a bucket policy allowing `s3.amazonaws.com` to write:
