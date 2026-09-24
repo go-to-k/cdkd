@@ -32,6 +32,7 @@ import type {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS RDS Provider
@@ -47,7 +48,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('RDSProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

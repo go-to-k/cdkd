@@ -99,6 +99,7 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -264,7 +265,7 @@ export const settleRolloutDelays = {
 
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ECSProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

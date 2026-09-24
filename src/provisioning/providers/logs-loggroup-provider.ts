@@ -46,6 +46,7 @@ import type {
   ResourceImportResult,
   UpdateContext,
 } from '../../types/resource.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Whether a raw `RetentionInDays` is CloudFormation's spelling of "no
@@ -1202,8 +1203,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
       const accountId = identity.Account;
       // Region comes from the client config
-      const region =
-        (await this.logsClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
+      const region = (await this.logsClient.config.region()) || ambientRegion() || 'us-east-1';
       const { partition } = derivePartitionAndUrlSuffix(region);
       return `arn:${partition}:logs:${region}:${accountId}:log-group:${logGroupName}:*`;
     } catch {
@@ -1221,7 +1221,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // byte-identical to the old placeholder wherever it was right, and a
       // non-commercial `AWS_REGION` upgrades it rather than leaving a silent
       // commercial claim.
-      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      const { partition } = derivePartitionAndUrlSuffix(ambientRegion() ?? '');
       return `arn:${partition}:logs:unknown:unknown:log-group:${logGroupName}:*`;
     }
   }

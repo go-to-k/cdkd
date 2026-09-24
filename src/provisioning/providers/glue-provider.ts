@@ -105,6 +105,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -435,7 +436,7 @@ function resolveTableIdentity(input: {
  */
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -2258,7 +2259,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueWorkflowProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -2554,7 +2555,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
  */
 export class GlueSecurityConfigurationProvider implements ResourceProvider {
   private client: GlueClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueSecurityConfigurationProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -3069,7 +3070,7 @@ async function buildGlueResourceArn(
   name: string,
   accountId: string | undefined
 ): Promise<string> {
-  const region = (await client.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
+  const region = (await client.config.region()) || ambientRegion() || 'us-east-1';
   const account = accountId ?? (await resolveAccountId(stsClient));
   return `arn:aws:glue:${region}:${account}:${resource}/${name}`;
 }
@@ -3124,7 +3125,7 @@ export class GlueJobProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueJobProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -3688,7 +3689,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueCrawlerProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -4203,7 +4204,7 @@ function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, u
  */
 export class GlueConnectionProvider implements ResourceProvider {
   private client: GlueClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueConnectionProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -4485,7 +4486,7 @@ export class GlueTriggerProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueTriggerProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

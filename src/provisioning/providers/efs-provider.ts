@@ -54,6 +54,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * SDK Provider for AWS EFS resources
@@ -68,7 +69,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class EFSProvider implements ResourceProvider {
   private client: EFSClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EFSProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

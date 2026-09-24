@@ -38,6 +38,7 @@ import type {
   CreateContext,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * What `delete()` throws for a non-empty bucket with no auto-empty opt-in
@@ -132,7 +133,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
 
   private ec2Client: EC2Client | undefined;
   private s3ControlClient: S3ControlClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
 
   constructor() {
     const awsClients = getAwsClients();
@@ -234,7 +235,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * KNOWN BOUND (pre-existing, not introduced by #1815): the region — and now
    * the partition derived from it — comes from `s3Client`, while the tag
    * calls that consume this ARN go through `s3ControlClient`, built from
-   * `providerRegion` (`process.env['AWS_REGION']`). Those two can disagree,
+   * `providerRegion` (`ambientRegion()`). Those two can disagree,
    * so the ARN can name a different region than the client receiving it. The
    * region SEGMENT already had this exposure before the partition rode along
    * with it; unifying the two clients' region resolution is a separate change.

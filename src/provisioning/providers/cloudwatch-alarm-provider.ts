@@ -26,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS CloudWatch Alarm Provider
@@ -280,7 +281,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // it because it is recorded into state and served as the `Arn` attribute.
     try {
       const region =
-        (await this.cloudWatchClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
+        (await this.cloudWatchClient.config.region()) || ambientRegion() || 'us-east-1';
       const { partition } = derivePartitionAndUrlSuffix(region);
       return `arn:${partition}:cloudwatch:${region}:*:alarm:${alarmName}`;
     } catch {
@@ -297,7 +298,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       // claim commercial in some future configuration where the two sources
       // ARE decoupled, and the unit test pins the stated behavior — but do
       // not read the test as evidence of a live non-commercial path here.
-      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      const { partition } = derivePartitionAndUrlSuffix(ambientRegion() ?? '');
       return `arn:${partition}:cloudwatch:*:*:alarm:${alarmName}`;
     }
   }

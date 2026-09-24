@@ -89,6 +89,7 @@ import type {
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -162,7 +163,7 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private s3Client: S3Client | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('AppSyncProvider');
   /**
    * Cache of `apiId -> GraphqlApi ARN` for the lifetime of this provider

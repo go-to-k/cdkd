@@ -37,6 +37,7 @@ import type {
   CreateContext,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
 const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
@@ -140,7 +141,7 @@ function tableIdentityFromGetTable(
  */
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3TablesProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

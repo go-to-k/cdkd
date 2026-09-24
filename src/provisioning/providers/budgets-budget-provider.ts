@@ -38,6 +38,7 @@ import type {
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
@@ -78,7 +79,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class BudgetsBudgetProvider implements ResourceProvider {
   private client: BudgetsClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('BudgetsBudgetProvider');
   private accountIdPromise: Promise<string> | undefined;
 
@@ -135,7 +136,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * `${AWS::Partition}` uses (issue #1815).
    *
    * Asking the CLIENT rather than `providerRegion` is what makes the ARN and
-   * its consumer agree. `providerRegion` is `process.env['AWS_REGION']`, and
+   * its consumer agree. `providerRegion` is `ambientRegion()` (the stack scope's region, else
+   * `process.env['AWS_REGION']`), and
    * when that is unset `getClient()` builds `new BudgetsClient({})`, leaving
    * the SDK to resolve the region from its OWN chain (`AWS_DEFAULT_REGION`,
    * the `~/.aws/config` profile). So a profile-configured `cn-north-1` /

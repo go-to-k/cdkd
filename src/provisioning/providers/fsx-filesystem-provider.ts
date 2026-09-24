@@ -49,6 +49,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Default polling budget for FSx lifecycle transitions. Lustre SCRATCH
@@ -266,7 +267,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   private client: FSxClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FSxFileSystemProvider');
 
   private readonly pollIntervalMs: number;

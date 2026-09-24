@@ -25,6 +25,7 @@ import type {
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -62,7 +63,7 @@ import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js
  */
 export class SchedulerScheduleProvider implements ResourceProvider {
   private client: SchedulerClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('SchedulerScheduleProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

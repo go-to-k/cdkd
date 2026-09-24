@@ -46,6 +46,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -239,7 +240,7 @@ function canonicalizeQueryName(name: string): string {
  */
 export class Route53Provider implements ResourceProvider {
   private route53Client?: Route53Client;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('Route53Provider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

@@ -48,6 +48,7 @@ import type {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS Auto Scaling Provider
@@ -108,7 +109,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ASGProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

@@ -27,6 +27,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /** CFn tag-list entry shape (`{ Key, Value }`). */
 interface CfnTag {
@@ -66,7 +67,7 @@ interface CfnTag {
  */
 export class DLMLifecyclePolicyProvider implements ResourceProvider {
   private client: DLMClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DLMLifecyclePolicyProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

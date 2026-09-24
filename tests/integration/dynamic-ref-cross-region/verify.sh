@@ -20,44 +20,34 @@
 # populated by the first stack and writes the first region's value into the
 # second region's resource.
 #
-# DEPLOY IS SERIAL HERE (`--stack-concurrency 1`) AND MUST STAY SERIAL. That is
-# a safety requirement, not a leftover from #1933 — read this before "modernising"
-# it to the default concurrency, which is the obvious-looking change:
+# DEPLOY IS SERIAL HERE (`--stack-concurrency 1`). It was first a SAFETY
+# requirement, and is now a SCOPE decision:
 #
-#   cdkd installs the per-stack region-pinned AWS clients into a PROCESS-GLOBAL
-#   singleton (`setAwsClients`, src/cli/commands/deploy.ts:655) and re-points
-#   `process.env.AWS_REGION` with it (`switchRegion`). Serially that is fine —
-#   both are re-pinned before each stack. Concurrently (the default is 4) two
-#   multi-region stacks race for them, and the race is NOT confined to the
-#   dynamic-reference lookups: 42 provider files read `getAwsClients()`, most of
-#   them at CALL time, and `switchRegion` mutates `process.env.AWS_REGION` for
-#   the whole process. So a lost race CREATES this fixture's echo parameters IN
-#   THE WRONG REGION — resources this script's region-keyed cleanup would not
-#   delete, i.e. billed orphans, on a run whose purpose is to prove correctness.
+#   Before issue #1981, cdkd installed the per-stack region-pinned AWS clients
+#   into a PROCESS-GLOBAL singleton (`setAwsClients`) and re-pointed
+#   `process.env.AWS_REGION` with them (`switchRegion`), both in
+#   src/cli/commands/deploy.ts. Concurrently (the default is 4) two multi-region
+#   stacks raced for them, and a lost race could CREATE this fixture's echo
+#   parameters IN THE WRONG REGION — billed orphans this script's region-keyed
+#   cleanup would not delete. So this fixture ran serially.
 #
 #   (An earlier version of this note offered `SSMParameterProvider`'s
-#   CONSTRUCTOR capture as the proof. That was WRONG and is corrected here:
-#   `setAwsClients` and `registerAllProviders` are synchronous neighbours with
-#   no `await` between them, and the registry is per stack, so the constructor
-#   capture is the one shape that is IMMUNE to the race. The race lives in the
-#   call-time readers and in the env mutation. The conclusion is unchanged.)
+#   CONSTRUCTOR capture as the proof. That was WRONG: `setAwsClients` and
+#   `registerAllProviders` were synchronous neighbours with no `await` between
+#   them, so the constructor capture was IMMUNE to the race. The race lived in
+#   the call-time readers and in the env mutation.)
 #
-#   Issue #1957 fixed the RESOLVER half of that singleton problem (each lookup
-#   is now bound to its resolver's own region — `clientsForRegion` in
-#   src/deployment/intrinsic-function-resolver.ts). It deliberately did NOT
-#   touch the PROVISIONING half, which lives in deploy.ts and is filed
-#   separately as issue #1981. Until that one is fixed, a cross-region deploy at
-#   the default concurrency is unsafe to run at all, so this fixture does not
-#   run one and #1957's "default concurrency" acceptance criterion cannot be met
-#   by a deploy-shaped arm.
-#
-#   If you come back to build that arm after the provisioning half lands: vary
-#   which stack goes first through the DECLARATION order in bin/app.ts, not the
-#   argv order — `matchStacks` (src/cli/stack-matcher.ts) walks the cloud
-#   assembly's own order and ignores the order the names were typed, so
-#   `cdkd deploy B A` deploys in exactly the same order as `cdkd deploy A B`.
-#   And run it more than once: a race that interleaves harmlessly once proves
-#   nothing.
+#   Issue #1957 fixed the RESOLVER half (each lookup is bound to its resolver's
+#   own region — `clientsForRegion` in
+#   src/deployment/intrinsic-function-resolver.ts). #1981 fixed the
+#   PROVISIONING half: each stack now deploys inside its own AWS scope
+#   (src/utils/stack-aws-scope.ts) and the deploy no longer touches the
+#   singleton or the environment per stack. The default-concurrency
+#   cross-region deploy arm — including a `{{resolve:ssm:...}}` consumer, which
+#   is #1957's "default concurrency" acceptance criterion — lives in
+#   tests/integration/cross-region-concurrent-stacks. This fixture stays serial
+#   because its arms are about the resolver's cache and scrub, not about
+#   concurrency.
 #
 # WHAT PINS #1957 HERE INSTEAD is `cdkd scrub` (phase 3d), which is the issue's
 # OTHER site and needs no concurrency to reach the same defect: scrub installs

@@ -67,11 +67,11 @@ first appears, because several seams already exist:
   `cdk synth` accepts (CDK is oblivious to the key); vanilla `cdk deploy`
   simply ignores it.
 - **Client routing: `AwsClients` becomes a region-keyed pool.** Today
-  `getAwsClients()` returns a process-global singleton with a single region,
-  and `switchRegion()` (`src/cli/commands/deploy.ts`) mutates
-  `process.env.AWS_REGION` per stack. That mutation is NOT safe for
-  concurrent per-resource regions (the DAG executor runs a stack's resources
-  in parallel). Replace it on the per-resource path with a pool keyed by
+  `getAwsClients()` returns ONE region's clients per stack: the stack AWS
+  scope `deploy` enters (`src/utils/stack-aws-scope.ts`, issue #1981), which
+  also supplies `ambientRegion()` and `awsClientDefaults()`'s region. One region
+  per scope is NOT enough for per-resource regions (the DAG executor runs a
+  stack's resources in parallel inside that one scope). Replace it on the per-resource path with a pool keyed by
   region; `region === undefined` returns the existing default (= stack
   region), so existing behavior is byte-identical.
 - **Provider signatures: optional region.** Add an optional region (mirroring

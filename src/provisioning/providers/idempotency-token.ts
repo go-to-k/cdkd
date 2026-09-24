@@ -56,6 +56,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getCurrentStackName } from '../resource-name.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Mixed into every digest so no two `cdkd` processes can derive the same token
@@ -154,7 +155,7 @@ const tokenKey = (
   // contingency that comment says it does not want to rely on.
   injectiveKey(
     scope,
-    process.env['AWS_REGION'] ?? '',
+    ambientRegion() ?? '',
     getCurrentStackName() ?? '',
     logicalId,
     maxLength,

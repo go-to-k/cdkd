@@ -26,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Serialise a CFn-shape `RedrivePolicy` (object) to the string form
@@ -515,7 +516,7 @@ export class SQSQueueProvider implements ResourceProvider {
       // placeholder is byte-identical to the old one wherever the old one was
       // right, and a non-commercial `AWS_REGION` upgrades it rather than
       // leaving a silent commercial claim.
-      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      const { partition } = derivePartitionAndUrlSuffix(ambientRegion() ?? '');
       return `arn:${partition}:sqs:unknown:unknown:${queueName}`;
     }
   }
