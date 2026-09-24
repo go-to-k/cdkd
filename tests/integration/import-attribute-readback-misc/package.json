@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-example-import-attribute-readback-misc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-AWS test: cdkd import --migrate-from-cloudformation records SSM Parameter, IAM path-bearing ARNs and AgentCore Evaluator attributes (issue #3627)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1135.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

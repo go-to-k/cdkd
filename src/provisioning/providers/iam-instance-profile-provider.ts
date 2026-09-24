@@ -8,6 +8,7 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -363,8 +364,15 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'InstanceProfileName');
     if (explicit) {
       try {
-        await this.iamClient.send(new GetInstanceProfileCommand({ InstanceProfileName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.iamClient.send(
+          new GetInstanceProfileCommand({ InstanceProfileName: explicit })
+        );
+        // Issue #3627: the `Arn` `create()` records. The resolver's arm builds
+        // `instance-profile/<name>` and drops a non-`/` `Path`, silently.
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({ Arn: resp.InstanceProfile?.Arn }),
+        };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;
         throw err;

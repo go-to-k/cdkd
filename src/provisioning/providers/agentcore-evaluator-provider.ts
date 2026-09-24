@@ -433,24 +433,29 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     if (!input.knownPhysicalId) {
       return null;
     }
-    if (input.knownPhysicalId.includes(':evaluator/')) {
-      return {
-        physicalId: input.knownPhysicalId,
-        attributes: {
-          EvaluatorArn: input.knownPhysicalId,
-          EvaluatorId: evaluatorIdFromArn(input.knownPhysicalId),
-        },
-      };
+    // Issue #3627: both forms are read back, so the record carries `Status` /
+    // `CreatedAt` as `create()` records them; the ARN form made no AWS call and
+    // the resolver served the ARN for both. A missing evaluator is `null`.
+    const isArn = input.knownPhysicalId.includes(':evaluator/');
+    let response;
+    try {
+      response = await this.client.send(
+        new GetEvaluatorCommand({ evaluatorId: evaluatorIdFromArn(input.knownPhysicalId) })
+      );
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return null;
+      throw err;
     }
-    const response = await this.client.send(
-      new GetEvaluatorCommand({ evaluatorId: input.knownPhysicalId })
-    );
+    const evaluatorArn = isArn ? input.knownPhysicalId : response.evaluatorArn;
+    if (!evaluatorArn) return null;
     return {
-      physicalId: response.evaluatorArn!,
-      attributes: {
-        EvaluatorArn: response.evaluatorArn!,
-        EvaluatorId: response.evaluatorId ?? input.knownPhysicalId,
-      },
+      physicalId: evaluatorArn,
+      attributes: definedAttributes({
+        EvaluatorArn: evaluatorArn,
+        EvaluatorId: response.evaluatorId ?? evaluatorIdFromArn(input.knownPhysicalId),
+        Status: response.status,
+        CreatedAt: response.createdAt?.toISOString(),
+      }),
     };
   }
 }

@@ -11,6 +11,7 @@ import {
   type ParameterType,
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -878,7 +879,34 @@ export class SSMParameterProvider implements ResourceProvider {
         // `GetParameter` above ALREADY reports the authoritative ARN, so prefer
         // the value AWS holds over deriving one.
         const arn = resp.Parameter?.ARN;
-        return { physicalId: explicit, attributes: { ...(arn !== undefined && { Arn: arn }) } };
+        // Issue #3627: `Type` / `Value` too, the rest of the map `create()`
+        // records; the resolver has no arm for them, so after an import they
+        // resolved to the parameter NAME.
+        //
+        // `Value` ONLY when the template declares it as a plain literal.
+        // `GetParameter` returns the PLAINTEXT a `{{resolve:...}}` dynamic
+        // reference or a `Ref` to a NoEcho parameter put there, and nothing on
+        // these paths holds a needle for it: the #1852 heal re-reads through
+        // this method for an UNCHANGED record, whose scrub has no needles and
+        // relies on the read itself returning nothing sensitive, and the import
+        // scan's needles are only what THIS run resolved (a NoEcho parameter's
+        // `Default`, a secret's current version). A literal cannot hide a
+        // secret, so recording it is the `create()` parity. The heal passes the
+        // record's already-redacted properties and import passes the
+        // Ref-substituted template, and both keep a reference visible as either
+        // an object or `{{resolve:` text. (`WithDecryption` stays off, so a
+        // `SecureString` adopted via `--resource` would yield ciphertext, never
+        // plaintext; CloudFormation cannot create one.)
+        const declared = input.properties?.['Value'];
+        const literalValue = typeof declared === 'string' && !declared.includes('{{resolve:');
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            Type: resp.Parameter?.Type,
+            ...(literalValue && { Value: resp.Parameter?.Value }),
+            Arn: arn,
+          }),
+        };
       } catch (err) {
         if (err instanceof ParameterNotFound) return null;
         throw err;
