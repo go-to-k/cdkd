@@ -126,15 +126,25 @@ export class Route53Stack extends cdk.Stack {
     // Exercises the #609 GeoProximityLocation backfill: a geoproximity
     // routing-policy RecordSet (requires a setIdentifier + an anchor — here
     // awsRegion, the simplest anchor needing no extra resource — plus a bias).
-    new route53.CfnRecordSet(this, 'GeoProximityRecord', {
+    //
+    // Written as a RAW property override, not the L1 `geoProximityLocation`
+    // prop (issue #3578). AWS removed `GeoProximityLocation` from the
+    // AWS::Route53::RecordSet CloudFormation schema, and aws-cdk-lib regenerates
+    // `CfnRecordSetProps` from that schema, so newer releases (2.270.0 here) no
+    // longer have the prop. This fixture runs through Node's type stripping, so
+    // nothing type-checks the props object: the unknown key was silently
+    // DROPPED from the synthesized template, and Route 53 then refused a
+    // routing-policy record carrying a SetIdentifier but no policy. cdkd's
+    // provider still forwards the field (the SDK's ResourceRecordSet keeps it).
+    const geoRecord = new route53.CfnRecordSet(this, 'GeoProximityRecord', {
       hostedZoneId: zone.hostedZoneId,
       name: `geo.cdkd-test-${this.account}.internal`,
       type: 'A',
       ttl: '300',
       resourceRecords: ['198.51.100.1'],
       setIdentifier: 'geo-use1',
-      geoProximityLocation: { awsRegion: 'us-east-1', bias: 10 },
     });
+    geoRecord.addPropertyOverride('GeoProximityLocation', { AWSRegion: 'us-east-1', Bias: 10 });
 
     // A CIDR collection backing the CidrRoutingConfig record below.
     // AWS::Route53::CidrCollection has NO cdkd SDK provider — it routes via
