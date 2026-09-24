@@ -1,14 +1,14 @@
 {
   "resourceType": "AWS::EMR::InstanceGroupConfig",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-09-24",
   "properties": [
     "AutoScalingPolicy",
     "BidPrice",
     "Configurations",
     "CustomAmiId",
     "EbsConfiguration",
-    "Id",
     "InstanceCount",
+    "InstanceGroupId",
     "InstanceRole",
     "InstanceType",
     "JobFlowId",
@@ -16,7 +16,7 @@
     "Name"
   ],
   "readOnlyProperties": [
-    "Id"
+    "InstanceGroupId"
   ],
   "createOnlyProperties": [
     "BidPrice",
@@ -30,7 +30,8 @@
     "Name"
   ],
   "primaryIdentifier": [
-    "Id"
+    "InstanceGroupId",
+    "JobFlowId"
   ],
   "nestedProperties": {
     "AutoScalingPolicy": [
@@ -129,7 +130,7 @@
       "EbsConfiguration": "object",
       "InstanceRole": "scalar",
       "CustomAmiId": "scalar",
-      "Id": "scalar",
+      "InstanceGroupId": "scalar",
       "Configurations": "array",
       "InstanceType": "scalar",
       "Market": "scalar",
@@ -160,7 +161,7 @@
       "EbsBlockDeviceConfigs": "array",
       "EbsOptimized": "scalar"
     },
-    "Configuration": {
+    "AppConfiguration": {
       "ConfigurationProperties": "object",
       "Configurations": "array",
       "Classification": "scalar"
