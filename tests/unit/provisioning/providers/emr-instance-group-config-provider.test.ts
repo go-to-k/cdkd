@@ -119,7 +119,7 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     vi.clearAllMocks();
   });
 
-  it('adds the group, polls PROVISIONING → RUNNING, returns physicalId + Id attribute', async () => {
+  it('adds the group, polls PROVISIONING → RUNNING, returns physicalId + Id / InstanceGroupId attributes', async () => {
     routeSend({
       AddInstanceGroupsCommand: { JobFlowId: CLUSTER_ID, InstanceGroupIds: [GROUP_ID] },
       ListInstanceGroupsCommand: [groupOf('PROVISIONING'), groupOf('BOOTSTRAPPING'), groupOf('RUNNING')],
@@ -128,7 +128,7 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     const result = await newProvider().create('Grp', RESOURCE_TYPE, BASE_PROPS);
 
     expect(result.physicalId).toBe(GROUP_ID);
-    expect(result.attributes).toEqual({ Id: GROUP_ID });
+    expect(result.attributes).toEqual({ Id: GROUP_ID, InstanceGroupId: GROUP_ID });
 
     const add = callsOf(AddInstanceGroupsCommand);
     expect(add).toHaveLength(1);
@@ -474,9 +474,10 @@ describe('EMRInstanceGroupConfigProvider getAttribute', () => {
     vi.clearAllMocks();
   });
 
-  it('returns the physical id for Id and undefined for anything else', async () => {
+  it('returns the physical id for Id and InstanceGroupId, undefined for anything else', async () => {
     const provider = newProvider();
     expect(await provider.getAttribute(GROUP_ID, RESOURCE_TYPE, 'Id')).toBe(GROUP_ID);
+    expect(await provider.getAttribute(GROUP_ID, RESOURCE_TYPE, 'InstanceGroupId')).toBe(GROUP_ID);
     expect(await provider.getAttribute(GROUP_ID, RESOURCE_TYPE, 'Other')).toBeUndefined();
     expect(mockSend).not.toHaveBeenCalled();
   });
