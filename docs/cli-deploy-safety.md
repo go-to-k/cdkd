@@ -182,9 +182,10 @@ Three exceptions:
   refused while the same property is still named in
   `--prefer-sdk-route`, so drop the entry in the same run. A
   stateful type also needs
-  [`--force-stateful-recreation`](#force-stateful-recreation), and a type whose
-  provider declines the Cloud Control fallback cannot be recreated that way at
-  all.
+  [`--force-stateful-recreation`](#force-stateful-recreation). A type the Cloud
+  Control route cannot serve (no Cloud Control handlers, or a provider that
+  declines the fallback) cannot be recreated that way at all, and removing the
+  flag makes its deploy refuse at pre-flight; the warn line says so.
 
 ### When to use it
 
