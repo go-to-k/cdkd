@@ -305,7 +305,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         ])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `Got '${HOSTILE.stackA.clean}' and '${HOSTILE.stackB.clean}'.`
+        `Got ${JSON.stringify(HOSTILE.stackA.clean)} and ${JSON.stringify(HOSTILE.stackB.clean)}.`
       );
       expectNoForgingIn([reportedError()]);
     });
@@ -318,7 +318,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await expect(
         runOrphan(['StackA/A', 'StackB/B', '--app', 'noop', '--yes'])
       ).rejects.toThrow();
-      expect(reportedError()).toContain("Got 'StackA' and 'StackB'.");
+      expect(reportedError()).toContain("Got StackA and StackB.");
     });
   });
 
@@ -335,7 +335,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan([`${HOSTILE.stackA.raw}/Nope`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       const message = reportedError();
-      expect(message).toContain(`not found in template for stack '${HOSTILE.stackA.clean}'.`);
+      expect(message).toContain(`not found in template for stack ${JSON.stringify(HOSTILE.stackA.clean)}.`);
       expect(message).toContain(`"${HOSTILE.cdkPathA.clean}"`);
       expect(message).toContain(`"${HOSTILE.cdkPathB.clean}"`);
       // Scoped to the ASSEMBLY-DERIVED tail. The head echoes the operator's own
@@ -355,7 +355,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ]);
       await expect(runOrphan(['MyStack/Nope', '--app', 'noop', '--yes'])).rejects.toThrow();
       const message = reportedError();
-      expect(message).toContain("not found in template for stack 'MyStack'.");
+      expect(message).toContain("not found in template for stack MyStack.");
       expect(message).toContain('Available paths:\n  MyStack/Bucket/Resource\n  MyStack/Queue/Resource');
     });
   });
@@ -377,7 +377,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `No state found for stack '${HOSTILE.stackA.clean}' (${HOSTILE.region.clean}).`
+        `No state found for stack ${JSON.stringify(HOSTILE.stackA.clean)} (${HOSTILE.region.clean}).`
       );
       expectNoForgingIn([reportedError()]);
     });
@@ -387,7 +387,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValue(undefined);
       await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
-      expect(reportedError()).toContain("No state found for stack 'MyStack' (us-east-1).");
+      expect(reportedError()).toContain("No state found for stack MyStack (us-east-1).");
     });
   });
 
@@ -409,7 +409,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan([`${HOSTILE.stackA.raw}/A`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `Stack '${HOSTILE.stackA.clean}' has state in multiple regions: ` +
+        `Stack ${JSON.stringify(HOSTILE.stackA.clean)} has state in multiple regions: ` +
           `"${HOSTILE.region.clean}", eu-west-1.`
       );
       expectNoForgingIn([reportedError()]);
@@ -427,7 +427,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ]);
       await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
       expect(reportedError()).toContain(
-        "Stack 'MyStack' has state in multiple regions: us-east-1, (legacy)."
+        "Stack MyStack has state in multiple regions: us-east-1, (legacy)."
       );
     });
   });
@@ -449,7 +449,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       ).rejects.toThrow();
       const message = reportedError();
       expect(message).toContain(
-        `Resource(s) not in state for stack '${HOSTILE.stackA.clean}' ` +
+        `Resource(s) not in state for stack ${JSON.stringify(HOSTILE.stackA.clean)} ` +
           `(${HOSTILE.region.clean}): "${HOSTILE.logicalId.clean}".`
       );
       expect(message).toContain(`Available logical IDs: "${HOSTILE.otherLogicalId.clean}"`);
@@ -462,7 +462,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
       const message = reportedError();
       expect(message).toContain(
-        "Resource(s) not in state for stack 'MyStack' (us-east-1): Bucket.\n" +
+        "Resource(s) not in state for stack MyStack (us-east-1): Bucket.\n" +
           'Available logical IDs: Other'
       );
       // Neither half gains quotes for an ordinary logical id, which is what
@@ -541,7 +541,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan([`${HOSTILE.stackA.raw}/A`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `No state found for stack '${HOSTILE.stackA.clean}'. ` +
+        `No state found for stack ${JSON.stringify(HOSTILE.stackA.clean)}. ` +
           "Run 'cdkd state list' to see available stacks."
       );
       expectNoForgingIn([reportedError()]);
@@ -552,7 +552,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       mockListStacks.mockResolvedValue([]);
       await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
       expect(reportedError()).toContain(
-        "No state found for stack 'MyStack'. Run 'cdkd state list' to see available stacks."
+        "No state found for stack MyStack. Run 'cdkd state list' to see available stacks."
       );
     });
   });
@@ -594,12 +594,12 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes']);
       const lines = infoLines();
       expect(lines).toContain(
-        `Target: ${HOSTILE.stackA.clean} (${HOSTILE.region.clean}); ` +
+        `Target: ${JSON.stringify(HOSTILE.stackA.clean)} (${JSON.stringify(HOSTILE.region.clean)}); ` +
           `orphaning 1 resource(s): ${HOSTILE.logicalId.clean}`
       );
       expect(lines).toContain(
-        `Orphaned 1 resource(s) from state: ${HOSTILE.stackA.clean} ` +
-          `(${HOSTILE.region.clean}). ` +
+        `Orphaned 1 resource(s) from state: ${JSON.stringify(HOSTILE.stackA.clean)} ` +
+          `(${JSON.stringify(HOSTILE.region.clean)}). ` +
           'AWS resources are still in AWS; cdkd will no longer manage them.'
       );
       // The rewrite audit row names the SIBLING that referenced the orphan, and
@@ -649,7 +649,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         ])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `No state found for stack '${HOSTILE.stackA.clean}' in region 'eu-west-1'. ` +
+        `No state found for stack ${JSON.stringify(HOSTILE.stackA.clean)} in region eu-west-1. ` +
           `Available regions: "${HOSTILE.region.clean}".`
       );
       expectNoForgingIn([reportedError()]);
@@ -664,7 +664,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan(['MyStack/A', '--stack-region', 'eu-west-1', '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        "No state found for stack 'MyStack' in region 'eu-west-1'. " +
+        'No state found for stack MyStack in region eu-west-1. ' +
           'Available regions: us-east-1.'
       );
     });
@@ -880,7 +880,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop']);
       const question = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
       expect(question).toContain(
-        `from cdkd state for ${HOSTILE.stackA.clean} (${HOSTILE.region.clean})?`
+        `from cdkd state for ${JSON.stringify(HOSTILE.stackA.clean)} (${JSON.stringify(HOSTILE.region.clean)})?`
       );
       expectNoForgingIn([question]);
       expect(mockSaveState).not.toHaveBeenCalled();

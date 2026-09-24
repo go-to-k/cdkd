@@ -40,7 +40,7 @@ describe('resolveVerboseTemplatePath', () => {
     const { out } = outdir();
 
     expect(() => resolveVerboseTemplatePath(out, '../../evil')).toThrow(
-      /Stack '\.\.\/\.\.\/evil' would write its template to a path that resolves to .*evil\.template\.json, outside/
+      /Stack \.\.\/\.\.\/evil would write its template to a path that resolves to .*evil\.template\.json, outside/
     );
   });
 

@@ -238,7 +238,8 @@ echo "    OK: producer state.exportNames == [\"${SHARED_NAME}\"]"
 # The index still holds the decoy's v8-era plain-name entry at this point, so
 # the producer's re-index overwrites an entry another stack owns — the v9
 # binary must SAY so (and name the transitional cause) rather than stay silent.
-if ! grep -q "is published by both '${DECOY_STACK}'" "${PRODUCER_V9_LOG}"; then
+# Bare since go-to-k/cdkd#3617: a plain stack name renders without quotes.
+if ! grep -q "is published by both ${DECOY_STACK} " "${PRODUCER_V9_LOG}"; then
   echo "FAIL: producer v9 deploy did not warn about the decoy's stale index entry" >&2
   cat "${PRODUCER_V9_LOG}"
   exit 1

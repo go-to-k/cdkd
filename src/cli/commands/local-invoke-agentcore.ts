@@ -1393,7 +1393,7 @@ async function resolveAgentCoreCodeImage(
     // cdkd-raw-beside-safe: `getEmbedConfig().cliName` is this binary's own
     // configured name, not a value the assembly or the user supplies.
     throw new CdkdError(
-      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle (asset ${displaySafe(code.codeAssetHash)}) was not found ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} code bundle (asset ${displaySafe(code.codeAssetHash)}) was not found ` +
         `in the cdk.out asset manifest. ${getEmbedConfig().cliName} invoke-agentcore runs a local from-source ` +
         `build of a fromCodeAsset bundle — re-synthesize the app so the asset is staged in cdk.out and retry. ` +
         `(A fromS3 bundle is downloaded from S3 instead; this runtime has no literal Code.S3.Bucket.)`,
@@ -1416,7 +1416,7 @@ async function resolveAgentCoreCodeImage(
     throw new CdkdError(
       // `sourceDir` is manifest-derived, and this message is the one READER of
       // the value the containment check above produced (go-to-k/cdkd#3277).
-      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle source ${displayAssemblyPath(sourceDir)} does not exist or is not a ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} code bundle source ${displayAssemblyPath(sourceDir)} does not exist or is not a ` +
         `directory. Re-synthesize the app and retry.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
     );

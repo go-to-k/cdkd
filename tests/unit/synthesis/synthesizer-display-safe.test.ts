@@ -279,7 +279,7 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
           { region: 'us-east-1' }
         )
       );
-      expect(message.startsWith(`Stack '${HOSTILE.oversizeStack.clean}' uses CloudFormation`)).toBe(
+      expect(message.startsWith(`Stack ${JSON.stringify(HOSTILE.oversizeStack.clean)} uses CloudFormation`)).toBe(
         true
       );
       expect(hasForgingCharacter(message)).toBe(false);
@@ -294,7 +294,7 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
           { region: 'us-east-1' }
         )
       );
-      expect(message.startsWith("Stack 'ProdStack' uses CloudFormation")).toBe(true);
+      expect(message.startsWith("Stack ProdStack uses CloudFormation")).toBe(true);
     });
   });
 
@@ -315,7 +315,7 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
       );
       const lines = infoLines();
       expect(lines[0]).toBe(
-        `[macros] Expanding CloudFormation macros for stack '${HOSTILE.infoStack.clean}' ` +
+        `[macros] Expanding CloudFormation macros for stack ${JSON.stringify(HOSTILE.infoStack.clean)} ` +
           `via CFn round-trip (transforms: ${HOSTILE.transformA.clean}, ` +
           `${HOSTILE.transformB.clean}; may take 30-60s)...`
       );
@@ -331,7 +331,7 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
         { region: 'us-east-1', accountId: '123456789012' }
       );
       expect(infoLines()[0]).toBe(
-        "[macros] Expanding CloudFormation macros for stack 'ProdStack' via CFn round-trip " +
+        "[macros] Expanding CloudFormation macros for stack ProdStack via CFn round-trip " +
           '(transforms: AWS::Serverless-2016-10-31; may take 30-60s)...'
       );
     });

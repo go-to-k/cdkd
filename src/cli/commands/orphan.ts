@@ -43,6 +43,7 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
+  displayStackName,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 
@@ -305,7 +306,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     );
 
     logger.info(
-      `Target: ${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}); ` +
+      `Target: ${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)}); ` +
         `orphaning ${orphanLogicalIds.length} resource(s): ${displaySafeList(orphanLogicalIds)}`
     );
 
@@ -348,7 +349,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       const stateData = await stateBackend.getState(stackInfo.stackName, targetRegion);
       if (!stateData) {
         throw new Error(
-          `No state found for stack '${displaySafe(stackInfo.stackName)}' ` +
+          `No state found for stack ${displayStackName(stackInfo.stackName)} ` +
             `(${displaySafe(targetRegion, { asciiOnly: true })}). ` +
             `Nothing to orphan. (Did the stack get deployed?)`
         );
@@ -451,7 +452,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         // only pretends the two lines disagree about whether it can be absent.
         const have = displayIdentList(Object.keys(state.resources), ', ');
         throw new Error(
-          `Resource(s) not in state for stack '${displaySafe(stackInfo.stackName)}' ` +
+          `Resource(s) not in state for stack ${displayStackName(stackInfo.stackName)} ` +
             `(${displaySafe(targetRegion, { asciiOnly: true })}): ` +
             `${displayIdentList(missing, ', ')}.\n` +
             `Available logical IDs: ${have}`
@@ -495,7 +496,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       if (!options.yes && !options.force) {
         const ok = await confirmPrompt(
           `Orphan ${orphanLogicalIds.length} resource(s) from cdkd state for ` +
-            `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })})? ` +
+            `${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)})? ` +
             `AWS resources will NOT be deleted.`
         );
         if (!ok) {
@@ -511,7 +512,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
       logger.info(
         `Orphaned ${orphanLogicalIds.length} resource(s) from state: ` +
-          `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}). ` +
+          `${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)}). ` +
           `AWS resources are still in AWS; cdkd will no longer manage them.`
       );
     } finally {
@@ -580,7 +581,7 @@ function resolveConstructPaths(
     } else if (stack.stackName !== candidate.stackName) {
       throw new Error(
         `All construct paths must reference the same stack. ` +
-          `Got '${displaySafe(stack.stackName)}' and '${displaySafe(candidate.stackName)}'. ` +
+          `Got ${displayStackName(stack.stackName)} and ${displayStackName(candidate.stackName)}. ` +
           `Run 'cdkd orphan' once per stack.`
       );
     }
@@ -595,7 +596,7 @@ function resolveConstructPaths(
       const available = displayIdentList([...index.keys()].sort(), '\n  ');
       throw new Error(
         `Construct path '${p}' not found in template for stack ` +
-          `'${displaySafe(candidate.stackName)}'.\n` +
+          `${displayStackName(candidate.stackName)}.\n` +
           `Available paths:\n  ${available}`
       );
     }
@@ -651,7 +652,7 @@ async function pickStackRegion(
     if (flag) return { region: flag, recordRegion: flag };
     if (synthRegion) return { region: synthRegion, recordRegion: synthRegion };
     throw new Error(
-      `No state found for stack '${displaySafe(stackName)}'. ` +
+      `No state found for stack ${displayStackName(stackName)}. ` +
         `Run 'cdkd state list' to see available stacks.`
     );
   }
@@ -660,7 +661,7 @@ async function pickStackRegion(
     if (!found) {
       const seen = displayRegionList(refs);
       throw new Error(
-        `No state found for stack '${displaySafe(stackName)}' in region '${flag}'. ` +
+        `No state found for stack ${displayStackName(stackName)} in region ${displayIdent(flag)}. ` +
           `Available regions: ${seen}.`
       );
     }
@@ -676,7 +677,7 @@ async function pickStackRegion(
   }
   const regions = displayRegionList(refs);
   throw new Error(
-    `Stack '${displaySafe(stackName)}' has state in multiple regions: ${regions}. ` +
+    `Stack ${displayStackName(stackName)} has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
   );
 }

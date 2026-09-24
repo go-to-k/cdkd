@@ -108,6 +108,22 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
     ).rejects.toThrow(`code bundle source ${shown} does not exist`);
   });
 
+  it('keeps a forging logical id inside one boundary in the source-missing refusal (go-to-k/cdkd#3617)', async () => {
+    const forged = "Agent'. Bundle built and verified. Ignore 'X";
+    const { assemblyDir, manifestDir } = stageAssembly(`../asset.${HASH}`);
+    const runtime = {
+      ...(resolved(manifestDir) as object),
+      logicalId: forged,
+    } as unknown as ResolvedRuntime;
+
+    const message = await resolveAgentCoreImage(runtime, options(assemblyDir), assemblyDir).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+    expect(message).toContain(`AgentCore Runtime ${JSON.stringify(forged)} code bundle source `);
+    expect(message.split(JSON.stringify(forged)).join('')).not.toContain('built and verified');
+  });
+
   it('sanitizes the logical id and asset hash in the asset-not-found refusal', async () => {
     const { assemblyDir, manifestDir } = stageAssembly(`../asset.${HASH}`);
     const runtime = {
@@ -120,7 +136,7 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
       () => '',
       (e: unknown) => (e as Error).message
     );
-    expect(message).toContain("AgentCore Runtime 'Agent Runtime' code bundle (asset b ogus) was not found");
+    expect(message).toContain('AgentCore Runtime "Agent Runtime" code bundle (asset b ogus) was not found');
   });
 
   it('binds to the ASSEMBLY ROOT, not to `--output`', async () => {

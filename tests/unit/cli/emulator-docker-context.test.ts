@@ -201,7 +201,7 @@ describe('assertEmulatorDockerContextsContained', () => {
     expect(thrown).toBeInstanceOf(LocalInvokeBuildError);
     expect((thrown as Error).message).toMatch(
       new RegExp(
-        `^Refusing to build container image asset '${HASH}' of stack 'StageStack': ` +
+        `^Refusing to build container image asset ${HASH} of stack StageStack: ` +
           `asset source\\.directory=\\.\\./\\.\\./victim which resolves to .*victim, outside`
       )
     );

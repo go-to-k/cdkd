@@ -9,7 +9,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displayStackName } from '../../utils/display-safe.js';
 import { LocalInvokeBuildError } from '../../utils/error-handler.js';
 import { getLogger } from '../../utils/logger.js';
 
@@ -91,7 +91,7 @@ export function assertEmulatorDockerContextsContained(
     if (!manifestFile.contained) {
       throw new LocalInvokeBuildError(
         `Refusing to build container images: the asset manifest for stack ` +
-          `'${displaySafe(stack.stackName)}' ${renderAssemblyPathEscape(manifestFile, manifestDir)}`
+          `${displayStackName(stack.stackName)} ${renderAssemblyPathEscape(manifestFile, manifestDir)}`
       );
     }
     const dockerImages = readDockerImages(manifestFile.path);
@@ -106,8 +106,8 @@ export function assertEmulatorDockerContextsContained(
         assetOutdir,
         wrapError: (message) =>
           new LocalInvokeBuildError(
-            `Refusing to build container image asset '${displaySafe(assetId)}' of stack ` +
-              `'${displaySafe(stack.stackName)}': ${message}`
+            `Refusing to build container image asset ${displayIdent(assetId)} of stack ` +
+              `${displayStackName(stack.stackName)}: ${message}`
           ),
       });
     }

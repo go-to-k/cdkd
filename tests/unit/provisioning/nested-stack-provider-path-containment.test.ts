@@ -60,7 +60,7 @@ describe('NestedStackProvider.indexGrandchildTemplates containment', () => {
     const { child } = assembly();
 
     expect(() => indexer()(template('../outside.json'), child)).toThrow(
-      /NestedStackProvider: nested-stack 'Grand' has Metadata\['aws:asset:path'\]=\.\.\/outside\.json which resolves to .*outside\.json, outside/
+      /NestedStackProvider: nested-stack Grand has Metadata\['aws:asset:path'\]=\.\.\/outside\.json which resolves to .*outside\.json, outside/
     );
   });
 

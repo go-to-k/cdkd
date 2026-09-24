@@ -8,7 +8,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { realpathSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
   displayAssemblyPath,
@@ -244,7 +244,7 @@ export function resolveDockerContextDirectory(opts: DockerContextResolveOptions)
 
 /** One spelling of the warning subject, so the two arms cannot drift. */
 function dockerSubject(assetId: string | undefined): string {
-  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
+  return assetId === undefined ? 'A Docker asset' : `Docker asset ${displayIdent(assetId)}`;
 }
 
 /** Every value {@link assertCdkLocalDockerContextContained} decides on, as a bag. */

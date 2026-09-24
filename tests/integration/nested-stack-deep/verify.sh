@@ -242,8 +242,9 @@ if ! grep -qF -- "contains a cycle" <<<"${CYCLE_OUT}"; then
   fi
   exit 1
 fi
-if ! grep -q -- "'Child' (.*) -> 'Grandchild' (.*)" <<<"${CYCLE_OUT}"; then
-  echo "FAIL: the refusal did not name the cycle path ('Child' -> 'Grandchild')"
+# Bare since go-to-k/cdkd#3617: a plain logical id renders without quotes.
+if ! grep -q -- "Child (.*) -> Grandchild (.*)" <<<"${CYCLE_OUT}"; then
+  echo "FAIL: the refusal did not name the cycle path (Child -> Grandchild)"
   exit 1
 fi
 echo "  OK: refused (rc=${CYCLE_RC}) naming the cycle"
