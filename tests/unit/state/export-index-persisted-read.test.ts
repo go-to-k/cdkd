@@ -553,14 +553,16 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
 
     await store.patchEntry(
       'MyExport',
-      { value: 'mine', producerStack: `Mine${FORGED}`, producerRegion: 'us-east-1' },
-      { requireOwner: { producerStack: `Mine${FORGED}`, producerRegion: 'us-east-1' } }
+      { value: 'mine', producerStack: `Mine${FORGED}`, producerRegion: `r${FORGED}` },
+      { requireOwner: { producerStack: `Mine${FORGED}`, producerRegion: `r${FORGED}` } }
     );
     const said = loggerSpies.warn.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(said).toContain(`Expected producer ${JSON.stringify(`Mine${FORGED}`)} (us-east-1), found `);
+    expect(said).toContain(
+      `Expected producer ${JSON.stringify(`Mine${FORGED}`)} (${JSON.stringify(`r${FORGED}`)}), found `
+    );
     expect(said).toContain(`${JSON.stringify(FORGED)} (us-east-1)`);
     expect(
-      said.split(JSON.stringify(`Mine${FORGED}`)).join('').split(JSON.stringify(FORGED)).join('')
+      [`Mine${FORGED}`, `r${FORGED}`, FORGED].reduce((t, v) => t.split(JSON.stringify(v)).join(''), said)
     ).not.toContain('write proceeding');
   });
 

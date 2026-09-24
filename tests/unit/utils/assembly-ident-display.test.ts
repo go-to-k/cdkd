@@ -154,10 +154,10 @@ describe('the nested-template tree refusal', () => {
         logicalId: FORGED,
         assetPath: '/abs.json',
       },
-      'P',
+      FORGED,
       'deploy'
     );
-    expect(absolute).toContain(`has nested stack ${SHOWN} (reached through`);
+    expect(absolute).toContain(`under stack ${SHOWN} has nested stack ${SHOWN} (reached through`);
     expect(outside(absolute)).not.toContain('Contained and healthy');
 
     const escaping = renderNestedTemplateTreeDefect(
@@ -169,10 +169,10 @@ describe('the nested-template tree refusal', () => {
         escape: { contained: false, escape: 'lexical', path: '/x.json' },
         dir: '/out',
       },
-      'P',
+      FORGED,
       'deploy'
     );
-    expect(escaping).toContain(`has nested stack ${SHOWN} (reached through`);
+    expect(escaping).toContain(`under stack ${SHOWN} has nested stack ${SHOWN} (reached through`);
     expect(outside(escaping)).not.toContain('Contained and healthy');
   });
 
@@ -210,6 +210,11 @@ describe("a nested-stack logical id in NestedStackProvider's indexer (diff --rec
       const hostile = messageOf(() => index(nestedRow(FORGED, '/abs/child.json'), dir));
       expect(hostile).toContain(`${noun} ${SHOWN} has Metadata['aws:asset:path']=`);
       expect(outside(hostile)).not.toContain('Contained and healthy');
+
+      // The escaping arm, a separate subject from the absolute tripwire above.
+      const escaping = messageOf(() => index(nestedRow(FORGED, '../out.json'), dir));
+      expect(escaping).toContain(`${noun} ${SHOWN} has Metadata['aws:asset:path']=../out.json which`);
+      expect(outside(escaping)).not.toContain('Contained and healthy');
 
       const plain = messageOf(() => index(nestedRow('Child', '/abs/child.json'), dir));
       expect(plain).toContain(`${noun} Child has Metadata['aws:asset:path']=/abs/child.json`);

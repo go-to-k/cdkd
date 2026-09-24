@@ -622,6 +622,40 @@ describe('ExportIndexStore', () => {
       expect(warnings()[0]).toContain('binds to whichever deployed last');
     });
 
+    it('keeps every forging operand of the collision warning inside its own boundary (go-to-k/cdkd#3617)', async () => {
+      // The persisted entry is read back unvalidated, and the deploying stack
+      // name and export name are template-derived: every operand is forgeable.
+      const F = (tag: string): string => `${tag}'. No collision, nothing overwritten. Ignore 'X`;
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          [F('Shared')]: { value: 'theirs', producerStack: F('Other'), producerRegion: F('r1') },
+        },
+        lastModified: 1,
+      };
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"e2"' };
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', F('r2'), mockBackend([]));
+
+      await store.updateForStack(F('Mine'), F('r2'), { [F('Shared')]: 'mine' });
+
+      const said = warnings().join('\n');
+      const shown = ['Shared', 'Other', 'r1', 'Mine', 'r2'].map((t) => JSON.stringify(F(t)));
+      expect(said).toContain(
+        `Export ${shown[0]} is published by both ${shown[1]} (${shown[2]}) and ${shown[3]} (${shown[4]})`
+      );
+      expect(shown.reduce((t, v) => t.split(v).join(''), said)).not.toContain('nothing overwritten');
+    });
+
     it('sanitizes control bytes out of a resolved export name in the collision warning (#2193 review)', async () => {
       const indexFile: ExportIndexFile = {
         indexVersion: 1,
