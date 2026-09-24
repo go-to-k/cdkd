@@ -392,8 +392,8 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       // the same group, so DeleteSecurityGroup races them: AWS answers
       // DependencyViolation (or InvalidGroup.NotFound if the delete wins),
       // the cleanup only WARNS, and the half-wired group is orphaned — the
-      // exact outcome the cleanup exists to prevent. `Promise.allSettled`
-      // makes the group quiescent first.
+      // exact outcome the cleanup exists to prevent. Draining every branch
+      // first makes the group quiescent.
       //
       // So the assertion is on the in-flight COUNT at the moment the delete
       // is issued, not on the delete's existence.
@@ -437,7 +437,7 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       });
       // Let the ingress branch reject and the siblings park, then unblock
       // them. Under Promise.all the create has already rejected (and issued
-      // its racing delete) by the time this fires; under allSettled this is
+      // its racing delete) by the time this fires; under the drain this is
       // what lets the create finish at all.
       const releaseTimer = setTimeout(() => releaseSlowWiring(), 10);
 
@@ -451,6 +451,108 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       expect(inFlightAtDelete).toBe(0);
       // Exactly one cleanup attempt — not one per rejected branch.
       expect(deleteCount).toBe(1);
+    });
+
+    describe('which of two wiring rejections is rethrown (issue #2804)', () => {
+      // `applyTags` swallows its own failure, so the two branches that can
+      // reject are ingress (array position 1) and egress (position 2). Each
+      // case makes one reject at once and holds the other behind a gate that
+      // opens only AFTER the first rejection, so "first in time" and "first
+      // by position" name different errors whenever the egress one fires first.
+      const rules = {
+        GroupDescription: 'Two wiring branches fail',
+        SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: 'bogus' }],
+        SecurityGroupEgress: [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: 'bogus' }],
+      };
+
+      function failBoth(opts: {
+        first: 'ingress' | 'egress';
+        firstReason: unknown;
+        secondReason: unknown;
+      }): { deletedAfterBothSettled: () => boolean } {
+        let openGate!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          openGate = resolve;
+        });
+        let settledBranches = 0;
+        let deleteSawSettled = -1;
+        const firstCommand =
+          opts.first === 'ingress'
+            ? AuthorizeSecurityGroupIngressCommand
+            : AuthorizeSecurityGroupEgressCommand;
+        const secondCommand =
+          opts.first === 'ingress'
+            ? AuthorizeSecurityGroupEgressCommand
+            : AuthorizeSecurityGroupIngressCommand;
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof CreateSecurityGroupCommand) return { GroupId: 'sg-two-fail' };
+          if (cmd instanceof DeleteSecurityGroupCommand) {
+            deleteSawSettled = settledBranches;
+            return {};
+          }
+          if (cmd instanceof firstCommand) {
+            settledBranches++;
+            // Open the gate only once this rejection is already on its way.
+            setTimeout(() => openGate(), 0);
+            throw opts.firstReason;
+          }
+          if (cmd instanceof secondCommand) {
+            await gate;
+            settledBranches++;
+            throw opts.secondReason;
+          }
+          return {}; // the egress revoke
+        });
+        return { deletedAfterBothSettled: () => deleteSawSettled === 2 };
+      }
+
+      it('rethrows the EGRESS rejection when it fails first, although ingress comes first in the array', async () => {
+        const probe = failBoth({
+          first: 'egress',
+          firstReason: new Error('egress failed first'),
+          secondReason: new Error('ingress failed second'),
+        });
+
+        const error = await provider
+          .create('TwoFailSg', 'AWS::EC2::SecurityGroup', rules)
+          .catch((e: unknown) => e);
+
+        expect((error as Error).message).toBe(
+          'Failed to create SecurityGroup TwoFailSg: egress failed first'
+        );
+        expect(probe.deletedAfterBothSettled()).toBe(true);
+      });
+
+      it('rethrows the INGRESS rejection when it fails first (the control: not "last wins")', async () => {
+        const probe = failBoth({
+          first: 'ingress',
+          firstReason: new Error('ingress failed first'),
+          secondReason: new Error('egress failed second'),
+        });
+
+        const error = await provider
+          .create('TwoFailSg', 'AWS::EC2::SecurityGroup', rules)
+          .catch((e: unknown) => e);
+
+        expect((error as Error).message).toBe(
+          'Failed to create SecurityGroup TwoFailSg: ingress failed first'
+        );
+        expect(probe.deletedAfterBothSettled()).toBe(true);
+      });
+
+      it('keeps a first rejection whose reason is undefined rather than letting a later one replace it', async () => {
+        failBoth({
+          first: 'egress',
+          firstReason: undefined,
+          secondReason: new Error('ingress failed second'),
+        });
+
+        const error = await provider
+          .create('TwoFailSg', 'AWS::EC2::SecurityGroup', rules)
+          .catch((e: unknown) => e);
+
+        expect((error as Error).message).toBe('Failed to create SecurityGroup TwoFailSg: undefined');
+      });
     });
 
     it('should not call RevokeSecurityGroupEgress when SecurityGroupEgress is not provided', async () => {
