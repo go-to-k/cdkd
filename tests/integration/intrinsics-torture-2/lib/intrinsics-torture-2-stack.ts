@@ -58,6 +58,14 @@ export class IntrinsicsTorture2Stack extends cdk.Stack {
       default: 'mid',
     });
 
+    // The Fn::Select INDEX by Ref (issue #3574): a Number parameter, which
+    // cdkd coerces to a number. Before the fix the index was never resolved,
+    // so the property became undefined and the SSM create failed.
+    const selectIndexParam = new cdk.CfnParameter(this, 'SelectIndexParam', {
+      type: 'Number',
+      default: 2,
+    });
+
     // ---- Conditions (for the nested Fn::If inside Sub inside Join) ----
     // Always-true condition: AWS::Region equals itself via a param default.
     const alwaysTrue = new cdk.CfnCondition(this, 'AlwaysTrue', {
@@ -74,6 +82,12 @@ export class IntrinsicsTorture2Stack extends cdk.Stack {
         // A present key so the "hit" assertion has something to land on.
         'us-east-1': { theKey: 'nvirginia-hit' },
       },
+    });
+
+    // The Fn::Select INDEX by Fn::FindInMap (issue #3574), as the numeric
+    // STRING a mapping value usually is.
+    new cdk.CfnMapping(this, 'SelectIndexMap', {
+      mapping: { index: { position: '1' } },
     });
 
     // ---- The single real dependency resource: an SNS Topic ----
@@ -106,6 +120,18 @@ export class IntrinsicsTorture2Stack extends cdk.Stack {
     //    1b) Fn::Select[0, Fn::Split(',', <Ref CsvParam>)] -> 'alpha'.
     makeParam('SelectSplit', 'select-split', {
       'Fn::Select': [0, { 'Fn::Split': [',', { Ref: csvParam.logicalId }] }],
+    });
+
+    //    1c) Fn::Select[{Ref: SelectIndexParam=2}, [...]] -> 'index-two' (#3574).
+    makeParam('SelectRefIndex', 'select-ref-index', {
+      'Fn::Select': [{ Ref: selectIndexParam.logicalId }, ['index-zero', 'index-one', 'index-two']],
+    });
+    //    1d) Fn::Select[{Fn::FindInMap -> '1'}, [...]] -> 'index-one' (#3574).
+    makeParam('SelectFindInMapIndex', 'select-findinmap-index', {
+      'Fn::Select': [
+        { 'Fn::FindInMap': ['SelectIndexMap', 'index', 'position'] },
+        ['index-zero', 'index-one', 'index-two'],
+      ],
     });
 
     // 2) Fn::FindInMap enhanced 4th-arg DefaultValue + Ref-driven top key.
