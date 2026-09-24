@@ -137,9 +137,10 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   concurrent suites the 600s watchdog kills lanes with timeouts in untouched
   files. Each agent runs `vp test run <its own suite>`.
 - A lane is killed at 600s of silence inside a tool call: background long runs
-  with a log redirect and wait on ONE `run_in_background` until-loop that exits
-  on EVERY terminal line — never a streaming watcher (`tail -F`, `Monitor`),
-  whose every line re-wakes the lane and pings the parent with a no-op.
+  via `run_in_background` with a log redirect and wake on ITS exit (one
+  notification) — never a per-line watcher (`tail -F`, a line-emitting
+  `Monitor`), whose every line re-wakes the lane and pings the parent with a
+  no-op. A turn ended with nothing in the background is final.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP if the branch carries work you did not write.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
