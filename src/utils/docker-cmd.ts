@@ -880,9 +880,11 @@ function secretsOnArgvAllowed(): boolean {
  * error class BEFORE any `docker run`. The AWS credential set is not refused
  * here (it is warned about by {@link warnFinchArgvExposure}) so finch stays
  * usable for containers that need AWS access. Forwarding them IS what puts
- * them on that argv — notably `--assume-role` session credentials and
- * `--profile` / SSO-resolved ones, which are not in cdkd's own environment
- * (finch itself forwards only that environment's credentials).
+ * them on that argv — notably `--assume-task-role` / `--assume-role` session
+ * credentials and `--profile` / SSO-resolved ones, which are not in cdkd's
+ * own environment
+ * (finch itself forwards that environment's credentials, plus on Windows with
+ * `ecr-login` what `aws configure export-credentials` resolves from it).
  * `subject` is caller-rendered context (e.g. the container name) and is not
  * sanitized here.
  */

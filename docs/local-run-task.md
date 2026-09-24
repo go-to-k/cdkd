@@ -353,7 +353,8 @@ So when `CDK_DOCKER` names finch on macOS or Windows:
   sidecar) are still forwarded, with a warning naming the variables but not
   their values. Forwarding them is what puts them on that command line, which
   matters most for credentials that are not in cdkd's own environment:
-  `--assume-role` session credentials and credentials resolved from
+  `--assume-task-role` session credentials (served by the metadata sidecar;
+  `--assume-role` for `invoke-agentcore`) and credentials resolved from
   `--profile` (including SSO). They are warned about rather than refused so
   that finch stays usable for containers that need AWS access. To keep them off
   the command line, use a client other than finch on macOS or Windows.
