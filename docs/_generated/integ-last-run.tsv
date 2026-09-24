@@ -253,12 +253,12 @@ rollback-replay-cc-generated-name	2026-09-19T18:00:07Z	PASS	144	verify.sh	rc ok,
 rollback-replay-effective-props	2026-09-23T21:27:56Z	PASS	688	verify.sh	CDKD_INTEG_MULTI_REGION=1 cross-region arm (#1741/#3569); drift bounded on #3573; 0 orphans us-east-1+eu-west-1
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-09-24T02:40:00Z	PASS	348	verify.sh	rc ok, orph clean; #3578 fixture fix (GeoProximityLocation via property override)
-s3-analytics-inventory	2026-09-24T06:20:48Z	PASS	145	verify.sh	rc ok, orph clean (#3585)
+s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
 s3-cloudfront	2026-09-24T06:28:51Z	PASS	275	verify.sh	rc ok, orph clean (#3585)
 s3-directory-bucket	2026-09-23T23:54:27Z	PASS	83	verify.sh	rc ok, orph clean (#1981 lane)
 s3-event-notification	2026-09-24T06:18:07Z	PASS	90	verify.sh	rc ok, orph clean (#3585)
-s3-lifecycle	2026-09-24T06:13:17Z	PASS	305	verify.sh	rc ok, orph clean (#3585)
+s3-lifecycle	2026-09-24T07:21:13Z	PASS	276	verify.sh	rc ok, orph clean (#3602)
 s3-object-lock	2026-09-24T06:23:46Z	PASS	60	verify.sh	rc ok, orph clean (#3585)
 s3-replication-and-filter	2026-09-24T06:16:12Z	PASS	110	verify.sh	rc ok, orph clean (#3585)
 s3-subconfig-removal	2026-09-24T06:22:25Z	PASS	80	verify.sh	rc ok, orph clean (#3585)
