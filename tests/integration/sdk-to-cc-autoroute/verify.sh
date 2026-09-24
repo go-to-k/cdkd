@@ -129,6 +129,27 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -z "${STATE_BUCKET:-}" ] && { echo "FAIL: STATE_BUCKET required" >&2; exit 1; }
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 command -v jq >/dev/null || { echo "FAIL: jq required" >&2; exit 1; }
+
+# Step 0: self-diagnosing trigger guard (issue 2648). The whole fixture rests
+# on EvaluationWindow being a silent drop for AWS::CloudWatch::Alarm, and its
+# rationale is `not yet implemented by cdkd` -- backlog position, so a backfill
+# will end it. Without this, that day reads as phase 2 "failing to auto-route",
+# a cdkd defect that is not one.
+echo "==> Step 0: trigger premise guard"
+if ! (cd "${REPO_ROOT}" && node --input-type=module -e "
+const mod = await import('./src/provisioning/property-coverage.generated.ts');
+const table = Object.values(mod).find((v) => v instanceof Map);
+const cov = table && table.get('AWS::CloudWatch::Alarm');
+if (!cov || !cov.silentDrop || !cov.silentDrop.has('EvaluationWindow')) process.exit(1);
+"); then
+  echo "FAIL: AWS::CloudWatch::Alarm.EvaluationWindow is no longer a silent-drop --" >&2
+  echo "      the trigger was backfilled and this fixture's premise is dead. Do NOT" >&2
+  echo "      debug the deploy: move the fixture to a still-silent-drop property" >&2
+  echo "      that meets the three conditions in lib/sdk-to-cc-autoroute-stack.ts." >&2
+  exit 1
+fi
+echo "    OK: EvaluationWindow is still a silent-drop (premise holds)"
+
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
