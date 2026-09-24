@@ -42,6 +42,19 @@ vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   return { ...actual, logger: quiet, getLogger: () => quiet };
 });
 
+// The engine asks the REAL name table whether a type is one cdkd names, and the
+// hostile TYPE is none it knows — it would stop at the type gate and never reach
+// the `Adopting ...` line. Answering for that one string only lets the hostile
+// type travel the whole path; every real type still gets the real answer.
+vi.mock('../../../src/provisioning/resource-name.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/provisioning/resource-name.js')>();
+  return {
+    ...actual,
+    explicitNamePropertyFor: (type: string) =>
+      type === 'AWS::IAM::Role\n\x1b]0;pwn\x07\u202e' ? 'RoleName' : actual.explicitNamePropertyFor(type),
+  };
+});
+
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   makeSiblingClaimReader,
@@ -283,16 +296,6 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
     ).adoptRollbackOrphans(state, template);
   }
 
-  /** A record with a REAL type, which the engine's real name table admits. */
-  function realTypeState(): { state: StackState; template: CloudFormationTemplate } {
-    const state = stackState();
-    (state.orphans?.[0] as StackOrphanRecord).state.resourceType = 'AWS::IAM::Role';
-    const template = {
-      Resources: { [ID]: { Type: 'AWS::IAM::Role', Properties: {} } },
-    } as unknown as CloudFormationTemplate;
-    return { state, template };
-  }
-
   function stackState(): StackState {
     return {
       version: 9,
@@ -310,22 +313,19 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
   }
 
   it('the `Adopting ...` log line', async () => {
-    // The hostile TYPE is not in the real name table, so the engine's real
-    // lookup would refuse it at the type gate; a real type is what reaches the
-    // adoption, and the type field's own rendering is pinned by the notices.
-    const { state, template } = realTypeState();
-    await adopt(state, template);
+    const state = stackState();
+    await adopt(state);
 
     expect(state.resources[ID]).toBeDefined();
     const adopting = infoLines().filter((l) => l.startsWith('Adopting '));
     expect(adopting).toHaveLength(1);
-    expectSafe(adopting[0], SHOWN_ID, 'AWS::IAM::Role', SHOWN_PHYS);
+    expectSafe(adopting[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
   });
 
   it('the logged notices', async () => {
-    // Unroutable through the REAL name table (the hostile type is unknown), so
-    // the record takes the refused-type notice the engine then logs.
-    await adopt(stackState());
+    // A template that no longer declares the id: the record is kept, with a
+    // notice the engine then logs.
+    await adopt(stackState(), { Resources: {} } as unknown as CloudFormationTemplate);
     const notices = infoLines().filter((l) => l.includes('earlier rollback'));
     expect(notices).toHaveLength(1);
     expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
@@ -336,8 +336,7 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
     backend.getState.mockResolvedValue({
       state: { resources: { X: { physicalId: PHYS } } },
     });
-    const { state, template } = realTypeState();
-    const error = await adopt(state, template)
+    const error = await adopt(stackState())
       .then(
         () => undefined,
         (e: unknown) => e
