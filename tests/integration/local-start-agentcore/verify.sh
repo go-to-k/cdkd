@@ -27,7 +27,8 @@
 # carries an AWS4-HMAC-SHA256 Authorization header signed by the host (#777;
 # the EchoAgent has no customJwtAuthorizer, so --sigv4 is the applicable inbound
 # auth mode). Each boot ends with a SIGTERM + a no-`cdkd-local-agentcore-*`
-# orphan-container assertion.
+# orphan-container assertion. Last, a copy of the assembly whose image asset
+# points outside it must be refused before any build (go-to-k/cdkd#3597).
 #
 # Run via `/run-integ local-start-agentcore` (recommended) or directly:
 #
@@ -50,6 +51,7 @@ CLI_PID=""
 OUT_FILE="$(mktemp)"
 HTTP_URL=""
 WS_URL=""
+TAMPER_DIR=""
 
 stop_server() {
   if [ -n "${CLI_PID}" ] && kill -0 "${CLI_PID}" 2>/dev/null; then
@@ -64,6 +66,7 @@ cleanup() {
   rc=$?
   stop_server
   rm -f "${OUT_FILE}"
+  [ -z "${TAMPER_DIR}" ] || rm -rf "${TAMPER_DIR}"
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -181,4 +184,37 @@ else
   assert_orphan_free
 fi
 
-echo "[verify] PASS: start-agentcore served the warm HTTP contract (ping + invocations with injected session-id), the /ws bridge, and --sigv4-signed forwarding, and cleaned up its container on each shutdown"
+echo "[verify] step 10: a Docker build context escaping the assembly is refused (go-to-k/cdkd#3597)"
+# A copy of the assembly the boots above synthesized, with the runtime's image
+# asset pointed at `../victim`: a sibling of the copy holding the fixture's own
+# agent, so a build that FOLLOWED the escape would succeed and boot. The
+# bundled engine must refuse it before building anything.
+TAMPER_DIR="$(mktemp -d)"
+cp -R cdk.out "${TAMPER_DIR}/cdk.out"
+cp -R agent "${TAMPER_DIR}/victim"
+node -e '
+  const fs = require("fs"), path = require("path");
+  const dir = process.argv[1];
+  let n = 0;
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".assets.json"))) {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+    for (const a of Object.values(m.dockerImages || {})) { a.source.directory = "../victim"; n++; }
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(m));
+  }
+  if (n === 0) { console.error("no Docker image asset to tamper"); process.exit(1); }
+' "${TAMPER_DIR}/cdk.out"
+: > "${OUT_FILE}"
+${CLI} local start-agentcore "${TARGET}" -a "${TAMPER_DIR}/cdk.out" --host 127.0.0.1 --port 0 \
+  > "${OUT_FILE}" 2>&1 &
+CLI_PID=$!
+for _ in $(seq 1 240); do kill -0 "${CLI_PID}" 2>/dev/null || break; sleep 0.5; done
+kill -0 "${CLI_PID}" 2>/dev/null && fail "start-agentcore kept running on an assembly whose build context escapes it"
+TAMPER_RC=0
+wait "${CLI_PID}" || TAMPER_RC=$?
+CLI_PID=""
+[ "${TAMPER_RC}" -ne 0 ] || fail "start-agentcore exited 0 on an assembly whose build context escapes it"
+grep -Eq "source\.directory='?\.\./victim'? which resolves to .*victim'?, outside" "${OUT_FILE}" \
+  || fail "start-agentcore did not name the escaping build context in its refusal"
+assert_orphan_free
+
+echo "[verify] PASS: start-agentcore served the warm HTTP contract (ping + invocations with injected session-id), the /ws bridge, and --sigv4-signed forwarding, cleaned up its container on each shutdown, and refused an escaping build context"

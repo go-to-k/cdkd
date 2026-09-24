@@ -193,15 +193,36 @@ Refused:
   a file before running it, so an escaping module path would have written the
   assembly's own bytes to a path of its choosing;
 - a Docker asset's `source.directory` — the directory an image is built
-  from — under `cdkd local run-task`, `cdkd local invoke` and
-  `cdkd local start-api` (a container-image Lambda),
-  `cdkd local invoke-agentcore` (its container arm, both the image build and
-  the directory its `--watch` soft reload reads), and
-  `cdkd local start-service` / `cdkd local start-alb` (an ECS service's image,
-  and a container-image Lambda behind the ALB). The last two are checked,
-  across every stack in the assembly, before any image is built — when the run
-  starts and again on every `--watch` reload;
-- a code asset's `source.path` under `cdkd local invoke-agentcore`;
+  from, and the working directory of a `source.executable` build script — on
+  every command that builds one: `cdkd local run-task`, `cdkd local invoke`
+  and `cdkd local start-api` (a container-image Lambda),
+  `cdkd local invoke-agentcore` and `cdkd local start-agentcore` (the
+  container arm), `cdkd local start-service` / `cdkd local start-alb` (an ECS
+  service's image, and a container-image Lambda behind the ALB), and a
+  container-image Lambda behind a function URL origin of
+  `cdkd local start-cloudfront`. A relative value that leaves the app's output
+  directory, through `..` or a symbolic link, is refused before anything is
+  spawned. An absolute value is placed UNDER the manifest's directory, which is
+  how the build has always joined it. For `start-service` / `start-alb`, cdkd
+  also checks every stack in the assembly before any image is built, when the
+  run starts and again on every `--watch` reload;
+- the directory a `--watch` soft reload copies into a running container
+  (`start-service`, `start-alb`, `invoke-agentcore`, `start-agentcore`): a
+  relative escape, and ANY absolute value outside the output directory. The
+  image's own build places an absolute value under the manifest's directory,
+  so a `cdk synth --no-staging` assembly never reaches a soft reload. A refused
+  reload falls back to a full rebuild, or is skipped, and never copies the
+  directory;
+- a code asset's `source.path` under `cdkd local invoke-agentcore` and
+  `cdkd local start-agentcore`, when it leaves the output directory (an
+  absolute value is placed under the manifest's directory, as above);
+- a `BucketDeployment` source that `cdkd local start-cloudfront` serves as an
+  S3 origin, when it is **relative** and leaves the output directory. Each file
+  served must also resolve inside its origin directory, so a symbolic link
+  there pointing elsewhere is not served. An **absolute** one follows the
+  `--no-staging` rule below;
+- a stack name that would carry `<stack>.assets.json` out of the assembly
+  directory;
 - a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke`,
   `cdkd local start-api`, `cdkd local start-alb` and
   `cdkd local start-cloudfront`, when it is **relative** — both the function's
@@ -242,24 +263,42 @@ Warned about, but accepted:
   command against an assembly executes code from it, and the CloudFormation
   template does not show that command.**
 
-Not refused today:
+- an **absolute** `BucketDeployment` source that `cdkd local start-cloudfront`
+  serves as an S3 origin, when it lies outside the output directory — the
+  shape `cdk synth --no-staging` writes. It is served, with a warning naming
+  it, only when it is a folder inside your project: inside the git work tree
+  holding the output directory (the nearest ancestor with a `.git` directory
+  or file), or inside the current directory when that contains the output
+  directory or is itself a git work-tree root. A project root that is your
+  home directory, or contains it, does not count, so a folder is refused when
+  the only candidate is `~` itself (a cwd of `~`, or a dotfiles repository
+  there). No directory between that
+  project root and the folder may be a credential or version-control
+  directory (`.git`, `.hg`, `.svn`, `.ssh`, `.aws`, `.gnupg`, `.docker`,
+  `.kube`, `.config`, `.azure`, `.gcloud`, `.terraform`, `.npm`,
+  `.pnpm-store`, `.yarn`, `.cache`, `.local`, compared case-insensitively).
+  Other hidden build folders, such as `docs/.vitepress/dist`, are accepted.
+  Everything else is refused. That includes `/`, your home directory and every
+  directory containing it, every directory containing the output directory,
+  and the project root itself; all of these are judged on real paths. An
+  origin accepted this way never serves a hidden entry (`/.env`,
+  `/.git/...`), except a `.well-known` path segment. The rule scopes the folder
+  without proving it is yours: running from a folder that holds several
+  repositories puts a sibling repository's non-hidden folders in scope, and
+  the credential list is not exhaustive.
 
-- the Docker build context of a container image built inside a command the
-  bundled `cdk-local` engine runs end to end, which joins the path itself:
-  `cdkd local start-agentcore`'s container arm, and a container-image Lambda
-  behind a function URL origin of `cdkd local start-cloudfront`;
-- the source directory a `--watch` soft reload of `cdkd local start-service` /
-  `cdkd local start-alb` copies into a running replica: the engine looks it up
-  separately from the image build, and takes an absolute value as given.
+Every path on these lists is checked wherever a `cdkd local` command reads it, including
+the ones the bundled `cdk-local` engine runs end to end (`start-agentcore`,
+`start-cloudfront`, `start-service`, `start-alb`). The engine also warns about a
+BuildKit passthrough path outside the assembly (a build secret, an SSH key, a
+build context, a cache or output directory) on every image it builds, and a
+Lambda's `Metadata['aws:asset:path']` reached through it follows the same rule
+as cdkd's own resolver.
 
-A Lambda's `Metadata['aws:asset:path']` is on that list for no command. Reaching
-it through the bundled `cdk-local` engine — which is how `cdkd local start-alb`
-and `cdkd local start-cloudfront` reach it — no longer means reaching it
-unguarded: the engine applies the same rule cdkd's own resolver does.
-
-Until the rest land, a hand-modified assembly can still put a directory of its
-choosing in front of code it also supplies. Treat an assembly you did not
-synthesize yourself as untrusted input.
+None of this makes a hand-modified assembly safe to run: its
+`source.executable` still runs on your machine, and its handler code still runs
+in the container. Treat an assembly you did not synthesize yourself as
+untrusted input.
 
 ## Related
 

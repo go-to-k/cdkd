@@ -271,11 +271,13 @@ export interface CdkLocalDockerContextOptions {
  * would take from outside the assembly (issue
  * [#3503](https://github.com/go-to-k/cdkd/issues/3503)).
  *
- * `cdk-local`'s own `buildDockerImage` spells the context (and the
- * `executable` arm's cwd) as `${cdkOutDir}/${source.directory}` with no
- * containment, and cdkd cannot hand it a pre-resolved path without changing
- * the image tag it derives from `source`. So this judges the path the engine
- * WILL open, before the engine runs, through the same
+ * Since cdk-local 0.149.3 the engine's own `buildDockerImage` refuses the same
+ * escapes and opens the path it judged (go-to-k/cdkd#3597). This copy stays in
+ * FRONT of it because the engine's refusal quotes the assembly-chosen value in
+ * a boundary the value can close (go-to-k/cdk-local#758), while this one
+ * renders it through `displayAssemblyPath`; go-to-k/cdkd#3652 removes it once
+ * that ships. It judges the path the engine's `${cdkOutDir}/${source.directory}`
+ * spelling names, before the engine runs, through the same
  * {@link resolveDockerContextDirectory} cdkd's own build uses.
  *
  * An ABSOLUTE value is judged by the engine's spelling, not honoured: the
@@ -304,12 +306,12 @@ export function assertCdkLocalDockerContextContained(opts: CdkLocalDockerContext
         ? "run this asset's source.executable with that directory as its working directory"
         : 'send that directory to docker build as the context of an image cdkd then runs locally',
   });
-  // The engine hands the RAW string to the OS as a cwd, and the kernel applies
-  // `..` AFTER following a link: `sub/link/..` lands in the link target's
-  // parent, while every lexical model (including `resolveAssemblyPath`, which
-  // folds `..` before it resolves links) reads it as `sub`. So the path is also
-  // judged exactly as the kernel will open it. A spelling that does not
-  // resolve is left to the engine, which cannot open it either.
+  // The kernel applies `..` AFTER following a link: `sub/link/..` lands in the
+  // link target's parent, while every lexical model (including
+  // `resolveAssemblyPath`, which folds `..` before it resolves links) reads it
+  // as `sub`. The engine now opens the lexical result, which is inside; this
+  // copy still refuses the spelling, the stricter of the two readings. A
+  // spelling that does not resolve is left to the engine.
   const engineSpelled = `${manifestDir}/${asEngineJoinsIt}`;
   const physical = tryRealpathNative(engineSpelled);
   if (physical === undefined) return;

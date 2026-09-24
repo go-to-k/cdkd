@@ -2,9 +2,11 @@
  * Issue go-to-k/cdkd#3503: the Docker build context of every image cdkd hands
  * to cdk-local's OWN builder is contained within the app's outdir.
  *
- * cdk-local joins `source.directory` onto the manifest directory raw, so the
- * guard lives in cdkd's shim (`src/local/docker-image-builder.ts`) and each
- * call site must hand it the right BOUND. Two halves:
+ * cdkd refuses an escaping `source.directory` in its shim
+ * (`src/local/docker-image-builder.ts`) before the engine runs, and each call
+ * site must hand it the right BOUND, which the shim forwards to the engine's
+ * own check (go-to-k/cdkd#3597; `engine-docker-context.test.ts` runs the real
+ * engine). Two halves:
  *
  * - the shim itself, against real directories (an absolute value and a
  *   symlink are both judged by the engine's own spelling);
@@ -151,7 +153,7 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
     );
   });
 
-  it('delegates an ordinary asset unchanged, and does not forward the bound', async () => {
+  it('delegates an ordinary asset unchanged, forwarding the bound to the engine', async () => {
     const cdkOut = join(tmp(), 'cdk.out');
     mkdirSync(join(cdkOut, 'asset.abc'), { recursive: true });
     const asset = { source: { directory: 'asset.abc' } };
@@ -164,7 +166,14 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
 
     // The SAME asset object and directory string: cdk-local derives the image
     // tag from `source`, so a rewritten directory would change every tag.
-    expect(builtWith).toHaveBeenCalledWith(asset, cdkOut, { architecture: 'arm64', noBuild: true });
+    // The bound goes WITH it: the engine checks the context too since
+    // cdk-local 0.149.3, and without one narrows to the manifest directory
+    // (go-to-k/cdkd#3597).
+    expect(builtWith).toHaveBeenCalledWith(asset, cdkOut, {
+      architecture: 'arm64',
+      noBuild: true,
+      assetOutdir: cdkOut,
+    });
     expect(builtWith.mock.calls[0]![0]).toBe(asset);
   });
 
@@ -183,9 +192,9 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
   });
 
   it('refuses `<link>/..`, which the kernel resolves AFTER following the link', async () => {
-    // Lexically `sub/link/..` is `sub`, inside the assembly. The engine hands
-    // the raw string to the OS as a cwd, which follows `link` first and then
-    // climbs from its target — out of the assembly.
+    // Lexically `sub/link/..` is `sub`, inside the assembly; the kernel
+    // follows `link` first and then climbs from its target — out of it. The
+    // engine opens the lexical result, and cdkd refuses the spelling outright.
     const outer = tmp();
     const cdkOut = join(outer, 'cdk.out');
     mkdirSync(join(cdkOut, 'sub'), { recursive: true });
@@ -355,8 +364,9 @@ describe('the three call sites hand the shim the APP outdir as the bound', () =>
 
     expect(builtWith).toHaveBeenCalledTimes(1);
     // Built from the manifest's own directory, which is what the engine joins
-    // the relative value onto.
+    // the relative value onto, with the APP outdir as the engine's bound.
     expect(builtWith.mock.calls[0]![1]).toBe(a.manifestDir);
+    expect(builtWith.mock.calls[0]![2]).toMatchObject({ assetOutdir: a.assemblyDir });
   });
 
   it.each(sites)('$name REFUSES a source.directory escaping the app outdir', async ({ run }) => {

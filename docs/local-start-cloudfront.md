@@ -123,7 +123,13 @@ directory serves it from there.
 S3 origin content is resolved out of the cloud assembly: the origin's bucket →
 its `BucketDeployment` custom resource → `SourceObjectKeys` → the staged asset
 directory. Reads are path-traversal safe — a resolved path that escapes the
-origin directory, whether through `../` or a symlink, yields no read.
+origin directory, whether through `../` or a symlink, yields no read. The
+origin directory itself must stay inside the app's output directory. The one
+exception is the absolute source folder `cdk synth --no-staging` writes: it is
+served, with a warning, when it is a folder inside your project. Such an
+origin never serves hidden entries except a `.well-known` path segment.
+[Local Execution](local-emulation.md#what-cdkd-trusts-in-the-assembly) lists
+the rules.
 
 Two origins cannot be resolved that way, and each has a route out:
 
