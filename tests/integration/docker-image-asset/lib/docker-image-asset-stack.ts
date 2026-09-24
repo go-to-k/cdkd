@@ -60,6 +60,14 @@ export class DockerImageAssetStack extends cdk.Stack {
       environment: {
         DEPLOYED_BY: 'cdkd',
       },
+      // Issue #1894: `CDKD_TEST_IMAGE_RMC=1` sets the L2's own
+      // `runtimeManagementMode` -- the spelling a user writes -- which
+      // synthesizes a `RuntimeManagementConfig` AWS rejects for a container
+      // image. The redeploy carrying it must be refused by cdkd before any
+      // Lambda call.
+      ...(process.env['CDKD_TEST_IMAGE_RMC'] === '1' && {
+        runtimeManagementMode: lambda.RuntimeManagementMode.FUNCTION_UPDATE,
+      }),
     });
 
     new cdk.CfnOutput(this, 'FunctionName', {

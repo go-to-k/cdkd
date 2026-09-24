@@ -647,18 +647,46 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
     });
 
     it('skips ZIP-only runtime-management and code-signing reads for image functions', async () => {
-      mockSend.mockResolvedValueOnce({
-        Configuration: { FunctionName: 'fn', PackageType: 'Image' },
-        Code: { ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/fn:latest' },
-        Tags: {},
+      // Dispatched by command, and the two ZIP-only reads answer with values
+      // that WOULD be emitted: the trailing absence assertions then fail if the
+      // guard is removed, instead of passing because an unprimed read threw
+      // into its catch arm (issue #1894). No `*Once` primer, so a skipped read
+      // leaves nothing queued for the next case.
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof GetFunctionCommand) {
+          return {
+            Configuration: { FunctionName: 'fn', PackageType: 'Image' },
+            Code: { ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/fn:latest' },
+            Tags: {},
+          };
+        }
+        if (cmd instanceof GetRuntimeManagementConfigCommand) {
+          return { UpdateRuntimeOn: 'Manual', RuntimeVersionArn: 'arn:aws:lambda:::runtime:x' };
+        }
+        if (cmd instanceof GetFunctionCodeSigningConfigCommand) {
+          return { CodeSigningConfigArn: 'arn:csc:would-be-emitted' };
+        }
+        return {}; // GetFunctionRecursionConfig, GetFunctionConcurrency
       });
-      mockSend.mockResolvedValueOnce({}); // GetFunctionRecursionConfig
-      mockSend.mockResolvedValueOnce({}); // GetFunctionConcurrency
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      // `vi.clearAllMocks` in `beforeEach` keeps an implementation, so drop it
+      // here rather than leaking it into every later case in the file.
+      // The sent commands are captured FIRST: `mockReset` also clears the call
+      // log that `sentOfType` reads.
+      let state: Record<string, unknown> | undefined;
+      let sent: unknown[] = [];
+      try {
+        state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      } finally {
+        sent = mockSend.mock.calls.map((call) => call[0]);
+        mockSend.mockReset();
+      }
 
-      expect(sentOfType(GetRuntimeManagementConfigCommand)).toHaveLength(0);
-      expect(sentOfType(GetFunctionCodeSigningConfigCommand)).toHaveLength(0);
+      expect(sent.some((cmd) => cmd instanceof GetFunctionCommand)).toBe(true);
+      expect(sent.filter((cmd) => cmd instanceof GetRuntimeManagementConfigCommand)).toHaveLength(0);
+      expect(sent.filter((cmd) => cmd instanceof GetFunctionCodeSigningConfigCommand)).toHaveLength(
+        0
+      );
       expect(state?.['PackageType']).toBe('Image');
       expect(state?.['Code']).toEqual({
         ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/fn:latest',

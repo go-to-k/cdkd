@@ -79,7 +79,7 @@ destroy-interrupt	2026-09-21T12:33:50Z	PASS	373	verify.sh	rc ok, 15 deleted 0 er
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-23T23:38:04Z	PASS	110	verify.sh	rc ok, orph clean (#1981 lane)
 docdb-neptune	2026-09-24T13:59:58Z	PASS	1629	verify.sh	rc ok, orph clean; #3650 endpoint GetAtt 3e+3f, pre-fix FAILs all 8
-docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
+docker-image-asset	2026-09-24T21:33:20Z	PASS	80	verify.sh	#1894 drift clean + RMC refusal + AWS premise; pre-fix run red at 1d, guard-reverted run red at 1c; 2 del 0 err 0 orph, log group swept
 drift-revert	2026-09-24T20:13:37Z	PASS	161	verify.sh	#2792 provider-registry broad run; 13 del 0 err 0 orph
 drift-revert-arrays	2026-09-24T09:09:49Z	PASS	190	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group
 drift-revert-vpc	2026-09-24T20:13:37Z	PASS	286	verify.sh	#2792 provider-registry broad run; 21 del 0 err 0 orph
