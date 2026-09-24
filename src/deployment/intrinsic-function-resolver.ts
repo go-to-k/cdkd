@@ -9355,11 +9355,34 @@ export class IntrinsicFunctionResolver {
     }
   }
 
-  /** Lazily-constructed per-region CloudFormation client (issue #1697). */
+  /**
+   * Lazily-constructed per-region CloudFormation client (issue #1697).
+   *
+   * Built with the ambient clients' {@link AwsClients.credentialConfig}, the
+   * way {@link serviceDiscoveryClient} is (issue
+   * [#1983](https://github.com/go-to-k/cdkd/issues/1983)). An explicit
+   * `AwsClientConfig.credentials` has no environment path — only a LIBRARY
+   * caller passes one, and it never runs the CLI's `AWS_PROFILE` mirror — so a
+   * client built from `awsClientDefaults()` alone ran the CFn fallback reads
+   * under the default chain's identity instead. The explicit `credentials`
+   * spread AFTER the defaults, so they outrank an assumed `--role-arn` role,
+   * matching {@link AwsClients}' own spread order.
+   *
+   * Not routed through {@link clientsForRegion}: the region here is always
+   * the one the caller named, never the ambient's, and a test double without
+   * `credentialConfig` degrades to the default chain rather than throwing.
+   * Keyed by region alone for the reason {@link regionScopedClients} gives:
+   * the credential half is process-wide.
+   */
   private getCfnClient(region: string): CloudFormationClient {
     let client = this.cfnClients[region];
     if (!client) {
-      client = new CloudFormationClient({ ...awsClientDefaults(), region });
+      const credentialConfig = getAwsClients().credentialConfig ?? {};
+      client = new CloudFormationClient({
+        ...awsClientDefaults({ profile: credentialConfig.profile }),
+        ...credentialConfig,
+        region,
+      });
       this.cfnClients[region] = client;
     }
     return client;
