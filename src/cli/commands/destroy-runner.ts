@@ -34,6 +34,8 @@ import {
 } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { extractLocalDeletionProtection } from '../../provisioning/providers/dynamodb-globaltable-provider.js';
+import { isTruthyCfnBoolean } from '../../provisioning/data-delete-intent.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import {
@@ -365,7 +367,22 @@ export interface DestroyRunnerResult {
  */
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
-export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
+/**
+ * Where a type's protection flag lives in a resource's property bag: a
+ * top-level key, a PATH of keys for a flag nested in a container, or a reader
+ * for a flag that is not at a fixed path (go-to-k/cdkd#3676). A reader gets the
+ * bag and the record's region.
+ */
+export type ProtectionLocator =
+  | string
+  | readonly string[]
+  | ((bag: Record<string, unknown>, region: string | undefined) => unknown);
+
+/**
+ * The protection flag per type. `countProtectedResources` reads it the same
+ * way in `properties` and then `observedProperties`.
+ */
+export const PROTECTION_PROPERTY_BY_TYPE: Record<string, ProtectionLocator> = {
   'AWS::Logs::LogGroup': 'DeletionProtectionEnabled',
   'AWS::RDS::DBInstance': 'DeletionProtection',
   'AWS::RDS::DBCluster': 'DeletionProtection',
@@ -378,10 +395,30 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::Neptune::DBCluster': 'DeletionProtection',
   'AWS::Neptune::DBInstance': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
-  'AWS::DynamoDB::GlobalTable': 'DeletionProtectionEnabled',
+  // CFn and CDK put the flag on the local replica
+  // (`Replicas[?Region==<region>].DeletionProtectionEnabled`); the provider's
+  // `readCurrentState` writes it top-level. `extractLocalDeletionProtection`
+  // reads the replica first and the top-level key second, as `create()` does.
+  'AWS::DynamoDB::GlobalTable': (bag, region) => extractLocalDeletionProtection(bag, region ?? ''),
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',
   'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',
+  // The flag is one entry of the `LoadBalancerAttributes` key/value list, its
+  // value the string `'true'` / `'false'`.
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': (bag) => {
+    const attrs = bag['LoadBalancerAttributes'];
+    if (!Array.isArray(attrs)) return undefined;
+    const entry: unknown = attrs.find(
+      (a: unknown) =>
+        typeof a === 'object' &&
+        a !== null &&
+        (a as { Key?: unknown }).Key === 'deletion_protection.enabled'
+    );
+    return (entry as { Value?: unknown } | undefined)?.Value;
+  },
+  // EMR's termination protection sits inside the `Instances` block, in the
+  // template and in the provider's `readCurrentState` bag alike.
+  'AWS::EMR::Cluster': ['Instances', 'TerminationProtected'],
   // CC-routed generic protection flip (issues #1312 / #1314) — see
   // src/provisioning/cc-protection-properties.ts.
   'AWS::DSQL::Cluster': 'DeletionProtectionEnabled',
@@ -415,40 +452,70 @@ export const PROTECTION_ACTIVE_PREDICATE_BY_TYPE: Record<string, (value: unknown
 };
 
 /**
+ * The flag's recorded value in `bag`. A missing or torn container on the way
+ * (`null`, a string, a list) yields `undefined`, which leaves the count to the
+ * other bag rather than throwing mid-prompt.
+ */
+function readProtection(
+  bag: unknown,
+  locator: ProtectionLocator,
+  region: string | undefined
+): unknown {
+  if (typeof locator === 'function') {
+    if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return undefined;
+    return locator(bag as Record<string, unknown>, region);
+  }
+  let value: unknown = bag;
+  for (const key of typeof locator === 'string' ? [locator] : locator) {
+    if (value === null || value === undefined) return undefined;
+    value = (value as Record<string, unknown>)[key];
+  }
+  return value;
+}
+
+/**
+ * An OWN entry of one of the per-type maps. A plain-object map answers a
+ * `resourceType` of `constructor` or `__proto__` with an inherited value, and a
+ * hand-edited record can carry one.
+ */
+function perType<T>(map: Record<string, T>, resourceType: unknown): T | undefined {
+  return typeof resourceType === 'string' && Object.hasOwn(map, resourceType)
+    ? map[resourceType]
+    : undefined;
+}
+
+/**
  * Count how many resources in a stack's recorded state appear to have
- * deletion protection enabled. Walks `properties` and `observedProperties`
- * for the property name registered against each resource type in
- * `PROTECTION_PROPERTY_BY_TYPE`. ELBv2 LoadBalancer protection lives in
- * `LoadBalancerAttributes` (a CFn `Array<{Key, Value}>`), so it's
- * handled separately via the `deletion_protection.enabled` key.
+ * deletion protection enabled, reading each type's flag through its
+ * `PROTECTION_PROPERTY_BY_TYPE` locator in `properties` and in
+ * `observedProperties`.
  */
 export function countProtectedResources(state: StackState): number {
   let count = 0;
   for (const resource of Object.values(state.resources ?? {})) {
-    const propName = PROTECTION_PROPERTY_BY_TYPE[resource.resourceType];
-    if (propName) {
-      const recorded = resource.properties?.[propName] ?? resource.observedProperties?.[propName];
-      const activePredicate = PROTECTION_ACTIVE_PREDICATE_BY_TYPE[resource.resourceType];
-      const activeValues = PROTECTION_ACTIVE_VALUES_BY_TYPE[resource.resourceType];
-      if (activePredicate) {
-        if (activePredicate(recorded)) count++;
-      } else if (activeValues) {
-        if (activeValues.has(recorded)) count++;
-      } else if (recorded === true) {
+    const locator = perType(PROTECTION_PROPERTY_BY_TYPE, resource.resourceType);
+    if (locator) {
+      const activePredicate = perType(PROTECTION_ACTIVE_PREDICATE_BY_TYPE, resource.resourceType);
+      const activeValues = perType(PROTECTION_ACTIVE_VALUES_BY_TYPE, resource.resourceType);
+      const isActive = (recorded: unknown): boolean =>
+        activePredicate
+          ? activePredicate(recorded)
+          : activeValues
+            ? activeValues.has(recorded)
+            : // `'true'` too: a String parameter or an `Fn::If` resolves a CFn
+              // boolean to a string, and the providers flip it all the same.
+              isTruthyCfnBoolean(recorded);
+      // EITHER bag, not the first one that holds a value. The template can
+      // say off while the observed baseline says on (protection enabled out
+      // of band): the delete flips what AWS has, so the prompt must count it.
+      // Over-counting is the safe direction for a warning.
+      if (
+        isActive(readProtection(resource.properties, locator, state.region)) ||
+        isActive(readProtection(resource.observedProperties, locator, state.region))
+      ) {
         count++;
       }
       continue;
-    }
-    if (resource.resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer') {
-      const attrs =
-        (resource.properties?.['LoadBalancerAttributes'] as
-          | Array<{ Key?: string; Value?: string }>
-          | undefined) ??
-        (resource.observedProperties?.['LoadBalancerAttributes'] as
-          | Array<{ Key?: string; Value?: string }>
-          | undefined);
-      const enabled = attrs?.find((a) => a?.Key === 'deletion_protection.enabled');
-      if (enabled?.Value === 'true') count++;
     }
   }
   return count;

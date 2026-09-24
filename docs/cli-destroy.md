@@ -334,10 +334,12 @@ effectively a no-op there.
 | `AWS::Neptune::DBCluster` | `DeletionProtection` | `ModifyDBCluster(DeletionProtection=false, ApplyImmediately=true)` (Neptune SDK) |
 | `AWS::Neptune::DBInstance` | `DeletionProtection` | `ModifyDBInstance(DeletionProtection=false, ApplyImmediately=true)` (Neptune SDK) |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then `DescribeTable` poll until `ACTIVE` |
+| `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then a wait until the table is `ACTIVE`. If the delete then fails, protection is turned back on, but only when it was on before the flip. |
 | `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
+| `AWS::EMR::Cluster` | `Instances.TerminationProtected` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
 | `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
 | `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
