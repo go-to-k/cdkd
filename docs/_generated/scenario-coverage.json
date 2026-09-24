@@ -1159,6 +1159,13 @@
       ]
     },
     {
+      "name": "import-lambda-url-attributes",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-nested-stack",
       "annotated": true,
       "scenarios": [
@@ -2638,6 +2645,7 @@
       "scenario": "migrate-from-cfn-handover",
       "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).",
       "fixtures": [
+        "import-lambda-url-attributes",
         "migrate-from-cfn"
       ]
     },
