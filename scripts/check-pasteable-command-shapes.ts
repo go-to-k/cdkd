@@ -893,8 +893,10 @@ export function scanSource(
  *
  * Three of them, one per input SHAPE the parser claims to handle, because an
  * aggregate floor hides one dead shape: `spansExamined` can stay high while the
- * command-literal walk dies, and vice versa. Measured 2026-09-24 at 359 / 1498 /
- * 859; the floors sit well below so an ordinary deletion does not false-fire.
+ * command-literal walk dies, and vice versa. Measured 2026-09-25 at 361 / 1423 /
+ * 868, after a rebase onto a `main` that removed cdkd's own quotes from around
+ * displayed identifiers (go-to-k/cdkd#3658) -- which is why the SPAN count fell
+ * while the others rose; the floors sit well below so an ordinary deletion does not false-fire.
  * Both non-file magnitudes moved DOWN twice during review and neither move was
  * a narrowing: removing a duplicate visit of nested literals took 1532 / 1047
  * to 1511 / 1022, and folding `+` runs merges several literals into one, which
