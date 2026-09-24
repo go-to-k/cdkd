@@ -132,7 +132,7 @@ export function collectStackMessages(
       // newlines, so `displaySafe` (which maps them to spaces) is the wrong
       // helper and the right one does not exist yet.
       throw new SynthesisError(
-        `Failed to read stack metadata file ${displaySafe(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
+        `Failed to read stack metadata file ${displayAssemblyPath(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }

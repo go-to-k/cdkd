@@ -14,6 +14,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
@@ -1381,8 +1382,10 @@ async function resolveAgentCoreCodeImage(
       findFileAssetByObjectKey(fileAssets, code.codeAssetHash))
     : undefined;
   if (!asset) {
+    // cdkd-raw-beside-safe: `getEmbedConfig().cliName` is this binary's own
+    // configured name, not a value the assembly or the user supplies.
     throw new CdkdError(
-      `AgentCore Runtime '${resolved.logicalId}' code bundle (asset ${code.codeAssetHash}) was not found ` +
+      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle (asset ${displaySafe(code.codeAssetHash)}) was not found ` +
         `in the cdk.out asset manifest. ${getEmbedConfig().cliName} invoke-agentcore runs a local from-source ` +
         `build of a fromCodeAsset bundle — re-synthesize the app so the asset is staged in cdk.out and retry. ` +
         `(A fromS3 bundle is downloaded from S3 instead; this runtime has no literal Code.S3.Bucket.)`,
@@ -1405,7 +1408,7 @@ async function resolveAgentCoreCodeImage(
     throw new CdkdError(
       // `sourceDir` is manifest-derived, and this message is the one READER of
       // the value the containment check above produced (go-to-k/cdkd#3277).
-      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle source '${displaySafe(sourceDir)}' does not exist or is not a ` +
+      `AgentCore Runtime '${displaySafe(resolved.logicalId)}' code bundle source ${displayAssemblyPath(sourceDir)} does not exist or is not a ` +
         `directory. Re-synthesize the app and retry.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
     );

@@ -10,9 +10,11 @@
  * value through `displayAssemblyPath`: bare when plain, one JSON boundary
  * otherwise.
  *
- * Both polarities per site: the FORGING value stays inside its boundary with
- * nothing of it outside, and an ordinary value renders bare, with no quote of
- * any kind around it.
+ * Two polarities: every site gets a FORGING value, which must stay inside its
+ * boundary with nothing of it outside, and each site family also gets an
+ * ordinary value, which must render bare with no quote of any kind. The
+ * forging row is the one that catches a site losing its boundary altogether
+ * (a bare `${displaySafe(x)}`), which prints an ordinary value byte-identically.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -41,6 +43,13 @@ import {
 import { resolveAssetCodeDirectory } from '../../../src/local/lambda-resolver.js';
 import { resolveInlineCodeFilePath } from '../../../src/cli/commands/local-invoke.js';
 import { renderNestedTemplateTreeDefect } from '../../../src/utils/nested-template-cycle.js';
+import { collectStackMessages } from '../../../src/synthesis/stack-messages.js';
+import { resolveFileAssetSourcePath } from '../../../src/assets/asset-manifest-loader.js';
+import { resolveDockerContextDirectory } from '../../../src/assets/docker-build.js';
+import { resolveVerboseTemplatePath } from '../../../src/cli/commands/synth.js';
+import { engineAssemblyRoot } from '../../../src/cli/commands/emulator-docker-context.js';
+import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import { indexNestedTemplatePaths } from '../../../src/cli/commands/export.js';
 import { indexNestedChildTemplates } from '../../../src/cli/commands/diff-recursive.js';
 import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
@@ -234,7 +243,6 @@ describe('cdkd local invoke: an inline Handler in the refusal subject', () => {
     expect(message.startsWith(`Handler ${JSON.stringify(handler)} names a module path that `)).toBe(
       true
     );
-    expect(message.slice(0, 80)).not.toContain("Handler '");
   });
 
   it('renders an ordinary Handler bare', () => {
@@ -350,5 +358,215 @@ describe("cdkd local's Lambda asset directory: symbolic-link target and relative
 
     expect(message).toContain(`Metadata['aws:asset:path']=${JSON.stringify(value)} which resolves to `);
     expect(outsideOf(message, value, resolve(outdir, value))).not.toContain('Contained and healthy');
+  });
+});
+
+/**
+ * A FORGING value at every remaining refusal site. Each row escapes (or, for
+ * the not-found and symbolic-link rows, names a path that cannot be used), so
+ * the site renders the value in its subject, and the resolved path the shared
+ * tail prints is cut out alongside it.
+ */
+describe('every other refusal subject keeps a forging value inside one boundary', () => {
+  const escaping = `../${FORGED}`;
+  function nestedRow(assetPath: string): CloudFormationTemplate {
+    return {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': assetPath } },
+      },
+    } as unknown as CloudFormationTemplate;
+  }
+  const provider = new NestedStackProvider();
+  const grandchild = (
+    provider as unknown as {
+      indexGrandchildTemplates: (t: unknown, childTemplatePath: string) => unknown;
+    }
+  ).indexGrandchildTemplates.bind(provider);
+
+  /** [name, run it against `dir`, the subject it must print, the base the value resolves from]. */
+  const ROWS: ReadonlyArray<[string, (dir: string) => unknown, string]> = [
+    [
+      'cdkd diff --recursive nested row',
+      (dir) => indexNestedChildTemplates(nestedRow(escaping), join(dir, 'P.json')),
+      `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'cdkd export nested row',
+      (dir) =>
+        indexNestedTemplatePaths(nestedRow(escaping) as unknown as Record<string, unknown>, dir),
+      `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'NestedStackProvider nested row',
+      (dir) => grandchild(nestedRow(escaping), join(dir, 'C.json')),
+      `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'AssemblyReader nested row',
+      (dir) => {
+        writeFileSync(join(dir, 'Main.template.json'), JSON.stringify(nestedRow(escaping)));
+        return new AssemblyReader().getAllStacks(dir, {
+          version: '54.0.0',
+          artifacts: {
+            Main: {
+              type: 'aws:cloudformation:stack',
+              properties: { stackName: 'MainStack', templateFile: 'Main.template.json' },
+            } as ArtifactManifest,
+          },
+        } as AssemblyManifest);
+      },
+      `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'AssemblyReader asset-manifest artifact',
+      (dir) =>
+        new AssemblyReader().getAllStacks(dir, {
+          version: '54.0.0',
+          artifacts: {
+            'Main.assets': {
+              type: 'cdk:asset-manifest',
+              properties: { file: escaping },
+            } as ArtifactManifest,
+          },
+        } as AssemblyManifest),
+      `has file=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'stack metadata side file',
+      (dir) =>
+        collectStackMessages(dir, {
+          type: 'aws:cloudformation:stack',
+          additionalMetadataFile: escaping,
+        } as unknown as ArtifactManifest),
+      `Stack metadata file ${JSON.stringify(escaping)} resolves to `,
+    ],
+    [
+      "a file asset's source.path",
+      (dir) =>
+        resolveFileAssetSourcePath(
+          dir,
+          {
+            displayName: 'A',
+            source: { path: escaping, packaging: 'zip' },
+            destinations: {},
+          } as never,
+          { assetOutdir: dir, sink: 'upload it' }
+        ),
+      `source.path=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      "a Docker asset's source.directory",
+      (dir) =>
+        resolveDockerContextDirectory({
+          manifestDir: dir,
+          directory: escaping,
+          wrapError: (m) => new Error(m),
+          assetOutdir: dir,
+          sink: 'build it',
+        }),
+      `source.directory=${JSON.stringify(escaping)} which resolves to `,
+    ],
+  ];
+
+  for (const [name, run, subject] of ROWS) {
+    it(name, () => {
+      const dir = tmp();
+      const message = messageOf(() => run(dir));
+
+      expect(message).toContain(subject);
+      expect(outsideOf(message, escaping, resolve(dir, escaping))).not.toContain(
+        'Contained and healthy'
+      );
+    });
+  }
+
+  it('the nested-template tree refusal, escaping arm', () => {
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'escaping-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: 'E',
+        assetPath: escaping,
+        escape: { contained: false, escape: 'lexical', path: resolve('/out', escaping) },
+        dir: '/out',
+      },
+      'P',
+      'deploy'
+    );
+
+    expect(text).toContain(`Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `);
+    expect(outsideOf(text, escaping, resolve('/out', escaping))).not.toContain(
+      'Contained and healthy'
+    );
+  });
+
+  it('cdkd synth --verbose, a symbolic link at the template path', () => {
+    const out = tmp();
+    const target = join(out, `${FORGED}.template.json`);
+    // A link to a path INSIDE the directory, so containment passes and the
+    // `lstat` refusal is the one that names the link.
+    symlinkSync(join(out, 'elsewhere.json'), target, 'file');
+
+    const message = messageOf(() => resolveVerboseTemplatePath(out, FORGED));
+    expect(message).toContain(`over a symbolic link at ${JSON.stringify(target)}. `);
+    // The stack name is an IDENTIFIER, rendered by its own rule in the
+    // subject's `Stack '...'`; only the path is this site's subject here.
+    expect(outsideOf(message.replace(`Stack '${FORGED}'`, ''), target)).not.toContain(
+      'Contained and healthy'
+    );
+  });
+
+  it("cdkd local invoke, a contained Lambda asset directory that does not exist", () => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+    mkdirSync(outdir);
+    writeFileSync(join(outdir, 'Stk.assets.json'), JSON.stringify({ version: '54.0.0' }));
+    const assetPath = `asset.${FORGED}`;
+    const stack = {
+      stackName: 'Stk',
+      displayName: 'Stk',
+      artifactId: 'Stk',
+      assetManifestPath: join(outdir, 'Stk.assets.json'),
+      assetOutdir: outdir,
+      dependencyNames: [],
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Code: {} },
+            Metadata: { 'aws:asset:path': assetPath },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+
+    const message = messageOf(() => resolveLambdaTarget('Stk:Fn', [stack]));
+    const abs = join(outdir, assetPath);
+    expect(message).toContain(`asset directory ${JSON.stringify(abs)} does not exist`);
+    expect(outsideOf(message, abs)).not.toContain('Contained and healthy');
+  });
+
+  it("the emulator's Stage-root warning names both directories inside their boundaries", () => {
+    const root = join(tmp(), FORGED);
+    const sub = join(root, 'assembly-MyStage');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(
+      join(root, 'manifest.json'),
+      JSON.stringify({
+        version: '54.0.0',
+        artifacts: {
+          'assembly-MyStage': {
+            type: 'cdk:cloud-assembly',
+            properties: { directoryName: 'assembly-MyStage' },
+          },
+        },
+      })
+    );
+
+    expect(engineAssemblyRoot(sub)).toBe(root);
+    const said = warns.find((w) => w.includes('is a cdk.Stage sub-assembly'));
+    expect(said).toContain(`${JSON.stringify(sub)} is a cdk.Stage sub-assembly`);
+    expect(said).toContain(`its parent ${JSON.stringify(root)} as the assembly root`);
+    expect(outsideOf(said!, sub, root)).not.toContain('Contained and healthy');
   });
 });

@@ -1007,7 +1007,7 @@ function resolveAssetCodePath(
   });
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' asset directory '${displaySafe(abs)}' does not exist ` +
+      `Lambda '${displaySafe(logicalId)}' asset directory ${displayAssemblyPath(abs)} does not exist ` +
         'or is not a directory. Re-synthesize the app and retry.'
     );
   }

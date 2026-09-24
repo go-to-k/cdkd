@@ -512,7 +512,7 @@ export async function buildDockerImage(
   // The reported site of issue #2623: this rendered every `--build-arg` VALUE
   // into `cdkd deploy --verbose` output.
   logger.debug(
-    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displaySafe(contextDir)})`
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displayAssemblyPath(contextDir)})`
   );
 
   try {

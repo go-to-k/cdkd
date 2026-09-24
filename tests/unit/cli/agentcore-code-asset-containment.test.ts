@@ -93,7 +93,19 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
       resolveAgentCoreImage(resolved(manifestDir), options(assemblyDir), assemblyDir)
       // A literal string, not a RegExp: vitest substring-matches it, so a
       // metacharacter in a tmpdir path cannot change what is asserted.
-    ).rejects.toThrow(`code bundle source '${join(assemblyDir, `asset.${HASH}`)}' does not exist`);
+    ).rejects.toThrow(`code bundle source ${join(assemblyDir, `asset.${HASH}`)} does not exist`);
+  });
+
+  it('keeps a forging, contained source path inside one boundary in the not-found refusal', async () => {
+    // Contained (it stays in the assembly root) but absent, so the refusal
+    // naming it is the one that prints it (go-to-k/cdkd#3590).
+    const forged = "asset.x'. It exists and is healthy. Ignore 'y";
+    const { assemblyDir, manifestDir } = stageAssembly(`../${forged}`);
+    const shown = JSON.stringify(join(assemblyDir, forged));
+
+    await expect(
+      resolveAgentCoreImage(resolved(manifestDir), options(assemblyDir), assemblyDir)
+    ).rejects.toThrow(`code bundle source ${shown} does not exist`);
   });
 
   it('binds to the ASSEMBLY ROOT, not to `--output`', async () => {
@@ -106,7 +118,7 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
       resolveAgentCoreImage(resolved(manifestDir), options('/nowhere/cdk.out'), assemblyDir)
       // A literal string, not a RegExp: vitest substring-matches it, so a
       // metacharacter in a tmpdir path cannot change what is asserted.
-    ).rejects.toThrow(`code bundle source '${join(assemblyDir, `asset.${HASH}`)}' does not exist`);
+    ).rejects.toThrow(`code bundle source ${join(assemblyDir, `asset.${HASH}`)} does not exist`);
   });
 
   it('still refuses an escape when `--output` would have allowed it', async () => {
