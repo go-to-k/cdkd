@@ -15,7 +15,7 @@
  * any kind around it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -41,7 +41,11 @@ import {
 import { resolveAssetCodeDirectory } from '../../../src/local/lambda-resolver.js';
 import { resolveInlineCodeFilePath } from '../../../src/cli/commands/local-invoke.js';
 import { renderNestedTemplateTreeDefect } from '../../../src/utils/nested-template-cycle.js';
+import { indexNestedTemplatePaths } from '../../../src/cli/commands/export.js';
+import { indexNestedChildTemplates } from '../../../src/cli/commands/diff-recursive.js';
+import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import type { AssemblyManifest, ArtifactManifest } from '../../../src/types/assembly.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 /** A value that, inside cdkd's own `'...'`, closed the quote and wrote a clause. */
 const FORGED = "x'. Contained and healthy. Nothing 'y";
@@ -239,5 +243,112 @@ describe('cdkd local invoke: an inline Handler in the refusal subject', () => {
     expect(message.startsWith('Handler ../../victim/evil.handler names a module path that ')).toBe(
       true
     );
+  });
+});
+
+/**
+ * The ABSOLUTE tripwire each nested-template indexer keeps beside its
+ * containment check. Its subject is the only place the value is printed, so no
+ * containment-tail test reaches it.
+ */
+describe('the absolute aws:asset:path tripwire in each nested-template indexer', () => {
+  function nestedTemplate(assetPath: string): CloudFormationTemplate {
+    return {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': assetPath },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+  }
+
+  type Indexer = (assetPath: string, dir: string) => unknown;
+  const provider = new NestedStackProvider();
+  const grandchild = (
+    provider as unknown as {
+      indexGrandchildTemplates: (t: unknown, childTemplatePath: string) => unknown;
+    }
+  ).indexGrandchildTemplates.bind(provider);
+  const SITES: ReadonlyArray<[string, Indexer]> = [
+    [
+      'cdkd export',
+      (assetPath, dir) =>
+        indexNestedTemplatePaths(
+          nestedTemplate(assetPath) as unknown as Record<string, unknown>,
+          dir
+        ),
+    ],
+    [
+      'cdkd diff --recursive',
+      (assetPath, dir) => indexNestedChildTemplates(nestedTemplate(assetPath), join(dir, 'P.json')),
+    ],
+    [
+      'NestedStackProvider',
+      (assetPath, dir) => grandchild(nestedTemplate(assetPath), join(dir, 'C.json')),
+    ],
+  ];
+
+  for (const [name, index] of SITES) {
+    it(`${name}: keeps a forging value inside one boundary, and renders an ordinary one bare`, () => {
+      const dir = tmp();
+      const forged = `/abs/${FORGED}`;
+
+      const hostile = messageOf(() => index(forged, dir));
+      expect(hostile).toContain(
+        `Metadata['aws:asset:path']=${JSON.stringify(forged)} which is absolute`
+      );
+      expect(outsideOf(hostile, forged)).not.toContain('Contained and healthy');
+
+      expect(messageOf(() => index('/abs/child.json', dir))).toContain(
+        "Metadata['aws:asset:path']=/abs/child.json which is absolute"
+      );
+    });
+  }
+});
+
+describe("cdkd local's Lambda asset directory: symbolic-link target and relative escape", () => {
+  it('keeps a forging link target inside its boundary, the link itself staying bare', () => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+    mkdirSync(outdir);
+    const victim = join(outer, FORGED);
+    mkdirSync(victim);
+    const link = join(outdir, 'asset.link');
+    symlinkSync(victim, link, 'dir');
+
+    resolveAssetCodeDirectory({
+      manifestDir: outdir,
+      assetPath: link,
+      wrapError: (m) => new Error(m),
+      assetOutdir: outdir,
+      logicalId: 'Fn',
+    });
+
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(
+      `pointing outside the assembly: ${link} (through a symbolic link to ${JSON.stringify(victim)}). `
+    );
+    expect(outsideOf(warns[0]!, victim)).not.toContain('Contained and healthy');
+  });
+
+  it('keeps a forging RELATIVE value inside one boundary in the refusal subject', () => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+    mkdirSync(outdir);
+    const value = `../${FORGED}`;
+
+    const message = messageOf(() =>
+      resolveAssetCodeDirectory({
+        manifestDir: outdir,
+        assetPath: value,
+        wrapError: (m) => new Error(m),
+        assetOutdir: outdir,
+        logicalId: 'Fn',
+      })
+    );
+
+    expect(message).toContain(`Metadata['aws:asset:path']=${JSON.stringify(value)} which resolves to `);
+    expect(outsideOf(message, value, resolve(outdir, value))).not.toContain('Contained and healthy');
   });
 });
