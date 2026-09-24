@@ -120,8 +120,6 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-09-24T08:28:52Z	PASS	236	verify.sh	rc ok, orph clean; #2872 lane
-export-nested-stack	2026-09-24T08:32:14Z	PASS	165	verify.sh	rc ok, orph clean; #2872 lane
 export	2026-09-24T09:21:54Z	PASS	239	verify.sh	rc ok, orph clean (#3614)
 export-nested-stack	2026-09-24T09:21:54Z	PASS	164	verify.sh	rc ok, orph clean (#3614)
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
@@ -144,13 +142,8 @@ iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-r
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err
 import-auto-mode	2026-09-24T08:37:51Z	PASS	90	verify.sh	rc ok, orph clean; #2872 lane
 import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, orph clean; #2872 stale-baseline arm (pre-fix probe red at 6c RootPwParam marked)
-import-nested-stack	2026-09-24T08:17:00Z	PASS	140	verify.sh	rc ok, orph clean; #2872 lane
-import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
-import-value-strong-ref	2026-09-24T08:35:36Z	PASS	156	verify.sh	rc ok, orph clean; #2872 lane
-import-auto-mode	2026-09-20T10:06:22Z	PASS	87	verify.sh	rc ok, orph clean
-import-deployed-parameter-secret	2026-09-20T15:54:22Z	PASS	318	verify.sh	rc ok, orph clean, 52 assertions; #3468 stamp and import-carry probes red at redeploy and re-import plaintext assertions
 import-nested-stack	2026-09-24T09:21:54Z	PASS	147	verify.sh	rc ok, orph clean (#3614)
-import-secret-observed	2026-09-20T11:44:15Z	PASS	137	verify.sh	rc ok, orph clean, 0 versions
+import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
 import-value-strong-ref	2026-09-24T09:21:54Z	PASS	152	verify.sh	rc ok, orph clean (#3614)
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
@@ -217,7 +210,6 @@ loggroup-kms-associate	2026-09-24T03:51:15Z	PASS	60	verify.sh	rc ok, orph clean 
 loggroup-never-expire-guard	2026-09-06T08:17:58Z	PASS	110	verify.sh	PR2695 gate run; 9 phases incl. new 4b string-retention + 4c observed-only arms, destroy 3 deleted 0 errors, 0 orphans
 macro-expansion	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; diff-expands + destroy-no-expand asserts, 0 orph
 microservices	2026-08-13T18:47:41Z	PASS	44	standard	Issue #1874 broad integ at rebased head 133a9660 (merged PR #1884 region fold + PR #1885); 19 created / 19 deleted, 0 errors, 0 orphans
-migrate-from-cfn	2026-09-24T08:23:47Z	PASS	366	run.sh	run.sh rc ok, orph clean; #2872 lane
 migrate-from-cfn	2026-09-24T09:21:54Z	PASS	377	run.sh	rc ok, orph clean (#3614)
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
