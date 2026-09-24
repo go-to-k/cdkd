@@ -193,6 +193,28 @@ describe('pasteable-command shape fence — it does not report everything', () =
   });
 });
 
+describe('pasteable-command shape fence — its known bound, pinned', () => {
+  it('sees a command split across CONCATENATED literals as two fragments', () => {
+    // The bound the header records, measured rather than asserted. One literal
+    // holds the quoted command's opening and the next holds the interpolation,
+    // so the `quoted-command` recognizer — which examines ONE literal node —
+    // sees neither a command with a hole nor a hole with a verb.
+    const concatenated =
+      "const m = `Repair with 'cdkd import <stack> --resource ` + `${id}=<physicalId> --force';`;";
+    const single = "const m = `Repair with 'cdkd import <stack> --resource ${id}' now.`;";
+
+    // Same command, written two ways. The single literal is classified fully.
+    expect(shapesOf(single)).toEqual(['open-hole', 'quoted-command']);
+    // The concatenated one loses the `quoted-command` classification...
+    expect(shapesOf(concatenated)).toEqual(['open-hole']);
+    // ...but is NOT lost: `open-hole` still reports the site, which is why this
+    // is a classification bound rather than a hole in the population. A site
+    // whose ONLY defect were the interpolation would be missed, and that is
+    // what a `concatParts` fold would close.
+    expect(shapesOf(concatenated).length).toBeGreaterThan(0);
+  });
+});
+
 describe('pasteable-command shape fence — real code, not only fixtures', () => {
   // A synthetic fixture encodes the author's mental model, so a checker and its
   // tests can share a blind spot. Each probe here introduces the shape into a

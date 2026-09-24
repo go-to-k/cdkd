@@ -659,7 +659,7 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // bounded by the LINE, so each command must end its own.
       expectDestroyCommandLines(destroy, {
         inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
-        drop: 'cdkd state orphan <stack> --stack-region <region>',
+        drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
       });
       // ...and the sibling's legacy-record clause, because for such a record
       // the `--stack-region` flag must be OMITTED or it selects nothing.
@@ -1265,7 +1265,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       // QUOTED, because `~` is shell-significant (tilde expansion) — the
       // gate admits the name, and `shellQuote` still does its job on it.
       inspect: "cdkd state show 'Parent~Child' --stack-region us-east-1 --json",
-      drop: 'cdkd state orphan <stack> --stack-region <region>',
+      drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
     });
   });
 
@@ -1277,7 +1277,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // only the distance case without this).
     expectDestroyCommandLines(malformedDestroyResourcesRefusalMessage('MyStack', 'us-east-1'), {
       inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
-      drop: 'cdkd state orphan <stack> --stack-region <region>',
+      drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
     });
     // The withhold arm keeps the read as a TEMPLATE and offers no destructive
     // line: it has just said another record may render identically, so it has
@@ -1434,7 +1434,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
   it('spells the DESTRUCTIVE remedy as a template, so a record-supplied region cannot aim it', () => {
     const PLANTED = 'zz-planted-1';
     const m = malformedDestroyResourcesRefusalMessage('MyStack', PLANTED);
-    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     // Non-vacuity first: the region really is in the message, so the bound
     // below is a POSITION test rather than an absence test.
     expect(m).toContain(PLANTED);
@@ -1578,7 +1578,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // Without this, a gate that withheld unconditionally would satisfy every
     // case above while making the remedy unreachable.
     const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
-    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     expect(m).not.toContain('does NOT render exactly');
     // The region's own edge, from below: exactly its cap still renders
     // exactly, so a gate measuring the region at a SMALLER cap cannot pass.
@@ -2068,7 +2068,7 @@ describe('the entry-level text', () => {
   it('withholds the target when an identifier forges the destructive template', () => {
     // The same forgery go-to-k/cdkd#3516's review closed on the two DESTROY
     // refusals, one function over: this message NAMES a target and ends on the
-    // same `cdkd state orphan <stack> --stack-region <region>` template, and
+    // same `cdkd state orphan '<stack>' --stack-region '<region>'` template, and
     // exactness alone keeps a space and a `:`. The KEY REGION is the reachable
     // half — it is an S3 key segment.
     const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1';

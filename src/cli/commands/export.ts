@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
@@ -3637,7 +3637,8 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
     // Names no target: the identity above it may not be this record's. List the
     // records AS STORED and act on the one whose key matches.
     return (
-      `cdkd state orphan <stack> --stack-region <region> — spelled out because this record's ` +
+      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
+      `spelled out because this record's ` +
       `name or region does NOT render exactly, so another record may render identically; ` +
       `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
     );

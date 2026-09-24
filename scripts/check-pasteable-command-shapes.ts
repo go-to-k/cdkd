@@ -55,6 +55,23 @@
  * message, pasted at sentence and clause granularity — a source shape cannot
  * see it, and the issue says so. The per-site paste cases carry it.
  *
+ * KNOWN BOUNDS, measured rather than claimed away
+ * -----------------------------------------------
+ * **A command split across CONCATENATED literals is seen per literal, not as
+ * one command.** `export.ts:2205` reads
+ * `` `... 'cdkd import <stack> --resource ` + `${logicalId}=<physicalId> --force' ...` ``:
+ * the quoted span opens in one literal and the interpolation lands in the next,
+ * so the `quoted-command` recognizer — which examines ONE literal node — sees a
+ * command with no hole and a hole with no verb. It is still reported, as
+ * `open-hole`, so the site is not lost; what is lost is the CLASSIFICATION, and
+ * a site whose only defect were the interpolation would be missed entirely.
+ * go-to-k/cdkd#3436's body names this bound for its own greps ("it misses a
+ * value concatenated on the NEXT line of a multi-line string"), and the fix is
+ * the `concatParts` fold `scripts/check-docs-error-strings.ts` already does for
+ * `+` runs. Not done here because folding changes what every offset means, and
+ * the population it would ADD is zero at this head — a widening with no
+ * measured subject is a widening nobody can check.
+ *
  * REFUSALS, NOT SKIPS
  * -------------------
  * Every unreadable input is a refusal: a file that does not parse, and an

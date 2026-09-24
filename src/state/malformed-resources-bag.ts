@@ -387,10 +387,21 @@ function inspectTail(
  * ONE spelling, because copies are what drift, and they carry it byte-identically
  * on purpose — a reader who has met one must recognise the others. Two wrap it
  * in {@link DROP_RECORD_LINE}'s label; `divergentRecordRegionRefusalMessage`
- * ends on it bare. `<stack>` / `<region>` are LITERAL: nothing may substitute them, for
+ * ends on it bare. The two holes are LITERAL: nothing may substitute them, for
  * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
+ *
+ * They are {@link commandHole}'s QUOTED form rather than a bare `<stack>`, and
+ * the difference is not cosmetic. A bare `<name>` is two shell redirections:
+ * pasted, `<stack` reads stdin from a file and the `>` takes the NEXT WORD as
+ * an output target and CREATES it. This template is inert today only because
+ * it ends on its second hole, so the trailing `>` faces the newline and bash
+ * refuses the line — a property of where the command happens to stop, not a
+ * decision anyone made, and it goes away the moment a flag is appended. That
+ * is how go-to-k/cdkd#3363 met this shape (M4 of its review). Measured on
+ * go-to-k/cdkd#3436: the quoted form passes both holes through as literal
+ * argv (`ARGV: state orphan <stack> --stack-region <region>`).
  */
-const DROP_RECORD_TEMPLATE = 'cdkd state orphan <stack> --stack-region <region>';
+const DROP_RECORD_TEMPLATE = `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`;
 
 /**
  * The same template as a LABELLED line, for the two messages that carry their
