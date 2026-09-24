@@ -291,21 +291,7 @@ const MAX_TEMPLATE_CHARS = 600;
 export function scanTemplateLiterals(
   text: string
 ): Array<{ raw: string; start: number; end: number }> {
-  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  /*
-   * An unparseable file yields a PARTIAL tree, not an error: its templates go
-   * missing while every count stays plausible. `FLOORS.templates` carries
-   * thousands of slack, so the largest files could all fail to parse and the
-   * run would still report green — the fail-vacuous shape the sibling critics
-   * hard-fail on for the same reason.
-   */
-  const diagnostics = (sf as unknown as { parseDiagnostics?: ReadonlyArray<unknown> })
-    .parseDiagnostics;
-  if (diagnostics && diagnostics.length > 0) {
-    throw new Error(
-      `refusing to scan: ${diagnostics.length} parse diagnostic(s); a partial tree silently drops templates`
-    );
-  }
+  const sf = parseOrRefuse(text);
   const out: Array<{ raw: string; start: number; end: number }> = [];
 
   const visit = (node: ts.Node): void => {
@@ -328,20 +314,113 @@ export function scanTemplateLiterals(
   return out;
 }
 
+/**
+ * Parse `text`, REFUSING a partial tree.
+ *
+ * An unparseable file yields a PARTIAL tree, not an error: its templates go
+ * missing while every count stays plausible. `FLOORS.templates` carries
+ * thousands of slack, so the largest files could all fail to parse and the run
+ * would still report green — the fail-vacuous shape the sibling critics
+ * hard-fail on for the same reason.
+ *
+ * ONE copy, shared by both scanners: two would drift, and only one of them is
+ * on the path extraction takes (m10 of the go-to-k/cdkd#3499 review).
+ */
+function parseOrRefuse(text: string): ts.SourceFile {
+  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const diagnostics = (sf as unknown as { parseDiagnostics?: ReadonlyArray<unknown> })
+    .parseDiagnostics;
+  if (diagnostics && diagnostics.length > 0) {
+    throw new Error(
+      `refusing to scan: ${diagnostics.length} parse diagnostic(s); a partial tree silently drops templates`
+    );
+  }
+  return sf;
+}
+
+/**
+ * Every template literal in `text`, as its COOKED literal parts plus position.
+ *
+ * `node.text` is the string the running program builds, so each escape is
+ * already rendered (`\n` a line break, `\u0041` an `A`, `\${` a literal `${`)
+ * and every hole boundary is the PARSER's. The hand-written scanner this
+ * replaced was correct on the cases it had been shown and wrong on the next one
+ * every round — an escaped interpolation, an escaped backslash before a real
+ * hole, a nested-brace span, a brace inside a STRING inside such a span — which
+ * is the signature of re-implementing a parser (go-to-k/cdkd#3436).
+ *
+ * `start` / `end` are the literal's span in `text`, which is what lets
+ * {@link extractTemplates} see a `+` between two of them.
+ *
+ * Parsing goes through {@link parseOrRefuse}, so an unparseable file is a
+ * REFUSAL rather than a silent drop — and both scanners share that one copy.
+ */
+export function templateLiteralParts(
+  text: string
+): Array<{ parts: string[]; start: number; end: number }> {
+  // `start` / `end` also delimit the RAW template text, which is what
+  // `MAX_TEMPLATE_CHARS` is applied to — see the cap's note in
+  // `extractTemplates`.
+  const sf = parseOrRefuse(text);
+  const out: Array<{ parts: string[]; start: number; end: number }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isNoSubstitutionTemplateLiteral(node)) {
+      out.push({ parts: [node.text], start: node.getStart(sf), end: node.getEnd() });
+      return;
+    }
+    if (ts.isTemplateExpression(node)) {
+      out.push({
+        parts: [node.head.text, ...node.templateSpans.map((span) => span.literal.text)],
+        start: node.getStart(sf),
+        end: node.getEnd(),
+      });
+      // Do NOT descend: a template inside a hole is part of this one's text.
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+/**
+ * Concatenate two literals' parts the way `+` concatenates the strings: the
+ * tail of the left and the head of the right become ONE part, since no hole
+ * sits between them.
+ */
+export function concatParts(left: readonly string[], right: readonly string[]): string[] {
+  // Only the LEFT side can be empty, and only on the first literal of a run.
+  // A right side never is: `templateLiteralParts` gives every literal at least
+  // its head, so a guard for it would be unreachable — and an unreachable guard
+  // is one no test can hold honest.
+  if (left.length === 0) return [...right];
+  return [...left.slice(0, -1), left[left.length - 1]! + right[0]!, ...right.slice(1)];
+}
+
 export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[] {
   const out: Template[] = [];
   const seen = new Set<string>();
 
-  const add = (raw: string): void => {
-    const collapsed = raw.replace(/\s+/g, ' ').trim();
-    if (collapsed.length === 0 || collapsed.length > MAX_TEMPLATE_CHARS) return;
+  const add = (parts: readonly string[], rawText: string): void => {
+    // Whitespace collapses inside each part; only the OUTER edges are trimmed,
+    // since a space next to a hole is text the message really prints.
+    // Never empty: a parsed literal carries at least its head, and
+    // `concatParts` preserves that.
+    const collapsed = parts.map((part) => part.replace(/\s+/g, ' '));
+    collapsed[0] = collapsed[0]!.replace(/^ /, '');
+    collapsed[collapsed.length - 1] = collapsed[collapsed.length - 1]!.replace(/ $/, '');
+    const literal = collapsed.join('');
+    // The cap is applied to the RAW span — the template text WITH its holes —
+    // exactly as it was before the parser rewrite (M1 of the go-to-k/cdkd#3499
+    // review). Capping the literals instead lets a template that is mostly
+    // holes through, and that compiles into a matcher of many `[\s\S]*?`
+    // wildcards: the "nearly-all-holes template vouches for anything" shape
+    // this file's header names as its risk.
+    if (rawText.replace(/\s+/g, ' ').trim().length > MAX_TEMPLATE_CHARS) return;
+    if (literal.length < MIN_TEMPLATE_LITERAL_CHARS) return;
 
-    // Split on `${...}` holes. A nested-brace hole splits imperfectly, which
-    // only ever makes the matcher STRICTER — never more permissive.
-    const parts = collapsed.split(/\$\{[^{}]*\}/g);
-    if (parts.join('').length < MIN_TEMPLATE_LITERAL_CHARS) return;
-
-    const source = parts.map(esc).join(HOLE);
+    const source = collapsed.map(esc).join(HOLE);
     if (seen.has(source)) return;
     seen.add(source);
     out.push({
@@ -353,7 +432,7 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     const text = readFileSync(file, 'utf8');
     let tokens;
     try {
-      tokens = scanTemplateLiterals(text);
+      tokens = templateLiteralParts(text);
     } catch (e) {
       // Name the file: the scan refuses a partial tree, and a refusal that
       // does not say which input caused it is not actionable.
@@ -363,17 +442,26 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
      * Join runs of literals concatenated with `+`. cdkd builds its longest
      * messages that way, and neither half alone matches what a user sees.
      */
-    let run = '';
+    let run: string[] = [];
+    let runRaw = '';
     for (let k = 0; k < tokens.length; k++) {
       const tok = tokens[k]!;
       const nextTok = tokens[k + 1];
       // Each literal is also registered alone: a concatenation may splice a
       // message with an unrelated neighbour, and the message is still real.
-      add(tok.raw);
-      run += tok.raw;
+      // The RAW template text, backticks excluded — the same span the cap was
+      // applied to before the parser rewrite, so the measurement is unchanged.
+      const tokRaw = text.slice(tok.start + 1, tok.end - 1);
+      add(tok.parts, tokRaw);
+      run = concatParts(run, tok.parts);
+      runRaw += tokRaw;
       if (nextTok && /^\s*\+\s*$/.test(text.slice(tok.end, nextTok.start))) continue;
-      if (run !== tok.raw) add(run);
-      run = '';
+      // Unconditional: `add` already drops a duplicate by its compiled source,
+      // so a run equal to the literal just added costs nothing, and any guard
+      // here is a branch no test can hold honest.
+      add(run, runRaw);
+      run = [];
+      runRaw = '';
     }
   }
   return out;

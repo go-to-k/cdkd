@@ -21,6 +21,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { pasteableCommand } from '../utils/pasteable-command.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -168,10 +169,18 @@ export async function assertAssetBucketRegion(
   cause: Error
 ): Promise<void> {
   const want = canonicalizeRegion(expectedRegion);
+  // The command rides a trailing labelled line, never the sentence: pasting a
+  // prose span WITH its quotes is what let an interpolated value run
+  // (go-to-k/cdkd#3436). The `<name>` hole is quoted for the same reason — bare,
+  // it reads stdin from a file `name` and truncates the next word.
+  const bootstrapUnique = pasteableCommand('cdkd bootstrap', [
+    { flag: '--region', value: want, hole: 'region' },
+    { flag: '--asset-bucket', hole: 'name' },
+  ]);
   const remedy =
-    `Either bootstrap ${want} with an asset-bucket name unique to it ` +
-    `('cdkd bootstrap --region ${want} --asset-bucket <name>'), or run this ` +
-    `against the bucket's own region.`;
+    `Either bootstrap ${want} with an asset-bucket name unique to it, or run this ` +
+    `against the bucket's own region.` +
+    `\nBootstrap with: ${bootstrapUnique.command}`;
 
   let actual: string;
   const fromHeader = readBucketRegionHeader(cause);
@@ -528,7 +537,14 @@ export async function verifyAssetStorageExists(
   region: string,
   opts: { profile?: string } = {}
 ): Promise<void> {
-  const rebootstrapHint = `Run 'cdkd bootstrap --region ${region}' to recreate it. cdkd never silently falls back to CDK bootstrap asset storage once a region is opted in.`;
+  // Appended LAST by each of the three refusals below, so its command stays the
+  // final line of whatever message carries it (go-to-k/cdkd#3436).
+  const rebootstrap = pasteableCommand('cdkd bootstrap', [
+    { flag: '--region', value: region, hole: 'region' },
+  ]);
+  const rebootstrapHint =
+    `cdkd never silently falls back to CDK bootstrap asset storage once a region is opted in.` +
+    `\nRecreate it with: ${rebootstrap.command}`;
 
   // `--profile` must reach these probes: with the default chain resolving a
   // DIFFERENT account, the asset bucket's own deny-external-account policy
@@ -726,9 +742,14 @@ export async function ensureAssetStorage(
       throw new CdkdError(
         `Region '${region}' is already bootstrapped with ${conflicts.join(' and ')}. ` +
           `Changing asset storage names would strand the existing storage and every ` +
-          `published asset in it — run 'cdkd bootstrap --destroy --region ${region}' to ` +
-          `tear the region's asset storage down first, then re-run bootstrap with the ` +
-          `new names.`,
+          `published asset in it — tear the region's asset storage down first, then ` +
+          `re-run bootstrap with the new names.` +
+          `\nTear it down with: ${
+            pasteableCommand('cdkd bootstrap', [
+              { literal: '--destroy' },
+              { flag: '--region', value: region, hole: 'region' },
+            ]).command
+          }`,
         'ASSET_STORAGE_NAME_CONFLICT'
       );
     }
@@ -1088,7 +1109,12 @@ export class AssetModeResolver {
         this.logger.info(
           `Assets for region '${region}' are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +
             `garbage-collect (cdkd-deployed stacks have no CloudFormation stack for gc to scan). ` +
-            `Run 'cdkd bootstrap --region ${region}' to create cdkd-owned asset storage that 'cdk gc' never touches.`
+            `Create cdkd-owned asset storage that 'cdk gc' never touches:` +
+            `\nBootstrap with: ${
+              pasteableCommand('cdkd bootstrap', [
+                { flag: '--region', value: region, hole: 'region' },
+              ]).command
+            }`
         );
       }
       return { mode: 'legacy' };
@@ -1169,8 +1195,13 @@ export class AssetModeResolver {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `Failed to auto-create cdkd asset storage for region '${region}': ${message} ` +
-          `Falling back to the CDK bootstrap destinations for this run — run ` +
-          `'cdkd bootstrap --region ${region}' (with S3/ECR create permissions) to opt the region in.`
+          `Falling back to the CDK bootstrap destinations for this run — opt the region ` +
+          `in with S3/ECR create permissions.` +
+          `\nBootstrap with: ${
+            pasteableCommand('cdkd bootstrap', [
+              { flag: '--region', value: region, hole: 'region' },
+            ]).command
+          }`
       );
       return null;
     } finally {

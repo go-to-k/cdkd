@@ -501,7 +501,14 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     expect(messages).toMatch(/nested child of 'NestedStackExample'/);
     // Error suggests both bypass paths: parent destroy AND state destroy escape hatch.
     expect(messages).toMatch(/cdkd destroy NestedStackExample/);
-    expect(messages).toMatch(/cdkd state destroy NestedStackExample~Child/);
+    // The labelled line, whole (go-to-k/cdkd#3436): a loose match accepts the
+    // command back inside the sentence, which is the shape that pastes as shell.
+    // The label says what the command DOES: `cdkd state destroy` deletes the
+    // child's AWS resources and then its record — it is the synth-free destroy,
+    // not a record-only drop (delta round 2 on go-to-k/cdkd#3436).
+    expect(messages).toMatch(
+      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child'$/m
+    );
     // The parent's logical id helps the user identify which child this is when
     // a parent has multiple nested stacks with similar physical-key shapes.
     expect(messages).toMatch(/parent's logical id: Child/);
@@ -634,7 +641,14 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(messages).toMatch(/nested child of 'NestedStackExample'/);
     expect(messages).toMatch(/cdkd destroy NestedStackExample/);
-    expect(messages).toMatch(/cdkd state destroy NestedStackExample~Child/);
+    // The labelled line, whole (go-to-k/cdkd#3436): a loose match accepts the
+    // command back inside the sentence, which is the shape that pastes as shell.
+    // The label says what the command DOES: `cdkd state destroy` deletes the
+    // child's AWS resources and then its record — it is the synth-free destroy,
+    // not a record-only drop (delta round 2 on go-to-k/cdkd#3436).
+    expect(messages).toMatch(
+      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child'$/m
+    );
   });
 
   it('wildcard pattern that matches only a child does NOT trigger the upfront refusal (generic miss is correct)', async () => {

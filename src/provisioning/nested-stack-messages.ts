@@ -38,7 +38,16 @@ export function nestedStackChildFailureMessage(
   childStackName: string,
   errorCount: number,
   alsoSkippedCount: number,
-  alsoInterrupted: boolean
+  alsoInterrupted: boolean,
+  /**
+   * The `cdkd state show <child>` line, already built by
+   * `pasteableCommand` (go-to-k/cdkd#3436) and printed LAST.
+   *
+   * Passed IN rather than built here: this module must stay a LEAF, and the
+   * header above says why an import re-creates a real cycle. The caller holds
+   * the child's name anyway.
+   */
+  inspectCommand: string
 ): string {
   const extra: string[] = [];
   if (alsoSkippedCount > 0) extra.push(`${alsoSkippedCount} resource(s) were also skipped`);
@@ -50,8 +59,9 @@ export function nestedStackChildFailureMessage(
     // there is something to say. Fenced by a test asserting no `()` in the
     // no-extra case.
     (extra.length > 0 ? ` (${extra.join('; ')})` : '') +
-    `. The child's state is PRESERVED and still lists them — inspect it with ` +
-    `'cdkd state show ${childStackName}', resolve the failure, and re-run the destroy. ` +
-    `The parent's record of this nested stack is kept so the child stays reachable.`
+    `. The child's state is PRESERVED and still lists them — inspect it, resolve ` +
+    `the failure, and re-run the destroy. The parent's record of this nested stack ` +
+    `is kept so the child stays reachable.` +
+    `\nInspect it with: ${inspectCommand}`
   );
 }

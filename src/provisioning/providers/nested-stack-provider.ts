@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import * as path from 'node:path';
 import type {
   CloudFormationTemplate,
@@ -512,7 +513,9 @@ export class NestedStackProvider implements ResourceProvider {
           childStackName,
           childResult.errorCount,
           childResult.skippedCount,
-          childResult.interrupted
+          childResult.interrupted,
+          // Built HERE because the message module is a leaf by design.
+          pasteableCommand('cdkd state show', [{ value: childStackName, hole: 'stack' }]).command
         )
       );
       throw childResult.interrupted ? markNonRetryable(failure) : failure;

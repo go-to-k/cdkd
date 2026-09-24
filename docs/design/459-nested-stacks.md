@@ -417,9 +417,11 @@ key), the CLI refuses with a clear error pointing at the parent:
 
 ```
 NestedStackChildDirectDestroyError: Stack 'MyParent~MyChild' is a nested child of 'MyParent';
-directly destroying a nested stack is not supported. Either run 'cdkd destroy MyParent' to
-cascade-delete this child along with its parent, or run 'cdkd state destroy MyParent~MyChild'
-if you intentionally want to leave the parent's reference dangling (the state-only escape hatch).
+directly destroying a nested stack is not supported. Either cascade-delete this child along
+with its parent, or destroy the child on its own — which deletes its AWS resources and its
+record, and leaves the parent's reference dangling (the synth-free escape hatch).
+Cascade-delete with: cdkd destroy MyParent
+Destroy the child alone with: cdkd state destroy 'MyParent~MyChild'
 ```
 
 The check fires in `destroy.ts` BEFORE lock acquisition by reading the

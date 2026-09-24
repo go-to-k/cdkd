@@ -363,10 +363,98 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     );
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state show TestStack~Child'");
-    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
+    // WHOLE LINES, not substrings (go-to-k/cdkd#3436): one command per line is
+    // the property — dropping the newline `hintFor` prefixes concatenates two
+    // commands into one invocation and every substring check still passes.
+    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child' --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child' --stack-region us-east-1$/m);
     // The parent's own file must NOT be the one named — that is the bug.
-    expect(warn).not.toContain("'cdkd state show TestStack'");
+    expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
+  });
+
+  it('gives EVERY skipped target its own command line, never one concatenated run', () => {
+    // Two targets is where the hazard lives: with one, the call site's own
+    // layout hides a `hintFor` that stopped opening a line, and the two
+    // commands then paste as a single invocation with the second handed to the
+    // first as arguments (proxy round 8 on go-to-k/cdkd#3436).
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    return runDestroyForStack(
+      'TestStack',
+      makeState({
+        ChildA: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+        ChildB: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+      }),
+      makeCtx()
+    ).then(() => {
+      const lines = allWarn().split('\n');
+      expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
+      ]);
+      expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
+      ]);
+      // ...and those four lines END the summary, in that order, with nothing
+      // between them: a blank entry or a reordering means a stray newline or a
+      // join crept back in. (Earlier blank lines belong to the separate
+      // per-resource warning `allWarn` also collects.)
+      expect(lines.slice(-4)).toEqual([
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
+      ]);
+    });
+  });
+
+  it('emits ONE line per distinct command when a target fails AND is skipped', async () => {
+    // M6 of the go-to-k/cdkd#3499 review: the same state target lands in both
+    // `failedStateTargets` and `skippedStateTargets`, and the two `hintFor`
+    // calls cannot see each other — so the dedupe has to happen across them,
+    // not only within each. Before it, this printed the orphan line twice.
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Table'
+        ? Promise.resolve({ outcome: 'skipped', reason: 'bad id' })
+        : Promise.reject(new Error('boom'))
+    );
+
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Table: res(), Queue: res({ resourceType: 'AWS::SQS::Queue' }) }),
+      makeCtx()
+    );
+
+    const lines = allWarn().split('\n');
+    const orphan = lines.filter((l) => l.startsWith('Drop the record with: '));
+    expect(orphan).toEqual(['Drop the record with: cdkd state orphan TestStack --stack-region us-east-1']);
+  });
+
+  it('collapses targets that all render as the same hole to ONE line', async () => {
+    // The other half of M6: when the gate holds every name, each target
+    // produces the identical `'<stack>'` line, and N copies of it say nothing
+    // the first does not.
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    await runDestroyForStack(
+      '--all',
+      makeState({
+        ChildA: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+        ChildB: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+      }),
+      makeCtx()
+    );
+
+    const lines = allWarn().split('\n');
+    // ARITY as well as distinctness: `> 0` plus all-distinct is satisfied by a
+    // regression that emits only one of the two labels (m15 of the
+    // go-to-k/cdkd#3499 review).
+    const holes = lines.filter((l) => l.includes("'<stack>'"));
+    expect(holes).toEqual([
+      "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+    ]);
   });
 
   it('names THIS stack\'s file for an ordinary (non-nested) skip', async () => {
@@ -379,8 +467,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toContain("'cdkd state show TestStack'");
-    expect(warn).toContain("'cdkd state orphan TestStack'");
+    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1$/m);
     expect(warn).not.toContain('TestStack~');
   });
 

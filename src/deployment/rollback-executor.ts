@@ -46,6 +46,7 @@
  *    replays each op exactly once).
  */
 
+import { pasteableCommand } from '../utils/pasteable-command.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
@@ -3226,9 +3227,19 @@ async function replaySingle(
               `Create API is name-idempotent and the new resource still holds the same ` +
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
-              `state now records the pre-replacement properties, so run ` +
-              `'cdkd drift ${stackName}' to inspect and 'cdkd deploy' to reconcile, or rename ` +
-              `the resource to make the replacement reversible.`
+              `state now records the pre-replacement properties, so inspect the drift and ` +
+              `run 'cdkd deploy' to reconcile, or rename the resource to make the replacement ` +
+              `reversible.` +
+              // `--stack-region` for the same reason the destroy hints carry
+              // it: without it `cdkd drift` resolves every region holding this
+              // name. Read-only, so no data loss — but it reports on records
+              // the message never named (go-to-k/cdkd#3499 review nits).
+              `\nInspect it with: ${
+                pasteableCommand('cdkd drift', [
+                  { value: stackName, hole: 'stack' },
+                  { flag: '--stack-region', value: ctx.region, hole: 'region' },
+                ]).command
+              }`
           );
           result.warnings++;
         }

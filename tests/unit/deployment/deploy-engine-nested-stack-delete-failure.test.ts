@@ -69,7 +69,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 const NESTED_TYPE = 'AWS::CloudFormation::Stack';
 /** The REAL message the provider throws — imported, never hand-copied. */
-const CHILD_FAILURE_MESSAGE = nestedStackChildFailureMessage('MyStack~Child', 1, 0, false);
+const CHILD_FAILURE_MESSAGE = nestedStackChildFailureMessage('MyStack~Child', 1, 0, false, "cdkd state show 'MyStack~Child'");
 
 describe('DeployEngine DELETE branch — nested stack whose child failed (#1777)', () => {
   let deleteProvider: ResourceProvider;

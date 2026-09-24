@@ -689,7 +689,9 @@ describe('NestedStackProvider', () => {
       // still live; the child's state key is the file they must actually open
       // (the parent's own state.json says nothing about which resource failed).
       expect(msg).toContain('3 resource(s) failed to delete');
-      expect(msg).toContain("'cdkd state show Parent~Child'");
+      // The whole labelled line (go-to-k/cdkd#3436): the command left the
+      // sentence's quotes, which is the shape that pastes as shell.
+      expect(msg).toMatch(/^Inspect it with: cdkd state show 'Parent~Child'$/m);
       // BOTH callers' catch blocks treat an already-deleted-shaped message as
       // an idempotent SUCCESS and drop the state row — the exact outcome this
       // throw exists to prevent. The two sets are not identical, so pin their

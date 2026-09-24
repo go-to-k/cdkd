@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 
 // Logger / config-loader / aws-clients mocks: same pattern as the
 // other state-* tests so the command boot path runs cleanly without
@@ -1505,13 +1506,19 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       expect(error).toBeDefined();
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toContain('legacy state record without a region');
-      // Sanitized (the escape becomes a space) and shell-quoted in the prose —
-      // but NO `cdkd deploy` example: that command WRITES, and a name
-      // sanitizing altered can name a different stack in the user's app, so it
-      // is printed only for an exact name (the case below).
+      // Sanitized (the escape becomes a space) and shell-quoted in the prose,
+      // and the command names the HOLE rather than the name: that command
+      // WRITES, and a name sanitizing altered can address a different stack in
+      // the user's app (M5 of the go-to-k/cdkd#3499 review made this site match
+      // its two siblings, which print the hole).
       expect(message).not.toContain(String.fromCharCode(0x1b));
-      expect(message).toContain(String.raw`Stack 'Old '\''; rm -rf ~ #' has only a legacy`);
-      expect(message).not.toContain('cdkd deploy');
+      // `displayIdent`, not POSIX escaping, since go-to-k/cdkd#3499's M9: the
+      // name is prose here, not a shell word — and `displayIdent` QUOTES what
+      // it altered, so a trimmed spelling cannot read as a healthy sibling.
+      expect(message).toContain(String.raw`Stack "Old '; rm -rf ~ #" has only a legacy`);
+      expect(message).toContain('does NOT render exactly');
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      expect(message).not.toMatch(/cdkd deploy 'Old/);
       expect(mockGetState).not.toHaveBeenCalled();
       expect(mockAcquireLock).not.toHaveBeenCalled();
       expect(mockSaveState).not.toHaveBeenCalled();
@@ -1533,8 +1540,18 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       ['a leading hyphen', '--all'],
       // A SHORT option, one dash: a gate keyed on `--` alone must not pass it.
       ['a single leading hyphen', '-x'],
+      // The BOUNDARY of that gate, and the reason its sentence names the
+      // leading `-` rather than claiming the value parses as a flag: Commander
+      // takes a bare `-` POSITIONALLY (measured), unlike `--all` and `-x`. The
+      // gate refuses it anyway, conservatively, so the hole is still printed.
+      ['a bare hyphen', '-'],
     ] as const) {
-      it(`WITHHOLDS the \`cdkd deploy\` example for a legacy name with ${label}`, async () => {
+      it(`HOLDS the name out of the \`cdkd deploy\` command for a legacy name with ${label}`, async () => {
+        // Since go-to-k/cdkd#3499 this site prints the HOLE on a labelled line
+        // rather than withholding the command, matching its two siblings in
+        // this file (M5 of that review). A hole resolves to a stack literally
+        // named `<stack>` and refuses, so nothing is pasteable that addresses
+        // a real record — what must never appear is the NAME itself.
         mockListStacks.mockResolvedValueOnce([{ stackName: name }]);
         mockGetState.mockResolvedValue(null);
 
@@ -1543,9 +1560,176 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
         expect(error).toBeDefined();
         const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
         expect(message).toContain('legacy state record without a region');
-        expect(message).not.toContain('cdkd deploy');
+        expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+        expect(message).not.toContain(`cdkd deploy ${name}`);
+        expect(message).not.toContain(`cdkd deploy '${name}'`);
+        // ...and no ALTERED spelling either, which the `not.toContain('cdkd
+        // deploy')` this replaced also rejected (m17 of the go-to-k/cdkd#3499
+        // review). Only the hole may follow the verb.
+        expect(message).toMatch(/cdkd deploy '<stack>'/);
+        expect(message.match(/cdkd deploy \S+/g)).toEqual(["cdkd deploy '<stack>'"]);
       });
     }
+
+    it('does not print a TRAILING-SPACE key as its healthy sibling (go-to-k/cdkd#3499 M9)', async () => {
+      // The harm the prose rendering had: `displaySafe` TRIMS, so a planted v1
+      // key `ProdStack ` printed as `Stack ProdStack` — byte-identical to a
+      // real, healthy stack — directly above a `Migrate with: cdkd deploy
+      // '<stack>'` template. The operator fills the hole with the name they
+      // were shown and WRITES to the wrong record. `displayIdent` quotes what
+      // it altered, and the message says another record may render identically.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'ProdStack ' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).not.toContain('Stack ProdStack has only');
+      expect(message).toContain('does NOT render exactly');
+      expect(message).toContain("list the records as stored with 'cdkd state list --long'");
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    });
+
+    it('gives an EXACT legacy name no withheld-name clause (go-to-k/cdkd#3499 M11)', async () => {
+      // The first of the two directions M11 exists for. `Old;Stack` renders
+      // exactly — `displaySafe` alters nothing in it, and quoting is what makes
+      // the `;` safe — so the command NAMES it, and a sentence saying the name
+      // "does NOT render exactly" would be false ABOVE a command that spells it
+      // out. The clause comes from the same gate that decided the hole, so
+      // there is no second predicate that could disagree with the command.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'Old;Stack' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toMatch(/^Migrate with: cdkd deploy 'Old;Stack'$/m);
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy 'Old;Stack'`)).toBe(true);
+      expect(message).not.toContain('does NOT render exactly');
+      expect(message).not.toContain('is not named in the command below');
+    });
+
+    it('explains the HOLE for an option-shaped legacy name (go-to-k/cdkd#3499 M11)', async () => {
+      // The other direction, and the one a site-local `displayIdent(n) === n`
+      // predicate gets WRONG: `--all` survives sanitizing untouched, so that
+      // predicate calls it exact and prints no clause at all — leaving a bare,
+      // authoritative name above an unexplained hole, which invites the
+      // operator to type the name they were shown into `cdkd deploy`. That
+      // deploys every stack in the app. The gate withheld it for a REASON, and
+      // the reason is what the sentence is rendered from.
+      mockListStacks.mockResolvedValueOnce([{ stackName: '--all' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      expect(message).toContain(
+        `This record's name begins with a '-', so it is not safe to print as an argument to ` +
+          `'cdkd deploy' — a name like '--all' is parsed as the FLAG and targets every stack`
+      );
+      expect(message).toContain('it is not named in the command below');
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
+      // NOT the exactness sentence: `--all` renders exactly. Keying the clause
+      // on rendering alone would print the wrong reason here, or none.
+      expect(message).not.toContain('does NOT render exactly');
+    });
+
+    for (const [label, name] of [
+      ['a wildcard', '*'],
+      ['a wildcard after a prefix', 'Prod-*'],
+      ['a display path', 'Stage/Stack'],
+    ] as const) {
+      it(`explains the HOLE as a PATTERN for a legacy name with ${label} (go-to-k/cdkd#3499 M11)`, async () => {
+        // The third reachable reason, and the one whose sentence differs most
+        // from the other two: these names render exactly AND are not options,
+        // so neither of the sibling sentences is true of them. `cdkd deploy`
+        // reads its argument through `src/cli/stack-matcher.ts`, so `'*'` is
+        // every stack in the app. Asserting only the hole (which the sibling
+        // loop above does) leaves the sentence free to say anything.
+        mockListStacks.mockResolvedValueOnce([{ stackName: name }]);
+        mockGetState.mockResolvedValue(null);
+
+        const { error } = await runRefresh(['--all', '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(
+          `This record's name would be read as a PATTERN by 'cdkd deploy', which can match ` +
+            `other stacks`
+        );
+        expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+        expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
+        expect(message).not.toContain('does NOT render exactly');
+        expect(message).not.toContain(`begins with a '-'`);
+      });
+    }
+
+    it('explains the HOLE as OVER-LONG for a legacy name past the cap (go-to-k/cdkd#3499 M11)', async () => {
+      // An arm this site cannot reach from a real key, covered anyway. The cap
+      // is `STACK_REF_MAX_CODE_POINTS` (1152) and S3 caps the whole key at
+      // 1024 bytes, so `cdkd/<name>/state.json` leaves the name at most 1008 —
+      // `listStacks` can never hand this site an over-cap name. It is pinned
+      // because the REASON belongs to `pasteableCommand`, not to this caller:
+      // the mock is how the sentence gets exercised at the SITE at all. Since
+      // M13 the `switch` is exhaustive, so DROPPING the arm is a compile error
+      // rather than a silent fall-through — what this case buys on top of that
+      // is the arm's TEXT, which the type checker cannot see. The name here is
+      // neither altered by
+      // sanitizing nor option- or pattern-shaped, so only its LENGTH withholds
+      // it — the exactness sentence would be false and no sentence would leave
+      // the hole unexplained.
+      const overLong = 'A'.repeat(STACK_REF_MAX_CODE_POINTS + 1);
+      mockListStacks.mockResolvedValueOnce([{ stackName: overLong }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain(`This record's name is too long to print`);
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
+      expect(message).not.toContain('does NOT render exactly');
+    });
+
+    it('explains the HOLE as EMPTY for a blank legacy name (go-to-k/cdkd#3499 M11)', async () => {
+      // The second arm this site cannot reach from a real key — `listStacks`
+      // drops a key whose stack segment is empty (`s3-state-backend.ts`'s
+      // `if (!stackName) continue`) — and pinned for the same reason as the
+      // over-cap one: the REASON is `pasteableCommand`'s, so a caller whose
+      // value comes from elsewhere can see it, and the exhaustive `switch`
+      // guarantees the arm EXISTS but not that it says the right thing. The
+      // mock supplies what the backend filters out, which is the only way to
+      // drive the sentence at the SITE.
+      mockListStacks.mockResolvedValueOnce([{ stackName: '' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain(`This record's name is empty`);
+      expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
+      expect(message).not.toContain('does NOT render exactly');
+      expect(message).not.toContain('would be read as a PATTERN');
+    });
 
     it('prints the `cdkd deploy` example for an ordinary HYPHENATED legacy name', async () => {
       // The `^` of the leading-hyphen guard, pinned from the side that matters:
@@ -1560,7 +1744,8 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
 
       expect(error).toBeDefined();
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-      expect(message.trimEnd().endsWith('For example: cdkd deploy My-App-Stack')).toBe(true);
+      expect(message).toMatch(/^Migrate with: cdkd deploy My-App-Stack$/m);
+      expect(message.trimEnd().endsWith('Migrate with: cdkd deploy My-App-Stack')).toBe(true);
     });
 
     it('prints the `cdkd deploy` example for a legacy target whose name renders EXACTLY', async () => {
@@ -1576,7 +1761,8 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
 
       expect(error).toBeDefined();
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-      expect(message.trimEnd().endsWith("For example: cdkd deploy 'Old;Stack'")).toBe(true);
+      expect(message).toMatch(/^Migrate with: cdkd deploy 'Old;Stack'$/m);
+      expect(message.trimEnd().endsWith("Migrate with: cdkd deploy 'Old;Stack'")).toBe(true);
       expect(mockSaveState).not.toHaveBeenCalled();
     });
 

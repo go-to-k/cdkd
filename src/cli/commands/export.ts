@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
@@ -2751,8 +2752,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       logger.warn(
         `Stack '${resolvedStackName}' has a rollback journal — a previous deploy failed or was ` +
           `interrupted and has not been reverted. Exporting this half-deployed state to ` +
-          `CloudFormation is likely unintended; run 'cdkd rollback ${resolvedStackName}' to revert ` +
-          `(or 'cdkd deploy' to fix forward) first.`
+          `CloudFormation is likely unintended; revert it first (or 'cdkd deploy' to fix ` +
+          `forward).` +
+          `\nRevert it with: ${
+            pasteableCommand('cdkd rollback', [{ value: resolvedStackName, hole: 'stack' }]).command
+          }`
       );
       if (!options.yes && !options.dryRun) {
         const proceed = await confirmPrompt('Export anyway?');
@@ -3615,8 +3619,16 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
   const exact =
     typeof stackName === 'string' &&
     shownStack === stackName &&
+    // A record named `--state-bucket=attacker` renders EXACTLY, so the raw
+    // compare admits it — and the shell strips the quotes `shellQuote` adds,
+    // handing Commander an argv entry it parses as that FLAG. A
+    // record-DELETING command would then be pointed at an attacker-named
+    // bucket. The same rule `pasteableCommand`'s `printable()` applies
+    // (M4 of the go-to-k/cdkd#3499 review).
+    !stackName.startsWith('-') &&
     typeof region === 'string' &&
-    safeSegment(region) === region;
+    safeSegment(region) === region &&
+    !region.startsWith('-');
   if (!exact) {
     // Names no target: the identity above it may not be this record's. List the
     // records AS STORED and act on the one whose key matches.
@@ -7049,9 +7061,12 @@ export async function runPerStackImportLoop(args: {
             `Phase 1A IMPORT changeset failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
               `'${plan.cfnName}'). Stacks imported successfully so far: ${importedSummary}. ` +
               `Stacks not yet imported (cdkd state preserved): ${remainingSummary}. ` +
-              `After resolving the underlying cause, re-run 'cdkd export ${rootStackName}' — ` +
-              `already-imported children will be adopted as nested references on retry. ` +
-              `Cause: ${err instanceof Error ? err.message : String(err)}`,
+              `After resolving the underlying cause, re-run the export — already-imported ` +
+              `children will be adopted as nested references on retry. ` +
+              `Cause: ${err instanceof Error ? err.message : String(err)}` +
+              `\nRe-run with: ${
+                pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
+              }`,
             { cause: err instanceof Error ? err : undefined }
           );
         }

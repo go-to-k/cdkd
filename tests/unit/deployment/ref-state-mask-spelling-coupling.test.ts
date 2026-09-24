@@ -126,7 +126,7 @@ describe('the masked Ref state-key read couples its producer to its consumer (#2
 
     // LOCAL: a concrete, copy-pasteable command naming the record that HOLDS
     // the mask...
-    expect(remedy).toContain("'cdkd import <stack> --resource MyTable=<physicalId> --force'");
+    expect(remedy).toMatch(/^Re-import with: cdkd import '<stack>' --resource 'MyTable=<physicalId>' --force$/m);
     // ...and NOT the cross-stack arm, which offers no command at all.
     expect(remedy).not.toContain('ANOTHER stack');
   });
@@ -151,7 +151,7 @@ describe('the masked Ref state-key read couples its producer to its consumer (#2
       [logicalId]: { resourceType: TABLE_TYPE },
     });
 
-    expect(remedy).toContain(`--resource ${logicalId}=<physicalId>`);
+    expect(remedy).toContain(`--resource '${logicalId}=<physicalId>'`);
   });
 
   it('a HYPHENATED logical id still routes LOCAL and names itself in the command', async () => {
@@ -169,7 +169,7 @@ describe('the masked Ref state-key read couples its producer to its consumer (#2
 
     const remedy = remedyFor(reads, { [logicalId]: { resourceType: TABLE_TYPE } });
 
-    expect(remedy).toContain(`--resource ${logicalId}=<physicalId>`);
+    expect(remedy).toContain(`--resource '${logicalId}=<physicalId>'`);
     expect(remedy).toContain("CDKD's own read");
     expect(remedy).not.toContain('ANOTHER stack');
   });

@@ -1315,9 +1315,14 @@ fi
 # THE REMEDY. A refusal that does not name the working fix strands the operator
 # on a command that can never succeed, which is why this branch refuses instead
 # of writing something into the leaf: there is no correct value to write.
-if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}'"; then
+# The remedy left the prose sentence for a trailing `Scrub with:` line since
+# go-to-k/cdkd#3436 -- an operator selects a prose `'...'` span WITH its quotes,
+# so a value carrying `'` ran as shell. Keying this on the old inline spelling
+# would pin the defect. Anchored to the line start so a mention inside prose
+# cannot satisfy it.
+if ! printf '%s\n' "${PLAINTEXT_PRODUCER_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?$"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
-  fail "'cdkd scrub ${CONSUMER}' refused without naming the remedy 'cdkd scrub ${PRODUCER}'"
+  fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi
 if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CONSUMER}"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
@@ -1512,9 +1517,9 @@ if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "at Description['Fn::Join']"; 
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused from somewhere other than the Description's Fn::Join — the refusal is not attributable to the taken-branch conditional read this phase seeds for"
 fi
-if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}'"; then
+if ! printf '%s\n' "${TAKEN_REFUSE_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?$"; then
   diag "${TAKEN_REFUSE_OUT}"
-  fail "'cdkd scrub ${CONSUMER}' refused without naming the remedy 'cdkd scrub ${PRODUCER}'"
+  fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi
 if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CONSUMER}"; then
   diag "${TAKEN_REFUSE_OUT}"
@@ -1808,9 +1813,16 @@ fi
 # THE REMEDY, and for a chain it is more than one command: the middle stack can
 # only store the expression once the head of the chain has been scrubbed, so a
 # refusal naming only the middle stack sends the operator into a second refusal.
-if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}', then 'cdkd scrub ${CONSUMER}'"; then
+# The chain is now one labelled line PER command, head of chain first, so the
+# order is asserted by comparing the two line numbers rather than by matching a
+# single inline sentence (go-to-k/cdkd#3436). `grep -n` gives the order; a
+# missing line yields an empty capture and fails the numeric compare.
+CHAIN_HEAD_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${PRODUCER}'?$" | head -1 | cut -d: -f1)"
+CHAIN_NEXT_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${CONSUMER}'?$" | head -1 | cut -d: -f1)"
+if [ -z "${CHAIN_HEAD_LINE}" ] || [ -z "${CHAIN_NEXT_LINE}" ] ||
+  [ "${CHAIN_HEAD_LINE}" -ge "${CHAIN_NEXT_LINE}" ]; then
   diag "${CHAIN_REFUSE_OUT}"
-  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without prescribing the chain in scrub order ('cdkd scrub ${PRODUCER}', then 'cdkd scrub ${CONSUMER}')"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without prescribing the chain in scrub order: expected a 'Scrub with: cdkd scrub ${PRODUCER}' line ABOVE a 'Scrub with: cdkd scrub ${CONSUMER}' line (got head=${CHAIN_HEAD_LINE:-none} next=${CHAIN_NEXT_LINE:-none})"
 fi
 if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CHAIN_CONSUMER}"; then
   diag "${CHAIN_REFUSE_OUT}"

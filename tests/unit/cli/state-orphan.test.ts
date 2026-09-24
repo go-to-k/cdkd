@@ -281,7 +281,7 @@ describe('cdkd state orphan', () => {
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/AWS resources will NOT be deleted/);
-    expect(out).toMatch(/Use 'cdkd destroy MyStack'/);
+    expect(out).toMatch(/^Destroy with: cdkd destroy MyStack$/m);
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
