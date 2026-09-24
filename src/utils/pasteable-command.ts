@@ -237,7 +237,20 @@ export function rendersExactly(value: string): boolean {
   return reason === undefined || reason === 'option-shaped';
 }
 
-/** Whether a value may be NAMED in a command, or must become a hole. */
+/**
+ * WHY a value must become a hole, or `undefined` when it may be NAMED.
+ *
+ * FIRST MATCH WINS, in the order written: `empty`, `altered`, `too-long`,
+ * `option-shaped`, `pattern-shaped` (m21 of the go-to-k/cdkd#3499 review). A
+ * value can satisfy several — `-\u001b[x` is both option-shaped and altered —
+ * and the caller renders ONE sentence, so the order decides which. It runs
+ * cheapest-and-most-fundamental first: a value that does not survive rendering
+ * cannot be reasoned about as a command argument at all, so saying "this would
+ * be read as an option" about a spelling that is not what is stored would be
+ * the more misleading of the two true sentences. The order is also the order
+ * the two functions this replaced already applied, which is what keeps the
+ * refactor behaviour-preserving.
+ */
 function withholdReason(
   value: string,
   opts: ValueGateOptions | undefined
@@ -246,10 +259,11 @@ function withholdReason(
   const safe = displaySafe(value, { asciiOnly: true });
   if (safe !== value) return 'altered';
   if (truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated) return 'too-long';
-  // A leading `-` is an OPTION to every cdkd command: a state key named
-  // `--all` survives sanitizing, the cap and quoting, and then addresses every
-  // stack. Quoting does not save it — the shell passes `'--all'` through as
-  // the same argv entry Commander then parses as a flag.
+  // See `WithholdReason`'s `'option-shaped'` member for why this refuses on the
+  // LEADING `-` rather than on whether the value parses as an option. In short:
+  // `--all` does parse as the flag — quoting stops the shell, not Commander,
+  // which sees the same argv entry either way — while a bare `-` Commander
+  // takes positionally, and this refuses it anyway.
   if (value.startsWith('-')) return 'option-shaped';
   if (opts?.patternMatched === true && (value.includes('*') || value.includes('/'))) {
     return 'pattern-shaped';

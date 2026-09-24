@@ -3216,6 +3216,90 @@ function createStateInfoCommand(): Command {
 }
 
 /**
+ * The hole the legacy refusal's `cdkd deploy` prints for a name it cannot
+ * name, and the key {@link withheldNameClause} reads the reason back by. ONE
+ * spelling so the two cannot drift apart (m22 of the go-to-k/cdkd#3499 review).
+ */
+const STACK_HOLE = 'stack';
+
+/**
+ * The sentence for a name `pasteableCommand` would not print, rendered from the
+ * REASON it gave rather than from a predicate of this site's own — M11 of the
+ * go-to-k/cdkd#3499 review. Keying it on a second predicate got both directions
+ * wrong at once: `Old;Stack` renders exactly, so a rendering-based clause called
+ * a command that names it "not exact", and `--all` also renders exactly, so the
+ * same clause said nothing above a hole the operator was then invited to fill
+ * with the name printed beside it.
+ *
+ * THREE of the five reasons are reachable from this call site, and the other
+ * two are bounded out by where the name comes from — an S3 key segment:
+ *
+ * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
+ *   planted key can spell a name any of those ways in a handful of bytes.
+ * - `empty` is not. `listStacks` drops a key whose stack segment is empty
+ *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
+ *   is non-empty by the time the refusal is built.
+ * - `too-long` is not either, and the bound is not obvious: the cap is
+ *   `STACK_REF_MAX_CODE_POINTS` (1152), while S3 caps the WHOLE key at 1024
+ *   bytes, leaving at most 1008 for the name inside `cdkd/<name>/state.json`.
+ *   A multi-byte character only lowers the code-point count further, so a name
+ *   arriving through `listStacks` can never reach the cap.
+ *
+ * Both unreachable arms stay, and are covered, because the REASON is the
+ * gate's and not this site's: `pasteableCommand` can return either to a caller
+ * whose value comes from somewhere else, and a missing arm would fall through
+ * to the pattern sentence — the exact class of silent disagreement M11 closed.
+ */
+function withheldNameClause(built: PasteableCommand): string {
+  // Keyed on the hole NAME the call site passes, which couples the two (m22 of
+  // the go-to-k/cdkd#3499 review). Renaming the hole there would drop this
+  // sentence while the hole itself still printed — silently, since the message
+  // stays well-formed. `state-refresh-observed.test.ts` pins the pairing from
+  // the rendered message: every reason case asserts BOTH the hole in the
+  // command and the sentence about it, so a rename that broke the lookup reds
+  // five cases.
+  const reason = built.withheld.find((w) => w.hole === STACK_HOLE)?.reason;
+  if (reason === undefined) return '';
+  // A `switch` with a `never` default, not a ternary chain with a catch-all
+  // (M13 of the go-to-k/cdkd#3499 review). The header above says a missing arm
+  // would fall through to the pattern sentence and calls that the exact class
+  // M11 closed — a hazard identified and then left undefended, since a sixth
+  // `WithholdReason` member typechecks fine against a catch-all and silently
+  // renders the wrong sentence. Here it is a COMPILE error, which is the
+  // enforcement this change is about: the reason comes from one predicate, and
+  // every reason that predicate can return has to be answered on purpose.
+  let why: string;
+  switch (reason) {
+    case 'altered':
+      why = `does NOT render exactly, so another record may render identically`;
+      break;
+    case 'empty':
+      why = `is empty`;
+      break;
+    case 'too-long':
+      why = `is too long to print`;
+      break;
+    case 'option-shaped':
+      why =
+        `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
+        `name like '--all' is parsed as the FLAG and targets every stack`;
+      break;
+    case 'pattern-shaped':
+      why = `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
+      break;
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+  return (
+    ` This record's name ${why} — so it is not named in the command below; ` +
+    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
+    `matches.`
+  );
+}
+
+/**
  * `cdkd state refresh-observed <stack>` command implementation.
  *
  * Walks every resource in the given stack(s) and refreshes its
@@ -3251,63 +3335,6 @@ function createStateInfoCommand(): Command {
  *  - `-y` / `--yes` — skip the confirmation prompt.
  *  - Standard state options + `--profile` / `--role-arn` / `--verbose`.
  */
-/**
- * The sentence that explains a `cdkd deploy` hole, built from the GATE's reason.
- *
- * One predicate for the hole and for the sentence: a site that derives "is this
- * name safe to print" a second time derives a different set, and then the
- * message contradicts the command beside it (M11 of the go-to-k/cdkd#3499
- * review).
- */
-/**
- * The sentence for a name `pasteableCommand` would not print, rendered from the
- * REASON it gave rather than from a predicate of this site's own — M11 of the
- * go-to-k/cdkd#3499 review. Keying it on a second predicate got both directions
- * wrong at once: `Old;Stack` renders exactly, so a rendering-based clause called
- * a command that names it "not exact", and `--all` also renders exactly, so the
- * same clause said nothing above a hole the operator was then invited to fill
- * with the name printed beside it.
- *
- * THREE of the five reasons are reachable from this call site, and the other
- * two are bounded out by where the name comes from — an S3 key segment:
- *
- * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
- *   planted key can spell a name any of those ways in a handful of bytes.
- * - `empty` is not. `listStacks` drops a key whose stack segment is empty
- *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
- *   is non-empty by the time the refusal is built.
- * - `too-long` is not either, and the bound is not obvious: the cap is
- *   `STACK_REF_MAX_CODE_POINTS` (1152), while S3 caps the WHOLE key at 1024
- *   bytes, leaving at most 1008 for the name inside `cdkd/<name>/state.json`.
- *   A multi-byte character only lowers the code-point count further, so a name
- *   arriving through `listStacks` can never reach the cap.
- *
- * Both unreachable arms stay, and are covered, because the REASON is the
- * gate's and not this site's: `pasteableCommand` can return either to a caller
- * whose value comes from somewhere else, and a missing arm would fall through
- * to the pattern sentence — the exact class of silent disagreement M11 closed.
- */
-function withheldNameClause(built: PasteableCommand): string {
-  const reason = built.withheld.find((w) => w.hole === 'stack')?.reason;
-  if (reason === undefined) return '';
-  const why =
-    reason === 'altered'
-      ? `does NOT render exactly, so another record may render identically`
-      : reason === 'empty'
-        ? `is empty`
-        : reason === 'too-long'
-          ? `is too long to print`
-          : reason === 'option-shaped'
-            ? `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
-              `name like '--all' is parsed as the FLAG and targets every stack`
-            : `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
-  return (
-    ` This record's name ${why} — so it is not named in the command below; ` +
-    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
-    `matches.`
-  );
-}
-
 async function stateRefreshObservedCommand(
   stackArgs: string[],
   options: {
@@ -3475,7 +3502,7 @@ async function stateRefreshObservedCommand(
         // flag. Withheld, the hole is printed rather than the altered spelling.
         // The command is LAST and UNWRAPPED on its own labelled line.
         const migrate = pasteableCommand('cdkd deploy', [
-          { value: target.stackName, hole: 'stack', opts: { patternMatched: true } },
+          { value: target.stackName, hole: STACK_HOLE, opts: { patternMatched: true } },
         ]);
         // The SAME shape as the two sibling refusals in this file, deliberately
         // (M5 of the go-to-k/cdkd#3499 review). `main` withheld the example

@@ -1606,6 +1606,7 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       expect(error).toBeDefined();
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toMatch(/^Migrate with: cdkd deploy 'Old;Stack'$/m);
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy 'Old;Stack'`)).toBe(true);
       expect(message).not.toContain('does NOT render exactly');
       expect(message).not.toContain('is not named in the command below');
     });
@@ -1631,6 +1632,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
           `'cdkd deploy' — a name like '--all' is parsed as the FLAG and targets every stack`
       );
       expect(message).toContain('it is not named in the command below');
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
       // NOT the exactness sentence: `--all` renders exactly. Keying the clause
       // on rendering alone would print the wrong reason here, or none.
       expect(message).not.toContain('does NOT render exactly');
@@ -1660,6 +1666,7 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
             `other stacks`
         );
         expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+        expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
         expect(message).not.toContain('does NOT render exactly');
         expect(message).not.toContain(`begins with a '-'`);
       });
@@ -1687,6 +1694,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toContain(`This record's name is too long to print`);
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
       expect(message).not.toContain('does NOT render exactly');
     });
 
@@ -1708,6 +1720,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toContain(`This record's name is empty`);
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+      // ...and the command is still LAST: `withheldNameClause` returns a string
+      // concatenated BEFORE the `\nMigrate with:` line, so a change that
+      // appended it AFTER would put prose beneath the command — the layout
+      // hazard M5 closed, and one a line-anchored regex cannot see.
+      expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
       expect(message).not.toContain('does NOT render exactly');
       expect(message).not.toContain('would be read as a PATTERN');
     });

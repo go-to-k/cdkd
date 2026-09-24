@@ -352,6 +352,36 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     ]);
   });
 
+  it('reports the FIRST matching reason, not an arbitrary one (go-to-k/cdkd#3499 m21)', () => {
+    // A value can satisfy several conditions, and the caller renders ONE
+    // sentence from the reason — so the branch ORDER is an observable contract,
+    // not an implementation detail. Nothing else in this file pins it: every
+    // other case is a value that matches exactly one condition, so reordering
+    // the branches today is invisible to the whole suite.
+    //
+    // `-\u001b[x` is option-shaped AND altered, and `altered` wins: a spelling
+    // that is not what is stored cannot be reasoned about as a command argument
+    // at all, so "this would be read as an option" — said about a rendering the
+    // record does not have — is the more misleading of the two true sentences.
+    const both = pasteableCommand('cdkd deploy', [
+      { value: '-\u001b[x', hole: 'stack' },
+    ]);
+    expect(both.withheld).toEqual([{ hole: 'stack', reason: 'altered' }]);
+
+    // The same value with the escape removed falls through to the later branch,
+    // which is what proves the first case is ORDER and not just "altered wins
+    // whenever a `-` is present".
+    const optionOnly = pasteableCommand('cdkd deploy', [{ value: '-x', hole: 'stack' }]);
+    expect(optionOnly.withheld).toEqual([{ hole: 'stack', reason: 'option-shaped' }]);
+
+    // And an over-cap value that is ALSO option-shaped reports the cap, since
+    // `too-long` precedes `option-shaped` too.
+    const longOption = pasteableCommand('cdkd deploy', [
+      { value: `-${'q'.repeat(STACK_REF_MAX_CODE_POINTS)}`, hole: 'stack' },
+    ]);
+    expect(longOption.withheld).toEqual([{ hole: 'stack', reason: 'too-long' }]);
+  });
+
   describe('rendersExactly', () => {
     it('is about RENDERING only, so an option-shaped name is still exact', () => {
       // The compatibility exception M11 had to make explicit. `rendersExactly`
