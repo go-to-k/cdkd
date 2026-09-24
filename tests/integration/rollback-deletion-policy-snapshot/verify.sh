@@ -60,23 +60,23 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 FIXTURE_TAG="rollback-deletion-policy-snapshot"
-IDS_FILE="/tmp/cdkd-integ-rollback-deletion-policy-snapshot-ids"
+# Per-run and private (mktemp), never a fixed /tmp path: the cleanup sweep
+# deletes EVERY snapshot of each id listed here, so a stale or planted id in a
+# shared, predictable file would widen what it deletes (issue #3455 review).
+IDS_FILE="$(mktemp)"
 DEPLOY_LOG="/tmp/cdkd-integ-rollback-deletion-policy-snapshot-deploy.log"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# snapshot_id_for <volume-id> — first cdkd-tagged snapshot of the volume, or
-# empty when none exists (`--query` returns the literal None on an empty
-# result set; a filtered describe never not-founds). Deliberately strict: a
-# real probe failure (throttle, auth) aborts the run instead of reading as
-# "no snapshot" (in cleanup the surrounding `set +eu` keeps it best-effort).
-snapshot_id_for() {
-  local id
-  id=$(aws ec2 describe-snapshots --owner-ids self --region "${REGION}" \
-    --filters "Name=volume-id,Values=$1" "Name=tag-key,Values=cdkd:final-snapshot-of" \
-    --query 'Snapshots[0].SnapshotId' --output text) || return 1
-  if [ "${id}" = "None" ]; then id=""; fi
-  printf '%s' "${id}"
+# all_snapshot_ids_for <volume-id> — EVERY snapshot of the volume, tagged or
+# not (issue #3455: the Cloud Control delete handler was seen taking its own,
+# untagged snapshot, which a sweep keyed on cdkd's tag never reached). A
+# volume id is AWS-generated and never reused, so this cannot touch another
+# run's snapshots. Strict: a real probe failure (throttle, auth) returns
+# non-zero instead of reading as "no snapshot".
+all_snapshot_ids_for() {
+  aws ec2 describe-snapshots --owner-ids self --region "${REGION}" \
+    --filters "Name=volume-id,Values=$1" --query 'Snapshots[].SnapshotId' --output text
 }
 
 cleanup() {
@@ -85,21 +85,23 @@ cleanup() {
   # Recorded volume ids from this (or a previous failed) run — snapshots
   # outlive their volumes, so the sweep is keyed on the recorded ids, never
   # on a broad tag scan that could touch a parallel session's snapshots.
-  # `sweep_failed` keeps the ids file when a snapshot could not be deleted:
-  # the sweep is keyed ONLY on these recorded ids (a broad tag scan could
-  # touch a parallel session's snapshots), so discarding the file after a
-  # failed delete would strand the snapshot with nothing able to find it.
-  sweep_failed=""
+  # The ids file is this run's own, so it cannot carry a failed sweep to the
+  # next run: a snapshot that could not be deleted is NAMED on stderr instead
+  # (the sweep is keyed ONLY on these recorded ids — a broad tag scan could
+  # touch a parallel session's snapshots — so nothing else would find it).
   if [ -f "${IDS_FILE}" ]; then
     while read -r vol_id; do
       [ -n "${vol_id}" ] || continue
-      snap_id=$(snapshot_id_for "${vol_id}")
-      if [ -n "${snap_id}" ]; then
-        if ! aws ec2 delete-snapshot --snapshot-id "${snap_id}" --region "${REGION}" >/dev/null 2>&1; then
-          sweep_failed=yes
-          echo "WARN: could not delete final snapshot ${snap_id} of ${vol_id} — keeping ${IDS_FILE} so the next run retries" >&2
-        fi
+      if ! snap_ids=$(all_snapshot_ids_for "${vol_id}"); then
+        echo "WARN: could not list snapshots of ${vol_id} — delete them by hand: aws ec2 describe-snapshots --owner-ids self --filters Name=volume-id,Values=${vol_id}" >&2
+        continue
       fi
+      [ "${snap_ids}" = "None" ] && snap_ids=""
+      for snap_id in ${snap_ids}; do
+        if ! aws ec2 delete-snapshot --snapshot-id "${snap_id}" --region "${REGION}" >/dev/null 2>&1; then
+          echo "WARN: could not delete snapshot ${snap_id} of ${vol_id} — delete it by hand" >&2
+        fi
+      done
     done < "${IDS_FILE}"
   fi
   # Volumes by this fixture's tag (an ORPHANED volume — the pre-#1358
@@ -125,7 +127,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
-  if [ -z "${sweep_failed}" ]; then
+  # `pre` (the pre-run sweep) keeps the file for this run; the EXIT trap
+  # removes it.
+  if [ "${1:-}" != "pre" ]; then
     rm -f "${IDS_FILE}"
   fi
   rm -f "${DEPLOY_LOG}"
@@ -152,7 +156,7 @@ if [ ! -d node_modules ]; then
 fi
 
 echo "==> Pre-run cleanup"
-cleanup
+cleanup pre
 
 # --- Phase 1: deploy, expected to FAIL and roll back ------------------------
 echo "==> Phase 1: deploy (VolumeSnap succeeds, BadQueue fails -> rollback)"
@@ -231,6 +235,34 @@ REMAINING=$(aws ec2 describe-volumes --region "${REGION}" \
   --query "Volumes[?State!='deleting' && State!='deleted'].VolumeId" --output text)
 if [ -n "${REMAINING}" ]; then
   echo "FAIL: fixture-tagged volume(s) still present after the rollback: ${REMAINING}" >&2
+  exit 1
+fi
+
+# Issue #3455: the volume must be deleted with EC2 `DeleteVolume`, never a
+# Cloud Control `DeleteResource` — the registry handler behind the latter was
+# seen snapshotting the volume on its own and then hanging past the wait. The
+# DELETE request list is the direct read of which route ran (Cloud Control
+# keeps requests for 7 days); the handler's stray snapshot happens on only a
+# few percent of deletes, so its absence alone could not tell the routes apart.
+if ! CC_DELETES=$(aws cloudcontrol list-resource-requests --region "${REGION}" \
+  --resource-request-status-filter Operations=DELETE \
+  --query "ResourceRequestStatusSummaries[?Identifier=='${VOL_ID}'].RequestToken" --output text); then
+  echo "FAIL: could not list Cloud Control DELETE requests to check the route" >&2
+  exit 1
+fi
+# `|| true`: zero matches -- the PASS case -- exits grep 1, which pipefail
+# would turn into an abort at this assignment.
+CC_DELETE_COUNT=$(printf '%s' "${CC_DELETES}" \
+  | { grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || true; } \
+  | wc -l | tr -d ' ')
+if [ "${CC_DELETE_COUNT}" != "0" ]; then
+  echo "FAIL: ${VOL_ID} was deleted through Cloud Control (${CC_DELETE_COUNT} DeleteResource request(s)) — expected EC2 DeleteVolume (issue #3455)" >&2
+  exit 1
+fi
+# ...and the only snapshot of the volume is cdkd's own.
+ALL_SNAPS=$(all_snapshot_ids_for "${VOL_ID}")
+if [ "${ALL_SNAPS}" != "${SNAP_ID}" ]; then
+  echo "FAIL: snapshots of ${VOL_ID} are '${ALL_SNAPS}', expected only cdkd's ${SNAP_ID} (a stray snapshot cdkd did not take — issue #3455)" >&2
   exit 1
 fi
 

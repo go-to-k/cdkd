@@ -70,7 +70,7 @@ data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 er
 deep-getatt-chains	2026-09-19T20:26:58Z	PASS	56	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destroy-runner ordering, rc 0, 19 del 0 err, LB/TG/SG/subnet/IGW/VPC/EC2 all gone
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
-deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+deletion-policy-snapshot	2026-09-24T06:34:22Z	PASS	246	verify.sh	#3455 fix: rc ok, orph clean, no CC DeleteResource for 3 volumes
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-09-16T07:18:21Z	PASS	38	verify.sh	go-to-k/cdkd#3216 sidecar check made live (--recursive); prefix empty, orph clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
@@ -246,7 +246,7 @@ retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
 rollback-command	2026-09-19T18:00:07Z	PASS	139	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-cross-region-secret	2026-08-21T05:20:29Z	PASS	174	verify.sh	#2135 live arm, re-run after a round-2 review found the first note overclaimed: every pre-existing assertion here (notCompared roll-up, referencesUnresolved, drift rc=2, drifted+partial exits 1) is byte-identical to main and passes under the pre-#2135 shape too, so it was a #2108 regression net and no evidence about #2135. Added the one discriminating arm -- SecretEcho must be ABSENT from clean[], the sole user-visible payload delta -- guarded against vacuity by requiring clean[] to have been emitted. MUTATION-PROBED against real AWS: routing notCompared back into clean[] made the arm go RED with 'SecretEcho is STILL in clean[]'. Note the type system rejects that mutation outright (clean[] entries are typed referencesUnresolved: false). destroy 2 stacks 0 errors, 0 orphans
-rollback-deletion-policy-snapshot	2026-09-19T18:00:07Z	PASS	99	verify.sh	rc ok on re-run; first run hit the intermittent CC volume-delete hang (#3455), orphan snapshot hand-deleted
+rollback-deletion-policy-snapshot	2026-09-24T06:34:22Z	PASS	105	verify.sh	#3455 fix: rc ok, orph clean; pre-fix probe went red at the CC-route assertion
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replay-cc-generated-name	2026-09-19T18:00:07Z	PASS	144	verify.sh	rc ok, orph clean; #2668 type-change routing

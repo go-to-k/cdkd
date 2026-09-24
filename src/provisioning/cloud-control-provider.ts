@@ -33,6 +33,8 @@ import {
   isTerminationProtectionPropagationError,
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from './ec2-termination-protection.js';
+import { deleteEc2VolumeDirect } from './ec2-volume-delete.js';
+import type { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import {
@@ -904,11 +906,14 @@ export class CloudControlProvider implements ResourceProvider {
       //    parts rather than the one an earlier revision of this comment gave.
       //    (a) Everything inside `delete()`'s own `handleError` try is wrapped
       //    into a `ProvisioningError` — always an `Error`. (b) `delete()` also
-      //    has three awaits OUTSIDE that try — `asgProvider.delete`,
-      //    `disableInstanceApiTermination` and `disableCcProtection` — and a
-      //    non-`Error` CAN escape those; what makes them unreachable from HERE
-      //    is that all three are gated on `context?.removeProtection === true`,
-      //    and this site's call passes NO context at all. So the gate is
+      //    has four awaits OUTSIDE that try. Three — `asgProvider.delete`,
+      //    `disableInstanceApiTermination` and `disableCcProtection` — CAN let
+      //    a non-`Error` escape; what makes them unreachable from HERE is that
+      //    all three are gated on `context?.removeProtection === true`, and
+      //    this site's call passes NO context at all. The fourth,
+      //    `ec2ClientInCcRegion` (an `AWS::EC2::Volume` only, issue #3455), is
+      //    NOT gated and IS reachable from here, but it catches its own region
+      //    reads and throws only a cdkd-authored `ProvisioningError`. So the gate is
       //    load-bearing: give this call a context with `removeProtection` and
       //    the arm becomes live. The flip's own catch differs for the mirror
       //    reason — its `UpdateResource` SEND is inside it, so a non-`Error`
@@ -1351,9 +1356,41 @@ export class CloudControlProvider implements ResourceProvider {
       }
     }
 
+    // Issue #3455: resolved OUTSIDE the `try` below, so a region refusal can
+    // never reach its already-deleted arm, which matches message substrings
+    // that the interpolated logical id can contain.
+    const volumeEc2Client =
+      resourceType === 'AWS::EC2::Volume'
+        ? await this.ec2ClientInCcRegion(resourceType, logicalId, physicalId)
+        : undefined;
+
     const maxAttempts = isProtectedEc2Instance ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
     for (let attempt = 1; ; attempt++) {
       try {
+        // Issue #3455: an EBS volume is deleted with EC2 `DeleteVolume`, never
+        // through the registry handler, which has been seen taking its own
+        // snapshot and then hanging past the wait (`ec2-volume-delete.ts`).
+        // The DELETE itself is inside this `try` on purpose (only AWS-authored
+        // errors and the marked timeout leave it): `InvalidVolume.NotFound`
+        // must reach the region-checked already-deleted arm below, as Cloud
+        // Control's `NotFound` did.
+        if (volumeEc2Client !== undefined) {
+          await deleteEc2VolumeDirect(volumeEc2Client, physicalId, logicalId, {
+            logger: this.logger,
+            sleep: (ms) => this.sleep(ms),
+            maxWaitMs: Math.max(
+              this.MAX_WAIT_TIME_MS,
+              slowCcOperationTimeoutMs(resourceType, 'DELETE')
+            ),
+            // The Cloud Control status poll's own grace and classifier, passed
+            // in rather than re-derived so the two waits cannot drift apart.
+            transientGraceMs: this.POLL_TRANSIENT_GRACE_MS,
+            isTransientFailure: isTransientPollFailure,
+          });
+          this.logger.debug(`Deleted resource ${logicalId}`);
+          return withIndeterminateGuard(undefined, indeterminateGuard);
+        }
+
         // Start resource deletion
         const deleteResponse = await this.cloudControlClient.send(
           new DeleteResourceCommand({
@@ -1471,6 +1508,49 @@ export class CloudControlProvider implements ResourceProvider {
         this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
       }
     }
+  }
+
+  /**
+   * The EC2 client for a delete this provider issues through EC2 instead of
+   * Cloud Control (issue #3455), refused unless it targets the SAME region as
+   * the Cloud Control client the region pre-flight vetted.
+   *
+   * `getAwsClients()` is read at call time while `cloudControlClient` was
+   * captured at construction, so the two are not the same object and could
+   * name different regions. The comparison is load-bearing rather than
+   * defensive: a volume id is region-scoped, so a wrong-region `DeleteVolume`
+   * answers `InvalidVolume.NotFound`, which the caller's already-deleted arm
+   * would take as success and drop the record of a live volume.
+   */
+  private async ec2ClientInCcRegion(
+    resourceType: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<EC2Client> {
+    const ec2 = getAwsClients().ec2;
+    const resolve = async (client: { config: { region: () => Promise<string> } }) => {
+      try {
+        return canonicalizeRegion((await client.config.region())?.trim());
+      } catch {
+        return undefined;
+      }
+    };
+    const ccRegion = await resolve(this.cloudControlClient);
+    const ec2Region = await resolve(ec2);
+    if (ccRegion === undefined || ccRegion === '' || ccRegion !== ec2Region) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Refusing to delete ${logicalId} (${resourceType}, ${physicalId}): the EC2 client ` +
+            `targets region '${ec2Region ?? 'unknown'}' but the Cloud Control client targets ` +
+            `'${ccRegion ?? 'unknown'}', so cdkd cannot show the delete would reach this volume. ` +
+            `Re-run with --region set to the stack's region.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return ec2;
   }
 
   /**

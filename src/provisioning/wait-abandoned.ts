@@ -4,6 +4,8 @@
  * [#3253](https://github.com/go-to-k/cdkd/issues/3253)).
  *
  * `CloudControlWaitAbandonedError` is raised in `cloud-control-provider.ts`,
+ * and `ec2-volume-delete.ts` marks its own abandoned volume-delete wait (issue
+ * [#3455](https://github.com/go-to-k/cdkd/issues/3455)) with the same marker,
  * but FIVE call sites have to refuse it, and three of them live in other
  * files. Four are GOVERNED by
  * `tests/unit/provisioning/wait-abandoned-guard-population.test.ts`:

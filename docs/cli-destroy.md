@@ -211,7 +211,7 @@ cost and latency are unwanted, and the escape hatch for the refusal below.
 | `AWS::Neptune::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (Neptune SDK) |
 | `AWS::DocDB::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (DocDB SDK) |
 | `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only |
-| `AWS::EC2::Volume` | Pre-delete `CreateSnapshot`, waited to `completed`, then the normal delete. |
+| `AWS::EC2::Volume` | Pre-delete `CreateSnapshot`, waited to `completed`, then EC2 `DeleteVolume`. |
 | `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot`, waited to `available`, then the delete. |
 | `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the delete. Redis only. |
 
@@ -224,7 +224,10 @@ Three of those rows carry behaviour worth knowing before you rely on them:
 - **`AWS::EC2::Volume`** is Cloud-Control-routed and `DeleteVolume` takes no
   snapshot parameter, which is why the snapshot is a separate pre-delete step.
   cdkd tags it `cdkd:final-snapshot-of: <volumeId>`, so a destroy re-run reuses
-  the existing snapshot instead of creating and charging for a second one.
+  the existing snapshot instead of creating and charging for a second one. The
+  delete itself is always EC2 `DeleteVolume`, never Cloud Control: the Cloud
+  Control delete handler has been seen taking a second, untagged snapshot of
+  its own and then leaving the volume stuck in `deleting` past cdkd's wait.
 - **`AWS::Redshift::Cluster`** waits a second time after the snapshot, for the
   cluster itself to settle: a fresh snapshot leaves it busy and the delete would
   otherwise fail with `There is an operation running on the Cluster`.
