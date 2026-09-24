@@ -193,7 +193,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Stack 'MyStage-Api' has templateFile='\.\.\/\.\.\/outside\.json'/);
+    ).toThrow(/Stage MyStage: Stack 'MyStage-Api' has templateFile=\.\.\/\.\.\/outside\.json which/);
   });
 
   it('propagates the nested aws:asset:path CONTAINMENT escape under a Stage', () => {

@@ -414,7 +414,7 @@ describe('FileAssetPublisher', () => {
           'us-east-1',
           '/tmp/cdk.out'
         )
-      ).rejects.toThrow(/source\.path='\.\.\/\.\.\/\.\.\/etc' which resolves to .*, outside/);
+      ).rejects.toThrow(/source\.path=\.\.\/\.\.\/\.\.\/etc which resolves to .*, outside/);
 
       expect(mockS3Send).not.toHaveBeenCalled();
     });

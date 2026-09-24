@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { displaySafe } from './display-safe.js';
 import {
+  displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
   type ResolvedAssemblyPath,
@@ -318,7 +319,7 @@ const MAX_RENDERED_HOPS = 8;
  */
 function renderChain(chain: readonly NestedTemplateHop[]): string {
   const hop = (h: NestedTemplateHop): string =>
-    `'${displaySafe(h.logicalId)}' (${displaySafe(h.templatePath)})`;
+    `'${displaySafe(h.logicalId)}' (${displayAssemblyPath(h.templatePath)})`;
   if (chain.length <= MAX_RENDERED_HOPS) return chain.map(hop).join(' -> ');
   const keep = MAX_RENDERED_HOPS / 2;
   return [
@@ -389,13 +390,13 @@ export function renderNestedTemplateTreeDefect(
     return (
       `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
       `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +
-      `Metadata['aws:asset:path']='${displaySafe(defect.assetPath)}' which ` +
+      `Metadata['aws:asset:path']=${displayAssemblyPath(defect.assetPath)} which ` +
       `${renderAssemblyPathEscape(defect.escape, defect.dir, action)}`
     );
   }
   return (
     `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
     `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +
-    `Metadata['aws:asset:path']='${displaySafe(defect.assetPath)}' which is absolute. ${provenance}`
+    `Metadata['aws:asset:path']=${displayAssemblyPath(defect.assetPath)} which is absolute. ${provenance}`
   );
 }

@@ -11,6 +11,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -234,7 +235,7 @@ export function resolveDockerContextDirectory(opts: DockerContextResolveOptions)
   }
   if (!resolved.contained) {
     throw wrapError(
-      `asset source.directory='${displaySafe(directory)}' which ` +
+      `asset source.directory=${displayAssemblyPath(directory)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'build it')}`
     );
   }
@@ -316,7 +317,7 @@ export function assertCdkLocalDockerContextContained(opts: CdkLocalDockerContext
   const rel = relative(bound, physical);
   if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return;
   throw wrapError(
-    `asset source.directory='${displaySafe(directory)}' which ` +
+    `asset source.directory=${displayAssemblyPath(directory)} which ` +
       renderAssemblyPathEscape(
         { contained: false, escape: 'symlink', path: engineSpelled, realPath: physical },
         assetOutdir,

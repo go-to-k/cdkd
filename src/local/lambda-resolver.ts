@@ -9,6 +9,7 @@ import { stringifyValue } from '../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
@@ -878,9 +879,9 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
       getLogger().warn(
         `Lambda '${displaySafe(logicalId)}' has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +
-          `'${displaySafe(absolute)}'` +
+          `${displayAssemblyPath(absolute)}` +
           (escape.escape === 'symlink'
-            ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
+            ? ` (through a symbolic link to ${displayAssemblyPath(escape.realPath)})`
             : '') +
           `. cdkd will bind-mount that directory into the container read-only, where ` +
           `the code in this assembly can read it. This is what ` +
@@ -919,7 +920,7 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
     // rest of its text is this file's own literal.
     throw wrapError(
       `Lambda '${displaySafe(logicalId)}' has ` +
-        `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+        `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
     );
   }

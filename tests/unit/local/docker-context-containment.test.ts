@@ -112,7 +112,7 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
 
     await expect(run).rejects.toBeInstanceOf(LocalInvokeBuildError);
     await expect(run).rejects.toThrow(
-      /Refusing to build the container image: asset source\.directory='\.\.\/victim'/
+      /Refusing to build the container image: asset source\.directory=\.\.\/victim which/
     );
     expect(builtWith).not.toHaveBeenCalled();
   });
@@ -198,7 +198,7 @@ describe('the container-image shim (src/local/docker-image-builder.ts)', () => {
         assetOutdir: cdkOut,
       })
     ).rejects.toThrow(
-      new RegExp(`source\\.directory='sub/link/\\.\\.' which .*${join(outer, 'victim')}, outside`)
+      new RegExp(`source\\.directory=sub/link/\\.\\. which .*${join(outer, 'victim')}, outside`)
     );
     expect(builtWith).not.toHaveBeenCalled();
   });
@@ -337,7 +337,7 @@ describe('the three call sites hand the shim the APP outdir as the bound', () =>
     const a = stageAssembly('../../victim');
 
     await expect(run(a)).rejects.toThrow(
-      /Refusing to build the container image: asset source\.directory='\.\.\/\.\.\/victim'/
+      /Refusing to build the container image: asset source\.directory=\.\.\/\.\.\/victim which/
     );
     expect(builtWith).not.toHaveBeenCalled();
   });

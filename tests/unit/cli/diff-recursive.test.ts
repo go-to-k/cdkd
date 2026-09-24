@@ -1893,7 +1893,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       // and the root never refuses: its ancestor set is empty.
     ).rejects.toThrow(
       new RegExp(
-        `under stack 'Parent~Child' resolves to nested template '${resolve(nonCanonicalRoot).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`
+        `under stack 'Parent~Child' resolves to nested template ${resolve(nonCanonicalRoot).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which`
       )
     );
   });

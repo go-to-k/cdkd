@@ -14,7 +14,11 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
@@ -1665,7 +1669,7 @@ export function resolveInlineCodeFilePath(
     // rest of its text is this file's own literal. The population fence sees a
     // bare call beside a `displaySafe(...)` and cannot tell the two apart.
     throw new Error(
-      `Handler '${displaySafe(handler)}' names a module path that ` +
+      `Handler ${displayAssemblyPath(handler)} names a module path that ` +
         `${renderAssemblyPathEscape(
           resolved,
           dir,
