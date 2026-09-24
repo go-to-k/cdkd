@@ -1899,6 +1899,7 @@
     "--tree",
     "--type",
     "--type-name",
+    "--update-runtime-on",
     "--usage-plan-id",
     "--user-name",
     "--user-pool-id",
