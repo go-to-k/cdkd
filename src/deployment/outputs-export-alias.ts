@@ -250,7 +250,8 @@ const MIN_SECRET_NEEDLE = 4;
  * secret verbatim, and the remaining two printed it minus one character.
  *
  * So the fix is not another arm on the check — it is removing the second and
- * third string. Everything below happens in `canonicalForSecretScan` space.
+ * third string. Everything below happens in {@link secretScanHaystacks} space:
+ * one stripped string, and its trim for printing.
  *
  * THE CLASS IS DERIVED FROM UNICODE CATEGORIES, NOT ENUMERATED. A hand list
  * was written first -- both sanitisers' classes plus the four residuals
@@ -313,15 +314,50 @@ const MIN_SECRET_NEEDLE = 4;
 const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
- * The one string space in which this module tests for, masks, and prints a
- * possibly-secret-bearing name.
+ * A possibly-secret-bearing name as PRINTED: {@link secretScanHaystacks}'
+ * untrimmed string, trimmed.
  *
  * `.trim()` mirrors `displaySafe`, whose trim this replaces on these paths. It
- * is applied to the TEXT only -- see {@link canonicalNeedle}, where trimming
- * would silently shorten a recorded secret.
+ * shapes the printed text only; a containment test reads both haystacks, since
+ * the trim can remove whitespace that belongs to a recorded secret.
  */
 function canonicalForSecretScan(text: string): string {
-  return text.replace(SECRET_SCAN_INVISIBLES, '').trim();
+  return secretScanHaystacks(text)[0];
+}
+
+/**
+ * The two haystacks every containment test on this path reads: `[trimmed,
+ * untrimmed]`, both with the invisible class deleted (issue
+ * [#2890](https://github.com/go-to-k/cdkd/issues/2890)).
+ *
+ * UNTRIMMED, because a recorded secret's own EDGE whitespace (`\p{Zs}`, which
+ * the invisible class keeps) is part of the secret and can sit at the edge of
+ * the key, where the trim removes it: a recorded `' a<ZWSP>bcd'` in the key
+ * `' abcd-x'` matched no arm and printed `abcd-x`. TRIMMED, because the
+ * whole-value arm has to see a key whose edge whitespace is NOT part of the
+ * secret: `' ab '` is the sub-floor secret `ab`, and the untrimmed string does
+ * not equal it. For the embedded arm the trimmed string adds nothing (it is a
+ * substring of the untrimmed one); it is read anyway so the two arms walk one
+ * list.
+ *
+ * WHY THIS PAIR CANNOT SPLIT THE VERDICT FROM THE PRINTED TEXT, the class
+ * issue [#2874](https://github.com/go-to-k/cdkd/issues/2874) found. That bug
+ * was three strings that could each hold a secret the others did not. These
+ * two are one string and a trim of it: the trimmed one is a SUBSTRING of the
+ * untrimmed one, and {@link secretSafeKeyDisplay} masks the UNTRIMMED string
+ * and prints the trim of the result. Every verdict arm implies the canonical
+ * needle occurs in that untrimmed string -- the raw arm too, since deleting
+ * characters from a text containing the plaintext leaves the plaintext's own
+ * deletion contiguous in it. So every occurrence a verdict can see is masked
+ * before the trim, and the trim can only drop mask-free
+ * whitespace from the ends -- it cannot join two characters, so it cannot
+ * create an occurrence either. The post-mask re-test then reads the masked
+ * untrimmed string, whose trimmed haystack IS the printed text, character for
+ * character.
+ */
+function secretScanHaystacks(text: string): readonly [string, string] {
+  const untrimmed = text.replace(SECRET_SCAN_INVISIBLES, '');
+  return [untrimmed.trim(), untrimmed];
 }
 
 /**
@@ -414,19 +450,18 @@ function secretsPresentIn(
   //   a key that carries the invisible characters ITSELF -- the raw forms
   //   match there even when the canonical needle is too short.
   //
-  // THE EFFECTIVE RULE FOR AN EMBEDDED MATCH IS THE RENDERED LENGTH AFTER THE
-  // HAYSTACK'S TRIM. The trim is part of the rule, not a detail: a recorded
-  // value whose own EDGE whitespace the haystack trims away matches neither
-  // arm however long it renders -- measured, a recorded `' a<ZWSP>bcd'`
-  // against the key `' abcd-x'` returns `safe` and prints the secret minus one
-  // character. `origin/main` does the same, so it is a residual rather than a
-  // regression -- tracked as issue
-  // [#2890](https://github.com/go-to-k/cdkd/issues/2890) -- and it is written
-  // here because two successive revisions of this comment stated the rule
-  // WITHOUT the trim and review refuted both. Its scope is narrower than the
-  // sentence alone suggests: only `\p{Zs}` edges qualify, since a tab or
-  // newline at a needle's edge is `\p{Cc}`, which this class DELETES rather
-  // than trims.
+  // THE CANONICAL ARM READS TWO HAYSTACKS, the stripped text untrimmed and
+  // trimmed (issue #2890) -- see `secretScanHaystacks` for why each is needed
+  // and why the pair cannot split the verdict from the printed text. With the
+  // trimmed one alone, a recorded value whose own EDGE whitespace the trim
+  // removed matched no arm however long it rendered.
+  //
+  // The RAW arm keeps only containment. Its whole-value comparison
+  // (`text === plaintext`) is implied by the untrimmed whole-value one: the
+  // invisible class is deleted character by character, so equal inputs
+  // canonicalise equally. Its containment comparison is NOT implied, and stays:
+  // its floor is keyed to the RECORDED length, so it still sees a needle that
+  // canonicalisation shortened below the floor.
   //
   // The rule is spelled out at all because an earlier revision claimed the two
   // arms COVER the shortening case, which measurement also refuted:
@@ -437,7 +472,7 @@ function secretsPresentIn(
   // reader actually sees, not a gap either arm was meant to close. What the
   // raw arm does buy is the key that carries the invisibles too, which main
   // caught and a canonical-only form would have dropped.
-  const haystack = canonicalForSecretScan(text);
+  const haystacks = secretScanHaystacks(text);
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
     // NO EMPTY-NEEDLE GUARD HERE, and the reason has now been wrong twice, so
@@ -463,10 +498,11 @@ function secretsPresentIn(
     // out of `maskEveryOccurrence` -- `''.split()` interleaves the mask
     // between every character of the key.
     const needle = canonicalNeedle(plaintext);
-    const canonicalHit =
-      haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle));
-    const rawHit =
-      text === plaintext || (plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext));
+    const canonicalHit = haystacks.some(
+      (haystack) =>
+        haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle))
+    );
+    const rawHit = plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext);
     if (canonicalHit || rawHit) exposure.set(plaintext, expression);
   }
   return exposure.size > 0 ? exposure : undefined;
@@ -603,18 +639,22 @@ export function secretBearingExportNameWarning(
   // hidden: a genuinely sub-floor secret embedded in an output key is NOT
   // masked here, which is the identical tradeoff containment already makes.
   const ownerForceMask: RecordedSecretValues = new Map();
+  const ownerHaystacks = secretScanHaystacks(outputKey);
   for (const [plaintext, expression] of exposure) {
-    // The CANONICAL whole-value comparison sits beside the raw one, or the
-    // filter implements half the rule the sentence above names and a key
-    // differing from its needle by one invisible character prints raw.
+    // The whole-value comparison is CANONICAL, over both haystacks, or the
+    // filter implements part of the rule the sentence above names: a key
+    // differing from its needle by one invisible character printed raw, and
+    // one whose edge whitespace belongs to the needle printed the needle
+    // minus that whitespace (issue #2890). No raw comparison beside it: equal
+    // raw strings canonicalise equally, so it could never add a match.
     // Hard to reach through the engine, whose corpus is USUALLY a superset of
     // `exposure` so containment catches the case first -- but not provably so:
     // `recordedSecretValues` is optional on the context, and issue #2563 loses
     // a `nameSecrets` entry a still-pending `Fn::Join` part records. Driven
     // directly by a test rather than left to that argument.
+    const needle = canonicalNeedle(plaintext);
     if (
-      plaintext === outputKey ||
-      canonicalNeedle(plaintext) === canonicalForSecretScan(outputKey) ||
+      ownerHaystacks.some((haystack) => haystack === needle) ||
       plaintext.length >= MIN_SECRET_NEEDLE
     ) {
       ownerForceMask.set(plaintext, expression);
@@ -641,9 +681,9 @@ export function secretBearingExportNameWarning(
  * `stripControlChars` sanitise for a TERMINAL; neither masks a secret.
  *
  * Three outcomes, and the third is the one a caller must not collapse into the
- * first: masking can leave the text UNCHANGED (a needle below
- * {@link MIN_SECRET_NEEDLE} that matched only as the whole key, or a mask that
- * happens to equal the input), and printing it then would publish the secret
+ * first: masking can leave the text UNCHANGED (a recorded value that happens
+ * to equal the mask itself, or one that canonicalises to empty beside a
+ * force-mask needle the text lacks), and printing it then would publish the secret
  * under a label asserting it had been masked —
  * {@link secretBearingExportNameWarning}'s invariant, applied here.
  */
@@ -680,7 +720,16 @@ export function secretSafeKeyDisplay(
   // (issue #2874). The bug this replaces was not a missing arm on the check --
   // it was the check, the mask and the print each running over a DIFFERENT
   // string.
-  const shown = canonicalForSecretScan(key);
+  //
+  // THE MASK RUNS OVER THE UNTRIMMED STRING and the printed text is its trim
+  // (issue #2890). Masking the trimmed `shown` instead reopened #2874 one
+  // level down: the verdict can come from the untrimmed haystack, and a
+  // needle whose own edge whitespace the trim removed is absent from
+  // `shown` -- so a key holding it at the edge AND mid-key masked the mid-key
+  // copy and printed the edge copy minus its space, under a `masked` label.
+  // For a key no needle touches at its edge the result is `shown` with the
+  // same occurrences masked, so the printed shape is unchanged.
+  const [shown, untrimmed] = secretScanHaystacks(key);
 
   // THE VERDICT COMES FROM CONTAINMENT ALONE. `secretsPresentIn` is handed the
   // RAW map, not pre-canonicalised needles, because its four-character floor
@@ -704,12 +753,16 @@ export function secretSafeKeyDisplay(
   }
   if (mask.size === 0) return { kind: 'safe', text: shown };
 
-  const masked = maskEveryOccurrence(shown, mask);
-  if (masked === shown) {
+  const masked = maskEveryOccurrence(untrimmed, mask);
+  if (masked === untrimmed) {
     // NOTHING CHANGED, and which answer that deserves depends on WHY.
     //
     // With an exposure, a needle really is in this text and masking failed to
-    // remove it, so the name is withheld -- fail closed. With NO exposure the
+    // remove it, so the name is withheld -- fail closed. Every verdict arm with
+    // a non-empty needle puts it in `untrimmed` (see `secretScanHaystacks`), so
+    // what reaches here is a recorded value equal to the mask itself, or an
+    // exposure whose needle canonicalised to empty beside an absent force-mask
+    // needle. With NO exposure the
     // only needles were force-mask ones that are simply absent from the text,
     // which is the ordinary case for the OUTPUT KEY beside a secret-bearing
     // export name: collapsing that into `withheld` withheld an innocent name
@@ -727,9 +780,11 @@ export function secretSafeKeyDisplay(
   // same secret twice -- once contiguous, once split -- used to mask the first
   // occurrence and print the second. In canonical space that cannot happen,
   // and this re-test is what PROVES it rather than asserting it: any needle
-  // still present after masking withholds the whole name.
+  // still present after masking withholds the whole name. It reads the masked
+  // UNTRIMMED string, so its trimmed haystack is exactly the text returned
+  // below -- the re-test and the print are one string.
   if (stateKeySecretExposure(masked, secrets)) return { kind: 'withheld' };
-  return { kind: 'masked', text: masked };
+  return { kind: 'masked', text: canonicalForSecretScan(masked) };
 }
 
 /**

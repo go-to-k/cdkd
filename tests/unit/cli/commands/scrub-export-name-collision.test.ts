@@ -1268,14 +1268,15 @@ describe('outputs-export-alias message builders', () => {
   it('when BOTH names withhold, the message does not read as a name colliding with itself', () => {
     // Two identical placeholders made the sentence claim a name collides with
     // ITSELF. The reader cannot act on either name here, but must still be
-    // able to tell there are two. Reached with sub-floor secrets whose edge
-    // whitespace the canonical form trims, so masking changes nothing and
-    // both sides withhold.
+    // able to tell there are two. Reached through the post-mask re-test: each
+    // name holds `secret`, and masking it creates `1***b`, a second recorded
+    // secret, so both sides withhold. (This used sub-floor secrets with edge
+    // whitespace until issue #2890 made those MASKABLE.)
     const secrets = new Map([
-      ['ab ', 'E1'],
-      ['cd ', 'E2'],
+      ['secret', 'E1'],
+      ['1***b', 'E2'],
     ]);
-    const message = exportAliasCollisionScrubWarning('ab ', 'cd ', secrets);
+    const message = exportAliasCollisionScrubWarning('a1secretb', 'c1secretb', secrets);
     expect(message).toContain('<the owning output, name withheld: contains a secret>');
     expect(message).toContain('<name withheld: contains a secret>');
     // The clause that quoted a placeholder as if it were a key is reworded.

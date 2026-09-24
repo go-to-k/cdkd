@@ -20,11 +20,13 @@
 
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  exportNameSecretExposure,
   secretBearing,
   secretBearingExportNameWarning,
   secretSafeKeyDisplay,
   WITHHELD_NAME_DISPLAY,
   displayTextOrWithheld,
+  type SecretSafeKeyDisplay,
 } from '../../../src/deployment/outputs-export-alias.js';
 import { SECRET_MASK, type RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
@@ -457,18 +459,16 @@ describe('secretSafeKeyDisplay', () => {
     });
   });
 
-  it('the WHOLE-VALUE raw arm fires on its own, for a SUB-FLOOR secret with edge whitespace', () => {
-    // One case per whole-value arm. The first version of this case used a
-    // 17-character secret, which the raw CONTAINMENT sub-arm already matches
-    // -- so the whole-value comparison was redundant for it and the test
-    // passed with that arm deleted (measured). The arm is live only for a
-    // sub-floor plaintext whose edge whitespace the canonical haystack trims
-    // away: `'ab '` canonicalises the KEY to `'ab'`, so the canonical
-    // comparison fails while the raw one holds.
+  it('a SUB-FLOOR secret with edge whitespace, as the WHOLE key, is masked rather than withheld', () => {
+    // This used to be the case that kept a raw whole-value arm alive: `'ab '`
+    // trims the KEY to `'ab'`, so only `text === plaintext` matched, and the
+    // mask -- run over the trimmed text -- then found nothing and WITHHELD the
+    // name. The untrimmed haystack (issue #2890) matches it, and masking runs
+    // over that same untrimmed string, so the name comes back masked.
     const secret = 'ab ';
     expect(secret.length).toBeLessThan(4);
     const shown = secretSafeKeyDisplay(secret, new Map([[secret, EXPR]]));
-    expect(shown).toEqual({ kind: 'withheld' });
+    expect(shown).toEqual({ kind: 'masked', text: SECRET_MASK });
   });
 
   it('the WHOLE-VALUE canonical arm fires on its own, for a sub-floor split secret', () => {
@@ -549,19 +549,247 @@ describe('secretSafeKeyDisplay', () => {
     expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
   });
 
-  it('a needle whose EDGE whitespace the haystack trims away is a RESIDUAL, not a match', () => {
-    // The rule the two-arm comment now states: the effective embedded floor is
-    // the rendered length AFTER the haystack's trim. A recorded value whose
-    // own leading space the trim removes matches neither arm however long it
-    // renders, and the display prints the secret minus that character.
-    //
-    // PINNED AS A RESIDUAL rather than left implicit: `origin/main` does the
-    // same, and two successive revisions of that comment stated the rule
-    // without the trim. Tracked as issue #2890 -- a pinned residual with no
-    // issue is one that never closes. If a future change closes this, the test
-    // reds and the comment gets corrected with it instead of drifting again.
-    const secret = ' a\u200bbcd';
-    const shown = secretSafeKeyDisplay(' abcd-x', new Map([[secret, EXPR]]));
-    expect(shown).toEqual({ kind: 'safe', text: 'abcd-x' });
+});
+
+/**
+ * A recorded secret whose own EDGE whitespace the display's trim removes
+ * (issue [#2890](https://github.com/go-to-k/cdkd/issues/2890)).
+ *
+ * The scan reads TWO haystacks -- the stripped key untrimmed, and that string
+ * trimmed, which is what gets printed -- and the mask runs over the untrimmed
+ * one. Both halves are pinned separately below, because each half alone
+ * leaves a leak: the verdict half without the mask half prints the secret
+ * minus its edge space under a `masked` label, and the mask half is
+ * unreachable without the verdict half.
+ */
+describe('secretSafeKeyDisplay: edge whitespace of a recorded secret (#2890)', () => {
+  it('the measured case: a leading-space secret at the start of a key is masked', () => {
+    // Before: `safe`, printing `abcd-x` -- the secret minus its leading space.
+    // Neither arm matched: the canonical needle kept the space the trimmed
+    // haystack had lost, and the ZWSP kept the raw plaintext out of the key.
+    const shown = secretSafeKeyDisplay(' abcd-x', new Map([[' a\u200bbcd', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `${SECRET_MASK}-x` });
+  });
+
+  it('a trailing-space secret at the end of a key is masked too', () => {
+    // `U+3000` is `\p{Zs}`, which the trim removes and the invisible class
+    // keeps -- the only kind of edge the residual ever covered.
+    const shown = secretSafeKeyDisplay('x-abcd\u3000', new Map([['ab\u200bcd\u3000', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `x-${SECRET_MASK}` });
+  });
+
+  it('a verdict the RAW arm reaches is now masked in place, not withheld', () => {
+    // The raw arm already saw this one (no invisible in the secret), but the
+    // mask ran over the TRIMMED text, where the needle's trailing space was
+    // gone -- masking changed nothing, and the name was withheld.
+    const shown = secretSafeKeyDisplay('x-abcd\u3000', new Map([['abcd\u3000', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `x-${SECRET_MASK}` });
+  });
+
+  it('MASK HALF: the same secret at the edge AND mid-key is masked at both', () => {
+    // THE VERDICT/DISPLAY SPLIT a verdict-only fix would ship. The trimmed
+    // text `abcd-x abcd` holds ` abcd` once, mid-key, so the verdict fired
+    // even before #2890 -- and the mask, run over that trimmed text, masked
+    // the mid-key copy and printed the edge copy minus its space, under a
+    // `masked` label: `abcd-x***` (measured on `origin/main`). Masking the
+    // UNTRIMMED string reaches both copies.
+    const shown = secretSafeKeyDisplay(' abcd-x abcd', new Map([[' abcd', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `${SECRET_MASK}-x${SECRET_MASK}` });
+  });
+
+  it('the post-mask RE-TEST reads the masked UNTRIMMED string, not only the printed one', () => {
+    // Masking can CREATE a recorded secret (the fail-closed case above), and
+    // it can create one at the edge. Here masking `secret` turns the key into
+    // ` ***b`, which is the second recorded secret; the printed text `***b`
+    // is that secret minus its leading space. A re-test over the printed text
+    // alone does not see it -- measured green-then-leaking under that
+    // mutation -- so it must read the untrimmed string the mask produced.
+    const corpus = new Map([
+      ['secret', EXPR],
+      [` ${SECRET_MASK}b`, EXPR],
+    ]);
+    expect(secretSafeKeyDisplay(' secretb', corpus)).toEqual({ kind: 'withheld' });
+  });
+
+  it('UNTRIMMED haystack, whole-value arm, on its own', () => {
+    // A sub-floor needle, so no embedded arm applies; the raw forms differ by
+    // the ZWSP; the trimmed key `ab` lacks the needle's space. Only
+    // `untrimmed === needle` can match.
+    const shown = secretSafeKeyDisplay(' a\u200bb', new Map([[' ab', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: SECRET_MASK });
+  });
+
+  it('TRIMMED haystack, whole-value arm, on its own', () => {
+    // The partner: a sub-floor needle WITHOUT edge whitespace, in a key that
+    // has some. Only `trimmed === needle` matches, so dropping the trimmed
+    // haystack in favour of the untrimmed one alone reds here.
+    const shown = secretSafeKeyDisplay(' ab ', new Map([['ab', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: SECRET_MASK });
+  });
+
+  it('a FORCE-MASK needle with edge whitespace is masked at the key edge', () => {
+    // The caller KNOWS it substituted ` ab` here. The force-mask needles were
+    // matched against the trimmed text, where ` ab` is absent, so the name
+    // came back `safe` as `ab-x`.
+    const shown = secretSafeKeyDisplay(' ab-x', new Map(), new Map([[' ab', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `${SECRET_MASK}-x` });
+  });
+
+  it('the OUTPUT KEY force-mask filter compares against the untrimmed key too', () => {
+    // The sibling site: `secretBearingExportNameWarning` keeps a sub-floor
+    // authoritative needle for the output key only when it IS the whole key,
+    // and "whole" was compared against the trimmed key alone -- so a key
+    // ` a<ZWSP>b` holding the substituted ` ab` printed as `Output ab`.
+    const sub = new Map([[' ab', EXPR]]);
+    const message = secretBearingExportNameWarning(' a\u200bb', 'x-ab-y', sub, new Map());
+    expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
+  });
+
+  it('an ABSENT force-mask needle leaves a key with edge whitespace SAFE, not "masked"', () => {
+    // The no-op test compares the mask's input with its output, and the input
+    // is now the UNTRIMMED string. Comparing the output with the TRIMMED
+    // `shown` instead reads every key with edge whitespace as "changed", and
+    // labels an untouched name `masked` -- a message claiming a masking it did
+    // not perform (review of #2890, measured as a surviving mutant).
+    const shown = secretSafeKeyDisplay(' Key ', new Map(), new Map([['zzzz', EXPR]]));
+    expect(shown).toEqual({ kind: 'safe', text: 'Key' });
+  });
+
+  it('the OUTPUT KEY filter still reads the TRIMMED key for a whole-value match', () => {
+    // The partner of the case above: a sub-floor needle WITHOUT edge
+    // whitespace, in an output key that has some. Only the trimmed key equals
+    // it, so a filter reading the untrimmed key alone prints `Output ab`.
+    const sub = new Map([['ab', EXPR]]);
+    const message = secretBearingExportNameWarning(' ab ', 'x-ab-y', sub, new Map());
+    expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
+  });
+
+  it('the deploy REFUSES an export name carrying such a secret', () => {
+    // The verdict's other consumer. `undefined` here means the alias is
+    // PUBLISHED as a state key and into the exports index, which `cdkd scrub`
+    // then reports as a leak it cannot rewrite.
+    const recorded = new Map([[' a\u200bbcd', EXPR]]);
+    expect(exportNameSecretExposure(' abcd-x', new Map(), recorded)).toEqual(recorded);
+  });
+
+  it('a tab or newline edge was never in the residual: the class DELETES it', () => {
+    // The control for the scope the issue stated. `\t` is `\p{Cc}`, deleted
+    // from the needle and the key alike, so both sides agree without #2890.
+    const shown = secretSafeKeyDisplay('\tabcd-x', new Map([['\tabcd', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `${SECRET_MASK}-x` });
+  });
+
+  // THE WALK. Hand-picked cases pin the shapes someone thought of; this one
+  // pins the CLAIM, over an enumerated space of recorded secrets and keys:
+  //
+  // 1. OUTSIDE the intended class -- every pair where the needle has no edge
+  //    whitespace, or does not occur in the untrimmed key at all -- the
+  //    result is IDENTICAL to the pre-#2890 function, text included. That is
+  //    "the printed text keeps its shape".
+  // 2. INSIDE it, the verdict is never `safe` for a needle the rule covers.
+  // 3. EVERYWHERE, a `masked` text is clean: putting back the whitespace the
+  //    trim removed from THIS key does not reconstitute the needle, and the
+  //    text fed back through `secretSafeKeyDisplay` is `safe`. (3) is the
+  //    non-divergence claim itself -- the #2874 class is a printed string
+  //    holding what the verdict said it had removed. The re-pad is the check
+  //    that discriminates: a mask run over the trimmed text leaves the edge
+  //    copy of ` abcd` in `-x abcd`-suffixed keys, and only re-padding sees
+  //    it. The re-feed is the weaker half, kept as the plain statement of the
+  //    claim; the production re-test already reads a superset of it.
+  it('WALK: unchanged outside the edge-whitespace class, and never divergent inside it', () => {
+    const INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+    const strip = (s: string): string => s.replace(INVISIBLES, '');
+
+    // A TRANSCRIPTION of `secretSafeKeyDisplay` before #2890 (no force-mask
+    // set), kept as the reference for claim (1) only.
+    const preFix = (key: string, corpus: RecordedSecretValues): SecretSafeKeyDisplay => {
+      const present = (text: string): boolean => {
+        const haystack = strip(text).trim();
+        return [...corpus.keys()].some((p) => {
+          const n = strip(p);
+          return (
+            haystack === n ||
+            (n.length >= 4 && haystack.includes(n)) ||
+            text === p ||
+            (p.length >= 4 && text.includes(p))
+          );
+        });
+      };
+      const shown = strip(key).trim();
+      if (!present(key)) return { kind: 'safe', text: shown };
+      const needles = [...corpus.keys()].map(strip).filter((n) => n.length > 0);
+      let masked = shown;
+      for (const n of needles.sort((a, b) => b.length - a.length)) {
+        masked = masked.split(n).join(SECRET_MASK);
+      }
+      if (masked === shown) return { kind: 'withheld' };
+      if (present(masked)) return { kind: 'withheld' };
+      return { kind: 'masked', text: masked };
+    };
+
+    const recordedSecrets = [
+      ' abcd',
+      'abcd ',
+      ' abcd ',
+      '\u3000abcd',
+      'abcd\u00a0',
+      ' a\u200bbcd',
+      'abcd',
+      'a\u200bbcd',
+      'ab  cd',
+      ' ab',
+      'ab ',
+      'ab',
+    ];
+    const splitOnce = (s: string): string => {
+      const i = s.search(/\S/);
+      return i < 0 ? s : `${s.slice(0, i + 1)}\u200b${s.slice(i + 1)}`;
+    };
+    let outside = 0;
+    let inside = 0;
+    let changed = 0;
+    let maskedCount = 0;
+    for (const secret of recordedSecrets) {
+      const corpus = new Map([[secret, EXPR]]);
+      const needle = strip(secret);
+      const edge = needle !== needle.trim();
+      for (const body of [secret, splitOnce(secret), secret.trim(), 'zzzz']) {
+        for (const prefix of ['', ' ', 'x-', 'x ']) {
+          // `-x${secret}` puts a SECOND copy mid-key, so a mask that reaches
+          // only the trimmed text leaves the edge copy for claim (3) to see.
+          for (const suffix of ['', ' ', '-y', ' y', `-x${secret}`]) {
+            const key = `${prefix}${body}${suffix}`;
+            const untrimmed = strip(key);
+            const shown = secretSafeKeyDisplay(key, corpus);
+            const label = JSON.stringify({ secret, key, shown });
+            if (!edge || !untrimmed.includes(needle)) {
+              outside++;
+              expect(shown, label).toEqual(preFix(key, corpus));
+            } else {
+              inside++;
+              const covered = needle.length >= 4 || untrimmed === needle;
+              if (covered) expect(shown.kind, label).not.toBe('safe');
+              if (JSON.stringify(shown) !== JSON.stringify(preFix(key, corpus))) changed++;
+            }
+            if (shown.kind === 'masked') {
+              maskedCount++;
+              // What the trim removed from THIS key -- not the needle's own
+              // edge -- because a key that never held the edge copy (`abcd-x
+              // abcd` against ` abcd`) prints `abcd` legitimately.
+              const lead = /^\s*/.exec(untrimmed)?.[0] ?? '';
+              const trail = /\s*$/.exec(untrimmed)?.[0] ?? '';
+              expect(`${lead}${shown.text}${trail}`.includes(needle), label).toBe(false);
+              expect(secretSafeKeyDisplay(shown.text, corpus).kind, label).toBe('safe');
+            }
+          }
+        }
+      }
+    }
+    // LITERAL floors, so a walk that silently stops generating one class
+    // cannot pass on the other.
+    expect(outside).toBe(532);
+    expect(inside).toBe(428);
+    expect(changed).toBe(187);
+    expect(maskedCount).toBe(526);
   });
 });
