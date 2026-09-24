@@ -61,6 +61,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS API Gateway V2 (HTTP API) Provider
@@ -75,7 +76,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class ApiGatewayV2Provider implements ResourceProvider {
   private client: ApiGatewayV2Client | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ApiGatewayV2Provider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

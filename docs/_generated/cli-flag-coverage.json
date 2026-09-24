@@ -136,6 +136,7 @@
         "cognito-resource-server",
         "cognito-userpool-user-ref",
         "conditions",
+        "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
@@ -435,6 +436,7 @@
         "conditions",
         "conditions-and-if",
         "conditions-update-2",
+        "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
@@ -720,6 +722,7 @@
         "conditions",
         "conditions-and-if",
         "conditions-update-2",
+        "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
@@ -978,6 +981,7 @@
     {
       "flag": "--stack-concurrency",
       "integs": [
+        "cross-region-concurrent-stacks",
         "dynamic-ref-cross-region"
       ]
     },
@@ -1026,6 +1030,7 @@
         "conditions",
         "conditions-and-if",
         "conditions-update-2",
+        "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
@@ -1337,6 +1342,7 @@
         "conditions",
         "conditions-and-if",
         "conditions-update-2",
+        "cross-region-concurrent-stacks",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
@@ -1754,6 +1760,7 @@
     "--protect-configuration-id",
     "--protocol",
     "--pull",
+    "--purge-events",
     "--qualifier",
     "--query",
     "--queue-name",

@@ -47,6 +47,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Default polling budget for EMR cluster lifecycle transitions. A cluster
@@ -147,7 +148,7 @@ export class EMRClusterProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   private client: EMRClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EMRClusterProvider');
 
   private readonly pollIntervalMs: number;

@@ -23,6 +23,7 @@ import type {
   ResourceUpdateResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * SDK Provider for AWS::Kinesis::StreamConsumer.
@@ -53,7 +54,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class KinesisStreamConsumerProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('KinesisStreamConsumerProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

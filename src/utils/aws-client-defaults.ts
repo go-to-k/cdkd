@@ -94,6 +94,7 @@ import { NodeHttpHandler } from '@smithy/node-http-handler';
 // spelling as `.js`, and `tests/unit/utils/aws-clients-region-fold.test.ts`
 // fences the whole closure by resolving it the way `node` would.
 import { ProxyRoutingAgent } from './proxy-routing-agent.ts';
+import { currentStackAwsScope } from './stack-aws-scope.ts';
 
 export interface AwsClientDefaultsOptions {
   /** The profile the calling site was configured with, if any. */
@@ -188,6 +189,13 @@ export interface AssumedRoleCredentials {
  * member is the STATIC bag published by {@link setAssumedRoleCredentials}.
  */
 export interface AwsClientDefaults {
+  /**
+   * The active per-stack scope's region (issue go-to-k/cdkd#1981), and absent
+   * outside a scope. A site that names its own `region` after this spread
+   * still wins, which is what a site deliberately targeting another region
+   * (a replica, a state bucket) needs.
+   */
+  region?: string;
   requestHandler?: NodeHttpHandler;
   credentials?: ReturnType<typeof defaultProvider> | AssumedRoleCredentials | CallerEnvCredentials;
 }
@@ -623,6 +631,18 @@ function callerIdentityForOptOut(
  * builds on its own and makes this a no-op for every existing user.
  */
 export function awsClientDefaults(options: AwsClientDefaultsOptions = {}): AwsClientDefaults {
+  // Inside a per-stack scope, a client built with no region of its own must
+  // take the STACK's region, not whatever `process.env.AWS_REGION` says: the
+  // environment is shared by every stack deploying concurrently, and the SDK
+  // memoizes the region a client resolves at its first request (issue
+  // go-to-k/cdkd#1981). Spread FIRST so the credential / handler keys below are
+  // never shadowed and a site's own explicit `region` still overrides it.
+  const scopeRegion = currentStackAwsScope()?.region;
+  const defaults = credentialAndHandlerDefaults(options);
+  return scopeRegion === undefined ? defaults : { region: scopeRegion, ...defaults };
+}
+
+function credentialAndHandlerDefaults(options: AwsClientDefaultsOptions): AwsClientDefaults {
   // Read the proxy environment FIRST in both branches: its whitespace-only
   // guard is a refusal the assumed-role path must not skip past.
   const proxied = isProxyConfigured();

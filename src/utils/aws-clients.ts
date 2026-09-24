@@ -21,6 +21,7 @@ import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
+import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 
 /**
  * AWS client configuration
@@ -147,18 +148,21 @@ export class AwsClients {
    * incomplete, it is UNSTABLE in the one direction that is dangerous: the SDK
    * memoizes a region-less client's region at its first resolution
    * (`@smithy/node-config-provider`'s `loadConfig` wraps the provider chain in
-   * `memoize`), while `deploy.ts`'s `switchRegion` keeps mutating
-   * `process.env.AWS_REGION` per stack and restores it in each stack's
-   * `finally`. So an env-derived answer can report region X for a client that
-   * long ago pinned itself to region P — letting a caller conclude "these
+   * `memoize`), while a per-stack region switch (`destroy-runner.ts` today;
+   * `deploy.ts` until issue #1981 moved it into a stack scope) mutates
+   * `process.env.AWS_REGION` and restores it in each stack's `finally`. So
+   * an env-derived answer can report region X for a client that long ago
+   * pinned itself to region P — letting a caller conclude "these
    * clients already point at my region" and use the WRONG ones, which is worse
    * than not knowing.
    *
    * When this returns `undefined` the region is not merely unknown to us, it is
-   * NOT YET DECIDED — and that is the important part. {@link clientOptions}
-   * omits `region` entirely in that case, so each service client resolves and
+   * NOT YET DECIDED — and that is the important part. Outside a stack scope
+   * (`runWithStackAwsClients`, which makes `awsClientDefaults()` supply the
+   * scope's region), {@link clientOptions} omits `region` entirely in that
+   * case, so each service client resolves and
    * MEMOIZES its own region independently, at its own first construction, from
-   * an environment `deploy.ts`'s `switchRegion` is actively mutating. The
+   * an environment a per-stack region switch may be actively mutating. The
    * members of one region-less bag can therefore disagree with each other:
    * `ssm` can pin `us-west-2` and `secretsManager` pin `us-east-1` a moment
    * later, because the getters are lazy and each samples a different instant.
@@ -701,9 +705,17 @@ export class AwsClients {
 let globalClients: AwsClients | null = null;
 
 /**
- * Get or create global AWS clients
+ * The AWS clients for the code running now: the active per-stack scope's
+ * clients when one is entered ({@link runWithStackAwsClients}), else the
+ * process-global instance, created on first use.
+ *
+ * The scope comes FIRST so that a stack deploying concurrently with a stack in
+ * another region can never read the other stack's clients (issue
+ * go-to-k/cdkd#1981). `config` only matters when the global is created.
  */
 export function getAwsClients(config?: AwsClientConfig): AwsClients {
+  const scoped = currentStackAwsScope();
+  if (scoped) return scoped.clients;
   if (!globalClients) {
     globalClients = new AwsClients(config);
   }
@@ -711,7 +723,29 @@ export function getAwsClients(config?: AwsClientConfig): AwsClients {
 }
 
 /**
- * Set global AWS clients instance
+ * Run `fn` with `clients` as the AWS clients, and their configured region as
+ * the ambient region, of everything it calls — across `await`s, and without
+ * touching the process-global instance or `process.env.AWS_REGION`, which
+ * concurrently running stacks would otherwise overwrite for each other
+ * (issue go-to-k/cdkd#1981). See `stack-aws-scope.ts`.
+ *
+ * `clients` must be configured with a region: the scope's whole job is to name
+ * one, and a region-less bag resolves its region from the very environment
+ * this replaces.
+ */
+export function runWithStackAwsClients<T>(clients: AwsClients, fn: () => T): T {
+  const region = clients.configuredRegion;
+  if (region === undefined) {
+    throw new Error('runWithStackAwsClients requires AwsClients configured with a region');
+  }
+  return runInStackAwsScope({ region, clients }, fn);
+}
+
+/**
+ * Set global AWS clients instance.
+ *
+ * Inside a {@link runWithStackAwsClients} scope, `getAwsClients()` keeps
+ * returning the scope's clients: the global this sets is only seen outside it.
  */
 export function setAwsClients(clients: AwsClients): void {
   globalClients = clients;

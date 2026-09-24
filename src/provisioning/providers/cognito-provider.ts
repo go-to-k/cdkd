@@ -57,6 +57,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
@@ -1297,7 +1298,7 @@ function narrowMfaConfiguration(properties: Record<string, unknown>): Record<str
  */
 export class CognitoUserPoolProvider implements ResourceProvider {
   private cognitoClient?: CognitoIdentityProviderClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CognitoUserPoolProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

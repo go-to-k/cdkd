@@ -2481,12 +2481,14 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string
   ): Promise<AwsAccountInfo | undefined> {
     // The provider's OWN region, not the ambient one. `getAccountInfo()` with no
-    // override resolves `process.env['AWS_REGION']`, which `deploy` mutates
-    // globally while stacks run concurrently (`--stack-concurrency`, default 4)
-    // — so a multi-region deploy could synthesize an ARN carrying a sibling
-    // stack's region. Before issue #1746 this call inherited whichever region
-    // the FIRST caller cached, which was wrong in a different way; passing the
-    // client's region is the answer that is right under both.
+    // override resolves `process.env['AWS_REGION']`, which is process-wide and
+    // cannot say which of several concurrently deploying stacks
+    // (`--stack-concurrency`, default 4) is asking — so a multi-region deploy
+    // could synthesize an ARN carrying a sibling stack's region (the per-stack
+    // region lives in the stack AWS scope since #1981). Before issue #1746 this
+    // call inherited whichever region the FIRST caller cached, which was wrong
+    // in a different way; passing the client's region is the answer that is
+    // right under both.
     const accountInfo = await getAccountInfo(await this.cloudControlClient.config.region());
     if (accountInfo.fabricated) {
       this.logger.warn(

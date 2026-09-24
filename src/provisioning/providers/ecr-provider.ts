@@ -41,6 +41,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS ECR Repository Provider
@@ -55,7 +56,7 @@ import { definedAttributes } from '../attribute-map.js';
  */
 export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ECRProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [

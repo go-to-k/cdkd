@@ -667,6 +667,11 @@
       "scenarios": []
     },
     {
+      "name": "cross-region-concurrent-stacks",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-region-state-bucket",
       "annotated": true,
       "scenarios": [
@@ -2908,6 +2913,7 @@
     "cognito-identity-pool",
     "cognito-lambda-triggers",
     "cognito-userpool-user-ref",
+    "cross-region-concurrent-stacks",
     "dynamodb-autoscaling",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",

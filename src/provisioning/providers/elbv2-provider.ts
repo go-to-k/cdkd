@@ -72,6 +72,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -211,7 +212,7 @@ const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
  */
 export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ELBv2Provider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

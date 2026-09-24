@@ -33,6 +33,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * The selector set a trail carries when its template declares NO
@@ -158,7 +159,7 @@ function describeValue(value: unknown): string {
  */
 export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CloudTrailProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

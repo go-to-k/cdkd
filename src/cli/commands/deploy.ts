@@ -63,7 +63,7 @@ import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { DeployEngine, type DeployEngineOptions } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
@@ -578,11 +578,6 @@ async function deployCommand(
     const diffCalculator = new DiffCalculator();
     const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
 
-    const switchRegion = (region: string): void => {
-      process.env['AWS_REGION'] = region;
-      process.env['AWS_DEFAULT_REGION'] = region;
-    };
-
     // Build work graph
     const workGraph = new WorkGraph();
     const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
@@ -736,14 +731,27 @@ async function deployCommand(
         `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`
       );
 
-      switchRegion(stackRegion);
-
+      // The stack's clients and region reach its providers through a stack AWS
+      // scope (issue #1981), NOT by re-pointing the process-global
+      // `setAwsClients` singleton and `process.env.AWS_REGION`: with
+      // `--stack-concurrency` > 1 those globals belong to whichever stack
+      // switched them last, so a provider call after any `await` could run
+      // against a sibling stack's region. The scope follows this stack's own
+      // async chain; see src/utils/stack-aws-scope.ts.
       const stackAwsClients = new AwsClients({
         region: stackRegion,
         ...(options.profile && { profile: options.profile }),
       });
-      setAwsClients(stackAwsClients);
+      return runWithStackAwsClients(stackAwsClients, () =>
+        deployStackInScope(stackInfo, stackRegion, stackAwsClients)
+      );
+    };
 
+    const deployStackInScope = async (
+      stackInfo: (typeof targetStacks)[0],
+      stackRegion: string,
+      stackAwsClients: AwsClients
+    ): Promise<void> => {
       const stateS3Client = new AwsClients({
         region: baseRegion,
         ...(options.profile && { profile: options.profile }),
@@ -965,8 +973,8 @@ async function deployCommand(
           ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
           ...(options.skipFinalSnapshot && { skipFinalSnapshot: true }),
           // Region-pinned clients for the pre-delete final snapshots
-          // (issues #1352 / #1353): the global getAwsClients() singleton
-          // races under --stack-concurrency > 1 with multi-region stacks.
+          // (issues #1352 / #1353). Passed explicitly; since #1981 the stack
+          // AWS scope also makes getAwsClients() return these same clients.
           finalSnapshotClients: stackAwsClients,
           ...(options.strictGetatt && { strictGetAtt: true }),
           ...(options.cfnFallback === false && { cfnFallback: false }),
@@ -1215,8 +1223,6 @@ async function deployCommand(
         }
         stackAwsClients.destroy();
         stateS3Client.destroy();
-        switchRegion(baseRegion);
-        setAwsClients(awsClients);
       }
     };
 

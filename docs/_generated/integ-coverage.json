@@ -2909,6 +2909,7 @@
     {
       "resourceType": "AWS::ECR::Repository",
       "integs": [
+        "cross-region-concurrent-stacks",
         "destroy-data-guard",
         "ecr",
         "ecr-scanning",
@@ -2917,6 +2918,10 @@
         "stage-assets"
       ],
       "signals": {
+        "cross-region-concurrent-stacks": [
+          "l2",
+          "literal"
+        ],
         "destroy-data-guard": [
           "l2"
         ],
@@ -4750,6 +4755,7 @@
         "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
+        "cross-region-concurrent-stacks",
         "drift-revert",
         "ec2-vpc",
         "ecs-fargate",
@@ -4788,6 +4794,10 @@
           "l2"
         ],
         "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-region-concurrent-stacks": [
           "l2",
           "literal"
         ],
@@ -5325,6 +5335,7 @@
         "codecommit",
         "composite-stack",
         "conditions-and-if",
+        "cross-region-concurrent-stacks",
         "deep-getatt-chains",
         "deployment-events",
         "drift-revert",
@@ -5380,6 +5391,10 @@
         ],
         "conditions-and-if": [
           "l1"
+        ],
+        "cross-region-concurrent-stacks": [
+          "l2",
+          "literal"
         ],
         "deep-getatt-chains": [
           "l1"
@@ -5488,6 +5503,7 @@
       "resourceType": "AWS::SNS::TopicPolicy",
       "integs": [
         "codecommit",
+        "cross-region-concurrent-stacks",
         "iam-propagation-stress",
         "migrate-from-cfn",
         "replacement-fanout",
@@ -5497,6 +5513,10 @@
       "signals": {
         "codecommit": [
           "l2"
+        ],
+        "cross-region-concurrent-stacks": [
+          "l2",
+          "literal"
         ],
         "iam-propagation-stress": [
           "literal"
@@ -5526,6 +5546,7 @@
         "cloudwatch-anomaly-detector",
         "composite-stack",
         "conditions-update-2",
+        "cross-region-concurrent-stacks",
         "data-pipeline",
         "drift-revert-arrays",
         "event-driven",
@@ -5587,6 +5608,10 @@
         ],
         "conditions-update-2": [
           "l1"
+        ],
+        "cross-region-concurrent-stacks": [
+          "l2",
+          "literal"
         ],
         "data-pipeline": [
           "l2"
@@ -5741,6 +5766,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "context-test",
+        "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-references",
@@ -5822,6 +5848,10 @@
         ],
         "context-test": [
           "l2"
+        ],
+        "cross-region-concurrent-stacks": [
+          "l2",
+          "literal"
         ],
         "cross-region-state-bucket": [
           "l1"

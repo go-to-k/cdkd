@@ -34,6 +34,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -175,7 +176,7 @@ function triggersEqual(a: RepositoryTrigger[], b: RepositoryTrigger[]): boolean 
 export class CodeCommitRepositoryProvider implements ResourceProvider {
   private client?: CodeCommitClient;
   private s3Client?: S3Client;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CodeCommitRepositoryProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

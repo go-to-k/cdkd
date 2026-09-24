@@ -32,6 +32,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS DocumentDB Provider
@@ -57,7 +58,7 @@ import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
  */
 export class DocDBProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DocDBProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

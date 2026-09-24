@@ -24,6 +24,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -36,7 +37,7 @@ import { definedAttributes } from '../attribute-map.js';
  */
 export class S3VectorsProvider implements ResourceProvider {
   private client: S3VectorsClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3VectorsProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

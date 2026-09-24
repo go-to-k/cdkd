@@ -57,6 +57,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -96,7 +97,7 @@ const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
 export class ServiceDiscoveryProvider implements ResourceProvider {
   private client?: ServiceDiscoveryClient;
   private stsClient?: STSClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ServiceDiscoveryProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

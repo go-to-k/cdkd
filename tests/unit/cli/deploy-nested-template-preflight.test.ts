@@ -174,6 +174,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(() => ({ destroy: vi.fn() })),
+  // The per-stack scope is irrelevant here; run the stack body directly.
+  runWithStackAwsClients: vi.fn((_clients: unknown, fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../../src/utils/role-arn.js', () => ({

@@ -47,6 +47,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * CFn destination property names that this provider can apply
@@ -80,7 +81,7 @@ const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
  */
 export class FirehoseProvider implements ResourceProvider {
   private client: FirehoseClient | undefined;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FirehoseProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

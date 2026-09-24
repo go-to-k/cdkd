@@ -31,6 +31,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * AWS ElastiCache Provider
@@ -44,7 +45,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  */
 export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

@@ -28,6 +28,7 @@ import type {
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -69,7 +70,7 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  */
 export class RDSDBProxyProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('RDSDBProxyProvider');
   private readonly attributeCache = new Map<string, unknown>();
 

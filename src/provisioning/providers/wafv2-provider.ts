@@ -34,6 +34,7 @@ import type {
   CreateContext,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
  * Translate the empty-string placeholder `readCurrentState` emits for an
@@ -481,7 +482,7 @@ export function parseWebACLArn(arn: string): {
  */
 export class WAFv2WebACLProvider implements ResourceProvider {
   private wafv2Client?: WAFV2Client;
-  private readonly providerRegion = process.env['AWS_REGION'];
+  private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('WAFv2WebACLProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([

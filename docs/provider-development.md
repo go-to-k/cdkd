@@ -506,6 +506,14 @@ drop answer, ask what your readback emits for the UNCONFIGURED resource.
 
 ## Provider Implementation Examples
 
+**Clients and region.** Take AWS clients from `getAwsClients()`, or build your
+own SDK client with `awsClientDefaults()` spread first, and read the region
+through `ambientRegion()` (`src/utils/stack-aws-scope.ts`) — never
+`process.env.AWS_REGION` directly. `cdkd deploy` runs stacks in several regions
+concurrently, each inside its own stack AWS scope, and those three are the reads
+that follow the scope; the environment is process-wide and belongs to no stack
+(issue [#1981](https://github.com/go-to-k/cdkd/issues/1981)).
+
 ### 1. Simple Example: S3 Bucket Policy Provider
 
 S3 bucket policies benefit from an SDK Provider for fast, synchronous operations without CC API polling overhead.
