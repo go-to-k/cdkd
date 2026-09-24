@@ -3039,7 +3039,11 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     'repairMalformedOrphanRecordsForReadOnly(',
     'unreadableOrphanRecords(',
     'unpreviewableOrphanRecords(',
-    'isPreviewableOrphanRecord(',
+    // The LEADING SPACE is load-bearing: without it `unpreviewableOrphanRecords(`
+    // contains this spelling and satisfies every check on its behalf
+    // (go-to-k/cdkd#3643, which replaced the per-row `isPreviewableOrphanRecord(`
+    // filter with this list-level one).
+    ' previewableOrphanRecords(',
   ];
 
   /**
@@ -3064,7 +3068,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
       'unreadableOrphanRecords(',
     ],
     'src/cli/commands/diff-recursive.ts': [
-      'isPreviewableOrphanRecord(',
+      ' previewableOrphanRecords(',
       'unpreviewableOrphanRecords(',
     ],
   };

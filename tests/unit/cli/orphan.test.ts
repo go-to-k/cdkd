@@ -977,6 +977,36 @@ describe('cdkd orphan (per-resource)', () => {
       });
     }
 
+    it('#3643: refuses two healthy rollback-orphan records sharing a logicalId, under --dry-run too', async () => {
+      const twin = (physicalId: string) => ({
+        logicalId: 'Twin',
+        orphanedAt: 1,
+        state: { ...BUCKET, physicalId },
+      });
+      for (const flag of ['--yes', '--dry-run']) {
+        errorSpy.mockClear();
+        mockSaveState.mockClear();
+        arrange({ Bucket: BUCKET, Other: other() }, { orphans: [twin('g-1'), twin('g-2')] });
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', flag])).rejects.toThrow();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        const message = refusal();
+        expect(message).toContain(
+          `holds 2 rollback-orphan record(s) in 'orphans' that cannot be read — Twin, Twin —`
+        );
+        expect(message).toContain('shares it with another row');
+      }
+    });
+
+    it('#3643: FLOOR — two records under DISTINCT ids are saved', async () => {
+      const orphans = [
+        { logicalId: 'Twin', orphanedAt: 1, state: { ...BUCKET, physicalId: 'g-1' } },
+        { logicalId: 'Other2', orphanedAt: 1, state: { ...BUCKET, physicalId: 'g-2' } },
+      ];
+      arrange({ Bucket: BUCKET, Other: other() }, { orphans });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+    });
+
     it('#3344: FLOOR — a readable orphans list is saved, verbatim', async () => {
       const orphans = [{ logicalId: 'Gone', orphanedAt: 1, state: { ...BUCKET, attributes: { Arn: 'a' } } }];
       arrange({ Bucket: BUCKET, Other: other({ attributes: { Arn: 'x' } }) }, { orphans });

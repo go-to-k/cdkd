@@ -53,10 +53,15 @@ the `resources` map — not in a list.
 **The `orphans` ROW class is its own, one level under the table's THIRD
 container (go-to-k/cdkd#3500).** That container is guarded above the rows
 (go-to-k/cdkd#3379), so a row pass runs only once the field is known to be a
-list — which is why `unreadableOrphanRecords` and `unpreviewableOrphanRecords`,
-the two helpers that ENUMERATE, return `[]` for a container that is not one. The
+list — which is why `unreadableOrphanRecords`, `unpreviewableOrphanRecords` and
+`previewableOrphanRecords`, the helpers that ENUMERATE, return `[]` for a
+container that is not one. The
 predicates themselves answer per RECORD and say nothing about the container. `isReadableOrphanRecord` is the predicate and
-`unreadableOrphanRecords` names every row a state fails on; the disposition
+`unreadableOrphanRecords` names every row a state fails on — PLUS every row
+whose string `logicalId` another row carries (go-to-k/cdkd#3643), the one
+LIST-level defect no per-record predicate can see, so never filter a list with
+the predicate alone: take `unreadableOrphanRecords` /
+`previewableOrphanRecords`. The disposition
 splits the way the container's does — `refuseMalformedOrphanRecords` for a
 writer, `refuseMalformedOrphanRecordsForDestroy` for the destroy,
 `refuseMalformedOrphansForOrphan` for `cdkd orphan` (which answers for the
@@ -69,7 +74,8 @@ costs is per command (excluded from the secret scan, versus not previewed for
 adoption), and a defaulted flag lets a third caller under-report silently.
 
 **`cdkd diff` takes a NARROWER predicate, and that is deliberate.**
-`isPreviewableOrphanRecord` / `unpreviewableOrphanRecords` ask only what the
+`isPreviewableOrphanRecord` / `unpreviewableOrphanRecords` /
+`previewableOrphanRecords` ask only what the
 adoption preview dereferences — an object, a string `logicalId`, a readable
 `state` with a NON-EMPTY string `physicalId` — and say nothing about that state's
 `properties` / `attributes`. The
@@ -85,13 +91,14 @@ such a row, so a preview that keeps it and says nothing lets `cdkd diff --fail`
 exit 0 and the deploy the operator runs next refuse — the contract `cdkd diff`
 states for the adoption preview. `deployRefusesOrphanRowsReason` is that verdict:
 `diff-recursive.ts` computes the rows the NARROW predicate accepts and the FULL
-one rejects — from the ROWS, since two rows can share a name — and then SUBTRACTS
+one rejects — from the ROWS the preview kept — and then SUBTRACTS
 the names the adopted-`properties` arm already reported, because a second reason
 for one row broke go-to-k/cdkd#3335's `countBlocking` contract. So what this arm
 covers is the two cases nothing else does: a torn `attributes` map, and a torn
-`properties` map on a row the adoption did NOT take. Subtracting by NAME is not
-exact where two rows share an id — stated at the site, and go-to-k/cdkd#3643's
-shape rather than a new one.
+`properties` map on a row the adoption did NOT take. Subtracting by NAME is
+exact because rows sharing an id are DROPPED before the preview
+(go-to-k/cdkd#3643) — dropped rather than kept-and-warned, so the preview never
+shows one adoption for two rows and `--fail` counts them.
 
 **The REASON is top-level only and the WARNING is not**, and that asymmetry is
 load-bearing (go-to-k/cdkd#3641 rounds 2 and 3). "Every node" means every node the RUN

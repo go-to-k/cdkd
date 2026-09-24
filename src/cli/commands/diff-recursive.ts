@@ -56,8 +56,8 @@ import {
   malformedResourcesWarning,
   deployRefusesOrphanRowsReason,
   malformedOrphanRowsKeptWarning,
-  isPreviewableOrphanRecord,
   isReadableOrphanRecord,
+  previewableOrphanRecords,
   unpreviewableOrphanRecords,
   malformedOrphansWarning,
   repairMalformedOrphansForReadOnly,
@@ -980,10 +980,17 @@ export async function computeStackDiff(
     // bare `RangeError` naming no field, container or stack — on the command a
     // user runs BECAUSE the record is suspect (go-to-k/cdkd#3500 security review;
     // measured 100k OK, 130k over). The pre-image pushed per row and was immune.
+    //
+    // Rows SHARING a string `logicalId` are DROPPED here too, every one of them
+    // (go-to-k/cdkd#3643) — both helpers below carry that list-level check, which
+    // the per-row predicate cannot make. Dropped rather than kept-and-warned so
+    // the preview never hands `planOrphanAdoption` two rows it would key onto one
+    // adoption, and so `--fail` still predicts the deploy: a dropped row joins the
+    // node's `unreadable`, which `--fail` counts, and the deploy refuses the
+    // record over the same rows. Keeping them would preview one adoption for two
+    // resources, which is the collapse the writers refuse.
     for (const id of unpreviewableOrphanRecords(currentState)) unreadableOrphans.push(id);
-    const readableOrphans = currentState.orphans.filter((record) =>
-      isPreviewableOrphanRecord(record)
-    );
+    const readableOrphans = previewableOrphanRecords(currentState);
     if (unreadableOrphans.length > 0) {
       // `false`: this command took the PREVIEWABLE predicate, so the diagnosis
       // must not name a torn map as a reason a row was dropped here.
@@ -1054,10 +1061,10 @@ export async function computeStackDiff(
     // before this lane (go-to-k/cdkd#3641 item o5), which is why the arm above
     // reports it and this one subtracts it.
     //
-    // Which rows, computed from the ROWS and not by subtracting the two NAME
-    // lists: a name is not an identity here (two rows can share one —
-    // go-to-k/cdkd#3643 — and a row with no string id is named `''`), so a set
-    // difference over names would drop a row whose id another row also carries.
+    // Which rows: the ones the preview KEPT that the writers' per-row predicate
+    // rejects. That predicate alone is enough HERE, and only here, because its
+    // one blind spot — rows sharing a `logicalId` (go-to-k/cdkd#3643) — was
+    // dropped from `readableOrphans` above.
     //
     // MINUS what the arm above already reported, which is the half a first cut
     // got wrong: for an adopted torn-`properties` row that arm already says the
@@ -1069,11 +1076,9 @@ export async function computeStackDiff(
     // `properties` map on a row the adoption did NOT take — the likelier case,
     // since the deploy refuses before it would adopt anything.
     //
-    // The exclusion is BY NAME, which the identity note above says is not exact:
-    // where two rows share an id and only one was adopted, this reports neither.
-    // The operator is still told the deploy refuses over that id, by the arm
-    // above, which is what M1 asks for; a count that says "one row" for two is the
-    // residual, and it is go-to-k/cdkd#3643's shape rather than a new one.
+    // The exclusion is BY NAME, and that is exact here: every row in
+    // `readableOrphans` carries a string `logicalId` no other row carries, since
+    // rows sharing one were dropped above (go-to-k/cdkd#3643).
     const alreadyReported = new Set(reportedByTheAdoptedPropertiesArm);
     const previewedRowsTheDeployRefuses = readableOrphans
       .filter((record) => !isReadableOrphanRecord(record))

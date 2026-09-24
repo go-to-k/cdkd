@@ -443,14 +443,17 @@ defect and is never refused — it is the ordinary shape for a stack that has
 never had a failed deploy.
 
 The same refusal covers a readable list holding a record no reader can use — one
-that is not an object, has no string `logicalId`, or whose `state` is not a
+that is not an object, has no string `logicalId` or shares it with another
+record, or whose `state` is not a
 readable resource entry with a NON-EMPTY string `physicalId`, including that entry's
-`properties` and `attributes` maps. The adoption pass dereferences every record it walks.
+`properties` and `attributes` maps. The adoption pass dereferences every record it walks,
+and keys what it adopts by `logicalId`, so of two records sharing one only the
+last would be adopted.
 
 `cdkd diff` previews such a record rather than refusing it, and warns either
 way — but what it EXITS depends on the shape. A row it cannot preview at all (not
 an object, no string `logicalId`, no readable `state`, or a `state` with no non-empty string
-`physicalId`) is dropped,
+`physicalId`) is dropped, and so is every record sharing its `logicalId` with another,
 named in the warning and in `--fail`'s count, and exits `0` without `--fail`. A
 row it KEEPS — one whose `properties` or `attributes` map is not an object —
 additionally exits `3` on the top-level stack, because there the preview would

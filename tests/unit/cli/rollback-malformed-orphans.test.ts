@@ -305,6 +305,44 @@ describe('rollbackCommand refuses an unusable orphan ROW (go-to-k/cdkd#3500)', (
     expect(merged, 'the merge no longer collapses two id-less rows').toHaveLength(1);
   });
 
+  // go-to-k/cdkd#3643: two HEALTHY rows sharing a STRING `logicalId`. Each passes
+  // the per-row predicate, and the merge keys them onto one entry exactly as it
+  // does two id-less rows — so the second row's resource would be the one left
+  // live in AWS with nothing tracking it. `''` is a string key too.
+  for (const sharedId of ['Twin', '']) {
+    it(`THE LOSS: two healthy rows sharing the id ${JSON.stringify(sharedId)} refuse, saving nothing`, async () => {
+      const rowA = {
+        logicalId: sharedId,
+        orphanedAt: 1,
+        state: { physicalId: 'live-A', resourceType: 'AWS::SQS::Queue', properties: {} },
+      };
+      const rowB = {
+        logicalId: sharedId,
+        orphanedAt: 2,
+        state: { physicalId: 'live-B', resourceType: 'AWS::SQS::Queue', properties: {} },
+      };
+      const h = install([healthy('Keep'), rowA, rowB]);
+      const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      // BOTH rows are named and the healthy distinct one is not: nothing in the
+      // record says which twin is the live resource the stack should keep.
+      const message = (thrown as CdkdError).message;
+      expect(message).toContain('2 rollback-orphan record(s)');
+      expect(message).toContain('shares it with another row');
+      expect(message).not.toContain('Keep');
+      expect(h.saveState).not.toHaveBeenCalled();
+      expect(replayProvider.delete).not.toHaveBeenCalled();
+
+      // THE PREMISE: the merge keeps one of the two, which is the loss refused.
+      const merged = orphansAfterRollback(
+        { orphans: [rowA, rowB] } as unknown as StackState,
+        []
+      ).orphans;
+      expect(merged, 'the merge no longer collapses two rows sharing an id').toHaveLength(1);
+    });
+  }
+
   it('CONTROL: a list whose every row is usable replays and SAVES', async () => {
     const h = install([healthy('Keep'), healthy('AlsoKeep')]);
     const thrown = await rollbackCommand(STACK, BASE_OPTS).catch((e: unknown) => e);

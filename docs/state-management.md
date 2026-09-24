@@ -1181,23 +1181,30 @@ a separate question, answered by the section below.
 The field being a list says nothing about the records in it. A record is usable
 only if it is an object with a string `logicalId` whose `state` is a readable
 resource entry carrying a NON-EMPTY string `physicalId` — including that entry's
-`properties` and `attributes` maps — and each command answers a damaged one the
-same way it answers a damaged container:
+`properties` and `attributes` maps — and no OTHER record in the list carries
+that same `logicalId`. Each command answers a damaged one the same way it
+answers a damaged container:
 
 | Command | Answer |
 | --- | --- |
 | `cdkd deploy` | **Refuses** at the load. The adoption pass dereferences every record, so one whose `state` is absent or `null` aborts the run; one already in `resources` is dropped silently before `state` is read; and a primitive or type-less `state` is kept with a notice, since the provider lookup fails inside the pass's own `try` |
 | `cdkd destroy` / `cdkd state destroy` | **Refuses**, at both reads. The listing that tells you which resources stop being tracked prints each record's own fields |
-| `cdkd rollback` | **Refuses** before any replay. This is where the loss is worst: records MISSING a `logicalId` all key ONE entry of the merge map, so those collapse into one and the record saved keeps only that one (two distinct NUMERIC ids stay distinct keys) |
+| `cdkd rollback` | **Refuses** before any replay. This is where the loss is worst: records MISSING a `logicalId` all key ONE entry of the merge map, so those collapse into one and the record saved keeps only that one (two distinct NUMERIC ids stay distinct keys) — and records SHARING one collapse the same way, the other rows' resources left live in AWS with nothing tracking them |
 | `cdkd import` | **Refuses** — it carries the records into the record it writes, verbatim |
 | `cdkd orphan` | **Refuses**, under `--dry-run` too |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); under `--dry-run` it DROPS the record, warns, and reports it in the audited-record refusal |
-| `cdkd diff` | **Drops** the record, names it in the preview, in `--json`'s `unreadable` and in the `--fail` count, and previews the rest. It drops only what the preview cannot read — an object, a string `logicalId`, and a readable `state` with a non-empty string `physicalId` (the preview resolves that id against AWS and against other stacks' records); a record whose `properties` or `attributes` map is torn is KEPT, and the preview then WARNS naming the row — at every node the run reaches with an adoption preview; a plain run visits only the top-level stack, and a state-only child being DELETED runs no preview at all — saying that `cdkd deploy` refuses the record over it; the TOP-LEVEL stack also exits `3`, so a clean run never precedes a deploy that will not start. A kept row that is ADOPTED additionally has its `properties` map repaired and named by the [`properties` repair](#when-a-resource-properties-map-is-not-an-object) |
+| `cdkd diff` | **Drops** the record, names it in the preview, in `--json`'s `unreadable` and in the `--fail` count, and previews the rest. It drops only what the preview cannot read — an object, a string `logicalId`, and a readable `state` with a non-empty string `physicalId` (the preview resolves that id against AWS and against other stacks' records) — plus EVERY record whose `logicalId` another record also carries, since the preview keys its adoptions by that id and would show one adoption for two resources; a record whose `properties` or `attributes` map is torn is KEPT, and the preview then WARNS naming the row — at every node the run reaches with an adoption preview; a plain run visits only the top-level stack, and a state-only child being DELETED runs no preview at all — saying that `cdkd deploy` refuses the record over it; the TOP-LEVEL stack also exits `3`, so a clean run never precedes a deploy that will not start. A kept row that is ADOPTED additionally has its `properties` map repaired and named by the [`properties` repair](#when-a-resource-properties-map-is-not-an-object) |
 
 Inspect the record with `cdkd state show <stack> --stack-region <region> --json`
 and repair the row rather than deleting the record: no command removes a single
 `orphans` row — the per-resource commands act on `resources` — and the record is
 the only evidence that an earlier failed deploy left its resource live in AWS.
+
+Two records sharing a `logicalId` are never written by cdkd — every save merges
+by that id and keeps one record per id — so they come from a hand edit or a
+damaged file. Each of them is named, since nothing in the record says which is
+the resource the stack should re-adopt; the repair is to keep ONE record for
+that id, and the other resource is then no longer tracked by cdkd.
 
 #### Example
 
