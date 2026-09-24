@@ -599,6 +599,13 @@ By default `cdkd diff` does not descend into nested stacks, matching
 `cdk diff`: the parent's `AWS::CloudFormation::Stack` row shows up as a single
 `TemplateURL` / `Parameters` change and nothing below it is inspected.
 
+With or without `--recursive`, a changed nested stack also lists every parent
+resource that reads one of its outputs (`Fn::GetAtt [Child, 'Outputs.<Key>']`)
+as an update. The child's new outputs are known only once it deploys, so the
+preview cannot tell which of them will move. `cdkd deploy` sends an update
+only to the readers whose output did move. A reader that reads any value stored as
+the `***` mask (a `NoEcho` custom resource's) is not listed and not updated.
+
 `--recursive` walks into every `AWS::CloudFormation::Stack` row in DFS order and
 diffs each nested child against its **own** deployed state at
 `cdkd/<parent>~<childLogicalId>/<region>/state.json`. Each child's block is
