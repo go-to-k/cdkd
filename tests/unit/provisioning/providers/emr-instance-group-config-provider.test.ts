@@ -241,6 +241,8 @@ describe('EMRInstanceGroupConfigProvider update', () => {
 
     expect(result.wasReplaced).toBe(false);
     expect(result.physicalId).toBe(GROUP_ID);
+    // The deploy engine replaces (not merges) the attribute bag with this one.
+    expect(result.attributes).toEqual({ Id: GROUP_ID, InstanceGroupId: GROUP_ID });
     const modify = callsOf(ModifyInstanceGroupsCommand);
     expect(modify).toHaveLength(1);
     expect(modify[0]!.input.ClusterId).toBe(CLUSTER_ID);

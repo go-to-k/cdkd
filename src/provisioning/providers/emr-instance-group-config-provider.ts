@@ -351,7 +351,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated EMR instance group ${logicalId}`);
-      return { physicalId, wasReplaced: false, attributes: { Id: physicalId } };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: { Id: physicalId, InstanceGroupId: physicalId },
+      };
     } catch (error) {
       if (error instanceof ProvisioningError || error instanceof ResourceUpdateNotSupportedError) {
         throw error;
