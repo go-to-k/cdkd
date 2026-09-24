@@ -365,21 +365,30 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'CONTAINER_CONNECTION',
     'CONTAINER_SSHKEY',
     'PODMAN_CONNECTIONS_CONF',
+    'CONTAINER_PROXY',
+    'CONTAINERS_SSH_CONF',
     'CONTAINERS_CONF',
     'CONTAINERS_CONF_OVERRIDE',
     'CONTAINERS_REGISTRIES_CONF',
+    'CONTAINERS_REGISTRIES_CONF_OVERRIDE',
     'REGISTRIES_CONFIG_PATH',
     'CONTAINERS_STORAGE_CONF',
+    'CONTAINERS_STORAGE_CONF_OVERRIDE',
+    'CONTAINERS_POLICY_JSON',
     'STORAGE_OPTS',
     'CONTAINERS_HELPER_BINARY_DIR',
     'REGISTRY_AUTH_FILE',
     'DBUS_SESSION_BUS_ADDRESS',
+    'NOTIFY_SOCKET',
     // Base directories podman / nerdctl / finch derive config and sockets from:
     'XDG_CONFIG_HOME',
     'XDG_RUNTIME_DIR',
     'APPDATA',
     'PROGRAMDATA',
+    'PROGRAMFILES',
     'LOCALAPPDATA',
+    // finch -> limactl execs `$SSH`:
+    'SSH',
     // nerdctl / containerd:
     'CONTAINERD_ADDRESS',
     'CONTAINERD_NAMESPACE',
@@ -387,6 +396,7 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'CNI_PATH',
     'NETCONFPATH',
     'ROOTLESSKIT_STATE_DIR',
+    'NERDCTL_LOG_FILE',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'GODEBUG',
@@ -418,7 +428,10 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
       // is preserved (rather than `not 'evil'`) is both stronger and immune to
       // a host env that legitimately holds the probe literal (Codex review).
       expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).toBe(process.env[key]);
-      expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
+      const { flags, collisions } = partitionSensitiveEnv({ [key]: 'evil' }, new Set([key]));
+      expect(flags).toEqual([]);
+      // ...and REPORTED, which is what the callers' drop warning reads.
+      expect(collisions).toEqual([key]);
     }
   );
 
@@ -468,6 +481,8 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'STORAGE_ACCOUNT_KEY',
     'CNI_VERSION',
     'NERDCTL_PASSWORD',
+    'CONTAINERS_TOKEN',
+    'SSH_KEY', // `SSH` is an exact entry, not a prefix
   ])('still delivers the neighbouring secret name %s', (key) => {
     expect(isDockerClientEnvKey(key)).toBe(false);
     const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(

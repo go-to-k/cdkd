@@ -297,24 +297,27 @@ process arguments. The secret's **name** decides whether it is forwarded at all.
 Two name shapes are dropped entirely — no `-e` flag and no spawn-environment
 entry:
 
-- **A name that collides with a variable the container CLI itself reads**,
-  matched case-insensitively. That is the Docker CLI, or the podman, nerdctl or
-  finch binary `CDK_DOCKER` names. The set covers connection and TLS settings,
-  behaviour toggles, `PATH` / `PATHEXT` / `HOME` / `USERPROFILE`, the loader,
-  trust and runtime variables, the SSH exec-helper variables, the AWS
-  credential-helper variables `docker-credential-ecr-login` reads, podman's
-  connection and config-file variables (`CONTAINER_HOST`, `CONTAINERS_CONF`,
-  `REGISTRY_AUTH_FILE`, ...), nerdctl's (`CONTAINERD_ADDRESS`, `NERDCTL_TOML`,
-  `CNI_PATH`, ...), and the `XDG_CONFIG_HOME` / `XDG_RUNTIME_DIR` base
-  directories they fall back to, plus the `LD_`, `DYLD_` and `AWS_ENDPOINT_URL_`
-  prefix families. Forwarding such a name would let a template-controlled
-  secret name redirect the container client itself — a secret named
+- **A name that collides with a variable the container client itself reads**,
+  matched case-insensitively. The client is the Docker CLI, or the podman,
+  nerdctl or finch binary `CDK_DOCKER` names. Forwarding such a name would let a
+  template-controlled secret name redirect that client — a secret named
   `DOCKER_HOST` (or `CONTAINER_HOST` under podman) could point it at a
-  different daemon.
+  different daemon. The families covered are listed in the table below.
 - **A malformed name** — empty, or containing `=` or NUL. The `=` case is the
   dangerous one: the OS parses an environment entry's name as everything before
   the first `=`, so a secret named `PATH=/tmp/evil:` would land as `PATH`, a
   different variable than the collision check inspected.
+
+| Family | Examples |
+| --- | --- |
+| Docker connection, TLS and behaviour settings | `DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_TLS_VERIFY` |
+| Process, loader and trust variables | `PATH`, `HOME`, `GCONV_PATH`, `SSL_CERT_FILE`; the `LD_` / `DYLD_` prefixes |
+| SSH helper variables | `SSH_AUTH_SOCK`, `SSH_ASKPASS` |
+| AWS variables `docker-credential-ecr-login` reads | `AWS_PROFILE`, `AWS_ECR_CACHE_DIR`; the `AWS_ENDPOINT_URL_` prefix |
+| podman connection and config files | `CONTAINER_HOST`, `CONTAINERS_CONF`, `REGISTRY_AUTH_FILE` |
+| nerdctl connection, config and CNI | `CONTAINERD_ADDRESS`, `NERDCTL_TOML`, `CNI_PATH` |
+| finch's Lima layer | `SSH` |
+| Base directories the above fall back to | `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`; on Windows `APPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `LOCALAPPDATA` |
 
 Each refusal is reported as a warning naming the dropped secret, so the drop is
 never silent. Rename the secret if the container needs its value.

@@ -463,7 +463,7 @@ export async function runEcsTask(
     // "docker run failed" (issue #2183 review).
     if (built.collisions.length > 0) {
       logger.warn(
-        `Container '${container.name}': secret(s) ${built.collisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack the docker client; a malformed name cannot form a valid environment variable). Rename the secret if the container needs it.`
+        `Container '${container.name}': secret(s) ${built.collisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a variable the container client reads (docker, or the CDK_DOCKER binary) or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack that client; a malformed name cannot form a valid environment variable). Rename the secret if the container needs it.`
       );
     }
   }
