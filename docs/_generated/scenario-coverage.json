@@ -708,6 +708,11 @@
       ]
     },
     {
+      "name": "custom-resource-noecho-nested",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "custom-resource-provider",
       "annotated": true,
       "scenarios": [
@@ -2948,6 +2953,7 @@
     "cognito-lambda-triggers",
     "cognito-userpool-user-ref",
     "cross-region-concurrent-stacks",
+    "custom-resource-noecho-nested",
     "dynamodb-autoscaling",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",

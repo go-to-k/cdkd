@@ -64,6 +64,7 @@ cross-stack-cfn-fallback	2026-09-24T04:31:45Z	PASS	125	verify.sh	rc ok, orph cle
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-09-24T09:51:42Z	PASS	478	verify.sh	rc ok, orph clean (PR #3625)
 custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
+custom-resource-noecho-nested	2026-09-24T15:02:55Z	PASS	301	verify.sh	rc ok, orph clean; #2460 new fixture, #3659 verbose GetAtt mask; 4 real-AWS probes red
 custom-resource-provider	2026-09-05T23:03:46Z	PASS	750	verify.sh	PR2662 gate run; skip-arm then clean re-destroy 26 deleted 0 errors, 0 orphans
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
