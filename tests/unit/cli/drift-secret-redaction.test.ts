@@ -671,15 +671,20 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
       .find((m) => m.includes('not accepting') && m.includes('SECRET_PASSWORD'));
     expect(refusal).toBeDefined();
-    // BOTH directions, since go-to-k/cdkd#3486 round 4 (M14). `includes('not
-    // accepting')` alone left the go-to-k/cdkd#3307 defect reinstatable green:
-    // putting `${report.stackName}` back inside the quoted command here —
-    // `main`'s shape, and the exact paste hazard this PR is about — reddened
-    // nothing. The positive pins the stack-free command, the negative pins
-    // that the NAME is not in it.
-    expect(refusal).toContain(`Run 'cdkd drift --revert' for this stack`);
-    expect(refusal).not.toContain('cdkd drift TestStack');
-    expect(refusal).not.toMatch(/cdkd drift (?:\S+ --revert|--revert \S)/);
+    // go-to-k/cdkd#3307's remedy for this site, closed through
+    // go-to-k/cdkd#3436's fold-in: the command names the stack AND the region,
+    // on a labelled line of its own, gated by `isPasteableIdent` in
+    // conjunction with the command gate. `for this stack` named neither.
+    expect(refusal).toMatch(
+      /^Revert with: cdkd drift TestStack --stack-region us-east-1 --revert$/m
+    );
+    expect(refusal).toContain('Push the referenced value back to AWS with the command below');
+    // And nothing runnable inside a prose quoted span -- the go-to-k/cdkd#3363
+    // shape M14 pinned in both directions. The block still carries the
+    // property path and the resource type, which is why the command rides a
+    // line of its own rather than the sentence.
+    expect(refusal).not.toContain(`Run 'cdkd drift --revert' for this stack`);
+    expect(refusal).not.toMatch(/'cdkd drift[^']*--revert[^']*'/);
   });
 
   it('--accept still records the NON-secret paths in the same run', async () => {

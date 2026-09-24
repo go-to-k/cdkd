@@ -790,6 +790,51 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     expect(stdout).not.toContain('metadata_location');
   });
 
+  it('WITHHOLDS the revert command at the two prose sites for an unpasteable name', async () => {
+    // The withheld direction of go-to-k/cdkd#3307's sites 2 and 3, which
+    // `revertCommandLine` shares with site 4. Without this case, deleting the
+    // `isPasteableIdent` gate reds nothing across all three drift suites
+    // (measured) -- every other case uses `TestStack`, which passes.
+    //
+    // The prose falls back to `for this stack`, which names no command to
+    // paste, rather than to a labelled line with a hole: both blocks already
+    // display the stack name, so a hole beside it invites the operator to fill
+    // it from a name the block shows.
+    const odd = makeState({
+      Table: {
+        physicalId: 'tbl-1',
+        resourceType: 'AWS::Glue::Table',
+        properties: { Parameters: { classification: 'parquet' } },
+      },
+    });
+    odd.state.stackName = 'Test:Stack';
+    mockGetState.mockResolvedValue(odd);
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'Test:Stack', region: 'us-east-1' }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async (): Promise<Record<string, unknown>> => ({
+        Parameters: { classification: 'json' },
+      }),
+    });
+
+    const { stderr } = await runDrift([
+      '--all',
+      '--state-bucket',
+      'b',
+      '--region',
+      'us-east-1',
+      '--json',
+      '--accept',
+      '--yes',
+    ]);
+
+    // Positive: the run reached the accept path, so the negatives are not
+    // satisfied by an empty message.
+    expect(stderr.length).toBeGreaterThan(0);
+    // No labelled command line anywhere, and no hole standing in for one.
+    expect(stderr).not.toMatch(/^Revert with: /m);
+    expect(stderr).not.toContain("cdkd drift '<stack>'");
+  });
+
   it('WITHHOLDS the populate command for a stack name the paste gate refuses', async () => {
     // The other direction of go-to-k/cdkd#3436's fold-in at this site, and the
     // one that decides whether the gate is real. `Test:Stack` renders exactly

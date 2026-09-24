@@ -3669,18 +3669,23 @@ async function runAccept(
           // (`--revert` can fix it, `--accept` cannot).
           const refusal = acceptRefusalReason(change, outcome.maskedPaths);
           if (refusal !== undefined) {
+            // The command is never INSIDE the sentence -- a pasted prose
+            // `'...'` span ran the value it carried (go-to-k/cdkd#3363). It
+            // rides a labelled line when both identifiers clear
+            // `revertCommandLine`'s gate, and the prose names no command at
+            // all when they do not. The block still carries the property path
+            // and the resource type, which is why the command is on its own
+            // line rather than in the sentence.
+            const revert = revertCommandLine(report.stackName, report.region);
             logger.warn(
               `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                 `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
-                // The command names no stack: this block carries a property
-                // path and a resource type that cannot be gated for exactness
-                // and still printed, so it has not earned a pasteable line
-                // (go-to-k/cdkd#3486 round 3). The NAME is the row's first
-                // field, which go-to-k/cdkd#3232 owns; what this change
-                // removes is the name from INSIDE the quoted command, where a
-                // pasted span ran it.
-                `state. Run 'cdkd drift --revert' for this stack to push the referenced ` +
-                `value back to AWS, or re-deploy if the reference changed.`
+                (revert === undefined
+                  ? `state. Run 'cdkd drift --revert' for this stack to push the referenced ` +
+                    `value back to AWS, or re-deploy if the reference changed.`
+                  : `state. Push the referenced value back to AWS with the command below, or ` +
+                    `re-deploy if the reference changed.` +
+                    `\nRevert with: ${revert}`)
             );
             continue;
           }
@@ -6335,18 +6340,18 @@ async function runRevert(
               `provider actually applied on ${recordedCount} resource(s).`
           );
         } catch (err) {
+          // Same treatment as site 2, and the same gate. The untrusted value in
+          // this block is the STATE-WRITE error message -- the provider update
+          // already succeeded; this is `saveState` failing after it.
+          const revertAgain = revertCommandLine(report.stackName, report.region);
           logger.warn(
             `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
               `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
-              `The next 'cdkd drift' will report the same difference — re-run ` +
-              // No stack inside the quoted command, for site 2's reason: this
-              // block carries the STATE-WRITE error message (the provider
-              // update already succeeded; this is `saveState` failing after
-              // it), which cannot be gated
-              // for exactness and still printed, so it has not earned a
-              // pasteable line (go-to-k/cdkd#3486 round 3). The NAME is in the
-              // sentence's first clause, which go-to-k/cdkd#3232 owns.
-              `'cdkd drift --revert' for this stack once the state write can succeed.`
+              `The next 'cdkd drift' will report the same difference — ` +
+              (revertAgain === undefined
+                ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
+                : `re-run the command below once the state write can succeed.` +
+                  `\nRevert with: ${revertAgain}`)
           );
         }
       }
@@ -6528,6 +6533,52 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
  * One line per resource summarising how many property paths will be
  * overwritten on the AWS side.
  */
+/**
+ * The gated `cdkd drift ... --revert` line for a block that also carries
+ * untrusted values, or `undefined` when either identifier cannot be named.
+ *
+ * go-to-k/cdkd#3307's remedy for its sites 2 and 3, closed through
+ * go-to-k/cdkd#3436's fold-in and on exactly the derivation site 4 uses.
+ *
+ * The corrected go-to-k/cdkd#3486 criterion says a rendered block carrying
+ * untrusted values carries no pasteable command, and both of these blocks do —
+ * a property path and a resource type at one, a state-write error message at
+ * the other. What makes the command printable anyway is the rule `main` has
+ * for naming a target BESIDE such a block
+ * (`.claude/rules/state-malformed-containers.md`, go-to-k/cdkd#3328):
+ * exactness keeps a space and a `:`, so an identifier can spell one of the
+ * block's own labels and forge it once the terminal wraps, and the answer is
+ * `isPasteableIdent` in CONJUNCTION with the command gate, on BOTH
+ * identifiers.
+ *
+ * Withheld means NOT PRINTED rather than printed with a hole: both blocks
+ * already display the stack name, so a hole beside it invites the operator to
+ * fill it from a name the block shows — the misdirection the criterion
+ * forbids. The prose keeps its own `for this stack` wording in that case,
+ * which names no command to paste.
+ *
+ * `exact` is not consulted: `isPasteableIdent` is strictly stronger on every
+ * arm of the gate — it starts at an alphanumeric so is never option-shaped,
+ * admits no `*` or `/`, cannot be empty, and its `displayIdent` compare
+ * carries both the alteration test and the cap.
+ */
+function mayNameTarget(stackName: string, region: string): boolean {
+  return isPasteableIdent(stackName) && isPasteableIdent(region);
+}
+
+/**
+ * The gated `cdkd drift ... --revert` line, or `undefined` when
+ * {@link mayNameTarget} refuses either identifier.
+ */
+function revertCommandLine(stackName: string, region: string): string | undefined {
+  if (!mayNameTarget(stackName, region)) return undefined;
+  const built = pasteableCommand('cdkd drift', [
+    { value: stackName, hole: 'stack' },
+    { flag: '--stack-region', value: region, hole: 'region' },
+  ]);
+  return `${built.command} --revert`;
+}
+
 function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
@@ -6691,13 +6742,16 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           // the command is not printed at all rather than printed with a hole
           // the operator fills from a name this block also displays — which is
           // the misdirection the corrected go-to-k/cdkd#3486 criterion forbids.
-          const refresh =
-            isPasteableIdent(report.stackName) && isPasteableIdent(report.region)
-              ? pasteableCommand('cdkd state refresh-observed', [
-                  { value: report.stackName, hole: 'stack' },
-                  { flag: '--stack-region', value: report.region, hole: 'region' },
-                ])
-              : undefined;
+          // The SAME predicate the two prose sites use, not a second spelling
+          // of it. Three sites deciding "may I name this target" by three
+          // hand-built conditions is the defect go-to-k/cdkd#3499 closed one
+          // module over; one predicate means one probe can red all three.
+          const refresh = mayNameTarget(report.stackName, report.region)
+            ? pasteableCommand('cdkd state refresh-observed', [
+                { value: report.stackName, hole: 'stack' },
+                { flag: '--stack-region', value: report.region, hole: 'region' },
+              ])
+            : undefined;
           // `refresh !== undefined`, not `refresh.exact === true`: the second
           // is SUBSUMED and no mutant can red it. `isPasteableIdent` requires
           // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$` plus `displayIdent(v) === v`, which

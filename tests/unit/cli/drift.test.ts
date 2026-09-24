@@ -2524,13 +2524,19 @@ describe('cdkd drift', () => {
         expect(warned).toMatch(
           /could not record the value the provider actually applied: PreconditionFailed/
         );
-        // BOTH directions, since go-to-k/cdkd#3486 round 4 (M14). Matching the
-        // middle clause alone left the go-to-k/cdkd#3307 defect reinstatable
-        // green: restoring `${report.stackName}` inside the quoted command
-        // here — `main`'s shape — reddened nothing.
-        expect(warned).toContain(`re-run 'cdkd drift --revert' for this stack`);
-        expect(warned).not.toContain('cdkd drift TestStack');
-        expect(warned).not.toMatch(/cdkd drift (?:\S+ --revert|--revert \S)/);
+        // go-to-k/cdkd#3307's remedy for this site, closed through
+        // go-to-k/cdkd#3436's fold-in: the command names the stack AND the
+        // region, on a labelled line of its own, gated by `isPasteableIdent`
+        // in conjunction with the command gate. `for this stack` named
+        // neither.
+        expect(warned).toMatch(
+          /^Revert with: cdkd drift TestStack --stack-region us-east-1 --revert$/m
+        );
+        expect(warned).toContain('re-run the command below once the state write can succeed');
+        // Nothing runnable inside a prose quoted span -- the go-to-k/cdkd#3363
+        // shape, and the half M14 pinned in both directions.
+        expect(warned).not.toContain(`re-run 'cdkd drift --revert' for this stack`);
+        expect(warned).not.toMatch(/'cdkd drift[^']*--revert[^']*'/);
         // The lock is still released.
         expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
       });
