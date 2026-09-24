@@ -121,7 +121,8 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 ### 8-h. Reviewer findings are inputs, not verdicts
 
 - **Fix what a reviewer DEMONSTRATES, nits included** — "pre-existing" or "not
-  a regression" is no decline in a file the PR holds (go-to-k/cdkd#3640); WITHDRAW
+  a regression" is no decline in a file the PR holds (go-to-k/cdkd#3640;
+  `filing.md`'s scope tripwire still applies); WITHDRAW
   an addition whose part keeps producing blockers. A right finding can carry a
   wrong FIX: check the PREMISE, and record a decline in the PR body.
 

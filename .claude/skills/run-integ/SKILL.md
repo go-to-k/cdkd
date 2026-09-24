@@ -341,11 +341,10 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   `mktemp -d` scratch dir whose `config.json` is
   `{"auths":{"cdkd-verify.invalid":{}}}`** (never `{}`: with no auth, docker
   falls back to `osxkeychain` and a login's token outlives the dir,
-  go-to-k/cdkd#3651). If that pulls, the `credsStore` helper is hung — run with
-  that override, then `rm -rf` the dir (an ECR login writes its token there in
-  plaintext). Only a
-  pull that ALSO hangs there is the daemon path alone: WAIT, it recovers on its
-  own. Do not pipe the waiting probe through `tail`, which buffers away the
+  go-to-k/cdkd#3651). If that pulls, the `credsStore` helper is hung and waiting
+  will not clear it — run with that override, then `rm -rf` the dir (an ECR
+  login writes its token there in plaintext). Only a pull that ALSO hangs there
+  is the daemon path alone: WAIT, it recovers on its own. Do not pipe the waiting probe through `tail`, which buffers away the
   progress lines. Never escalate to a factory reset or deleting Docker data
   (it destroys local images and volumes) — ask the maintainer. Clean up your own
   probes: `kill`ing a `docker pull` wrapper leaves the `com.docker.cli` child.
