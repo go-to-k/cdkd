@@ -42,12 +42,11 @@ const ROW_ONLY_PLAINTEXT = 'the-real-resolved-legacy-key';
  * references name one secret by different spellings (an ARN and a name, two
  * versionIds).
  *
- * It exists because the two keys of the per-row map need separate pins: with
- * distinct plaintexts the UNION already carries both rows' needles, so mutating
- * only the `get` side back to `logicalId` stayed green (round-2 proxy pass).
- * Where the plaintext collides, the union holds ONE entry for it — the last row's
- * expression — so only the per-row lookup can put each row's OWN expression back
- * into that row.
+ * It existed to pin the two keys of the per-row map separately while two rows
+ * could share a `logicalId` (round-2 proxy pass). Such a record is refused since
+ * go-to-k/cdkd#3643, so it now pins the per-row lookup over DISTINCT ids: where the
+ * plaintext collides, the union holds ONE entry for it — the last row's
+ * expression — so only the per-row lookup can put each row's OWN expression back.
  */
 const COLLIDING_EXPR = '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:111122223333:secret:prod/legacy-AbCdEf:SecretString:key}}';
 const RESOLVES: Record<string, string> = {
@@ -383,26 +382,25 @@ describe('cdkd scrub over an unusable orphan ROW (go-to-k/cdkd#3500)', () => {
   });
 });
 
-describe('two usable orphan rows sharing a `logicalId` (go-to-k/cdkd#3500 security)', () => {
+describe('orphan rows sharing a `logicalId` (go-to-k/cdkd#3500 security, go-to-k/cdkd#3643)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   /**
-   * Nothing validates that `orphans` logical ids are UNIQUE — the row guard asks
-   * only whether each row is usable, and two rows carrying the same id are both
-   * usable. `cdkd scrub` collects one needle map PER ROW, and while that map was
-   * keyed by `logicalId` the second row's fresh map REPLACED the first's filled
-   * one: the first row's needles left the collection entirely, so neither its own
-   * lookup nor the union the rewrite builds could find them, and its stored
-   * PLAINTEXT was written back to S3 by a run reporting success.
+   * Two rows carrying one `logicalId` used to be USABLE — the row guard asked
+   * only whether each row was — and `cdkd scrub` lost one row's needles to the
+   * other while its per-row map was keyed by id (go-to-k/cdkd#3500 security
+   * review), writing that row's PLAINTEXT back to S3 from a run reporting success.
+   * The map is keyed by row INDEX since then.
    *
-   * Each row carries its OWN secret: the expression in `properties` (which is
-   * where the needle comes from) and the resolved plaintext in `attributes`
-   * (which is what has to be rewritten). With one shared secret the defect is
-   * invisible, since the surviving map holds the same entry.
+   * go-to-k/cdkd#3643 made such a record MALFORMED: no cdkd writer produces one,
+   * so a real run now REFUSES it before the collecting loop and `--dry-run` DROPS
+   * both rows. The index keying stays as defense in depth, but no command route
+   * can reach it with a shared id any more — the two cases that fenced it through
+   * the command now fence the refusal instead, which is what keeps the plaintext
+   * from being written.
    *
-   * Probe: keying both `set` and `get` back on `record.logicalId` reds this case
-   * on the FIRST row's plaintext while the second stays clean — the asymmetry is
-   * the defect's signature, so the case asserts both rows rather than a count.
+   * Each row carries its OWN secret: the expression in `properties` and the
+   * resolved plaintext in `attributes`.
    */
   const dupRows = [
     {
@@ -427,42 +425,48 @@ describe('two usable orphan rows sharing a `logicalId` (go-to-k/cdkd#3500 securi
     },
   ];
 
-  it('redacts BOTH rows — neither row loses its needles to the other', async () => {
+  it('a REAL run refuses two rows sharing a `logicalId`, naming both and saving nothing', async () => {
     const h = await scrub(record(dupRows), false);
-    expect(h.result, `refused usable duplicate rows: ${String(h.result)}`).not.toBeInstanceOf(Error);
+    expect(h.result, 'scrub accepted two rows sharing a logicalId').toBeInstanceOf(Error);
+    expect((h.result as { code?: string }).code).toBe(STATE_RESOURCES_MALFORMED);
+    const message = String((h.result as Error).message);
+    expect(message).toContain('2 rollback-orphan record(s)');
+    expect(message).toContain('Dup, Dup');
+    expect(message).toContain('shares it with another row');
+    expect(h.saveState, 'the real run rewrote a record holding a shared id').not.toHaveBeenCalled();
+  });
+
+  it('--dry-run DROPS both rows, names them, and reports the finding', async () => {
+    const state = record(dupRows);
+    const h = await scrub(state, true);
+    expect(h.result, `--dry-run refused: ${String(h.result)}`).not.toBeInstanceOf(Error);
+    expect((h.result as unknown as { malformedOrphanRows?: true }).malformedOrphanRows).toBe(true);
+    const warned = logger.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(warned).toContain('2 rollback-orphan record(s)');
+    expect(warned).toContain('share it with another row');
+    // BOTH rows went, not the second alone: nothing says which is the live one.
+    expect(state.orphans, 'a row sharing its id survived the dry-run drop').toEqual([]);
+    expect(h.saveState).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: the same two rows under DISTINCT ids are both redacted and saved', async () => {
+    const distinct = [dupRows[0]!, { ...dupRows[1]!, logicalId: 'Other' }];
+    const h = await scrub(record(distinct), false);
+    expect(h.result, `refused distinct ids: ${String(h.result)}`).not.toBeInstanceOf(Error);
     expect(h.saveState, 'the run never saved, so it pins nothing').toHaveBeenCalled();
     const saved = h.saved?.orphans as unknown as Array<{
       state: { attributes: Record<string, unknown> };
     }>;
-    expect(saved, 'a row was dropped from the saved record').toHaveLength(2);
-    // Row ONE is the one the id key lost. Its plaintext must be gone and the
-    // expression must be what replaced it — "not the plaintext" alone would also
-    // pass for a row rewritten to something useless.
+    expect(saved).toHaveLength(2);
     expect(saved[0]!.state.attributes['CachedPassword']).toBe(ROW_ONLY_EXPR);
-    // Row TWO, which was clean even with the defect present: asserting it is what
-    // makes the first assertion a statement about the KEY rather than about
-    // orphan redaction in general.
     expect(saved[1]!.state.attributes['CachedToken']).toBe(OTHER_EXPR);
-    // And no plaintext anywhere in what was written.
     expect(JSON.stringify(h.saved)).not.toContain(ROW_ONLY_PLAINTEXT);
     expect(JSON.stringify(h.saved)).not.toContain(OTHER_PLAINTEXT);
   });
-
-  it("each row keeps its OWN expression when the two rows' secrets COLLIDE", async () => {
-    // The `get` half of the key, which the case above cannot reach: with distinct
-    // plaintexts the union carries both rows' needles, so reading the map back by
-    // `logicalId` still redacted each row correctly. Here both rows resolve the
-    // SAME plaintext through DIFFERENT expressions, so the union holds one entry
-    // for it and the per-row lookup is the only thing that can give row one its
-    // own expression back.
-    //
-    // A wrong expression is not a cosmetic defect: `state.outputs` and a record's
-    // properties are re-resolved by later commands, so a row rewritten to another
-    // reference's expression resolves to whatever THAT reference holds after a
-    // rotation — a silently wrong value, from a run that reported success.
+  it("CONTROL: each row keeps its OWN expression when two distinct ids' secrets COLLIDE", async () => {
     const colliding = [
       {
-        logicalId: 'Dup',
+        logicalId: 'One',
         orphanedAt: 1,
         state: {
           physicalId: 'live-one',
@@ -472,7 +476,7 @@ describe('two usable orphan rows sharing a `logicalId` (go-to-k/cdkd#3500 securi
         },
       },
       {
-        logicalId: 'Dup',
+        logicalId: 'Two',
         orphanedAt: 2,
         state: {
           physicalId: 'live-two',
@@ -488,8 +492,6 @@ describe('two usable orphan rows sharing a `logicalId` (go-to-k/cdkd#3500 securi
       state: { attributes: Record<string, unknown> };
     }>;
     expect(saved).toHaveLength(2);
-    // Each row's own expression, not the other's. Reading the map back by
-    // `logicalId` gives BOTH rows the second expression, which is what this pins.
     expect(saved[0]!.state.attributes['CachedKey']).toBe(ROW_ONLY_EXPR);
     expect(saved[1]!.state.attributes['CachedKey']).toBe(COLLIDING_EXPR);
     expect(JSON.stringify(h.saved)).not.toContain(ROW_ONLY_PLAINTEXT);

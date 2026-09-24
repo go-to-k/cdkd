@@ -362,6 +362,56 @@ describe('runDestroyForStack refuses an unusable orphan ROW (go-to-k/cdkd#3500)'
     expect(h.releaseLock, 'the lock is stranded').toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#3643: two HEALTHY rows sharing a string `logicalId`. The listing
+  // would print both, but no cdkd command writes such a record, and the destroy
+  // would discard it before anyone decided which resource the stack owns.
+  const twin = (physicalId: string) => ({
+    logicalId: 'Twin',
+    orphanedAt: 1,
+    state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+  });
+
+  it('refuses two healthy rows sharing a `logicalId` at the entry read, naming both', async () => {
+    const h = makeCtx();
+    const thrown = await runDestroyForStack(
+      STACK,
+      stateWith([healthy, twin('live-1'), twin('live-2')], {
+        A: { physicalId: 'a', resourceType: 'AWS::SQS::Queue', properties: {} },
+      }),
+      h.ctx
+    ).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(CdkdError);
+    expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+    const message = (thrown as CdkdError).message;
+    expect(message).toContain('DELETES state');
+    expect(message).toContain('2 rollback-orphan record(s)');
+    expect(message).toContain('Twin, Twin');
+    expect(message).toContain('rows sharing one');
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect(h.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it('refuses two rows sharing a `logicalId` when only the UNDER-LOCK re-read carries them', async () => {
+    const h = makeCtx(stateWith([twin('live-1'), twin('live-2')]));
+    const thrown = await runDestroyForStack(STACK, stateWith([]), h.ctx).catch((e: unknown) => e);
+    expect(thrown, 're-read rows sharing an id are unguarded').toBeInstanceOf(CdkdError);
+    expect((thrown as CdkdError).message).toContain('Twin, Twin');
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect(h.acquireLock).toHaveBeenCalled();
+    expect(h.getState).toHaveBeenCalled();
+    expect(h.releaseLock, 'the lock is stranded').toHaveBeenCalled();
+  });
+
+  it('CONTROL: the same two rows under DISTINCT ids run to the delete', async () => {
+    const distinct = [twin('live-1'), { ...twin('live-2'), logicalId: 'Other' }];
+    const h = makeCtx(stateWith(distinct));
+    const outcome = await runDestroyForStack(STACK, stateWith(distinct), h.ctx).catch(
+      (e: unknown) => e as Error
+    );
+    expect(outcome, `refused distinct ids: ${String(outcome)}`).not.toBeInstanceOf(Error);
+    expect(h.deleteState, 'the control never deleted, so it proves nothing').toHaveBeenCalled();
+  });
+
   it('CONTROL: a list whose every row is usable runs to the delete', async () => {
     // An EMPTY record first, then a populated one below. Both reach
     // `deleteState`: with no resources left the run takes the ordinary path

@@ -2609,6 +2609,63 @@ describe('cdkd import', () => {
       });
     }
 
+    /**
+     * go-to-k/cdkd#3643: two HEALTHY rows sharing a string `logicalId`. Each
+     * passes the per-row predicate, and `orphansCarriedFrom` would carry both
+     * into the record this command saves — a record no cdkd writer produces,
+     * which the next deploy's merge collapses to one.
+     */
+    it('refuses an existing record whose orphans list holds two rows sharing a `logicalId`', async () => {
+      const twin = (physicalId: string) => ({
+        logicalId: 'Twin',
+        orphanedAt: 1,
+        state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: { ...existingState(), orphans: [twin('live-1'), twin('live-2')] as unknown as [] },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+      ).rejects.toThrow();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('2 rollback-orphan record(s)');
+      expect(message).toContain('shares it with another row');
+      expect(
+        mockSaveState,
+        'cdkd import saved a record holding two rows sharing a logicalId'
+      ).not.toHaveBeenCalled();
+    });
+
+    it('FLOOR: two rows under DISTINCT ids are still imported', async () => {
+      const row = (logicalId: string, physicalId: string) => ({
+        logicalId,
+        orphanedAt: 1,
+        state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+      });
+      mockSaveState.mockClear();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: {
+          ...existingState(),
+          orphans: [row('Twin', 'live-1'), row('Other', 'live-2')] as unknown as [],
+        },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes']);
+      expect(mockSaveState, 'the control never saved, so it proves nothing').toHaveBeenCalled();
+    });
+
     it('FLOOR: a populated, an empty and an ABSENT orphans container are all still imported', async () => {
       // The one-sidedness guard for the four cases above, and the ABSENT row
       // is the load-bearing one: a stack that never had a failed deploy has no

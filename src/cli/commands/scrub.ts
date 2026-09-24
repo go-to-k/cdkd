@@ -4682,9 +4682,12 @@ export async function scrubStack(
    * another's coinciding literal.
    *
    * Keyed by the row's INDEX in `orphans`, never by its `logicalId`
-   * (go-to-k/cdkd#3500 security review). Two rows may legitimately carry the same
-   * id — `orphansAfterRollback` dedupes newest-wins when it MERGES, but nothing
-   * stops a record holding both until then — and on an id key the second row's
+   * (go-to-k/cdkd#3500 security review). Two rows sharing an id are a MALFORMED
+   * record — no cdkd writer produces one, since `orphansAfterRollback` keeps one
+   * row per id — and both arms of this command meet it before this map is read:
+   * a real run refuses the record and `--dry-run` drops every such row
+   * (go-to-k/cdkd#3643). The index keying stays as defense in depth, because it
+   * is still the only identity that cannot collide: on an id key the second row's
    * empty map REPLACED the first row's filled one. Both halves broke: the first
    * row's needles left the union that the rewrite and the error boundary read, and
    * its own lookup returned the OTHER row's map, so where two rows resolve one

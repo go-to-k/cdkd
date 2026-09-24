@@ -461,6 +461,54 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
     expect(node.unreadable.sort()).toEqual(['', 'Gone']);
   });
 
+  // go-to-k/cdkd#3643: rows sharing a string `logicalId`. Each passes the narrow
+  // per-row predicate, and `planOrphanAdoption` keys its adoptions by that id, so
+  // handing both to the preview shows ONE adoption for two resources — the
+  // collapse every writer refuses. DROPPED, every one of them, so the rows join
+  // `unreadable` (which `--fail` counts) exactly as any other row the deploy
+  // refuses and the preview cannot use.
+  const twin = (physicalId: string, properties: unknown = {}) => ({
+    logicalId: 'Twin',
+    orphanedAt: 1,
+    state: { physicalId, resourceType: 'AWS::SQS::Queue', properties },
+  });
+
+  it('DROPS every row sharing a `logicalId`, naming each, and previews the rest', async () => {
+    const seen: unknown[] = [];
+    const node = await diffWithPreview(
+      record([healthy, twin('live-1'), twin('live-2')] as unknown),
+      seen
+    );
+    expect(seen, 'a row sharing its id reached the adoption preview').toEqual([healthy]);
+    expect(node.unreadable, 'the rows sharing an id were not both named').toEqual(['Twin', 'Twin']);
+    expect(warnings()).toContain('2 rollback-orphan record(s)');
+    expect(warnings()).toContain('share it with another row');
+    // Dropped, so no KEPT-row reason: the drop is what `--fail` counts.
+    expect(node.blocking.join('\n')).not.toContain('carry a');
+  });
+
+  it('DROPS both rows of a shared id even when one of them is only torn in a map', async () => {
+    // A torn-`properties` row on its own is KEPT (the case above this block);
+    // sharing its id with a healthy row is the list-level defect and wins, so the
+    // healthy twin is not previewed as the stack's only row of that id.
+    const seen: unknown[] = [];
+    const node = await diffWithPreview(
+      record([healthy, twin('live-1', 'abcdef'), twin('live-2')] as unknown),
+      seen
+    );
+    expect(seen).toEqual([healthy]);
+    expect(node.unreadable).toEqual(['Twin', 'Twin']);
+  });
+
+  it('CONTROL: the same two rows under DISTINCT ids both reach the preview', async () => {
+    const seen: unknown[] = [];
+    const other = { ...twin('live-2'), logicalId: 'Other' };
+    const node = await diffWithPreview(record([twin('live-1'), other] as unknown), seen);
+    expect(seen).toEqual([twin('live-1'), other]);
+    expect(node.unreadable).toEqual([]);
+    expect(warnings()).not.toContain('rollback-orphan record');
+  });
+
   it('CONTROL: a list whose every row is usable is passed through untouched', async () => {
     const seen: unknown[] = [];
     const node = await buildDiffTree({

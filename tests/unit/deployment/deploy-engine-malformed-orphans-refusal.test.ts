@@ -339,6 +339,47 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
       expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
+    // go-to-k/cdkd#3643: two HEALTHY rows sharing a string `logicalId`. Each
+    // passes the per-row predicate; the adoption pass writes `adopted[logicalId]`
+    // per row and the failure-path save merges by id, so one of the two would be
+    // dropped from tracking while its resource stays live.
+    const twin = (logicalId: string, physicalId: string) => ({
+      logicalId,
+      orphanedAt: 1,
+      state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+    });
+
+    for (const sharedId of ['Twin', '']) {
+      it(`refuses two healthy rows sharing the id ${JSON.stringify(sharedId)}, provisioning and writing nothing`, async () => {
+        stateBackend.getState.mockResolvedValue({
+          state: makeState([healthy, twin(sharedId, 'p-1'), twin(sharedId, 'p-2')] as unknown),
+          etag: 'etag-old',
+        });
+        const err = (await makeEngine()
+          .deploy(STACK, template)
+          .catch((e: unknown) => e)) as CdkdError;
+        expect(err, 'rows sharing an id reached the adoption pass').toBeInstanceOf(CdkdError);
+        expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+        expect(err.message).toContain('2 rollback-orphan record(s)');
+        expect(err.message).toContain('shares it with another row');
+        expect(err.message).not.toContain('Keep');
+        expect(provisioned).toEqual([]);
+        expect(stateBackend.saveState).not.toHaveBeenCalled();
+        expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+        expect(isMarkedNonRetryable(err)).toBe(true);
+      });
+    }
+
+    it('CONTROL: the same two rows under DISTINCT ids still deploy', async () => {
+      stateBackend.getState.mockResolvedValue({
+        state: makeState([twin('Twin', 'p-1'), twin('Other', 'p-2')] as unknown),
+        etag: 'etag-old',
+      });
+      await makeEngine().deploy(STACK, template);
+      expect(provisioned, 'the control never provisioned, so it proves nothing').not.toEqual([]);
+      expect(stateBackend.saveState).toHaveBeenCalled();
+    });
+
     it('CONTROL: a list whose every row is usable still deploys', async () => {
       vi.clearAllMocks();
       provisioned = [];

@@ -507,7 +507,8 @@ export async function rollbackCommand(
       // The ROWS (go-to-k/cdkd#3500). This command is where the collapse is
       // observable: `orphansAfterRollback` keys on `entry.logicalId`, so rows
       // MISSING one all write the SAME `undefined` entry and the record saved
-      // below keeps one of them. Two distinct numeric ids do not collide.
+      // below keeps one of them. Two distinct numeric ids do not collide; two
+      // rows SHARING a string id do, and are refused here too (go-to-k/cdkd#3643).
       refuseMalformedOrphanRecords(baseState, stackName, region);
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
