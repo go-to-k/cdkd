@@ -773,13 +773,77 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     expect(() => JSON.parse(stdout)).not.toThrow();
     expect(stderr).toContain('this resource has no observed-capture baseline');
     expect(stderr).toContain('Parameters.metadata_location');
-    // The command names no stack since go-to-k/cdkd#3307: this block carries
-    // values that cannot be gated, so it has not earned a pasteable line, and
-    // the name is what a pasted span ran.
-    expect(stderr).toContain("Run 'cdkd state refresh-observed' for this stack");
-    expect(stderr).not.toContain("cdkd state refresh-observed TestStack");
+    // go-to-k/cdkd#3307's `--stack-region` requirement for this site, closed
+    // through go-to-k/cdkd#3436's fold-in. The issue's stated harm is that
+    // `for this stack` gives the operator neither NAME nor REGION, and a name
+    // held in several regions is ambiguous. The command is now gated and on a
+    // labelled line of its own, carrying BOTH.
+    expect(stderr).toMatch(
+      /^Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+    );
+    // ...and the prose points at it rather than naming a command inline, so a
+    // pasted sentence carries nothing runnable.
+    expect(stderr).toContain('Populate observedProperties with the command below');
+    expect(stderr).not.toContain("Run 'cdkd state refresh-observed' for this stack");
+    expect(stderr).not.toMatch(/'cdkd state refresh-observed[^']*'/);
     expect(stdout).not.toContain('observed-capture baseline');
     expect(stdout).not.toContain('metadata_location');
+  });
+
+  it('WITHHOLDS the populate command for a stack name the paste gate refuses', async () => {
+    // The other direction of go-to-k/cdkd#3436's fold-in at this site, and the
+    // one that decides whether the gate is real. `Test:Stack` renders exactly
+    // and is not option- or pattern-shaped, so `pasteableCommand` alone would
+    // NAME it — `isPasteableIdent` is what refuses it, because exactness keeps
+    // a space and a `:`, and an identifier carrying either can spell one of
+    // this block's own labels and forge it once the terminal wraps
+    // (`.claude/rules/state-malformed-containers.md`, go-to-k/cdkd#3328).
+    //
+    // Withheld means the line is NOT PRINTED, rather than printed with a hole:
+    // this block displays the stack name in its own plan header, so a hole
+    // beside it invites the operator to fill it from a name the block already
+    // shows — the misdirection the corrected go-to-k/cdkd#3486 criterion
+    // forbids.
+    const odd = makeState({
+      Table: {
+        physicalId: 'tbl-1',
+        resourceType: 'AWS::Glue::Table',
+        properties: { Parameters: { classification: 'parquet' } },
+      },
+    });
+    // The REGION rather than the name, so the record still resolves by the
+    // positional the other cases use. `isPasteableIdent` refuses it on BOTH
+    // identifiers, and the region is the one go-to-k/cdkd#3307 asks this site
+    // to carry — a record whose region cannot be named safely is exactly the
+    // case where naming it would be worse than saying nothing.
+    odd.state.stackName = 'Test:Stack';
+    mockGetState.mockResolvedValue(odd);
+    // `--all` with a planted listing, the route the state-command tests use to
+    // drive a name a positional argument cannot resolve.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'Test:Stack', region: 'us-east-1' }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async (): Promise<Record<string, unknown>> => ({
+        Parameters: { classification: 'json', metadata_location: 's3://b/metadata/00000.json' },
+      }),
+    });
+
+    const { stderr } = await runDrift([
+      '--all',
+      '--state-bucket',
+      'b',
+      '--region',
+      'us-east-1',
+      '--json',
+      '--revert',
+      '--dry-run',
+    ]);
+
+    // Positive: the block was REACHED, so the negatives below cannot be
+    // satisfied by an empty or unrelated message.
+    expect(stderr).toContain('this resource has no observed-capture baseline');
+    // No command line at all, and no hole standing in for one.
+    expect(stderr).not.toMatch(/^Populate with: /m);
+    expect(stderr).not.toContain('cdkd state refresh-observed');
   });
 
   /**

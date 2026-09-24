@@ -63,11 +63,13 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -6672,14 +6674,43 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
-              // Same as sites 2 and 3: this block lists PROPERTY PATHS, so it
-              // carries no pasteable line and the stack name stays out of the
-              // quoted command. go-to-k/cdkd#3307 also asks this site for a
-              // `--stack-region`; that needs a gated command, so it lands with
-              // the rest of the site in go-to-k/cdkd#3436.
-              `Run 'cdkd state refresh-observed' for this stack (or re-deploy) to populate ` +
-              `observedProperties if you want them reverted too.\n`
+              `Populate observedProperties with the command below, or re-deploy, if you want ` +
+              `them reverted too.\n`
           );
+          // go-to-k/cdkd#3307's `--stack-region` requirement for this site,
+          // closed through go-to-k/cdkd#3436's fold-in. The issue's stated
+          // harm is that `for this stack` gives the operator neither NAME nor
+          // REGION, and a name held in several regions is ambiguous.
+          //
+          // Naming a target here needs MORE than the command gate, and the
+          // rule is `.claude/rules/state-malformed-containers.md`'s
+          // (go-to-k/cdkd#3328): exactness keeps a space and a `:`, so an
+          // identifier can spell one of this block's own labels and forge it
+          // once the terminal wraps. `isPasteableIdent` in CONJUNCTION with the
+          // gate is what that rule requires, on BOTH identifiers. Withheld,
+          // the command is not printed at all rather than printed with a hole
+          // the operator fills from a name this block also displays — which is
+          // the misdirection the corrected go-to-k/cdkd#3486 criterion forbids.
+          const refresh =
+            isPasteableIdent(report.stackName) && isPasteableIdent(report.region)
+              ? pasteableCommand('cdkd state refresh-observed', [
+                  { value: report.stackName, hole: 'stack' },
+                  { flag: '--stack-region', value: report.region, hole: 'region' },
+                ])
+              : undefined;
+          // `refresh !== undefined`, not `refresh.exact === true`: the second
+          // is SUBSUMED and no mutant can red it. `isPasteableIdent` requires
+          // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$` plus `displayIdent(v) === v`, which
+          // is strictly stronger than the command gate on every arm — it starts
+          // at an alphanumeric (no option), admits no `*` or `/` (no pattern),
+          // cannot be empty, and the `displayIdent` compare carries both the
+          // alteration test and the cap. A line that reads as a guard while
+          // guarding nothing is the shape go-to-k/cdkd#3436's fence work keeps
+          // finding; stating the subsumption is better than keeping a
+          // belt-and-braces check nothing can check.
+          if (refresh !== undefined) {
+            out.write(`Populate with: ${refresh.command}\n`);
+          }
         }
       }
     }

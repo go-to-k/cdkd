@@ -2126,9 +2126,18 @@ describe('cdkd drift', () => {
       expect(output).toContain('LEAVES 2 AWS-authored values untouched');
       expect(output).toContain('Parameters.table_type');
       expect(output).toContain('Parameters.metadata_location');
-      // No stack inside the quoted command since go-to-k/cdkd#3307.
-      expect(output).toContain("Run 'cdkd state refresh-observed' for this stack");
-      expect(output).not.toContain('cdkd state refresh-observed TestStack');
+      // go-to-k/cdkd#3307's `--stack-region` requirement for this site, closed
+      // through go-to-k/cdkd#3436's fold-in: the command carries BOTH the name
+      // and the region, on a labelled line of its own, gated by
+      // `isPasteableIdent` in conjunction with the command gate. `for this
+      // stack` named neither, which is the harm the issue states.
+      expect(output).toMatch(
+        /^Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+      );
+      expect(output).toContain('Populate observedProperties with the command below');
+      // Nothing runnable left inside a prose quoted span.
+      expect(output).not.toContain("Run 'cdkd state refresh-observed' for this stack");
+      expect(output).not.toMatch(/'cdkd state refresh-observed[^']*'/);
     });
 
     it('--revert does NOT warn when state HAS observedProperties (issue #1478)', async () => {
