@@ -60,7 +60,7 @@ conditions-update-2	2026-07-26T19:05:27Z	PASS	83	verify.sh	0727b sweep-b8 stalen
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 cross-region-concurrent-stacks	2026-09-23T22:38:00Z	PASS	192	verify.sh	rc ok, orph clean; new #1981 arm, pre-fix build RED at TopicPolicy (wrong-region client)
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
-cross-stack-cfn-fallback	2026-09-19T20:26:58Z	PASS	118	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
+cross-stack-cfn-fallback	2026-09-24T04:31:45Z	PASS	125	verify.sh	rc ok, orph clean (#3589)
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-09-09T23:51:27Z	PASS	331	verify.sh	rc ok, 0 errors, 0 orphans, 0 surviving versions
 custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
