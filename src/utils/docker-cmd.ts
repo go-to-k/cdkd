@@ -364,18 +364,27 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
 }
 
 /**
- * Env vars the docker CLI itself reads to decide how / where to run. A resolved
- * ECS secret (or SecureString) whose NAME collides with one of these must NOT
- * override it in the docker client's own process environment: a secret named
- * `DOCKER_HOST` would redirect the client to a different daemon, and `PATH`
- * would break locating the docker binary. See issue
- * https://github.com/go-to-k/cdkd/issues/2183.
+ * Env vars the container CLI itself reads to decide how / where to run — the
+ * binary {@link getDockerCmd} resolves, i.e. `docker` or whatever `CDK_DOCKER`
+ * names (podman / nerdctl / finch). A resolved ECS secret (or SecureString)
+ * whose NAME collides with one of these must NOT override it in the client's
+ * own process environment: a secret named `DOCKER_HOST` (or podman's
+ * `CONTAINER_HOST`) would redirect the client to a different daemon, and `PATH`
+ * would break locating the binary. See issues
+ * https://github.com/go-to-k/cdkd/issues/2183 and
+ * https://github.com/go-to-k/cdkd/issues/2188.
+ *
+ * RULE for additions: anything a supported container CLIENT (or a credential /
+ * connection helper it execs) reads to decide WHAT CODE IT LOADS, WHAT IT
+ * TRUSTS, or WHERE / HOW IT CONNECTS. The docker CLI's documented set is kept
+ * whole, behaviour toggles included; beyond it, a var that only tunes
+ * behaviour (a storage driver, a snapshotter, a temp dir, an experimental
+ * toggle) is OUT, because dropping a colliding secret costs the user that
+ * secret. The operator's OWN value is never touched — the spawn
+ * env starts from `process.env` — so adding a key costs only a secret of that
+ * name.
  */
 export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
-  // RULE for additions: anything the docker CLIENT (or a credential / connection
-  // helper it execs) reads to decide WHAT CODE IT LOADS, WHAT IT TRUSTS, or
-  // WHERE / HOW IT CONNECTS. A user-controlled secret NAME matching one of these
-  // must never reach the client's own environment (issue #2183).
   // Process-level vars the client needs to run at all (incl. Windows HOME).
   // `PATHEXT` is here for the same code-execution reason as `PATH`: on Windows
   // Go's executable lookup reads it to choose which extension of an adjacent
@@ -463,6 +472,92 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   'AWS_ROLE_ARN',
   'AWS_EC2_METADATA_SERVICE_ENDPOINT',
+  // `docker-credential-ecr-login` WRITES the ECR auth token it mints with the
+  // operator's credentials into this directory (and reads a cached one back),
+  // so a colliding secret chooses where that token lands (#2188).
+  'AWS_ECR_CACHE_DIR',
+  // podman / containers tooling (#2188; podman(1) "Environment Variables",
+  // containers.conf(5), containers/common `pkg/auth`). Connection:
+  // `CONTAINER_HOST` is podman's `DOCKER_HOST` (it also switches the client to
+  // remote mode), `CONTAINER_CONNECTION` picks a named remote from
+  // `PODMAN_CONNECTIONS_CONF`, `CONTAINER_SSHKEY` is the ssh identity for it.
+  'CONTAINER_HOST',
+  'CONTAINER_CONNECTION',
+  'CONTAINER_SSHKEY',
+  'PODMAN_CONNECTIONS_CONF',
+  // `CONTAINER_PROXY` routes podman-remote's API traffic (registry auth
+  // headers included) through a proxy — the `HTTP_PROXY` class.
+  // `CONTAINERS_SSH_CONF` becomes `ssh -F <file>` for native-ssh remotes, and
+  // an ssh config's `ProxyCommand` / `LocalCommand` executes code.
+  'CONTAINER_PROXY',
+  'CONTAINERS_SSH_CONF',
+  // Config files that name executables (`conmon_path`, `runtime`,
+  // `helper_binaries_dir`, `hooks_dir`, storage `mount_program`) or registry
+  // routing (mirrors, insecure registries): `CONTAINERS_CONF` REPLACES the
+  // whole config hierarchy and `CONTAINERS_CONF_OVERRIDE` is loaded last on
+  // top of it; the shared config-file loader reads the same `<NAME>_OVERRIDE`
+  // for registries.conf and storage.conf, so each override is listed beside
+  // its base name. `REGISTRIES_CONFIG_PATH` is the legacy spelling of
+  // `CONTAINERS_REGISTRIES_CONF`. `CONTAINERS_POLICY_JSON` picks the
+  // signature-verification policy (WHAT IT TRUSTS; that loader reads no
+  // override for it). `STORAGE_OPTS` takes the same options as
+  // storage.conf, `overlay.mount_program` (an executable) included.
+  // `CONTAINERS_HELPER_BINARY_DIR` is searched FIRST for conmon / netavark /
+  // pasta and the other helper binaries.
+  'CONTAINERS_CONF',
+  'CONTAINERS_CONF_OVERRIDE',
+  'CONTAINERS_REGISTRIES_CONF',
+  'CONTAINERS_REGISTRIES_CONF_OVERRIDE',
+  'REGISTRIES_CONFIG_PATH',
+  'CONTAINERS_STORAGE_CONF',
+  'CONTAINERS_STORAGE_CONF_OVERRIDE',
+  'CONTAINERS_POLICY_JSON',
+  'STORAGE_OPTS',
+  'CONTAINERS_HELPER_BINARY_DIR',
+  // Which registry credentials are sent (and which `credHelpers` entry is
+  // exec'd): podman reads this before `DOCKER_CONFIG`.
+  'REGISTRY_AUTH_FILE',
+  // Rootless podman connects to the session bus to place the container in a
+  // systemd scope, and passes the host's `NOTIFY_SOCKET` on so conmon writes
+  // the container's sd_notify datagrams to that path.
+  'DBUS_SESSION_BUS_ADDRESS',
+  'NOTIFY_SOCKET',
+  // Base directories BOTH podman and nerdctl derive the above from when the
+  // specific var is unset: rootless config files (containers.conf,
+  // registries.conf, storage.conf, nerdctl.toml, CNI net.d) under
+  // `XDG_CONFIG_HOME`, and the rootless auth file, podman API socket
+  // and nerdctl RootlessKit state dir under `XDG_RUNTIME_DIR`. `APPDATA` /
+  // `PROGRAMDATA` are where containers/common reads the user / system
+  // containers.conf on Windows, `PROGRAMFILES` is where nerdctl on Windows
+  // looks for the CNI plugin binaries it execs, and `LOCALAPPDATA` is finch's
+  // root directory on Windows (its `finch.yaml` configures the credential
+  // helpers).
+  'XDG_CONFIG_HOME',
+  'XDG_RUNTIME_DIR',
+  'APPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'LOCALAPPDATA',
+  // finch on macOS / Windows runs `limactl shell finch sudo -E nerdctl ...`
+  // with the client's environment, and Lima splits `SSH` into shell words
+  // and EXECS the result in place of `ssh` — code execution with no ssh
+  // transport configured first, unlike the `SSH_*` entries above.
+  'SSH',
+  // nerdctl / containerd (#2188; nerdctl docs/config.md). `CONTAINERD_ADDRESS`
+  // is nerdctl's `DOCKER_HOST`; `CONTAINERD_NAMESPACE` decides whose containers
+  // and images it acts on; `NERDCTL_TOML` repoints the whole config
+  // (address, namespace, CNI paths); nerdctl EXECS the CNI plugins found under
+  // `CNI_PATH` (as root when rootful), which the net.d configs under
+  // `NETCONFPATH` name. `ROOTLESSKIT_STATE_DIR` is where rootless nerdctl reads
+  // the `child_pid` it `nsenter`s into. `NERDCTL_LOG_FILE` makes nerdctl
+  // APPEND its log to the named path, as root when rootful.
+  'CONTAINERD_ADDRESS',
+  'CONTAINERD_NAMESPACE',
+  'NERDCTL_TOML',
+  'CNI_PATH',
+  'NETCONFPATH',
+  'ROOTLESSKIT_STATE_DIR',
+  'NERDCTL_LOG_FILE',
   // Trust — a colliding secret repoints the client's trusted CA bundle for the
   // daemon / registry TLS handshake (Go's x509 honours these on Linux) or tunes
   // the Go runtime.

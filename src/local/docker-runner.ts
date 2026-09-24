@@ -335,7 +335,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   if (collisions.length > 0) {
     logger.warn(
-      `Env var(s) ${collisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack the docker client; a malformed name cannot form a valid environment variable). Rename the env var if the container needs it.`
+      `Env var(s) ${collisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a variable the container client reads (docker, or the CDK_DOCKER binary) or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack that client; a malformed name cannot form a valid environment variable). Rename the env var if the container needs it.`
     );
   }
 
