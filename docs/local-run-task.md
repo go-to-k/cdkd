@@ -346,9 +346,11 @@ So when `CDK_DOCKER` names finch on macOS or Windows:
   while it stays set; the warning below still names each forwarded secret.
   `cdkd local invoke-agentcore` applies the same refusal to a
   decrypted SecureString, before its container starts.
-- **`cdkd local start-service` does not apply the refusal or the warning yet.**
-  It runs on a separate engine, so under finch on macOS or Windows its
-  containers' secrets and credentials reach that command line without notice.
+- **`cdkd local start-service` and `cdkd local start-alb` apply the same
+  refusal and warning**, checked for each service when its first replica
+  boots. The shared network and metadata sidecar already exist then, and with
+  several targets the services booted before the refused one are already
+  running; the run then exits and tears everything down.
 - **The AWS credentials cdkd hands a container** (and the metadata-endpoint
   sidecar) are still forwarded, with a warning naming the variables but not
   their values. Forwarding them is what puts them on that command line, which
