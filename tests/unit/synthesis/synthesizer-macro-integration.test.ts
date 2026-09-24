@@ -7,7 +7,7 @@
  * in-place mutation contract, no-op short-circuit, and multi-stack
  * dispatch. Closes Test gap 1 of the (#519) review.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockExecute = vi.hoisted(() => vi.fn());
 const mockReadManifest = vi.hoisted(() => vi.fn());
@@ -100,6 +100,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { Synthesizer } from '../../../src/synthesis/synthesizer.js';
 import { SynthesisError } from '../../../src/utils/error-handler.js';
+import { AwsClients, resetAwsClients, setAwsClients } from '../../../src/utils/aws-clients.js';
 
 const SAM_TEMPLATE = {
   Transform: ['AWS::Serverless-2016-10-31'],
@@ -425,5 +426,62 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     const names = await s.listStacks({ app: 'node app.js' });
     expect(names).toEqual(['Macro']);
     expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The account lookups sign as the caller's explicit `AwsClients` credentials
+ * (issue [#3588](https://github.com/go-to-k/cdkd/issues/3588)). A library caller
+ * that installed `new AwsClients({ credentials })` had both `GetCallerIdentity`
+ * clients here sign with the default credential chain, so the default state
+ * bucket named a different account from the one it deploys to.
+ */
+describe('Synthesizer — account lookup credentials (#3588)', () => {
+  const EXPLICIT = { accessKeyId: 'AKIDSYNTHESIZER3588', secretAccessKey: 'secret-synth' };
+
+  const stsCtorCredentials = async (): Promise<unknown[]> => {
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    return (STSClient as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as { credentials?: unknown }).credentials
+    );
+  };
+  const clearStsCtor = async (): Promise<void> => {
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    (STSClient as unknown as ReturnType<typeof vi.fn>).mockClear();
+  };
+
+  beforeEach(() => {
+    setAwsClients(new AwsClients({ region: 'us-east-1', credentials: EXPLICIT }));
+  });
+
+  afterEach(() => {
+    resetAwsClients();
+  });
+
+  it('the synth-time account lookup carries the explicit credentials', async () => {
+    await clearStsCtor();
+    mockAssemblyStacks.mockReturnValue([
+      { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
+    ]);
+    await new Synthesizer().synthesize({ app: 'node app.js', region: 'us-east-1' });
+
+    expect(await stsCtorCredentials()).toEqual([EXPLICIT]);
+  });
+
+  it('the deferred macro-expansion account lookup carries the explicit credentials', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockStatSync.mockReturnValue({ isDirectory: () => true });
+    mockAssemblyStacks.mockReturnValue([
+      { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' },
+    ]);
+    const s = new Synthesizer();
+    const options = { app: '/path/to/cdk.out', deferMacroExpansion: true };
+    const result = await s.synthesize(options);
+    await clearStsCtor();
+
+    await s.expandMacrosForStacks(result.stacks, options);
+
+    expect(mockStsSend).toHaveBeenCalled();
+    expect(await stsCtorCredentials()).toEqual([EXPLICIT]);
   });
 });

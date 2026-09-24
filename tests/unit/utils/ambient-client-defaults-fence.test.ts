@@ -56,12 +56,8 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'src/cli/config-loader.ts':
     "default-bucket probe deliberately reuses the STS client's resolved provider " +
     '(a CONDITIONAL credentials spread); CLI-only',
-  'src/local/ecr-puller.ts':
-    'CLI-only (`cdkd local`); its per-region CALLER_IDENTITY_CACHE must be keyed by identity ' +
-    'in the same change, so it follows #3588 separately',
   'src/provisioning/providers/s3-tables-provider.ts':
     'held by open PR #3613 when #3588 landed; route it next',
-  'src/synthesis/synthesizer.ts': 'held by open PR #3658 when #3588 landed; route it next',
 };
 
 const ROUTED_HELPERS = new Set(['ambientClientDefaults', 'clientDefaultsFor']);

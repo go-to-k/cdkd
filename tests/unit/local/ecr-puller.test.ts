@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // STS + ECR client mocks. The hoisted captures let each test set the
 // canned response per-call.
@@ -84,6 +84,7 @@ import {
   pullEcrImage,
 } from '../../../src/local/ecr-puller.js';
 import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
+import { AwsClients, resetAwsClients, setAwsClients } from '../../../src/utils/aws-clients.js';
 import { ECR_REGISTRY_HOST_FORMS } from '../../../src/utils/ecr-uri.js';
 
 describe('parseEcrUri', () => {
@@ -1252,5 +1253,109 @@ describe('pullEcrImage', () => {
 
     expect(pullRefOf()).toBe('111111111111.dkr.ecr-fips.us-gov-west-1.amazonaws.com/Team/App:V1');
     expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr-fips.us-gov-west-1.amazonaws.com');
+  });
+});
+
+/**
+ * The caller's explicit `AwsClients` credentials reach every client the puller
+ * builds, and both module-level caches are keyed by that identity (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). A library caller that
+ * pulls under identity A and then under identity B in one process must not be
+ * told A's account or handed the role credentials A's session obtained.
+ */
+describe('pullEcrImage — credential identity (#3588)', () => {
+  const A = { accessKeyId: 'AKIDECRPULLA3588', secretAccessKey: 'secret-a' };
+  const B = { accessKeyId: 'AKIDECRPULLB3588', secretAccessKey: 'secret-b' };
+  const ROLE = 'arn:aws:iam::999999999999:role/EcrPull';
+  const IMAGE = '999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t';
+  /** The access key id of the STS client that sent each call, in order. */
+  let stsSenders: Array<{ kind: string; keyId: string | undefined }>;
+
+  beforeEach(() => {
+    stsSendMock.mockReset();
+    stsConstructorMock.mockReset();
+    ecrSendMock.mockReset();
+    ecrConstructorMock.mockReset();
+    runDockerMock.mockReset();
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
+    spawnForegroundMock.mockReset();
+    process.env['AWS_REGION'] = 'us-east-1';
+    delete process.env['AWS_DEFAULT_REGION'];
+    __resetStsCachesForTesting();
+    stsSenders = [];
+    stsSendMock.mockImplementation(async (command: { _kind: string }) => {
+      const config = stsConstructorMock.mock.calls.at(-1)![0] as {
+        credentials?: { accessKeyId?: string };
+      };
+      const keyId = config.credentials?.accessKeyId;
+      stsSenders.push({ kind: command._kind, keyId });
+      if (command._kind === 'GetCallerIdentity') {
+        return { Account: keyId === A.accessKeyId ? '111111111111' : '222222222222' };
+      }
+      return {
+        Credentials: {
+          AccessKeyId: `ASIAROLEFOR${String(keyId)}`,
+          SecretAccessKey: 'role-secret',
+          SessionToken: 'role-session',
+          Expiration: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      };
+    });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    resetAwsClients();
+    delete process.env['AWS_REGION'];
+  });
+
+  const pullAs = async (credentials: typeof A, ecrRoleArn?: string): Promise<void> => {
+    setAwsClients(new AwsClients({ region: 'us-east-1', credentials }));
+    await pullEcrImage(IMAGE, { skipPull: false, ...(ecrRoleArn && { ecrRoleArn }) });
+  };
+
+  const ecrCredentials = (): unknown[] =>
+    ecrConstructorMock.mock.calls.map((c) => (c[0] as { credentials?: unknown }).credentials);
+
+  it('signs GetCallerIdentity and the ECR login as the explicit credentials, per identity', async () => {
+    await pullAs(A);
+    await pullAs(B);
+    await pullAs(A);
+
+    // A's second pull is answered from A's cached account; B asked for its own.
+    expect(stsSenders).toEqual([
+      { kind: 'GetCallerIdentity', keyId: A.accessKeyId },
+      { kind: 'GetCallerIdentity', keyId: B.accessKeyId },
+    ]);
+    expect(ecrCredentials()).toEqual([A, B, A]);
+  });
+
+  it('never hands one source identity the role credentials another obtained', async () => {
+    await pullAs(A, ROLE);
+    await pullAs(B, ROLE);
+    await pullAs(A, ROLE);
+
+    expect(stsSenders).toEqual([
+      { kind: 'GetCallerIdentity', keyId: A.accessKeyId },
+      { kind: 'AssumeRole', keyId: A.accessKeyId },
+      { kind: 'GetCallerIdentity', keyId: B.accessKeyId },
+      { kind: 'AssumeRole', keyId: B.accessKeyId },
+    ]);
+    // The assumed role outranks the caller's explicit credentials on the ECR
+    // client, and each identity logs in with the role session IT obtained.
+    expect(
+      ecrCredentials().map((c) => (c as { accessKeyId?: string } | undefined)?.accessKeyId)
+    ).toEqual([
+      `ASIAROLEFOR${A.accessKeyId}`,
+      `ASIAROLEFOR${B.accessKeyId}`,
+      `ASIAROLEFOR${A.accessKeyId}`,
+    ]);
   });
 });
