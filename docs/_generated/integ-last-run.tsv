@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-09-05T03:27:04Z	PASS	91	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (exit-2 survivor contract)
 agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
-alb	2026-09-24T22:46:12Z	FAIL	242	verify.sh	pre-existing: routing.http.response.server.enabled removal assertion (tooling backlog, was #2085); main build fails identically in the same window, so not #3663. Destroy clean, 0 orphans
+alb	2026-09-24T23:20:39Z	FAIL	210	verify.sh	pre-existing: routing.http.response.server.enabled removal assertion (tooling backlog, was #2085); main build fails identically, so not #3663. Destroy clean, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
@@ -60,7 +60,7 @@ conditions-update-2	2026-07-26T19:05:27Z	PASS	83	verify.sh	0727b sweep-b8 stalen
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 cross-region-concurrent-stacks	2026-09-23T22:38:00Z	PASS	192	verify.sh	rc ok, orph clean; new #1981 arm, pre-fix build RED at TopicPolicy (wrong-region client)
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
-cross-stack-cfn-fallback	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
+cross-stack-cfn-fallback	2026-09-24T23:20:39Z	PASS	120	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-09-24T09:51:42Z	PASS	478	verify.sh	rc ok, orph clean (PR #3625)
 custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
@@ -101,12 +101,12 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-23T23:13:03Z	PASS	69	verify.sh	rc ok, orph clean (#1981 lane)
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
-ecs-fargate	2026-09-24T22:46:12Z	PASS	395	verify.sh	rc ok, 0 orphans (#3663)
+ecs-fargate	2026-09-24T23:20:39Z	PASS	386	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-09-19T18:00:07Z	PASS	68	verify.sh	rc ok, orph clean; #2668 type-change routing
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-efs-standalone	2026-09-24T22:46:12Z	PASS	169	verify.sh	rc ok, 0 orphans (#3663)
+efs-standalone	2026-09-24T23:20:39Z	PASS	165	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
 elbv2-same-name-replacement	2026-09-23T23:53:04Z	PASS	83	verify.sh	rc ok, orph clean (#1981 lane)
 emr-cluster	2026-09-24T22:46:12Z	PASS	765	verify.sh	rc ok, 0 orphans (#3663)
@@ -131,7 +131,7 @@ fsx-windows	2026-08-02T07:56:26Z	PASS	3895	verify.sh	0802 heavy TTL sweep; AD-jo
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, site 6 (bootstrap marker). RUN IN eu-west-1, not us-east-1: the fixture correctly refuses a region whose bootstrap marker is not its own, and us-east-1 / ap-northeast-1 / us-west-2 all carry one. Premise 9 marker rows before teardown, then 1 row and 0 noncurrent; control 4 noncurrent lock.json versions survive. 0 errors, 0 orphans, no docker residue.
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
-getstackoutput-crossregion	2026-09-24T22:46:12Z	PASS	77	verify.sh	rc ok, 0 orphans (#3663)
+getstackoutput-crossregion	2026-09-24T23:20:39Z	PASS	75	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 glue-securityconfig-replace	2026-09-23T23:37:05Z	PASS	59	verify.sh	rc ok, orph clean (#1981 lane)
 glue-update-hardening	2026-09-24T22:46:12Z	PASS	92	verify.sh	rc ok, 0 orphans (#3663)
 iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
@@ -161,7 +161,7 @@ intrinsics-torture-2	2026-09-24T00:57:33Z	PASS	54	verify.sh	PR #3579; rc ok, des
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-09-24T22:46:12Z	PASS	108	verify.sh	rc ok, 0 orphans (#3663)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-24T22:46:12Z	PASS	98	verify.sh	rc ok, 0 orphans (#3663)
+lambda	2026-09-24T23:20:39Z	PASS	105	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -285,7 +285,7 @@ secrets-dynamic-ref	2026-09-24T09:51:42Z	PASS	546	verify.sh	rc ok, orph clean (P
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-14T04:47:25Z	PASS	74	verify.sh	rc ok, orph clean, 0 surviving versions (3068 lane: the new recipe's output accepted by the live service)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-servicediscovery	2026-09-24T22:46:12Z	PASS	117	verify.sh	rc ok, 0 orphans (#3663)
+servicediscovery	2026-09-24T23:20:39Z	PASS	115	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/2063 maskSecrets threading, re-run after rebase onto 0.284.17; six namespace arms + pollOperation via async operation-based create/update/delete; destroy 2 deleted 0 errors, hosted zone gone, 0 orphans
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-09-24T19:02:32Z	PASS	166	verify.sh	#2804 SG wiring drain selects first rejection by time; 3 stacks 19 del 0 err 0 orph
