@@ -209,7 +209,7 @@ local-start-api-container	2026-09-24T15:24:47Z	PASS	15	verify.sh	rc ok, docker c
 local-start-api-rest-v1-non-proxy	2026-09-24T13:18:27Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-start-api-websocket	2026-09-24T13:38:27Z	FAIL	65	verify.sh	amd64 RIE SIGSEGV under emulation (wirep: already in go); same failure on origin/main at cdk-local 0.149.2 -- pre-existing/environmental, not #3654
 local-start-cloudfront	2026-09-24T15:31:24Z	PASS	10	verify.sh	rc ok, docker clean (#3652 engine-only containment)
-local-start-service	2026-09-24T15:27:23Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
+local-start-service	2026-09-24T21:38:13Z	PASS	120	verify.sh	rc ok, destroy 0 errors, orph clean; #3655 PR 3682 fix round (DOCKER_HOST pinned from current context): cdk-local 0.149.6 dual-stack + FIPS pull arms green through cdk-local's puller (pre-fix 0.149.5 red: no basic auth credentials); DOCKER_CONFIG seeded-auths override
 local-start-service-watch-fast	2026-09-24T15:31:14Z	PASS	205	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
 loggroup-class-guard	2026-09-24T03:51:15Z	PASS	95	verify.sh	rc ok, orph clean (#3269)
