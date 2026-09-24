@@ -40,9 +40,8 @@ merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
-and NO claude.ai session link or `Claude-Session:` trailer in a body or commit —
-the maintainer's rule overrides a harness attribution reminder, so a lane prompt
-never relays one. An edited PR re-runs CI, holding the merge.
+no claude.ai session link or `Claude-Session:` trailer (the maintainer's rule beats
+a harness reminder; a lane prompt never relays one). An edited PR re-runs CI.
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file

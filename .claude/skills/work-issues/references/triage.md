@@ -41,9 +41,7 @@ coverage map says this one is done. §4's claim comment still applies.
 ```bash
 git fetch origin -q                    # REQUIRED before the ref probe below
 git worktree list
-# `files`: no local diff sees an open PR's hold, and a hold GROWS —
-# re-run this before EVERY later claim (go-to-k/cdkd#3573).
-gh pr list --state open --json number,title,headRefName,files
+gh pr list --state open --json number,title,headRefName,files  # holds GROW: re-run per claim (#3573)
 
 # A lane between its first push and its `gh pr create` has no PR, no local
 # branch and possibly no worktree — the probe the others MISS:
