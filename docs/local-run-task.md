@@ -292,8 +292,10 @@ beats a silently empty variable: fix the credentials or the IAM policy and re-ru
 ### Secret names that are not forwarded
 
 An accepted secret's value reaches the container through the `docker run` spawn
-environment as a value-less `-e KEY` flag, so the plaintext never appears in the
-process arguments. The secret's **name** decides whether it is forwarded at all.
+environment as a value-less `-e KEY` flag, so the plaintext does not appear in
+the container client's process arguments. The one client where that does not hold is finch on
+macOS / Windows, covered [below](#finch-on-macos-and-windows). The secret's
+**name** decides whether it is forwarded at all.
 Two name shapes are dropped entirely — no `-e` flag and no spawn-environment
 entry:
 
@@ -325,6 +327,38 @@ entry:
 
 Each refusal is reported as a warning naming the dropped secret, so the drop is
 never silent. Rename the secret if the container needs its value.
+
+### finch on macOS and Windows
+
+finch on macOS and Windows runs containers inside a Lima VM. It resolves each
+value-less `-e KEY` itself and rewrites it as `-e KEY=<value>` on the command
+line of the `limactl` process it starts, and from there onto the command lines
+inside the VM. Other local processes can read those command lines. finch also
+puts `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from
+its own environment there, on every command.
+
+So when `CDK_DOCKER` names finch on macOS or Windows:
+
+- **A task with a `Secrets` entry is refused** before any image is pulled, any
+  secret is fetched or any container starts. The error names the secrets. Use a
+  client that keeps the value off the command line (Docker, podman, nerdctl, or
+  finch on Linux), or set `CDKD_ALLOW_SECRETS_ON_ARGV=1` to accept the exposure
+  while it stays set; the warning below still names each forwarded secret.
+  `cdkd local invoke-agentcore` applies the same refusal to a
+  decrypted SecureString, before its container starts.
+- **`cdkd local start-service` does not apply the refusal or the warning yet.**
+  It runs on a separate engine, so under finch on macOS or Windows its
+  containers' secrets and credentials reach that command line without notice.
+- **The AWS credentials cdkd hands a container** (and the metadata-endpoint
+  sidecar) are still forwarded, with a warning naming the variables but not
+  their values. finch places the credentials of its own environment on that
+  command line for every command anyway, so refusing them would disable finch
+  without removing the exposure.
+
+finch is recognised by the file name `CDK_DOCKER` resolves to: `finch`, or
+`finch.exe`, in any case. A wrapper script or a symlink under another name is
+not recognised. finch on Linux passes the flags to nerdctl unchanged and is not
+affected.
 
 ## Container start ordering
 

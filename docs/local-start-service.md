@@ -266,7 +266,9 @@ hatch when Docker hangs. Orphan containers may remain;
 
 Every limitation of the underlying task runner applies here too — volumes,
 secret-name refusals and container start ordering all behave as described in
-[`cdkd local run-task`](local-run-task.md).
+[`cdkd local run-task`](local-run-task.md). The exception is
+[finch on macOS and Windows](local-run-task.md#finch-on-macos-and-windows):
+this command does not yet refuse or warn there.
 
 ## Exit codes
 

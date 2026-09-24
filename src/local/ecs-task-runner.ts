@@ -10,8 +10,12 @@ import {
   describeDockerFailure,
   redactDockerArgvValues,
   runDockerStreaming,
+  finchSecretArgvRefusal,
+  isDockerClientEnvKey,
+  isMalformedEnvKey,
+  warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -355,6 +359,22 @@ export async function runEcsTask(
   const dag = buildDependencyGraph(task.containers);
   const startOrder = topoSort(dag, task.containers);
 
+  // Under finch's Lima VM a value-less `-e KEY` lands on the limactl argv as
+  // `-e KEY=<value>` (#3600). Refuse BEFORE any image is prepared, any secret
+  // fetched or any resource created, unless the operator opted in. A name that would be
+  // dropped anyway (`partitionSensitiveEnv`'s collision path) never leaves, so
+  // it does not trigger the refusal.
+  // Every container is checked before throwing, so one run names them all.
+  const finchRefusals: string[] = [];
+  for (const c of task.containers) {
+    const refusal = finchSecretArgvRefusal(
+      c.secrets.map((s) => s.name).filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
+      `Container ${displayIdent(c.name)}`
+    );
+    if (refusal !== undefined) finchRefusals.push(refusal);
+  }
+  if (finchRefusals.length > 0) throw new EcsTaskRunnerError(finchRefusals.join('\n'));
+
   // Resolve every container's image. Production callers leave
   // `imagePlanByContainer` undefined — the resolver below walks the asset
   // manifest / ECR / public-image path per image.
@@ -483,8 +503,9 @@ export async function runEcsTask(
     const args = dockerCmds.get(container.name)!;
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
+    const sensitiveEnv = dockerEnvs.get(container.name)!;
+    warnFinchArgvExposure(Object.keys(sensitiveEnv));
     try {
-      const sensitiveEnv = dockerEnvs.get(container.name)!;
       const { stdout } = await execFileAsync(getDockerCmd(), args, {
         maxBuffer: 10 * 1024 * 1024,
         // The `-e KEY` (value-less) flags read their values from here, so
