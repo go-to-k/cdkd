@@ -14,16 +14,23 @@
  * - `--no-cfn-fallback` opt-out (no CFn call, original error message)
  * - graceful degradation on lookup failure (warn + original not-found error)
  * - `Fn::GetStackOutput` region pinning + per-region client caching
+ * - explicit `AwsClientConfig.credentials` reaching the fallback client (#1983)
  *
  * The RoleArn (cross-account) path never takes the CFn fallback — asserted
  * in intrinsic-getstackoutput-cross-account.test.ts alongside the rest of
  * the cross-account machinery mocks.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import {
+  AwsClients,
+  resetAwsClients,
+  runWithStackAwsClients,
+  setAwsClients,
+} from '../../../src/utils/aws-clients.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StateImportEntry, StateOutputReadEntry } from '../../../src/types/state.js';
@@ -522,5 +529,81 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
 
     expect(cfnMockSend).toHaveBeenCalledTimes(2);
     expect(cfnClientConfigs).toEqual([{ region: 'us-east-1' }]);
+  });
+});
+
+describe('CloudFormation fallback client - explicit credentials (#1983)', () => {
+  const EXPLICIT = {
+    accessKeyId: 'AKIDEXPLICIT1983',
+    secretAccessKey: 'explicit-secret-1983',
+    sessionToken: 'explicit-token-1983',
+  };
+
+  afterEach(() => {
+    resetAwsClients();
+  });
+
+  it('Fn::ImportValue: the ListExports client carries the ambient AwsClients explicit credentials', async () => {
+    setAwsClients(new AwsClients({ region: 'us-east-1', credentials: EXPLICIT }));
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      listExports: async () => ({ Exports: [{ Name: 'SharedArn', Value: 'arn:x' }] }),
+    });
+
+    const result = await resolver.resolve(
+      { 'Fn::ImportValue': 'SharedArn' },
+      buildContext({ stateBackend: makeBackend([]) })
+    );
+
+    expect(result).toBe('arn:x');
+    expect(cfnClientConfigs).toHaveLength(1);
+    expect(cfnClientConfigs[0]).toMatchObject({ region: 'us-east-1', credentials: EXPLICIT });
+  });
+
+  it('Fn::GetStackOutput: a cross-region DescribeStacks client carries the explicit credentials and profile', async () => {
+    setAwsClients(
+      new AwsClients({ region: 'us-east-1', profile: 'lib-profile', credentials: EXPLICIT })
+    );
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      describeStacks: async () => ({
+        Stacks: [{ Outputs: [{ OutputKey: 'ApiUrl', OutputValue: 'https://eu' }] }],
+      }),
+    });
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'ApiUrl', Region: 'eu-west-1' },
+      },
+      buildContext({ stateBackend: makeBackend([]) })
+    );
+
+    expect(result).toBe('https://eu');
+    expect(cfnClientConfigs).toHaveLength(1);
+    expect(cfnClientConfigs[0]).toMatchObject({
+      region: 'eu-west-1',
+      profile: 'lib-profile',
+      credentials: EXPLICIT,
+    });
+  });
+
+  it('reads the credentials of the stack-scoped clients, not the process-global ones', async () => {
+    setAwsClients(new AwsClients({ region: 'us-east-1' }));
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      listExports: async () => ({ Exports: [{ Name: 'SharedArn', Value: 'arn:scoped' }] }),
+    });
+
+    const result = await runWithStackAwsClients(
+      new AwsClients({ region: 'us-east-1', credentials: EXPLICIT }),
+      () =>
+        resolver.resolve(
+          { 'Fn::ImportValue': 'SharedArn' },
+          buildContext({ stateBackend: makeBackend([]) })
+        )
+    );
+
+    expect(result).toBe('arn:scoped');
+    expect(cfnClientConfigs[0]).toMatchObject({ credentials: EXPLICIT });
   });
 });
