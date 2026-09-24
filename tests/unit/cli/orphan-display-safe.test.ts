@@ -594,12 +594,12 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop', '--yes']);
       const lines = infoLines();
       expect(lines).toContain(
-        `Target: ${HOSTILE.stackA.clean} (${HOSTILE.region.clean}); ` +
+        `Target: ${JSON.stringify(HOSTILE.stackA.clean)} (${JSON.stringify(HOSTILE.region.clean)}); ` +
           `orphaning 1 resource(s): ${HOSTILE.logicalId.clean}`
       );
       expect(lines).toContain(
-        `Orphaned 1 resource(s) from state: ${HOSTILE.stackA.clean} ` +
-          `(${HOSTILE.region.clean}). ` +
+        `Orphaned 1 resource(s) from state: ${JSON.stringify(HOSTILE.stackA.clean)} ` +
+          `(${JSON.stringify(HOSTILE.region.clean)}). ` +
           'AWS resources are still in AWS; cdkd will no longer manage them.'
       );
       // The rewrite audit row names the SIBLING that referenced the orphan, and
@@ -649,7 +649,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         ])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        `No state found for stack ${JSON.stringify(HOSTILE.stackA.clean)} in region 'eu-west-1'. ` +
+        `No state found for stack ${JSON.stringify(HOSTILE.stackA.clean)} in region eu-west-1. ` +
           `Available regions: "${HOSTILE.region.clean}".`
       );
       expectNoForgingIn([reportedError()]);
@@ -664,7 +664,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         runOrphan(['MyStack/A', '--stack-region', 'eu-west-1', '--app', 'noop', '--yes'])
       ).rejects.toThrow();
       expect(reportedError()).toContain(
-        "No state found for stack MyStack in region 'eu-west-1'. " +
+        'No state found for stack MyStack in region eu-west-1. ' +
           'Available regions: us-east-1.'
       );
     });
@@ -880,7 +880,7 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await runOrphan([`${HOSTILE.stackA.raw}/Bucket`, '--app', 'noop']);
       const question = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
       expect(question).toContain(
-        `from cdkd state for ${HOSTILE.stackA.clean} (${HOSTILE.region.clean})?`
+        `from cdkd state for ${JSON.stringify(HOSTILE.stackA.clean)} (${JSON.stringify(HOSTILE.region.clean)})?`
       );
       expectNoForgingIn([question]);
       expect(mockSaveState).not.toHaveBeenCalled();

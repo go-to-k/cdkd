@@ -126,7 +126,7 @@ export function resolveFileAssetSourcePath(
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined) {
       warnAbsoluteAssetPath({
-        subject: `File asset ${displayStackName(asset.displayName)}`,
+        subject: `File asset ${displayAssemblyPath(asset.displayName)}`,
         field: 'source.path',
         absolute,
         escape,
@@ -140,7 +140,7 @@ export function resolveFileAssetSourcePath(
       // equality here answers "not the bound" for exactly the values that
       // most need the line.
       warnWholeAssemblyAsSource({
-        subject: `File asset ${displayStackName(asset.displayName)}`,
+        subject: `File asset ${displayAssemblyPath(asset.displayName)}`,
         field: 'source.path',
         outdir: absolute,
         sink,
@@ -183,7 +183,7 @@ export function resolveFileAssetSourcePath(
   // `resolveAssemblyPath`'s job and not this arm's.
   if (!resolved.contained && namesTheSameDirectory(assetOutdir, resolved.path)) {
     warnWholeAssemblyAsSource({
-      subject: `File asset ${displayStackName(asset.displayName)}`,
+      subject: `File asset ${displayAssemblyPath(asset.displayName)}`,
       field: 'source.path',
       outdir: resolved.path,
       sink,
@@ -192,7 +192,7 @@ export function resolveFileAssetSourcePath(
   }
   if (!resolved.contained) {
     throw new Error(
-      `File asset ${displayStackName(asset.displayName)} has ` +
+      `File asset ${displayAssemblyPath(asset.displayName)} has ` +
         `source.path=${displayAssemblyPath(asset.source.path)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'publish it')}`
     );

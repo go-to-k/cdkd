@@ -306,7 +306,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     );
 
     logger.info(
-      `Target: ${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}); ` +
+      `Target: ${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)}); ` +
         `orphaning ${orphanLogicalIds.length} resource(s): ${displaySafeList(orphanLogicalIds)}`
     );
 
@@ -496,7 +496,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       if (!options.yes && !options.force) {
         const ok = await confirmPrompt(
           `Orphan ${orphanLogicalIds.length} resource(s) from cdkd state for ` +
-            `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })})? ` +
+            `${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)})? ` +
             `AWS resources will NOT be deleted.`
         );
         if (!ok) {
@@ -512,7 +512,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
       logger.info(
         `Orphaned ${orphanLogicalIds.length} resource(s) from state: ` +
-          `${displaySafe(stackInfo.stackName)} (${displaySafe(targetRegion, { asciiOnly: true })}). ` +
+          `${displayStackName(stackInfo.stackName)} (${displayIdent(targetRegion)}). ` +
           `AWS resources are still in AWS; cdkd will no longer manage them.`
       );
     } finally {
@@ -661,7 +661,7 @@ async function pickStackRegion(
     if (!found) {
       const seen = displayRegionList(refs);
       throw new Error(
-        `No state found for stack ${displayStackName(stackName)} in region '${flag}'. ` +
+        `No state found for stack ${displayStackName(stackName)} in region ${displayIdent(flag)}. ` +
           `Available regions: ${seen}.`
       );
     }

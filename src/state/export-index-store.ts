@@ -48,7 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe, displayStackName } from '../utils/display-safe.js';
+import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
@@ -734,16 +734,19 @@ export class ExportIndexStore {
     producerRegion: string
   ): void {
     if (!existing || existing.producerStack === stackName) return;
-    // `exportName` is a template-controlled RESOLVED value (an `Fn::Sub` name can
-    // carry control / ANSI bytes); strip them for the log line, matching how
-    // `outputs-diff.ts` renders output / export names.
-    const safeName = displaySafe(exportName);
+    // Every operand is untrusted: `exportName` is a template-controlled RESOLVED
+    // value (an `Fn::Sub` name can carry control / ANSI bytes), and `existing`
+    // is read back from the persisted index, which nothing validated. Each
+    // renders through `displayIdent` / `displayStackName`, which supply their
+    // own boundary, so none sits inside quotes of cdkd's (go-to-k/cdkd#3617).
+    const theirs = displayStackName(existing.producerStack);
     this.logger.warn(
-      `Export '${safeName}' is published by both '${existing.producerStack}' ` +
-        `(${existing.producerRegion}) and '${stackName}' (${producerRegion}); the exports ` +
+      `Export ${displayIdent(exportName)} is published by both ${theirs} ` +
+        `(${displayIdent(existing.producerRegion)}) and ${displayStackName(stackName)} ` +
+        `(${displayIdent(producerRegion)}); the exports ` +
         `index keeps the latest writer, so an Fn::ImportValue on it binds to whichever ` +
         `deployed last. CloudFormation refuses a second producer of the same export ` +
-        `name — rename one of the two exports. (If '${existing.producerStack}' predates ` +
+        `name — rename one of the two exports. (If ${theirs} predates ` +
         `cdkd's state schema v9, this is its stale entry for a plain output of that name, ` +
         `and its next deploy clears it.)`
     );
@@ -770,8 +773,8 @@ export class ExportIndexStore {
         this.logger.warn(
           `Exports index entry ownership changed under a patch; refusing to write it. ` +
             `Expected producer ${displayStackName(requireOwner.producerStack)} ` +
-            `(${displaySafe(requireOwner.producerRegion)}), found ` +
-            `${current ? `${displayStackName(current.producerStack)} (${displaySafe(current.producerRegion)})` : 'no entry'}.`
+            `(${displayIdent(requireOwner.producerRegion)}), found ` +
+            `${current ? `${displayStackName(current.producerStack)} (${displayIdent(current.producerRegion)})` : 'no entry'}.`
         );
         return false;
       }

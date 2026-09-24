@@ -544,7 +544,7 @@ describe('renderNestedTemplateTreeDefect', () => {
     expect(text).toContain("L0 (/out/t0.json)");
     expect(text).toContain('... 33 more ...');
     expect(text).toContain("Closer (/out/t0.json)");
-    expect(text).not.toContain("'L20'");
+    expect(text).not.toContain('L20 (');
   });
 
   it('renders a chain of exactly 8 hops in full and elides from 9', () => {
@@ -584,8 +584,9 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     const text = renderNestedTemplateTreeDefect({ kind: 'cycle', chain }, 'P', 'deploy');
 
-    // The elision carries spaces, so `displayIdent` gives the name a boundary.
-    expect(text).toContain('(declared in stack "P~L0~L1~L2~L3~...22 more...~L26~L27~L28~L29")');
+    // The elision is cdkd's own text, outside the rendered ends, so a
+    // legitimate long chain stays bare.
+    expect(text).toContain('(declared in stack P~L0~L1~L2~L3~...22 more...~L26~L27~L28~L29)');
   });
 
   it('says why a too-deep tree is refused', () => {

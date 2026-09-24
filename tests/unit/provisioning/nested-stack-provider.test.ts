@@ -239,6 +239,64 @@ describe('NestedStackProvider', () => {
       ).rejects.toThrow(/deploy-mode context fields .* are missing/);
     });
 
+    it('keeps a FORGING logical id and parent stack name inside their boundaries (go-to-k/cdkd#3617)', async () => {
+      const FORGED = "X'. Template found and deployed. Nothing 'Y";
+      const SHOWN = JSON.stringify(FORGED);
+      const provider = new NestedStackProvider();
+      const outside = (m: string): string => m.split(SHOWN).join('');
+
+      const create = await withNestedStackContext(
+        makeContext({ nestedTemplates: {}, parentStackName: FORGED }),
+        () => provider.create(FORGED, 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(create).toContain(
+        `AWS::CloudFormation::Stack ${SHOWN} under parent ${SHOWN}. Verify the synth output`
+      );
+      expect(outside(create)).not.toContain('found and deployed');
+
+      const update = await withNestedStackContext(makeContext({ nestedTemplates: {} }), () =>
+        provider.update(FORGED, 'arn', 'AWS::CloudFormation::Stack', {}, {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(update).toContain(`AWS::CloudFormation::Stack ${SHOWN} on update.`);
+      expect(outside(update)).not.toContain('found and deployed');
+
+      const attribute = await provider
+        .getAttribute('arn', 'AWS::CloudFormation::Stack', FORGED)
+        .then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        );
+      expect(attribute).toContain(`attribute ${SHOWN} is not in the recorded Outputs map`);
+      expect(outside(attribute)).not.toContain('found and deployed');
+      expect(
+        await provider.getAttribute('arn', 'AWS::CloudFormation::Stack', 'Arn').then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        )
+      ).toContain('attribute Arn is not in the recorded Outputs map');
+
+      const parameter = (() => {
+        try {
+          (
+            provider as unknown as {
+              refuseNonScalarParameter: (k: string, o: unknown, where: string) => never;
+            }
+          ).refuseNonScalarParameter(FORGED, {}, '');
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(parameter).toContain(`child Parameter ${SHOWN} resolved to a non-scalar value`);
+      expect(outside(parameter)).not.toContain('found and deployed');
+    });
+
     it('rejects when the child template file is missing from nestedTemplates', async () => {
       const provider = new NestedStackProvider();
       const ctx = makeContext({ nestedTemplates: {} });

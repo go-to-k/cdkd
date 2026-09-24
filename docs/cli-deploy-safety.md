@@ -1118,7 +1118,7 @@ claimed as the explanation.
 Every other refusal under a Stage — an escaping or absent `templateFile`, an
 unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —
 aborts the run, with the Stage named ahead of the refusal
-(`Stage MyStage: Stack 'MyStage-Api' ...`). For a Stage inside a Stage, the
+(`Stage MyStage: Stack MyStage-Api ...`). For a Stage inside a Stage, the
 innermost one is named.
 
 Two sibling rows naming the **same** template are fine — that is a shared child,

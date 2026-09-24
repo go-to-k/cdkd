@@ -128,7 +128,7 @@ describe('the nested-template tree refusal', () => {
         kind: 'cycle',
         chain: [
           { logicalId: FORGED, templatePath: '/out/a.json' },
-          { logicalId: 'Loop', templatePath: '/out/a.json' },
+          { logicalId: FORGED, templatePath: '/out/a.json' },
         ],
       } as never,
       FORGED,
@@ -136,12 +136,44 @@ describe('the nested-template tree refusal', () => {
     );
 
     expect(text).toContain(`under stack ${SHOWN} contains a cycle`);
-    expect(text).toContain(`${SHOWN} (/out/a.json) -> Loop (/out/a.json)`);
+    expect(text).toContain(`${SHOWN} (/out/a.json) -> ${SHOWN} (/out/a.json)`);
+    // The CLOSING row, named on its own.
+    expect(text).toContain(`. Nested stack ${SHOWN} (declared in stack `);
     // The OWNING stack is built from the same values, `~`-joined.
     expect(text).toContain(`(declared in stack ${JSON.stringify(`${FORGED}~${FORGED}`)})`);
     expect(outside(text.split(JSON.stringify(`${FORGED}~${FORGED}`)).join(''))).not.toContain(
       'Contained and healthy'
     );
+  });
+
+  it('keeps a forging nested-stack logical id inside one boundary on the absolute and escaping arms', () => {
+    const absolute = renderNestedTemplateTreeDefect(
+      {
+        kind: 'absolute-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: FORGED,
+        assetPath: '/abs.json',
+      },
+      'P',
+      'deploy'
+    );
+    expect(absolute).toContain(`has nested stack ${SHOWN} (reached through`);
+    expect(outside(absolute)).not.toContain('Contained and healthy');
+
+    const escaping = renderNestedTemplateTreeDefect(
+      {
+        kind: 'escaping-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: FORGED,
+        assetPath: '../x.json',
+        escape: { contained: false, escape: 'lexical', path: '/x.json' },
+        dir: '/out',
+      },
+      'P',
+      'deploy'
+    );
+    expect(escaping).toContain(`has nested stack ${SHOWN} (reached through`);
+    expect(outside(escaping)).not.toContain('Contained and healthy');
   });
 
   it('renders ordinary identifiers bare', () => {
@@ -160,7 +192,7 @@ describe('the nested-template tree refusal', () => {
   });
 });
 
-describe('a nested-stack logical id in each indexer', () => {
+describe("a nested-stack logical id in NestedStackProvider's indexer (diff --recursive's twin is held by #3641)", () => {
   const provider = new NestedStackProvider();
   const grandchild = (
     provider as unknown as {
@@ -212,6 +244,39 @@ describe("cdkd local invoke: a Lambda's logical id", () => {
 
   it('renders an ordinary logical id bare', () => {
     expect(refuse('Fn')).toContain("Lambda Fn has no Metadata['aws:asset:path']");
+  });
+});
+
+describe("cdkd local invoke: a contained Lambda asset directory that does not exist", () => {
+  function refuse(logicalId: string): string {
+    const outdir = join(tmp(), 'cdk.out');
+    mkdirSync(outdir);
+    writeFileSync(join(outdir, 'Stk.assets.json'), JSON.stringify({ version: '54.0.0' }));
+    const stack = {
+      stackName: 'Stk',
+      displayName: 'Stk',
+      artifactId: 'Stk',
+      assetManifestPath: join(outdir, 'Stk.assets.json'),
+      assetOutdir: outdir,
+      dependencyNames: [],
+      template: {
+        Resources: {
+          [logicalId]: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Code: {} },
+            Metadata: { 'aws:asset:path': 'asset.missing' },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    return messageOf(() => resolveLambdaTarget(`Stk:${logicalId}`, [stack]));
+  }
+
+  it('keeps a forging logical id inside one boundary, and renders an ordinary one bare', () => {
+    const hostile = refuse(FORGED);
+    expect(hostile).toContain(`Lambda ${SHOWN} asset directory `);
+    expect(outside(hostile)).not.toContain('Contained and healthy');
+    expect(refuse('Fn')).toContain('Lambda Fn asset directory ');
   });
 });
 
@@ -448,6 +513,7 @@ describe('every other identifier site keeps a forging value inside one boundary'
       ])
     );
     expect(escaping).toContain(`the asset manifest for stack ${JSON.stringify(`../${FORGED}`)} `);
+    expect(escaping.split(JSON.stringify(`../${FORGED}`)).join('').split(JSON.stringify(join(dir, `../${FORGED}.assets.json`))).join('')).not.toContain('Contained and healthy');
 
     writeFileSync(
       join(dir, `${FORGED}.assets.json`),

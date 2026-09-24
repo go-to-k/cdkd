@@ -516,6 +516,12 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     expect(loggerSpies.warn).toHaveBeenCalledWith(
       expect.stringContaining('ownership changed under a patch')
     );
+    // The ordinary polarity of the go-to-k/cdkd#3617 case below: plain names bare.
+    expect(loggerSpies.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Expected producer Producer (us-east-1), found AnotherProducer (us-east-1).'
+      )
+    );
   });
 
   it('names a FORGING producer stack inside one boundary in the ownership warning (go-to-k/cdkd#3617)', async () => {

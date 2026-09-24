@@ -382,7 +382,7 @@ describe('ExportIndexStore', () => {
       const entry = await store.lookup('Shared');
       expect(entry?.producerStack).toBe('Second');
       expect(warnings()).toHaveLength(1);
-      expect(warnings()[0]).toContain("Export 'Shared' is published by both 'First' (us-east-1) and 'Second' (us-east-1)");
+      expect(warnings()[0]).toContain('Export Shared is published by both First (us-east-1) and Second (us-east-1)');
       expect(warnings()[0]).toContain('CloudFormation refuses a second producer');
     });
 
@@ -618,7 +618,7 @@ describe('ExportIndexStore', () => {
         producerRegion: 'us-east-1',
       });
       expect(warnings()).toHaveLength(1);
-      expect(warnings()[0]).toContain("Export 'Shared' is published by both 'Other' (us-west-2) and 'Mine' (us-east-1)");
+      expect(warnings()[0]).toContain('Export Shared is published by both Other (us-west-2) and Mine (us-east-1)');
       expect(warnings()[0]).toContain('binds to whichever deployed last');
     });
 
@@ -646,10 +646,10 @@ describe('ExportIndexStore', () => {
       await store.updateForStack('Mine', 'us-east-1', { 'Shared\u0007X': 'mine' });
 
       expect(warnings()).toHaveLength(1);
-      // The BEL byte is replaced (displaySafe maps a control char to a space);
-      // the printable characters remain, and no raw control byte survives.
+      // The BEL byte is replaced by a space, which makes the name non-plain, so
+      // `displayIdent` gives it a boundary; no raw control byte survives.
       expect(warnings()[0]).not.toContain('\u0007');
-      expect(warnings()[0]).toContain("Export 'Shared X'");
+      expect(warnings()[0]).toContain('Export "Shared X" is published');
     });
 
     it('drops all entries when outputs map is empty', async () => {

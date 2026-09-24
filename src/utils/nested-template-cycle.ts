@@ -350,11 +350,13 @@ export function renderNestedTemplateTreeDefect(
   const owner = (chain: readonly NestedTemplateHop[]): string => {
     const ids = chain.slice(0, -1).map((h) => h.logicalId);
     const keep = MAX_RENDERED_HOPS / 2;
-    const shown =
-      ids.length <= MAX_RENDERED_HOPS
-        ? ids
-        : [...ids.slice(0, keep), `...${ids.length - 2 * keep} more...`, ...ids.slice(-keep)];
-    return displayStackName([stackName, ...shown].join('~'));
+    if (ids.length <= MAX_RENDERED_HOPS) return displayStackName([stackName, ...ids].join('~'));
+    // The elision marker is cdkd's own text and carries spaces, so it stays
+    // OUTSIDE the rendered ends: inside one `displayStackName` it would give a
+    // legitimate long chain the boundary that marks a hostile value.
+    const head = displayStackName([stackName, ...ids.slice(0, keep)].join('~'));
+    const tail = displayStackName(ids.slice(-keep).join('~'));
+    return `${head}~...${ids.length - 2 * keep} more...~${tail}`;
   };
   if (defect.kind === 'cycle') {
     const closing = defect.chain[defect.chain.length - 1]!;
