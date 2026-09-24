@@ -282,6 +282,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "cc-api-fallback",
+        "cc-api-fallback-transitions",
         "drift-revert",
         "export",
         "local-start-api",
@@ -296,6 +297,10 @@
           "literal"
         ],
         "cc-api-fallback": [
+          "l1",
+          "literal"
+        ],
+        "cc-api-fallback-transitions": [
           "l1",
           "literal"
         ],
@@ -601,6 +606,7 @@
     {
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
+        "custom-resource-noecho-nested",
         "export-nested-stack",
         "import-nested-stack",
         "nested-stack",
@@ -610,6 +616,9 @@
         "recreate-nested-logical-id-collision"
       ],
       "signals": {
+        "custom-resource-noecho-nested": [
+          "literal"
+        ],
         "export-nested-stack": [
           "literal"
         ],
@@ -647,9 +656,13 @@
     {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "integs": [
+        "import-attribute-readback-network",
         "s3-cloudfront"
       ],
       "signals": {
+        "import-attribute-readback-network": [
+          "l1"
+        ],
         "s3-cloudfront": [
           "l2"
         ]
@@ -936,6 +949,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "glue-update-hardening",
+        "import-attribute-readback",
         "lambda",
         "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
@@ -1000,6 +1014,10 @@
         "glue-update-hardening": [
           "l2"
         ],
+        "import-attribute-readback": [
+          "l2",
+          "literal"
+        ],
         "lambda": [
           "l2"
         ],
@@ -1058,6 +1076,7 @@
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
+        "import-migrate-vpc",
         "propagation-races-2",
         "remove-protection"
       ],
@@ -1070,6 +1089,9 @@
         ],
         "ec2-instance-fanout": [
           "l1"
+        ],
+        "import-migrate-vpc": [
+          "l2"
         ],
         "propagation-races-2": [
           "l1"
@@ -1114,6 +1136,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1225,6 +1248,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -1316,6 +1342,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1422,6 +1449,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -1480,10 +1510,14 @@
     {
       "resourceType": "AWS::EC2::NetworkAcl",
       "integs": [
-        "ec2-vpc"
+        "ec2-vpc",
+        "import-migrate-vpc"
       ],
       "signals": {
         "ec2-vpc": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ]
       }
@@ -1533,6 +1567,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1646,6 +1681,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -1740,6 +1778,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1851,6 +1890,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -2122,6 +2164,8 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-network",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2231,6 +2275,12 @@
         "fsx-windows": [
           "l2"
         ],
+        "import-attribute-readback-network": [
+          "l1"
+        ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2328,6 +2378,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2434,6 +2485,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2522,6 +2576,8 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-network",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2644,6 +2700,12 @@
           "l2",
           "literal"
         ],
+        "import-attribute-readback-network": [
+          "l1"
+        ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2740,6 +2802,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2852,6 +2915,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -3123,7 +3189,8 @@
       "integs": [
         "ecs-fargate",
         "efs-lambda",
-        "efs-standalone"
+        "efs-standalone",
+        "import-attribute-readback-network"
       ],
       "signals": {
         "ecs-fargate": [
@@ -3134,6 +3201,9 @@
         ],
         "efs-standalone": [
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ]
       }
     },
@@ -3144,7 +3214,8 @@
         "ecs-fargate",
         "efs-immutable-replacement",
         "efs-lambda",
-        "efs-standalone"
+        "efs-standalone",
+        "import-attribute-readback-network"
       ],
       "signals": {
         "drift-revert-vpc": [
@@ -3165,6 +3236,9 @@
         "efs-standalone": [
           "l2",
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ]
       }
     },
@@ -3296,6 +3370,7 @@
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
+        "import-attribute-readback-network",
         "local-start-alb",
         "local-start-alb-from-state",
         "nlb-source-nat",
@@ -3319,6 +3394,9 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",
@@ -3345,6 +3423,7 @@
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
+        "import-attribute-readback-network",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
@@ -3361,6 +3440,9 @@
         "elbv2-same-name-replacement": [
           "l1",
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",
@@ -3685,7 +3767,6 @@
         "appsync",
         "batch",
         "cc-api-fallback",
-        "cc-api-fallback-transitions",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "ci-cd",
@@ -3712,6 +3793,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
+        "import-attribute-readback",
         "import-deployed-parameter-secret",
         "infra-security",
         "intrinsic-functions",
@@ -3771,9 +3853,6 @@
           "l2"
         ],
         "cc-api-fallback": [
-          "l2"
-        ],
-        "cc-api-fallback-transitions": [
           "l2"
         ],
         "cc-getatt-readback": [
@@ -3860,6 +3939,10 @@
           "literal"
         ],
         "iam-role-prefixed-name-update": [
+          "l2",
+          "literal"
+        ],
+        "import-attribute-readback": [
           "l2",
           "literal"
         ],
@@ -4174,6 +4257,7 @@
         "dynamodb-streams",
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
+        "import-attribute-readback",
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
@@ -4187,6 +4271,10 @@
           "literal"
         ],
         "fifo-sqs-event-source": [
+          "literal"
+        ],
+        "import-attribute-readback": [
+          "l1",
           "literal"
         ],
         "lambda-esm-self-managed-kafka": [
@@ -4209,12 +4297,12 @@
         "bench-cdk-sample",
         "bootstrap-free-region",
         "cache-streaming",
-        "cc-api-fallback-transitions",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
         "composite-stack",
         "custom-resource-getatt-data",
+        "custom-resource-noecho-nested",
         "custom-resource-provider",
         "data-pipeline",
         "deep-getatt-chains",
@@ -4234,7 +4322,9 @@
         "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "import-attribute-readback",
         "import-deployed-parameter-secret",
+        "import-lambda-url-attributes",
         "kinesis-esm-filter",
         "lambda",
         "lambda-alias-provisioned-concurrency",
@@ -4343,10 +4433,6 @@
         "cache-streaming": [
           "l2"
         ],
-        "cc-api-fallback-transitions": [
-          "l1",
-          "literal"
-        ],
         "cloudfront-function-url": [
           "l2"
         ],
@@ -4362,6 +4448,10 @@
         ],
         "custom-resource-getatt-data": [
           "l2"
+        ],
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
         ],
         "custom-resource-provider": [
           "l2"
@@ -4424,8 +4514,14 @@
         "iam-role-policies-drift-clean": [
           "l2"
         ],
+        "import-attribute-readback": [
+          "l2"
+        ],
         "import-deployed-parameter-secret": [
           "l1"
+        ],
+        "import-lambda-url-attributes": [
+          "l2"
         ],
         "kinesis-esm-filter": [
           "l2"
@@ -4744,10 +4840,14 @@
       "resourceType": "AWS::Lambda::Url",
       "integs": [
         "composite-stack",
+        "import-lambda-url-attributes",
         "lambda-url-authtype-replay"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "import-lambda-url-attributes": [
           "literal"
         ],
         "lambda-url-authtype-replay": [
@@ -5355,6 +5455,7 @@
         "export",
         "full-stack-demo",
         "iam-propagation-stress",
+        "import-attribute-readback",
         "importvalue-chain",
         "intrinsics-torture",
         "intrinsics-torture-2",
@@ -5433,6 +5534,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "import-attribute-readback": [
+          "l2",
+          "literal"
         ],
         "importvalue-chain": [
           "l2"
@@ -5782,19 +5887,25 @@
         "cross-stack-references",
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
+        "custom-resource-noecho-nested",
         "deep-getatt-chains",
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
+        "docdb-neptune",
         "dynamic-ref-cross-region",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
+        "import-attribute-readback",
+        "import-attribute-readback-network",
         "import-attributes",
         "import-deployed-parameter-secret",
+        "import-lambda-url-attributes",
         "import-nested-stack",
+        "import-retain-destroy",
         "import-secret-observed",
         "import-value-strong-ref",
         "importvalue-chain",
@@ -5878,6 +5989,10 @@
         "custom-resource-getatt-data": [
           "l2"
         ],
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
+        ],
         "deep-getatt-chains": [
           "l1"
         ],
@@ -5891,6 +6006,9 @@
         "destroy-interrupt": [
           "l2",
           "literal"
+        ],
+        "docdb-neptune": [
+          "l2"
         ],
         "dynamic-ref-cross-region": [
           "l1"
@@ -5913,15 +6031,27 @@
           "l1",
           "l2"
         ],
+        "import-attribute-readback": [
+          "l2"
+        ],
+        "import-attribute-readback-network": [
+          "l2"
+        ],
         "import-attributes": [
           "literal"
         ],
         "import-deployed-parameter-secret": [
           "l1"
         ],
+        "import-lambda-url-attributes": [
+          "l2"
+        ],
         "import-nested-stack": [
           "l2",
           "literal"
+        ],
+        "import-retain-destroy": [
+          "l2"
         ],
         "import-secret-observed": [
           "l2",

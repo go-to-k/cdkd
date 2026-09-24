@@ -474,6 +474,17 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
 }
 
 /**
+ * {@link displayIdent} for a STACK NAME or a construct path: the same rule, with
+ * the cap a nested `Parent~Child~Grandchild` name or a Stage path legitimately
+ * needs ({@link STACK_REF_MAX_CODE_POINTS}). The caller writes NO quotes around
+ * the result, since `displayIdent` supplies its own boundary for any value that
+ * needs one (go-to-k/cdkd#3617).
+ */
+export function displayStackName(value: unknown): string {
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+}
+
+/**
  * The shape a state-key segment must have before it may be interpolated into a
  * command cdkd invites an operator to PASTE.
  *

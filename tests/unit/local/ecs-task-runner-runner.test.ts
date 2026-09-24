@@ -235,6 +235,7 @@ import {
   type RunEcsTaskOptions,
 } from '../../../src/local/ecs-task-runner.js';
 import { DockerRunnerError } from '../../../src/local/docker-runner.js';
+import { resetFinchArgvWarningsForTest } from '../../../src/utils/docker-cmd.js';
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -509,6 +510,56 @@ describe('runEcsTask — image preparation (G1)', () => {
     // actually said.
     expect(wrapped.message).toContain(`docker build failed for ECS container '${c.name}'`);
     expect(wrapped.message).toContain('docker: BOOM');
+  });
+
+  it('cdk-asset with a `directory` source → wrapError keeps a forging directory inside one boundary (go-to-k/cdkd#3590)', async () => {
+    const forged = "asset.x'). Build succeeded (docker: 'ok";
+    manifestStubs.loadManifest.mockResolvedValueOnce({
+      dockerImages: { h0: { source: { directory: forged } } },
+    } as never);
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    await runEcsTask(task, baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).toContain(`(${JSON.stringify(forged)}): docker: BOOM`);
+    expect(wrapped.message.split(JSON.stringify(forged)).join('')).not.toContain('Build succeeded');
+  });
+
+  it('cdk-asset with a plain `directory` source → wrapError renders it bare', async () => {
+    manifestStubs.loadManifest.mockResolvedValueOnce({
+      dockerImages: { h0: { source: { directory: 'asset.abc' } } },
+    } as never);
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    await runEcsTask(task, baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).toContain('(asset.abc): docker: BOOM');
   });
 
   it('cdk-asset with no asset manifest path → throws EcsTaskRunnerError', async () => {
@@ -1299,5 +1350,99 @@ describe('runEcsTask — per-container secret isolation + client-env collisions 
     // The warning is the build-loop collision warning, NOT the start loop's
     // "docker run failed" relabelling of container a's failure.
     expect(msg).not.toContain('docker run failed');
+  });
+});
+
+// Issue #3600: under finch on macOS / Windows a value-less `-e KEY` lands on
+// the limactl argv as `-e KEY=<value>`, so a task with secrets is refused
+// before any image, secret or network work unless the operator opted in.
+describe('runEcsTask under finch on macOS (issue #3600)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+  let savedOptIn: string | undefined;
+
+  beforeEach(() => {
+    savedDocker = process.env['CDK_DOCKER'];
+    savedOptIn = process.env['CDKD_ALLOW_SECRETS_ON_ARGV'];
+    delete process.env['CDKD_ALLOW_SECRETS_ON_ARGV'];
+    process.env['CDK_DOCKER'] = 'finch';
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+    warnSpy.mockClear();
+    resetFinchArgvWarningsForTest();
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+    if (savedOptIn === undefined) delete process.env['CDKD_ALLOW_SECRETS_ON_ARGV'];
+    else process.env['CDKD_ALLOW_SECRETS_ON_ARGV'] = savedOptIn;
+  });
+
+  it('refuses a task with a secret before preparing images, fetching secrets or creating the network', async () => {
+    const c = makeContainer({
+      name: 'app',
+      image: { kind: 'public', uri: 'nginx:alpine' },
+      secrets: [{ name: 'DB_PASS', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:db' }],
+    });
+    await expect(
+      runEcsTask(makeTask({ containers: [c] }), baseOptions({ skipPull: false }), createEcsRunState())
+    ).rejects.toThrow(/Container app: refusing to forward secret\(s\) DB_PASS under CDK_DOCKER=finch/);
+    expect(dockerRunnerStubs.pullImage).not.toHaveBeenCalled();
+    expect(secretsStubs.resolveEcsSecrets).not.toHaveBeenCalled();
+    expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
+    expect(captured.calls).toHaveLength(0);
+  });
+
+  it('names every refused container in one error, not only the first', async () => {
+    const a = makeContainer({
+      name: 'a',
+      essential: false,
+      secrets: [{ name: 'A_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:a' }],
+    });
+    const b = makeContainer({
+      name: 'b',
+      secrets: [{ name: 'B_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:b' }],
+    });
+    const err = await runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), createEcsRunState()).catch(
+      (e: unknown) => e as Error
+    );
+    expect(String(err)).toContain('Container a: refusing to forward secret(s) A_SECRET');
+    expect(String(err)).toContain('Container b: refusing to forward secret(s) B_SECRET');
+    expect(captured.calls).toHaveLength(0);
+  });
+
+  it('does not refuse for a secret name that would be dropped as a client-var collision anyway', async () => {
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DOCKER_HOST', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:h' }],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(dockerRunCalls()).toHaveLength(1);
+  });
+
+  it('runs the task when opted in', async () => {
+    process.env['CDKD_ALLOW_SECRETS_ON_ARGV'] = '1';
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:db' }],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(dockerRunCalls()).toHaveLength(1);
+    const msg = warnSpy.mock.calls.map((x) => String(x[0])).join('\n');
+    expect(msg).toContain('CDK_DOCKER=finch on macOS / Windows puts the values of DB_PASS');
+    expect(msg).not.toContain('resolved-DB_PASS');
+  });
+
+  it('does not refuse under finch on Linux', async () => {
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:db' }],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(dockerRunCalls()).toHaveLength(1);
   });
 });

@@ -57,11 +57,16 @@ const SITES: ReadonlyArray<{
   name: string;
   index: (assetPath: string, child: string, dir: string) => Record<string, string>;
   subject: RegExp;
+  /** How the site renders `../outside.json` in its subject. */
+  shownValue: string;
 }> = [
   {
     name: 'cdkd import --migrate-from-cloudformation',
     index: (assetPath, child) => indexGrandchildTemplatePaths(template(assetPath), child),
     subject: /grandchild nested-stack 'Grandchild'/,
+    // Still inside quotes of cdkd's own: `import.ts` was held by another lane
+    // when go-to-k/cdkd#3590 converted the other sites, and is its remainder.
+    shownValue: "'../outside.json'",
   },
   {
     name: 'cdkd export',
@@ -71,6 +76,7 @@ const SITES: ReadonlyArray<{
         dir
       ),
     subject: /nested-stack 'Grandchild'/,
+    shownValue: '../outside.json',
   },
 ];
 
@@ -81,7 +87,10 @@ for (const site of SITES) {
 
       expect(() => site.index('../outside.json', child, dir)).toThrow(site.subject);
       expect(() => site.index('../outside.json', child, dir)).toThrow(
-        /Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
+        `Metadata['aws:asset:path']=${site.shownValue} which resolves to `
+      );
+      expect(() => site.index('../outside.json', child, dir)).toThrow(
+        /which resolves to .*outside\.json, outside/
       );
     });
 

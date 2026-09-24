@@ -281,8 +281,12 @@ function isRoleArnSite(expression: string): boolean {
  * fence working: extracting the helper turned `${message}` — a site that had
  * just been sanitized — back into an undeclared raw neighbour, because the
  * predicate keys on the CALL and not on what the call does.
+ *
+ * `displayAssemblyPath` (go-to-k/cdkd#3509) joined on the same terms: it runs
+ * `displaySafe` first and then either returns that result unchanged or puts it
+ * in an escaped JSON boundary, so it too cannot be weaker than `displaySafe`.
  */
-const SANITIZER_CALL = /\b(displayIdent|displaySafe|displayAwsMessage)\s*\(/;
+const SANITIZER_CALL = /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`

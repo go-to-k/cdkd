@@ -177,6 +177,8 @@ describe('DocDBProvider', () => {
         MasterUserPassword: 'secret123',
       });
       expect(result.attributes).toStrictEqual({
+        // CloudFormation's `Fn::GetAtt` name (issue #3650), plus the dotted key.
+        Endpoint: 'cluster.cluster-xxx.docdb.amazonaws.com',
         'Endpoint.Address': 'cluster.cluster-xxx.docdb.amazonaws.com',
         Arn: 'arn:aws:rds:us-east-1:123:cluster:my-cluster',
       });

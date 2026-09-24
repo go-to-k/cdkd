@@ -13,7 +13,7 @@ import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, displayStackName } from '../utils/display-safe.js';
 
 /**
  * Every manifest- or template-derived value this module RENDERS goes through
@@ -443,7 +443,7 @@ export class Synthesizer {
       const oversize = stacksWithMacros.find((s) => JSON.stringify(s.template).length > 51_200);
       if (oversize) {
         throw new SynthesisError(
-          `Stack '${displaySafe(oversize.stackName)}' uses CloudFormation macros AND its serialized ` +
+          `Stack ${displayStackName(oversize.stackName)} uses CloudFormation macros AND its serialized ` +
             `template exceeds the 51,200-byte inline TemplateBody limit, so cdkd must ` +
             `upload the template to S3 for the transient expansion changeset. cdkd could ` +
             `not resolve a state bucket: STS GetCallerIdentity failed AND --state-bucket ` +
@@ -462,7 +462,7 @@ export class Synthesizer {
     for (const stack of stacksWithMacros) {
       const macros = enumerateMacros(stack.template);
       this.logger.info(
-        `[macros] Expanding CloudFormation macros for stack '${displaySafe(stack.stackName)}' ` +
+        `[macros] Expanding CloudFormation macros for stack ${displayStackName(stack.stackName)} ` +
           `via CFn round-trip (transforms: ${macros.map((m) => displaySafe(m)).join(', ')}; ` +
           `may take 30-60s)...`
       );

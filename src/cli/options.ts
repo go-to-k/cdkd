@@ -7,6 +7,7 @@ import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
+import { removeProtectionTypeList } from '../provisioning/remove-protection-types.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record
@@ -768,7 +769,7 @@ function parseRouteEntries(value: string, previous: string[] | undefined, flag: 
       throw new Error(
         `Invalid ${flag} value "${token}": expected ` +
           `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
-          `(e.g. AWS::Lambda::Function:RuntimeManagementConfig).`
+          `(e.g. AWS::ApiGatewayV2::Api:Body).`
       );
     }
     if (token.startsWith('Custom::')) {
@@ -851,7 +852,7 @@ export const preferSdkRouteOption = new Option(
     'NOT written to AWS — the deployed resource is missing the field. Ignored for a ' +
     'resource that routes to Cloud Control for another reason (a sibling unwired ' +
     'property, or a sticky cc-api state record), where the values are written after all. ' +
-    'Example: --prefer-sdk-route AWS::Lambda::Function:RuntimeManagementConfig'
+    'Example: --prefer-sdk-route AWS::ApiGatewayV2::Api:Body'
 ).argParser(parsePreferSdkRouteToken);
 
 /**
@@ -1436,14 +1437,7 @@ export const destroyOptions = [
     '--remove-protection',
     'Bypass deletion protection on protected resources by flipping the per-resource ' +
       'protection flag off in-place before delete. Covers stack-level terminationProtection ' +
-      '(CDK property) and resource-level protection on AWS::Logs::LogGroup, AWS::RDS::DBInstance, ' +
-      'AWS::RDS::DBCluster, AWS::DocDB::DBCluster, AWS::Neptune::DBCluster, ' +
-      'AWS::Neptune::DBInstance, AWS::DynamoDB::Table, AWS::EC2::Instance, ' +
-      'AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
-      'AWS::ElasticLoadBalancingV2::LoadBalancer, AWS::DSQL::Cluster, ' +
-      'AWS::NeptuneGraph::Graph, AWS::SMSVOICE::ProtectConfiguration, ' +
-      'AWS::VerifiedPermissions::PolicyStore, AWS::EKS::Cluster, ' +
-      'AWS::RDS::GlobalCluster, and AWS::DocDB::GlobalCluster.'
+      `(CDK property) and resource-level protection on ${removeProtectionTypeList()}.`
   ).default(false),
   allowUnsupportedTypesOption,
 ];

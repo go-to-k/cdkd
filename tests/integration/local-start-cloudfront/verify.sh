@@ -15,6 +15,8 @@
 #   - --watch      -> editing the site source re-synths + swaps the routing
 #                     model under the live socket; the new content is served.
 #   - SIGTERM frees the listening port.
+#   - a copy of the assembly whose BucketDeployment source points outside it
+#     is refused instead of served (go-to-k/cdkd#3597).
 #
 #     bash tests/integration/local-start-cloudfront/verify.sh
 
@@ -31,6 +33,7 @@ CDKD_PID=""
 OUT_FILE=$(mktemp)
 ROOT_BODY=$(mktemp)
 MISS_BODY=$(mktemp)
+TAMPER_DIR=""
 
 cleanup() {
   echo "==> Cleanup: stopping the server"
@@ -46,6 +49,7 @@ cleanup() {
     mv -f site/index.html.bak site/index.html
   fi
   rm -f "${OUT_FILE}" "${ROOT_BODY}" "${MISS_BODY}"
+  [[ -z "${TAMPER_DIR}" ]] || rm -rf "${TAMPER_DIR}"
 }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
@@ -134,4 +138,52 @@ CDKD_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkd local start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, and a --watch reload."
+# ---------------------------------------------------------------------------
+# 6. An S3 origin escaping the assembly is refused (go-to-k/cdkd#3597).
+# ---------------------------------------------------------------------------
+# A copy of the assembly the boot above synthesized, with every directory file
+# asset (the BucketDeployment source among them) pointed at `../victim`: a
+# sibling of the copy holding a page of its own, so an origin that FOLLOWED the
+# escape would serve it.
+echo "==> A BucketDeployment source escaping the assembly is refused"
+TAMPER_DIR=$(mktemp -d)
+cp -R cdk.out "${TAMPER_DIR}/cdk.out"
+mkdir "${TAMPER_DIR}/victim"
+printf '<!doctype html><html><body>victim page</body></html>\n' > "${TAMPER_DIR}/victim/index.html"
+node -e '
+  const fs = require("fs"), path = require("path");
+  const dir = process.argv[1];
+  let n = 0;
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".assets.json"))) {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+    for (const a of Object.values(m.files || {})) {
+      if (a.source.packaging !== "zip") continue;
+      a.source.path = "../victim";
+      n++;
+    }
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(m));
+  }
+  if (n === 0) { console.error("no directory file asset to tamper"); process.exit(1); }
+' "${TAMPER_DIR}/cdk.out"
+: > "${OUT_FILE}"
+${CDKD} local start-cloudfront "${TARGET}" -a "${TAMPER_DIR}/cdk.out" --port "${PORT}" > "${OUT_FILE}" 2>&1 &
+CDKD_PID=$!
+for _ in $(seq 1 120); do
+  kill -0 "${CDKD_PID}" 2>/dev/null || break
+  if grep -q "CloudFront distribution serving on" "${OUT_FILE}"; then
+    if curl -fsS "${BASE}/" 2>/dev/null | grep -qi "victim page"; then
+      fail "the S3 origin served a directory outside the assembly"
+    fi
+    fail "start-cloudfront booted on an assembly whose S3 origin escapes it"
+  fi
+  sleep 0.5
+done
+kill -0 "${CDKD_PID}" 2>/dev/null && fail "start-cloudfront neither refused nor booted in time"
+TAMPER_RC=0
+wait "${CDKD_PID}" || TAMPER_RC=$?
+CDKD_PID=""
+[[ "${TAMPER_RC}" -ne 0 ]] || fail "start-cloudfront exited 0 on an assembly whose S3 origin escapes it"
+grep -Eq "BucketDeployment source asset for bucket .* has source\.path=\.\./victim which resolves to [^ ]*victim, outside" "${OUT_FILE}" \
+  || fail "start-cloudfront did not name the escaping S3 origin in its refusal"
+
+echo "PASS: cdkd local start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, and a --watch reload, and refused an escaping S3 origin."

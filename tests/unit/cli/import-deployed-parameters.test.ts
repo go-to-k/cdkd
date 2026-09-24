@@ -1217,3 +1217,157 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
   });
 });
+
+describe('a REFUSED record a selective import PRESERVES ends with NO baseline (issue #2872)', () => {
+  // A plaintext an earlier binary captured into the preserved record's baseline.
+  const STALE_PLAINTEXT = 'stale-plaintext-2872-baseline';
+
+  function preservedState(record: StackState['resources'][string]): StackState {
+    return {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'arm4-stack',
+      region: 'us-east-1',
+      resources: { Res: structuredClone(record) },
+      outputs: {},
+      lastModified: 0,
+    };
+  }
+
+  function countingRegistry(
+    readback: Record<string, unknown> | undefined = { Detail: { pw: LIVE_PLAINTEXT } },
+    withReader = true
+  ): {
+    registry: Parameters<typeof captureObservedForImportedResources>[1];
+    reads: () => number;
+  } {
+    let reads = 0;
+    const provider = withReader
+      ? {
+          readCurrentState: async () => {
+            reads++;
+            return structuredClone(readback);
+          },
+        }
+      : {};
+    return {
+      registry: {
+        getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+      } as unknown as Parameters<typeof captureObservedForImportedResources>[1],
+      reads: () => reads,
+    };
+  }
+
+  it('the PRESERVED-REFUSAL arm: an already-marked record keeps its marker and loses its baseline, nothing is read', async () => {
+    const state = preservedState({
+      physicalId: 'res-phys',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { Detail: { pw: 'CHANGEME' } },
+      observedProperties: { Detail: { pw: STALE_PLAINTEXT } },
+      observedBaselineRefused: true,
+      observedBaselineRefusalReason: 'unverifiable-parameter',
+    });
+    const { ObservedBaselineRefusals } = await import('../../../src/cli/commands/import.js');
+    const { registry, reads } = countingRegistry();
+    await captureObservedForImportedResources(
+      state,
+      registry,
+      getLogger(),
+      new ObservedBaselineRefusals(),
+      new Set()
+    );
+    expect(reads()).toBe(0);
+    const record = state.resources['Res']!;
+    // ABSENT, not `undefined`: the persisted JSON must not carry the key.
+    expect(Object.hasOwn(record, 'observedProperties')).toBe(false);
+    expect(record.observedBaselineRefused).toBe(true);
+    expect(record.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+    expect(JSON.stringify(state)).not.toContain(STALE_PLAINTEXT);
+  });
+
+  it("THIS RUN's refusal of a preserved record (the ARM 4 shape go-to-k/cdkd#3461 measured): marked, and its baseline dropped", async () => {
+    // A record a pre-#2854 import wrote: placeholder `properties`, and a
+    // baseline holding what AWS really holds there.
+    const state = preservedState({
+      physicalId: 'res-phys',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { Detail: { pw: 'CHANGEME' } },
+      observedProperties: { Detail: { pw: STALE_PLAINTEXT } },
+    });
+    const template = templateWith(PW_PARAM, {}, { Properties: PW_PROPS });
+    const refusals = await resolveImportedProperties(
+      state,
+      template,
+      'us-east-1',
+      undefined as never,
+      getLogger(),
+      DeployedParameters.fromDescribeStacks([
+        { ParameterKey: 'DbPassword', ParameterValue: DEPLOYED_SENTINEL },
+      ])
+    );
+    // The premise: this run's set names the PRESERVED record.
+    expect(refusals.has('Res')).toBe(true);
+    const { registry, reads } = countingRegistry();
+    // Rebuilt set EMPTY: a selective merge left the record in place.
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
+    expect(reads()).toBe(0);
+    const record = state.resources['Res']!;
+    expect(Object.hasOwn(record, 'observedProperties')).toBe(false);
+    expect(record.observedBaselineRefused).toBe(true);
+    expect(record.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+    const persisted = JSON.stringify(state);
+    expect(persisted).not.toContain(STALE_PLAINTEXT);
+    expect(persisted).not.toContain(LIVE_PLAINTEXT);
+    expect(logged.join('\n')).not.toContain(STALE_PLAINTEXT);
+  });
+
+  it('THIS RUN refusing a preserved record through ANOTHER arm (a throw) drops its baseline too', async () => {
+    const state = preservedState({
+      physicalId: 'res-phys',
+      resourceType: 'AWS::SQS::Queue',
+      // The walk resolves the RECORD's own bag, so the throw has to be there:
+      // a previous run whose resolve threw left the raw intrinsic in place.
+      properties: { Other: { Ref: 'NoSuchThing' } },
+      observedProperties: { Other: STALE_PLAINTEXT },
+    });
+    const refusals = await resolveImportedProperties(
+      state,
+      templateWith({}, {}, { Properties: { Other: { Ref: 'NoSuchThing' } } }),
+      'us-east-1',
+      undefined as never,
+      getLogger(),
+      undefined
+    );
+    expect(refusals.has('Res')).toBe(true);
+    const { registry, reads } = countingRegistry();
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
+    expect(reads()).toBe(0);
+    const record = state.resources['Res']!;
+    expect(Object.hasOwn(record, 'observedProperties')).toBe(false);
+    expect(record.observedBaselineRefused).toBe(true);
+    expect(record.observedBaselineRefusalReason).toBe('incomplete-resolution');
+    expect(JSON.stringify(state)).not.toContain(STALE_PLAINTEXT);
+  });
+
+  it('a preserved record NO arm refuses keeps its baseline when nothing replaces it: the clear belongs to the refusal, not to every skip', async () => {
+    const baseline = { Detail: { pw: 'kept-baseline-2872' } };
+    const state = preservedState({
+      physicalId: 'res-phys',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { Detail: { pw: 'CHANGEME' } },
+      observedProperties: structuredClone(baseline),
+    });
+    const { ObservedBaselineRefusals } = await import('../../../src/cli/commands/import.js');
+    // A provider with no `readCurrentState`: the capture returns before
+    // writing, so only a clear could change the baseline.
+    const { registry } = countingRegistry(undefined, false);
+    await captureObservedForImportedResources(
+      state,
+      registry,
+      getLogger(),
+      new ObservedBaselineRefusals(),
+      new Set()
+    );
+    expect(state.resources['Res']!.observedProperties).toEqual(baseline);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+  });
+});

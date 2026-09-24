@@ -2791,7 +2791,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
   describe('import', () => {
     it('resolves via explicit TableName override → DescribeTable verify', async () => {
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, TableId: 'tid', LatestStreamArn: `${TABLE_ARN}/stream/s` },
+      });
       const result = await provider.import({
         logicalId: 'L',
         resourceType: RESOURCE_TYPE,
@@ -2800,7 +2802,16 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         properties: {},
         knownPhysicalId: 'explicit-table',
       });
-      expect(result).toEqual({ physicalId: 'explicit-table', attributes: {} });
+      // Issue #3627: the same map `create()` records.
+      expect(result).toStrictEqual({
+        physicalId: 'explicit-table',
+        attributes: {
+          Arn: TABLE_ARN,
+          TableId: 'tid',
+          StreamArn: `${TABLE_ARN}/stream/s`,
+          TableName: 'explicit-table',
+        },
+      });
     });
 
     it('returns null when explicit override does not exist on AWS', async () => {

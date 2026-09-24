@@ -76,11 +76,16 @@ describe('ServiceDiscoveryProvider — import', () => {
 
   describe('Service', () => {
     it('verifies explicit Id via GetService', async () => {
-      mockSend.mockResolvedValueOnce({ Service: { Id: 'svc-abc' } });
+      const arn = 'arn:aws:servicediscovery:us-east-1:123456789012:service/svc-abc';
+      mockSend.mockResolvedValueOnce({ Service: { Id: 'svc-abc', Arn: arn, Name: 'api' } });
       const result = await provider.import!(
         makeServiceInput({ knownPhysicalId: 'svc-abc' })
       );
-      expect(result).toEqual({ physicalId: 'svc-abc', attributes: {} });
+      // Issue #3627: the same map `create()` records (`Name` resolved to the id).
+      expect(result).toStrictEqual({
+        physicalId: 'svc-abc',
+        attributes: { Id: 'svc-abc', Arn: arn, Name: 'api' },
+      });
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetServiceCommand);
     });
 

@@ -84,6 +84,7 @@ import {
   pullEcrImage,
 } from '../../../src/local/ecr-puller.js';
 import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
+import { ECR_REGISTRY_HOST_FORMS } from '../../../src/utils/ecr-uri.js';
 
 describe('parseEcrUri', () => {
   it('parses a same-region ECR URI', () => {
@@ -182,6 +183,40 @@ describe('parseEcrUri', () => {
  * Only the DOMAIN may be folded — the repository path and tag decide WHICH
  * image is pulled.
  */
+/**
+ * The host fold must be ASCII-only. A full Unicode fold ran BEFORE
+ * `parseEcrRegistryHost`'s raw-capture charset guard and turned the Kelvin sign
+ * U+212A into ASCII `k`, so the guard saw a clean host and accepted it.
+ */
+describe('parseEcrUri refuses a host that only a Unicode fold makes ASCII', () => {
+  it('a Kelvin sign in the REGION is refused, not read as the region `us-keast-1`', () => {
+    expect(
+      parseEcrUri('123456789012.dkr.ecr-fips.us-Keast-1.amazonaws.com/r:t')
+    ).toBeUndefined();
+  });
+
+  it('a Kelvin sign in the LABELS is refused, not resolved to the plain form', () => {
+    expect(parseEcrUri('123456789012.dKr.ecr.us-east-1.amazonaws.com/r:t')).toBeUndefined();
+  });
+
+  it('a dotted capital I (U+0130) in the region is refused', () => {
+    // Regression guard rather than a discriminator: U+0130 folds to `i` plus a
+    // COMBINING dot, which is non-ASCII either way.
+    expect(parseEcrUri('123456789012.dkr.ecr.us-İast-1.amazonaws.com/r:t')).toBeUndefined();
+  });
+
+  it('upper-case ASCII still folds and is accepted (negative control)', () => {
+    expect(parseEcrUri('123456789012.DKR.ECR-FIPS.US-EAST-1.AMAZONAWS.COM/r:t')).toMatchObject({
+      region: 'us-east-1',
+      canonicalUri: '123456789012.dkr.ecr-fips.us-east-1.amazonaws.com/r:t',
+    });
+  });
+
+  it('canonicalizeImageUriHost leaves a non-ASCII code point as written', () => {
+    expect(canonicalizeImageUriHost('Reg.K.Example/Repo:T')).toBe('reg.K.example/Repo:T');
+  });
+});
+
 describe('canonicalizeImageUriHost (issue #1801)', () => {
   it('lower-cases the host and leaves the repository path + tag untouched', () => {
     expect(
@@ -1110,5 +1145,111 @@ describe('pullEcrImage', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  // ---------- non-plain host forms log in to their OWN host (issue #1855) ----------
+  // `GetAuthorizationToken` reports the PLAIN host as `proxyEndpoint`. A login
+  // there followed by a pull from a FIPS / dual-stack host sent no credentials,
+  // since docker keys its credential store on the hostname verbatim. The cases
+  // are driven off the form table, so a form added there is covered here too.
+
+  const PLAIN_PROXY_ENDPOINT = 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com';
+  const hostForForm = (form: { labels: string; fixedUrlSuffix?: string }): string =>
+    `111111111111.${form.labels}.us-east-1.${form.fixedUrlSuffix ?? 'amazonaws.com'}`;
+  const NON_PLAIN_FORMS = ECR_REGISTRY_HOST_FORMS.filter((form) => form.labels !== 'dkr.ecr');
+
+  it('the form table still carries the three non-plain forms these cases drive', () => {
+    // A literal floor, so the table-driven cases below cannot go vacuous.
+    expect(NON_PLAIN_FORMS.map((form) => form.labels).sort()).toEqual([
+      'dkr-ecr',
+      'dkr-ecr-fips',
+      'dkr.ecr-fips',
+    ]);
+  });
+
+  it.each(NON_PLAIN_FORMS.map((form) => [form.labels, hostForForm(form)] as const))(
+    '%s: login targets the pull host, not the plain proxyEndpoint',
+    async (_labels, host) => {
+      stsSendMock.mockResolvedValue({ Account: '111111111111' });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [
+          {
+            authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+            // What real ECR reports for every form: the PLAIN host.
+            proxyEndpoint: PLAIN_PROXY_ENDPOINT,
+          },
+        ],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+
+      const result = await pullEcrImage(`${host}/r:t`, { skipPull: false });
+
+      const pullRef = pullRefOf();
+      expect(pullRef).toBe(`${host}/r:t`);
+      expect(loginEndpointOf()).toBe(`https://${host}`);
+      expect(hostOf(loginEndpointOf())).toBe(hostOf(pullRef));
+      expect(result).toBe(pullRef);
+    }
+  );
+
+  it('the plain form keeps the proxyEndpoint beside a non-plain case (negative control)', async () => {
+    // The same fixture as the table-driven cases, with only the host form
+    // changed: a fix that ignored `proxyEndpoint` for EVERY form would pass
+    // those, and this one pins that the plain form is byte-identical.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false });
+
+    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com');
+  });
+
+  it('a non-plain form ignores even a VPC-endpoint proxyEndpoint', async () => {
+    // `proxyEndpoint` names the plain registry, VPC endpoint or not, so a
+    // dual-stack pull must still log in to the dual-stack host.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    await pullEcrImage('111111111111.dkr-ecr.us-east-1.on.aws/r:t', { skipPull: false });
+
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr-ecr.us-east-1.on.aws');
+  });
+
+  it('a mixed-case FIPS host: login and pull both use the folded host', async () => {
+    // The #1801 fold and the #1855 host threading compose: the login host is
+    // taken off the CANONICAL reference, never the raw input.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: PLAIN_PROXY_ENDPOINT,
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-gov-west-1';
+
+    await pullEcrImage('111111111111.DKR.ECR-FIPS.US-GOV-WEST-1.amazonaws.com/Team/App:V1', {
+      skipPull: false,
+    });
+
+    expect(pullRefOf()).toBe('111111111111.dkr.ecr-fips.us-gov-west-1.amazonaws.com/Team/App:V1');
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr-fips.us-gov-west-1.amazonaws.com');
   });
 });

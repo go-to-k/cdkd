@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as docdb from 'aws-cdk-lib/aws-docdb';
 import * as neptune from 'aws-cdk-lib/aws-neptune';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * cdkd DocDB + Neptune SDK provider E2E test stack.
@@ -167,5 +168,28 @@ export class DocdbNeptuneStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DocdbInstanceId', { value: docdbInstance.ref });
     new cdk.CfnOutput(this, 'NeptuneClusterId', { value: neptuneCluster.ref });
     new cdk.CfnOutput(this, 'NeptuneInstanceId', { value: neptuneInstance.ref });
+
+    // ── Issue #3650: endpoint Fn::GetAtt names ────────────────────────
+    // DocDB / Neptune name these attributes `Endpoint` / `Port` /
+    // `ReadEndpoint` (not RDS's dotted `Endpoint.Address`). cdkd recorded only
+    // the dotted keys, so each of these resolved to the cluster / instance
+    // IDENTIFIER. One SSM parameter per attribute carries the GetAtt;
+    // verify.sh compares each against DescribeDBClusters / DescribeDBInstances.
+    // Present in both deploys, so the CDKD_TEST_REMOVAL redeploy does not
+    // delete them.
+    const endpointParams: Record<string, string> = {
+      DocdbClusterEndpointParam: docdbCluster.attrEndpoint,
+      DocdbClusterPortParam: docdbCluster.attrPort,
+      DocdbClusterReadEndpointParam: docdbCluster.attrReadEndpoint,
+      DocdbInstanceEndpointParam: docdbInstance.attrEndpoint,
+      NeptuneClusterEndpointParam: neptuneCluster.attrEndpoint,
+      NeptuneClusterPortParam: neptuneCluster.attrPort,
+      NeptuneClusterReadEndpointParam: neptuneCluster.attrReadEndpoint,
+      NeptuneInstanceEndpointParam: neptuneInstance.attrEndpoint,
+    };
+    for (const [logicalId, value] of Object.entries(endpointParams)) {
+      const param = new ssm.StringParameter(this, logicalId, { stringValue: value });
+      (param.node.defaultChild as cdk.CfnResource).overrideLogicalId(logicalId);
+    }
   }
 }

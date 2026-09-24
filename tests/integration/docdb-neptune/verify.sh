@@ -187,6 +187,59 @@ if [ "${NEPTUNE_BASE_PROT}" != "true" ] || [ "${NEPTUNE_BASE_RETENTION}" != "7" 
 fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters"
 
+# Issue #3650: each SSM parameter carries one DocDB / Neptune endpoint
+# `Fn::GetAtt`. Before the fix every one held the cluster / instance
+# IDENTIFIER, because cdkd recorded only RDS-style dotted keys these services
+# do not use. Checked after the create (step 3e) and again after the
+# CDKD_TEST_REMOVAL redeploy (step 3f), whose UPDATE rewrites the records.
+check_endpoints() { # usage: check_endpoints <step label>
+  local state docdb_cluster neptune_cluster docdb_instance_id neptune_instance_id
+  local docdb_instance_endpoint neptune_instance_endpoint
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  docdb_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DocDB::DBInstance") | .value.physicalId] | first // ""') || return 1
+  neptune_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBInstance") | .value.physicalId] | first // ""') || return 1
+  if [ -z "${docdb_instance_id}" ] || [ -z "${neptune_instance_id}" ]; then
+    echo "[verify] FAIL: could not resolve instance identifiers from state (docdb='${docdb_instance_id}', neptune='${neptune_instance_id}')" >&2
+    return 1
+  fi
+  docdb_cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json) || return 1
+  neptune_cluster=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json) || return 1
+  docdb_instance_endpoint=$(aws docdb describe-db-instances --db-instance-identifier "${docdb_instance_id}" \
+    --region "${REGION}" --query 'DBInstances[0].Endpoint.Address' --output text) || return 1
+  neptune_instance_endpoint=$(aws neptune describe-db-instances --db-instance-identifier "${neptune_instance_id}" \
+    --region "${REGION}" --query 'DBInstances[0].Endpoint.Address' --output text) || return 1
+  ENDPOINT_FAILED=0
+  check_param "${state}" DocdbClusterEndpointParam "$(echo "${docdb_cluster}" | jq -r '.Endpoint')" || return 1
+  check_param "${state}" DocdbClusterPortParam "$(echo "${docdb_cluster}" | jq -r '.Port')" || return 1
+  check_param "${state}" DocdbClusterReadEndpointParam "$(echo "${docdb_cluster}" | jq -r '.ReaderEndpoint')" || return 1
+  check_param "${state}" DocdbInstanceEndpointParam "${docdb_instance_endpoint}" || return 1
+  check_param "${state}" NeptuneClusterEndpointParam "$(echo "${neptune_cluster}" | jq -r '.Endpoint')" || return 1
+  check_param "${state}" NeptuneClusterPortParam "$(echo "${neptune_cluster}" | jq -r '.Port')" || return 1
+  check_param "${state}" NeptuneClusterReadEndpointParam "$(echo "${neptune_cluster}" | jq -r '.ReaderEndpoint')" || return 1
+  check_param "${state}" NeptuneInstanceEndpointParam "${neptune_instance_endpoint}" || return 1
+  [ "${ENDPOINT_FAILED}" = 0 ] || return 1
+  echo "[verify] $1 ok: all eight endpoint attributes resolved to AWS's values"
+}
+check_param() { # usage: check_param <state json> <logical id> <expected value>
+  local name got
+  name=$(echo "$1" | jq -r --arg l "$2" '.resources[$l].physicalId // ""') || return 1
+  if [ -z "${name}" ]; then
+    echo "[verify] FAIL: $2 has no state record" >&2
+    ENDPOINT_FAILED=1
+    return 0
+  fi
+  got=$(aws ssm get-parameter --name "${name}" --region "${REGION}" --query Parameter.Value --output text) || return 1
+  if [ "${got}" != "$3" ]; then
+    echo "[verify] FAIL: $2 holds '${got}', want '$3'" >&2
+    ENDPOINT_FAILED=1
+  fi
+}
+
+echo "[verify] step 3e: endpoint Fn::GetAtt values reached their consumers (issue #3650)"
+check_endpoints "step 3e"
+
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 fields)"
 CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -231,6 +284,9 @@ if [ -z "${RESET_OK}" ]; then
   exit 1
 fi
 echo "[verify] step 3d ok: both clusters reset to DeletionProtection=false + BackupRetentionPeriod=1 (+ Neptune IAMDatabaseAuthenticationEnabled=false) — #1160 silent-drop CLOSED"
+
+echo "[verify] step 3f: endpoint Fn::GetAtt values after the UPDATE redeploy (issue #3650)"
+check_endpoints "step 3f"
 
 echo "[verify] step 4: cdkd destroy --force (no --remove-protection — proves the #1160 reset landed)"
 ${CLI} destroy "${STACK}" \

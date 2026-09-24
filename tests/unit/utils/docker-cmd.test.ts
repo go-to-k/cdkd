@@ -2,11 +2,14 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
+  ALLOW_SECRETS_ON_ARGV_ENV,
   DOCKER_CLIENT_ENV_KEYS,
   DOCKER_CLIENT_ENV_PREFIXES,
   DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS,
   dockerSpawnEnvWithSensitive,
+  finchSecretArgvRefusal,
   isDockerClientEnvKey,
+  isFinchVmClient,
   isMalformedEnvKey,
   describeDockerCapturedOutput,
   describeDockerExecFailure,
@@ -1874,3 +1877,119 @@ describe.skipIf(process.platform === 'win32')(
     });
   }
 );
+
+// Issue #3600: finch on macOS / Windows rewrites a value-less `-e KEY` into
+// `-e KEY=<value>` on the limactl argv, so the value-less form is not a
+// guarantee there.
+describe('finch VM argv exposure (issue #3600)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+  let savedOptIn: string | undefined;
+
+  function setPlatform(p: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: p });
+  }
+
+  beforeEach(() => {
+    savedDocker = process.env['CDK_DOCKER'];
+    savedOptIn = process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+    delete process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+    if (savedOptIn === undefined) delete process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+    else process.env[ALLOW_SECRETS_ON_ARGV_ENV] = savedOptIn;
+  });
+
+  it.each([
+    ['finch', 'darwin', true],
+    ['/opt/homebrew/bin/finch', 'darwin', true],
+    ['Finch', 'darwin', true],
+    ['C:\\Program Files\\Finch\\bin\\finch.exe', 'win32', true],
+    ['FINCH.EXE', 'win32', true],
+    ['finch', 'win32', true],
+    // finch on Linux passes the argv to nerdctl unchanged.
+    ['finch', 'linux', false],
+    ['/usr/local/bin/finch', 'linux', false],
+    // Other clients resolve the bare `-e KEY` themselves.
+    ['docker', 'darwin', false],
+    ['podman', 'darwin', false],
+    ['nerdctl', 'darwin', false],
+    // Documented limit: another basename is not recognised.
+    ['/usr/local/bin/finch-wrapper', 'darwin', false],
+    ['nerdctl.lima', 'darwin', false],
+  ] as const)('isFinchVmClient(%j, %s) is %s', (cmd, platform, expected) => {
+    expect(isFinchVmClient(cmd, platform)).toBe(expected);
+  });
+
+  it('isFinchVmClient defaults to the CDK_DOCKER binary and the running platform', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = '/opt/homebrew/bin/finch';
+    expect(isFinchVmClient()).toBe(true);
+    delete process.env['CDK_DOCKER'];
+    expect(isFinchVmClient()).toBe(false);
+    process.env['CDK_DOCKER'] = 'finch';
+    setPlatform('linux');
+    expect(isFinchVmClient()).toBe(false);
+  });
+
+  it('refuses a template secret under finch on macOS, naming it and the opt-in', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'API_KEY'], "Container 'app'");
+    expect(msg).toBeDefined();
+    expect(msg).toContain("Container 'app': refusing to forward secret(s) DB_PASSWORD, API_KEY");
+    expect(msg).toContain(`${ALLOW_SECRETS_ON_ARGV_ENV}=1`);
+    expect(msg).toContain('limactl');
+  });
+
+  it('names a repeated secret once', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'DB_PASSWORD'], 'Container')!;
+    expect(msg.match(/DB_PASSWORD/g)).toHaveLength(1);
+  });
+
+  it('says the opt-in holds while set, not for one run', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toContain('while it stays set');
+  });
+
+  it('refuses under finch on Windows too', () => {
+    setPlatform('win32');
+    process.env['CDK_DOCKER'] = 'finch.exe';
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+  });
+
+  it('renders a hostile secret name through displayIdent (no raw control bytes)', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    const msg = finchSecretArgvRefusal(['EVIL\u001b[31mNAME'], 'Container')!;
+    expect(msg).not.toContain('\u001b');
+  });
+
+  it.each([
+    ['no secret names', [] as string[], 'darwin' as NodeJS.Platform, 'finch', undefined],
+    ['finch on Linux', ['DB_PASSWORD'], 'linux' as NodeJS.Platform, 'finch', undefined],
+    ['docker on macOS', ['DB_PASSWORD'], 'darwin' as NodeJS.Platform, 'docker', undefined],
+    ['podman on macOS', ['DB_PASSWORD'], 'darwin' as NodeJS.Platform, 'podman', undefined],
+    ['opt-in 1', ['DB_PASSWORD'], 'darwin' as NodeJS.Platform, 'finch', '1'],
+    ['opt-in TRUE', ['DB_PASSWORD'], 'darwin' as NodeJS.Platform, 'finch', 'TRUE'],
+  ])('does not refuse: %s', (_label, names, platform, docker, optIn) => {
+    setPlatform(platform);
+    process.env['CDK_DOCKER'] = docker;
+    if (optIn !== undefined) process.env[ALLOW_SECRETS_ON_ARGV_ENV] = optIn;
+    expect(finchSecretArgvRefusal(names, 'Container')).toBeUndefined();
+  });
+
+  it.each(['0', 'false', 'yes', ''])('an opt-in value of %j does not opt in', (optIn) => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    process.env[ALLOW_SECRETS_ON_ARGV_ENV] = optIn;
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+  });
+});

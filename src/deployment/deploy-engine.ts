@@ -29,6 +29,7 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
+  refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourcesForDeploy,
 } from '../state/malformed-resources-bag.js';
 import {
@@ -3355,6 +3356,15 @@ export class DeployEngine {
       // go-to-k/cdkd#3018 exists to remove. `cdkd diff` keeps its repair-and-warn
       // half at its own load, so the preview this refusal points at still works.
       refuseMalformedResourcesForDeploy(currentState, stackName, this.stackRegion);
+      // And each ROW of that bag (go-to-k/cdkd#3314). A `null` or typeless row
+      // reads as absent in the diff and is planned as a CREATE of a resource
+      // this stack already manages. `calculateDiff` refuses it too, but two
+      // walks run before the diff and each died on the row first, with a bare
+      // `TypeError`: the CLI's prefix-migration gate (`onCurrentStateLoaded`
+      // below) and the observed-state auto-refresh. The load dominates both.
+      // It does not dominate the CLI's PRE-lock `--recreate-via-*` check, which
+      // reads the named rows itself (go-to-k/cdkd#3202 owns that site).
+      refuseMalformedResourceEntriesForDeploy(currentState, stackName, this.stackRegion);
       // The `orphans` CONTAINER, beside it and for the same placement reason
       // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
       // and ASSIGNS `currentState.orphans` from what it read, so an unreadable

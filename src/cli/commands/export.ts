@@ -8,7 +8,11 @@ import {
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
 import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
@@ -4035,7 +4039,7 @@ export function indexNestedTemplatePaths(
     if (nodePath.isAbsolute(assetPath)) {
       throw new Error(
         `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
-          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' ` +
+          `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} ` +
           `which is absolute. CDK emits relative asset paths for nested templates.`
       );
     }
@@ -4048,7 +4052,7 @@ export function indexNestedTemplatePaths(
     if (!resolved.contained) {
       throw new Error(
         `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
-          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+          `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
           `${renderAssemblyPathEscape(resolved, templateDir)}`
       );
     }

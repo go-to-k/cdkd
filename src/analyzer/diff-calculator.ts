@@ -18,7 +18,11 @@ import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
 } from '../provisioning/property-coverage.js';
-import { refuseMalformedResourceProperties } from '../state/malformed-resources-bag.js';
+import {
+  refuseMalformedResourceEntriesForDeploy,
+  refuseMalformedResourceProperties,
+} from '../state/malformed-resources-bag.js';
+import { carriesSecretMask, splitGetAttStringForm } from '../deployment/secret-redaction.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -103,6 +107,25 @@ export type CanonicalizePropertiesFn = (
 const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
 });
+
+/**
+ * The PREFIX twin of {@link IN_PLACE_UPDATE_DERIVED_ATTRS}, for a type whose
+ * derived attributes are an open family rather than a fixed list (issue
+ * [#3631](https://github.com/go-to-k/cdkd/issues/3631)).
+ *
+ * A nested stack's `Outputs.<Key>` attributes are the child's outputs, and a
+ * child-only change moves them while the parent's `AWS::CloudFormation::Stack`
+ * row changes only `TemplateURL` / `Parameters`. The parent's diff runs BEFORE
+ * the child deploys, so a reader of `Fn::GetAtt [Child, 'Outputs.<Key>']`
+ * resolves against the PREVIOUS value and diffs NO_CHANGE. Which outputs move
+ * is decided by the child's own deploy, so it is not knowable here: every
+ * reader is promoted, and the deploy engine's re-resolve-and-skip drops the
+ * ones whose output did not move.
+ */
+const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, readonly string[]>> =
+  Object.freeze({
+    'AWS::CloudFormation::Stack': Object.freeze(['Outputs.']),
+  });
 
 /**
  * Diff calculator for comparing desired state (template) with current state
@@ -205,6 +228,16 @@ export class DiffCalculator {
     // a decision made one layer up, where it also dominates every read of the
     // bag between the two (five, measured 2026-09-17 over comment-stripped
     // source; re-derive rather than trusting this figure).
+    //
+    // The ENTRY refusal comes first (go-to-k/cdkd#3314). A row that is not a
+    // readable resource record reads as absent at the lookup below and is
+    // planned as a CREATE of a resource cdkd already manages. A row with no
+    // `resourceType` is planned as a type-change replacement. Same placement
+    // and same no-identity decision as the `properties` refusal. It goes first
+    // so a typeless row with a torn map is reported as the row it is.
+    // `DeployEngine` also refuses at its state load, which a deploy reaches
+    // first: two walks between that load and this call died on such a row.
+    refuseMalformedResourceEntriesForDeploy(currentState, undefined, undefined);
     refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;
@@ -476,8 +509,7 @@ export class DiffCalculator {
     // only "change" is a Ref / Fn::GetAtt to a resource that will be
     // REPLACED resolves against CURRENT state above and lands on NO_CHANGE,
     // even though the reference's value (new physical ID / ARN) WILL change.
-    this.promoteReplacementDependents(changes, desiredTemplate);
-
+    //
     // Propagate IN-PLACE attribute changes to dependents (bug-hunt 2026-06-29):
     // a dependent that embeds `Fn::GetAtt[Up, Attr]` (e.g. an SSM Parameter whose
     // Value is `Fn::Sub[..., {V: Fn::GetAtt[Base, Value]}]`) resolves against the
@@ -489,7 +521,30 @@ export class DiffCalculator {
     // affected -- a `Ref` (physical id, unchanged in-place) or a GetAtt of an
     // unchanged / computed attribute (e.g. a Lambda `Arn`, which does not move on
     // an in-place Description update) is correctly left NO_CHANGE.
-    this.promoteInPlaceAttributeDependents(changes, desiredTemplate, rawGetAttRefs);
+    //
+    // Run to a FIXPOINT (issue #3631). An in-place promotion can create an
+    // upstream either pass seeds from: a nested stack whose `Parameters` read
+    // a sibling stack's output becomes an in-place UPDATE, which makes a
+    // reader of ITS outputs stale in turn, and a promotion whose referencing
+    // property is create-only is a REPLACEMENT, whose `Ref` readers only the
+    // replacement pass promotes. The replacement pass is transitive on its own
+    // and runs before each in-place pass, so the in-place pass's verdict alone
+    // decides whether another round is needed. It skips a path already
+    // present, so the loop ends at the latest once every referencing property
+    // carries a change.
+    let round = 0;
+    do {
+      round++;
+      this.promoteReplacementDependents(changes, desiredTemplate);
+    } while (
+      this.promoteInPlaceAttributeDependents(
+        changes,
+        desiredTemplate,
+        rawGetAttRefs,
+        currentResources,
+        round
+      )
+    );
 
     const summary = this.getSummary(changes);
     this.logger.debug(
@@ -661,7 +716,11 @@ export class DiffCalculator {
    *      update side-effects even though it is not a template property — the
    *      per-type {@link IN_PLACE_UPDATE_DERIVED_ATTRS} allow list (issue #985;
    *      e.g. `AWS::EC2::LaunchTemplate.LatestVersionNumber`, which an
-   *      `autoscaling.AutoScalingGroup` reads for its `LaunchTemplate.Version`).
+   *      `autoscaling.AutoScalingGroup` reads for its `LaunchTemplate.Version`);
+   *      or
+   *   3. `Attr` starts with a derived-attribute PREFIX of `Up`'s type — the
+   *      {@link IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES} table (issue #3631; a
+   *      nested stack's `Outputs.<Key>`).
    * (`Ref` resolves to the physical id, which an in-place update never moves, so
    * Ref-only dependents are left NO_CHANGE; likewise a GetAtt of a computed
    * attribute NOT in the allow list, e.g. a Lambda `Arn` on a Description edit.)
@@ -670,18 +729,31 @@ export class DiffCalculator {
    * promoted resource against the in-flight state and skips the provider call
    * when nothing actually changed.
    *
-   * Single-hop by design (unlike {@link promoteReplacementDependents}, which is
-   * fully transitive via a worklist): `changedPropsByUpstream` is frozen at entry,
-   * so a chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
-   * attr)` promotes B but not C. Deep GetAtt-of-a-changed-attr chains are rare in
-   * practice; if one ever needs full transitivity, promote to a worklist that
-   * re-derives changed props as dependents are promoted.
+   * One pass is single-hop: `changedPropsByUpstream` is frozen at entry, so a
+   * chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
+   * attr)` promotes B but not C. `calculateDiff` re-runs it to a fixpoint, and
+   * the pass after B's promotion sees B as an in-place UPDATE.
+   *
+   * A SPECULATIVE promotion — arm 3 in any round, and every arm after the first
+   * round, whose upstreams exist only because an earlier promotion guessed —
+   * skips a dependent that reads a MASKED attribute anywhere
+   * ({@link readsMaskedAttribute}). The engine resolves the dependent's whole
+   * bag and refuses a read of `***` BEFORE its no-change skip, so such a guess
+   * would fail a deploy that left the dependent alone before this pass could
+   * reach it (go-to-k/cdkd#3662). The first round's arms 1 and 2 keep their
+   * behaviour: a property they match really changed.
+   *
+   * @param round 1-based fixpoint round; see the speculative-promotion note.
+   * @returns whether any synthetic PropertyChange was added (the caller's
+   *          fixpoint signal).
    */
   private promoteInPlaceAttributeDependents(
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
-    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>
-  ): void {
+    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
+    currentResources: StackState['resources'],
+    round: number
+  ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
     const changedPropsByUpstream = new Map<string, Set<string>>();
     // Per upstream in-place UPDATE: its resource type, used to look up the
@@ -699,7 +771,8 @@ export class DiffCalculator {
         .filter((p): p is string => typeof p === 'string');
       if (props.length > 0) changedPropsByUpstream.set(logicalId, new Set(props));
     }
-    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return;
+    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return false;
+    let added = false;
 
     for (const [dependentId, perProp] of rawGetAttRefs) {
       const resource = desiredTemplate.Resources[dependentId];
@@ -711,6 +784,10 @@ export class DiffCalculator {
 
       const existingPaths = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
       const syntheticChanges: PropertyChange[] = [];
+      // Whether a SPECULATIVE promotion may take this dependent (see the method
+      // doc). Per DEPENDENT, not per attribute: the engine resolves every
+      // property, so one masked read anywhere is what it refuses.
+      const speculationAllowed = !DiffCalculator.readsMaskedAttribute(perProp, currentResources);
 
       for (const [propKey, getAttRefs] of perProp) {
         if (existingPaths.has(propKey)) continue; // already diffed on its own
@@ -718,6 +795,8 @@ export class DiffCalculator {
         let matched = false;
         for (const [upstreamId, attrs] of getAttRefs) {
           if (upstreamId === dependentId) continue; // self-reference defense
+          // Arms 1 and 2 are speculative after the first round only.
+          if (round > 1 && !speculationAllowed) break;
           // Arm 1: the referenced attribute names a property that changed.
           const changedProps = changedPropsByUpstream.get(upstreamId);
           if (changedProps && [...attrs].some((attr) => changedProps.has(attr))) {
@@ -728,11 +807,38 @@ export class DiffCalculator {
           // attribute of the upstream's type that an in-place UPDATE side-effects
           // (e.g. LaunchTemplate LatestVersionNumber) — regardless of WHICH
           // property changed, since any in-place edit can bump it.
+          //
+          // `Object.hasOwn` on both tables: the type is template text, and a
+          // bare lookup of `constructor` answers with `Object`'s own function.
           const upstreamType = inPlaceUpdateTypeByUpstream.get(upstreamId);
-          const derivedAttrs = upstreamType
-            ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
-            : undefined;
+          const derivedAttrs =
+            upstreamType !== undefined && Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, upstreamType)
+              ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
+              : undefined;
           if (derivedAttrs && [...attrs].some((attr) => derivedAttrs.has(attr))) {
+            matched = true;
+            break;
+          }
+          // Arm 3 (issue #3631): a derived attribute FAMILY, matched by prefix —
+          // a nested stack's `Outputs.<Key>`, which a child-only change moves.
+          // Always speculative: which outputs move is the child deploy's to
+          // decide. A reader of a `NoEcho` output (persisted `***`, issue #2274)
+          // is excluded by `speculationAllowed`; were it promoted, the value it
+          // needs is re-minted only when the child's custom resource ran this
+          // run, and even then the engine's skip compares `***` with `***`
+          // (go-to-k/cdkd#3662). Lifting the exclusion belongs with that fix.
+          // A promoted reader also re-runs everything the engine does before
+          // that skip, e.g. fetching its `{{resolve:...}}` references again.
+          const derivedPrefixes =
+            upstreamType !== undefined &&
+            Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES, upstreamType)
+              ? IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES[upstreamType]
+              : undefined;
+          if (
+            speculationAllowed &&
+            derivedPrefixes &&
+            [...attrs].some((attr) => derivedPrefixes.some((prefix) => attr.startsWith(prefix)))
+          ) {
             matched = true;
             break;
           }
@@ -755,6 +861,7 @@ export class DiffCalculator {
       }
 
       if (syntheticChanges.length === 0) continue;
+      added = true;
 
       if (change.changeType === 'NO_CHANGE') {
         change.changeType = 'UPDATE';
@@ -766,6 +873,57 @@ export class DiffCalculator {
         change.propertyChanges = [...(change.propertyChanges ?? []), ...syntheticChanges];
       }
     }
+    return added;
+  }
+
+  /**
+   * Whether any `Fn::GetAtt` / `Fn::Sub` read of a dependent (its
+   * {@link extractGetAttRefs} map, every property and every upstream) lands on
+   * a PERSISTED attribute carrying the redaction mask. The attribute is found
+   * the way the resolver finds it: the flat key, else the dot-separated path
+   * walked through nested objects (a Cloud Control record's
+   * `Endpoint.Address`).
+   *
+   * What it cannot see, and the engine still refuses on a speculative
+   * promotion: a masked cross-stack read (`Fn::ImportValue` /
+   * `Fn::GetStackOutput`), whose producer record is another stack's, and a
+   * `Ref` whose state-key lookup lands on a masked property, since `Ref`
+   * reads are not extracted.
+   */
+  private static readsMaskedAttribute(
+    perProp: Map<string, Map<string, Set<string>>>,
+    currentResources: StackState['resources']
+  ): boolean {
+    for (const getAttRefs of perProp.values()) {
+      for (const [upstreamId, attrs] of getAttRefs) {
+        const attributes = Object.hasOwn(currentResources, upstreamId)
+          ? currentResources[upstreamId]?.attributes
+          : undefined;
+        if (!attributes) continue;
+        for (const attr of attrs) {
+          if (carriesSecretMask(DiffCalculator.persistedAttribute(attributes, attr))) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * A persisted attribute by the resolver's lookup rule: the own flat key, else
+   * the dot-separated path through own keys of nested objects; `undefined`
+   * when neither exists.
+   */
+  private static persistedAttribute(attributes: Record<string, unknown>, attr: string): unknown {
+    if (Object.hasOwn(attributes, attr)) return attributes[attr];
+    if (!attr.includes('.')) return undefined;
+    let cursor: unknown = attributes;
+    for (const part of attr.split('.')) {
+      if (cursor === null || typeof cursor !== 'object' || !Object.hasOwn(cursor, part)) {
+        return undefined;
+      }
+      cursor = (cursor as Record<string, unknown>)[part];
+    }
+    return cursor;
   }
 
   /**
@@ -797,6 +955,11 @@ export class DiffCalculator {
         const ga = obj['Fn::GetAtt'];
         if (Array.isArray(ga) && typeof ga[0] === 'string' && typeof ga[1] === 'string') {
           add(ga[0], ga[1]);
+        } else if (typeof ga === 'string') {
+          // The STRING spelling (`!GetAtt A.B`), split by the resolver's own
+          // rule, so `Child.Outputs.Foo` reads as `Child` / `Outputs.Foo`.
+          const split = splitGetAttStringForm(ga);
+          if (split) add(split.logicalId, split.attributeName);
         }
         return;
       }

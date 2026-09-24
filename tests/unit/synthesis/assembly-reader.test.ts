@@ -529,7 +529,7 @@ describe('AssemblyReader', () => {
         SynthesisError
       );
       expect(() => reader.getStack('/tmp/cdk.out', manifest, 'NonExistent')).toThrow(
-        /Stack 'NonExistent' not found/
+        /Stack NonExistent not found/
       );
     });
 

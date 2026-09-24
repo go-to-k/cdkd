@@ -179,6 +179,21 @@ describe('collectStackMessages', () => {
     expect(message).not.toMatch(forging);
   });
 
+  it('keeps a forging metadata path inside one boundary in the SUBJECT of the read failure (go-to-k/cdkd#3590)', () => {
+    // The subject only: a real ENOENT repeats the path inside Node's own quotes
+    // after the colon, and that echo is tracked on go-to-k/cdkd#3617.
+    const artifact = stackArtifact({
+      additionalMetadataFile: 'meta: read and verified. Nothing to report.json',
+    });
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory');
+    });
+
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(
+      'Failed to read stack metadata file "/asm/meta: read and verified. Nothing to report.json": ENOENT'
+    );
+  });
+
   it('leaves an ordinary metadata path and read failure byte-identical', () => {
     const artifact = stackArtifact({ additionalMetadataFile: 'MyStack.metadata.json' });
     vi.mocked(readFileSync).mockImplementation(() => {

@@ -45,6 +45,7 @@ import {
   DeregisterScalableTargetCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -5990,8 +5991,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'TableName');
     if (explicit) {
       try {
-        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: explicit })
+        );
+        // Issue #3627: the same map `create()` records. The resolver's
+        // `StreamArn` arm returns `undefined` without it.
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            Arn: resp.Table?.TableArn,
+            TableId: resp.Table?.TableId,
+            StreamArn: resp.Table?.LatestStreamArn,
+            TableName: resp.Table?.TableName ?? explicit,
+          }),
+        };
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return null;
         throw err;

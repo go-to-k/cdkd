@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -239,12 +239,70 @@ describe('NestedStackProvider', () => {
       ).rejects.toThrow(/deploy-mode context fields .* are missing/);
     });
 
+    it('keeps a FORGING logical id and parent stack name inside their boundaries (go-to-k/cdkd#3617)', async () => {
+      const FORGED = "X'. Template found and deployed. Nothing 'Y";
+      const SHOWN = JSON.stringify(FORGED);
+      const provider = new NestedStackProvider();
+      const outside = (m: string): string => m.split(SHOWN).join('');
+
+      const create = await withNestedStackContext(
+        makeContext({ nestedTemplates: {}, parentStackName: FORGED }),
+        () => provider.create(FORGED, 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(create).toContain(
+        `AWS::CloudFormation::Stack ${SHOWN} under parent ${SHOWN}. Verify the synth output`
+      );
+      expect(outside(create)).not.toContain('found and deployed');
+
+      const update = await withNestedStackContext(makeContext({ nestedTemplates: {} }), () =>
+        provider.update(FORGED, 'arn', 'AWS::CloudFormation::Stack', {}, {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(update).toContain(`AWS::CloudFormation::Stack ${SHOWN} on update.`);
+      expect(outside(update)).not.toContain('found and deployed');
+
+      const attribute = await provider
+        .getAttribute('arn', 'AWS::CloudFormation::Stack', FORGED)
+        .then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        );
+      expect(attribute).toContain(`attribute ${SHOWN} is not in the recorded Outputs map`);
+      expect(outside(attribute)).not.toContain('found and deployed');
+      expect(
+        await provider.getAttribute('arn', 'AWS::CloudFormation::Stack', 'Arn').then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        )
+      ).toContain('attribute Arn is not in the recorded Outputs map');
+
+      const parameter = (() => {
+        try {
+          (
+            provider as unknown as {
+              refuseNonScalarParameter: (k: string, o: unknown, where: string) => never;
+            }
+          ).refuseNonScalarParameter(FORGED, {}, '');
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(parameter).toContain(`child Parameter ${SHOWN} resolved to a non-scalar value`);
+      expect(outside(parameter)).not.toContain('found and deployed');
+    });
+
     it('rejects when the child template file is missing from nestedTemplates', async () => {
       const provider = new NestedStackProvider();
       const ctx = makeContext({ nestedTemplates: {} });
       await expect(
         withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
-      ).rejects.toThrow(/Nested template file not found for AWS::CloudFormation::Stack 'Child'/);
+      ).rejects.toThrow(/Nested template file not found for AWS::CloudFormation::Stack Child/);
     });
 
     // B2 readChildTemplate failure paths (issue #556): the private helper
@@ -277,6 +335,37 @@ describe('NestedStackProvider', () => {
       ).rejects.toThrow(
         new RegExp(`Failed to parse nested template at ${invalidPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
       );
+    });
+
+    it('readChildTemplate: keeps a forging template path inside one boundary in the SUBJECT of both failure paths (go-to-k/cdkd#3590)', async () => {
+      // The subject only: Node's ENOENT text after the colon repeats the path
+      // inside its OWN quotes, and that echo is tracked on go-to-k/cdkd#3617.
+      const forged = "x. Loaded and deployed: Nothing wrong.nested.template.json";
+      const provider = new NestedStackProvider();
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-forged-'));
+
+      const missingPath = join(dir, forged);
+      const missing = await withNestedStackContext(
+        makeContext({ nestedTemplates: { Child: missingPath } }),
+        () => provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(missing).toContain(`Failed to read nested template at ${JSON.stringify(missingPath)}: `);
+
+      const invalidDir = join(dir, 'p');
+      mkdirSync(invalidDir);
+      const invalidPath = join(invalidDir, forged);
+      writeFileSync(invalidPath, '{ not json');
+      const invalid = await withNestedStackContext(
+        makeContext({ nestedTemplates: { Child: invalidPath } }),
+        () => provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(invalid).toContain(`Failed to parse nested template at ${JSON.stringify(invalidPath)}: `);
     });
 
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {
@@ -1280,7 +1369,7 @@ describe('NestedStackProvider', () => {
         message = error instanceof Error ? error.message : String(error);
       }
       expect(message).toBeDefined();
-      expect(message).toContain("child Parameter 'Mixed' element [1]");
+      expect(message).toContain("child Parameter Mixed element [1]");
       expect(message).toContain('non-scalar value');
       expect(message).toContain('type=object');
       // The value must never have been coerced on the way to the refusal.

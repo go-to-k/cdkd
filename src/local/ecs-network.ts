@@ -6,6 +6,7 @@ import {
   getDockerCmd,
   partitionSensitiveEnv,
   describeDockerFailure,
+  warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import {
@@ -205,6 +206,8 @@ async function createNetworkAndSidecar(args: {
     );
   }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
+  // Under finch's Lima VM these credential values reach the limactl argv (#3600).
+  warnFinchArgvExposure(Object.keys(sidecarSensitiveEnv));
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);
   try {

@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import type { ArtifactManifest, MetadataEntry } from '../types/assembly.js';
 import { displaySafe } from '../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import type { StackInfo } from './assembly-reader.js';
 
@@ -87,7 +91,7 @@ export function collectStackMessages(
     const resolved = resolveAssemblyPath(assemblyDir, artifact.additionalMetadataFile);
     if (!resolved.contained) {
       throw new SynthesisError(
-        `Stack metadata file '${displaySafe(artifact.additionalMetadataFile)}' ` +
+        `Stack metadata file ${displayAssemblyPath(artifact.additionalMetadataFile)} ` +
           `${renderAssemblyPathEscape(resolved, assemblyDir)}`
       );
     }
@@ -128,7 +132,7 @@ export function collectStackMessages(
       // newlines, so `displaySafe` (which maps them to spaces) is the wrong
       // helper and the right one does not exist yet.
       throw new SynthesisError(
-        `Failed to read stack metadata file ${displaySafe(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
+        `Failed to read stack metadata file ${displayAssemblyPath(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }

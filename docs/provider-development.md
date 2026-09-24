@@ -370,9 +370,12 @@ need:
   original reason was that a hardcoded branch leaves the malformed value alive at
   the other key and adds a stray one; normalizing wholesale removes the other key
   entirely, so that concern does not apply. The S3 analytics / inventory
-  `Destination` is the worked case: accepted flattened AND nested, emitted only
-  flattened, so it normalizes
-  ([#1707](https://github.com/go-to-k/cdkd/issues/1707)).
+  `Destination` was the worked case: accepted flattened AND nested, emitted only
+  flattened, so it normalized
+  ([#1707](https://github.com/go-to-k/cdkd/issues/1707)). The nested spelling
+  is now refused pre-flight as a missing required member
+  ([#3602](https://github.com/go-to-k/cdkd/issues/3602)); a spelling the
+  nested required-member check refuses is dropped rather than normalized.
 - Hand the recorder the value the read RETURNED, not the fallback literal, so
   "recorded" and "sent" cannot drift apart.
 

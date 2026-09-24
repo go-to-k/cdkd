@@ -68,9 +68,9 @@ describe('refuseMalformedNestedTemplateTrees', () => {
     }
     expect(caught).toBeInstanceOf(SynthesisError);
     const message = (caught as Error).message;
-    expect(message).toContain("under stack 'Root' contains a cycle");
-    expect(message).toContain("'Child'");
-    expect(message).toContain("'BackToA'");
+    expect(message).toContain("under stack Root contains a cycle");
+    expect(message).toContain('Child (');
+    expect(message).toContain('BackToA (');
     expect(message).toContain(
       'Refusing to start the deploy; nothing has been published or provisioned.'
     );
@@ -94,7 +94,7 @@ describe('refuseMalformedNestedTemplateTrees', () => {
     const a = writeTemplate('a.json', { Abs: '/etc/passwd' });
     expect(() =>
       refuseMalformedNestedTemplateTrees([{ stackName: 'Root', nestedTemplates: { Child: a } }])
-    ).toThrow(/Metadata\['aws:asset:path'\]='\/etc\/passwd' which is absolute/);
+    ).toThrow(/Metadata\['aws:asset:path'\]=\/etc\/passwd which is absolute/);
   });
 
   it('renders a template-controlled logical id display-safely', () => {
@@ -119,7 +119,7 @@ describe('refuseMalformedNestedTemplateTrees', () => {
         { stackName: 'First', nestedTemplates: { Ok: ok } },
         { stackName: 'Second', nestedTemplates: { Bad: bad } },
       ])
-    ).toThrow(/under stack 'Second' contains a cycle/);
+    ).toThrow(/under stack Second contains a cycle/);
   });
 });
 
@@ -346,7 +346,7 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
 
     expect(code).toBe(1);
     const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(message).toContain("under stack 'Root' contains a cycle");
+    expect(message).toContain("under stack Root contains a cycle");
     expect(message).toContain('nothing has been published or provisioned');
     expectNothingStarted();
   });
@@ -388,7 +388,7 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
 
     expect(code).toBe(1);
     const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(message).toContain("under stack 'Producer' contains a cycle");
+    expect(message).toContain("under stack Producer contains a cycle");
     expectNothingStarted();
   });
 

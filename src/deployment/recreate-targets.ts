@@ -29,9 +29,9 @@
  *      scope for v1; no `--force-stateful-recreation` bypass since
  *      this is a structural limitation, not a data-loss footgun.
  *
- * Plus one cross-flag invariant: `--recreate-via-cc-api MyLambda`
- * combined with `--allow-unsupported-properties AWS::Lambda::Function:RuntimeManagementConfig`
- * on a resource whose template carries `RuntimeManagementConfig` is **ambiguous
+ * Plus one cross-flag invariant: `--recreate-via-cc-api MyApi`
+ * combined with `--prefer-sdk-route AWS::ApiGatewayV2::Api:Body`
+ * on a resource whose template carries `Body` is **ambiguous
  * intent** — does the user want SDK + silent drop, or CC migration?
  * Fail fast and let the user pick one strategy per resource.
  */
@@ -111,7 +111,7 @@ export interface RecreateTarget {
 /**
  * One ambiguous-intent overlap: the resource is named in both
  * `--recreate-via-cc-api` AND its `<Type>:<Prop>` is in
- * `--allow-unsupported-properties` AND the template uses that property.
+ * `--prefer-sdk-route` AND the template uses that property.
  */
 export interface AmbiguousIntentOverlap {
   logicalId: string;
@@ -126,12 +126,12 @@ export interface RecreateTargetsValidation {
   unknownLogicalIds: string[];
   /** Logical ids named + in template but absent from existing state. */
   missingFromState: string[];
-  /** Overlaps between --recreate-via-cc-api and --allow-unsupported-properties. */
+  /** Overlaps between --recreate-via-cc-api and --prefer-sdk-route. */
   ambiguousIntent: AmbiguousIntentOverlap[];
   /**
    * Inverse ambiguous-intent (#651): `--recreate-via-sdk-provider <id>`
    * named on a resource whose template uses a silent-drop property
-   * that is NOT in `--allow-unsupported-properties`. The post-recreate
+   * that is NOT in `--prefer-sdk-route`. The post-recreate
    * routing would re-route the resource back to CC API on the very
    * next deploy (or this deploy, in the no-template-change case),
    * making the migration a round-trip. Refuse with an actionable fix.
@@ -365,7 +365,7 @@ export function validateRecreateTargets(input: {
     }
 
     if (direction === 'to-cc-api') {
-      // Ambiguous-intent overlap with --allow-unsupported-properties.
+      // Ambiguous-intent overlap with --prefer-sdk-route.
       // The overlap only fires when the template carries a silent-drop
       // property AND that property is in the override allow-set —
       // matching what the routing decision would actually do.
@@ -393,7 +393,7 @@ export function validateRecreateTargets(input: {
       }
     } else {
       // #651 inverse ambiguous-intent: the template uses a silent-drop
-      // property that is NOT in `--allow-unsupported-properties`. The
+      // property that is NOT in `--prefer-sdk-route`. The
       // default-on auto-route would immediately re-route the resource
       // back to CC after the recreate. Refuse the round-trip.
       const actionableDrops = findActionableSilentDrops(

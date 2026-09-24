@@ -510,7 +510,7 @@ collapse it into the general `1` bucket.
 | `cdkd state refresh-observed` | Per-resource read-back failures; the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, or ops skipped with a warning. The journal is kept so the run can be repeated. |
-| `cdkd drift` | Nothing drifted, but at least one comparison did not happen for a reason you can act on — cdkd **refused to compare** a secret-bearing property, a read failed, an import refused a baseline, or a state row is unreadable. |
+| `cdkd drift` | Nothing drifted, but at least one comparison did not happen for a reason you can act on — cdkd **refused to compare** a secret-bearing property, a read failed, an import refused a baseline, a recorded baseline holds a mask cdkd could not certify, or a state row is unreadable. |
 
 For `cdkd drift`, whether re-running clears it depends on the cause — a refused
 comparison needs the reference spelled as a full ARN, for instance. See [`cdkd drift`](cli-drift.md).

@@ -29,6 +29,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { foldRegionOption } from '../region-options.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -124,6 +125,15 @@ interface LocalRunTaskOptions {
    * not call `loadBootstrapContainerRepo` at all.
    */
   rawStackRegion?: string;
+  /**
+   * The user's UNFOLDED `AWS_REGION` (falling back to `AWS_DEFAULT_REGION`),
+   * captured at handler entry BEFORE `foldRegionOption` rewrites both env vars
+   * (issue #3622). Consumed only by the raw marker-key fallback probe in
+   * `loadBootstrapContainerRepo`, for the same reason as `rawStackRegion`: a
+   * pre-fold `AWS_REGION=US-EAST-1 cdkd bootstrap` wrote
+   * `cdkd-bootstrap/US-EAST-1.json`. It never reaches an SDK client.
+   */
+  rawEnvRegion?: string;
 }
 
 /**
@@ -150,7 +160,18 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   // down (`pullEcrImage`, and `ecs-secrets-resolver`'s SecretsManager / SSM
   // clients). AWS SDK endpoint resolution is case-sensitive, so a raw
   // `--region CN-NORTH-1` reached the COMMERCIAL endpoint at every one.
-  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  //
+  // Issue #3622: `foldRegionOption` folds the `AWS_REGION` /
+  // `AWS_DEFAULT_REGION` env vars as well. Folding only the flag left the SDK
+  // clients this command builds with NO region (the `--from-state` S3 client
+  // when `--region` is absent, `applyRoleArnIfSet`'s STS client, the
+  // `--profile` credential resolver) reading the raw env spelling through the
+  // SDK's own region chain, and the synth subprocess inheriting it. The raw env
+  // spelling is captured FIRST: the bootstrap-marker probe needs it, and after
+  // the fold `process.env` holds only the canonical one.
+  const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+  if (rawEnvRegion !== undefined) options.rawEnvRegion = rawEnvRegion;
+  foldRegionOption(options);
   // Issue #1836: `--stack-region` needs the same fold at the same point — its
   // raw value is COMPARED against a state record's region and is forwarded to
   // cdk-local as the CFn client's region, both case-SENSITIVE. The RAW spelling
@@ -720,6 +741,9 @@ export async function buildEcsImageResolutionContext(
       // reach the key an upper-cased `cdkd bootstrap` wrote (see
       // `loadBootstrapContainerRepo`'s `rawRegion` note).
       ...(options.rawStackRegion !== undefined && { rawStackRegion: options.rawStackRegion }),
+      // Issue #3622: likewise the raw env spelling, which the entry fold has
+      // already overwritten in `process.env`.
+      ...(options.rawEnvRegion !== undefined && { rawEnvRegion: options.rawEnvRegion }),
       ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
       ...(options.region !== undefined && { region: options.region }),
       ...(options.profile !== undefined && { profile: options.profile }),

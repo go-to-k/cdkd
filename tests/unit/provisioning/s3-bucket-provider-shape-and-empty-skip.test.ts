@@ -788,34 +788,31 @@ describe('#1718 CREATE: an empty rules collection skips the Put and SAYS SO', ()
 });
 
 /**
- * Issue #1707 — the destination-SHAPE sibling of #1686's key fold, pinned end to
- * end through the real drift comparator.
+ * Issue #1707 — the destination fold, pinned end to end through the real drift
+ * comparator.
  *
- * The desired side accepts the nested SDK `S3BucketDestination` wrapper and a
- * `Bucket` / `BucketArn` alias inside it; `inventorySdkToCfn` emits only the
- * flattened CFn block with `BucketArn`. So a record written in either tolerated
- * spelling could never match the readback — permanent phantom drift with NO
- * warning anywhere, because nothing is malformed and nothing is substituted.
+ * The nested SDK `S3BucketDestination` wrapper and the `Bucket` alias it once
+ * also folded are refused pre-flight since issue #3602. What still reaches the
+ * fold from a legitimate CFn block is the warn-and-SUBSTITUTE `Format` (#1670):
+ * the Put carries `'CSV'`, `inventorySdkToCfn` reads `'CSV'` back, so a record
+ * holding the declared malformed value would drift forever.
  */
-describe('#1707 UPDATE: a tolerated destination spelling converges after normalization', () => {
-  it('the nested wrapper + Bucket alias record as the flattened CFn block', async () => {
+describe('#1707 UPDATE: a substituted destination Format converges after the fold', () => {
+  it('a malformed Format records the CSV the wire sent', async () => {
     const desired = {
       Id: 'i1',
       Enabled: true,
       IncludedObjectVersions: 'All',
       ScheduleFrequency: 'Weekly',
-      Destination: {
-        S3BucketDestination: { Bucket: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
-      },
+      Destination: { BucketArn: DEST_ARN, Format: 42, Prefix: 'live/' },
     };
     const { result } = await updateInventory(desired);
 
-    // The wire is unchanged — the SDK really does take the nested shape with a
-    // `Bucket` member, so this is a RECORDING fold, not a re-shaped request.
+    // The wire carries the substituted default.
     const sent = sentCommands(PutBucketInventoryConfigurationCommand);
     expect(
-      at(sent[0]!.input, 'InventoryConfiguration', 'Destination', 'S3BucketDestination', 'Bucket')
-    ).toBe(DEST_ARN);
+      at(sent[0]!.input, 'InventoryConfiguration', 'Destination', 'S3BucketDestination', 'Format')
+    ).toBe('CSV');
 
     // ...and the record is the shape `inventorySdkToCfn` will produce.
     const awsCurrent = {
@@ -836,8 +833,8 @@ describe('#1707 UPDATE: a tolerated destination spelling converges after normali
   });
 
   it('the DECLARED spelling does NOT converge — the row above has teeth', async () => {
-    // Without the fold the record keeps the nested wrapper, which the readback
-    // can never emit. Driving the un-folded desired bag through the same
+    // Without the fold the record keeps the malformed Format, which the
+    // readback can never emit. Driving the un-folded desired bag through the same
     // comparator must report drift, or the row above would pass on any
     // implementation.
     const desired = {
@@ -845,9 +842,7 @@ describe('#1707 UPDATE: a tolerated destination spelling converges after normali
       Enabled: true,
       IncludedObjectVersions: 'All',
       ScheduleFrequency: 'Weekly',
-      Destination: {
-        S3BucketDestination: { Bucket: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
-      },
+      Destination: { BucketArn: DEST_ARN, Format: 42, Prefix: 'live/' },
     };
     const awsCurrent = {
       BucketName: BUCKET,

@@ -7,10 +7,13 @@ import {
   partitionSensitiveEnv,
   describeDockerCapturedOutput,
   describeDockerFailure,
+  finchSecretArgvRefusal,
   redactDockerArgvValues,
   runDockerForeground,
   runDockerStreaming,
+  warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -338,6 +341,17 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
       `Env var(s) ${collisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a variable the container client reads (docker, or the CDK_DOCKER binary) or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack that client; a malformed name cannot form a valid environment variable). Rename the env var if the container needs it.`
     );
   }
+
+  // Under finch's Lima VM the value-less `-e KEY` flags do not keep the value
+  // off argv (#3600): refuse a caller-marked secret unless the operator opted
+  // in, and warn about the rest (the AWS credential set).
+  const forwardedKeys = Object.keys(passthroughEnv);
+  const refusal = finchSecretArgvRefusal(
+    forwardedKeys.filter((k) => opts.sensitiveEnvKeys?.has(k)),
+    `Container for image ${displayIdent(opts.image)}`
+  );
+  if (refusal !== undefined) throw new DockerRunnerError(refusal);
+  warnFinchArgvExposure(forwardedKeys);
 
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), args, {

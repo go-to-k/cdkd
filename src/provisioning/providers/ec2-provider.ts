@@ -82,6 +82,7 @@ import {
   type Instance,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
@@ -2885,21 +2886,25 @@ export class EC2Provider implements ResourceProvider {
         //   2. Authorize{Ingress,Egress} accept an `IpPermissions` ARRAY, so
         //      N rules become ONE call instead of N.
         //
-        // Failure semantics are unchanged, but ONLY because this is
-        // allSettled and not all. `Promise.all` rejects the moment the first
-        // branch does, while the other two are still in flight -- so the
-        // outer catch would issue DeleteSecurityGroup concurrently with a
-        // pending Authorize / Revoke / CreateTags on the same group. That
-        // delete comes back DependencyViolation or InvalidGroup.NotFound,
-        // the cleanup only warns, and the half-wired SG leaks: exactly the
-        // orphan the cleanup exists to prevent. Serially this could not
-        // happen, because nothing was in flight at cleanup time.
+        // Failure semantics are unchanged, but ONLY because every branch is
+        // drained first. A bare `Promise.all` over the three branches rejects
+        // the moment the first one does, while the other two are still in
+        // flight -- so the outer catch would issue DeleteSecurityGroup
+        // concurrently with a pending Authorize / Revoke / CreateTags on the
+        // same group. That delete comes back DependencyViolation or
+        // InvalidGroup.NotFound, the cleanup only warns, and the half-wired SG
+        // leaks: exactly the orphan the cleanup exists to prevent. Serially
+        // this could not happen, because nothing was in flight at cleanup time.
         //
-        // allSettled waits for all three to settle before anything is thrown,
-        // so the group is quiescent when the delete goes out. The first
-        // rejection is rethrown so the caller sees the original cause; the
-        // remaining rejections are already handled by allSettled and cannot
-        // surface as unhandled.
+        // The drain waits for all three to settle before anything is thrown,
+        // so the group is quiescent when the delete goes out. Of several
+        // rejections, the one rethrown is the one that FAILED FIRST IN TIME
+        // (issue #2804) -- not the first by array position, which is what a
+        // scan of `Promise.allSettled`'s results would pick: each branch gets
+        // its own `catch`, so the callbacks run in rejection order and the
+        // first to fire wins. That choice is visible: the retry classifiers
+        // read the message. Every branch is `catch`-ed, so the rejections not
+        // rethrown cannot surface as unhandled.
         const ingressRules = properties['SecurityGroupIngress'] as
           | Array<Record<string, unknown>>
           | undefined;
@@ -2907,14 +2912,20 @@ export class EC2Provider implements ResourceProvider {
           | Array<Record<string, unknown>>
           | undefined;
 
-        const wiring = await Promise.allSettled([
-          this.applyTags(groupId, properties, logicalId),
-          this.authorizeInlineIngress(groupId, ingressRules),
-          this.applyInlineEgress(groupId, egressRules),
+        // Wrapped, so a branch rejecting with `undefined` still counts as a
+        // rejection.
+        let firstRejection: { readonly error: unknown } | undefined;
+        const recordRejection = (branch: Promise<unknown>): Promise<unknown> =>
+          branch.catch((error: unknown) => {
+            firstRejection ??= { error };
+          });
+        await Promise.all([
+          recordRejection(this.applyTags(groupId, properties, logicalId)),
+          recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
+          recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
-        const firstRejection = wiring.find((r) => r.status === 'rejected');
-        if (firstRejection) {
-          throw (firstRejection as PromiseRejectedResult).reason;
+        if (firstRejection !== undefined) {
+          throw firstRejection.error;
         }
       } catch (innerError) {
         try {
@@ -5409,12 +5420,14 @@ export class EC2Provider implements ResourceProvider {
    *   id, and records cdkd's composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>`
    *   plus the rule id as the `Id` attribute (issue #1761).
    *
-   * The remaining EC2 types this provider creates (RouteTable, Route,
-   * InternetGateway, VPCGatewayAttachment, NetworkAcl, NetworkAclEntry,
-   * SubnetRouteTableAssociation, SubnetNetworkAclAssociation, Instance) return
-   * `null` — Routes and associations are derived from their parent, and the
-   * typical adoption story is "find the VPC, cdkd reconstructs the rest at
-   * deploy time".
+   * - RouteTable, Route, InternetGateway, VPCGatewayAttachment, NetworkAcl,
+   *   NetworkAclEntry, SubnetRouteTableAssociation, SubnetNetworkAclAssociation,
+   *   Instance (issue #3661) — they used to return `null` on the premise that
+   *   cdkd reconstructs them at deploy time, which `--migrate-from-cloudformation`
+   *   breaks: the CloudFormation stack is retired with them live, and the
+   *   re-create duplicates or conflicts. VPCGatewayAttachment and
+   *   NetworkAclEntry rebuild cdkd's composite from the template, since
+   *   CloudFormation's id for them does not carry it.
    *
    * There is no `aws:cdk:path` tag lookup: AWS rejects `aws:`-prefixed tag
    * writes, so that tag never exists on a real resource and a
@@ -5426,7 +5439,12 @@ export class EC2Provider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     // Explicit override → verify by id and short-circuit.
     if (input.knownPhysicalId) {
-      return this.verifyExplicit(input.logicalId, input.resourceType, input.knownPhysicalId);
+      return this.verifyExplicit(
+        input.logicalId,
+        input.resourceType,
+        input.knownPhysicalId,
+        input.properties ?? {}
+      );
     }
 
     // A resource reaching here needs an explicit `--resource` override.
@@ -6446,7 +6464,8 @@ export class EC2Provider implements ResourceProvider {
   private async verifyExplicit(
     logicalId: string,
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    properties: Record<string, unknown>
   ): Promise<ResourceImportResult | null> {
     try {
       switch (resourceType) {
@@ -6458,7 +6477,19 @@ export class EC2Provider implements ResourceProvider {
           const resp = await this.ec2Client.send(
             new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
           );
-          return resp.Subnets?.[0] ? { physicalId, attributes: {} } : null;
+          // Issue #3627: the same map `create()` records; the resolver's
+          // Subnet arm builds only `SubnetId`, so `AvailabilityZone` resolved
+          // to the subnet id.
+          const subnet = resp.Subnets?.[0];
+          return subnet
+            ? {
+                physicalId,
+                attributes: definedAttributes({
+                  SubnetId: physicalId,
+                  AvailabilityZone: subnet.AvailabilityZone,
+                }),
+              }
+            : null;
         }
         case 'AWS::EC2::SecurityGroup': {
           const resp = await this.ec2Client.send(
@@ -6559,6 +6590,187 @@ export class EC2Provider implements ResourceProvider {
             physicalId: this.eipPhysicalId(logicalId, addr.PublicIp, addr.AllocationId),
             attributes: { AllocationId: addr.AllocationId, PublicIp: addr.PublicIp },
           };
+        }
+        // Issue #3661: the VPC plumbing a CDK `ec2.Vpc` synthesizes. These
+        // returned `null`, so `--migrate-from-cloudformation` retired the
+        // CloudFormation stack with them orphaned and the next deploy
+        // re-created them (a duplicate route table, a conflicting
+        // association). Each arm accepts CloudFormation's physical id (measured
+        // on a CloudFormation-created stack, see the issue) AND cdkd's own form
+        // (the #1852 heal re-reads through here with it), verifies against
+        // AWS, and records cdkd's form plus the attributes `create()` records.
+        // Every id is shape-checked BEFORE the call: a malformed id makes EC2
+        // throw `*.Malformed`, which `isNotFoundError` does not match, so it
+        // would abort the whole import rather than decline this row.
+        case 'AWS::EC2::RouteTable': {
+          if (!/^rtb-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeRouteTablesCommand({ RouteTableIds: [physicalId] })
+          );
+          return resp.RouteTables?.[0]
+            ? { physicalId, attributes: { RouteTableId: physicalId } }
+            : null;
+        }
+        case 'AWS::EC2::InternetGateway': {
+          if (!/^igw-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeInternetGatewaysCommand({ InternetGatewayIds: [physicalId] })
+          );
+          return resp.InternetGateways?.[0]
+            ? { physicalId, attributes: { InternetGatewayId: physicalId } }
+            : null;
+        }
+        case 'AWS::EC2::NetworkAcl': {
+          if (!/^acl-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeNetworkAclsCommand({ NetworkAclIds: [physicalId] })
+          );
+          return resp.NetworkAcls?.[0] ? { physicalId, attributes: { Id: physicalId } } : null;
+        }
+        case 'AWS::EC2::Route': {
+          // CloudFormation's id and cdkd's share one shape: `<rtb>|<destination>`.
+          const [routeTableId, destination, ...rest] = physicalId.split('|');
+          if (rest.length > 0 || !routeTableId || !destination) return null;
+          if (!/^rtb-[0-9a-f]+$/.test(routeTableId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeRouteTablesCommand({ RouteTableIds: [routeTableId] })
+          );
+          // AWS stores an IPv4 destination host-bit-cleared, while an id can
+          // spell the template's non-canonical CIDR (issue #1771), so IPv4 is
+          // compared canonically; the id is recorded as it came in.
+          const wanted = canonicalizeIpv4Cidr(destination) ?? destination;
+          const found = resp.RouteTables?.[0]?.Routes?.some(
+            (r) =>
+              (r.DestinationCidrBlock !== undefined &&
+                (canonicalizeIpv4Cidr(r.DestinationCidrBlock) ?? r.DestinationCidrBlock) ===
+                  wanted) ||
+              r.DestinationIpv6CidrBlock === destination ||
+              r.DestinationPrefixListId === destination
+          );
+          return found ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::VPCGatewayAttachment': {
+          // CloudFormation records `IGW|<vpcId>` (a CloudFormation IMPORT
+          // `<vpcId>|IGW`); cdkd records `<igwId>|<vpcId>`. Only the VPC is in
+          // CloudFormation's id, so the gateway comes from the template
+          // (`InternetGatewayId`, Ref-substituted to the gateway's id) or, failing
+          // that, from the one gateway AWS allows attached to the VPC.
+          const segments = physicalId.split('|');
+          if (segments.length !== 2) return null;
+          // A VPN gateway attachment is not this provider's to delete
+          // (`delete` only calls `DetachInternetGateway`).
+          if (segments.includes('VGW') || properties['VpnGatewayId'] !== undefined) return null;
+          const vpcId =
+            segments.find((seg) => /^vpc-[0-9a-f]+$/.test(seg)) ??
+            (typeof properties['VpcId'] === 'string' ? properties['VpcId'] : undefined);
+          if (!vpcId || !/^vpc-[0-9a-f]+$/.test(vpcId)) return null;
+          const declared =
+            segments.find((seg) => /^igw-[0-9a-f]+$/.test(seg)) ??
+            (typeof properties['InternetGatewayId'] === 'string'
+              ? properties['InternetGatewayId']
+              : undefined);
+          if (declared !== undefined && !/^igw-[0-9a-f]+$/.test(declared)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeInternetGatewaysCommand(
+              declared
+                ? { InternetGatewayIds: [declared] }
+                : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
+            )
+          );
+          const gateway = resp.InternetGateways?.find((g) =>
+            g.Attachments?.some(
+              // IGW attachments report `available` although the SDK types the
+              // field as `AttachmentStatus`, so compare it as a string.
+              (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+            )
+          );
+          if (!gateway?.InternetGatewayId) return null;
+          const attachmentSegments = [
+            { name: 'internetGatewayId', value: gateway.InternetGatewayId },
+            { name: 'vpcId', value: vpcId },
+          ];
+          // Defense-in-depth, unreachable in practice: both segments passed an
+          // anchored id pattern above, so neither can hold the separator.
+          const refusal = compositeIdSeparatorRefusal(resourceType, logicalId, attachmentSegments);
+          if (refusal !== undefined) {
+            this.logger.warn(`${refusal} Skipping import.`);
+            return null;
+          }
+          return {
+            physicalId: packCompositeId(resourceType, logicalId, attachmentSegments),
+            attributes: {},
+          };
+        }
+        case 'AWS::EC2::NetworkAclEntry': {
+          // CloudFormation's id is a generated name with no AWS information
+          // (e.g. `Stack-AclEn-aRdUO3zKO34t`), so the entry is located from the
+          // template: cdkd's own `<aclId>|<ruleNumber>|<egress>` when that is
+          // what came in, else `NetworkAclId` / `RuleNumber` / `Egress`.
+          const own = /^(acl-[0-9a-f]+)\|(\d+)\|(true|false)$/.exec(physicalId);
+          const networkAclId = own
+            ? own[1]
+            : typeof properties['NetworkAclId'] === 'string'
+              ? properties['NetworkAclId']
+              : undefined;
+          const ruleNumber = own ? Number(own[2]) : Number(properties['RuleNumber']);
+          const egress = own
+            ? own[3] === 'true'
+            : properties['Egress'] === true || properties['Egress'] === 'true';
+          if (!networkAclId || !/^acl-[0-9a-f]+$/.test(networkAclId)) return null;
+          if (!Number.isInteger(ruleNumber)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeNetworkAclsCommand({ NetworkAclIds: [networkAclId] })
+          );
+          const entry = resp.NetworkAcls?.[0]?.Entries?.find(
+            (e) => e.RuleNumber === ruleNumber && (e.Egress ?? false) === egress
+          );
+          if (!entry) return null;
+          const entrySegments = [
+            { name: 'networkAclId', value: networkAclId },
+            { name: 'ruleNumber', value: ruleNumber },
+            { name: 'egress', value: egress },
+          ];
+          // Defense-in-depth, unreachable in practice: an anchored `acl-` id,
+          // an integer and a boolean cannot hold the separator.
+          const refusal = compositeIdSeparatorRefusal(resourceType, logicalId, entrySegments);
+          if (refusal !== undefined) {
+            this.logger.warn(`${refusal} Skipping import.`);
+            return null;
+          }
+          return {
+            physicalId: packCompositeId(resourceType, logicalId, entrySegments),
+            attributes: {},
+          };
+        }
+        case 'AWS::EC2::SubnetRouteTableAssociation': {
+          if (!/^rtbassoc-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeRouteTablesCommand({
+              Filters: [{ Name: 'association.route-table-association-id', Values: [physicalId] }],
+            })
+          );
+          return resp.RouteTables?.[0] ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::SubnetNetworkAclAssociation': {
+          if (!/^aclassoc-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeNetworkAclsCommand({
+              Filters: [{ Name: 'association.association-id', Values: [physicalId] }],
+            })
+          );
+          return resp.NetworkAcls?.[0]
+            ? { physicalId, attributes: { AssociationId: physicalId } }
+            : null;
+        }
+        case 'AWS::EC2::Instance': {
+          if (!/^i-[0-9a-f]+$/.test(physicalId)) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+          );
+          const instance = resp.Reservations?.[0]?.Instances?.[0];
+          const state = instance?.State?.Name;
+          if (!instance || state === 'terminated' || state === 'shutting-down') return null;
+          return { physicalId, attributes: describedInstanceAttributes(physicalId, instance) };
         }
         default:
           return null;

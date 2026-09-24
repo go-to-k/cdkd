@@ -266,7 +266,10 @@ hatch when Docker hangs. Orphan containers may remain;
 
 Every limitation of the underlying task runner applies here too — volumes,
 secret-name refusals and container start ordering all behave as described in
-[`cdkd local run-task`](local-run-task.md).
+[`cdkd local run-task`](local-run-task.md), including the
+[finch on macOS and Windows](local-run-task.md#finch-on-macos-and-windows)
+refusal, which this command checks for each service when its first replica
+boots.
 
 ## Exit codes
 

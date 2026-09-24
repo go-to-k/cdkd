@@ -320,8 +320,10 @@ worth knowing before you read a report:
   the record cannot be lined up at such a position, cdkd writes the mask `***`
   there instead — it cannot tell a resolved secret from an ordinary literal
   once the pairing is gone, and the alternative is a decrypted secret in
-  `state.json`. Those positions report as drifted on every run and
-  `cdkd drift --accept` refuses them. The shapes that reach it are listed under
+  `state.json`. `cdkd drift` reports those positions as not compared (exit
+  `2`) while the mask is the only difference there, and as drift that
+  `--accept` refuses if anything else there changed. The shapes that reach it
+  are listed under
   [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 - **Some resources get no baseline at all.** Where the recorded properties no
   longer spell the template's dynamic reference — or the resolution had to
@@ -364,7 +366,10 @@ worth knowing before you read a report:
   leaves the resource in place rather than re-importing it. Without the record they could
   not tell a refused resource from one that simply never had a baseline, and
   each would position an AWS readback against the very properties the refusal
-  found untrustworthy.
+  found untrustworthy. A refused resource ends with no baseline at all: when a
+  selective import refuses a resource it leaves in place, it also removes any
+  baseline an earlier run recorded for it, since that baseline was read back
+  against the same untrustworthy properties.
 
   **A parameter refusal is the exception to the remedy below: deploying a
   change does NOT clear it.** `cdkd deploy` takes no parameter values either, so

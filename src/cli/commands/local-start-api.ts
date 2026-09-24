@@ -42,6 +42,7 @@ import {
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { foldRegionOption } from '../region-options.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
@@ -123,7 +124,7 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
   strandedProfileCredentialsNotice,
@@ -305,7 +306,16 @@ async function localStartApiCommand(
   // case-sensitive, so a raw `--region CN-NORTH-1` reached the COMMERCIAL
   // endpoint). The pseudo-parameter resolver folds again from its own four
   // sources; double-folding is a no-op.
-  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  //
+  // Issue #2103: `foldRegionOption` folds the `AWS_REGION` /
+  // `AWS_DEFAULT_REGION` env vars too. Folding only the flag left
+  // `AWS_REGION=US-EAST-1 cdkd local start-api` handing the raw spelling to
+  // every region-less SDK client this command and cdk-local's server build
+  // (the SDK's own chain reads the env var directly) and to the synth
+  // subprocess. This command never reaches the bootstrap-marker probe, the one
+  // consumer that needs the raw env spelling (`loadBootstrapContainerRepo` is
+  // `local run-task`'s), so nothing has to be captured first.
+  foldRegionOption(options);
   // Issue #1836: `--stack-region` needs the same fold at the same point — its
   // raw value is COMPARED against a state record's region and is forwarded to
   // cdk-local as the CFn client's region, both case-SENSITIVE. The RAW spelling
@@ -689,7 +699,12 @@ async function localStartApiCommand(
         assumeRole: options.assumeRole,
         containerHost: options.containerHost,
         ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
-        stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+        // Issue #1843: folded at the read as well as at the handler entry, the
+        // same shape as `local-invoke.ts`'s STS chain. It seeds the per-Lambda
+        // AssumeRole STS client and the container's own `AWS_REGION`.
+        stsRegion: canonicalizeRegion(
+          options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+        ),
         inlineTmpDirs,
         layerTmpDirs,
         stateByStack,
@@ -842,8 +857,11 @@ async function localStartApiCommand(
         }
       }
     }
-    const defaultRegion =
-      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? undefined;
+    // Issue #1843: folded — this is the API Gateway event's region and the
+    // region cdk-local's server builds its service-integration clients with.
+    const defaultRegion = canonicalizeRegion(
+      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? undefined
+    );
     const started = await startApiServer({
       state: groupState,
       rieTimeoutMs,
@@ -1033,12 +1051,14 @@ async function localStartApiCommand(
       }
       // Ensure the SDK has a region — apigatewaymanagementapi
       // clients refuse to instantiate without one.
+      // Issue #1843: folded, since it lands in the container's own env.
       if (!spec.env['AWS_REGION']) {
-        spec.env['AWS_REGION'] =
+        spec.env['AWS_REGION'] = canonicalizeRegion(
           options.region ??
-          process.env['AWS_REGION'] ??
-          process.env['AWS_DEFAULT_REGION'] ??
-          'us-east-1';
+            process.env['AWS_REGION'] ??
+            process.env['AWS_DEFAULT_REGION'] ??
+            'us-east-1'
+        );
       }
       // Mutate the spec to include host.docker.internal mapping so
       // the Lambda's `apigatewaymanagementapi:PostToConnection` URL
@@ -2513,7 +2533,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${displaySafe(logicalId)}' has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda ${displayIdent(logicalId)} has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
   const { manifestDir, assetOutdir } = assetPathDirs(stack);
@@ -2660,6 +2680,14 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
  * handler's AWS SDK calls can authenticate. Used when --assume-role is
  * NOT set for that Lambda — SAM-compatible default.
  *
+ * Issue [#1843](https://github.com/go-to-k/cdkd/issues/1843): the two REGION
+ * entries are folded through `canonicalizeRegion` on the way in and the
+ * credentials are copied verbatim (an access key id is case-sensitive) — the
+ * twin of `local-invoke.ts`'s `forwardAwsEnv`. The value becomes the
+ * container's own `AWS_REGION`, and SDK endpoint resolution is case-sensitive.
+ * Folded here as well as at the handler entry because this helper is exported
+ * and must not depend on its caller having folded `process.env`.
+ *
  * Exported for unit-test isolation (`local-container-caller-identity.test.ts`),
  * which drives the `--role-arn` cases without booting the API server.
  */
@@ -2670,9 +2698,11 @@ export function forwardAwsEnv(env: Record<string, string>): void {
   // while nothing imported it). The two region keys are this command's own
   // concern and stay here.
   const passThrough = [...AWS_CREDENTIAL_ENV_KEYS, 'AWS_REGION', 'AWS_DEFAULT_REGION'] as const;
+  const regionKeys = new Set<string>(['AWS_REGION', 'AWS_DEFAULT_REGION']);
   for (const key of passThrough) {
     const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+    if (value === undefined) continue;
+    env[key] = regionKeys.has(key) ? canonicalizeRegion(value) : value;
   }
   // Issue #3130: `applyRoleArnIfSet` OVERWRITES the three credential variables
   // above with a `--role-arn` assumed role's, so the copy that just ran would

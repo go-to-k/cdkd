@@ -171,7 +171,7 @@ describe('AssemblyReader: a stack templateFile', () => {
         manifest({ MainStack: stackArtifact({ templateFile: outside }) })
       )
     ).toThrow(
-      /Stack 'MainStack' has templateFile='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
+      /Stack MainStack has templateFile=\.\.\/outside\.json which resolves to .*outside\.json, outside/
     );
   });
 
@@ -219,7 +219,7 @@ describe('AssemblyReader: an asset-manifest artifact file', () => {
         })
       )
     ).toThrow(
-      /Asset manifest artifact 'MainStack\.assets' has file='\.\.\/outside\.json' which resolves to/
+      /Asset manifest artifact MainStack\.assets has file=\.\.\/outside\.json which resolves to/
     );
   });
 
@@ -298,7 +298,7 @@ describe("AssemblyReader: a nested-stack row's aws:asset:path", () => {
     writeFileSync(join(dir, 'MainStack.template.json'), nestedTemplate(outside));
 
     expect(() => read(dir)).toThrow(
-      /nested-stack 'Child' has Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to/
+      /nested-stack Child has Metadata\['aws:asset:path'\]=\.\.\/outside\.json which resolves to/
     );
     expect(() => read(dir)).toThrow(CONTAINMENT);
   });
@@ -346,7 +346,7 @@ describe('collectStackMessages: additionalMetadataFile', () => {
     expect(() =>
       collectStackMessages(dir, stackArtifact({}, { additionalMetadataFile: outside }))
     ).toThrow(
-      /Stack metadata file '\.\.\/outside\.json' resolves to .*outside\.json, outside .* Refusing to load\./
+      /Stack metadata file \.\.\/outside\.json resolves to .*outside\.json, outside .* Refusing to load\./
     );
   });
 

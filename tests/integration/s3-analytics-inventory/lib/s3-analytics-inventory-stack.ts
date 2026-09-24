@@ -5,29 +5,23 @@ import type { Construct } from 'constructs';
 /**
  * cdkd S3 analytics + inventory DESTINATION integ (issue #1493 items 2/3).
  *
- * Both `applyAnalyticsConfigurations` and `applyInventoryConfigurations` pick
- * between two accepted destination shapes by probing member presence. Before
- * the fix a `Destination` that was a string / array / unresolved intrinsic
+ * Before the fix, a `Destination` that was a string / array / unresolved
+ * intrinsic in `applyAnalyticsConfigurations` / `applyInventoryConfigurations`
  * indexed every probe to `undefined` and the whole block was omitted from the
  * Put — the configuration deployed with no destination and no error anywhere.
- * The fix refuses that on the create path and warns on the update path, and
- * widened the branch probe to include `Bucket` (the readers already accepted
- * `BucketArn ?? Bucket`, so a `{ Bucket }`-only block previously dropped).
+ * The fix refuses that on the create path and warns on the update path.
  *
  * Nothing in the integ tree exercised either configuration at all, so this
- * fixture is the live proof that the rewritten branch selection still delivers
- * a real destination to AWS — on CREATE and, via the per-id diff path where
+ * fixture is the live proof that the destination guard still delivers a real
+ * destination to AWS — on CREATE and, via the per-id diff path where
  * the warn callback is wired, on UPDATE.
  *
  * L1 `CfnBucket` is used so the exact CFn property shapes are under test.
  *
- * SHAPE SCOPE: only the CFn FLATTENED form (`Destination: { BucketArn, Format,
- * ... }`) is covered live, because it is the only one a CDK template can
- * express — `S3BucketDestination` is the SDK spelling cdkd additionally accepts
- * for state records and hand-written templates, and aws-cdk-lib's L1 renderer
- * silently DROPS a member it does not declare, so synthesizing it would need an
- * `addPropertyOverride` whose output no user ever writes. That branch stays
- * unit-covered in `s3-bucket-provider-destination-shape.test.ts`.
+ * SHAPE SCOPE: the CFn form (`Destination: { BucketArn, Format, ... }`) is the
+ * only one cdkd reads. The SDK nested `S3BucketDestination` shape and a
+ * `Bucket` alias are refused pre-flight by the nested required-member check
+ * (issue #3602), pinned in `s3-bucket-provider-destination-shape.test.ts`.
  *
  * ALSO the live coverage for the warn-and-SUBSTITUTE arms of issue #1670 —
  * see the `malformed` mode below.
@@ -133,8 +127,8 @@ export class S3AnalyticsInventoryStack extends cdk.Stack {
     const sourceBucket = new s3.CfnBucket(this, 'SourceBucket', {
       bucketName: sourceBucketName,
 
-      // FLATTENED destination shape — what the CFn schema declares, and the
-      // branch `resolveS3BucketDestination` picks via `BucketArn`.
+      // The CFn destination shape — the only one `resolveS3BucketDestination`
+      // reads.
       analyticsConfigurations: [
         {
           id: 'daily-analytics',
@@ -159,7 +153,7 @@ export class S3AnalyticsInventoryStack extends cdk.Stack {
           destination: {
             bucketArn: reportBucketArn,
             // Phase 5 flips the format too, so the UPDATE exercises the
-            // `readConfigString(s3Dest, 'Format', 'CSV', destPath)` read whose
+            // `readConfigString(s3Dest, 'Format', 'CSV', inventoryDestPath)` read whose
             // reported path item 3 corrected — not just the prefix pass-through.
             // The #1670 mode blanks it instead, so the same read takes its
             // warn-and-SUBSTITUTE arm and `CSV` is what reaches AWS.

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { inspect } from 'node:util';
+import { displayIdent } from './display-safe.js';
 import { getLogger, isStdoutReservedForPayload } from './logger.js';
 import { escapeRegExp } from './regexp.js';
 
@@ -831,6 +832,104 @@ export function dockerSpawnEnvWithSensitive(
     env[k] = v;
   }
   return env;
+}
+
+/**
+ * The env var that accepts, while it is set, that a container client puts secret
+ * VALUES on a process command line ({@link finchSecretArgvRefusal}). Only `1`
+ * or `true` (any case) opts in.
+ */
+export const ALLOW_SECRETS_ON_ARGV_ENV = 'CDKD_ALLOW_SECRETS_ON_ARGV';
+
+/**
+ * Is the container client finch running its Lima VM (macOS / Windows)? There
+ * the value-less `-e KEY` that {@link partitionSensitiveEnv} emits does NOT
+ * keep the value off argv (#3600): finch's `handleEnv` resolves each bare
+ * `KEY` against its own environment and re-emits `-e KEY=<value>` on the argv
+ * of the `limactl shell finch sudo -E nerdctl ...` child, and `--env-file` is
+ * read on the host and re-emitted the same way (runfinch/finch
+ * `cmd/finch/nerdctl_remote.go`, `handleEnv` / `handleEnvFile` and the
+ * `envArgs` rebuild). Its `passedEnvs` list also puts `AWS_ACCESS_KEY_ID` /
+ * `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` from its environment on that
+ * argv for every command. finch on Linux passes the argv to nerdctl unchanged
+ * and is NOT matched.
+ *
+ * Detection is by the BASENAME of the resolved binary (`finch`, `finch.exe`,
+ * any case): a wrapper script or a symlink under another name is not
+ * recognised, and neither is Lima's own `nerdctl.lima`.
+ */
+export function isFinchVmClient(
+  cmd: string = getDockerCmd(),
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  if (platform !== 'darwin' && platform !== 'win32') return false;
+  const base = (cmd.split(/[\\/]/).pop() ?? '').toLowerCase();
+  return base === 'finch' || base === 'finch.exe';
+}
+
+function secretsOnArgvAllowed(): boolean {
+  const v = process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+  return v !== undefined && ['1', 'true'].includes(v.trim().toLowerCase());
+}
+
+/**
+ * The refusal text when template-sourced secrets (ECS `Secrets`, decrypted
+ * SecureString parameters) would be forwarded under {@link isFinchVmClient},
+ * or `undefined` when they may be forwarded: another client, no such secret,
+ * or {@link ALLOW_SECRETS_ON_ARGV_ENV} set. The caller throws it in its own
+ * error class BEFORE any `docker run`. The AWS credential set is not refused
+ * here (it is warned about by {@link warnFinchArgvExposure}) so finch stays
+ * usable for containers that need AWS access. Forwarding them IS what puts
+ * them on that argv — notably `--assume-task-role` / `--assume-role` session
+ * credentials and `--profile` / SSO-resolved ones, which are not in cdkd's
+ * own environment
+ * (finch itself forwards that environment's credentials, plus on Windows with
+ * `ecr-login` what `aws configure export-credentials` resolves from it).
+ * `subject` is caller-rendered context (e.g. the container name) and is not
+ * sanitized here.
+ */
+export function finchSecretArgvRefusal(
+  secretNames: readonly string[],
+  subject: string
+): string | undefined {
+  if (secretNames.length === 0 || !isFinchVmClient() || secretsOnArgvAllowed()) return undefined;
+  const names = [...new Set(secretNames)];
+  return (
+    `${subject}: refusing to forward secret(s) ${names.map((k) => displayIdent(k)).join(', ')} ` +
+    `under CDK_DOCKER=finch on macOS / Windows. finch turns each value-less '-e KEY' into ` +
+    `'-e KEY=<value>' on the command line of the limactl process it starts, where other local ` +
+    `processes can read the plaintext. Use a container client that keeps the value off the command ` +
+    `line (Docker, podman, nerdctl, or finch on Linux), or set ${ALLOW_SECRETS_ON_ARGV_ENV}=1 to ` +
+    `accept that exposure while it stays set.`
+  );
+}
+
+/** Key sets already warned about by {@link warnFinchArgvExposure} in this process. */
+const finchArgvWarned = new Set<string>();
+
+/** Test-only: forget which key sets {@link warnFinchArgvExposure} warned about. */
+export function resetFinchArgvWarningsForTest(): void {
+  finchArgvWarned.clear();
+}
+
+/**
+ * Warn, once per process per distinct key set, that under
+ * {@link isFinchVmClient} the values of `keys` (the sensitive env about to be
+ * forwarded as value-less `-e KEY`) reach the `limactl` command line. Names
+ * only, never a value.
+ */
+export function warnFinchArgvExposure(keys: readonly string[]): void {
+  if (keys.length === 0 || !isFinchVmClient()) return;
+  const names = [...new Set(keys)].sort();
+  const latch = JSON.stringify(names);
+  if (finchArgvWarned.has(latch)) return;
+  finchArgvWarned.add(latch);
+  getLogger().warn(
+    `CDK_DOCKER=finch on macOS / Windows puts the values of ${names.map((k) => displayIdent(k)).join(', ')} ` +
+      `on the command line of the limactl process it starts (finch turns a value-less '-e KEY' into ` +
+      `'-e KEY=<value>'), where other local processes can read them. Docker, podman, nerdctl, or finch ` +
+      `on Linux keep them off the command line.`
+  );
 }
 
 function mergeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {

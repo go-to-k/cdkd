@@ -69,6 +69,15 @@ export interface LoadStateForStackOptions {
    * `stackRegion`, which is what the pre-round-3 behavior was.
    */
   rawStackRegion?: string;
+  /**
+   * The user's UNFOLDED `AWS_REGION` / `AWS_DEFAULT_REGION` spelling, captured
+   * before a handler-entry `foldRegionOption` rewrote `process.env` (issue
+   * #3622). Read only by {@link loadBootstrapContainerRepo}'s raw marker-key
+   * probe: in place of `process.env`, and as the raw spelling of a synth region
+   * that names the same region. Absent, that probe reads `process.env` as
+   * before.
+   */
+  rawEnvRegion?: string;
   stateBucket?: string;
   statePrefix: string;
   region?: string;
@@ -343,11 +352,24 @@ export async function loadBootstrapContainerRepo(
   // time it arrived, so `--stack-region US-EAST-1` could not reach the raw
   // second probe at all and the marker an upper-cased `cdkd bootstrap` wrote
   // stayed unreachable through the one flag that names the region explicitly.
+  const explicitRegion = opts.region ?? opts.rawStackRegion ?? opts.stackRegion;
+  // Issue #3622: when the SYNTH region decides the key, it is canonical — a
+  // stack whose `env.region` reads `CDK_DEFAULT_REGION` gets it from the
+  // already-folded `AWS_REGION`. The marker an `AWS_REGION=US-EAST-1 cdkd
+  // bootstrap` wrote is keyed by the RAW env spelling, so when that spelling
+  // names the SAME region, the raw second probe must use it; otherwise it
+  // would repeat the canonical key and never reach that marker.
+  const synthSpelling =
+    synthRegion !== undefined &&
+    opts.rawEnvRegion !== undefined &&
+    opts.rawEnvRegion !== synthRegion &&
+    canonicalizeRegion(opts.rawEnvRegion) === canonicalizeRegion(synthRegion)
+      ? opts.rawEnvRegion
+      : synthRegion;
   const rawRegion =
-    opts.region ??
-    opts.rawStackRegion ??
-    opts.stackRegion ??
-    synthRegion ??
+    explicitRegion ??
+    synthSpelling ??
+    opts.rawEnvRegion ??
     process.env['AWS_REGION'] ??
     process.env['AWS_DEFAULT_REGION'] ??
     'us-east-1';

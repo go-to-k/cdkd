@@ -6,11 +6,11 @@ import {
   runDockerStreaming,
   spawnStreaming,
 } from '../utils/docker-cmd.js';
-import { realpathSync } from 'fs';
-import { isAbsolute, relative, resolve, sep } from 'path';
-import { displaySafe } from '../utils/display-safe.js';
+import { isAbsolute, resolve } from 'path';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -234,7 +234,7 @@ export function resolveDockerContextDirectory(opts: DockerContextResolveOptions)
   }
   if (!resolved.contained) {
     throw wrapError(
-      `asset source.directory='${displaySafe(directory)}' which ` +
+      `asset source.directory=${displayAssemblyPath(directory)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'build it')}`
     );
   }
@@ -243,99 +243,7 @@ export function resolveDockerContextDirectory(opts: DockerContextResolveOptions)
 
 /** One spelling of the warning subject, so the two arms cannot drift. */
 function dockerSubject(assetId: string | undefined): string {
-  return assetId === undefined ? 'A Docker asset' : `Docker asset '${displaySafe(assetId)}'`;
-}
-
-/** Every value {@link assertCdkLocalDockerContextContained} decides on, as a bag. */
-export interface CdkLocalDockerContextOptions {
-  /**
-   * The directory the bundled engine joins `source.directory` onto — the
-   * manifest's own directory, which it calls `cdkOutDir`.
-   */
-  manifestDir: string;
-  /** The manifest entry's `source`, as the engine will read it. */
-  source: DockerImageAssetSource;
-  /**
-   * The containment bound: the app's outdir (`StackInfo.assetOutdir`, or the
-   * assembly root `Synthesizer.synthesize` reported). Never the manifest
-   * directory for a Stage stack, whose assets sit one level above it.
-   */
-  assetOutdir: string;
-  /** Wrap the refusal in the call site's own typed error class. */
-  wrapError: (message: string) => Error;
-}
-
-/**
- * Refuse a Docker asset whose build context the bundled `cdk-local` engine
- * would take from outside the assembly (issue
- * [#3503](https://github.com/go-to-k/cdkd/issues/3503)).
- *
- * `cdk-local`'s own `buildDockerImage` spells the context (and the
- * `executable` arm's cwd) as `${cdkOutDir}/${source.directory}` with no
- * containment, and cdkd cannot hand it a pre-resolved path without changing
- * the image tag it derives from `source`. So this judges the path the engine
- * WILL open, before the engine runs, through the same
- * {@link resolveDockerContextDirectory} cdkd's own build uses.
- *
- * An ABSOLUTE value is judged by the engine's spelling, not honoured: the
- * concatenation folds it UNDER the manifest directory, so its leading
- * separators are stripped and the remainder takes the relative arm. That
- * keeps a symlink inside the assembly from becoming an escape through an
- * absolute spelling, and keeps the honour-and-warn arm, which describes a
- * build this engine never performs, out of these paths.
- */
-export function assertCdkLocalDockerContextContained(opts: CdkLocalDockerContextOptions): void {
-  const { manifestDir, source, assetOutdir, wrapError } = opts;
-  const directory = source.directory;
-  // No directory: the executable arm runs from the manifest directory itself,
-  // and the directory arm is refused by the engine before it reads anything.
-  if (!directory) return;
-  const asEngineJoinsIt = isAbsolute(directory) ? directory.replace(/^[/\\]+/, '') : directory;
-  resolveDockerContextDirectory({
-    manifestDir,
-    directory: asEngineJoinsIt,
-    wrapError,
-    assetOutdir,
-    // The engine takes the `executable` arm first when both fields are set,
-    // exactly as `buildDockerImage` below does, so the sink follows it.
-    sink:
-      source.executable && source.executable.length > 0
-        ? "run this asset's source.executable with that directory as its working directory"
-        : 'send that directory to docker build as the context of an image cdkd then runs locally',
-  });
-  // The engine hands the RAW string to the OS as a cwd, and the kernel applies
-  // `..` AFTER following a link: `sub/link/..` lands in the link target's
-  // parent, while every lexical model (including `resolveAssemblyPath`, which
-  // folds `..` before it resolves links) reads it as `sub`. So the path is also
-  // judged exactly as the kernel will open it. A spelling that does not
-  // resolve is left to the engine, which cannot open it either.
-  const engineSpelled = `${manifestDir}/${asEngineJoinsIt}`;
-  const physical = tryRealpathNative(engineSpelled);
-  if (physical === undefined) return;
-  const bound = tryRealpathNative(assetOutdir) ?? resolve(assetOutdir);
-  const rel = relative(bound, physical);
-  if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return;
-  throw wrapError(
-    `asset source.directory='${displaySafe(directory)}' which ` +
-      renderAssemblyPathEscape(
-        { contained: false, escape: 'symlink', path: engineSpelled, realPath: physical },
-        assetOutdir,
-        'build it'
-      )
-  );
-}
-
-/**
- * `realpath(3)`, or `undefined` when the path does not resolve. `.native` is
- * load-bearing: the JavaScript `realpathSync` folds `..` lexically first,
- * which is the very reading the check above exists to avoid.
- */
-function tryRealpathNative(p: string): string | undefined {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return undefined;
-  }
+  return assetId === undefined ? 'A Docker asset' : `Docker asset ${displayIdent(assetId)}`;
 }
 
 /**
@@ -511,7 +419,7 @@ export async function buildDockerImage(
   // The reported site of issue #2623: this rendered every `--build-arg` VALUE
   // into `cdkd deploy --verbose` output.
   logger.debug(
-    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displaySafe(contextDir)})`
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displayAssemblyPath(contextDir)})`
   );
 
   try {

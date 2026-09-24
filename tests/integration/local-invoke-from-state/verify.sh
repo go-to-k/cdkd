@@ -178,6 +178,26 @@ RESULT_CANON=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state \
   exit 1
 }
 
+# Step 4d — upper-cased AWS_REGION / AWS_DEFAULT_REGION with NO --region
+# (issue #3622). The handler folded only the flag, so the env spelling reached
+# the SDK clients cdkd builds with no region (the `--from-state` S3 client
+# among them), whose region the AWS SDK reads from AWS_REGION directly.
+echo "[verify] step 4d: AWS_REGION=${UPPER_REGION} --from-state (no --region) — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
+RESULT_ENV_UPPER=$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" \
+  invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
+echo "[verify]   response: ${RESULT_ENV_UPPER}"
+echo "${RESULT_ENV_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+  echo "[verify] FAIL: AWS_REGION=${UPPER_REGION} must still read the ${REGION} state record;"
+  echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ENV_UPPER}"
+  exit 1
+}
+[ "${RESULT_ENV_UPPER}" = "${RESULT_CANON}" ] || {
+  echo "[verify] FAIL: an upper-cased AWS_REGION must answer byte-identically to the canonical run"
+  echo "[verify]   upper env: ${RESULT_ENV_UPPER}"
+  echo "[verify]   canonical: ${RESULT_CANON}"
+  exit 1
+}
+
 echo "[verify] step 5: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 

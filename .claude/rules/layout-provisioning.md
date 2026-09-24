@@ -44,6 +44,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **dynamodb-index-busy-delete.ts** - The index-busy `DeleteTable` rule BOTH DynamoDB providers read; it is TRANSIENT. The classifier is keyed on the MESSAGE, since AWS reports a plain `ResourceInUseException` for terminal conflicts too. The settle poll warns and RETURNS on timeout, because a throw would STRAND the resource, and **it runs PER RETRY**, so the budget is PER CALLING TYPE.
 
+- **remove-protection-types.ts** - The ONE list both `--remove-protection` help strings render from (SDK types, then the CC registry). `remove-protection-types.test.ts` binds it to the provider files that read `removeProtection`, in both directions ([#2660](https://github.com/go-to-k/cdkd/issues/2660)).
+
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`. The modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. A CC-routed ASG cannot `ForceDelete`, so `CloudControlProvider.delete` delegates that case to `ASGProvider.delete`.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.

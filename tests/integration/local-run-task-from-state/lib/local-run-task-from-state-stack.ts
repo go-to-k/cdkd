@@ -145,6 +145,44 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
     });
     (taskDefL2.node.defaultChild as ecs.CfnTaskDefinition).overrideLogicalId('NginxTaskDefL2');
 
+    // ─── Issue #1855: the same image through NON-PLAIN registry hosts ─────
+    //
+    // `GetAuthorizationToken` reports the PLAIN host as its `proxyEndpoint`,
+    // and docker keys its credential store on the hostname verbatim, so a
+    // login to the plain host followed by a pull from a dual-stack or FIPS
+    // host sent no credentials. verify.sh runs these two WITHOUT `--no-pull`
+    // (the arms above pass it, so they never reach the login) and under an
+    // empty `DOCKER_CONFIG`, so the only credentials docker holds are the
+    // ones cdkd's own login writes. Same repository, same pushed image: only
+    // the registry host differs.
+    const nonPlainHostTaskDef = (id: string, host: string, hostPort: number) => {
+      const td = new ecs.CfnTaskDefinition(this, id, {
+        family: `cdkd-local-run-task-from-state-${id.toLowerCase()}`,
+        requiresCompatibilities: ['EC2'],
+        networkMode: 'bridge',
+        containerDefinitions: [
+          {
+            name: 'web',
+            image: cdk.Fn.sub(`${host}/\${MyRepo}:latest`),
+            essential: true,
+            memory: 256,
+            portMappings: [{ containerPort: 80, hostPort, protocol: 'tcp' }],
+          },
+        ],
+      });
+      td.overrideLogicalId(id);
+    };
+    nonPlainHostTaskDef(
+      'NginxTaskDefDualStack',
+      '${AWS::AccountId}.dkr-ecr.${AWS::Region}.on.aws',
+      18084
+    );
+    nonPlainHostTaskDef(
+      'NginxTaskDefFips',
+      '${AWS::AccountId}.dkr.ecr-fips.${AWS::Region}.amazonaws.com',
+      18085
+    );
+
     // ─── Issue #291: env vars + secrets via state substitution ────────────
     //
     // A short-lived busybox task whose container `Environment` references

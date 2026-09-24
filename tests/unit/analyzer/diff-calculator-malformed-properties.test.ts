@@ -40,6 +40,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -249,14 +250,109 @@ describe('DiffCalculator refuses an unreadable properties bag (issue go-to-k/cdk
   });
 
   it('leaves the unreadable-ENTRY class to its own guard', async () => {
-    // Order-independence with the entry-level guard go-to-k/cdkd#3226 adds: a
-    // `null` entry has no `properties` to test, so naming it here would report
-    // this container for another one's defect. Pre-existing behaviour (the
-    // entry reads as absent, so the resource previews as a CREATE) is
-    // deliberately unchanged by THIS fix.
+    // Order-independence with the entry-level guard: a `null` entry has no
+    // `properties` to test, so naming it here would report this container for
+    // another one's defect. INVERTED by go-to-k/cdkd#3314. This case used to
+    // pin the pre-fix verdict (the entry read as absent and was planned as a
+    // CREATE). The row is now refused by the ENTRY guard, in that class's
+    // words, so this container's text must not appear.
     const state = record({ BucketName: 'my-bucket' });
     state.resources['MyBucket'] = null as unknown as StackState['resources'][string];
+    const error = await refusalFrom(state);
+    expect(error.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(error.message).toContain('cannot be read as resources');
+    expect(error.message).not.toContain("'properties' map cannot be read");
+  });
+});
+
+/**
+ * Issue [go-to-k/cdkd#3314](https://github.com/go-to-k/cdkd/issues/3314): the
+ * ROW itself, one level up from the `properties` map above.
+ *
+ * `calculateDiff` looks each template resource up by logical id and branched
+ * on `if (!currentResource)`. A `null` row was therefore indistinguishable from
+ * a resource that is not in state, and `cdkd deploy` planned a CREATE of a
+ * resource it already manages. A typeless object row compared unequal to the
+ * template's type and was planned as a type-change REPLACEMENT.
+ */
+describe('DiffCalculator refuses an unreadable resource ENTRY (issue go-to-k/cdkd#3314)', () => {
+  function withEntry(entry: unknown): StackState {
+    const state = record({ BucketName: 'my-bucket' });
+    state.resources['MyBucket'] = entry as StackState['resources'][string];
+    return state;
+  }
+
+  // THE FIRING SIDE, one case per shape. `null` and the other non-objects
+  // planned a CREATE before the fix. The typeless object planned a Type-change
+  // UPDATE that requires replacement.
+  for (const [label, entry] of [
+    ['null', null],
+    ['a string', 'abcdef'],
+    ['a number', 5],
+    ['a boolean', true],
+    ['a list', []],
+    ['a typeless object', { physicalId: 'my-bucket', properties: { BucketName: 'my-bucket' } }],
+  ] as const) {
+    it(`refuses when the entry is ${label}, instead of planning a change`, async () => {
+      const error = await refusalFrom(withEntry(entry));
+      expect(error.code).toBe(STATE_RESOURCES_MALFORMED);
+      expect(error.message).toContain('MyBucket');
+      expect(error.message).toContain('cannot be read as resources');
+      // It names the DEPLOY consequence, not the writer text of
+      // `refuseMalformedResourceEntries`, which claims nothing was locked.
+      expect(error.message).toContain('planned as a CREATE');
+      expect(error.message).not.toContain('Nothing was locked');
+      // No identity read off the record, as with the `properties` refusal.
+      expect(error.message).not.toContain('MyStack');
+      expect(error.message).not.toContain('us-east-1');
+      expect(error.message.endsWith("cdkd state show '<stack>' --stack-region '<region>' --json")).toBe(
+        true
+      );
+      // A nested child deploy runs inside the parent's `withRetry`.
+      expect(isMarkedNonRetryable(error)).toBe(true);
+    });
+  }
+
+  it('refuses an unreadable row the template no longer declares', async () => {
+    // The DELETE walk read `currentResource.resourceType` off the row and died
+    // on a bare `TypeError` for `null`.
+    const state = record({ BucketName: 'my-bucket' });
+    state.resources['Gone'] = null as unknown as StackState['resources'][string];
+    const error = await refusalFrom(state);
+    expect(error.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(error.message).toContain('Gone');
+    expect(error.message).not.toContain('MyBucket');
+  });
+
+  it('reports a typeless row with a torn map as the ROW, not as its map', async () => {
+    // Both predicates name this shape, so the order is what decides the text.
+    const error = await refusalFrom(withEntry({ physicalId: 'p', properties: 'torn' }));
+    expect(error.message).toContain('cannot be read as resources');
+    expect(error.message).not.toContain("'properties' map cannot be read");
+  });
+
+  // THE NON-FIRING SIDE.
+  it('still plans a CREATE for a resource that is genuinely not in state', async () => {
+    const state = record({ BucketName: 'my-bucket' });
+    delete state.resources['MyBucket'];
     const changes = await new DiffCalculator().calculateDiff(state, template);
     expect(changes.get('MyBucket')?.changeType).toBe('CREATE');
+  });
+
+  it('diffs a readable row that carries a resource type', async () => {
+    const changes = await new DiffCalculator().calculateDiff(
+      record({ BucketName: 'my-bucket', VersioningConfiguration: { Status: 'Enabled' } }),
+      template
+    );
+    expect(changes.get('MyBucket')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('refuses only the damaged row by name, beside a healthy one', async () => {
+    const state = record({ BucketName: 'my-bucket' });
+    state.resources['Other'] = null as unknown as StackState['resources'][string];
+    const error = await refusalFrom(state);
+    expect(error.message).toContain('holds 1 resource record(s)');
+    expect(error.message).toContain('Other');
+    expect(error.message).not.toContain('MyBucket');
   });
 });

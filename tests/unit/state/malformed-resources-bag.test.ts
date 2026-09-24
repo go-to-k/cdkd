@@ -25,6 +25,7 @@ import {
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
   malformedResourceEntriesRefusalMessage,
+  malformedDeployResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
   malformedOrphanRecordsWarning,
   deployRefusesOrphanRowsReason,
@@ -49,9 +50,11 @@ import {
   refuseMalformedOrphanRecords,
   refuseMalformedOrphanRecordsForDestroy,
   refuseMalformedOrphansForDestroy,
+  refuseMalformedOrphansForOrphan,
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceEntries,
+  refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
@@ -2090,6 +2093,38 @@ describe('the entry-level text', () => {
     expect(writer).toContain('the quietest shape is neither');
   });
 
+  it("every orphan-row text names the non-empty 'physicalId' clause the predicates enforce", () => {
+    // Both predicates reject a missing or EMPTY `state.physicalId`
+    // (go-to-k/cdkd#3641), and four texts diagnose that row. Only the destroy
+    // refusal's clause was pinned: deleting it from the writer refusal, the
+    // `cdkd orphan` refusal or either arm of the drop warning stayed green, so a
+    // row refused over its `physicalId` alone could be named for causes it does
+    // not have (maintainer test review, round 5).
+    const CLAUSE = "non-empty string 'physicalId'";
+    const state = {
+      orphans: [
+        { logicalId: 'Blank', state: { resourceType: 'AWS::S3::Bucket', physicalId: '', properties: {} } },
+      ] as unknown as StackState['orphans'],
+    };
+    const thrown = (label: string, refuse: () => void): string => {
+      try {
+        refuse();
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      throw new Error(`${label} did not throw over an empty physicalId, so this case pins nothing`);
+    };
+    for (const [label, text] of [
+      ['the writer refusal', thrown('the writer refusal', () => refuseMalformedOrphanRecords(state, 'S', 'us-east-1'))],
+      ['the destroy refusal', thrown('the destroy refusal', () => refuseMalformedOrphanRecordsForDestroy(state, 'S', 'us-east-1'))],
+      ["the 'cdkd orphan' refusal", thrown("the 'cdkd orphan' refusal", () => refuseMalformedOrphansForOrphan(state, 'S', 'us-east-1'))],
+      ['the diff drop warning', malformedOrphanRecordsWarning('S', 'us-east-1', ['Blank'], false)],
+      ['the scrub drop warning', malformedOrphanRecordsWarning('S', 'us-east-1', ['Blank'], true)],
+    ] as const) {
+      expect(text, `${label} no longer names the physicalId clause`).toContain(CLAUSE);
+    }
+  });
+
   it('the KEPT-row warning and the exit-3 reason say what they now say, and not what they said', () => {
     // o15 (go-to-k/cdkd#3641 round 4): nothing watched these two texts' CONTENT, so
     // restoring either retired phrasing stayed green — including the two sentences
@@ -3355,7 +3390,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(16);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(17);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3365,8 +3400,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // go-to-k/cdkd#3350, one predicate: `cdkd orphan`'s text says what ITS save
     // does with such an entry and subtracts the records the save deletes.
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
+    // A THIRD since go-to-k/cdkd#3314: `cdkd deploy`'s diff, whose text states
+    // the planned CREATE rather than a save.
     expect([...entries].sort()).toEqual([
       'refuseMalformedResourceEntries(',
+      'refuseMalformedResourceEntriesForDeploy(',
       'refuseMalformedResourceEntriesForOrphan(',
     ]);
     // An entry's `attributes` map (go-to-k/cdkd#3345), its own container with
@@ -4175,6 +4213,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     ['destroy resources', () => refuseMalformedResourcesForDestroy(state('abcdef'), 'S', 'us-east-1')],
     ['deploy resources', () => refuseMalformedResourcesForDeploy(state('abcdef'), 'S', 'us-east-1')],
     ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
+    ['deploy resource entries', () => refuseMalformedResourceEntriesForDeploy(state({ A: null }), undefined, undefined)],
     ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     // The ROW pair (go-to-k/cdkd#3500). The fixture is a READABLE list holding
@@ -4229,7 +4268,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(16);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(17);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6883,6 +6922,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedResourceEntriesWarning',
       (s, r) => malformedResourceEntriesWarning(s as string, r as string, ['A']),
     ],
+    [
+      'malformedDeployResourceEntriesRefusalMessage',
+      (s, r) => malformedDeployResourceEntriesRefusalMessage(s, r, ['A']),
+    ],
     // Converted by go-to-k/cdkd#3526 from spelling their own identity clause
     // and command to taking `stackClause` / `inspectCommand`, which render
     // byte-identically for a present identity and give the no-identity form
@@ -7029,6 +7072,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedOrphanRecordsForDestroy',
       'refuseMalformedResourceAttributesForOrphan',
       'refuseMalformedResourceEntries',
+      'refuseMalformedResourceEntriesForDeploy',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForOrphan',

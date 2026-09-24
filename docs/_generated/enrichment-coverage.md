@@ -177,7 +177,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | yes | sdk-fallback-gap | `LoadBalancerArns` (GAP), `TargetGroupArn` (allow), `TargetGroupFullName` (GAP), `TargetGroupName` (GAP) |
 | `AWS::EMR::Cluster` | yes | sdk-fallback-gap | `Id` (allow), `MasterPublicDNS` (GAP) |
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `Id` (allow) |
-| `AWS::EMR::InstanceGroupConfig` | yes | enriched | `Id` (allow) |
+| `AWS::EMR::InstanceGroupConfig` | yes | enriched | `InstanceGroupId` (allow) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (allow), `RuleName` (GAP) |
 | `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |

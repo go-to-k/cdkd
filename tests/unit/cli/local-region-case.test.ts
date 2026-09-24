@@ -57,7 +57,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
 const { resolvePseudoParametersForInvoke, applyLambdaCredentialEnv } = await import(
   '../../../src/cli/commands/local-invoke.js'
 );
-const { resolvePseudoParametersForStartApi } = await import(
+const { resolvePseudoParametersForStartApi, forwardAwsEnv: startApiForwardAwsEnv } = await import(
   '../../../src/cli/commands/local-start-api.js'
 );
 const { buildEcsImageResolutionContext, resolveEcsConsumerRegion } = await import(
@@ -568,6 +568,70 @@ describe('cdkd local invoke: container AWS_REGION on the DEFAULT path (issue #18
 });
 
 /**
+ * Issue [#1843](https://github.com/go-to-k/cdkd/issues/1843)'s fourth site: `cdkd
+ * local start-api`'s own `forwardAwsEnv`, the twin of the `local invoke` one
+ * above. It copies `AWS_REGION` / `AWS_DEFAULT_REGION` into every per-Lambda
+ * container that has no `--assume-role` mapping, and the copy was raw.
+ */
+describe('cdkd local start-api: container AWS_REGION via forwardAwsEnv (issue #1843)', () => {
+  const DEV_CREDS = {
+    AWS_ACCESS_KEY_ID: 'AKIADEVSHELL',
+    AWS_SECRET_ACCESS_KEY: 'dev-secret',
+    AWS_SESSION_TOKEN: 'dev-token',
+  } as const;
+
+  afterEach(() => {
+    for (const k of Object.keys(DEV_CREDS)) delete process.env[k];
+  });
+
+  it('folds an upper-cased AWS_REGION and AWS_DEFAULT_REGION into the container env', () => {
+    process.env['AWS_REGION'] = 'CN-NORTH-1';
+    process.env['AWS_DEFAULT_REGION'] = 'CN-NORTHWEST-1';
+    const env: Record<string, string> = {};
+
+    startApiForwardAwsEnv(env);
+
+    expect(env['AWS_REGION']).toBe('cn-north-1');
+    expect(env['AWS_DEFAULT_REGION']).toBe('cn-northwest-1');
+  });
+
+  it('leaves already-canonical region vars byte-identical', () => {
+    process.env['AWS_REGION'] = 'us-east-1';
+    process.env['AWS_DEFAULT_REGION'] = 'eu-west-1';
+    const env: Record<string, string> = {};
+
+    startApiForwardAwsEnv(env);
+
+    expect(env['AWS_REGION']).toBe('us-east-1');
+    expect(env['AWS_DEFAULT_REGION']).toBe('eu-west-1');
+  });
+
+  it('copies the CREDENTIALS verbatim — only the region entries are folded', () => {
+    // An over-broad fix lower-casing the whole pass-through list would corrupt
+    // every forwarded credential (an access key id is case-SENSITIVE).
+    for (const [k, v] of Object.entries(DEV_CREDS)) process.env[k] = v;
+    process.env['AWS_REGION'] = 'US-EAST-1';
+    const env: Record<string, string> = {};
+
+    startApiForwardAwsEnv(env);
+
+    expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIADEVSHELL');
+    expect(env['AWS_SECRET_ACCESS_KEY']).toBe('dev-secret');
+    expect(env['AWS_SESSION_TOKEN']).toBe('dev-token');
+    expect(env['AWS_REGION']).toBe('us-east-1');
+  });
+
+  it('does not invent a region var the shell never set', () => {
+    const env: Record<string, string> = {};
+
+    startApiForwardAwsEnv(env);
+
+    expect('AWS_REGION' in env).toBe(false);
+    expect('AWS_DEFAULT_REGION' in env).toBe(false);
+  });
+});
+
+/**
  * The three resolvers above cover the pseudo-parameter bag, but each command
  * ALSO hands `options.region` straight to SDK clients this file cannot reach
  * from a unit test — `applyRoleArnIfSet` / `assumeTaskRole` /
@@ -589,6 +653,7 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   // unit test, which is exactly why the fold is pinned at source level here
   // rather than asserted through a behavior test.
   const FOLD = 'options.region = canonicalizeRegion(options.region)';
+  const SHARED_FOLD = 'foldRegionOption(options);';
   const commandsDir = join(repoRoot, 'src', 'cli', 'commands');
 
   /**
@@ -642,7 +707,11 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
 
   it.each(commands)('%s canonicalizes options.region before using it', (file) => {
     const lines = liveLinesOf(file);
-    const foldAt = lines.findIndex((line) => line.includes(FOLD));
+    // `foldRegionOption(options)` is the shared helper's spelling of the same
+    // fold (plus the env half — issue #2103), so either satisfies the pin.
+    const foldAt = lines.findIndex(
+      (line) => line.includes(FOLD) || line.includes(SHARED_FOLD)
+    );
 
     expect(foldAt, `${file}: live options.region canonicalization not found`).toBeGreaterThan(-1);
 
@@ -699,6 +768,51 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   });
 
   /**
+   * Issues [#2103](https://github.com/go-to-k/cdkd/issues/2103) (start-api) and
+   * [#3622](https://github.com/go-to-k/cdkd/issues/3622) (the other three): the
+   * per-read folds cover the chains cdkd writes, not the SDK clients a command
+   * builds with NO region (the `--profile` credential resolver, the
+   * `--from-state` S3 client without `--region`, `applyRoleArnIfSet`'s STS
+   * client), whose region the SDK reads from `AWS_REGION` directly. Only
+   * folding the env var itself reaches those, and nothing else goes red if the
+   * call is dropped — so it is pinned here, before the first AWS call.
+   */
+  it.each([
+    'local-start-api.ts',
+    'local-invoke.ts',
+    'local-run-task.ts',
+    'local-invoke-agentcore.ts',
+  ])('%s folds the ENV half at its handler entry (issues #2103, #3622)', (file) => {
+    const lines = liveLinesOf(file);
+    const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
+    const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnIfSet('));
+
+    expect(foldAt, `live '${SHARED_FOLD}' not found in ${file}`).toBeGreaterThan(-1);
+    expect(roleArnAt, 'applyRoleArnIfSet anchor drifted').toBeGreaterThan(-1);
+    expect(foldAt).toBeLessThan(roleArnAt);
+  });
+
+  /**
+   * Issue #3622: `local run-task` is the one command that feeds the
+   * bootstrap-marker probe, whose second attempt needs the RAW env spelling.
+   * The capture reads `process.env`, which the fold overwrites, so it is only
+   * correct ABOVE the fold — swapped, it captures the folded value and the
+   * probe silently collapses onto its first key.
+   */
+  it('local-run-task.ts captures the RAW env region before folding it (issue #3622)', () => {
+    const lines = liveLinesOf('local-run-task.ts');
+    const captureAt = lines.findIndex((line) =>
+      line.includes("const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']")
+    );
+    const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
+    const forwardAt = lines.findIndex((line) => line.includes('rawEnvRegion: options.rawEnvRegion'));
+
+    expect(captureAt, 'raw env capture not found').toBeGreaterThan(-1);
+    expect(captureAt).toBeLessThan(foldAt);
+    expect(forwardAt, 'rawEnvRegion is never handed to loadBootstrapContainerRepo').toBeGreaterThan(-1);
+  });
+
+  /**
    * Issue [#1836](https://github.com/go-to-k/cdkd/issues/1836) review fix 5:
    * `local-run-task.ts` carries a FOURTH chain of the item-1 shape —
    * `consumerRegion`, which becomes the exports-index key
@@ -709,27 +823,41 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
    * `process.env['AWS_REGION']` chain in this file must sit inside a
    * `canonicalizeRegion(...)` call.
    *
-   * Scoped to this ONE file on purpose. `local-start-api.ts` has three chains of
-   * the same shape that are still raw — accepted residual, filed as issue #1843 —
-   * so a tree-wide sweep here would fail on another lane's open work rather than
-   * on a regression in this one.
+   * `local-start-api.ts` joined this pin with issue #1843, which folded its
+   * three chains of the same shape (the per-Lambda `stsRegion`, the server's
+   * `defaultRegion` and the WebSocket container's `AWS_REGION`).
    */
-  it('local-run-task.ts folds EVERY env-var region chain (issue #1836 item 5)', () => {
+  it.each([
+    // Floors: a parse that finds nothing would pass every row vacuously.
+    // run-task: `consumerRegion` and `buildEcsImageResolutionContext`'s
+    // pseudo-parameter region. start-api: the three #1843 chains plus
+    // `resolvePseudoParametersForStartApi`'s.
+    ['local-run-task.ts', 2],
+    ['local-start-api.ts', 4],
+  ])('%s folds EVERY env-var region chain (issues #1836 item 5, #1843)', (file, floor) => {
     // Statement granularity: the chains span several lines, so the live text is
     // re-joined and split on `;`. Every statement that READS an ambient region
     // env var must carry the fold.
-    const statements = liveLinesOf('local-run-task.ts').join('\n').split(';');
+    const statements = liveLinesOf(file as string)
+      .join('\n')
+      .split(';');
+    // The deliberate unfolded capture for the bootstrap-marker probe (issue
+    // #3622), pinned on its own above. Exempt only when the WHOLE statement is
+    // exactly that capture: matching the binding name alone would also exempt a
+    // second raw chain written into the same statement.
+    const RAW_CAPTURE =
+      "const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']";
+    const isRawCapture = (s: string): boolean => s.replace(/\s+/g, ' ').trim() === RAW_CAPTURE;
     const chains = statements.filter(
-      (s) => s.includes("process.env['AWS_REGION']") || s.includes("process.env['AWS_DEFAULT_REGION']")
+      (s) =>
+        (s.includes("process.env['AWS_REGION']") || s.includes("process.env['AWS_DEFAULT_REGION']")) &&
+        !isRawCapture(s)
     );
 
-    // Floor first: a parse that finds nothing would pass every row below
-    // vacuously. Measured 2026-08-13: two chains (`consumerRegion` and
-    // `buildEcsImageResolutionContext`'s pseudo-parameter region).
-    expect(chains.length).toBeGreaterThanOrEqual(2);
+    expect(chains.length).toBeGreaterThanOrEqual(floor as number);
 
     for (const chain of chains) {
-      expect(chain, `unfolded region chain in local-run-task.ts: ${chain.trim()}`).toContain(
+      expect(chain, `unfolded region chain in ${file}: ${chain.trim()}`).toContain(
         'canonicalizeRegion('
       );
     }

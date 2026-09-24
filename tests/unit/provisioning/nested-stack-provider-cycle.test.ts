@@ -144,8 +144,8 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       )
     );
 
-    expect(err.message).toContain("under stack 'Parent' contains a cycle");
-    expect(err.message).toContain(`'Child' (${child}) -> 'Loop' (${child})`);
+    expect(err.message).toContain("under stack Parent contains a cycle");
+    expect(err.message).toContain(`Child (${child}) -> Loop (${child})`);
     expect(err.message).toContain('Refusing to deploy any level of it.');
     expect(isMarkedNonRetryable(err)).toBe(true);
     // The point of refusing up front: NOTHING of the cyclic tree deployed.
@@ -164,7 +164,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       )
     );
 
-    expect(err.message).toContain(`'Child' (${a}) -> 'ToB' (${b}) -> 'BackToA' (${a})`);
+    expect(err.message).toContain(`Child (${a}) -> ToB (${b}) -> BackToA (${a})`);
     expect(engineDeploys).toEqual([]);
   });
 
@@ -221,7 +221,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       )
     );
 
-    expect(err.message).toContain("Metadata['aws:asset:path']='/etc/outside.json' which is absolute");
+    expect(err.message).toContain("Metadata['aws:asset:path']=/etc/outside.json which is absolute");
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(engineDeploys).toEqual([]);
   });
@@ -245,7 +245,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       )
     );
 
-    expect(err.message).toContain(`'Child' (${child}) -> '0' (${child})`);
+    expect(err.message).toContain(`Child (${child}) -> 0 (${child})`);
     expect(engineDeploys).toEqual([]);
   });
 

@@ -4,11 +4,13 @@
  * `manifest-passthrough-warnings.test.ts` fences the callees; a probe deleting
  * either of the calls below reddened NOTHING before this file existed, which is
  * the repo's own rule about a probed callee saying nothing about its wiring.
- * Both are load-bearing for a claim made to users: the shim call is what
- * `docs/cli-deploy-safety.md` rests on when it says `cdkd local invoke` and its
- * siblings announce a manifest-chosen command, and the destination loop is the
- * only reader of the bootstrap-shape check, the cross-region fix and the
- * redirect-target disjunct.
+ * The shim no longer makes the call: since cdk-local 0.149.3 the engine
+ * announces the command itself, once and after its containment check, so a
+ * shim call printed the paragraph twice per build (go-to-k/cdkd#3597).
+ * `tests/unit/local/engine-docker-context.test.ts` pins the single announcement
+ * against the real engine; the case below pins that the shim stays quiet. The
+ * destination loop is the only reader of the bootstrap-shape check, the
+ * cross-region fix and the redirect-target disjunct.
  */
 import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 
@@ -48,7 +50,7 @@ afterEach(() => {
 });
 
 describe("the local container-Lambda shim's executable warning", () => {
-  it('announces a manifest-chosen command BEFORE delegating to the bundled builder', async () => {
+  it('leaves the announcement to the bundled builder, which makes it itself', async () => {
     const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
 
     await buildContainerImage(
@@ -57,10 +59,8 @@ describe("the local container-Lambda shim's executable warning", () => {
       { architecture: 'x86_64' } as never
     );
 
-    expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain('./build.sh');
-    expect(warns[0]).toContain('DOES execute code from it');
-    // ...and it really did delegate, so the warning is not instead of the build.
+    expect(warns).toEqual([]);
+    // ...and it really did delegate, so the silence is not a skipped build.
     expect(buildContainerImageImpl).toHaveBeenCalledTimes(1);
   });
 

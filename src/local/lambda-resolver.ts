@@ -9,10 +9,11 @@ import { stringifyValue } from '../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -872,15 +873,16 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
       // user did NOT expect is visible rather than silent, so it names the
       // directory and says what is done with it.
       // cdkd-raw-beside-safe: every RENDERED operand is a `displaySafe(...)`
-      // call. What the fence reads as a raw neighbour is `escape.escape ===
-      // 'symlink'`, a DISCRIMINANT comparison choosing between two of this
-      // file's literals — it selects text, it does not render a value.
+      // or `displayAssemblyPath(...)` call. What the fence reads as a raw
+      // neighbour is `escape.escape === 'symlink'`, a DISCRIMINANT comparison
+      // choosing between two of this file's literals — it selects text, it
+      // does not render a value.
       getLogger().warn(
-        `Lambda '${displaySafe(logicalId)}' has an absolute ` +
+        `Lambda ${displayIdent(logicalId)} has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +
-          `'${displaySafe(absolute)}'` +
+          `${displayAssemblyPath(absolute)}` +
           (escape.escape === 'symlink'
-            ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
+            ? ` (through a symbolic link to ${displayAssemblyPath(escape.realPath)})`
             : '') +
           `. cdkd will bind-mount that directory into the container read-only, where ` +
           `the code in this assembly can read it. This is what ` +
@@ -918,8 +920,8 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
     // a value — it renders every path through `displayAssemblyPath` and the
     // rest of its text is this file's own literal.
     throw wrapError(
-      `Lambda '${displaySafe(logicalId)}' has ` +
-        `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+      `Lambda ${displayIdent(logicalId)} has ` +
+        `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
     );
   }
@@ -952,9 +954,8 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
  * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field, where
  * base and bound coincide again.
  *
- * Exported for `local-start-api.ts`'s copy of the caller, for the Docker
- * context check the ECS emulator commands run over cdk-local's `StackInfo`
- * (which is why it takes only the two fields it reads), and for unit testing.
+ * Exported for `local-start-api.ts`'s copy of the caller, and for unit
+ * testing.
  */
 export function assetPathDirs(stack: Pick<StackInfo, 'assetManifestPath' | 'assetOutdir'>): {
   manifestDir: string;
@@ -990,7 +991,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' has no Metadata['aws:asset:path']. ` +
+      `Lambda ${displayIdent(logicalId)} has no Metadata['aws:asset:path']. ` +
         'cdkd local invoke needs this hint to find the local asset directory. ' +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
@@ -1006,7 +1007,7 @@ function resolveAssetCodePath(
   });
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' asset directory '${displaySafe(abs)}' does not exist ` +
+      `Lambda ${displayIdent(logicalId)} asset directory ${displayAssemblyPath(abs)} does not exist ` +
         'or is not a directory. Re-synthesize the app and retry.'
     );
   }

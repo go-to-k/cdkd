@@ -1101,7 +1101,7 @@ describe('resolveLambdaTarget', () => {
       tmpRoot
     );
     expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
-      /Lambda 'MyLayer' has no Metadata\['aws:asset:path'\]/
+      /Lambda MyLayer has no Metadata\['aws:asset:path'\]/
     );
   });
 

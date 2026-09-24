@@ -20,6 +20,8 @@
 #      v2 to v3 (proving the fallback still works).
 #   3. Clean teardown on SIGTERM (no leftover cdkd-local-* containers /
 #      networks).
+#   4. A copy of the assembly whose image asset points outside it is refused
+#      before any build (go-to-k/cdkd#3597).
 #
 # Run via `/run-integ local-start-service-watch-fast` (recommended) or
 # directly:
@@ -43,6 +45,7 @@ SERVER_CJS_BACKUP=""
 DOCKERFILE_BACKUP=""
 LOG_FILE=""
 CDKD_PID=""
+TAMPER_DIR=""
 
 term_server() {
   if [[ -n "${CDKD_PID:-}" ]] && kill -0 "${CDKD_PID}" 2>/dev/null; then
@@ -87,6 +90,9 @@ cleanup() {
     | xargs -r docker network rm >/dev/null 2>&1 || true
   if [[ -n "${LOG_FILE:-}" ]]; then
     rm -f "${LOG_FILE}"
+  fi
+  if [[ -n "${TAMPER_DIR:-}" ]]; then
+    rm -rf "${TAMPER_DIR}"
   fi
 }
 # Install the trap BEFORE any mktemp/cp so a SIGINT in the pre-boot window
@@ -360,6 +366,57 @@ if [[ "${LEAKED_NETS}" -ne 0 ]]; then
   exit 1
 fi
 echo "    [clean teardown] OK"
+
+# An image build context escaping the assembly is refused (go-to-k/cdkd#3597).
+# A copy of the assembly the run above synthesized, with the service's image
+# asset pointed at `../victim`: a sibling of the copy holding the fixture's own
+# webapp, so a build that FOLLOWED the escape would succeed and boot.
+echo "==> A Docker build context escaping the assembly is refused"
+TAMPER_DIR="$(mktemp -d)"
+cp -R cdk.out "${TAMPER_DIR}/cdk.out"
+cp -R webapp "${TAMPER_DIR}/victim"
+node -e '
+  const fs = require("fs"), path = require("path");
+  const dir = process.argv[1];
+  let n = 0;
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".assets.json"))) {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+    for (const a of Object.values(m.dockerImages || {})) { a.source.directory = "../victim"; n++; }
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(m));
+  }
+  if (n === 0) { console.error("no Docker image asset to tamper"); process.exit(1); }
+' "${TAMPER_DIR}/cdk.out"
+: > "${LOG_FILE}"
+${CDKD} local start-service CdkdLocalStartServiceWatchFastFixture:WebService \
+  -a "${TAMPER_DIR}/cdk.out" \
+  --no-pull \
+  --host-port "8080=${HOST_PORT}" \
+  --container-host 127.0.0.1 \
+  >"${LOG_FILE}" 2>&1 &
+CDKD_PID=$!
+for _ in $(seq 1 120); do
+  kill -0 "${CDKD_PID}" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "${CDKD_PID}" 2>/dev/null; then
+  echo "FAIL: start-service kept running on an assembly whose build context escapes it"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+TAMPER_RC=0
+wait "${CDKD_PID}" || TAMPER_RC=$?
+CDKD_PID=""
+if [[ "${TAMPER_RC}" -eq 0 ]] \
+  || ! grep -Eq "source\.directory='?\.\./victim'? which resolves to .*victim'?, outside" "${LOG_FILE}"; then
+  echo "FAIL: start-service did not refuse the escaping build context (exit ${TAMPER_RC})"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if docker ps -a --filter "name=cdkd-local-" --format '{{.Names}}' | grep -q .; then
+  echo "FAIL: the refused run left cdkd-local-* containers behind"
+  exit 1
+fi
+echo "    [escaping build context refused] OK"
 
 echo ""
 echo "==> Phase 4 fast path integ PASSED"

@@ -189,99 +189,47 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Is this `Destination` block written in the CFn FLATTENED form
- * (`{ BucketArn, Format, ... }`) rather than the SDK NESTED one
- * (`{ S3BucketDestination: { ... } }`)?
- *
- * ONE predicate, called from both `resolveS3BucketDestination` (which picks the
- * bag) and `s3BucketDestinationPath` (which names it). They were written out
- * twice and a reviewer rightly pointed out that two copies of a branch
- * condition must be edited together or a refusal starts naming the wrong key.
- *
- * `Bucket` is probed alongside `BucketArn` because the readers accept it
- * (`s3Dest['BucketArn'] ?? s3Dest['Bucket']`); omitting it made a
- * `{ Bucket }`-only block take the nested branch, find nothing, and drop — the
- * same silent drop one shape over.
- */
-function isFlattenedDestination(dest: Record<string, unknown>): boolean {
-  return Boolean(dest['BucketArn'] || dest['Bucket'] || dest['BucketAccountId'] || dest['Format']);
-}
-
-/**
- * The CFn path of the destination bag `resolveS3BucketDestination` will pick —
- * issue #1493 item 3, which is a MESSAGE concern, not a value one.
- *
- * Kept separate from the resolver rather than returned alongside the bag:
- * `gen-nested-key-coverage`'s write-evidence walk follows a plain
- * `const x = this.helper(...)` binding to the members written beneath it, and
- * a DESTRUCTURED `const { bag, path } = ...` is a shape it cannot follow — so
- * pairing the two silently withdrew the write evidence for
- * `Destination.BucketArn` / `.BucketAccountId` and turned an opted-in target
- * red with no behavior change at all. Measured against the pre-change provider
- * via the critic's `--providers-dir=` seam.
- */
-function s3BucketDestinationPath(dest: unknown, destinationPath: string): string {
-  return isPlainObject(dest) && isFlattenedDestination(dest)
-    ? destinationPath
-    : `${destinationPath}.S3BucketDestination`;
-}
-
-/**
- * The FLATTENED CFn `Destination` block cdkd actually SENDS for `declared`
- * (issue #1707) — the shared fold behind BOTH halves of the #1633 pair: the
- * per-item `effectiveProperties` record and
+ * The CFn `Destination` block cdkd actually SENDS for `declared` (issue #1707) —
+ * the shared fold behind BOTH halves of the #1633 pair: the per-item
+ * `effectiveProperties` record and
  * {@link S3BucketProvider.canonicalizeDesiredProperties}.
  *
- * The desired side accepts TWO spellings (`resolveS3BucketDestination` picks
- * either the flattened CFn block or the nested SDK `S3BucketDestination` one)
- * plus a `Bucket` / `BucketArn` alias inside either, while the readback
- * (`inventorySdkToCfn` / `analyticsSdkToCfn`) emits ONLY the flattened form with
- * `BucketArn`. So a record written in any other spelling can never match what
- * `readCurrentState` returns: `cdkd drift` re-reports it forever and `--revert`
- * re-issues the same Put — the never-emitted-KEY class of issue #1686, reached
- * through the SHAPE rather than through a value. The live CFn registry schema
- * agrees the flattened form is the only CFn spelling (`Destination` is
- * `{BucketArn, BucketAccountId, Format, Prefix}` with `additionalProperties:
- * false`), so `S3BucketDestination` and `Bucket` are cdkd-only tolerances.
+ * The readback (`inventorySdkToCfn` / `analyticsSdkToCfn`) emits only
+ * `{BucketArn, BucketAccountId, Format, Prefix}`, the members the live CFn
+ * registry schema declares (`additionalProperties: false`). The block is rebuilt
+ * from exactly those members so a record never carries a key the readback cannot
+ * report.
  *
- * This NORMALIZES rather than retracting the tolerance, per the #1686 rule:
- * refusing the SDK spelling would break templates that deploy today. It also
- * supersedes #1670's write-back-at-the-DECLARED-branch decision, whose whole
- * reason was that writing at a hardcoded branch would leave the malformed value
- * alive at the other key and add a stray one — there is no other key left once
- * the block is normalized wholesale.
+ * The SDK spellings this once also folded (the nested
+ * `{ S3BucketDestination: { ... } }` shape and a `Bucket` alias for
+ * `BucketArn`) are gone: `BucketArn` and `Format` are schema-required here and
+ * `AWS::S3::Bucket` is in `CFN_ENFORCED_TYPES`, so a template using either is
+ * refused pre-flight by `nested-required.ts` (issue #3602).
  *
  * `Format` is the one member a caller can override: the applier passes the
  * value it SENT, which differs from the declared one when the warn-and-
- * SUBSTITUTE read replaced it (#1670). Absent on BOTH sides it defaults to the
- * `'CSV'` the appliers send, so the record carries what AWS will report back
- * rather than one key fewer.
+ * SUBSTITUTE read replaced a malformed value (#1670). Absent on BOTH sides it
+ * defaults to the `'CSV'` the appliers send, so the record carries what AWS
+ * will report back rather than one key fewer.
  *
- * @returns the flattened block, or `declared` BY IDENTITY when it already is
- *   one (so an ordinary template records byte-for-byte what it declared) or is
- *   not a shape this can fold at all (absent / malformed — left for the
- *   resolver's own refusal to report).
+ * @returns the rebuilt block, or `declared` BY IDENTITY when it already is one
+ *   (so an ordinary template records byte-for-byte what it declared) or is not
+ *   a shape this can fold at all (absent / malformed / no `BucketArn` — left for
+ *   the resolver's own refusal to report).
  */
 function effectiveS3BucketDestination(declared: unknown, sentFormat?: unknown): unknown {
   if (!isPlainObject(declared)) return declared;
-  const bag = isFlattenedDestination(declared)
-    ? declared
-    : (declared['S3BucketDestination'] as unknown);
-  if (!isPlainObject(bag)) return declared;
-  // The wire REQUIRES a bucket: `resolveS3BucketDestination` drops a bag with
-  // neither `BucketArn` nor `Bucket` and the item is SKIPPED, so folding one
-  // would describe a call that never went out (round-3 review — the same
-  // mirror-the-wire rule the schedule fold learned, one property over). The
-  // probe is truthiness, matching that guard exactly rather than approximating
-  // it with a presence test.
-  if (!bag['BucketArn'] && !bag['Bucket']) return declared;
-  const out: Record<string, unknown> = {};
-  const bucketArn = bag['BucketArn'] ?? bag['Bucket'];
-  if (bucketArn !== undefined) out['BucketArn'] = bucketArn;
-  if (bag['BucketAccountId'] !== undefined) out['BucketAccountId'] = bag['BucketAccountId'];
+  // The wire REQUIRES a bucket: `resolveS3BucketDestination` drops a block with
+  // no `BucketArn` and the item is SKIPPED, so folding one would describe a call
+  // that never went out. The probe is truthiness, matching that guard exactly.
+  if (!declared['BucketArn']) return declared;
+  const out: Record<string, unknown> = { BucketArn: declared['BucketArn'] };
+  if (declared['BucketAccountId'] !== undefined) {
+    out['BucketAccountId'] = declared['BucketAccountId'];
+  }
   out['Format'] =
-    sentFormat ?? declaredOrDefault(bag, 'Format', INVENTORY_DESTINATION_DEFAULT_FORMAT);
-  if (bag['Prefix'] !== undefined) out['Prefix'] = bag['Prefix'];
+    sentFormat ?? declaredOrDefault(declared, 'Format', INVENTORY_DESTINATION_DEFAULT_FORMAT);
+  if (declared['Prefix'] !== undefined) out['Prefix'] = declared['Prefix'];
   return sameScalarRecord(out, declared) ? declared : out;
 }
 
@@ -289,14 +237,6 @@ function effectiveS3BucketDestination(declared: unknown, sentFormat?: unknown): 
  * `container[key]` when the key is DECLARED, else `fallback` — presence-based,
  * NEVER `??`, and that distinction is the whole guard against issue #1670's
  * finding 3.
- *
- * The ONE licensed `??` in these folds is the ALIAS read
- * `bag['BucketArn'] ?? bag['Bucket']`, and it is not an exception to this rule —
- * it supplies no DEFAULT. It picks between two spellings of the same declared
- * value, exactly as the applier's own read does, so a nullish `BucketArn`
- * correctly falls through to the alias the wire would have used. When neither is
- * declared the key is simply absent from the fold's output, which is what makes
- * a bucket-less block identity-return rather than gain a phantom key.
  *
  * The default belongs to a key the template OMITTED: there the provider sends
  * it, the readback reports it, and folding both sides is what makes them agree.
@@ -1549,8 +1489,8 @@ interface PerItemApplyOutcome {
 /**
  * Name a malformed value in a refusal message, the way `config-shape.ts`'s
  * private `describe` does for the string-reading guards. Kept local rather than
- * exported from there because `resolveS3BucketDestination` is S3-specific
- * branch selection, not a shared shape guard — the two only share the wording.
+ * exported from there because `resolveS3BucketDestination` is an S3-specific
+ * refusal, not a shared shape guard — the two only share the wording.
  */
 function describeValue(value: unknown, maskSecrets: MaskerFn = (text) => text): string {
   if (value === null) return 'null';
@@ -3169,36 +3109,30 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Pick the `S3BucketDestination` bag out of an analytics / inventory
-   * `Destination` block, refusing a shape that would otherwise be dropped.
+   * Validate an analytics / inventory `Destination` block, refusing a shape
+   * that would otherwise be dropped.
    *
-   * Two shapes are legitimate and both must keep working: the CFn FLATTENED
-   * form (`Destination: { BucketArn, Format, ... }`, what the schema declares)
-   * and the SDK NESTED form (`Destination: { S3BucketDestination: { ... } }`,
-   * accepted because state records and hand-written templates carry it).
+   * The block is the CFn form the schema declares (`Destination: { BucketArn,
+   * Format, ... }`). The SDK NESTED form (`{ S3BucketDestination: { ... } }`)
+   * and a `Bucket` alias for `BucketArn` are no longer read: `BucketArn` and
+   * `Format` are schema-required, so a template using either is refused
+   * pre-flight by `nested-required.ts` (issue #3602). What still reaches this
+   * guard with such a shape (an unresolved intrinsic on the path, or a replayed
+   * pre-#1707 state record) is refused here like any other bucket-less block.
    *
-   * Issue #1493 item 2: the branch was picked by probing member presence
-   * (`dest?.['BucketAccountId'] || dest?.['BucketArn'] || dest?.['Format']`),
-   * so a `Destination` that is a STRING / array / unresolved intrinsic indexed
-   * every probe to `undefined`, fell through to an equally-`undefined`
-   * `S3BucketDestination`, and the caller's `s3Dest ? … : undefined` omitted
-   * the whole block from the Put — a configuration silently deployed without
-   * the destination it declared. Unlike the sibling defaulting class this is a
-   * DROP, not a substituted default, so `readConfigString` does not cover it:
-   * it needs its own decision, and per issue #1513's precedent that decision is
-   * REFUSE on the template-borne create path, WARN on the replay-reachable
-   * update path (`onUnusable`), where the desired bag can be a historical cdkd
-   * state record with no template-side remedy.
+   * Issue #1493 item 2: a `Destination` that is a STRING / array / unresolved
+   * intrinsic used to index every probe to `undefined`, and the caller's
+   * `s3Dest ? … : undefined` omitted the whole block from the Put — a
+   * configuration silently deployed without the destination it declared. Unlike
+   * the sibling defaulting class this is a DROP, not a substituted default, so
+   * `readConfigString` does not cover it: per issue #1513's precedent the
+   * decision is REFUSE on the template-borne create path, WARN on the
+   * replay-reachable update path (`onUnusable`), where the desired bag can be a
+   * historical cdkd state record with no template-side remedy.
    *
-   * Also returns the CFn path of the bag it picked (issue #1493 item 3): the
-   * callers used to hardcode `…Destination.S3BucketDestination` in the
-   * `containerPath` they pass to `readConfigString`, so a refusal on the
-   * FLATTENED branch — where the bag IS `dest` itself — named a key the user's
-   * template does not contain.
-   *
-   * @returns the picked bag, or `undefined` when the block was ABSENT or was
-   *   refused on a warn-only path. The caller distinguishes the two by testing
-   *   its own `Destination` value — see the `continue` at each call site.
+   * @returns the block, or `undefined` when it was ABSENT or was refused on a
+   *   warn-only path. The caller distinguishes the two by testing its own
+   *   `Destination` value — see the `continue` at each call site.
    */
   private resolveS3BucketDestination(
     dest: unknown,
@@ -3210,7 +3144,6 @@ export class S3BucketProvider implements ResourceProvider {
     // back-compatible contract.
     maskSecrets: MaskerFn = (text) => text
   ): Record<string, unknown> | undefined {
-    const nestedPath = `${destinationPath}.S3BucketDestination`;
     const drop = (message: string): undefined => {
       if (onUnusable) {
         onUnusable(
@@ -3236,43 +3169,17 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
 
-    // Branch selection is TRUTHINESS-based, matching the pre-fix code exactly.
-    // A presence (`!== undefined`) test reads better but silently re-routes
-    // `{ BucketAccountId: '', S3BucketDestination: {...} }` from the nested
-    // branch — where it worked — to the flat one, where it sends
-    // `Bucket: undefined`. Turning a working template into a broken request is
-    // the opposite of this guard's purpose, so the probe stays truthy and the
-    // REFUSAL below is what the change actually adds.
-    const bag = isFlattenedDestination(dest) ? dest : (dest['S3BucketDestination'] as unknown);
-
-    if (bag === undefined || bag === null) {
+    // The bucket is REQUIRED by both APIs, and it is the one member that cannot
+    // be defaulted. Truthiness, so an empty string is refused too.
+    if (!dest['BucketArn']) {
       return drop(
-        `${destinationPath} carries neither a bucket (BucketArn / Bucket) nor a nested ` +
-          `S3BucketDestination object (got ${describeValue(dest, maskSecrets)}) — the destination would ` +
-          `otherwise be dropped from the request with no error`
-      );
-    }
-    if (!isPlainObject(bag)) {
-      return drop(
-        `${nestedPath} must be an object (got ${describeValue(bag, maskSecrets)}) — check for an ` +
-          `unresolved intrinsic or a mis-nested template value; the destination would ` +
-          `otherwise be dropped from the request with no error`
-      );
-    }
-
-    // The bucket is REQUIRED by both APIs, and it is the one member neither
-    // branch can default. Checking it on the PICKED bag rather than only on the
-    // flat one closes the asymmetry a reviewer found: `{ S3BucketDestination: {} }`
-    // is truthy, so it used to sail through to a `Bucket: undefined` Put.
-    if (!bag['BucketArn'] && !bag['Bucket']) {
-      return drop(
-        `${bag === dest ? destinationPath : nestedPath} has no destination bucket ` +
-          `(BucketArn / Bucket) (got ${describeValue(bag, maskSecrets)}) — the request would be ` +
+        `${destinationPath} has no destination bucket (BucketArn) ` +
+          `(got ${describeValue(dest, maskSecrets)}) — the request would be ` +
           `rejected by S3, or silently carry no destination`
       );
     }
 
-    return bag;
+    return dest;
   }
 
   /**
@@ -3423,7 +3330,6 @@ export class S3BucketProvider implements ResourceProvider {
           skipped.push(index);
           continue;
         }
-        const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
             // Same update-path downgrade as the `Format` read below: the FIELD
@@ -3460,22 +3366,20 @@ export class S3BucketProvider implements ResourceProvider {
             Destination: s3Dest
               ? {
                   S3BucketDestination: {
-                    Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
+                    Bucket: s3Dest['BucketArn'] as string,
                     BucketAccountId: s3Dest['BucketAccountId'] as string | undefined,
                     // Same downgrade as the destination guard above: a
                     // rollback / `drift --revert` replays a STATE record here,
                     // so a malformed `Format` must not hard-fail one line below
                     // a guard that deliberately warns. And the same
                     // record-what-was-SENT rule as the schema version above
-                    // (issue #1670) — recorded, since issue #1707, in the
-                    // FLATTENED CFn spelling rather than at the branch the
-                    // template declared, because that is the only spelling
-                    // `analyticsSdkToCfn` can emit.
+                    // (issue #1670) — recorded in the CFn spelling
+                    // `analyticsSdkToCfn` emits (issue #1707).
                     Format: (sentFormat = this.readSubstitutedConfigString(
                       s3Dest,
                       'Format',
                       INVENTORY_DESTINATION_DEFAULT_FORMAT,
-                      destPath,
+                      analyticsDestPath,
                       { ...(onUnusable ? { onUnusable } : {}) }
                     )),
                     Prefix: s3Dest['Prefix'] as string | undefined,
@@ -3745,7 +3649,6 @@ export class S3BucketProvider implements ResourceProvider {
         skipped.push(index);
         continue;
       }
-      const destPath = s3BucketDestinationPath(rawDest, inventoryDestPath);
       // The value that goes ON THE WIRE for the one read a warn-and-SUBSTITUTE
       // downgrade can replace — see the analytics sibling (issue #1670). The
       // schedule frequency below is the other one, and both are handed to
@@ -3885,7 +3788,7 @@ export class S3BucketProvider implements ResourceProvider {
         Destination: {
           S3BucketDestination: s3Dest
             ? {
-                Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
+                Bucket: s3Dest['BucketArn'] as string,
                 AccountId: s3Dest['BucketAccountId'] as string | undefined,
                 // Same update-path downgrade as the analytics sibling, and the
                 // same record-what-was-SENT rule (issue #1670) —
@@ -3895,7 +3798,7 @@ export class S3BucketProvider implements ResourceProvider {
                   s3Dest,
                   'Format',
                   INVENTORY_DESTINATION_DEFAULT_FORMAT,
-                  destPath,
+                  inventoryDestPath,
                   { ...(onUnusable ? { onUnusable } : {}) }
                 )),
                 Prefix: s3Dest['Prefix'] as string | undefined,

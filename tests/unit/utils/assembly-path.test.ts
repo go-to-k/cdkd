@@ -800,6 +800,31 @@ describe('displayAssemblyPath', () => {
     expectOneBoundary(displayAssemblyPath('/x \u030ey'), '/x \u030ey');
   });
 
+  it('escapes a default-ignorable combining mark even directly after a letter (go-to-k/cdkd#3656)', () => {
+    // Each is `Mn` AND default-ignorable: it draws as nothing, so shown bare
+    // after a letter it makes `.ss<mark>h` print exactly like `.ssh`.
+    expect(displayAssemblyPath('/home/me/.ss\u034fh')).toBe('"/home/me/.ss\\u034fh"');
+    for (const [mark, escaped] of [
+      ['\u034f', '\\u034f'],
+      ['\u17b4', '\\u17b4'],
+      ['\u180b', '\\u180b'],
+      ['\ufe00', '\\ufe00'],
+      ['\ufe0f', '\\ufe0f'],
+      ['\u{e0100}', '\\udb40\\udd00'],
+      ['\u{e01ef}', '\\udb40\\uddef'],
+    ] as const) {
+      const value = `/home/me/.ss${mark}h`;
+      const rendered = displayAssemblyPath(value);
+      expect(rendered).toBe(`"/home/me/.ss${escaped}h"`);
+      expectOneBoundary(rendered, value);
+    }
+    // A visible mark after the escaped one no longer rides on the letter
+    // before it: it would draw on nothing, so it is escaped too.
+    expect(displayAssemblyPath('/x/s\u034f\u0301')).toBe('"/x/s\\u034f\\u0301"');
+    // A visible combining mark on a letter is still part of the name.
+    expect(displayAssemblyPath('/Users/Jose\u0301/cdk.out')).toBe('/Users/Jose\u0301/cdk.out');
+  });
+
   it('shows a letter as itself inside the boundary', () => {
     const value = '/Users/Jos\u00e9/My Project';
     expect(displayAssemblyPath(value)).toBe(`"${value}"`);

@@ -40,8 +40,12 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 // in every instance (see the per-arm note at the `errorCount` throw).
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
-import { displaySafe } from '../../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
 import {
   findNestedTemplateTreeDefect,
   isAbsoluteAssetPath,
@@ -198,8 +202,8 @@ export class NestedStackProvider implements ResourceProvider {
     const childTemplatePath = ctx.nestedTemplates![logicalId];
     if (!childTemplatePath) {
       throw new Error(
-        `Nested template file not found for AWS::CloudFormation::Stack '${displaySafe(logicalId)}' ` +
-          `under parent '${displaySafe(ctx.parentStackName)}'. Verify the synth output emits ` +
+        `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} ` +
+          `under parent ${displayStackName(ctx.parentStackName)}. Verify the synth output emits ` +
           `Metadata['aws:asset:path'] on this resource (CDK 2.x cdk.NestedStack does so by default).`
       );
     }
@@ -264,7 +268,7 @@ export class NestedStackProvider implements ResourceProvider {
     const childTemplatePath = ctx.nestedTemplates![logicalId];
     if (!childTemplatePath) {
       throw new Error(
-        `Nested template file not found for AWS::CloudFormation::Stack '${displaySafe(logicalId)}' on update.`
+        `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} on update.`
       );
     }
     this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
@@ -546,7 +550,7 @@ export class NestedStackProvider implements ResourceProvider {
     // attribute name cdkd did not record. Surface a clear error rather
     // than returning undefined silently.
     throw new Error(
-      `AWS::CloudFormation::Stack: attribute '${displaySafe(attributeName)}' is not in the recorded Outputs map. ` +
+      `AWS::CloudFormation::Stack: attribute ${displayIdent(attributeName)} is not in the recorded Outputs map. ` +
         `Only 'Outputs.<Key>' references to declared Output names on the child template are supported.`
     );
   }
@@ -715,7 +719,7 @@ export class NestedStackProvider implements ResourceProvider {
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
       throw new Error(
-        `Child stack state '${displaySafe(childStackName)}' not found after deploy — NestedStackProvider invariant violated.`
+        `Child stack state ${displayStackName(childStackName)} not found after deploy — NestedStackProvider invariant violated.`
       );
     }
     // AT THE LOAD, above the rebuild it protects (issue #3207). The child's
@@ -949,7 +953,7 @@ export class NestedStackProvider implements ResourceProvider {
    */
   private refuseNonScalarParameter(k: string, offender: unknown, where: string): never {
     throw new Error(
-      `NestedStackProvider: child Parameter '${displaySafe(k)}'${where} resolved to a non-scalar value ` +
+      `NestedStackProvider: child Parameter ${displayIdent(k)}${where} resolved to a non-scalar value ` +
         `(type=${offender === null ? 'null' : typeof offender}). Parameters must be scalars ` +
         `(string / number / boolean), or an ARRAY of them from a list-typed parameter, by ` +
         `the time they reach the provider — an unresolved intrinsic here means ` +
@@ -982,7 +986,7 @@ export class NestedStackProvider implements ResourceProvider {
       raw = fs.readFileSync(templatePath, 'utf-8');
     } catch (err) {
       throw new Error(
-        `Failed to read nested template at ${displaySafe(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
+        `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
       );
     }
     let template: CloudFormationTemplate;
@@ -990,7 +994,7 @@ export class NestedStackProvider implements ResourceProvider {
       template = JSON.parse(raw) as CloudFormationTemplate;
     } catch (err) {
       throw new Error(
-        `Failed to parse nested template at ${displaySafe(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
+        `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
       );
     }
     const grandchildTemplates = this.indexGrandchildTemplates(template, templatePath);
@@ -1002,7 +1006,7 @@ export class NestedStackProvider implements ResourceProvider {
       const n = rewriteTemplateAssetReferences(template, assetRedirect);
       if (n > 0) {
         this.logger.debug(
-          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${displaySafe(templatePath)}`
+          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${displayAssemblyPath(templatePath)}`
         );
       }
     }
@@ -1036,8 +1040,8 @@ export class NestedStackProvider implements ResourceProvider {
         // per-level backstop, sanitized and marked like that refusal.
         throw markNonRetryable(
           new Error(
-            `NestedStackProvider: nested-stack '${displaySafe(grandLogicalId)}' has ` +
-              `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which is absolute. ` +
+            `NestedStackProvider: nested-stack ${displayIdent(grandLogicalId)} has ` +
+              `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which is absolute. ` +
               `CDK emits relative asset paths for nested templates; an absolute path ` +
               `indicates the synth output was hand-modified or generated by a non-CDK ` +
               `toolchain. Refusing to load.`
@@ -1054,8 +1058,8 @@ export class NestedStackProvider implements ResourceProvider {
       if (!resolved.contained) {
         throw markNonRetryable(
           new Error(
-            `NestedStackProvider: nested-stack '${displaySafe(grandLogicalId)}' has ` +
-              `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+            `NestedStackProvider: nested-stack ${displayIdent(grandLogicalId)} has ` +
+              `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
               `${renderAssemblyPathEscape(resolved, dir)}`
           )
         );
