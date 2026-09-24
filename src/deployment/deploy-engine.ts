@@ -27,6 +27,7 @@ import { displayIdent, displaySafe, isPasteableIdent } from '../utils/display-sa
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourcesForDeploy,
@@ -3370,6 +3371,12 @@ export class DeployEngine {
       // container is rewritten by a writer. AFTER the lock, so the guarantee is
       // "before any resource operation" rather than "before any lock".
       refuseMalformedOrphans(currentState, stackName, this.stackRegion);
+      // The ROWS of a readable list (go-to-k/cdkd#3500). Its own call because
+      // the questions are independent: the adoption pass below dereferences
+      // each row's `state`, and `orphansAfterRollback` keys its merge map on
+      // each row's `logicalId`, so a list that IS a list can still abort the
+      // run, or collapse the rows MISSING a `logicalId` into one saved survivor.
+      refuseMalformedOrphanRecords(currentState, stackName, this.stackRegion);
       // Set when we loaded a `version: 1` legacy record. The next save
       // migrates it to the new key.
       const migrationPending = currentStateData?.migrationPending ?? false;

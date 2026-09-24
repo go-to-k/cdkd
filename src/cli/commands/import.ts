@@ -89,6 +89,7 @@ import {
 } from '../../types/state.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
@@ -619,7 +620,18 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // other command then refuses — on the command the docs offer as a recovery
     // route after a failed deploy — and say nothing. Refusing here names the
     // container while the record can still be repaired.
-    if (existingState) refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
+    // The ROWS come with it, on the same argument (go-to-k/cdkd#3500):
+    // `orphansCarriedFrom` copies them verbatim, so an unreadable row would be
+    // written into the record this command saves and met by the next deploy
+    // instead. Container first, matching the order every other reader here uses.
+    // That order is NOT load-bearing and the comment says so rather than
+    // inventing a reason: the row pass returns `[]` for a container that is not a
+    // list, so either order refuses a non-list field through the container guard,
+    // with the same text.
+    if (existingState) {
+      refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
+      refuseMalformedOrphanRecords(existingState, stackInfo.stackName, targetRegion);
+    }
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 

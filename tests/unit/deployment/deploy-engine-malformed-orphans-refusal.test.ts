@@ -187,6 +187,32 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
     });
   }
 
+  it('refuses an unusable row whose id is ALREADY in `resources`, which the pass skips silently', async () => {
+    // The shape go-to-k/cdkd#3500's plan called "worth its own case" and no
+    // fixture had (go-to-k/cdkd#3641, item o3). It needs the id to really be in
+    // `resources`, which the shared `makeState` cannot express — hence its own
+    // case rather than a table row, so the premise is set up rather than claimed.
+    //
+    // `planOrphanAdoption`'s FIRST branch drops a row whose id is already managed,
+    // before anything dereferences its `state`. So this row reaches no abort and
+    // produced no report at all: the run proceeded, and the damaged row stayed in
+    // the record every later command reads. The guard refuses it on SHAPE, which
+    // is what makes that silent path unreachable rather than merely unlikely.
+    const state = makeState([{ logicalId: 'Managed', orphanedAt: 1 }]);
+    state.resources = {
+      Managed: { physicalId: 'p-managed', resourceType: 'AWS::SQS::Queue', properties: {} },
+    };
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    const err = (await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e)) as CdkdError;
+    expect(err, 'the already-managed row was skipped silently').toBeInstanceOf(CdkdError);
+    expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(err.message).toContain('rollback-orphan record(s)');
+    expect(provisioned).toEqual([]);
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('marks the refusal non-retryable — a nested child deploy runs inside a withRetry', async () => {
     stateBackend.getState.mockResolvedValue({ state: makeState('abc'), etag: 'etag-old' });
     const err = await makeEngine()
@@ -207,5 +233,122 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
       expect(message).not.toContain("'orphans'");
       expect(provisioned, 'the control deployed nothing, so it proves nothing').toEqual(['create']);
     }
+  });
+  /**
+   * Issue go-to-k/cdkd#3500, deploy half — a READABLE list holding a row the
+   * adoption pass cannot use. `planOrphanAdoption` destructures every row and
+   * reads its `state`, and what that does depends on which part is torn: it can
+   * abort the deploy, drop the row, or keep it with a notice. The guard refuses
+   * instead of leaving the outcome to the shape.
+   */
+  describe('DeployEngine refuses an unusable orphan ROW (go-to-k/cdkd#3500)', () => {
+    const healthy = {
+      logicalId: 'Keep',
+      orphanedAt: 1,
+      state: { physicalId: 'p-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+    };
+
+    const UNUSABLE: Array<[string, unknown]> = [
+      ['a null row', null],
+      ['a number row', 5],
+      // The EMPTY-OBJECT row, named in go-to-k/cdkd#3500's verification plan and
+      // missing from every per-command table until go-to-k/cdkd#3641's review
+      // (item o3). It is a readable bag, and TWO clauses reject it — no string
+      // `logicalId` AND no readable `state` — so it does not discriminate either
+      // one (item o10: the first cut credited the `logicalId` clause alone, and
+      // deleting that clause leaves this row refused).
+      ['an empty-object row', {}],
+      ['a row with no `state`', { logicalId: 'Gone', orphanedAt: 1 }],
+      // A torn `properties` map: the deploy refuses it, while `cdkd diff` KEEPS it
+      // and now predicts this refusal (go-to-k/cdkd#3641 M1). The per-command
+      // tables were asymmetric — deploy had no `properties` row, destroy and scrub
+      // no `attributes` row — so each table now carries both halves.
+      [
+        'a row whose `state.properties` is not an object',
+        {
+          logicalId: 'Gone',
+          orphanedAt: 1,
+          state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: 'abcdef' },
+        },
+      ],
+      [
+        'a row whose `state.physicalId` is not a string',
+        {
+          logicalId: 'Gone',
+          orphanedAt: 1,
+          state: { resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+      ],
+      ['a row whose `logicalId` is not a string', { logicalId: 5, orphanedAt: 1, state: healthy.state }],
+      [
+        'a row whose `state.attributes` is not an object',
+        {
+          logicalId: 'Gone',
+          orphanedAt: 1,
+          state: {
+            physicalId: 'p',
+            resourceType: 'AWS::SQS::Queue',
+            properties: {},
+            attributes: 'abcdef',
+          },
+        },
+      ],
+    ];
+
+    for (const [label, row] of UNUSABLE) {
+      it(`refuses ${label}, provisioning nothing and writing nothing`, async () => {
+        stateBackend.getState.mockResolvedValue({
+          // A healthy row beside it: the guard must refuse a list it could
+          // partly read, not merely a uniformly broken one.
+          state: makeState([healthy, row] as unknown),
+          etag: 'etag-old',
+        });
+        const err = (await makeEngine()
+          .deploy(STACK, template)
+          .catch((e: unknown) => e)) as CdkdError;
+
+        expect(err).toBeInstanceOf(CdkdError);
+        expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+        // The ROW text: the container here is a perfectly good list.
+        expect(err.message).toContain('rollback-orphan record(s)');
+        expect(err.message).not.toContain("has no readable 'orphans' list");
+        expect(
+          provisioned,
+          'the deploy called a provider before refusing, so the guarantee is not "before any ' +
+            'resource operation"'
+        ).toEqual([]);
+        expect(stateBackend.saveState).not.toHaveBeenCalled();
+        expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+      });
+    }
+
+    it('marks the ROW refusal non-retryable too', async () => {
+      stateBackend.getState.mockResolvedValue({
+        state: makeState([5] as unknown),
+        etag: 'etag-old',
+      });
+      const err = await makeEngine()
+        .deploy(STACK, template)
+        .catch((e: unknown) => e);
+      // WHICH error, before the marker: a deploy can fail non-retryably for
+      // reasons that have nothing to do with this guard, and a bare
+      // `isMarkedNonRetryable` pass would credit the guard for one of those.
+      expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      expect((err as CdkdError).message).toContain('rollback-orphan record(s)');
+      expect(isMarkedNonRetryable(err)).toBe(true);
+    });
+
+    it('CONTROL: a list whose every row is usable still deploys', async () => {
+      vi.clearAllMocks();
+      provisioned = [];
+      stateBackend.getState.mockResolvedValue({
+        state: makeState([healthy] as unknown),
+        etag: 'etag-old',
+      });
+      stateBackend.saveState.mockResolvedValue('etag-new');
+      await makeEngine().deploy(STACK, template);
+      expect(provisioned, 'the control never provisioned, so it proves nothing').not.toEqual([]);
+    });
   });
 });

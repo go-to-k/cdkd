@@ -47,13 +47,85 @@ per-container table cannot classify, and the partition that owns it is by CLASS
 
 Its verdict is independent of the BAG guard, which a caller still owes; a
 read-only caller taking both drops entries AFTER the bag repair, so an
-unreadable bag has no rows to walk. `cdkd diff` also runs the entry predicate
-over `orphans[]` before previewing an adoption, with its OWN warning text
-(`malformedOrphanRecordsWarning`) because the shared one names `resources`; the
-dropped records join the node's `unreadable`, so `--fail` counts them. The
-CONTAINER those rows sit in is the table's third row, guarded one level above
-them (go-to-k/cdkd#3379): the entry pass runs only once the container is known
-to be a list.
+unreadable bag has no rows to walk. These entries sit in the table's FIRST row,
+the `resources` map — not in a list.
+
+**The `orphans` ROW class is its own, one level under the table's THIRD
+container (go-to-k/cdkd#3500).** That container is guarded above the rows
+(go-to-k/cdkd#3379), so a row pass runs only once the field is known to be a
+list — which is why `unreadableOrphanRecords` and `unpreviewableOrphanRecords`,
+the two helpers that ENUMERATE, return `[]` for a container that is not one. The
+predicates themselves answer per RECORD and say nothing about the container. `isReadableOrphanRecord` is the predicate and
+`unreadableOrphanRecords` names every row a state fails on; the disposition
+splits the way the container's does — `refuseMalformedOrphanRecords` for a
+writer, `refuseMalformedOrphanRecordsForDestroy` for the destroy,
+`refuseMalformedOrphansForOrphan` for `cdkd orphan` (which answers for the
+container in the same call), and `repairMalformedOrphanRecordsForReadOnly` for
+`cdkd scrub --dry-run`, which DROPS the row and names it through
+`malformedOrphanRecordsWarning`. That warning serves TWO predicates, so its
+`alsoRejectsTornMaps` flag is REQUIRED rather than defaulted, and it governs the
+CONSEQUENCE clause as well as the diagnosis — what continuing without the row
+costs is per command (excluded from the secret scan, versus not previewed for
+adoption), and a defaulted flag lets a third caller under-report silently.
+
+**`cdkd diff` takes a NARROWER predicate, and that is deliberate.**
+`isPreviewableOrphanRecord` / `unpreviewableOrphanRecords` ask only what the
+adoption preview dereferences — an object, a string `logicalId`, a readable
+`state` with a NON-EMPTY string `physicalId` — and say nothing about that state's
+`properties` / `attributes`. The
+reason is `properties` alone: `computeStackDiff` repairs and names that map a
+second time over the adopted records
+([state-malformed-properties.md](state-malformed-properties.md)), and does NOT
+touch `attributes`, so a torn `attributes` map is still not REPAIRED or named by
+that pass.
+
+**What `cdkd diff` owes for a row it keeps is the DEPLOY's verdict, and that is
+not optional** (go-to-k/cdkd#3641 M1). The writers refuse the whole record over
+such a row, so a preview that keeps it and says nothing lets `cdkd diff --fail`
+exit 0 and the deploy the operator runs next refuse — the contract `cdkd diff`
+states for the adoption preview. `deployRefusesOrphanRowsReason` is that verdict:
+`diff-recursive.ts` computes the rows the NARROW predicate accepts and the FULL
+one rejects — from the ROWS, since two rows can share a name — and then SUBTRACTS
+the names the adopted-`properties` arm already reported, because a second reason
+for one row broke go-to-k/cdkd#3335's `countBlocking` contract. So what this arm
+covers is the two cases nothing else does: a torn `attributes` map, and a torn
+`properties` map on a row the adoption did NOT take. Subtracting by NAME is not
+exact where two rows share an id — stated at the site, and go-to-k/cdkd#3643's
+shape rather than a new one.
+
+**The REASON is top-level only and the WARNING is not**, and that asymmetry is
+load-bearing (go-to-k/cdkd#3641 rounds 2 and 3). "Every node" means every node the RUN
+REACHES with an adoption preview, which is narrower in two ways a first cut missed
+(round 4): `buildDiffTree` returns before visiting any child unless `recursive`,
+so a plain `cdkd diff` warns for the top-level stack only; and
+`buildDeletedSubtree` calls `computeStackDiff` with no `previewOrphanAdoption`,
+which the whole row block is gated on, so a state-only child being DELETED gets
+neither orphan warning — its removal goes
+through `NestedStackProvider.delete` → `runDestroyForStack`, which refuses the
+row. That silence predates this lane; what the lane must not do is claim
+otherwise. The reason follows
+go-to-k/cdkd#3335's scope decision: the deploy skips an unchanged nested-stack
+row, so a reason there would report a refusal over a deploy that succeeds. What
+makes that split SAFE for every other class is that each one still WARNS at every
+node — and this class had none, because the row is KEPT and
+`malformedOrphanRecordsWarning` speaks only for DROPPED rows, so a changed nested
+child printed nothing while its own deploy refused.
+`malformedOrphanRowsKeptWarning` is that warning.
+Handing `cdkd diff` the writers' full predicate DROPS such a row instead, which
+retires that report rather than tightening it; a case in
+`tests/unit/cli/diff-recursive-malformed-orphans.test.ts` reds on exactly that
+substitution. **Both row predicates ask for a NON-EMPTY string `physicalId`, which
+`isReadableResourceEntry` does NOT** (go-to-k/cdkd#3641): that one stops at
+`resourceType` because a `resources` row failing per-resource is reported by its
+own command, while an `orphans` row's physical id is the only handle on a
+resource cdkd deliberately left LIVE — `cdkd destroy`'s listing is the one notice
+before the record is deleted, and `planOrphanAdoption` resolves that id against
+AWS and against other stacks' claims. The WRITERS' predicate asks MORE still —
+readable `properties` / `attributes` — because
+these rows are reached as a whole and a row MISSING its id collapses with every other such row
+in `orphansAfterRollback`'s merge map. Do not re-spell the test at a call site:
+`cdkd diff` did, asking only about `state`, and previewed an adoption for a row
+the writers would have refused.
 
 ## One refusal here is NOT about a container
 

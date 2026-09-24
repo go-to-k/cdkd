@@ -96,7 +96,11 @@ import {
   malformedStateRefusalMessage,
   producerCoordinateKey,
   producerRecordKey,
+  malformedOrphanRecordsRefusalMessage,
+  malformedOrphanRecordsWarning,
+  repairMalformedOrphanRecordsForReadOnly,
   repairMalformedOrphansForReadOnly,
+  unreadableOrphanRecords,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
@@ -899,7 +903,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.malformedOutputs) {
       malformedOutputRecords.push(stack.stackName);
     }
-    if (scrubbed.malformedOrphans) {
+    // Either shape of orphan damage lands in ONE list, because the verdict is
+    // one: this stack's orphan evidence could not be read, exit 2, repair the
+    // record (go-to-k/cdkd#3500). The WARNINGS above already distinguish the
+    // container from the rows, which is where the remedy differs.
+    if (scrubbed.malformedOrphans || scrubbed.malformedOrphanRows) {
       malformedOrphanRecords.push(stack.stackName);
     }
     if (scrubbed.unverifiableLeaves > 0) {
@@ -2278,10 +2286,12 @@ function malformedRecordsAuditedError(
   }
   if (orphanStackNames.length > 0) {
     parts.push(
-      `${orphanStackNames.length} stack(s) were audited with an EMPTY orphan list because ` +
-        `their state record has no readable 'orphans' list: ${safeNames(orphanStackNames)}. ` +
-        `Nothing is known about resources an earlier failed deploy may have left live in AWS ` +
-        `for them, so this run cannot certify them clean.`
+      `${orphanStackNames.length} stack(s) were audited with an INCOMPLETE orphan list because ` +
+        `their state record has no readable 'orphans' list, or a record inside it that no ` +
+        `reader can use: ${safeNames(orphanStackNames)}. Whichever it was, the warning above ` +
+        `names it per stack. Nothing is known about the resources those records describe — ` +
+        `resources an earlier failed deploy may have left live in AWS — so this run cannot ` +
+        `certify them clean.`
     );
   }
   return new ScrubRefusalError(
@@ -4524,6 +4534,13 @@ export interface ScrubStackResult {
    * resources live in AWS.
    */
   malformedOrphans?: true;
+
+  /**
+   * A readable `orphans` list held a record no reader can use, dropped under
+   * `--dry-run` (go-to-k/cdkd#3500). Separate from {@link malformedOrphans}: a
+   * run can meet either alone and the remedies differ.
+   */
+  malformedOrphanRows?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -4660,9 +4677,20 @@ export async function scrubStack(
   const outputSecrets = new Map<string, string>();
   /**
    * Needles derived from each rollback-orphan record's OWN recorded bag
-   * (issue go-to-k/cdkd#2943), keyed by logical id — per-record for the same
-   * reason `perResourceSecrets` is per-resource: one record's secret must not
-   * rewrite another's coinciding literal.
+   * (issue go-to-k/cdkd#2943) — per-record for the same reason
+   * `perResourceSecrets` is per-resource: one record's secret must not rewrite
+   * another's coinciding literal.
+   *
+   * Keyed by the row's INDEX in `orphans`, never by its `logicalId`
+   * (go-to-k/cdkd#3500 security review). Two rows may legitimately carry the same
+   * id — `orphansAfterRollback` dedupes newest-wins when it MERGES, but nothing
+   * stops a record holding both until then — and on an id key the second row's
+   * empty map REPLACED the first row's filled one. Both halves broke: the first
+   * row's needles left the union that the rewrite and the error boundary read, and
+   * its own lookup returned the OTHER row's map, so where two rows resolve one
+   * plaintext through different expressions the wrong expression was written. The
+   * index is the only identity the collecting loop and the rewrite can agree on,
+   * since both walk `state.orphans` in order and neither reorders it.
    */
   const orphanSecrets = new Map<string, Map<string, string>>();
   // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted
@@ -4834,16 +4862,39 @@ export async function scrubStack(
     // AWS. `--dry-run` repairs and reports instead, for the reason the two
     // branches above give.
     let malformedOrphans: true | undefined;
+    let malformedOrphanRows: true | undefined;
     if (opts.dryRun) {
       if (repairMalformedOrphansForReadOnly(state)) {
         malformedOrphans = true;
         logger.warn(malformedOrphansWarning(stack.stackName, region));
+      }
+      // The ROWS of a readable list, dropped and reported on the same arm
+      // (go-to-k/cdkd#3500). A SEPARATE finding from the container one because a
+      // run can meet either alone and the remedies differ — a non-list field has
+      // to be rewritten, a torn row repaired inside an otherwise good list. What
+      // distinguishes them for the operator is the WARNING above; the
+      // audited-record refusal takes one list of stack names either way.
+      const droppedRows = repairMalformedOrphanRecordsForReadOnly(state);
+      if (droppedRows.length > 0) {
+        malformedOrphanRows = true;
+        logger.warn(malformedOrphanRecordsWarning(stack.stackName, region, droppedRows, true));
       }
     } else if (!hasReadableOrphans(state)) {
       throw new ScrubRefusalError(
         malformedOrphansRefusalMessage(stack.stackName, region),
         STATE_RESOURCES_MALFORMED
       );
+    } else {
+      // A real run REFUSES the rows for the reason it refuses the container: the
+      // rewrite below reads `record.state` per row, and its save writes the
+      // whole record.
+      const unreadableRows = unreadableOrphanRecords(state);
+      if (unreadableRows.length > 0) {
+        throw new ScrubRefusalError(
+          malformedOrphanRecordsRefusalMessage(stack.stackName, region, unreadableRows),
+          STATE_RESOURCES_MALFORMED
+        );
+      }
     }
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
@@ -5302,7 +5353,9 @@ export async function scrubStack(
       // are the dynamic references redaction put back, which the resolve below
       // handles. If that is ever wrong the cost is a missed needle, not a
       // wrong rewrite, and the union in the rewrite pass is the backstop.
-      for (const record of state.orphans ?? []) {
+      // `entries()` for the INDEX, which is the key `orphanSecrets` is declared
+      // with — its doc comment carries why an id key lost a row's needles.
+      for (const [orphanIndex, record] of (state.orphans ?? []).entries()) {
         const recordedSecretValues = new Map<string, string>();
         // Registered before the pin for the same reason the resource loop
         // registers early: `pinCrossRegionSecrets` can throw AFTER recording a
@@ -5310,7 +5363,7 @@ export async function scrubStack(
         // function masks against `allRecordedSecrets(..., orphanSecrets)` —
         // which reads this map. Registering after the pin would leave that
         // throw with no needle for what it had already recorded.
-        orphanSecrets.set(record.logicalId, recordedSecretValues);
+        orphanSecrets.set(String(orphanIndex), recordedSecretValues);
         const resolveInput = await pinCrossRegionSecrets(
           {
             properties: record.state.properties,
@@ -5772,6 +5825,7 @@ export async function scrubStack(
         ...(malformedResources ? { malformedResources } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
         ...(malformedOrphans ? { malformedOrphans } : {}),
+        ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
@@ -5867,8 +5921,8 @@ export async function scrubStack(
     // Residual, stated rather than implied by a clean verdict: a record whose
     // logical id is gone from the template AND whose bag holds plaintext
     // matches neither source. Nothing in this run knows that plaintext.
-    const newOrphans = (state.orphans ?? []).map((record) => {
-      const own = orphanSecrets.get(record.logicalId);
+    const newOrphans = (state.orphans ?? []).map((record, orphanIndex) => {
+      const own = orphanSecrets.get(String(orphanIndex));
       const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
@@ -6093,6 +6147,7 @@ export async function scrubStack(
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
       ...(malformedOrphans ? { malformedOrphans } : {}),
+      ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };

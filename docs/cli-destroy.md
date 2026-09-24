@@ -742,9 +742,19 @@ there to catch, and the re-read record is the one the deletion acts on.
 To drop such a record deliberately and leave every live resource standing, the
 route is the one the `outputs` refusal above names — `cdkd state orphan`, which
 removes the record without reading either field, and whose caveats are the same
-here. An **absent** `orphans` field is not a defect and is never refused. The
-full per-command table is in
-[State Management](state-management.md#when-orphans-is-not-a-list).
+here. An **absent** `orphans` field is not a defect and is never refused.
+
+A readable list holding a record no reader can use is refused the same way, at
+both reads. The listing prints each record's own `logicalId`, resource type and
+physical id, and validates none of them, so without the refusal the damage
+decides what you see: a row can abort the listing before the confirmation, or be
+printed with a field missing from it and approved. Every field the listing
+prints is sanitized, so a stored value cannot forge a row or redraw the lines
+above it — and so is the list of resources to be deleted above it.
+
+The per-command tables are in State Management — one for
+[the container](state-management.md#when-orphans-is-not-a-list), one for
+[a single record](state-management.md#when-one-orphans-record-cannot-be-read).
 
 ## Every other mutating confirmation prompt is interactive-only too
 

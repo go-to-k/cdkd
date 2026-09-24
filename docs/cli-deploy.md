@@ -440,8 +440,25 @@ walked one **character** per orphan record.
 Inspect the record with `cdkd state show <stack> --stack-region <region>
 --json`, repair or remove it, then re-run. An **absent** `orphans` field is not a
 defect and is never refused — it is the ordinary shape for a stack that has
-never had a failed deploy. The full per-command table is in
-[State Management](state-management.md#when-orphans-is-not-a-list).
+never had a failed deploy.
+
+The same refusal covers a readable list holding a record no reader can use — one
+that is not an object, has no string `logicalId`, or whose `state` is not a
+readable resource entry with a NON-EMPTY string `physicalId`, including that entry's
+`properties` and `attributes` maps. The adoption pass dereferences every record it walks.
+
+`cdkd diff` previews such a record rather than refusing it, and warns either
+way — but what it EXITS depends on the shape. A row it cannot preview at all (not
+an object, no string `logicalId`, no readable `state`, or a `state` with no non-empty string
+`physicalId`) is dropped,
+named in the warning and in `--fail`'s count, and exits `0` without `--fail`. A
+row it KEEPS — one whose `properties` or `attributes` map is not an object —
+additionally exits `3` on the top-level stack, because there the preview would
+otherwise show an adoption this deploy will not perform.
+
+The per-command tables are in State Management — one for
+[the container](state-management.md#when-orphans-is-not-a-list), one for
+[a single record](state-management.md#when-one-orphans-record-cannot-be-read).
 
 ## A malformed resource `properties` map refuses the deploy
 
