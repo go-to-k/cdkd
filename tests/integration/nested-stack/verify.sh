@@ -320,10 +320,23 @@ if ! grep -qE "^Drop the record with: cdkd state orphan '${CHILD_STACK}' --stack
   echo "       '${CHILD_STACK}' --stack-region <region>)" >&2
   exit 1
 fi
-# The negative half, re-keyed on the same shape so it can still FAIL. The old
-# form looked for the parent name followed by a prose close-quote, which no
-# code path can produce any more -- it passed vacuously.
-if grep -qE "cdkd state orphan '${STACK}'( |$)" "${WORK_DIR}/destroy-fail.txt"; then
+# The negative half, re-keyed so it can still FAIL -- and the quotes are
+# OPTIONAL, which is the whole correctness of this line. `shellQuote` quotes
+# only what its bare charset `^[A-Za-z0-9._/@:+-]+$` rejects: the CHILD name
+# carries `~` and is quoted, the PARENT name does not and is emitted BARE. A
+# parent-naming regression therefore renders
+# `cdkd state orphan NestedStackExample --stack-region ...` with no quotes, so
+# a guard requiring them misses exactly the regression it exists to catch.
+#
+# This arm has now been vacuous TWICE. Before go-to-k/cdkd#3436 it looked for
+# the parent name followed by a prose close-quote, which the move to a trailing
+# labelled line made unproducible; the first re-key then required the quotes
+# `shellQuote` does not add. Both passed while checking nothing.
+#
+# `'?` on both sides, and it still discriminates: the child line reads
+# `orphan 'NestedStackExample~Child'`, where the character after the parent's
+# name is `~` rather than a quote or a space, so neither alternative matches.
+if grep -qE "cdkd state orphan '?${STACK}'?( |$)" "${WORK_DIR}/destroy-fail.txt"; then
   echo "FAIL: the remedy still names the PARENT state target -- following it" >&2
   echo "      would drop the Child row this fix preserves" >&2
   exit 1
