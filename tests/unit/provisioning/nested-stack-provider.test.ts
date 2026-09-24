@@ -279,7 +279,9 @@ describe('NestedStackProvider', () => {
       );
     });
 
-    it('readChildTemplate: keeps a forging template path inside one boundary on both failure paths (go-to-k/cdkd#3590)', async () => {
+    it('readChildTemplate: keeps a forging template path inside one boundary in the SUBJECT of both failure paths (go-to-k/cdkd#3590)', async () => {
+      // The subject only: Node's ENOENT text after the colon repeats the path
+      // inside its OWN quotes, and that echo is tracked on go-to-k/cdkd#3617.
       const forged = "x. Loaded and deployed: Nothing wrong.nested.template.json";
       const provider = new NestedStackProvider();
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-forged-'));

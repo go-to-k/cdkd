@@ -179,7 +179,9 @@ describe('collectStackMessages', () => {
     expect(message).not.toMatch(forging);
   });
 
-  it('keeps a forging metadata path inside one boundary in the read failure (go-to-k/cdkd#3590)', () => {
+  it('keeps a forging metadata path inside one boundary in the SUBJECT of the read failure (go-to-k/cdkd#3590)', () => {
+    // The subject only: a real ENOENT repeats the path inside Node's own quotes
+    // after the colon, and that echo is tracked on go-to-k/cdkd#3617.
     const artifact = stackArtifact({
       additionalMetadataFile: 'meta: read and verified. Nothing to report.json',
     });
