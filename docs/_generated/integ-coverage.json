@@ -5814,6 +5814,7 @@
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
+        "docdb-neptune",
         "dynamic-ref-cross-region",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
@@ -5922,6 +5923,9 @@
         "destroy-interrupt": [
           "l2",
           "literal"
+        ],
+        "docdb-neptune": [
+          "l2"
         ],
         "dynamic-ref-cross-region": [
           "l1"

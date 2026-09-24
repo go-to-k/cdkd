@@ -163,6 +163,8 @@ describe('NeptuneProvider', () => {
         DBClusterIdentifier: 'my-cluster',
       });
       expect(result.attributes).toStrictEqual({
+        // CloudFormation's `Fn::GetAtt` name (issue #3650), plus the dotted key.
+        Endpoint: 'cluster.neptune.amazonaws.com',
         'Endpoint.Address': 'cluster.neptune.amazonaws.com',
         ClusterResourceId: 'cluster-ABC',
       });

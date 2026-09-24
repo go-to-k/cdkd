@@ -187,6 +187,42 @@ if [ "${NEPTUNE_BASE_PROT}" != "true" ] || [ "${NEPTUNE_BASE_RETENTION}" != "7" 
 fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters"
 
+echo "[verify] step 3e: endpoint Fn::GetAtt values reached their consumers (issue #3650)"
+# Each SSM parameter carries one DocDB / Neptune endpoint `Fn::GetAtt`. Before
+# #3650 every one of them held the cluster / instance IDENTIFIER, because cdkd
+# recorded only RDS-style dotted keys these services do not use.
+DOCDB_INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DocDB::DBInstance") | .value.physicalId] | first // ""')
+NEPTUNE_INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBInstance") | .value.physicalId] | first // ""')
+DOCDB_INSTANCE_ENDPOINT=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0].Endpoint.Address' --output text)
+NEPTUNE_INSTANCE_ENDPOINT=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0].Endpoint.Address' --output text)
+ENDPOINT_FAILED=0
+check_param() { # usage: check_param <logical id> <expected value>
+  local name got
+  name=$(echo "${STATE}" | jq -r --arg l "$1" '.resources[$l].physicalId // ""') || return 1
+  if [ -z "${name}" ]; then
+    echo "[verify] FAIL: $1 has no state record" >&2
+    ENDPOINT_FAILED=1
+    return 0
+  fi
+  got=$(aws ssm get-parameter --name "${name}" --region "${REGION}" --query Parameter.Value --output text) || return 1
+  if [ "${got}" != "$2" ]; then
+    echo "[verify] FAIL: $1 holds '${got}', want '$2'" >&2
+    ENDPOINT_FAILED=1
+  fi
+}
+check_param DocdbClusterEndpointParam "$(echo "${DOCDB_BASE}" | jq -r '.Endpoint')"
+check_param DocdbClusterPortParam "$(echo "${DOCDB_BASE}" | jq -r '.Port')"
+check_param DocdbClusterReadEndpointParam "$(echo "${DOCDB_BASE}" | jq -r '.ReaderEndpoint')"
+check_param DocdbInstanceEndpointParam "${DOCDB_INSTANCE_ENDPOINT}"
+check_param NeptuneClusterEndpointParam "$(echo "${NEPTUNE_BASE}" | jq -r '.Endpoint')"
+check_param NeptuneClusterPortParam "$(echo "${NEPTUNE_BASE}" | jq -r '.Port')"
+check_param NeptuneClusterReadEndpointParam "$(echo "${NEPTUNE_BASE}" | jq -r '.ReaderEndpoint')"
+check_param NeptuneInstanceEndpointParam "${NEPTUNE_INSTANCE_ENDPOINT}"
+[ "${ENDPOINT_FAILED}" = 0 ] || exit 1
+echo "[verify] step 3e ok: all eight endpoint attributes resolved to AWS's values"
+
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 fields)"
 CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \

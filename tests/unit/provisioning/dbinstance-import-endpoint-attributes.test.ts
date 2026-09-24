@@ -84,6 +84,12 @@ describe.each(CASES)('%s import() attributes (#1852 / #3077)', (resourceType, ma
         'Endpoint.Address': 'mydb.abc.us-east-1.rds.amazonaws.com',
         'Endpoint.Port': '5432',
         Arn: 'arn:aws:rds:us-east-1:111122223333:db:mydb',
+        // DocDB / Neptune also record CloudFormation's own `Fn::GetAtt`
+        // names, which are not dotted for those services (issue #3650).
+        ...(resourceType !== 'AWS::RDS::DBInstance' && {
+          Endpoint: 'mydb.abc.us-east-1.rds.amazonaws.com',
+          Port: '5432',
+        }),
       },
     });
     expect(send).toHaveBeenCalledTimes(1);
