@@ -158,6 +158,57 @@ describe('pasteable-command shape fence — it does not report everything', () =
     expect(forced.stderr).toContain('forced by CDKD_SELF_PROBE_FORCE_FAIL');
   }, 120_000);
 
+  it('exits 2 when the DEFAULT root does not clear a floor', () => {
+    // The other half of the floor decision, and the one a probe showed was
+    // unpinned: disabling enforcement entirely left every case green, because
+    // the real tree always clears the floors and the scratch-root case does
+    // not consult them. This raises a floor above the real tree instead, which
+    // is the only way to observe enforcement without breaking the scan.
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const raised = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      env: { ...process.env, CDKD_PASTEABLE_FLOOR_FILES: '999999' },
+    });
+    expect(raised.status).toBe(2);
+    expect(raised.stderr).toContain('floor not met');
+  }, 120_000);
+
+  it('exits 1 -- not 2 -- for a DIRTY tree, naming the site', () => {
+    // The third arm, and the one that makes the 1-vs-2 split mean something.
+    // Review of an earlier revision noted the test asserted 0 and 2 while the
+    // body claimed all three; a distinction nothing exercises is a distinction
+    // a later edit can collapse for free.
+    //
+    // `--root=` points at a scratch tree rather than `src`, so this never
+    // depends on the real tree being dirty -- which it is not, and must not be.
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-pasteable-dirty-'));
+    try {
+      writeFileSync(
+        join(root, 'probe.ts'),
+        "export const m = `Run 'cdkd deploy ${name}' to migrate.`;\n",
+        'utf8'
+      );
+      const dirty = spawnSync(process.execPath, [script, `--root=${root}`], { encoding: 'utf8' });
+      // 2 would mean the FLOORS refused a one-file tree before the findings
+      // were reached, so this also pins that the floors are not consulted in a
+      // way that masks a real finding.
+      expect(dirty.status, dirty.stderr).toBe(1);
+      expect(dirty.stderr).toContain('quoted-command');
+      expect(dirty.stderr).toContain('probe.ts');
+      // ...and the floors were SKIPPED rather than silently met: a scratch
+      // tree of one file cannot clear them, so a run that enforced them would
+      // have said so on stderr and exited 2.
+      expect(dirty.stderr).not.toContain('floor not met');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('carries a NEGATIVE case for every accept arm', () => {
     // A probe suite of accepts only cannot fail on a classifier that reports
     // everything. The majority here are negatives by design, and this pins that

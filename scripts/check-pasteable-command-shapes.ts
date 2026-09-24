@@ -507,17 +507,29 @@ export function checkPasteableCommandShapes(root: string): PasteableReport {
  * broken rather than the tree.
  */
 export function main(argv: readonly string[] = process.argv.slice(2)): number {
-  const root = argv.find((a) => a.startsWith('--root='))?.slice('--root='.length) ?? 'src';
+  const rootFlag = argv.find((a) => a.startsWith('--root='))?.slice('--root='.length);
+  const root = rootFlag ?? 'src';
+  // The FLOORS attest that the REAL tree was read. They are meaningless over a
+  // caller-supplied root -- a scratch tree of one file legitimately has one
+  // file -- and applying them there turns every `--root=` run into exit 2, so
+  // "the critic is broken" would swallow "this tree is dirty". Measured: the
+  // dirty-tree case below reported 2 until this distinction existed.
+  const enforceFloors = rootFlag === undefined;
   const probeFailures = runSelfProbes();
   if (probeFailures.length > 0) {
     for (const failure of probeFailures) process.stderr.write(`self-probe: ${failure}\n`);
     return 2;
   }
   const report = checkPasteableCommandShapes(root);
+  // A test seam, and the only way to observe floor ENFORCEMENT: the real tree
+  // always clears the floors, so nothing else distinguishes "enforced" from
+  // "not enforced" (measured -- disabling enforcement left every case green).
+  const fileFloor = Number(process.env['CDKD_PASTEABLE_FLOOR_FILES'] ?? FLOORS.filesScanned);
   if (
-    report.filesScanned < FLOORS.filesScanned ||
-    report.spansExamined < FLOORS.spansExamined ||
-    report.commandLiteralsExamined < FLOORS.commandLiteralsExamined
+    enforceFloors &&
+    (report.filesScanned < fileFloor ||
+      report.spansExamined < FLOORS.spansExamined ||
+      report.commandLiteralsExamined < FLOORS.commandLiteralsExamined)
   ) {
     process.stderr.write(
       `floor not met: ${report.filesScanned} files, ${report.spansExamined} spans, ` +
