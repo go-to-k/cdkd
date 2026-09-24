@@ -1,5 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
@@ -9,6 +11,8 @@ import { Construct } from 'constructs';
  *
  * covers: AWS::SecretsManager::Secret
  * covers: AWS::ECS::TaskDefinition
+ * covers: AWS::CodeBuild::Project (drift arm)
+ * covers: AWS::IAM::Role (drift arm)
  *
  * It carries the real-AWS arm for issue
  * [#1917](https://github.com/go-to-k/cdkd/issues/1917) too — a secret whose
@@ -88,6 +92,19 @@ import { Construct } from 'constructs';
  * with `CDKD_INTEG_ANCHOR_ARM` unset the synthesized template is byte-identical
  * to what this fixture shipped before the arm existed, so the #1915 / #1917
  * rows can still be run — and audited — on their own.
+ *
+ * ## THE DRIFT ARM (issue #1947), gated on `CDKD_INTEG_DRIFT_ARM=1`
+ *
+ * `cdkd drift` on an array-nested secret: no phantom drift, no plaintext in
+ * the report, `--accept` persists none, `--revert` ships the RESOLVED value.
+ * The task definition above cannot carry the revert half: its revisions are
+ * immutable, so drift cannot be injected in place and `EcsProvider.update`
+ * refuses. The `ArrayDriftProject` CodeBuild project is the MUTABLE consumer:
+ * `Environment.EnvironmentVariables[]` is a `Name`-keyed array like
+ * `Environment[]`, `UpdateProject` edits it in place, and a NO_SOURCE project
+ * that never builds costs nothing. `Type: 'PLAINTEXT'` is written out because
+ * the readback always emits it, and the `properties` baseline compares the
+ * array wholesale. Gated for the same byte-identical reason as the anchor arm.
  */
 export class SecretsArrayNestedStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -102,6 +119,8 @@ export class SecretsArrayNestedStack extends cdk.Stack {
     // Issue #2012's arm. Opt-in so the OFF polarity stays byte-identical to the
     // pre-arm template; verify.sh exports it for every phase of a real run.
     const anchorArm = process.env['CDKD_INTEG_ANCHOR_ARM'] === '1';
+    // Issue #1947's arm, opt-in for the same reason.
+    const driftArm = process.env['CDKD_INTEG_DRIFT_ARM'] === '1';
 
     // The anchor arm's own plaintexts. Deliberately disjoint from every needle
     // this fixture already greps for (`cdkd-array-nested-pw-789`,
@@ -125,6 +144,10 @@ export class SecretsArrayNestedStack extends cdk.Stack {
       secretPayload['anchorPw'] = anchorCorroboratedPw;
       secretPayload['ambigAlpha'] = anchorAmbiguousAlpha;
       secretPayload['ambigBravo'] = anchorAmbiguousBravo;
+    }
+    if (driftArm) {
+      // Its own needle again, disjoint from every value above.
+      secretPayload['driftPw'] = 'cdkd-drift-array-pw-744';
     }
     const secret = new secretsmanager.Secret(this, 'ArraySecret', {
       secretName,
@@ -229,6 +252,42 @@ export class SecretsArrayNestedStack extends cdk.Stack {
       containerDefinitions,
     });
     taskDef.node.addDependency(secret);
+
+    if (driftArm) {
+      // Issue #1947. Named so verify.sh can edit and read it, and so its
+      // cleanup can sweep both by name. No policy: the project never builds.
+      const role = new iam.Role(this, 'ArrayDriftProjectRole', {
+        roleName: `cdkd-test-array-drift-${account}`,
+        assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      });
+      const project = new codebuild.CfnProject(this, 'ArrayDriftProject', {
+        name: `cdkd-test-array-drift-${account}`,
+        serviceRole: role.roleArn,
+        source: {
+          type: 'NO_SOURCE',
+          buildSpec: JSON.stringify({ version: '0.2', phases: { build: { commands: ['true'] } } }),
+        },
+        artifacts: { type: 'NO_ARTIFACTS' },
+        environment: {
+          type: 'LINUX_CONTAINER',
+          image: 'aws/codebuild/amazonlinux2-x86_64-standard:5.0',
+          computeType: 'BUILD_GENERAL1_SMALL',
+          environmentVariables: [
+            // THE leaf under test: a secret inside an array, on a resource
+            // `--revert` can actually write.
+            {
+              name: 'DB_PASSWORD',
+              type: 'PLAINTEXT',
+              value: `{{resolve:secretsmanager:${secretName}:SecretString:driftPw}}`,
+            },
+            // A non-secret sibling the revert re-sends in the same array.
+            { name: 'MODE', type: 'PLAINTEXT', value: 'production' },
+          ],
+        },
+      });
+      project.node.addDependency(secret);
+      new cdk.CfnOutput(this, 'DriftProjectName', { value: project.name! });
+    }
 
     new cdk.CfnOutput(this, 'TaskDefinitionFamily', { value: taskDef.family! });
     new cdk.CfnOutput(this, 'SecretName', { value: secretName });

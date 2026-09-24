@@ -1961,6 +1961,7 @@
       "name": "secrets-array-nested",
       "annotated": true,
       "scenarios": [
+        "drift-revert-roundtrip",
         "dynamic-reference-resolution"
       ]
     },
@@ -2387,7 +2388,8 @@
       "fixtures": [
         "drift-revert",
         "drift-revert-arrays",
-        "drift-revert-vpc"
+        "drift-revert-vpc",
+        "secrets-array-nested"
       ]
     },
     {

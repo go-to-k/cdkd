@@ -84,6 +84,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "route53",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "sg-circular-dependency",
         "ssm-secure-dynamic-ref"
@@ -1787,6 +1788,7 @@
     "--retention-in-days",
     "--revert",
     "--revert-failed",
+    "--reverts",
     "--rm",
     "--role-name",
     "--route-id",

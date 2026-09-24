@@ -767,7 +767,8 @@
       "resourceType": "AWS::CodeBuild::Project",
       "integs": [
         "ci-cd",
-        "codebuild-project"
+        "codebuild-project",
+        "secrets-array-nested"
       ],
       "signals": {
         "ci-cd": [
@@ -777,6 +778,10 @@
         ],
         "codebuild-project": [
           "l2",
+          "literal"
+        ],
+        "secrets-array-nested": [
+          "l1",
           "literal"
         ]
       }
@@ -3739,6 +3744,7 @@
         "s3-replication-and-filter",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "serverless-api",
         "sns-sqs-event",
@@ -3956,6 +3962,10 @@
         ],
         "sdk-ccapi-crossref": [
           "l1"
+        ],
+        "secrets-array-nested": [
+          "l2",
+          "literal"
         ],
         "secrets-dynamic-ref": [
           "l1"
