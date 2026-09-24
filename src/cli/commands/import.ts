@@ -1530,6 +1530,14 @@ export function buildStackState(
       // back to the same-physical-id stored map, then to `{}`.
       attributes: rowAttributes ?? priorAttributes ?? {},
       dependencies: deps,
+      // Issue #3645: the template's policies, as `DeployEngine` records them.
+      // `cdkd destroy` reads `DeletionPolicy` from STATE only, so a record
+      // written without it DELETED a `Retain` resource (and skipped a
+      // `Snapshot` one's final snapshot) when destroy ran before the first
+      // deploy rewrote the record. `template` is the synthesized CDK template,
+      // not the Retain-injected copy the CloudFormation retirement uploads.
+      deletionPolicy: tmplResource.DeletionPolicy,
+      updateReplacePolicy: tmplResource.UpdateReplacePolicy,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the
       // post-import drift / destroy paths route through the SDK provider

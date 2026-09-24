@@ -5825,6 +5825,7 @@
         "import-deployed-parameter-secret",
         "import-lambda-url-attributes",
         "import-nested-stack",
+        "import-retain-destroy",
         "import-secret-observed",
         "import-value-strong-ref",
         "importvalue-chain",
@@ -5958,6 +5959,9 @@
         "import-nested-stack": [
           "l2",
           "literal"
+        ],
+        "import-retain-destroy": [
+          "l2"
         ],
         "import-secret-observed": [
           "l2",

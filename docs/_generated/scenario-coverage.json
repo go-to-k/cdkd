@@ -1180,6 +1180,13 @@
       ]
     },
     {
+      "name": "import-retain-destroy",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-secret-observed",
       "annotated": false,
       "scenarios": []
@@ -2654,6 +2661,7 @@
       "fixtures": [
         "import-attribute-readback",
         "import-lambda-url-attributes",
+        "import-retain-destroy",
         "migrate-from-cfn"
       ]
     },

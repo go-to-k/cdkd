@@ -215,10 +215,9 @@ if grep -q 'Unknown attribute' "${WORK}/deploy.log"; then
   exit 1
 fi
 # cdkd colours every resource line, so strip ANSI before matching the row.
-# A `updated (metadata)` row is excluded: the import records no
-# DeletionPolicy / UpdateReplacePolicy (issue #3645), so the first deploy
-# writes the Table's. Drop the exclusion when #3645 is fixed.
-if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -E '✓ .* updated' | grep -qv 'updated (metadata)'; then
+# A metadata-only row counts too: the import records the template's policies
+# (issue #3645), so the first deploy has none to write.
+if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -qE '✓ .* updated'; then
   echo "[verify] FAIL: an unchanged deploy updated a resource the import should have recorded resolved"
   exit 1
 fi
