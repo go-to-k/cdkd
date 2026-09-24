@@ -345,7 +345,9 @@ if [ "${RMC_RC}" = "0" ]; then
   exit 1
 fi
 if ! grep -q 'is a container-image function (PackageType: Image)' "${RMC_OUT}"; then
-  if grep -q 'RuntimeManagementConfig' "${RMC_OUT}"; then
+  # AWS words its rejection "runtime management configuration", so match both
+  # spellings (measured on the pre-fix binary, issue #1894).
+  if grep -qiE 'RuntimeManagementConfig|runtime management configuration' "${RMC_OUT}"; then
     echo "FAIL (issue #1894): the redeploy failed on RuntimeManagementConfig WITHOUT cdkd's refusal -- AWS's rejection reached the user, or the refusal was reworded:" >&2
   else
     echo "FAIL: the redeploy failed for a reason unrelated to RuntimeManagementConfig:" >&2
