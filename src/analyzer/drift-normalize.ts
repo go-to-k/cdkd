@@ -42,10 +42,9 @@
  * (phantom drift against an ISO-string baseline, and `--accept` persisted the
  * `{}`). The identity return is what makes the second visible to the
  * comparator; the null-prototype target is what keeps the first an own key.
- * One layer LATER the same flattening survives in `secret-redaction.ts`'s
- * value walk, which `--accept` runs over a resource that RECORDS a secret
- * (issue #2427) -- so the ISO string reaches the baseline only where that
- * walk does not run.
+ * One layer LATER `secret-redaction.ts`'s value walk, which `--accept` runs
+ * over a resource that RECORDS a secret, keeps a `Date` by identity too (issue
+ * #2427), so the ISO string reaches the baseline on both kinds of resource.
  */
 
 import { hasPlainPrototype, nullPrototypeRecord } from '../utils/own-keys.js';

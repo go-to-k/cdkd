@@ -392,10 +392,10 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
   it('keeps a readback `Date` a Date instead of rebuilding it as an empty object', () => {
     // A provider readback carries real `Date` instances (`LastModified`,
     // `CreationDate`, ...), and `observedProperties` is where they land. The
-    // value scan's object walk rebuilds through `hasPlainPrototype` and turns
-    // one into `{}` -- issue #2427, pre-existing on the POPULATED-map paths.
+    // value scan's object walk used to turn one into `{}` on the POPULATED-map
+    // paths -- issue #2427, pinned in `secret-redaction-date-leaf.test.ts`.
     //
-    // This case fences the EMPTY-map path against inheriting it. The merge's
+    // This case fences the EMPTY-map path's MERGE against the same shape. The merge's
     // object arm runs before its leaf rule and `isPlainObject` admits a `Date`
     // (`Object.entries(new Date())` is `[]`), so without the `hasPlainPrototype`
     // guard the merge FLATTENED the Date itself, while a comment two screens up

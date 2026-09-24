@@ -3672,8 +3672,8 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
 // a non-plain readback value (a `Date`) to `{}` before the check ran. The
 // `#3121` Date case at the end of this describe pins the persisted ISO value
 // on a resource with NO recorded secret; the post-write warning itself is a
-// regression guard there (see that case), and on a resource WITH a recorded
-// secret the redaction value walk still flattens the Date (go-to-k/cdkd#2427).
+// regression guard there (see that case), and the `#2427` case after it pins
+// the same persisted ISO value on a resource WITH a recorded secret.
 describe('cdkd drift — the state-baseline walk and the destination-selected rules constant', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
@@ -3867,8 +3867,50 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     // same `{}`, and `deepEqualUnordered` answers plain-vs-plain by keys), so
     // this line cannot go red under this PR's mutations; it pins that the
     // fix did not START the warning on a clean accept. Scope: this resource
-    // records NO secret, so the redaction value walk (which flattens a
-    // `Date` again — go-to-k/cdkd#2427, `secret-redaction.ts`) never runs.
+    // records NO secret, so the redaction value walk never runs; the
+    // secret-bearing twin is the #2427 case below.
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'was NOT recorded'
+    );
+  });
+
+  it('#2427: on a resource that RECORDS a secret, --accept persists the Date readback as its ISO form', async () => {
+    // The twin of the case above with a populated secrets map: the redaction
+    // VALUE walk now runs over the accepted bag, and it rebuilt every object
+    // it walked — a `Date` has no own entries, so the baseline got `{}`.
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const baseline = {
+      FunctionName: 'fn',
+      Environment: { Variables: { SECRET_PASSWORD: SECRET_EXPR, PLAIN: 'ok' } },
+      LastModified: '2026-09-13T00:00:00.000Z',
+    };
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource(baseline) }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        FunctionName: 'fn',
+        Environment: { Variables: { SECRET_PASSWORD: SECRET_PLAINTEXT, PLAIN: 'ok' } },
+        LastModified: when,
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const persisted = JSON.stringify(mockSaveState.mock.calls[0]![2]);
+    // The control: the secret really was in the map, so the walk ran and
+    // redacted the resolved leaf back to its expression.
+    expect(persisted).not.toContain(SECRET_PLAINTEXT);
+    const observed = (JSON.parse(persisted) as StackState).resources['Consumer']!
+      .observedProperties as Record<string, unknown>;
+    expect((observed['Environment'] as { Variables: Record<string, unknown> }).Variables).toEqual({
+      SECRET_PASSWORD: SECRET_EXPR,
+      PLAIN: 'ok',
+    });
+    // Pre-fix: `{}`.
+    expect(observed['LastModified']).toBe('2026-09-14T00:00:00.000Z');
+    // Pre-fix the post-write check compared the rebuilt `{}` against the
+    // readback's Date and warned that the accept did not land.
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
       'was NOT recorded'
     );

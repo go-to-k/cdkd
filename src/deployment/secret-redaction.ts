@@ -4718,11 +4718,10 @@ function redactByPath(
   // never reported, which `cdkd drift --revert` can push. Guarding only the
   // second walk moved the flattening rather than removing it (measured: the
   // Date arrived at that walk already `{}`). A non-plain bag now falls to the
-  // divergence arm below, whose value scan returns it BY IDENTITY on the
-  // empty-map readback paths this guard is about. With a POPULATED map that
-  // scan still rebuilds it — that is the VALUE scan's own copy of the defect,
-  // issue [#2427](https://github.com/go-to-k/cdkd/issues/2427), and a different
-  // pass.
+  // divergence arm below, whose value scan returns a `Date` BY IDENTITY — on
+  // the empty-map readback paths trivially, and with a POPULATED map since
+  // issue [#2427](https://github.com/go-to-k/cdkd/issues/2427) (see
+  // {@link isOrdinaryDate}).
   if (isPlainObject(bag) && hasPlainPrototype(bag) && isPlainObject(source)) {
     // `Object.create(null)` (issue #1943's class): `JSON.parse` of an AWS
     // readback can produce an OWN `__proto__` key, and `out[k] = ...` on a
@@ -4985,6 +4984,41 @@ function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecre
 function hasPlainPrototype(value: object): boolean {
   const proto = Object.getPrototypeOf(value) as unknown;
   return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Is this a `Date` the value scan may return BY IDENTITY (issue
+ * [#2427](https://github.com/go-to-k/cdkd/issues/2427))?
+ *
+ * The scan redacts what PERSISTS, and `JSON.stringify` persists an unmodified
+ * `Date` as `Date.prototype.toJSON`'s ISO timestamp (or `null`) — never its own
+ * entries. So the only thing to scan is that timestamp — the walk runs it
+ * through the string arms and keeps the `Date` only when they leave it alone —
+ * and rebuilding it just threw the timestamp away. "Unmodified" is three
+ * conjuncts, each closing a shape whose persisted form is NOT that timestamp:
+ * the EXACT prototype, a real `[[DateValue]]` (the `getTime` brand check, which
+ * a `Proxy` or an `Object.create(Date.prototype)` fails), and NO own keys — an
+ * own `toJSON` (enumerable or not) is what `JSON.stringify` would call instead.
+ * No SDK readback or `JSON.parse` produces any of those; they are refused
+ * because the identity return must mean exactly "persists as a timestamp".
+ *
+ * Deliberately NOT "any non-plain object". `JSON.stringify` persists an
+ * arbitrary class instance's OWN ENUMERABLE fields, which is exactly what the
+ * rebuild scans, so returning one by identity would persist a plaintext held in
+ * such a field — a disclosure, traded for fidelity. A `Uint8Array` persists as
+ * the same `{"0":...}` either way. The EXACT prototype (not `instanceof`) keeps
+ * a `Date` subclass on the rebuild: its prototype can override `toJSON`, which
+ * the rebuild drops and identity would honour. A cross-realm `Date` fails the
+ * test too, which is the old flattening rather than a leak.
+ */
+function isOrdinaryDate(value: object): value is Date {
+  if (Object.getPrototypeOf(value) !== Date.prototype) return false;
+  try {
+    Date.prototype.getTime.call(value);
+  } catch {
+    return false;
+  }
+  return Reflect.ownKeys(value).length === 0;
 }
 
 /**
@@ -5774,21 +5808,22 @@ function asIndex(marks: unknown, index: number): unknown {
  *
  * KEEPING A NON-PLAIN LEAF INTACT takes the prototype guard on the object arm,
  * NOT that leaf rule, and an earlier revision of this comment claimed the
- * opposite — measured wrong. The scan's own walk rebuilds objects and turns a
+ * opposite — measured wrong. The scan's own walk rebuilt objects and turned a
  * `Date` the provider readback carries (`LastModified`) into `{}`; that
- * flattening predates this module's derived needles on the POPULATED-map path
- * (issue #2427). The object arm runs FIRST here and `isPlainObject` admits a
- * `Date`, so without `hasPlainPrototype` this walk did the flattening ITSELF —
- * newly extending #2427 to the EMPTY-map path, where the unchanged-resource
- * `drainObservedCaptures` baseline lives and where `cdkd drift --revert` pushes
- * the result to the live resource. With the guard a non-plain leaf falls
- * through to `refused`. That is the position passes' own answer, which is the
- * bag by identity: their object arm carried no prototype guard of its own until
- * issue [#2869](https://github.com/go-to-k/cdkd/issues/2869), so a non-plain
- * leaf whose source subtree carries a reference WAS already flattened one
- * function earlier and this guard could only keep a `{}` intact. Both halves
- * are guarded now; the remaining copy of the defect is the VALUE scan's own
- * walk, which is issue #2427 and a different pass.
+ * flattening predated this module's derived needles on the POPULATED-map path
+ * (issue #2427, since fixed in the scan). The object arm runs FIRST here and
+ * `isPlainObject` admits a `Date`, so without `hasPlainPrototype` this walk did
+ * the flattening ITSELF — newly extending #2427 to the EMPTY-map path, where
+ * the unchanged-resource `drainObservedCaptures` baseline lives and where
+ * `cdkd drift --revert` pushes the result to the live resource. With the guard
+ * a non-plain leaf falls through to `refused`. That is the position passes' own
+ * answer, which is the bag by identity: their object arm carried no prototype
+ * guard of its own until issue
+ * [#2869](https://github.com/go-to-k/cdkd/issues/2869), so a non-plain leaf
+ * whose source subtree carries a reference WAS already flattened one function
+ * earlier and this guard could only keep a `{}` intact. Both halves are guarded
+ * now, and the VALUE scan's own walk keeps a `Date` by identity since issue
+ * #2427, so `scanned` holds the same instance.
  *
  * The net effect is byte-identical to the FIRST ordering on every input where
  * the un-certification did not fire — which is the whole point: it keeps that
@@ -6900,6 +6935,22 @@ export function redactSecretsForState<T>(
       return value.map(walk);
     }
     if (value !== null && typeof value === 'object') {
+      // A readback `Date` (`LastModified`, `CreationDate`) is kept BY IDENTITY
+      // (issue [#2427](https://github.com/go-to-k/cdkd/issues/2427)): it has no
+      // own entries, so the rebuild below turned it into `{}` — a drift
+      // baseline AWS never reported, which `cdkd drift --revert` can push. See
+      // {@link isOrdinaryDate} for why this is not every non-plain object.
+      if (isOrdinaryDate(value)) {
+        // Identity only when the PERSISTED form survives the string arms: a
+        // recorded plaintext can itself be an ISO timestamp, and the string
+        // spelling of the same value is replaced there (PR #3586 review).
+        // `toJSON` is `Date.prototype`'s own (no own keys) — the ISO string,
+        // or `null` for an invalid date, which no needle can match.
+        const persisted = value.toJSON();
+        if (typeof persisted !== 'string') return value;
+        const scanned = walk(persisted);
+        return scanned === persisted ? value : scanned;
+      }
       // Null-prototype for the same reason the path walk uses one: an own
       // `__proto__` key must land as DATA, not on the prototype.
       const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
