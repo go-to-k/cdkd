@@ -19,9 +19,8 @@ callers, differing in MESSAGE and SCOPE but never the verdict; read-only is
 can NAME damaged records; it SKIPS a non-object entry and returns
 `[]` for an unreadable `resources` bag, so its verdict is independent of the
 BAG guard — which **a caller owes** — and of the opt-in ENTRY guard except for a
-typeless object with a torn map, which both name, so a caller taking both drops
-entries first. An ABSENT map is a DEFECT;
-an empty `{}` is healthy.
+typeless object with a torn map, which both name, so a caller taking both runs
+the entry guard first. An ABSENT map is a DEFECT; an empty `{}` is healthy.
 
 ## Repairing is not the safe half
 
@@ -41,6 +40,9 @@ The refusal is at `DiffCalculator.calculateDiff`'s ENTRY — the single CHOKEPOI
 both callers share — DOMINATING every `currentResource.properties` read rather
 than sitting on the reads. It names NO stack identity: the record's own
 `stackName` / `region` are unvalidated and could aim the remedy elsewhere.
+The ENTRY refusal `refuseMalformedResourceEntriesForDeploy` (go-to-k/cdkd#3314)
+sits just ABOVE it, and ALSO at `DeployEngine`'s load: two walks before the diff
+die on a `null` row, so only the load reaches the user.
 
 `loadStateOrEmpty` (`diff-recursive.ts`) carries the read-only half AFTER the
 `resources` bag repair and the entry drop, and `computeStackDiff` runs it a

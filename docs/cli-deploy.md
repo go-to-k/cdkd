@@ -475,6 +475,23 @@ record with `cdkd state show <stack> --stack-region <region> --json`, repair or
 remove it, then re-run. Full table in
 [State Management](state-management.md#when-a-resource-properties-map-is-not-an-object).
 
+## An unreadable resource record refuses the deploy
+
+A resource record in the `resources` map can itself be damaged: `null`, a
+string or a number instead of an object, or an object with no `resourceType`.
+The change calculation looks each template resource up by its logical id, so a
+record that is not an object reads as **not in state**. The deploy would plan a
+`CREATE` for a resource that is already live. A named resource then fails on a
+name collision, and an unnamed one is created a second time with the first copy
+left unmanaged. A record with no `resourceType` would be planned as a type
+change, which replaces the live resource.
+
+`cdkd deploy` refuses such a record before creating, updating or deleting any
+resource (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the records it could
+not read. `--dry-run` refuses too. `cdkd diff` drops those records, warns, and
+previews the rest of the stack. Inspect the record with `cdkd state show <stack>
+--stack-region <region> --json`, repair or remove it, then re-run.
+
 ## Exit codes
 
 | Code | Meaning |

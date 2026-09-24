@@ -1132,9 +1132,12 @@ record it would keep, scoped and with the same three ways out as above: its
 save rebuilds each kept record by copying fields, so a string entry would be
 saved as one key per character and a number as a record with no physical id. A
 reference from another resource to such a record you are orphaning, or to one
-with no physical id, is reported as unresolvable rather than substituted. `cdkd deploy` does **not yet guard**
-it: such an entry reads as absent, so deploy plans a `CREATE` for a resource it
-already manages. Tracked separately.
+with no physical id, is reported as unresolvable rather than substituted.
+`cdkd deploy` **refuses** such a record before creating, updating or deleting
+any resource (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too,
+naming the records it could not read. Otherwise the entry reads as absent and
+deploy plans a `CREATE` for a resource it already manages. `cdkd diff` drops
+those records, warns, and previews the rest.
 
 The same scoped refusal covers a kept record's `attributes` map — the cache
 `Fn::GetAtt` of it is read from — when it is `null` or not an object; an absent

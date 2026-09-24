@@ -79,6 +79,7 @@
         "ec2-instance",
         "export",
         "gc-custom-asset-names",
+        "lambda",
         "loggroup-never-expire-guard",
         "nested-stack-deep",
         "recreate-nested-logical-id-collision",

@@ -25,6 +25,7 @@ import {
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
   malformedResourceEntriesRefusalMessage,
+  malformedDeployResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
   malformedOrphanRecordsWarning,
   malformedResourcePropertiesRefusalMessage,
@@ -41,6 +42,7 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceEntries,
+  refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
@@ -2888,7 +2890,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(15);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -2898,8 +2900,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // go-to-k/cdkd#3350, one predicate: `cdkd orphan`'s text says what ITS save
     // does with such an entry and subtracts the records the save deletes.
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
+    // A THIRD since go-to-k/cdkd#3314: `cdkd deploy`'s diff, whose text states
+    // the planned CREATE rather than a save.
     expect([...entries].sort()).toEqual([
       'refuseMalformedResourceEntries(',
+      'refuseMalformedResourceEntriesForDeploy(',
       'refuseMalformedResourceEntriesForOrphan(',
     ]);
     // An entry's `attributes` map (go-to-k/cdkd#3345), its own container with
@@ -3693,6 +3698,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     ['destroy resources', () => refuseMalformedResourcesForDestroy(state('abcdef'), 'S', 'us-east-1')],
     ['deploy resources', () => refuseMalformedResourcesForDeploy(state('abcdef'), 'S', 'us-east-1')],
     ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
+    ['deploy resource entries', () => refuseMalformedResourceEntriesForDeploy(state({ A: null }), undefined, undefined)],
     ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
   ] as const;
@@ -3743,7 +3749,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(14);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(15);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6381,6 +6387,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedResourceEntriesWarning',
       (s, r) => malformedResourceEntriesWarning(s as string, r as string, ['A']),
     ],
+    [
+      'malformedDeployResourceEntriesRefusalMessage',
+      (s, r) => malformedDeployResourceEntriesRefusalMessage(s, r, ['A']),
+    ],
     // Converted by go-to-k/cdkd#3526 from spelling their own identity clause
     // and command to taking `stackClause` / `inspectCommand`, which render
     // byte-identically for a present identity and give the no-identity form
@@ -6523,6 +6533,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedOutputsForDestroy',
       'refuseMalformedResourceAttributesForOrphan',
       'refuseMalformedResourceEntries',
+      'refuseMalformedResourceEntriesForDeploy',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForOrphan',
