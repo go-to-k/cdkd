@@ -91,6 +91,15 @@ describe('directory source: --verbose build line (issue #2623)', () => {
     expect(line).toContain('(cwd=/cdk.out/asset.2623)');
   });
 
+  it('bounds a context directory that is not a plain path (go-to-k/cdkd#3590)', async () => {
+    await buildDockerImage({ source: { directory: 'asset x) done (y' } }, '/cdk.out', {
+      tag: 't',
+      wrapError,
+    });
+
+    expect(debugText()).toContain('(cwd="/cdk.out/asset x) done (y")');
+  });
+
   it('spawns docker with the RAW value — the redaction is display-only', async () => {
     await buildDockerImage({ source }, '/cdk.out', { tag: 'cdkd-asset-2623', wrapError });
 

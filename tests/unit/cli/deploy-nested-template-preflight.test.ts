@@ -94,7 +94,7 @@ describe('refuseMalformedNestedTemplateTrees', () => {
     const a = writeTemplate('a.json', { Abs: '/etc/passwd' });
     expect(() =>
       refuseMalformedNestedTemplateTrees([{ stackName: 'Root', nestedTemplates: { Child: a } }])
-    ).toThrow(/Metadata\['aws:asset:path'\]='\/etc\/passwd' which is absolute/);
+    ).toThrow(/Metadata\['aws:asset:path'\]=\/etc\/passwd which is absolute/);
   });
 
   it('renders a template-controlled logical id display-safely', () => {

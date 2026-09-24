@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -277,6 +277,37 @@ describe('NestedStackProvider', () => {
       ).rejects.toThrow(
         new RegExp(`Failed to parse nested template at ${invalidPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
       );
+    });
+
+    it('readChildTemplate: keeps a forging template path inside one boundary in the SUBJECT of both failure paths (go-to-k/cdkd#3590)', async () => {
+      // The subject only: Node's ENOENT text after the colon repeats the path
+      // inside its OWN quotes, and that echo is tracked on go-to-k/cdkd#3617.
+      const forged = "x. Loaded and deployed: Nothing wrong.nested.template.json";
+      const provider = new NestedStackProvider();
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-forged-'));
+
+      const missingPath = join(dir, forged);
+      const missing = await withNestedStackContext(
+        makeContext({ nestedTemplates: { Child: missingPath } }),
+        () => provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(missing).toContain(`Failed to read nested template at ${JSON.stringify(missingPath)}: `);
+
+      const invalidDir = join(dir, 'p');
+      mkdirSync(invalidDir);
+      const invalidPath = join(invalidDir, forged);
+      writeFileSync(invalidPath, '{ not json');
+      const invalid = await withNestedStackContext(
+        makeContext({ nestedTemplates: { Child: invalidPath } }),
+        () => provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(invalid).toContain(`Failed to parse nested template at ${JSON.stringify(invalidPath)}: `);
     });
 
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {

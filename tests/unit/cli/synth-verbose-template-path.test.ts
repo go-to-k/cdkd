@@ -100,7 +100,7 @@ describe('resolveVerboseTemplatePath', () => {
     symlinkSync('a/../c.json', join(out, 'C.template.json'), 'file');
 
     expect(() => resolveVerboseTemplatePath(out, 'C')).toThrow(
-      /would write its template over a symbolic link at '.*C\.template\.json'/
+      /would write its template over a symbolic link at .*C\.template\.json\. /
     );
     expect(existsSync(join(outer, 'c.json'))).toBe(false);
   });

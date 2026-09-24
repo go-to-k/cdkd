@@ -124,7 +124,11 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       expect(message).toMatch(/which is absolute/);
       expect(message).toContain(`Stack '${HOSTILE.stackName.clean}'`);
       expect(message).toContain(`nested-stack '${HOSTILE.logicalId.clean}'`);
-      expect(message).toContain(`Metadata['aws:asset:path']='${HOSTILE.assetPath.clean}'`);
+      // `displaySafe` blanked the U+2028, so the value no longer arrived plain
+      // and `displayAssemblyPath` gives it a boundary (go-to-k/cdkd#3590).
+      expect(message).toContain(
+        `Metadata['aws:asset:path']=${JSON.stringify(HOSTILE.assetPath.clean)} which`
+      );
       // ...and nothing that could forge a line survived any of the three.
       expect(message).not.toMatch(FORGING);
       expect(message).not.toContain(HOSTILE.stackName.raw);
@@ -162,19 +166,17 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
       expect(message).toContain(
-        `Stack 'MyStack' nested-stack 'ChildStack' has Metadata['aws:asset:path']='${longPath}' which is absolute.`
+        `Stack 'MyStack' nested-stack 'ChildStack' has Metadata['aws:asset:path']=${longPath} which is absolute.`
       );
       // `displayIdent`'s 255-code-point cap would append `[cut: N ...]` here.
       expect(message).not.toContain('cut:');
     });
 
-    it('leaves an ordinary path containing a space unquoted', () => {
-      // The assertion the previous case cannot make: a SPACE is printable, so
-      // `displaySafe` passes it through, while `displayIdent` reads it as a
-      // non-plain identifier and renders the whole value as a JSON string
-      // literal. A directory with a space in it is an ordinary `cdk.out`
-      // parent on macOS and Windows, so the bare rendering is the correct one
-      // and the quote is what must not appear.
+    it('keeps an ordinary path containing a space whole, in one boundary', () => {
+      // A directory with a space in it is an ordinary `cdk.out` parent on macOS
+      // and Windows. A space is also what would let a bare value read as a
+      // clause of its own, so `displayAssemblyPath` gives such a path a JSON
+      // boundary (go-to-k/cdkd#3590): quoted, never cut, never re-spelled.
       const spacedPath = '/Users/me/My Projects/cdk.out/Child.nested.template.json';
       const manifest: AssemblyManifest = {
         version: '38.0.0',
@@ -199,8 +201,8 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
 
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
-      expect(message).toContain(`Metadata['aws:asset:path']='${spacedPath}'`);
-      expect(message).not.toMatch(/='"/);
+      expect(message).toContain(`Metadata['aws:asset:path']=${JSON.stringify(spacedPath)} which`);
+      expect(message).not.toContain(`'${spacedPath}'`);
     });
   });
 

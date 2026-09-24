@@ -1,5 +1,4 @@
-import type { ResolvedAssemblyPath } from '../utils/assembly-path.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayAssemblyPath, type ResolvedAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -73,7 +72,7 @@ export function warnWholeAssemblyAsSource(w: {
     .child('assets')
     .warn(
       `${w.subject} has ${w.field} naming the output directory ITSELF: ` +
-        `'${displaySafe(w.outdir)}'. cdkd will ${w.sink} — that is the WHOLE ` +
+        `${displayAssemblyPath(w.outdir)}. cdkd will ${w.sink} — that is the WHOLE ` +
         `assembly, every template and every staged asset, not one asset ` +
         `directory. No CDK synth emits this, so treat this assembly as ` +
         `untrusted unless you wrote that path yourself.`
@@ -93,9 +92,9 @@ export function warnAbsoluteAssetPath(w: AbsoluteAssetPathWarning): void {
     .child('assets')
     .warn(
       `${w.subject} has an absolute ${w.field} pointing outside the assembly: ` +
-        `'${displaySafe(w.absolute)}'` +
+        `${displayAssemblyPath(w.absolute)}` +
         (w.escape.escape === 'symlink'
-          ? ` (through a symbolic link to '${displaySafe(w.escape.realPath)}')`
+          ? ` (through a symbolic link to ${displayAssemblyPath(w.escape.realPath)})`
           : '') +
         `. cdkd will ${w.sink}. This is what cdk synth --no-staging emits, and is ` +
         `expected for it; if you did not synthesize with that flag, treat this ` +

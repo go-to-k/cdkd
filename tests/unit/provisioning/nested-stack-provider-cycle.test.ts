@@ -221,7 +221,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       )
     );
 
-    expect(err.message).toContain("Metadata['aws:asset:path']='/etc/outside.json' which is absolute");
+    expect(err.message).toContain("Metadata['aws:asset:path']=/etc/outside.json which is absolute");
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(engineDeploys).toEqual([]);
   });

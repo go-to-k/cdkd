@@ -612,7 +612,7 @@ describe('renderNestedTemplateTreeDefect', () => {
     );
 
     expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
-    expect(text).toContain("Metadata['aws:asset:path']='/abs.json' which is absolute");
+    expect(text).toContain("Metadata['aws:asset:path']=/abs.json which is absolute");
   });
 
   it('names the rows leading to an ESCAPING path, worded apart from the absolute one', () => {
@@ -634,7 +634,7 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
     expect(text).toContain(
-      "Metadata['aws:asset:path']='../../etc/passwd' which resolves to /etc/passwd, outside /out."
+      "Metadata['aws:asset:path']=../../etc/passwd which resolves to /etc/passwd, outside /out."
     );
     expect(text).toContain('Refusing to deploy.');
     expect(text).not.toContain('is absolute');

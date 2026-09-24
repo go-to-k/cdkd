@@ -9,6 +9,7 @@ import { stringifyValue } from '../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
@@ -872,15 +873,16 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
       // user did NOT expect is visible rather than silent, so it names the
       // directory and says what is done with it.
       // cdkd-raw-beside-safe: every RENDERED operand is a `displaySafe(...)`
-      // call. What the fence reads as a raw neighbour is `escape.escape ===
-      // 'symlink'`, a DISCRIMINANT comparison choosing between two of this
-      // file's literals — it selects text, it does not render a value.
+      // or `displayAssemblyPath(...)` call. What the fence reads as a raw
+      // neighbour is `escape.escape === 'symlink'`, a DISCRIMINANT comparison
+      // choosing between two of this file's literals — it selects text, it
+      // does not render a value.
       getLogger().warn(
         `Lambda '${displaySafe(logicalId)}' has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +
-          `'${displaySafe(absolute)}'` +
+          `${displayAssemblyPath(absolute)}` +
           (escape.escape === 'symlink'
-            ? ` (through a symbolic link to '${displaySafe(escape.realPath)}')`
+            ? ` (through a symbolic link to ${displayAssemblyPath(escape.realPath)})`
             : '') +
           `. cdkd will bind-mount that directory into the container read-only, where ` +
           `the code in this assembly can read it. This is what ` +
@@ -919,7 +921,7 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
     // rest of its text is this file's own literal.
     throw wrapError(
       `Lambda '${displaySafe(logicalId)}' has ` +
-        `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+        `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
     );
   }
@@ -1006,7 +1008,7 @@ function resolveAssetCodePath(
   });
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' asset directory '${displaySafe(abs)}' does not exist ` +
+      `Lambda '${displaySafe(logicalId)}' asset directory ${displayAssemblyPath(abs)} does not exist ` +
         'or is not a directory. Re-synthesize the app and retry.'
     );
   }

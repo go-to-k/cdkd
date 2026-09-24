@@ -4,6 +4,7 @@ import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets
 import { displaySafe } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
+  displayAssemblyPath,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -192,7 +193,7 @@ export function resolveFileAssetSourcePath(
   if (!resolved.contained) {
     throw new Error(
       `File asset '${displaySafe(asset.displayName)}' has ` +
-        `source.path='${displaySafe(asset.source.path)}' which ` +
+        `source.path=${displayAssemblyPath(asset.source.path)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'publish it')}`
     );
   }

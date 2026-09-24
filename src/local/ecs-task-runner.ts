@@ -16,6 +16,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { displayAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -865,12 +866,11 @@ async function prepareOneImage(
             // a rule followed by hand.
             `docker build failed for ECS container '${displaySafe(container.name)}' (${
               asset.source.directory !== undefined
-                ? // `displaySafe` because `source.directory` is an
-                  // assembly-supplied string and the containment refusal
-                  // (go-to-k/cdkd#3489) is raised BEFORE docker runs, so this
-                  // wrapper now renders an attacker-chosen path into a message
-                  // whose inner text is already sanitized (go-to-k/cdkd#3277).
-                  displaySafe(asset.source.directory)
+                ? // `source.directory` is an assembly-supplied path and the
+                  // containment refusal (go-to-k/cdkd#3489) is raised BEFORE
+                  // docker runs, so this wrapper renders an attacker-chosen
+                  // path; `displayAssemblyPath` bounds it (go-to-k/cdkd#3590).
+                  displayAssemblyPath(asset.source.directory)
                 : asset.source.executable
                   ? redactDockerArgvValues(asset.source.executable).join(' ')
                   : undefined

@@ -4,7 +4,11 @@ import type { EmulatorStrategy } from './ecs-service-emulator.js';
 import { assertCdkLocalDockerContextContained } from '../../assets/docker-build.js';
 import { assetPathDirs } from '../../local/lambda-resolver.js';
 import type { DockerImageAssetSource } from '../../types/assets.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { LocalInvokeBuildError } from '../../utils/error-handler.js';
 import { getLogger } from '../../utils/logger.js';
@@ -133,8 +137,8 @@ export function engineAssemblyRoot(outdir: string): string {
   if (!warnedDerivedRoots.has(dir)) {
     warnedDerivedRoots.add(dir);
     getLogger().warn(
-      `'${displaySafe(outdir)}' is a cdk.Stage sub-assembly, so cdkd is treating its parent ` +
-        `'${displaySafe(dir)}' as the assembly root when it checks Docker build contexts — ` +
+      `${displayAssemblyPath(outdir)} is a cdk.Stage sub-assembly, so cdkd is treating its parent ` +
+        `${displayAssemblyPath(dir)} as the assembly root when it checks Docker build contexts — ` +
         "that is where cdk synth stages a Stage's assets. Everything under that parent is now " +
         'inside the containment bound, including siblings of the directory you named.'
     );

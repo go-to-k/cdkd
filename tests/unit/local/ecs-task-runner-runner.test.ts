@@ -512,6 +512,56 @@ describe('runEcsTask — image preparation (G1)', () => {
     expect(wrapped.message).toContain('docker: BOOM');
   });
 
+  it('cdk-asset with a `directory` source → wrapError keeps a forging directory inside one boundary (go-to-k/cdkd#3590)', async () => {
+    const forged = "asset.x'). Build succeeded (docker: 'ok";
+    manifestStubs.loadManifest.mockResolvedValueOnce({
+      dockerImages: { h0: { source: { directory: forged } } },
+    } as never);
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    await runEcsTask(task, baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).toContain(`(${JSON.stringify(forged)}): docker: BOOM`);
+    expect(wrapped.message.split(JSON.stringify(forged)).join('')).not.toContain('Build succeeded');
+  });
+
+  it('cdk-asset with a plain `directory` source → wrapError renders it bare', async () => {
+    manifestStubs.loadManifest.mockResolvedValueOnce({
+      dockerImages: { h0: { source: { directory: 'asset.abc' } } },
+    } as never);
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    await runEcsTask(task, baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).toContain('(asset.abc): docker: BOOM');
+  });
+
   it('cdk-asset with no asset manifest path → throws EcsTaskRunnerError', async () => {
     captured.responder = happyDockerResponder();
     const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });

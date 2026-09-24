@@ -49,7 +49,7 @@ describe('resolveInlineCodeFilePath', () => {
     const handler = '../../victim/evil.handler';
 
     expect(() => resolveInlineCodeFilePath(dir, modulePathOf(handler), '.js', handler)).toThrow(
-      /Handler '\.\.\/\.\.\/victim\/evil\.handler' names a module path that resolves to/
+      /Handler \.\.\/\.\.\/victim\/evil\.handler names a module path that resolves to/
     );
     expect(existsSync(join(dirname(dirname(dir)), 'victim'))).toBe(false);
   });

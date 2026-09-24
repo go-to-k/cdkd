@@ -134,8 +134,8 @@ describe('assertEmulatorDockerContextsContained', () => {
     // The widening is announced, naming both directories.
     const climbed = warns.filter((w) => w.includes('is a cdk.Stage sub-assembly'));
     expect(climbed).toHaveLength(1);
-    expect(climbed[0]).toContain(`'${subAssembly}'`);
-    expect(climbed[0]).toContain(`'${assemblyDir}'`);
+    expect(climbed[0]).toContain(`${subAssembly} is a cdk.Stage sub-assembly`);
+    expect(climbed[0]).toContain(`its parent ${assemblyDir} as the assembly root`);
   });
 
   it('warns about a derived root ONCE, not on every check (every --watch reload re-runs it)', () => {
@@ -202,7 +202,7 @@ describe('assertEmulatorDockerContextsContained', () => {
     expect((thrown as Error).message).toMatch(
       new RegExp(
         `^Refusing to build container image asset '${HASH}' of stack 'StageStack': ` +
-          `asset source\\.directory='\\.\\./\\.\\./victim' which resolves to .*victim, outside`
+          `asset source\\.directory=\\.\\./\\.\\./victim which resolves to .*victim, outside`
       )
     );
   });
