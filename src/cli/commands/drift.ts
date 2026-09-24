@@ -7353,9 +7353,10 @@ function stackIdentityLine(
   /**
    * No production caller passes this, and NOTHING exercises it — this function
    * is private and its one caller omits the parameter, so deleting `${indent}`
-   * reds nothing. Kept as go-to-k/cdkd#3436's landing place, where a nested
-   * block will want the line indented; read it as a placeholder, not as a
-   * tested path. Documented HERE rather than only in `stackCommandFor`'s
+   * reds nothing. Kept as a placeholder for a nested block that wants the line
+   * indented; read it as that, not as a tested path. It was described as
+   * go-to-k/cdkd#3436's landing place, which is now settled: that fold-in went
+   * to the shared `pasteableCommand` rather than to this helper. Documented HERE rather than only in `stackCommandFor`'s
    * docblock, which is where round 5 found it: a dead parameter's
    * justification belongs on the parameter.
    */
@@ -7404,17 +7405,26 @@ function stackIdentityLine(
  *   display path. `patternMatched` asks for the last two; `/` cannot arrive
  *   through a key (`listStacks` splits keys on it), so that half is defensive.
  *
- * **`region` and `flags` have NO production caller today, and neither does
+ * **`region` and `flags` have NO production caller, and neither does
  * `stackIdentityLine`'s `indent`** (M16 / m17 of the go-to-k/cdkd#3486 review;
  * the one call site is the legacy region-less refusal, which has no region by
- * definition and passes only `patternMatched`). They are kept, with their
- * cases, as the landing place for the three `cdkd drift` sites
- * go-to-k/cdkd#3436 owns — the `--stack-region` requirement go-to-k/cdkd#3307
- * states for `:6139` is exactly what `region` exists to satisfy. Read their
- * hazard-matrix cases as a SPECIFICATION for that landing, not as coverage of
- * a live path. `region` takes the same gates as the NAME — sanitize,
- * exactness, the cap, emptiness and the leading `-` — because a region is a
- * key SEGMENT, no more trusted than the name.
+ * definition and passes only `patternMatched`).
+ *
+ * **They were kept as go-to-k/cdkd#3436's landing place, and that landing has
+ * now happened WITHOUT them.** The three other `cdkd drift` sites, and
+ * go-to-k/cdkd#3307's `--stack-region` requirement with them, are closed by
+ * `revertCommandLine` and its siblings — built on the shared
+ * `pasteableCommand` and gated by `mayNameTarget`, not by this helper. So the
+ * prediction the earlier wording made is settled and wrong in its particulars:
+ * the fold-in went to the shared builder rather than to this local one.
+ *
+ * What that leaves is a helper with ONE live caller and two parameters nothing
+ * reaches. Read their hazard-matrix cases as coverage of a specification
+ * nobody implements, not of a live path. Folding this site onto
+ * `pasteableCommand` too would retire all three, and is the remaining
+ * go-to-k/cdkd#3436 work in this file. `region` takes the same gates as the
+ * NAME — sanitize, exactness, the cap, emptiness and the leading `-` —
+ * because a region is a key SEGMENT, no more trusted than the name.
  *
  * Exported for `tests/unit/cli/drift.test.ts`, which drives the hazard matrix
  * through it directly; the one call site is driven through the CLI separately,
