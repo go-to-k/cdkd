@@ -364,7 +364,10 @@ worth knowing before you read a report:
   leaves the resource in place rather than re-importing it. Without the record they could
   not tell a refused resource from one that simply never had a baseline, and
   each would position an AWS readback against the very properties the refusal
-  found untrustworthy.
+  found untrustworthy. A refused resource ends with no baseline at all: when a
+  selective import refuses a resource it leaves in place, it also removes any
+  baseline an earlier run recorded for it, since that baseline was read back
+  against the same untrustworthy properties.
 
   **A parameter refusal is the exception to the remedy below: deploying a
   change does NOT clear it.** `cdkd deploy` takes no parameter values either, so

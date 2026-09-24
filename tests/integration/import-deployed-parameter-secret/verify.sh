@@ -44,7 +44,9 @@
 #      `observedProperties`; no plaintext in root or child state, in ANY
 #      surviving object version under either prefix, or in the deploy log.
 #   6c-pre. Strip the root reasons AGAIN (6b healed them), so the re-import's
-#      carry is exercised on a REASON-LESS prior marker (issue #3468).
+#      carry is exercised on a REASON-LESS prior marker (issue #3468), and seed
+#      a sentinel `observedProperties` on the marked `RootPwParam`, which the
+#      re-import leaves in place and must strip of it (issue #2872).
 #   6c. RE-IMPORT ARM (issue #3462): a SELECTIVE `cdkd import --resource
 #      SecretEnvFn=<name> --force`. The migration deleted the CloudFormation
 #      stack, so this run has NO deployed parameter values, ARM 4 does not run,
@@ -595,6 +597,48 @@ echo "[verify] step 6c: RE-IMPORT ARM (issue #3462) -- a selective re-import wit
 # Step 6b healed the root reasons; strip them again so the carry under test
 # starts from a REASON-LESS prior marker (issue #3468).
 strip_refusal_reason "${STATE_KEY}" "root state before the re-import"
+# Issue #2872: give the PRESERVED, marked `RootPwParam` a stale baseline, the
+# shape an older cdkd could leave beside a refusal. A sentinel, never the
+# plaintext. The selective run below does not re-import it, so its refusal
+# stands and must DROP that baseline: `marked` below requires no
+# `observedProperties`, and the sentinel must be gone from the state.
+STALE_BASELINE_SENTINEL="stale-baseline-2872-sentinel"
+seed_stale_baseline() { # usage: seed_stale_baseline <logicalId>
+  local etag seeded
+  if ! etag="$(aws s3api get-object --bucket "${STATE_BUCKET}" --region "${REGION}" --key "${STATE_KEY}" \
+      --query 'ETag' --output text "${STRIP_FILE}" 2>/dev/null)" || [ -z "${etag}" ] || [ "${etag}" = "None" ]; then
+    echo "[verify] FAIL: could not read the root state document to seed a baseline" >&2
+    exit 1
+  fi
+  if ! python3 -c '
+import json, sys
+path, lid, sentinel = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    state = json.load(f)
+record = state["resources"][lid]
+if record.get("observedBaselineRefused") is not True or "observedProperties" in record:
+    sys.exit(f"{lid}: expected a marked record with no baseline before the seed")
+record["observedProperties"] = {"Value": sentinel}
+with open(path, "w") as f:
+    json.dump(state, f)
+' "${STRIP_FILE}" "$1" "${STALE_BASELINE_SENTINEL}"; then
+    echo "[verify] FAIL: could not seed a stale baseline on $1" >&2
+    exit 1
+  fi
+  if ! aws s3api put-object --bucket "${STATE_BUCKET}" --region "${REGION}" --key "${STATE_KEY}" \
+      --body "${STRIP_FILE}" --content-type application/json --if-match "${etag}" >/dev/null; then
+    echo "[verify] FAIL: the guarded baseline seed was refused or failed" >&2
+    exit 1
+  fi
+  # The seed LANDED: read back from S3, not from the local file.
+  seeded="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | grep -cF "${STALE_BASELINE_SENTINEL}" || true)"
+  if [ "${seeded}" != "1" ]; then
+    echo "[verify] FAIL: premise: the stale baseline did not land on $1 (sentinel lines: ${seeded:-none})" >&2
+    exit 1
+  fi
+  ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+}
+seed_stale_baseline RootPwParam
 # PREMISE: the source stack is gone, so this run cannot have deployed values.
 assert_gone "premise: the source CloudFormation stack still exists, so the re-import would HAVE a parameter source" \
   aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
@@ -634,8 +678,15 @@ if [ -z "${LAST_MODIFIED_3}" ] || [ "${LAST_MODIFIED_3}" = "${LAST_MODIFIED_2}" 
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 assert_record root-reimported "${ROOT_STATE_3}" SecretEnvFn refused
-# The rows the selective run left in place are untouched: still reason-less.
+# The rows the selective run left in place keep their marker (`marked` does not
+# read the reason); `RootPwParam`'s seeded stale baseline is DROPPED (issue #2872), which `marked`
+# checks as the absence of `observedProperties`.
 assert_record root-reimported "${ROOT_STATE_3}" RootPwParam marked
+if printf '%s' "${ROOT_STATE_3}" | grep -qF "${STALE_BASELINE_SENTINEL}"; then
+  echo "[verify] FAIL: the stale baseline seeded on the preserved, refused RootPwParam survived the re-import (issue #2872)" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 assert_record root-reimported "${ROOT_STATE_3}" RootStageParam captured
 if grep -qF "${SECRET_PLAINTEXT}" "${REIMPORT_LOG}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the re-import's --verbose output" >&2
@@ -692,9 +743,10 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # root + child before the redeploy, root before the re-import = 3 -> 46, plus
 # the child-state-rewritten proof = 47, plus the child function's 1 import
 # premise + 1 import verdict + 1 code sha + 1 live premise after the redeploy +
-# 1 redeploy verdict = 5 -> 52.
-if [ "${ASSERTIONS_RUN}" -lt 52 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN} of 52 assertions executed -- a block was skipped" >&2
+# 1 redeploy verdict = 5 -> 52, plus the stale-baseline seed premise + the
+# sentinel's absence after the re-import (issue #2872) = 2 -> 54.
+if [ "${ASSERTIONS_RUN}" -lt 54 ]; then
+  echo "FAIL: only ${ASSERTIONS_RUN} of 54 assertions executed -- a block was skipped" >&2
   exit 1
 fi
 echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462), with the refusal reason stripped as cdkd 0.290.35 wrote it (issue #3468); ${ASSERTIONS_RUN} assertions executed"
