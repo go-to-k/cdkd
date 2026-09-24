@@ -62,7 +62,7 @@ cross-region-concurrent-stacks	2026-09-23T22:38:00Z	PASS	192	verify.sh	rc ok, or
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
 cross-stack-cfn-fallback	2026-09-24T04:31:45Z	PASS	125	verify.sh	rc ok, orph clean (#3589)
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
-cross-stack-secret-import	2026-09-09T23:51:27Z	PASS	331	verify.sh	rc ok, 0 errors, 0 orphans, 0 surviving versions
+cross-stack-secret-import	2026-09-24T09:51:42Z	PASS	478	verify.sh	rc ok, orph clean (PR #3625)
 custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 custom-resource-provider	2026-09-05T23:03:46Z	PASS	750	verify.sh	PR2662 gate run; skip-arm then clean re-destroy 26 deleted 0 errors, 0 orphans
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
@@ -274,7 +274,7 @@ schema-v9-to-v10-migration	2026-09-24T08:13:18Z	PASS	160	verify.sh	rc ok, orph c
 sdk-ccapi-crossref	2026-09-19T20:26:58Z	PASS	104	verify.sh	rc ok, orph clean; CC side rebuilt on AWS::Events::Archive + a flag-seeded Lambda after the DesiredShardLevelMetrics premise rotted
 sdk-to-cc-autoroute	2026-09-24T08:00:23Z	PASS	156	verify.sh	rc ok, orph clean; #2648 step-0 EvaluationWindow premise guard
 secrets-array-nested	2026-09-24T09:09:49Z	PASS	300	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline
-secrets-dynamic-ref	2026-09-24T09:09:49Z	PASS	536	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline
+secrets-dynamic-ref	2026-09-24T09:51:42Z	PASS	546	verify.sh	rc ok, orph clean (PR #3625)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-14T04:47:25Z	PASS	74	verify.sh	rc ok, orph clean, 0 surviving versions (3068 lane: the new recipe's output accepted by the live service)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
