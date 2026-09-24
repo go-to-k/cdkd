@@ -216,7 +216,10 @@ function quotedSpans(reconstructed: string): Array<{ text: string; at: number }>
  */
 function isAssembledCommand(span: string): boolean {
   const chunks = span.split(HOLE);
-  if (chunks.length < 3) return false; // < 2 holes
+  // No early return on the hole COUNT: it would be subsumed. One hole gives
+  // `['', '']`, whose interior slice below is empty, so the space test already
+  // rejects it — and a line no mutant can red is a line that reads as a guard
+  // while guarding nothing. The space test is the single discriminator.
   // Separators only, AND at least one of them a SPACE. The space is what makes
   // this a command rather than a compound display value: argv words are
   // space-separated, while `'${containerId}:${workdir}'` — a real
@@ -313,6 +316,127 @@ export function scanSource(
   };
   ts.forEachChild(sf, visit);
   return { findings, spans, commandLiterals };
+}
+
+/**
+ * Floors, over the REAL tree, so a classifier that stopped matching cannot
+ * report "0 findings" and pass.
+ *
+ * Three of them, one per input SHAPE the parser claims to handle, because an
+ * aggregate floor hides one dead shape: `spansExamined` can stay high while the
+ * command-literal walk dies, and vice versa. Measured 2026-09-24 at 358 / 1532 /
+ * 1047; the floors sit well below so an ordinary deletion does not false-fire.
+ */
+export const FLOORS = { filesScanned: 300, spansExamined: 1200, commandLiteralsExamined: 800 } as const;
+
+/** One fixed source with a known verdict, analysed BEFORE the real tree. */
+export interface ProbeCase {
+  readonly label: string;
+  readonly source: string;
+  /** The shapes this source must produce, in any order. */
+  readonly expect: readonly PasteableShape[];
+}
+
+/**
+ * Sources with known verdicts, INCLUDING negatives.
+ *
+ * The floors above catch a collapse toward ZERO. These catch the opposite — a
+ * classifier that reports everything leaves every floor satisfied and the
+ * counts LARGER, so nothing else would see it. The majority are NEGATIVE on
+ * purpose, and each accept arm is paired with the near-miss that must not fire.
+ */
+export const SELF_PROBE_CASES: readonly ProbeCase[] = [
+  // --- quoted-command -------------------------------------------------------
+  {
+    label: 'a quoted cdkd command carrying an interpolation',
+    source: 'const m = `Run \'cdkd deploy ${name}\' to migrate it.`;',
+    expect: ['quoted-command'],
+  },
+  {
+    label: 'the same command UNWRAPPED on its own line is the remedy, not a defect',
+    source: 'const m = `Migrate with: cdkd deploy ${name}`;',
+    expect: [],
+  },
+  {
+    label: 'a quoted cdkd command with no interpolation is prose, not a hazard',
+    source: "const m = `Run 'cdkd state list --long' and act on the match.`;",
+    expect: [],
+  },
+  // --- quoted-interpolation -------------------------------------------------
+  {
+    label: "the hintFor shape: a span assembled from two holes",
+    source: 'const m = targets.map((t) => `\'${command} ${t}\'`);',
+    expect: ['quoted-interpolation'],
+  },
+  {
+    label: 'a gated command re-wrapped in quotes by hand',
+    source: 'const m = `\'${pasteableCommand(verb, args).command} ${suffix}\'`;',
+    expect: ['quoted-interpolation'],
+  },
+  {
+    label: 'ONE hole in quotes is a display value, not a command',
+    source: 'const m = `Stack \'${stackName}\' has no region.`;',
+    expect: [],
+  },
+  {
+    label: 'two holes joined by a colon is a display value, not a command',
+    source: 'const m = `docker cp into \'${containerId}:${workdir}\' failed`;',
+    expect: [],
+  },
+  // --- open-hole ------------------------------------------------------------
+  {
+    label: 'a bare hole with a flag after it',
+    source: 'const m = `Run cdkd force-unlock <stackName> --stack-region <region>`;',
+    expect: ['open-hole'],
+  },
+  {
+    label: 'a QUOTED hole with a flag after it is what commandHole emits',
+    source: "const m = `Run cdkd force-unlock '<stackName>' --stack-region '<region>'`;",
+    expect: [],
+  },
+  {
+    label: 'a bare hole ENDING the command is a syntax error, not a redirection',
+    source: 'const m = `Run cdkd force-unlock <stackName>`;',
+    expect: [],
+  },
+  {
+    label: 'a hole and a cdkd verb in different sentences are not one command',
+    source: 'const m = `Pass --state-bucket <name> (cdkd deploy uses the same bucket).`;',
+    expect: [],
+  },
+  {
+    // The same rule from the OTHER side, and the one the first draft left
+    // unpinned: here the verb comes FIRST and the hole follows a sentence end,
+    // so only the command's own TAIL bound rejects it. Removing that bound
+    // reddens nothing without this case (measured).
+    label: 'a hole AFTER the command sentence ends is not inside the command',
+    source: 'const m = `Run cdkd deploy MyStack. Then pass --resource <id> --force by hand.`;',
+    expect: [],
+  },
+];
+
+/**
+ * Run the self-probes.
+ *
+ * `CDKD_SELF_PROBE_FORCE_FAIL=1` is the seam proving the BINARY still consults
+ * them: the unit suite calls this directly, so `main()` dropping the call would
+ * otherwise be unobservable.
+ */
+export function runSelfProbes(): string[] {
+  const failures: string[] = [];
+  if (process.env['CDKD_SELF_PROBE_FORCE_FAIL'] === '1') {
+    failures.push('forced by CDKD_SELF_PROBE_FORCE_FAIL');
+  }
+  for (const probe of SELF_PROBE_CASES) {
+    const got = scanSource('probe.ts', probe.source)
+      .findings.map((f) => f.shape)
+      .sort();
+    const want = [...probe.expect].sort();
+    if (got.join(',') !== want.join(',')) {
+      failures.push(`${probe.label}: expected [${want.join(', ')}], got [${got.join(', ')}]`);
+    }
+  }
+  return failures;
 }
 
 /** Run the critic over a source root. */
