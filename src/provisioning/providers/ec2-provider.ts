@@ -6458,7 +6458,19 @@ export class EC2Provider implements ResourceProvider {
           const resp = await this.ec2Client.send(
             new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
           );
-          return resp.Subnets?.[0] ? { physicalId, attributes: {} } : null;
+          // Issue #3627: the same map `create()` records; the resolver's
+          // Subnet arm builds only `SubnetId`, so `AvailabilityZone` resolved
+          // to the subnet id.
+          const subnet = resp.Subnets?.[0];
+          return subnet
+            ? {
+                physicalId,
+                attributes: definedAttributes({
+                  SubnetId: physicalId,
+                  AvailabilityZone: subnet.AvailabilityZone,
+                }),
+              }
+            : null;
         }
         case 'AWS::EC2::SecurityGroup': {
           const resp = await this.ec2Client.send(

@@ -46,6 +46,7 @@ import {
   type TargetDescription,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
@@ -190,6 +191,45 @@ const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
 const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
   'routing.http.response.server.enabled': 'true',
 };
+
+/**
+ * The attribute map a load balancer records, shared by `create()` and
+ * `import()` (issue #3627).
+ */
+function loadBalancerAttributes(
+  lb: {
+    DNSName?: string | undefined;
+    CanonicalHostedZoneId?: string | undefined;
+    LoadBalancerName?: string | undefined;
+  },
+  lbArn: string
+): Record<string, unknown> {
+  return definedAttributes({
+    DNSName: lb.DNSName,
+    CanonicalHostedZoneID: lb.CanonicalHostedZoneId,
+    LoadBalancerArn: lbArn,
+    LoadBalancerFullName: lbArn.split('/').slice(1).join('/'),
+    LoadBalancerName: lb.LoadBalancerName,
+  });
+}
+
+/**
+ * The attribute map a target group records, shared by `create()`,
+ * `update()` and `import()` (issue #3627).
+ */
+function targetGroupAttributes(
+  tg: { TargetGroupName?: string | undefined },
+  tgArn: string
+): Record<string, unknown> {
+  return definedAttributes({
+    TargetGroupArn: tgArn,
+    // CloudFormation's value keeps the `targetgroup/` prefix
+    // (`targetgroup/<name>/<id>`), the form a CloudWatch `TargetGroup`
+    // dimension takes; the earlier `.replace('targetgroup/', '')` dropped it.
+    TargetGroupFullName: tgArn.split(':').pop(),
+    TargetGroupName: tg.TargetGroupName,
+  });
+}
 
 /**
  * AWS ELBv2 Provider
@@ -696,13 +736,7 @@ export class ELBv2Provider implements ResourceProvider {
 
       return {
         physicalId: lbArn,
-        attributes: {
-          DNSName: lb.DNSName,
-          CanonicalHostedZoneID: lb.CanonicalHostedZoneId,
-          LoadBalancerArn: lbArn,
-          LoadBalancerFullName: lbArn.split('/').slice(1).join('/'),
-          LoadBalancerName: lb.LoadBalancerName,
-        },
+        attributes: loadBalancerAttributes(lb, lbArn),
       };
     } catch (error) {
       // `cause` carries the ORIGINAL error untouched (issue #2063): the
@@ -1268,11 +1302,7 @@ export class ELBv2Provider implements ResourceProvider {
 
       return {
         physicalId: tgArn,
-        attributes: {
-          TargetGroupArn: tgArn,
-          TargetGroupFullName: tgArn.split(':').pop()?.replace('targetgroup/', ''),
-          TargetGroupName: tg.TargetGroupName,
-        },
+        attributes: targetGroupAttributes(tg, tgArn),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1507,11 +1537,7 @@ export class ELBv2Provider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
-          TargetGroupArn: physicalId,
-          TargetGroupFullName: physicalId.split(':').pop()?.replace('targetgroup/', ''),
-          TargetGroupName: tg?.TargetGroupName,
-        },
+        attributes: targetGroupAttributes(tg ?? {}, physicalId),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -2629,8 +2655,14 @@ export class ELBv2Provider implements ResourceProvider {
         const resp = await this.getClient().send(
           new DescribeLoadBalancersCommand({ LoadBalancerArns: [input.knownPhysicalId] })
         );
-        return resp.LoadBalancers?.[0]?.LoadBalancerArn
-          ? { physicalId: resp.LoadBalancers[0].LoadBalancerArn, attributes: {} }
+        // Issue #3627: the same map `create()` records; the resolver has no
+        // ELBv2 arm, so without it every attribute resolved to the ARN.
+        const lb = resp.LoadBalancers?.[0];
+        return lb?.LoadBalancerArn
+          ? {
+              physicalId: lb.LoadBalancerArn,
+              attributes: loadBalancerAttributes(lb, lb.LoadBalancerArn),
+            }
           : null;
       } catch (err) {
         if (this.isNotFoundError(err)) return null;
@@ -2654,8 +2686,13 @@ export class ELBv2Provider implements ResourceProvider {
         const resp = await this.getClient().send(
           new DescribeTargetGroupsCommand({ TargetGroupArns: [input.knownPhysicalId] })
         );
-        return resp.TargetGroups?.[0]?.TargetGroupArn
-          ? { physicalId: resp.TargetGroups[0].TargetGroupArn, attributes: {} }
+        // Issue #3627: the same map `create()` records.
+        const tg = resp.TargetGroups?.[0];
+        return tg?.TargetGroupArn
+          ? {
+              physicalId: tg.TargetGroupArn,
+              attributes: targetGroupAttributes(tg, tg.TargetGroupArn),
+            }
           : null;
       } catch (err) {
         if (this.isNotFoundError(err)) return null;

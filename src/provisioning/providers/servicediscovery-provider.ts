@@ -1782,8 +1782,19 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(new GetServiceCommand({ Id: input.knownPhysicalId }));
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        const resp = await this.getClient().send(
+          new GetServiceCommand({ Id: input.knownPhysicalId })
+        );
+        // Issue #3627: the same map `create()` records; the resolver's
+        // Service arm builds only `Arn` / `Id`, so `Name` resolved to the id.
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: definedAttributes({
+            Id: input.knownPhysicalId,
+            Arn: resp.Service?.Arn,
+            Name: resp.Service?.Name,
+          }),
+        };
       } catch (err) {
         if (err instanceof ServiceNotFound) return null;
         throw err;

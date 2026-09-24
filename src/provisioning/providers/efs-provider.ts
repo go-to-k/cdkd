@@ -34,6 +34,7 @@ import {
 } from '@aws-sdk/client-efs';
 import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -1655,7 +1656,18 @@ export class EFSProvider implements ResourceProvider {
           new DescribeAccessPointsCommand({ AccessPointId: input.knownPhysicalId })
         );
         const ap = resp.AccessPoints?.[0];
-        return ap?.AccessPointId ? { physicalId: ap.AccessPointId, attributes: {} } : null;
+        // Issue #3627: the same map `create()` records; the physical id is
+        // `fsap-...`, so without `Arn` the resolver's shape guard refused
+        // `Fn::GetAtt [AccessPoint, Arn]`.
+        return ap?.AccessPointId
+          ? {
+              physicalId: ap.AccessPointId,
+              attributes: definedAttributes({
+                Arn: ap.AccessPointArn,
+                AccessPointId: ap.AccessPointId,
+              }),
+            }
+          : null;
       } catch (err) {
         if (err instanceof AccessPointNotFound) return null;
         throw err;
