@@ -1076,6 +1076,7 @@
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
+        "import-migrate-vpc",
         "propagation-races-2",
         "remove-protection"
       ],
@@ -1088,6 +1089,9 @@
         ],
         "ec2-instance-fanout": [
           "l1"
+        ],
+        "import-migrate-vpc": [
+          "l2"
         ],
         "propagation-races-2": [
           "l1"
@@ -1132,6 +1136,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1243,6 +1248,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -1334,6 +1342,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1440,6 +1449,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -1498,10 +1510,14 @@
     {
       "resourceType": "AWS::EC2::NetworkAcl",
       "integs": [
-        "ec2-vpc"
+        "ec2-vpc",
+        "import-migrate-vpc"
       ],
       "signals": {
         "ec2-vpc": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ]
       }
@@ -1551,6 +1567,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1664,6 +1681,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -1758,6 +1778,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -1869,6 +1890,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [
@@ -2141,6 +2165,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "import-attribute-readback-network",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2253,6 +2278,9 @@
         "import-attribute-readback-network": [
           "l1"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2350,6 +2378,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2456,6 +2485,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2545,6 +2577,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "import-attribute-readback-network",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2670,6 +2703,9 @@
         "import-attribute-readback-network": [
           "l1"
         ],
+        "import-migrate-vpc": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2766,6 +2802,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2878,6 +2915,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "import-migrate-vpc": [
           "l2"
         ],
         "infra-security": [

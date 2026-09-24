@@ -6568,7 +6568,8 @@
           ],
           "seededBy": [
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "verifyExplicit"
           ]
         },
         {
@@ -6823,7 +6824,8 @@
           ],
           "seededBy": [
             "create",
-            "createVpcGatewayAttachment"
+            "createVpcGatewayAttachment",
+            "verifyExplicit"
           ]
         },
         {
@@ -6989,7 +6991,8 @@
           "seededBy": [
             "create",
             "createNetworkAclEntry",
-            "createSubnetNetworkAclAssociation"
+            "createSubnetNetworkAclAssociation",
+            "verifyExplicit"
           ]
         },
         {
@@ -7148,7 +7151,8 @@
           ],
           "seededBy": [
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "verifyExplicit"
           ]
         },
         {
@@ -7496,7 +7500,8 @@
             "createRouteTable",
             "createSecurityGroup",
             "createSubnet",
-            "createVpcGatewayAttachment"
+            "createVpcGatewayAttachment",
+            "verifyExplicit"
           ]
         },
         {
