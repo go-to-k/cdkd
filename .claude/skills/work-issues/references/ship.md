@@ -20,7 +20,9 @@ LANE'S WORKTREE. Never two lanes' integs or merges at once.
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
 `docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
-repo squash-merges, so flattening loses nothing:
+repo squash-merges, so flattening loses nothing. If the harness denies
+`git reset`, run the bare `git rebase origin/main` instead and fix up with NEW
+commits — safe while the ledger row is committed only AFTER the rebase:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit

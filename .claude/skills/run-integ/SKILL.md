@@ -95,10 +95,13 @@ verify, clean up.
                    # `> ""` is a loud failure that costs you the whole run
    bash verify.sh > "$LOG" 2>&1 &
    VPID=$!
-   ( sleep 1500; kill -9 $VPID 2>/dev/null; echo "WATCHDOG_FIRED" >> "$LOG" ) &
+   # 1500s in 5s polls that end on their own: NEVER kill the watchdog — a
+   # kill orphans its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
+   ( i=0; while [ $i -lt 300 ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
+     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 $VPID; } ) &
    WPID=$!
    wait "$VPID"; RC=$?
-   kill "$WPID" 2>/dev/null
+   wait "$WPID"   # at most 5s more
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
    echo "verify.sh rc=$RC"   # the verdict steps 6-11 read; nothing else carries it out
    ```
