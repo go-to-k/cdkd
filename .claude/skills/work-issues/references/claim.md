@@ -28,8 +28,9 @@ it and say so here; I will stand down."
 ```
 
 When the run ends before reaching one — or a lane never becomes RUNNABLE because
-another SESSION's open PR holds its file — **stand it down rather than leave the
-claim standing**: say it is unclaimed, carry the four classification fields, and
+an open PR holds the lines its fix needs (triage.md §2) — **stand it down rather
+than leave the claim standing**: say it is unclaimed, carry the four
+classification fields, and
 **when the blocker is EXTERNAL name the query that clears it**, passing it **via
 `--body-file`** (that query is BACKTICKED; `--body "..."` would execute it).
 
