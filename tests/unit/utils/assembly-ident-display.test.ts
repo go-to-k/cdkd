@@ -176,6 +176,25 @@ describe('the nested-template tree refusal', () => {
     expect(outside(escaping)).not.toContain('Contained and healthy');
   });
 
+  it('keeps a forging stack and tail id inside their own boundaries when the owner name is elided', () => {
+    // More than 8 hops: the owner is rendered as a head and a tail around
+    // cdkd's `...N more...` marker, each end with its own boundary.
+    const chain = Array.from({ length: 30 }, (_, i) => ({
+      logicalId: i === 29 ? FORGED : `L${i}`,
+      templatePath: `/out/t${i}.json`,
+    }));
+    chain.push({ logicalId: 'Closer', templatePath: '/out/t0.json' });
+
+    const text = renderNestedTemplateTreeDefect({ kind: 'cycle', chain }, FORGED, 'deploy');
+
+    const head = JSON.stringify(`${FORGED}~L0~L1~L2~L3`);
+    const tail = JSON.stringify(`L26~L27~L28~${FORGED}`);
+    expect(text).toContain(`(declared in stack ${head}~...22 more...~${tail})`);
+    expect(
+      [head, tail, SHOWN].reduce((t, v) => t.split(v).join(''), text)
+    ).not.toContain('Contained and healthy');
+  });
+
   it('renders ordinary identifiers bare', () => {
     const text = renderNestedTemplateTreeDefect(
       {
@@ -328,6 +347,12 @@ describe("an asset's display name and id in the containment subject", () => {
     expect(hostile).toContain(`File asset ${SHOWN} has source.path=`);
     expect(outside(hostile)).not.toContain('Contained and healthy');
     expect(run('MyStack/MyAsset')).toContain('File asset MyStack/MyAsset has source.path=');
+    // A display name is free-form construct-path text: a non-ASCII construct
+    // id stays READABLE (`displayAssemblyPath`), where `displayIdent` would
+    // blank every such character to a space.
+    expect(run('MyStack/\u8cc7\u7523')).toContain(
+      'File asset MyStack/\u8cc7\u7523 has source.path='
+    );
   });
 
   it('Docker asset: a forging id stays inside one boundary in the warning, an ordinary one is bare', () => {
