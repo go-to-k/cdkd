@@ -260,6 +260,20 @@ describe('pasteable-command shape fence — real code, not only fixtures', () =>
   });
 });
 
+describe('pasteable-command shape fence — the tree is CLEAN, and stays clean', () => {
+  it('reports ZERO findings across src/', () => {
+    // This is the assertion that makes the fence a fence rather than a report.
+    // Every site it found is fixed in this PR, so any new one reds here by
+    // name — which is the whole point of keying on a SHAPE: nobody has to know
+    // what the next author calls their gate.
+    const report = realTree();
+    expect(
+      report.findings.map((f) => `${f.file}:${f.line} ${f.shape} ${f.excerpt}`),
+      'a pasteable command in a prose quoted span, assembled from holes, or with a bare <hole> followed by words'
+    ).toEqual([]);
+  }, 60_000);
+});
+
 describe('pasteable-command shape fence — exemptions cannot go stale', () => {
   it('reports an exemption whose target no longer exists', () => {
     // An exemption outliving its target is how a fence goes quiet without

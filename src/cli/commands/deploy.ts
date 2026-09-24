@@ -16,6 +16,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
@@ -329,9 +330,17 @@ async function deployCommand(
       // path) — the lock TTL reclaims them automatically otherwise.
       process.stderr.write(
         '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run this for EACH stack it names ' +
-          '(the region-qualified form — see the message that run prints): ' +
-          'cdkd force-unlock <stackName> --stack-region <region>\n'
+          'If the next run reports a lock, run this for EACH stack it names, ' +
+          'in the region-qualified form — see the message that run prints.' +
+          // The holes are QUOTED, and on a labelled line of their own. A bare
+          // `<stackName>` is two shell redirections: `<stackName` reads stdin
+          // from a file and the `>` takes the next word as an output TARGET
+          // and creates it (measured on go-to-k/cdkd#3436). This one ends on
+          // its second hole, so bash refuses the line rather than running it —
+          // inert by where the command happens to stop, not by design, and one
+          // appended flag from being silent.
+          `\nRelease with: cdkd force-unlock ${commandHole('stackName')} ` +
+          `--stack-region ${commandHole('region')}\n`
       );
       process.exit(130);
     }

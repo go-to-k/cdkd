@@ -2073,7 +2073,7 @@ async function stateOrphanCommand(
   if (options.verbose) logger.setLevel('debug');
 
   if (stackArgs.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd state orphan <stack> [<stack>...]');
+    throw new Error('Stack name is required. Usage: cdkd state orphan <stacks...>');
   }
 
   const setup = await setupStateBackend(options);
@@ -2369,9 +2369,7 @@ async function stateDestroyCommand(
   setResolvedResourceTimeouts(options.resourceTimeout);
 
   if (!options.all && stackArgs.length === 0) {
-    throw new Error(
-      'Stack name is required. Usage: cdkd state destroy <stack> [<stack>...] | --all'
-    );
+    throw new Error('Stack name is required. Usage: cdkd state destroy [stacks...] | --all');
   }
 
   const setup = await setupStateBackend(options);
@@ -3367,7 +3365,7 @@ async function stateRefreshObservedCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      'Stack name is required. Usage: cdkd state refresh-observed <stack> [<stack>...] | --all'
+      'Stack name is required. Usage: cdkd state refresh-observed [stacks...] | --all'
     );
   }
 

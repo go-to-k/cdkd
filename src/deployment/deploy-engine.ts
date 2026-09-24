@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesSameResource,
@@ -2108,7 +2108,8 @@ export class DeployEngine {
         parts.push(
           `Re-import the record that HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
             `the command is withheld: that is not a plain CloudFormation logical id, so a pasted ` +
-            `'cdkd import <stack> --resource <id>=<physicalId> --force' could be reshaped by the ` +
+            `\`cdkd import ${commandHole('stack')} --resource ` +
+            `${commandHole('id')}=${commandHole('physicalId')} --force\` could be reshaped by the ` +
             `shell or name a different resource. Read the id from 'cdkd state show' and quote it ` +
             `yourself.`
         );

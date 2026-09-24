@@ -38,6 +38,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 
 /** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
 const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
@@ -1519,7 +1520,18 @@ export class S3TablesProvider implements ResourceProvider {
     const resourceArn = await this.lookupTableArn(tableBucketARN, namespace, name);
     if (!resourceArn) {
       throw new ProvisioningError(
-        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone or state is out-of-sync. Refusing to silently drop the tag update (run 'cdkd state orphan ${logicalId}' to clean up if the table was deleted out-of-band).`,
+        // The command is NOT inside the prose `'...'` span: an operator
+        // selects that span WITH its quotes, and a `logicalId` carrying `'`
+        // then closes the wrapper so the rest runs as shell (go-to-k/cdkd#3363
+        // measured it; go-to-k/cdkd#3436 owns the class). It goes on its own
+        // labelled line, built by the one gate, which names the id only when
+        // it renders exactly and prints a quoted hole otherwise.
+        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone ` +
+          `or state is out-of-sync. Refusing to silently drop the tag update. If the table was ` +
+          `deleted out-of-band, clean up the record with the command below.` +
+          `\nClean up with: ${
+            pasteableCommand('cdkd state orphan', [{ value: logicalId, hole: 'stack' }]).command
+          }`,
         resourceType,
         logicalId,
         physicalId

@@ -966,7 +966,14 @@ export function createDestroyCommand(): Command {
         'those keys survive and stay readable with GetObject and a VersionId. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
-        "Equivalent for an already-destroyed stack: 'cdkd events prune <stack> --all'.",
+        // `[stacks...]`, the spelling Commander itself prints for this
+        // argument, rather than `<stack>`. A bare `<stack>` followed by a flag
+        // is the redirection shape go-to-k/cdkd#3436 measured: pasted with a
+        // file named `stack` present, the `>` takes `--all` as an output
+        // TARGET and creates it, at exit 0. This is `--help` text, so it
+        // states the grammar rather than offering a command to run — which is
+        // why the fix is Commander's own rendering and not a quoted hole.
+        'Equivalent for an already-destroyed stack: cdkd events prune [stacks...] --all.',
       false
     )
     .action(withErrorHandling(destroyCommand));

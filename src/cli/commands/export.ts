@@ -2206,10 +2206,21 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
     `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +
     `next update. The mask is what 'cdkd import' writes for a Cloud Control model key it could ` +
     `not certify as read-only — every key when cloudformation:DescribeType was unavailable. ` +
-    `Re-deploying does NOT clear it. Repair the record with 'cdkd import <stack> --resource ` +
-    `${logicalId}=<physicalId> --force' after granting cloudformation:DescribeType, or export ` +
+    `Re-deploying does NOT clear it. Repair the record with the command below, after ` +
+    `granting cloudformation:DescribeType, or export ` +
     `the stack without this resource and adopt it into CloudFormation by hand. ` +
-    `See https://github.com/go-to-k/cdkd/issues/2932.`
+    `See https://github.com/go-to-k/cdkd/issues/2932.` +
+    // The command on its own labelled line, with the logical id gated. It used
+    // to sit inside the prose `'...'` span with `${logicalId}` interpolated
+    // ACROSS two concatenated literals — the go-to-k/cdkd#3363 shape, and the
+    // one case the shape fence classifies as `open-hole` rather than
+    // `quoted-command` because its recognizer reads one literal at a time.
+    `\nRepair with: ${
+      pasteableCommand('cdkd import', [
+        { value: logicalId, hole: 'stack' },
+        { flag: '--resource', hole: 'logicalId=physicalId' },
+      ]).command
+    } --force`
   );
 }
 
@@ -4364,7 +4375,8 @@ export async function buildImportPlan(
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
           'Repair the record that HOLDS the mask ' +
-          "('cdkd import <stack> --resource <logicalId>=<physicalId> --force', granting " +
+          `(\`cdkd import ${commandHole('stack')} --resource ` +
+          `${commandHole('logicalId')}=${commandHole('physicalId')} --force\`, granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
           'schema), then re-run whichever command wrote this property. Either way you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
@@ -7413,7 +7425,9 @@ export async function runPerStackImportLoop(args: {
             // The FULL template: omitting `--stack-region` drops the record for
             // that name in EVERY region, which is wider than this list
             // describes and is the widening `orphanCommandFor` refuses to emit.
-            `Recover with 'cdkd state orphan <stack> --stack-region <region>' per record.`
+            `Recover with the command below, once per record.` +
+            `\nRecover with: cdkd state orphan ${commandHole('stack')} ` +
+            `--stack-region ${commandHole('region')}`
         );
       }
 
