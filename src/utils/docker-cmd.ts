@@ -458,10 +458,14 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'PYTHONWARNINGS',
   'BROWSER',
   // CA bundles that Python's `requests` (gcloud keeps `trust_env` on) and
-  // gcloud's bundled httplib2 read: WHAT IT TRUSTS.
+  // gcloud's bundled httplib2 read: WHAT IT TRUSTS. `SSLKEYLOGFILE` is where
+  // urllib3 (gcloud's TLS context) and curl write the session keys, so the
+  // TLS of gcloud's refresh-token exchange becomes decryptable: the
+  // `AWS_ECR_CACHE_DIR` class.
   'REQUESTS_CA_BUNDLE',
   'CURL_CA_BUNDLE',
   'HTTPLIB2_CA_CERTS',
+  'SSLKEYLOGFILE',
   // Where gcloud fetches the operator's credentials on GCE: the metadata-server
   // twin of `AWS_EC2_METADATA_SERVICE_ENDPOINT` below. The rest of gcloud's
   // env surface is the `CLOUDSDK_` prefix family.
@@ -469,18 +473,23 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'GCE_METADATA_ROOT',
   'GCE_METADATA_IP',
   // Node: `NODE_OPTIONS` takes `--import=data:...`, which runs code with no file
-  // on disk; the other two decide which code and which CAs it trusts.
+  // on disk; the rest decide which code it loads (`NODE_COMPILE_CACHE` is
+  // V8 code cache it loads unverified, the `PYTHONPYCACHEPREFIX` class) and
+  // which CAs it trusts.
   'NODE_OPTIONS',
   'NODE_PATH',
+  'NODE_COMPILE_CACHE',
   'NODE_EXTRA_CA_CERTS',
   'NODE_TLS_REJECT_UNAUTHORIZED',
   // Ruby and Perl: `PERL5OPT=-d` plus `PERL5DB` runs code with no file on disk.
   // `GEM_PATH` / `GEM_HOME` are where RubyGems resolves a `require`, the
-  // `NODE_PATH` class.
+  // `NODE_PATH` class. `RUBYGEMS_GEMDEPS=-` makes older RubyGems evaluate a
+  // `Gemfile` found by walking up from the cwd, which is the CDK app's.
   'RUBYOPT',
   'RUBYLIB',
   'GEM_PATH',
   'GEM_HOME',
+  'RUBYGEMS_GEMDEPS',
   'PERL5OPT',
   'PERL5LIB',
   'PERLLIB',
@@ -657,8 +666,9 @@ const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
  * $CLOUDSDK_PYTHON_ARGS`. `BASH_FUNC_` is bash's exported-function family.
  * No plausible secret name collides with these, apart from the one listed in
  * {@link DOCKER_CLIENT_ENV_PREFIX_EXEMPTIONS}. Matched by prefix rather than
- * enumerated (issue #2183 review). `SSH_` was a prefix here and was demoted to an EXACT enumeration
- * in {@link DOCKER_CLIENT_ENV_KEYS} (#2186 review round 3): the family is not
+ * enumerated (issue #2183 review). `SSH_` was a prefix here and was demoted to
+ * an EXACT enumeration in {@link DOCKER_CLIENT_ENV_KEYS} (#2186 review round
+ * 3): the family is not
  * uniformly dangerous and is not growing, while the prefix broke realistic,
  * currently-working secrets (`SSH_PRIVATE_KEY`, GitLab CI's canonical
  * deploy-key spelling). Exported so the test fence can assert the EXACT
