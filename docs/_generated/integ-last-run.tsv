@@ -77,7 +77,7 @@ destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded
 destroy-interrupt	2026-09-21T12:33:50Z	PASS	373	verify.sh	rc ok, 15 deleted 0 errors, VPC/ENI/SG/role gone, orph clean (#3496: lambda-vpc-deps delete-dep edge keys)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-23T23:38:04Z	PASS	110	verify.sh	rc ok, orph clean (#1981 lane)
-docdb-neptune	2026-09-24T01:38:15Z	PASS	1485	verify.sh	rc ok, orph clean (#1981 lane)
+docdb-neptune	2026-09-24T13:59:58Z	PASS	1629	verify.sh	rc ok, orph clean; #3650 endpoint GetAtt 3e+3f, pre-fix FAILs all 8
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
 drift-revert	2026-09-24T09:09:49Z	PASS	175	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group
 drift-revert-arrays	2026-09-24T09:09:49Z	PASS	190	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group

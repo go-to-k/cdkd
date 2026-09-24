@@ -35,6 +35,58 @@ import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
+ * The attribute map a DocumentDB DB cluster records (issue #3650), under
+ * CloudFormation's `Fn::GetAtt` names (`Endpoint`, `Port`, `ReadEndpoint`,
+ * `ClusterResourceId`). The RDS-style dotted keys (`Endpoint.Address`, ...)
+ * are kept for records and readers that already use them; no
+ * `Fn::GetAtt` names them for this service, so on their own they left
+ * `Fn::GetAtt [Cluster, Endpoint]` resolving to the cluster identifier.
+ */
+function clusterAttributes(
+  cluster:
+    | {
+        Endpoint?: string | undefined;
+        Port?: number | undefined;
+        ReaderEndpoint?: string | undefined;
+        DBClusterArn?: string | undefined;
+        DbClusterResourceId?: string | undefined;
+      }
+    | undefined
+): Record<string, unknown> {
+  return definedAttributes({
+    Endpoint: cluster?.Endpoint,
+    Port: stringifyIfAssigned(cluster?.Port),
+    ReadEndpoint: cluster?.ReaderEndpoint,
+    'Endpoint.Address': cluster?.Endpoint,
+    'Endpoint.Port': stringifyIfAssigned(cluster?.Port),
+    'ReadEndpoint.Address': cluster?.ReaderEndpoint,
+    Arn: cluster?.DBClusterArn,
+    ClusterResourceId: cluster?.DbClusterResourceId,
+  });
+}
+
+/**
+ * The attribute map a DocumentDB DB instance records (issue #3650): `Endpoint` /
+ * `Port` are CloudFormation's `Fn::GetAtt` names, the dotted keys are kept.
+ */
+function instanceAttributes(
+  instance:
+    | {
+        Endpoint?: { Address?: string | undefined; Port?: number | undefined } | undefined;
+        DBInstanceArn?: string | undefined;
+      }
+    | undefined
+): Record<string, unknown> {
+  return definedAttributes({
+    Endpoint: instance?.Endpoint?.Address,
+    Port: stringifyIfAssigned(instance?.Endpoint?.Port),
+    'Endpoint.Address': instance?.Endpoint?.Address,
+    'Endpoint.Port': stringifyIfAssigned(instance?.Endpoint?.Port),
+    Arn: instance?.DBInstanceArn,
+  });
+}
+
+/**
  * AWS DocumentDB Provider
  *
  * Implements resource provisioning for DocumentDB resources:
@@ -422,13 +474,7 @@ export class DocDBProvider implements ResourceProvider {
 
       return {
         physicalId: dbClusterIdentifier,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
-          'ReadEndpoint.Address': described?.ReaderEndpoint,
-          Arn: described?.DBClusterArn,
-          ClusterResourceId: described?.DbClusterResourceId,
-        }),
+        attributes: clusterAttributes(described),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -532,13 +578,7 @@ export class DocDBProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
-          'ReadEndpoint.Address': described?.ReaderEndpoint,
-          Arn: described?.DBClusterArn,
-          ClusterResourceId: described?.DbClusterResourceId,
-        }),
+        attributes: clusterAttributes(described),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -681,11 +721,7 @@ export class DocDBProvider implements ResourceProvider {
 
       return {
         physicalId: dbInstanceIdentifier,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint?.Address,
-          'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-          Arn: described?.DBInstanceArn,
-        }),
+        attributes: instanceAttributes(described),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -746,11 +782,7 @@ export class DocDBProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint?.Address,
-          'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-          Arn: described?.DBInstanceArn,
-        }),
+        attributes: instanceAttributes(described),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1213,11 +1245,7 @@ export class DocDBProvider implements ResourceProvider {
         const described = resp.DBInstances?.[0];
         return {
           physicalId: explicit,
-          attributes: definedAttributes({
-            'Endpoint.Address': described?.Endpoint?.Address,
-            'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-            Arn: described?.DBInstanceArn,
-          }),
+          attributes: instanceAttributes(described),
         };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;
@@ -1234,10 +1262,11 @@ export class DocDBProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'DBClusterIdentifier');
     if (explicit) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeDBClustersCommand({ DBClusterIdentifier: explicit })
         );
-        return { physicalId: explicit, attributes: {} };
+        // Issue #3627: the same map `create()` records.
+        return { physicalId: explicit, attributes: clusterAttributes(resp.DBClusters?.[0]) };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBClusterNotFoundFault') return null;
         throw err;
