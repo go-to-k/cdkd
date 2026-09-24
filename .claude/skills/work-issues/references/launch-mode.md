@@ -116,3 +116,4 @@ it has exactly ONE working tree:
 | 7 | `main` is checked out in the main checkout, so the post-merge `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"`, and rebuild there too | §9 |
 | 8 | The retro branch is created in THIS tree, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not in §9's per-lane cleanup | §10-d |
 | 9 | Serial lanes SHARE this tree's `integ-destroy` marker, which is per-worktree, so lane 2 inherits lane 1's. Its `hash: diff` scope narrows that but does not close it, and a marker measured on lane 1's stack says nothing about lane 2's: run the integ per LANE | §8 |
+| 10 | Serial lanes SHARE ignored files too: a new fixture's `node_modules/` survives the branch switch, the directory with it, and `gen:all-matrices` counts a fixture the next lane's branch lacks — CI's regen check then fails. List untracked fixture dirs before regenerating (go-to-k/cdkd#3644) | §6 |
