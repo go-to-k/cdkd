@@ -4444,13 +4444,13 @@ export class IntrinsicFunctionResolver {
    * - `Object.hasOwn`, never a bare read (issue #2767): the logical id is
    *   template text, and a plain-object read walks the prototype chain.
    * - A record whose `physicalId` is not a string, or that is not an object at
-   *   all, is REFUSED here, above every reader (issue #3576). Nothing in `src/state/` checks the type, so a hand
-   *   edit or a foreign writer can leave a number, and the arms below call
-   *   `.startsWith` / `.replace` on it (a bare `TypeError`) or build an ARN
-   *   from it. cdkd never writes such a record, so no answer derived from it
-   *   is honest. `markNonRetryable`: the verdict is a function of the
-   *   persisted record, and the message carries a template-controlled id.
-   *   A NULL record keeps missing as before.
+   *   all, is REFUSED here, above every reader (issue #3576). Nothing in
+   *   `src/state/` checks the type, so a hand edit or a foreign writer can
+   *   leave a number, and the arms below call `.startsWith` / `.replace` on
+   *   it (a bare `TypeError`) or build an ARN from it. cdkd never writes such
+   *   a record, so no answer derived from it is honest. `markNonRetryable`:
+   *   the verdict is a function of the persisted record, and the message
+   *   carries a template-controlled id. A NULL record keeps missing as before.
    */
   private lookupResourceRecord(
     logicalId: string,
@@ -7874,8 +7874,7 @@ export class IntrinsicFunctionResolver {
         new IntrinsicResolutionRefusalError(
           `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
             `(a number, or its decimal string with no leading zero), got ${this.describeOperandShape(resolvedIndex, context)}. ` +
-            `CloudFormation rejects any other index too; use a literal, a Ref to a ` +
-            `parameter or an Fn::FindInMap that yields one.`
+            `Use a literal, a Ref to a parameter or an Fn::FindInMap that yields one.`
         )
       );
     }
@@ -7885,8 +7884,9 @@ export class IntrinsicFunctionResolver {
     if (!Array.isArray(resolvedList)) {
       // A plain `Error`, unlike the two refusals above, and deliberately left
       // so: the LIST is often a resolution product (`Fn::GetAtt`, a
-      // parameter), and a best-effort pass abandons a plain error and keeps the
-      // raw intrinsic, where a refusal class would fail the whole pass.
+      // parameter), and `cdkd scrub`'s per-key recovery abandons a plain error
+      // for that key alone, where a refusal class abandons the enclosing
+      // property.
       throw new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`);
     }
 

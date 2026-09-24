@@ -155,7 +155,7 @@ describe('every non-string id type is refused at the record read (#3576)', () =>
     ['string', 'vpc-0abc'],
     ['an array', [{ physicalId: 'vpc-0abc' }]],
   ])('a record that is not an object (%s) is refused as a RECORD, not as its id', async (got, record) => {
-    const outcome = await new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false })
+    const outcome: Outcome = await new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false })
       .resolve({ Ref: 'Thing' }, {
         template: { Resources: {} } as unknown as CloudFormationTemplate,
         resources: { Thing: record },
