@@ -347,10 +347,16 @@ So when `CDK_DOCKER` names finch on macOS or Windows:
   `cdkd local invoke-agentcore` applies the same refusal to a
   decrypted SecureString, before its container starts.
 - **`cdkd local start-service` and `cdkd local start-alb` apply the same
-  refusal and warning**, checked for each service when its first replica
-  boots. The shared network and metadata sidecar already exist then, and with
-  several targets the services booted before the refused one are already
-  running; the run then exits and tears everything down.
+  refusal and warning.** An ALB's Lambda targets are checked when they boot,
+  before any service, for a decrypted SecureString; each service is checked
+  when its first replica boots. The shared network and metadata sidecar
+  already exist then, and with several targets the ones booted before the
+  refused one are already running; at start-up the run then exits and tears
+  everything down, while a refusal during a `--watch` rebuild is logged and
+  the run keeps going.
+- **`cdkd local start-agentcore` and `cdkd local start-cloudfront`** (its
+  Lambda Function URL origins) refuse a decrypted SecureString the same way,
+  before the container starts.
 - **The AWS credentials cdkd hands a container** (and the metadata-endpoint
   sidecar) are still forwarded, with a warning naming the variables but not
   their values. Forwarding them is what puts them on that command line, which
