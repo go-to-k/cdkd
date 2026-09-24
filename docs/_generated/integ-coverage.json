@@ -282,6 +282,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "cc-api-fallback",
+        "cc-api-fallback-transitions",
         "drift-revert",
         "export",
         "local-start-api",
@@ -296,6 +297,10 @@
           "literal"
         ],
         "cc-api-fallback": [
+          "l1",
+          "literal"
+        ],
+        "cc-api-fallback-transitions": [
           "l1",
           "literal"
         ],
@@ -3685,7 +3690,6 @@
         "appsync",
         "batch",
         "cc-api-fallback",
-        "cc-api-fallback-transitions",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "ci-cd",
@@ -3771,9 +3775,6 @@
           "l2"
         ],
         "cc-api-fallback": [
-          "l2"
-        ],
-        "cc-api-fallback-transitions": [
           "l2"
         ],
         "cc-getatt-readback": [
@@ -4209,7 +4210,6 @@
         "bench-cdk-sample",
         "bootstrap-free-region",
         "cache-streaming",
-        "cc-api-fallback-transitions",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
@@ -4342,10 +4342,6 @@
         ],
         "cache-streaming": [
           "l2"
-        ],
-        "cc-api-fallback-transitions": [
-          "l1",
-          "literal"
         ],
         "cloudfront-function-url": [
           "l2"

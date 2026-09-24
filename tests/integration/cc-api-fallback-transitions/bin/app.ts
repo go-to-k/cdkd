@@ -11,5 +11,5 @@ new OverrideStack(app, 'CdkdCcApiOverride', {
 
 new UpdateTransitionStack(app, 'CdkdCcApiTransition', {
   description:
-    'cdkd #634 item 4 — SDK→CC mid-life re-route integ probe (toggled via CDKD_INTEG_USE_LOGGING_CONFIG env var)',
+    'cdkd #634 item 4 — SDK→CC mid-life re-route integ probe (toggled via CDKD_INTEG_USE_SILENT_DROP env var)',
 });
