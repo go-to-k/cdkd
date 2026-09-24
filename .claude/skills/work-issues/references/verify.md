@@ -120,10 +120,10 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 
 ### 8-h. Reviewer findings are inputs, not verdicts
 
-- **A NIT is not a work item** — fix what a reviewer DEMONSTRATES is wrong, and
-  WITHDRAW an addition whose part keeps producing blockers. A suggested FIX can
-  be wrong when its finding is right: check the PREMISE, and record a decline
-  in the PR body.
+- **Fix what a reviewer DEMONSTRATES, nits included** — "pre-existing" or "not
+  a regression" is no decline in a file the PR holds (go-to-k/cdkd#3640); WITHDRAW
+  an addition whose part keeps producing blockers. A right finding can carry a
+  wrong FIX: check the PREMISE, and record a decline in the PR body.
 
 ### 8-i. Fresh deploys, and who verifies what
 
