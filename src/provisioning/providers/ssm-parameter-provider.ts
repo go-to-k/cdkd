@@ -12,6 +12,7 @@ import {
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -190,7 +191,7 @@ export class SSMParameterProvider implements ResourceProvider {
     } catch (error) {
       this.logger.warn(
         mask(
-          `Could not build the Arn attribute for SSM parameter ${name}: ` +
+          `Could not build the Arn attribute for SSM parameter ${displaySafe(mask(name))}: ` +
             `${describeAwsFailure(error).detail}. The parameter itself is ` +
             `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
             `deploy records it.`
@@ -226,7 +227,7 @@ export class SSMParameterProvider implements ResourceProvider {
       this.logger.warn(
         mask(
           `Cannot determine the AWS account (STS is unreachable, and the resolved account id is ` +
-            `a placeholder), so the Arn attribute for SSM parameter ${name} would be fabricated ` +
+            `a placeholder), so the Arn attribute for SSM parameter ${displaySafe(mask(name))} would be fabricated ` +
             `and is NOT recorded. An Fn::GetAtt on it will fail until a later deploy resolves ` +
             `the account.`
         )
@@ -289,7 +290,7 @@ export class SSMParameterProvider implements ResourceProvider {
     const mask = maskerOrIdentity(context?.maskSecrets);
     const warn = (message: string): void => this.logger.warn(mask(message));
     const debug = (message: string): void => this.logger.debug(mask(message));
-    debug(`Creating SSM parameter ${logicalId}`);
+    debug(`Creating SSM parameter ${displaySafe(logicalId)}`);
 
     const name =
       (properties['Name'] as string | undefined) ||
@@ -299,7 +300,7 @@ export class SSMParameterProvider implements ResourceProvider {
 
     if (!value) {
       throw new ProvisioningError(
-        `Value is required for SSM parameter ${logicalId}`,
+        `Value is required for SSM parameter ${displaySafe(logicalId)}`,
         resourceType,
         logicalId
       );
@@ -353,7 +354,7 @@ export class SSMParameterProvider implements ResourceProvider {
         try {
           await this.ssmClient.send(new DeleteParameterCommand({ Name: name }));
           debug(
-            `Cleaned up partially-created SSM parameter ${logicalId} (${name}) after wiring failure`
+            `Cleaned up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}) after wiring failure`
           );
         } catch (cleanupError) {
           // The SSM twin of the issue #2669 remedy (issue #3136): a pasteable
@@ -364,11 +365,11 @@ export class SSMParameterProvider implements ResourceProvider {
           // `error.message`, not this.) Rendered through the shared sanitize /
           // shell-quote / SUPPRESS, so the COMMAND never carries either raw,
           // and no command is shown at all when sanitizing CHANGED the name
-          // (it would act on a DIFFERENT parameter). The prose `(${name})`
-          // beside it is still interpolated as-is: this line takes only the
-          // pasteable half, and display-sanitizing the PROSE of provider
-          // warnings is tracked as issue
-          // [#3269](https://github.com/go-to-k/cdkd/issues/3269).
+          // (it would act on a DIFFERENT parameter). The PROSE copy of the
+          // name beside it goes through `displaySafe` (issue
+          // [#3269](https://github.com/go-to-k/cdkd/issues/3269)), masked
+          // FIRST: `displaySafe` rewrites characters, so a secret carrying
+          // one would no longer OCCUR literally for the message-level mask.
           //
           // `maskSecrets` is threaded, and is not decoration: `mask` below is
           // a message-level masker matching by LITERAL occurrence, and
@@ -387,13 +388,15 @@ export class SSMParameterProvider implements ResourceProvider {
               'parameter name cannot be reproduced safely on a command line, and a command ' +
               'naming the sanitized form would delete a DIFFERENT parameter.';
           warn(
-            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
+            `Failed to clean up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
           );
         }
         throw innerError;
       }
 
-      debug(`Successfully created SSM parameter ${logicalId}: ${name}`);
+      debug(
+        `Successfully created SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(name))}`
+      );
 
       // Built AFTER the cleanup-guarded wiring block on purpose (issue #1824):
       // a failure here must NOT trigger the best-effort `DeleteParameter` above,
@@ -426,7 +429,7 @@ export class SSMParameterProvider implements ResourceProvider {
         // secret is NOT covered here. It is masked before interpolation anyway
         // so the engine is not the only boundary. The `cause` is left alone so
         // the retry classifiers still see the original error object.
-        `Failed to create SSM parameter ${logicalId}: ${mask(
+        `Failed to create SSM parameter ${displaySafe(logicalId)}: ${mask(
           error instanceof Error ? error.message : String(error)
         )}`,
         resourceType,
@@ -452,14 +455,14 @@ export class SSMParameterProvider implements ResourceProvider {
     // per call site.
     const mask = maskerOrIdentity(context?.maskSecrets);
     const debug = (message: string): void => this.logger.debug(mask(message));
-    debug(`Updating SSM parameter ${logicalId}: ${physicalId}`);
+    debug(`Updating SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(physicalId))}`);
 
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
 
     if (!value) {
       throw new ProvisioningError(
-        `Value is required for SSM parameter ${logicalId}`,
+        `Value is required for SSM parameter ${displaySafe(logicalId)}`,
         resourceType,
         logicalId,
         physicalId
@@ -529,10 +532,10 @@ export class SSMParameterProvider implements ResourceProvider {
             })
           );
         }
-        debug(`Updated tags for SSM parameter ${physicalId}`);
+        debug(`Updated tags for SSM parameter ${displaySafe(mask(physicalId))}`);
       }
 
-      debug(`Successfully updated SSM parameter ${logicalId}`);
+      debug(`Successfully updated SSM parameter ${displaySafe(logicalId)}`);
 
       // Re-report `Arn` here even though an in-place update cannot change it
       // (issue #1824): an update result's `attributes` REPLACE the state
@@ -567,7 +570,7 @@ export class SSMParameterProvider implements ResourceProvider {
         // secret is NOT covered here. It is masked before interpolation anyway
         // so the engine is not the only boundary. The `cause` is left alone so
         // the retry classifiers still see the original error object.
-        `Failed to update SSM parameter ${logicalId}: ${mask(
+        `Failed to update SSM parameter ${displaySafe(logicalId)}: ${mask(
           error instanceof Error ? error.message : String(error)
         )}`,
         resourceType,
@@ -588,7 +591,9 @@ export class SSMParameterProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting SSM parameter ${logicalId}: ${physicalId}`);
+    this.logger.debug(
+      `Deleting SSM parameter ${displaySafe(logicalId)}: ${displaySafe(physicalId)}`
+    );
 
     try {
       await this.ssmClient.send(
@@ -597,7 +602,7 @@ export class SSMParameterProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully deleted SSM parameter ${logicalId}`);
+      this.logger.debug(`Successfully deleted SSM parameter ${displaySafe(logicalId)}`);
     } catch (error) {
       if (error instanceof ParameterNotFound) {
         const clientRegion = await this.ssmClient.config.region();
@@ -608,13 +613,13 @@ export class SSMParameterProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Parameter ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`Parameter ${displaySafe(physicalId)} does not exist, skipping deletion`);
         return;
       }
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SSM parameter ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete SSM parameter ${displaySafe(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -834,10 +839,9 @@ export class SSMParameterProvider implements ResourceProvider {
         ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
         'safely on a command line, so any command shown here would read a different parameter.';
     throw new ProvisioningError(
-      // The `('${explicit}')` clause is PROSE, not a pasteable span, and stays
-      // as it is — see the create-path note above for why that half is a
-      // separate class.
-      `Cannot adopt SSM parameter ${input.logicalId} from ${shape} ('${explicit}'): cdkd records ` +
+      // The quoted `explicit` clause is PROSE, not a pasteable span, so it is
+      // display-sanitized in place rather than suppressed (issue #3269).
+      `Cannot adopt SSM parameter ${displaySafe(input.logicalId)} from ${shape} ('${displaySafe(explicit)}'): cdkd records ` +
         `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
         `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
         `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +
