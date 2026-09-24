@@ -358,7 +358,11 @@ describe('SNSTopicProvider import (name-based lookup)', () => {
     const provider = new SNSTopicProvider();
     const result = await provider.import(importInput({ knownPhysicalId: TOPIC_ARN }));
 
-    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    // Issue #3627: the same map `create()` records.
+    expect(result).toStrictEqual({
+      physicalId: TOPIC_ARN,
+      attributes: { TopicArn: TOPIC_ARN, TopicName: 'my-topic' },
+    });
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetTopicAttributesCommand');
   });
@@ -376,7 +380,11 @@ describe('SNSTopicProvider import (name-based lookup)', () => {
       importInput({ properties: { TopicName: 'my-topic' } })
     );
 
-    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    // Issue #3627: the same map `create()` records.
+    expect(result).toStrictEqual({
+      physicalId: TOPIC_ARN,
+      attributes: { TopicArn: TOPIC_ARN, TopicName: 'my-topic' },
+    });
     // ListTopics only — no per-candidate tag read.
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListTopicsCommand');
@@ -395,7 +403,11 @@ describe('SNSTopicProvider import (name-based lookup)', () => {
       importInput({ properties: { TopicName: 'my-topic' } })
     );
 
-    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    // Issue #3627: the same map `create()` records.
+    expect(result).toStrictEqual({
+      physicalId: TOPIC_ARN,
+      attributes: { TopicArn: TOPIC_ARN, TopicName: 'my-topic' },
+    });
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(mockSend.mock.calls[0][0].input.NextToken).toBeUndefined();
     expect(mockSend.mock.calls[1][0].input.NextToken).toBe('page-2');

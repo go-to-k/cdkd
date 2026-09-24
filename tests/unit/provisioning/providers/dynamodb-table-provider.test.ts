@@ -1050,11 +1050,40 @@ describe('DynamoDBTableProvider import', () => {
   });
 
   it('verifies an explicit TableName override via DescribeTable', async () => {
+    mockSend.mockResolvedValueOnce(
+      activeTable({ LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/s' })
+    );
+    const provider = new DynamoDBTableProvider();
+    const result = await provider.import(importInput({ knownPhysicalId: 'MyTable' }));
+    // Issue #3627: the same map `create()` records, so `StreamArn` resolves
+    // after an import (the resolver's arm returns `undefined` without it).
+    expect(result).toStrictEqual({
+      physicalId: 'MyTable',
+      attributes: {
+        Arn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable',
+        TableId: 'id-1',
+        StreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/s',
+        TableName: 'MyTable',
+      },
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the table NAME when the override is the table ARN', async () => {
+    // DescribeTable accepts an ARN; the recorded `TableName` must still be the name.
+    mockSend.mockResolvedValueOnce(activeTable({ TableName: 'MyTable' }));
+    const provider = new DynamoDBTableProvider();
+    const result = await provider.import(
+      importInput({ knownPhysicalId: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable' })
+    );
+    expect(result?.attributes).toMatchObject({ TableName: 'MyTable' });
+  });
+
+  it('omits StreamArn for a table with no stream', async () => {
     mockSend.mockResolvedValueOnce(activeTable());
     const provider = new DynamoDBTableProvider();
     const result = await provider.import(importInput({ knownPhysicalId: 'MyTable' }));
-    expect(result).toEqual({ physicalId: 'MyTable', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(result?.attributes).not.toHaveProperty('StreamArn');
   });
 
   it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {

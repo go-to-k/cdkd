@@ -11,6 +11,7 @@ import {
   type EventSourcePosition,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -986,11 +987,26 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * `--resource <logicalId>=<UUID>` (matching the physical id format
    * returned by `create()`).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+    if (!input.knownPhysicalId) return null;
+    // Issue #3627: read back `EventSourceMappingArn`, which `create()` records
+    // and the resolver cannot build from the UUID, so a sibling's
+    // `Fn::GetAtt [Esm, EventSourceMappingArn]` resolves after an import.
+    let resp;
+    try {
+      resp = await this.lambdaClient.send(
+        new GetEventSourceMappingCommand({ UUID: input.knownPhysicalId })
+      );
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return null;
+      throw err;
     }
-    return null;
+    return {
+      physicalId: input.knownPhysicalId,
+      attributes: definedAttributes({
+        Id: input.knownPhysicalId,
+        EventSourceMappingArn: resp.EventSourceMappingArn,
+      }),
+    };
   }
 }

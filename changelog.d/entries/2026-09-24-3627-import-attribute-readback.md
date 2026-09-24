@@ -1,0 +1,8 @@
+- **`cdkd import` now records the attributes `create()` records for `AWS::SNS::Topic`, `AWS::DynamoDB::Table` / `GlobalTable`, `AWS::IAM::Role` and `AWS::Lambda::EventSourceMapping` (issue [#3627](https://github.com/go-to-k/cdkd/issues/3627))** -- `src/provisioning/providers/{sns-topic,dynamodb-table,dynamodb-globaltable,iam-role,lambda-eventsource}-provider.ts`, `src/deployment/intrinsic-function-resolver.ts`, their unit tests, and the new `tests/integration/import-attribute-readback/` fixture. These types' `import()` returned no attributes, and the resolver could not produce them from the physical id. After `cdkd import`, a sibling's `Fn::GetAtt` got one of these results:
+  - **SNS `TopicName`**: the topic ARN, with no warning. The physical id is the ARN, which the resolver read as a name.
+  - **SNS `TopicArn`**: a doubled ARN, with no warning. Same cause.
+  - **DynamoDB `StreamArn`, IAM Role `RoleId`**: `undefined`.
+  - **IAM Role `Arn`**: an ARN with a non-`/` `Path` dropped.
+  - **Event source mapping `EventSourceMappingArn`**: a refusal.
+
+  Each `import()` now reads these attributes back, and drops any member AWS does not report. A record imported before this fix heals on the next `cdkd deploy` for the event source mapping, through the deploy-time stale-attribute heal ([#1852](https://github.com/go-to-k/cdkd/issues/1852)), and for SNS, through the resolver change below. It does not heal for the DynamoDB `StreamArn`, IAM `RoleId` or path-bearing IAM `Arn` rows: their resolver arms answer before the heal runs. Re-import those resources ([#3627](https://github.com/go-to-k/cdkd/issues/3627) tracks it). The resolver's SNS arms now treat an ARN physical id as the ARN. Importing an event source mapping now needs `lambda:GetEventSourceMapping`.

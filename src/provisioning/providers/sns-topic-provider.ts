@@ -48,6 +48,14 @@ import type {
 export const SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT = '262144';
 
 /**
+ * The attribute map `create()` records, from the topic ARN (the physical id).
+ * `import()` returns it too (issue #3627).
+ */
+function snsTopicAttributes(topicArn: string): Record<string, unknown> {
+  return { TopicArn: topicArn, TopicName: topicArn.split(':').pop() };
+}
+
+/**
  * AWS SNS Topic Provider
  *
  * Implements resource provisioning for AWS::SNS::Topic using the SNS SDK.
@@ -952,7 +960,14 @@ export class SNSTopicProvider implements ResourceProvider {
         await this.snsClient.send(
           new GetTopicAttributesCommand({ TopicArn: input.knownPhysicalId })
         );
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        // Issue #3627: the same map `create()` records. The resolver's
+        // `TopicArn` / `TopicName` arms read the physical id as a NAME, but it
+        // is the ARN, so without these an imported topic served a doubled ARN
+        // and an ARN as its name, silently.
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: snsTopicAttributes(input.knownPhysicalId),
+        };
       } catch (err) {
         if (err instanceof NotFoundException) return null;
         throw err;
@@ -976,7 +991,7 @@ export class SNSTopicProvider implements ResourceProvider {
         if (!t.TopicArn) continue;
         const arnTail = t.TopicArn.substring(t.TopicArn.lastIndexOf(':') + 1);
         if (arnTail === desiredName) {
-          return { physicalId: t.TopicArn, attributes: {} };
+          return { physicalId: t.TopicArn, attributes: snsTopicAttributes(t.TopicArn) };
         }
       }
       marker = list.NextToken;

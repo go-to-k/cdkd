@@ -22,6 +22,7 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -1030,8 +1031,14 @@ export class IAMRoleProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'RoleName');
     if (explicit) {
       try {
-        await this.iamClient.send(new GetRoleCommand({ RoleName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: explicit }));
+        // Issue #3627: the same map `create()` records. The resolver's
+        // `RoleId` arm returns `undefined` without it, and its `Arn` arm
+        // ignores a non-`/` `Path`.
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({ Arn: resp.Role?.Arn, RoleId: resp.Role?.RoleId }),
+        };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;
         throw err;
