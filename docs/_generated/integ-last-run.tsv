@@ -198,7 +198,7 @@ local-invoke-ruby	2026-09-24T13:22:19Z	PASS	50	verify.sh	rc ok, docker clean, aw
 local-run-task	2026-09-24T15:24:57Z	PASS	15	verify.sh	rc ok, docker clean (#3658)
 local-run-task-awsvpc	2026-09-24T13:17:26Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-run-task-cdkd-assets	2026-09-24T13:17:11Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-run-task-from-state	2026-09-24T14:14:22Z	PASS	190	verify.sh	rc ok, destroy 0 errors, state versions swept; #1855 PR 3651 final (rebased on cdk-local 0.149.3): dual-stack + FIPS pull arms green; DOCKER_CONFIG seeded-auths override
+local-run-task-from-state	2026-09-24T16:58:28Z	PASS	197	verify.sh	rc ok, destroy 0 errors, state versions swept; #3670 PR 3673 final (login always to pull host, partition-scoped forms, region-shape guard): dual-stack + FIPS pull arms green; DOCKER_CONFIG seeded-auths override
 local-run-task-multi-container	2026-09-24T13:17:42Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-start-agentcore	2026-09-24T15:26:58Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb	2026-09-24T15:27:48Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)

@@ -840,11 +840,12 @@ describe('pullEcrImage', () => {
     expect(assumeRoleCalls).toHaveLength(2);
   });
 
-  // ---------- docker login endpoint fallback (issue #1758) ----------
+  // ---------- docker login endpoint partition suffix (issue #1758) ----------
   // `ecrLogin` is private and only reachable through `pullEcrImage` — the
   // entry point every production caller uses (`ecs-task-runner`,
-  // `local invoke`, `local start-api`, `local invoke-agentcore`). The fallback
-  // fires only when AWS reports no `proxyEndpoint`, so each case omits it.
+  // `local invoke`, `local start-api`, `local invoke-agentcore`). The login
+  // endpoint is the pull host (issue #3670), whose suffix the parse paired
+  // with the region; these cases omit `proxyEndpoint`, which is never used.
 
   const loginEndpointOf = (): string => {
     const loginCall = runDockerMock.mock.calls.find(
@@ -854,7 +855,7 @@ describe('pullEcrImage', () => {
     return (loginCall![0] as string[])[4]!;
   };
 
-  it('login endpoint fallback derives the URL suffix from the image region (aws-cn)', async () => {
+  it('login endpoint carries the image region\'s URL suffix (aws-cn)', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
@@ -866,7 +867,7 @@ describe('pullEcrImage', () => {
     expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn');
   });
 
-  it('login endpoint fallback stays byte-identical in the commercial partition', async () => {
+  it('login endpoint stays byte-identical in the commercial partition', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
@@ -876,7 +877,7 @@ describe('pullEcrImage', () => {
     expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.us-east-1.amazonaws.com');
   });
 
-  it('login endpoint fallback derives the URL suffix in us-iso too', async () => {
+  it('login endpoint carries the URL suffix in us-iso too', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
@@ -886,18 +887,17 @@ describe('pullEcrImage', () => {
     expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.us-iso-east-1.c2s.ic.gov');
   });
 
-  it('an AWS-reported proxyEndpoint still wins over the derived fallback', async () => {
+  it('an AWS-reported VPC-endpoint proxyEndpoint is IGNORED: login targets the pull host (#3670)', async () => {
+    // Replaces the #1758-era pin that the reported `proxyEndpoint` wins. The
+    // login must name the host `docker pull` targets, or docker sends the pull
+    // no credentials; `proxyEndpoint` names the caller's default registry, not
+    // the pull host. It is set to a host the pull does NOT target, so a
+    // regression back to preferring it is observable.
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [
         {
           authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
-          // Deliberately NOT what the derived fallback would compute for this
-          // region — a VPC-endpoint host. The obvious fixture reports the same
-          // string the fallback derives, so the two candidates COINCIDE and the
-          // test cannot tell which one won: deleting `authData.proxyEndpoint ||`
-          // outright passes it. Making them differ is what fences the
-          // precedence.
           proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.cn-north-1.vpce.amazonaws.com.cn',
         },
       ],
@@ -906,7 +906,7 @@ describe('pullEcrImage', () => {
     await pullEcrImage('111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t', {
       skipPull: false,
     });
-    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.cn-north-1.vpce.amazonaws.com.cn');
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn');
   });
 
   it('the STS caches are keyed on the CANONICAL region, so a case flip does not re-issue', async () => {
@@ -986,8 +986,7 @@ describe('pullEcrImage', () => {
   it('mixed-case host: the login endpoint and the pull reference name the SAME host', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
-      // No proxyEndpoint, so the login endpoint is the DERIVED one — the
-      // spelling this fix has to keep in step with the pull reference.
+      // No proxyEndpoint; the login endpoint is the pull host either way.
       authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
     });
     process.env['AWS_REGION'] = 'us-east-1';
@@ -1009,9 +1008,8 @@ describe('pullEcrImage', () => {
 
   it('mixed-case host WITH an AWS-reported proxyEndpoint: login and pull still agree', async () => {
     // Real ECR ALWAYS returns `proxyEndpoint`, so this is the production-
-    // dominant arm — the derived-fallback test above only fires when AWS
-    // reports none. AWS reports the endpoint lower-cased, so the fold on the
-    // pull side is what makes the two agree here.
+    // dominant shape. It is not used for the login (issue #3670); the fold on
+    // the pull side is what makes the login and pull hosts agree.
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [
@@ -1033,11 +1031,9 @@ describe('pullEcrImage', () => {
     expect(result).toBe(pullRef);
   });
 
-  it('a VPC-endpoint proxyEndpoint still wins for a mixed-case input', async () => {
-    // The paired NON-agreement case, so the test above cannot be read as "the
-    // login host is always the pull host". AWS names the endpoint its own token
-    // authenticates; when that is a VPC endpoint it legitimately differs from
-    // the registry host, and cdkd must not rewrite it.
+  it('a VPC-endpoint proxyEndpoint is ignored for a mixed-case input too (#3670)', async () => {
+    // Replaces the #1801-era "VPC endpoint still wins" pin. Login and pull now
+    // agree on the FOLDED pull host even when AWS reports a different endpoint.
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [
@@ -1051,7 +1047,7 @@ describe('pullEcrImage', () => {
 
     await pullEcrImage('111111111111.dkr.ecr.US-EAST-1.amazonaws.com/r:t', { skipPull: false });
 
-    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com');
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.us-east-1.amazonaws.com');
     expect(pullRefOf()).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
   });
 
@@ -1192,24 +1188,29 @@ describe('pullEcrImage', () => {
     }
   );
 
-  it('the plain form keeps the proxyEndpoint beside a non-plain case (negative control)', async () => {
-    // The same fixture as the table-driven cases, with only the host form
-    // changed: a fix that ignored `proxyEndpoint` for EVERY form would pass
-    // those, and this one pins that the plain form is byte-identical.
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+  it('a cross-account PLAIN pull on the caller\'s credentials logs in to the pull host (#3670)', async () => {
+    // The #3670 defect. `GetAuthorizationToken({})` sends no `registryIds`, so
+    // its `proxyEndpoint` names the CALLER's registry (222222222222 here). The
+    // image is in 999999999999, granted by a repository policy, with no
+    // `--ecr-role-arn`. Logging in to the caller's host left the pull with no
+    // credentials, while the FIPS / dual-stack forms of the same pull worked.
+    stsSendMock.mockResolvedValue({ Account: '222222222222' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [
         {
           authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
-          proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com',
+          proxyEndpoint: 'https://222222222222.dkr.ecr.us-east-1.amazonaws.com',
         },
       ],
     });
     process.env['AWS_REGION'] = 'us-east-1';
 
-    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false });
 
-    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com');
+    // No AssumeRole: this is the caller's-own-credentials arm.
+    expect(stsSendMock.mock.calls.map((c) => c[0]._kind)).not.toContain('AssumeRole');
+    expect(loginEndpointOf()).toBe('https://999999999999.dkr.ecr.us-east-1.amazonaws.com');
+    expect(hostOf(loginEndpointOf())).toBe(hostOf(pullRefOf()));
   });
 
   it('a non-plain form ignores even a VPC-endpoint proxyEndpoint', async () => {

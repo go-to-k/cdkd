@@ -585,14 +585,34 @@ describe('resolveEcsTaskTarget', () => {
         const img = resolveImage('123456789012.dkr-ecr.us-east-1.amazonaws.com/myrepo:latest');
         expect(img.kind).toBe('public');
         expect(debug).toHaveBeenCalledTimes(1);
-        // The URI is asserted, not the sentence: the sentence still says the
-        // suffix "does not belong to its region's partition", which is FALSE for
-        // a mispairing (`amazonaws.com` IS us-east-1's suffix). Recorded on
-        // issue #1846 — `src/local/ecs-task-resolver.ts` is owned elsewhere — so
-        // pinning today's wording here would pin a known-wrong message.
+        // The wording no longer claims a foreign suffix (fixed with issue
+        // #3670); `amazonaws.com` IS us-east-1's suffix, so only the pairing is
+        // wrong here.
         expect(String(debug.mock.calls[0]![0])).toContain(
           '123456789012.dkr-ecr.us-east-1.amazonaws.com/myrepo:latest'
         );
+      } finally {
+        childSpy.mockRestore();
+      }
+    });
+
+    it('a FIPS host outside aws / aws-us-gov stays public and reaches the diagnostic (#3670)', () => {
+      // AWS serves `dkr.ecr-fips` only in the aws / aws-us-gov partitions, so
+      // the aws-cn spelling is not a registry endpoint even though its suffix
+      // IS the region's own. The wording must not claim a foreign suffix.
+      const debug = vi.fn();
+      const childSpy = vi
+        .spyOn(getLogger(), 'child')
+        .mockReturnValue({ debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never);
+      try {
+        const uri = '123456789012.dkr.ecr-fips.cn-north-1.amazonaws.com.cn/myrepo:latest';
+        const img = resolveImage(uri);
+        expect(img.kind).toBe('public');
+        expect(debug).toHaveBeenCalledTimes(1);
+        const line = String(debug.mock.calls[0]![0]);
+        expect(line).toContain(uri);
+        expect(line).toContain('not an ECR registry endpoint for its region');
+        expect(line).not.toContain("does not belong to its region's partition");
       } finally {
         childSpy.mockRestore();
       }

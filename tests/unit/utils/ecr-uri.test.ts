@@ -435,15 +435,71 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       });
     });
 
-    it('accepts a dual-stack host in ANY partition, deliberately', () => {
-      // A recorded decision, not an oversight: AWS documents the dual-stack
-      // endpoints for commercial + GovCloud, and refusing the others would
-      // re-inherit the #1764 failure (a cdkd table lagging AWS rejecting a
-      // GENUINE registry). `on.aws` is AWS-owned, so unlike a captured suffix
-      // it cannot be substituted by a host someone else controls.
-      expect(parseEcrRegistryHost('123456789012.dkr-ecr.cn-north-1.on.aws/r:t')).toEqual({
-        accountId: '123456789012',
-        region: 'cn-north-1',
+    // Issue #3670 reversed the earlier "accept `on.aws` in ANY partition"
+    // decision: `on.aws` is the dual-stack DNS of `aws` / `aws-us-gov` only, and
+    // the pull path logs in to whatever host the reference names, so a host AWS
+    // does not serve for the region's partition is refused and diagnosed.
+    it.each([
+      ['aws-cn dual-stack', '123456789012.dkr-ecr.cn-north-1.on.aws/r:t'],
+      ['aws-cn dual-stack FIPS', '123456789012.dkr-ecr-fips.cn-northwest-1.on.aws/r:t'],
+      ['aws-iso dual-stack', '123456789012.dkr-ecr.us-iso-east-1.on.aws/r:t'],
+      ['aws-iso-b dual-stack', '123456789012.dkr-ecr.us-isob-east-1.on.aws/r:t'],
+      ['aws-iso-e dual-stack', '123456789012.dkr-ecr.eu-isoe-west-1.on.aws/r:t'],
+      ['aws-eusc dual-stack', '123456789012.dkr-ecr.eusc-de-east-1.on.aws/r:t'],
+    ])('refuses and diagnoses %s (#3670)', (_row, imageUri) => {
+      expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: true });
+    });
+
+    it.each([
+      ['commercial dual-stack', '123456789012.dkr-ecr.eu-west-1.on.aws/r:t', 'eu-west-1'],
+      ['GovCloud dual-stack', '123456789012.dkr-ecr.us-gov-east-1.on.aws/r:t', 'us-gov-east-1'],
+      [
+        'GovCloud dual-stack FIPS',
+        '123456789012.dkr-ecr-fips.us-gov-west-1.on.aws/r:t',
+        'us-gov-west-1',
+      ],
+    ])('still accepts %s (negative control for #3670)', (_row, imageUri, region) => {
+      expect(verdict(imageUri)).toEqual({
+        parse: { accountId: '123456789012', region },
+        foreignSuffix: false,
+      });
+    });
+
+    it('the served-partition list is exactly aws / aws-us-gov on the three non-plain rows', () => {
+      const scoped = ECR_REGISTRY_HOST_FORMS.filter((form) => form.labels !== 'dkr.ecr');
+      expect(scoped.map((form) => form.labels).sort()).toEqual([
+        'dkr-ecr',
+        'dkr-ecr-fips',
+        'dkr.ecr-fips',
+      ]);
+      for (const form of scoped) expect(form.partitions, form.labels).toEqual(['aws', 'aws-us-gov']);
+      // The plain form is served in every partition.
+      expect(ECR_REGISTRY_HOST_FORMS.find((f) => f.labels === 'dkr.ecr')!.partitions).toBeUndefined();
+    });
+
+    // AWS's endpoint data lists the `fips-dkr-<region>` registry endpoints in
+    // `aws` and `aws-us-gov` only, so a FIPS host in any other partition is not
+    // served even though its suffix is that partition's own (#3670).
+    it.each([
+      ['aws-cn FIPS', '123456789012.dkr.ecr-fips.cn-north-1.amazonaws.com.cn/r:t'],
+      ['aws-iso FIPS', '123456789012.dkr.ecr-fips.us-iso-east-1.c2s.ic.gov/r:t'],
+      ['aws-iso-e FIPS', '123456789012.dkr.ecr-fips.eu-isoe-west-1.cloud.adc-e.uk/r:t'],
+      ['aws-iso-f FIPS', '123456789012.dkr.ecr-fips.us-isof-south-1.csp.hci.ic.gov/r:t'],
+      ['aws-eusc FIPS', '123456789012.dkr.ecr-fips.eusc-de-east-1.amazonaws.eu/r:t'],
+    ])('refuses and diagnoses %s (#3670)', (_row, imageUri) => {
+      expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: true });
+    });
+
+    it.each([
+      ['commercial FIPS', '123456789012.dkr.ecr-fips.us-west-2.amazonaws.com/r:t', 'us-west-2'],
+      ['GovCloud FIPS', '123456789012.dkr.ecr-fips.us-gov-east-1.amazonaws.com/r:t', 'us-gov-east-1'],
+      // The plain form stays accepted in every partition.
+      ['aws-cn plain', '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t', 'cn-north-1'],
+      ['aws-iso-e plain', '123456789012.dkr.ecr.eu-isoe-west-1.cloud.adc-e.uk/r:t', 'eu-isoe-west-1'],
+    ])('still accepts %s (negative control for the FIPS scoping)', (_row, imageUri, region) => {
+      expect(verdict(imageUri)).toEqual({
+        parse: { accountId: '123456789012', region },
+        foreignSuffix: false,
       });
     });
   });
@@ -504,6 +560,63 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
           foreignSuffix: true,
         });
       }
+    });
+  });
+
+  // Issue #3670: the region segment must have the SHAPE of a region id. The
+  // charset guard admits any `[A-Za-z0-9-]` label, and a service-name label
+  // falls back to the commercial partition, so its suffix matched and the host
+  // became a `docker login` target.
+  describe('the region segment must be a region id (#3670)', () => {
+    it.each([
+      ['a bare service label', '123456789012.dkr.ecr.s3.amazonaws.com/r:t'],
+      ['a hyphenated service label', '123456789012.dkr.ecr.lambda-url.amazonaws.com/r:t'],
+      ['a service label with a digit tail', '123456789012.dkr.ecr.s3-external-1.amazonaws.com/r:t'],
+      ['a region with no number', '123456789012.dkr.ecr.us-east.amazonaws.com/r:t'],
+      ['a FIPS host on a service label', '123456789012.dkr.ecr-fips.s3.amazonaws.com/r:t'],
+      ['a dual-stack host on a service label', '123456789012.dkr-ecr.s3.on.aws/r:t'],
+    ])('refuses %s at both entry points', (_row, imageUri) => {
+      expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: false });
+    });
+
+    // A REGION-shaped label no partition knows is refused by the parse but
+    // REPORTED: it may be a genuine registry in a region cdkd has not learned
+    // yet (the issue #1764 gap), which must not go quiet.
+    it.each([
+      ['a new commercial-style prefix', '123456789012.dkr.ecr.nz-north-1.amazonaws.com/r:t'],
+      ['an unknown partition prefix', '123456789012.dkr.ecr.zz-east-1.amazonaws.com/r:t'],
+      ['a fips- prefixed pseudo-region', '123456789012.dkr.ecr.fips-us-east-1.amazonaws.com/r:t'],
+      ['a dual-stack host in an unknown region', '123456789012.dkr-ecr.nz-north-1.on.aws/r:t'],
+    ])('refuses but diagnoses %s', (_row, imageUri) => {
+      expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: true });
+    });
+
+    it.each([
+      ['us-east-1', 'amazonaws.com'],
+      ['ap-southeast-7', 'amazonaws.com'],
+      ['mx-central-1', 'amazonaws.com'],
+      ['il-central-1', 'amazonaws.com'],
+      ['us-gov-west-1', 'amazonaws.com'],
+      ['cn-north-1', 'amazonaws.com.cn'],
+      ['us-iso-east-1', 'c2s.ic.gov'],
+      ['us-isob-east-1', 'sc2s.sgov.gov'],
+      ['us-isof-south-1', 'csp.hci.ic.gov'],
+      ['eu-isoe-west-1', 'cloud.adc-e.uk'],
+      ['eusc-de-east-1', 'amazonaws.eu'],
+      // Wider than botocore's `eusc-(de)-`, matching `PARTITION_TABLE`'s `eusc-`.
+      ['eusc-fr-east-1', 'amazonaws.eu'],
+    ])('accepts the real region %s', (region, suffix) => {
+      expect(parseEcrRegistryHost(`123456789012.dkr.ecr.${region}.${suffix}/r:t`)).toEqual({
+        accountId: '123456789012',
+        region,
+      });
+    });
+
+    it('accepts an upper-case real region (the shape is checked after the fold)', () => {
+      expect(parseEcrRegistryHost('123456789012.dkr.ecr.US-GOV-WEST-1.amazonaws.com/r:t')).toEqual({
+        accountId: '123456789012',
+        region: 'us-gov-west-1',
+      });
     });
   });
 
