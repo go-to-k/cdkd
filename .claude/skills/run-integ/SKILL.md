@@ -337,9 +337,12 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   name which is down first: `curl` the registry from the HOST, `curl` it from
   inside an already-cached container (401 from both means networking is fine),
   then `docker pull hello-world`. **A pull that hangs while both curls return
-  401 is the daemon path alone — WAIT, it recovers on its own and a restart does
-  not fix it.** Do not pipe the waiting probe through `tail`, which buffers away
-  the progress lines. Never escalate to a factory reset or deleting Docker data
+  401 is NOT yet the daemon: retry it with `DOCKER_CONFIG` pointing at a dir
+  whose `config.json` is `{}`.** If that pulls, the `credsStore` helper
+  (`docker-credential-desktop get`) is hung, and neither waiting nor a restart
+  clears it — run with that override. Only a pull that ALSO hangs there is the
+  daemon path alone: WAIT, it recovers on its own. Do not pipe the waiting probe
+  through `tail`, which buffers away the progress lines. Never escalate to a factory reset or deleting Docker data
   (it destroys local images and volumes) — ask the maintainer. Clean up your own
   probes: `kill`ing a `docker pull` wrapper leaves the `com.docker.cli` child.
 
