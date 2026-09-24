@@ -682,10 +682,10 @@ describe('renderAssemblyPathEscape', () => {
   it('decides a long path in linear time', () => {
     // The bare test walks characters; a `^(a|a)+$`-shaped regex over the whole
     // value backtracks exponentially on a path that fails at its last character.
-    // 24 characters: long enough that the exponential shape takes seconds, short
-    // enough that it still TERMINATES and goes red rather than hanging the
-    // worker, which no timeout can interrupt.
-    const value = `/${'a'.repeat(24)}'`;
+    // 30 characters: measured at several seconds under the exponential shape,
+    // so it goes red, yet it still TERMINATES rather than hanging the worker,
+    // which no timeout can interrupt.
+    const value = `/${'a'.repeat(30)}'`;
     const started = performance.now();
     expect(displayAssemblyPath(value)).toBe(JSON.stringify(value));
     expect(performance.now() - started).toBeLessThan(500);
