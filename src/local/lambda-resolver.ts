@@ -915,8 +915,8 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
   }
   if (!resolved.contained) {
     // cdkd-raw-beside-safe: `renderAssemblyPathEscape` is a safe RENDERER, not
-    // a value — it `displaySafe`s every path it interpolates and the rest of
-    // its text is this file's own literal.
+    // a value — it renders every path through `displayAssemblyPath` and the
+    // rest of its text is this file's own literal.
     throw wrapError(
       `Lambda '${displaySafe(logicalId)}' has ` +
         `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +

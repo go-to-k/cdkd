@@ -384,7 +384,8 @@ export function renderNestedTemplateTreeDefect(
     // Worded apart from the absolute arm below on purpose: the two refusals
     // answer different questions, and `join` never lets an absolute path leave
     // the directory (issue go-to-k/cdkd#3489). `renderAssemblyPathEscape`
-    // supplies its own provenance sentence and `displaySafe`s its inputs.
+    // supplies its own provenance sentence and renders every path through
+    // `displayAssemblyPath`.
     return (
       `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
       `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +

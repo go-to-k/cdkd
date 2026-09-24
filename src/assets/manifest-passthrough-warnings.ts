@@ -336,7 +336,7 @@ export function warnEscapingBuildKitPaths(
     // values a real CDK synth emits.
     //
     // cdkd-raw-beside-safe: `renderAssemblyPathEscape` is a safe RENDERER — it
-    // `displaySafe`s every path it interpolates and the rest is its own
+    // renders every path through `displayAssemblyPath` and the rest is its own
     // literal text. `ref.field` and `verb` are this module's own literals.
     logger.warn(
       `Docker asset ${ref.field}` +

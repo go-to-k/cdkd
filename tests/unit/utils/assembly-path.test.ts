@@ -635,6 +635,42 @@ describe('renderAssemblyPathEscape', () => {
     expect(outsideOf(text, value)).not.toContain('Loaded.');
   });
 
+  it('keeps a path joined by blank-DRAWING characters inside one boundary', () => {
+    // None of these is JS `\s`, and every one draws as a space in a terminal.
+    for (const blank of ['\u2800', '\u3164', '\u200b']) {
+      const value = `/abs/x${blank}is${blank}inside${blank}the${blank}assembly.${blank}Loaded`;
+      const text = renderAssemblyPathEscape(
+        { contained: false, escape: 'lexical', path: value },
+        '/tmp/cdk.out'
+      );
+
+      expect(text).toMatch(/^resolves to "[ -~]*", outside \/tmp\/cdk\.out\. /);
+      expect(text).not.toContain(blank);
+    }
+  });
+
+  it('keeps a quote-carrying DIRECTORY inside its boundary on the link-to-directory arm', () => {
+    const outer = tmp();
+    const dir = path.join(outer, "d'. Contained and healthy. Directory 'e");
+    mkdirSync(dir);
+    symlinkSync(dir, path.join(dir, 'alias.json'), 'dir');
+
+    const text = renderAssemblyPathEscape(refused(resolveAssemblyPath(dir, 'alias.json')), dir);
+    expect(text).toContain(`a symbolic link to the directory ${JSON.stringify(dir)} itself`);
+    expect(outsideOf(text, dir).split(JSON.stringify(path.join(dir, 'alias.json'))).join('')).not.toContain(
+      'Contained and healthy'
+    );
+  });
+
+  it('decides a long path in linear time', () => {
+    // The bare test walks characters; a `^(a|a)+$`-shaped regex over the whole
+    // value backtracks exponentially on a path that fails at its last character.
+    const value = `/${'a'.repeat(40)}'`;
+    const started = performance.now();
+    expect(displayAssemblyPath(value)).toBe(JSON.stringify(value));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it('leaves a legitimate path bare, adding no quotes of any kind', () => {
     const text = renderAssemblyPathEscape(
       { contained: false, escape: 'lexical', path: '/work/app/outside.json' },
@@ -658,39 +694,94 @@ describe('renderAssemblyPathEscape', () => {
 });
 
 describe('displayAssemblyPath', () => {
+  /** What the boundary must satisfy for ANY value: one JSON string, nothing outside it. */
+  function expectOneBoundary(rendered: string, value: string): void {
+    expect(rendered.startsWith('"')).toBe(true);
+    expect(JSON.parse(rendered)).toBe(value);
+    // Printable ASCII only between the quotes: no blank, curly or fullwidth
+    // quote survives to pass for a space or for the boundary's own `"`.
+    expect(rendered).toMatch(/^"[ -~]*"$/);
+  }
+
   it('is the identity on a plain path, including a non-ASCII and a very long one', () => {
     for (const value of [
       '/tmp/cdk.out/asset.abc/index.js',
       '/Users/Jos\u00e9/\u00dcberprojekt/cdk.out',
+      // macOS stores names decomposed: `e` + U+0301 COMBINING ACUTE ACCENT.
+      '/Users/Jose\u0301/cdk.out',
+      '/Users/\u5c71\u7530/cdk.out',
       'C:\\Users\\me\\cdk.out',
+      '/tmp/a-b_c~d+e@f=g:h',
       `/${'a'.repeat(400)}/cdk.out`,
     ]) {
       expect(displayAssemblyPath(value)).toBe(value);
     }
   });
 
-  it('adds a JSON boundary for every character that can read as a quote', () => {
+  it('adds a boundary for every character that can read as a quote, escaping the lookalikes', () => {
     for (const value of [
       "/tmp/it's",
       '/tmp/say"hi',
       '/tmp/back`tick',
       '/tmp/\u2018curly\u2019',
       '/tmp/\u201cdouble\u201d',
+      '/tmp/\u00abguillemet\u00bb',
+      '/tmp/\u2039single\u203a',
+      '/tmp/\uff02fullwidth\uff07',
+      '/tmp/\u02bcmodifier\u02ba',
+      '/tmp/\u2032prime\u2033',
     ]) {
-      expect(displayAssemblyPath(value)).toBe(JSON.stringify(value));
+      expectOneBoundary(displayAssemblyPath(value), value);
     }
   });
 
-  it('adds a JSON boundary for every whitespace, not only the ASCII space', () => {
-    for (const value of ['/tmp/a b', '/tmp/a\u00a0b', '/tmp/a\u3000b', '/tmp/a\u2003b']) {
-      expect(displayAssemblyPath(value)).toBe(JSON.stringify(value));
+  it('adds a boundary for every blank, including those JS \\s does not match', () => {
+    for (const value of [
+      '/tmp/a b',
+      '/tmp/a\u00a0b',
+      '/tmp/a\u3000b',
+      '/tmp/a\u2003b',
+      // Draw as a blank, and none is `\s`: U+3164 and U+FFA0 are even LETTERS.
+      '/tmp/a\u2800b',
+      '/tmp/a\u3164b',
+      '/tmp/a\uffa0b',
+      '/tmp/a\u115fb',
+      '/tmp/a\u180eb',
+      '/tmp/a\u200bb',
+      '/tmp/a\u2060b',
+      '/tmp/a\u200eb',
+    ]) {
+      expectOneBoundary(displayAssemblyPath(value), value);
     }
+  });
+
+  it('keeps a lookalike closing quote from ending the boundary early', () => {
+    const value = '/abs/x\u201d is inside. Also \u201c/y';
+    const rendered = displayAssemblyPath(value);
+
+    expect(rendered).toBe('"/abs/x\\u201d is inside. Also \\u201c/y"');
+    expectOneBoundary(rendered, value);
+  });
+
+  it('adds a boundary to any other symbol, and escapes one outside the BMP per code unit', () => {
+    expectOneBoundary(displayAssemblyPath('/tmp/a;b'), '/tmp/a;b');
+    expectOneBoundary(displayAssemblyPath('/tmp/a\u{1f600}b'), '/tmp/a\u{1f600}b');
+    expect(displayAssemblyPath('/tmp/a\u{1f600}b')).toBe('"/tmp/a\\ud83d\\ude00b"');
+  });
+
+  it('shows a letter as itself inside the boundary', () => {
+    const value = '/Users/Jos\u00e9/My Project';
+    expect(displayAssemblyPath(value)).toBe(`"${value}"`);
   });
 
   it('adds a boundary to a value displaySafe altered, and shows the sanitized text', () => {
     expect(displayAssemblyPath(' /tmp/padded ')).toBe('"/tmp/padded"');
     expect(displayAssemblyPath('/tmp/a\u202eb')).toBe('"/tmp/a b"');
     expect(displayAssemblyPath('/tmp/a\nb')).toBe('"/tmp/a b"');
+  });
+
+  it('escapes a lone surrogate rather than showing it', () => {
+    expect(displayAssemblyPath('/tmp/a\ud800b')).toBe('"/tmp/a\\ud800b"');
   });
 
   it('renders an empty value as a visible empty boundary', () => {

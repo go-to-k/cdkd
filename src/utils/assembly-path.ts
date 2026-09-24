@@ -497,13 +497,33 @@ export function assemblyPathEscape(
 }
 
 /**
- * What a path may contain and still render WITHOUT a boundary: anything but
- * whitespace (JS `\s` is Unicode-aware, so NBSP and U+3000 count) and the
- * characters that read as a quote. Whitespace is what lets a bare value read as
- * a clause of its own, and a quote character is what would let it fake a
- * boundary around one.
+ * A letter, digit or combining mark that neither draws as a blank nor reads as
+ * a quote. Two carve-outs, because `\p{L}` alone admits both: Hangul fillers
+ * (U+3164, U+FFA0) are letters that draw as a blank, hence the default-ignorable
+ * class, and the Spacing Modifier Letters block (U+02B0-U+02FF) holds letters
+ * that ARE quote marks to the eye (U+02BA reads as `"`, U+02BC as `'`).
  */
-const BARE_PATH = /^[^\s'"`\u2018-\u201f]+$/u;
+const VISIBLE_WORD_CHAR = String.raw`(?![\p{Default_Ignorable_Code_Point}\u02b0-\u02ff])[\p{L}\p{N}\p{M}]`;
+
+/**
+ * What a path may contain and still render WITHOUT a boundary. An ALLOWLIST: a
+ * denylist has to enumerate every character that draws as a blank or reads as
+ * a quote, and JS `\s` alone already misses U+2800 and U+3164. Anything else —
+ * any whitespace, any quote, any other symbol — takes the boundary, which
+ * costs a legitimate path nothing but a pair of quotes.
+ *
+ * It tests ONE character and the caller walks the value — never `^(...)+$`
+ * over the whole of it: the two alternatives overlap on ASCII letters, and a
+ * quantified group over overlapping alternatives backtracks exponentially on a
+ * long path that fails near its end, which hangs the process uncatchably.
+ */
+const BARE_PATH_CHAR = new RegExp(
+  String.raw`^(?:[A-Za-z0-9/\\._~+@:=-]|${VISIBLE_WORD_CHAR})$`,
+  'u'
+);
+
+/** Shown as itself inside the boundary; every other character is `\u`-escaped. */
+const SHOWN_IN_BOUNDARY = new RegExp(String.raw`^(?:[ -~]|${VISIBLE_WORD_CHAR})$`, 'u');
 
 /**
  * Render a filesystem path that an assembly chose, or that embeds a value it
@@ -513,21 +533,41 @@ const BARE_PATH = /^[^\s'"`\u2018-\u201f]+$/u;
  * `displaySafe` alone is not enough inside quotes of cdkd's: it is a denylist
  * of control characters and passes `'`, so a value carrying one closed cdkd's
  * quote and wrote a clause of its own into the refusal. This keeps a plain path
- * bare, and puts any other one inside a JSON string, whose escaping means an
- * embedded `"` cannot close the boundary it adds.
+ * bare and puts any other one inside a JSON string literal. Inside it, `"` and
+ * `\` are escaped as JSON escapes them, and so is every character that is
+ * neither printable ASCII nor a visible letter — a curly or fullwidth quote
+ * that could pass for the boundary's own closing `"`, and a blank that could
+ * pass for a space. The result stays valid JSON: `JSON.parse` returns the
+ * sanitized value.
  *
  * Deliberately NOT `displayIdent`, which go-to-k/cdkd#3506 used for a Stage
  * path: that one is ASCII-only and capped at 255 code points, and a legitimate
  * path is neither — a non-ASCII directory name would render as spaces, naming
- * a path that does not exist. Here nothing is truncated and non-ASCII survives;
- * a path with a space (`/Users/me/My Project/cdk.out`) renders quoted, which
- * is the one visible change for a legitimate value.
+ * a path that does not exist. Here nothing is truncated and a non-ASCII letter
+ * is shown as itself; a path with a space (`/Users/me/My Project/cdk.out`)
+ * renders quoted, which is the one visible change for a legitimate value.
  */
 export function displayAssemblyPath(value: string): string {
   const clean = displaySafe(value);
   // `clean === value`: a value `displaySafe` altered (padding trimmed, a
   // control character blanked) did not arrive plain, so it gets the boundary.
-  return clean === value && BARE_PATH.test(clean) ? clean : JSON.stringify(clean);
+  // `Array.from` walks CODE POINTS, so a lone surrogate arrives alone
+  // and is escaped below rather than shown.
+  const chars = Array.from(clean);
+  if (clean === value && chars.length > 0 && chars.every((ch) => BARE_PATH_CHAR.test(ch))) {
+    return clean;
+  }
+  let body = '';
+  for (const ch of chars) {
+    if (ch === '"' || ch === '\\') body += `\\${ch}`;
+    else if (SHOWN_IN_BOUNDARY.test(ch)) body += ch;
+    else {
+      for (let i = 0; i < ch.length; i++) {
+        body += `\\u${ch.charCodeAt(i).toString(16).padStart(4, '0')}`;
+      }
+    }
+  }
+  return `"${body}"`;
 }
 
 /**
