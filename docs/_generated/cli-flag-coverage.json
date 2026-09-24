@@ -1782,6 +1782,7 @@
     "--resource-arns",
     "--resource-id",
     "--resource-ids",
+    "--resource-request-status-filter",
     "--resource-type",
     "--rest-api-id",
     "--retain-resources",

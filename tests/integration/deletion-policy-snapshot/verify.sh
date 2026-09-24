@@ -264,6 +264,26 @@ if [ "${SNAP_KEEP_STATE}" != "completed" ]; then
 fi
 echo "    runner path OK: ${SNAP_KEEP_ID} completed for ${VOL_KEEP_NEW_ID}"
 
+# Issue #3455: all three deletes (engine DELETE, replacement, runner) must use
+# EC2 `DeleteVolume`, never a Cloud Control `DeleteResource`, whose registry
+# handler was seen snapshotting the volume on its own and then hanging. The
+# DELETE request list (kept 7 days) is the direct read of which route ran.
+if ! CC_DELETES=$(aws cloudcontrol list-resource-requests --region "${REGION}" \
+  --resource-request-status-filter Operations=DELETE \
+  --query 'ResourceRequestStatusSummaries[].Identifier' --output text); then
+  echo "FAIL: could not list Cloud Control DELETE requests to check the route" >&2
+  exit 1
+fi
+for vol in "${VOL_REMOVE_ID}" "${VOL_KEEP_ID}" "${VOL_KEEP_NEW_ID}"; do
+  # No `-q`: grep exiting at the first match SIGPIPEs the upstream on a large
+  # listing, and pipefail would then read the HIT as a miss.
+  if printf '%s\n' "${CC_DELETES}" | tr '\t' '\n' | grep -xF "${vol}" >/dev/null; then
+    echo "FAIL: ${vol} was deleted through Cloud Control DeleteResource — expected EC2 DeleteVolume (issue #3455)" >&2
+    exit 1
+  fi
+done
+echo "    delete route OK: no Cloud Control DeleteResource for any of the three volumes"
+
 assert_gone "state file still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
