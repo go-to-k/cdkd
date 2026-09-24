@@ -109,7 +109,7 @@ describe("a file asset's source.path", () => {
     const { dir } = assembly();
 
     expect(() => resolveFile(dir, fileAsset('../../outside.json'), dir)).toThrow(
-      /File asset 'MyAsset' has source\.path=\.\.\/\.\.\/outside\.json which resolves to .*, outside/
+      /File asset MyAsset has source\.path=\.\.\/\.\.\/outside\.json which resolves to .*, outside/
     );
   });
 
@@ -789,7 +789,7 @@ describe('the asset manifest filename, built from a manifest-chosen stackName', 
     const { dir } = assembly();
 
     await expect(new AssetManifestLoader().loadManifest(dir, '../../evil')).rejects.toThrow(
-      /Asset manifest for stack '\.\.\/\.\.\/evil' resolves to .*, outside/
+      /Asset manifest for stack \.\.\/\.\.\/evil resolves to .*, outside/
     );
   });
 

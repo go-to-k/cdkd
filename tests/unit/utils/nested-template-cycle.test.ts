@@ -479,14 +479,14 @@ describe('renderNestedTemplateTreeDefect', () => {
       'deploy any level of it'
     );
 
-    expect(text).toContain("under stack 'Parent' contains a cycle");
+    expect(text).toContain("under stack Parent contains a cycle");
     expect(text).toContain(
-      "'Child' (/out/a.json) -> 'ToB' (/out/b.json) -> 'BackToA' (/out/a.json)"
+      "Child (/out/a.json) -> ToB (/out/b.json) -> BackToA (/out/a.json)"
     );
     // The OWNING stack of the closing row, derived the way the provider
     // derives a child's name: one `~<logicalId>` per hop above it.
     expect(text).toContain(
-      "Nested stack 'BackToA' (declared in stack 'Parent~Child~ToB') resolves to a template " +
+      "Nested stack BackToA (declared in stack Parent~Child~ToB) resolves to a template " +
         'that is already on that nesting chain'
     );
     expect(text).toContain('Refusing to deploy any level of it.');
@@ -541,9 +541,9 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     const text = renderNestedTemplateTreeDefect({ kind: 'cycle', chain }, 'P', 'deploy');
 
-    expect(text).toContain("'L0' (/out/t0.json)");
+    expect(text).toContain("L0 (/out/t0.json)");
     expect(text).toContain('... 33 more ...');
-    expect(text).toContain("'Closer' (/out/t0.json)");
+    expect(text).toContain("Closer (/out/t0.json)");
     expect(text).not.toContain("'L20'");
   });
 
@@ -555,9 +555,9 @@ describe('renderNestedTemplateTreeDefect', () => {
     const nine = renderNestedTemplateTreeDefect({ kind: 'cycle', chain: hops(9) }, 'P', 'deploy');
 
     expect(eight).not.toContain(' more ...');
-    expect(eight).toContain("'L4' (/out/t4.json)");
+    expect(eight).toContain("L4 (/out/t4.json)");
     expect(nine).toContain('... 1 more ...');
-    expect(nine).not.toContain("'L4' (/out/t4.json)");
+    expect(nine).not.toContain("L4 (/out/t4.json)");
   });
 
   it('says why a too-large tree is refused', () => {
@@ -568,7 +568,7 @@ describe('renderNestedTemplateTreeDefect', () => {
     );
 
     expect(text).toContain(`has more than ${MAX_ROWS_FOLLOWED} nested-stack rows to follow`);
-    expect(text).toContain("the walk stopped at 'Child' (/out/a.json)");
+    expect(text).toContain("the walk stopped at Child (/out/a.json)");
     expect(text).toContain('Refusing to deploy.');
     // A genuinely huge tree need not be hand-modified, so this arm does not
     // carry the provenance sentence the other refusals do.
@@ -584,7 +584,8 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     const text = renderNestedTemplateTreeDefect({ kind: 'cycle', chain }, 'P', 'deploy');
 
-    expect(text).toContain("(declared in stack 'P~L0~L1~L2~L3~...22 more...~L26~L27~L28~L29')");
+    // The elision carries spaces, so `displayIdent` gives the name a boundary.
+    expect(text).toContain('(declared in stack "P~L0~L1~L2~L3~...22 more...~L26~L27~L28~L29")');
   });
 
   it('says why a too-deep tree is refused', () => {
@@ -611,7 +612,7 @@ describe('renderNestedTemplateTreeDefect', () => {
       'deploy'
     );
 
-    expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
+    expect(text).toContain("nested stack E (reached through Child (/out/a.json))");
     expect(text).toContain("Metadata['aws:asset:path']=/abs.json which is absolute");
   });
 
@@ -632,7 +633,7 @@ describe('renderNestedTemplateTreeDefect', () => {
       'deploy'
     );
 
-    expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
+    expect(text).toContain("nested stack E (reached through Child (/out/a.json))");
     expect(text).toContain(
       "Metadata['aws:asset:path']=../../etc/passwd which resolves to /etc/passwd, outside /out."
     );

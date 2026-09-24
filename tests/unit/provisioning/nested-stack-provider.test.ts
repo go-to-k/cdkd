@@ -244,7 +244,7 @@ describe('NestedStackProvider', () => {
       const ctx = makeContext({ nestedTemplates: {} });
       await expect(
         withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
-      ).rejects.toThrow(/Nested template file not found for AWS::CloudFormation::Stack 'Child'/);
+      ).rejects.toThrow(/Nested template file not found for AWS::CloudFormation::Stack Child/);
     });
 
     // B2 readChildTemplate failure paths (issue #556): the private helper
@@ -1311,7 +1311,7 @@ describe('NestedStackProvider', () => {
         message = error instanceof Error ? error.message : String(error);
       }
       expect(message).toBeDefined();
-      expect(message).toContain("child Parameter 'Mixed' element [1]");
+      expect(message).toContain("child Parameter Mixed element [1]");
       expect(message).toContain('non-scalar value');
       expect(message).toContain('type=object');
       // The value must never have been coerced on the way to the refusal.

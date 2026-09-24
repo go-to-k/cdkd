@@ -124,7 +124,7 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
   strandedProfileCredentialsNotice,
@@ -2533,7 +2533,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${displaySafe(logicalId)}' has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda ${displayIdent(logicalId)} has no Metadata['aws:asset:path']. cdkd local start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
   const { manifestDir, assetOutdir } = assetPathDirs(stack);

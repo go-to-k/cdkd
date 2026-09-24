@@ -130,7 +130,7 @@ describe('the nested-template tree refusal', () => {
       'deploy'
     );
 
-    expect(text).toContain(`(reached through 'Child' (${JSON.stringify(templatePath)}))`);
+    expect(text).toContain(`(reached through Child (${JSON.stringify(templatePath)}))`);
     expect(text).toContain(`Metadata['aws:asset:path']=${JSON.stringify(assetPath)} which is absolute`);
     expect(outsideOf(text, templatePath, assetPath)).not.toContain('Contained and healthy');
   });
@@ -147,7 +147,7 @@ describe('the nested-template tree refusal', () => {
       'deploy'
     );
 
-    expect(text).toContain("(reached through 'Child' (/out/a.json))");
+    expect(text).toContain("(reached through Child (/out/a.json))");
     expect(text).toContain("Metadata['aws:asset:path']=/abs.json which is absolute");
   });
 });
@@ -157,7 +157,7 @@ describe('the absolute-asset-path warnings', () => {
     const absolute = `/abs/${FORGED}`;
     const realPath = `/etc/${FORGED}`;
     warnAbsoluteAssetPath({
-      subject: "File asset 'A'",
+      subject: "File asset A",
       field: 'source.path',
       absolute,
       escape: { contained: false, escape: 'symlink', path: absolute, realPath },
@@ -174,7 +174,7 @@ describe('the absolute-asset-path warnings', () => {
 
   it('renders an ordinary absolute path bare', () => {
     warnAbsoluteAssetPath({
-      subject: "File asset 'A'",
+      subject: "File asset A",
       field: 'source.path',
       absolute: '/work/app/asset',
       escape: { contained: false, escape: 'lexical', path: '/work/app/asset' },
@@ -186,9 +186,9 @@ describe('the absolute-asset-path warnings', () => {
 
   it('keeps a forging output directory inside its boundary, and renders an ordinary one bare', () => {
     const outdir = `/work/${FORGED}`;
-    warnWholeAssemblyAsSource({ subject: "File asset 'A'", field: 'source.path', outdir, sink: 'upload it' });
+    warnWholeAssemblyAsSource({ subject: "File asset A", field: 'source.path', outdir, sink: 'upload it' });
     warnWholeAssemblyAsSource({
-      subject: "File asset 'A'",
+      subject: "File asset A",
       field: 'source.path',
       outdir: '/work/cdk.out',
       sink: 'upload it',
@@ -510,8 +510,8 @@ describe('every other refusal subject keeps a forging value inside one boundary'
     const message = messageOf(() => resolveVerboseTemplatePath(out, FORGED));
     expect(message).toContain(`over a symbolic link at ${JSON.stringify(target)}. `);
     // The stack name is an IDENTIFIER, rendered by its own rule in the
-    // subject's `Stack '...'`; only the path is this site's subject here.
-    expect(outsideOf(message.replace(`Stack '${FORGED}'`, ''), target)).not.toContain(
+    // subject's `Stack ...`; only the path is this site's subject here.
+    expect(outsideOf(message.replace(`Stack ${JSON.stringify(FORGED)}`, ''), target)).not.toContain(
       'Contained and healthy'
     );
   });

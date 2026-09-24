@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { displaySafe } from './display-safe.js';
+import { displayIdent, displayStackName } from './display-safe.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -310,8 +310,9 @@ export function findNestedTemplateTreeDefect(
 const MAX_RENDERED_HOPS = 8;
 
 /**
- * `'A' (/x/a.json) -> 'B' (/x/b.json)`. Every interpolation goes through
- * `displaySafe`: this text exists FOR a hand-modified assembly, so a logical id
+ * `A (/x/a.json) -> B (/x/b.json)`. The logical id renders through
+ * `displayIdent` and the path through `displayAssemblyPath`, each supplying its
+ * own boundary: this text exists FOR a hand-modified assembly, so a logical id
  * (a template key) and a path (derived from `aws:asset:path`) are both
  * attacker-controlled, and a bare `Error` message is not sanitized downstream.
  * A long chain keeps both ends, since the entry row and the closing row are
@@ -319,7 +320,7 @@ const MAX_RENDERED_HOPS = 8;
  */
 function renderChain(chain: readonly NestedTemplateHop[]): string {
   const hop = (h: NestedTemplateHop): string =>
-    `'${displaySafe(h.logicalId)}' (${displayAssemblyPath(h.templatePath)})`;
+    `${displayIdent(h.logicalId)} (${displayAssemblyPath(h.templatePath)})`;
   if (chain.length <= MAX_RENDERED_HOPS) return chain.map(hop).join(' -> ');
   const keep = MAX_RENDERED_HOPS / 2;
   return [
@@ -353,20 +354,20 @@ export function renderNestedTemplateTreeDefect(
       ids.length <= MAX_RENDERED_HOPS
         ? ids
         : [...ids.slice(0, keep), `...${ids.length - 2 * keep} more...`, ...ids.slice(-keep)];
-    return displaySafe([stackName, ...shown].join('~'));
+    return displayStackName([stackName, ...shown].join('~'));
   };
   if (defect.kind === 'cycle') {
     const closing = defect.chain[defect.chain.length - 1]!;
     return (
-      `The nested template tree under stack '${displaySafe(stackName)}' contains a cycle: ` +
-      `${renderChain(defect.chain)}. Nested stack '${displaySafe(closing.logicalId)}' ` +
-      `(declared in stack '${owner(defect.chain)}') resolves to a template that is already ` +
+      `The nested template tree under stack ${displayStackName(stackName)} contains a cycle: ` +
+      `${renderChain(defect.chain)}. Nested stack ${displayIdent(closing.logicalId)} ` +
+      `(declared in stack ${owner(defect.chain)}) resolves to a template that is already ` +
       `on that nesting chain, so its Metadata['aws:asset:path'] closes a cycle. ${provenance}`
     );
   }
   if (defect.kind === 'too-large') {
     return (
-      `The nested template tree under stack '${displaySafe(stackName)}' has more than ` +
+      `The nested template tree under stack ${displayStackName(stackName)} has more than ` +
       `${MAX_ROWS_FOLLOWED} nested-stack rows to follow (the walk stopped at ` +
       `${renderChain(defect.chain)}). That is far beyond any CDK-generated assembly. Symlinked ` +
       `directories can give one template file many paths, which multiplies the tree without ` +
@@ -375,7 +376,7 @@ export function renderNestedTemplateTreeDefect(
   }
   if (defect.kind === 'too-deep') {
     return (
-      `The nested template tree under stack '${displaySafe(stackName)}' nests more than ` +
+      `The nested template tree under stack ${displayStackName(stackName)} nests more than ` +
       `${MAX_NESTING_DEPTH} levels deep: ${renderChain(defect.chain)}. No tree that deep can ` +
       `deploy, because each level lengthens the child's state key and S3 caps a key at 1024 ` +
       `bytes. ${provenance}`
@@ -388,15 +389,15 @@ export function renderNestedTemplateTreeDefect(
     // supplies its own provenance sentence and renders every path through
     // `displayAssemblyPath`.
     return (
-      `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
-      `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +
+      `The nested template tree under stack ${displayStackName(stackName)} has nested stack ` +
+      `${displayIdent(defect.logicalId)} (reached through ${renderChain(defect.chain)}) with ` +
       `Metadata['aws:asset:path']=${displayAssemblyPath(defect.assetPath)} which ` +
       `${renderAssemblyPathEscape(defect.escape, defect.dir, action)}`
     );
   }
   return (
-    `The nested template tree under stack '${displaySafe(stackName)}' has nested stack ` +
-    `'${displaySafe(defect.logicalId)}' (reached through ${renderChain(defect.chain)}) with ` +
+    `The nested template tree under stack ${displayStackName(stackName)} has nested stack ` +
+    `${displayIdent(defect.logicalId)} (reached through ${renderChain(defect.chain)}) with ` +
     `Metadata['aws:asset:path']=${displayAssemblyPath(defect.assetPath)} which is absolute. ${provenance}`
   );
 }

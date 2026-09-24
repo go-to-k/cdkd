@@ -13,7 +13,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -878,7 +878,7 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
       // choosing between two of this file's literals — it selects text, it
       // does not render a value.
       getLogger().warn(
-        `Lambda '${displaySafe(logicalId)}' has an absolute ` +
+        `Lambda ${displayIdent(logicalId)} has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +
           `${displayAssemblyPath(absolute)}` +
           (escape.escape === 'symlink'
@@ -920,7 +920,7 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
     // a value — it renders every path through `displayAssemblyPath` and the
     // rest of its text is this file's own literal.
     throw wrapError(
-      `Lambda '${displaySafe(logicalId)}' has ` +
+      `Lambda ${displayIdent(logicalId)} has ` +
         `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
     );
@@ -992,7 +992,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' has no Metadata['aws:asset:path']. ` +
+      `Lambda ${displayIdent(logicalId)} has no Metadata['aws:asset:path']. ` +
         'cdkd local invoke needs this hint to find the local asset directory. ' +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
@@ -1008,7 +1008,7 @@ function resolveAssetCodePath(
   });
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${displaySafe(logicalId)}' asset directory ${displayAssemblyPath(abs)} does not exist ` +
+      `Lambda ${displayIdent(logicalId)} asset directory ${displayAssemblyPath(abs)} does not exist ` +
         'or is not a directory. Re-synthesize the app and retry.'
     );
   }

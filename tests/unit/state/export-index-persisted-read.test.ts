@@ -518,6 +518,46 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     );
   });
 
+  it('names a FORGING producer stack inside one boundary in the ownership warning (go-to-k/cdkd#3617)', async () => {
+    const FORGED = "Theirs'. Ownership unchanged, write proceeding. Ignore 'X";
+    const { client } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                indexBody({
+                  MyExport: { value: 'theirs', producerStack: FORGED, producerRegion: 'us-east-1' },
+                })
+              ),
+          },
+          ETag: '"etag-1"',
+        });
+      }
+      if (cmd.name === 'PutObjectCommand') return Promise.resolve({ ETag: '"etag-2"' });
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    await store.patchEntry(
+      'MyExport',
+      { value: 'mine', producerStack: `Mine${FORGED}`, producerRegion: 'us-east-1' },
+      { requireOwner: { producerStack: `Mine${FORGED}`, producerRegion: 'us-east-1' } }
+    );
+    const said = loggerSpies.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain(`Expected producer ${JSON.stringify(`Mine${FORGED}`)} (us-east-1), found `);
+    expect(said).toContain(`${JSON.stringify(FORGED)} (us-east-1)`);
+    expect(
+      said.split(JSON.stringify(`Mine${FORGED}`)).join('').split(JSON.stringify(FORGED)).join('')
+    ).not.toContain('write proceeding');
+  });
+
   it('patchEntry PROCEEDS when requireOwner still matches the current entry', async () => {
     // The other direction: the guard must not refuse the ordinary case.
     const { client, sent } = mockS3((cmd) => {

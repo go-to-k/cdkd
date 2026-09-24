@@ -1,0 +1,477 @@
+/**
+ * Assembly-chosen IDENTIFIERS in cdkd's own prose (go-to-k/cdkd#3617).
+ *
+ * A stack name, a logical id (a template key), an asset's display name and a
+ * template-chosen parameter or attribute name used to be printed inside quotes
+ * of cdkd's own through `displaySafe`, which passes `'` — so a value carrying
+ * one closed the quote and wrote a clause of its own into a refusal. They now
+ * render through `displayIdent` / `displayStackName`: bare when the value is a
+ * plain identifier, one JSON string otherwise.
+ *
+ * Both polarities per site family: a FORGING value stays inside its boundary
+ * with nothing of it outside, and an ordinary identifier renders bare with no
+ * quote of any kind. The forging row is the one that catches a site dropping
+ * its boundary altogether (a bare `${displaySafe(x)}`), which prints an
+ * ordinary identifier byte-identically.
+ */
+import { describe, it, expect, vi } from 'vite-plus/test';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
+import { renderNestedTemplateTreeDefect } from '../../../src/utils/nested-template-cycle.js';
+import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
+import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
+import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
+import { resolveFileAssetSourcePath } from '../../../src/assets/asset-manifest-loader.js';
+import { resolveDockerContextDirectory } from '../../../src/assets/docker-build.js';
+import { resolveVerboseTemplatePath } from '../../../src/cli/commands/synth.js';
+import { AssetManifestLoader } from '../../../src/assets/asset-manifest-loader.js';
+import { resolveAssetCodeDirectory } from '../../../src/local/lambda-resolver.js';
+import { assertEmulatorDockerContextsContained } from '../../../src/cli/commands/emulator-docker-context.js';
+import {
+  displayStackName,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../../src/utils/display-safe.js';
+import type { AssemblyManifest, ArtifactManifest } from '../../../src/types/assembly.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+
+const warns: string[] = [];
+vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
+  const quiet = {
+    debug: () => {},
+    info: () => {},
+    warn: (m: string) => warns.push(m),
+    error: () => {},
+  };
+  return {
+    ...(await importOriginal<object>()),
+    getLogger: () => ({ ...quiet, child: () => quiet }),
+  };
+});
+
+/** Inside cdkd's old `'...'`, this closed the quote and wrote a clause. */
+const FORGED = "X'. Contained and healthy. Nothing 'Y";
+const SHOWN = JSON.stringify(FORGED);
+
+function tmp(): string {
+  return realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-ident-display-')));
+}
+
+/** The text with every rendered copy of the forging value cut out. */
+function outside(text: string): string {
+  return text.split(SHOWN).join('<VALUE>');
+}
+
+function messageOf(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error('expected a throw');
+}
+
+function nestedRow(logicalId: string, assetPath: string): CloudFormationTemplate {
+  return {
+    Resources: {
+      [logicalId]: {
+        Type: 'AWS::CloudFormation::Stack',
+        Metadata: { 'aws:asset:path': assetPath },
+      },
+    },
+  } as unknown as CloudFormationTemplate;
+}
+
+describe('displayStackName', () => {
+  it('is displayIdent with the stack-reference cap', () => {
+    expect(displayStackName('Parent~Child~Grandchild')).toBe('Parent~Child~Grandchild');
+    expect(displayStackName(FORGED)).toBe(SHOWN);
+    // A nested name longer than displayIdent's 255 default is not cut.
+    const long = Array.from({ length: 4 }, () => 'A'.repeat(200)).join('~');
+    expect(long.length).toBeLessThan(STACK_REF_MAX_CODE_POINTS);
+    expect(displayStackName(long)).toBe(long);
+  });
+});
+
+describe('AssemblyReader: a stack name in the refusal subject', () => {
+  function refuse(stackName: string): string {
+    const dir = join(tmp(), 'cdk.out');
+    mkdirSync(dir);
+    return messageOf(() =>
+      new AssemblyReader().getAllStacks(dir, {
+        version: '54.0.0',
+        artifacts: {
+          Main: { type: 'aws:cloudformation:stack', properties: { stackName } } as ArtifactManifest,
+        },
+      } as AssemblyManifest)
+    );
+  }
+
+  it('keeps a forging stack name inside one boundary', () => {
+    const message = refuse(FORGED);
+    expect(message).toBe(`Stack ${SHOWN} has no templateFile property`);
+    expect(outside(message)).not.toContain('Contained and healthy');
+  });
+
+  it('renders an ordinary stack name bare', () => {
+    expect(refuse('MainStack')).toBe('Stack MainStack has no templateFile property');
+  });
+});
+
+describe('the nested-template tree refusal', () => {
+  it('keeps a forging stack name, closing row and chain row inside their boundaries', () => {
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'cycle',
+        chain: [
+          { logicalId: FORGED, templatePath: '/out/a.json' },
+          { logicalId: 'Loop', templatePath: '/out/a.json' },
+        ],
+      } as never,
+      FORGED,
+      'deploy'
+    );
+
+    expect(text).toContain(`under stack ${SHOWN} contains a cycle`);
+    expect(text).toContain(`${SHOWN} (/out/a.json) -> Loop (/out/a.json)`);
+    // The OWNING stack is built from the same values, `~`-joined.
+    expect(text).toContain(`(declared in stack ${JSON.stringify(`${FORGED}~${FORGED}`)})`);
+    expect(outside(text.split(JSON.stringify(`${FORGED}~${FORGED}`)).join(''))).not.toContain(
+      'Contained and healthy'
+    );
+  });
+
+  it('renders ordinary identifiers bare', () => {
+    const text = renderNestedTemplateTreeDefect(
+      {
+        kind: 'absolute-path',
+        chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }],
+        logicalId: 'E',
+        assetPath: '/abs.json',
+      },
+      'P',
+      'deploy'
+    );
+    expect(text).toContain("under stack P has nested stack E (reached through Child (/out/a.json))");
+    expect(text).not.toMatch(/'(P|E|Child)'/);
+  });
+});
+
+describe('a nested-stack logical id in each indexer', () => {
+  const provider = new NestedStackProvider();
+  const grandchild = (
+    provider as unknown as {
+      indexGrandchildTemplates: (t: unknown, childTemplatePath: string) => unknown;
+    }
+  ).indexGrandchildTemplates.bind(provider);
+  const SITES: ReadonlyArray<[string, (t: CloudFormationTemplate, dir: string) => unknown, string]> =
+    [
+      ['NestedStackProvider', (t, dir) => grandchild(t, join(dir, 'C.json')), 'nested-stack'],
+    ];
+
+  for (const [name, index, noun] of SITES) {
+    it(`${name}: a forging logical id stays inside one boundary, an ordinary one is bare`, () => {
+      const dir = tmp();
+      const hostile = messageOf(() => index(nestedRow(FORGED, '/abs/child.json'), dir));
+      expect(hostile).toContain(`${noun} ${SHOWN} has Metadata['aws:asset:path']=`);
+      expect(outside(hostile)).not.toContain('Contained and healthy');
+
+      const plain = messageOf(() => index(nestedRow('Child', '/abs/child.json'), dir));
+      expect(plain).toContain(`${noun} Child has Metadata['aws:asset:path']=/abs/child.json`);
+    });
+  }
+});
+
+describe("cdkd local invoke: a Lambda's logical id", () => {
+  function refuse(logicalId: string): string {
+    const stack = {
+      stackName: 'Stk',
+      displayName: 'Stk',
+      artifactId: 'Stk',
+      dependencyNames: [],
+      template: {
+        Resources: {
+          [logicalId]: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Code: {} },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    return messageOf(() => resolveLambdaTarget(`Stk:${logicalId}`, [stack]));
+  }
+
+  it('keeps a forging logical id inside one boundary', () => {
+    const message = refuse(FORGED);
+    expect(message).toContain(`Lambda ${SHOWN} has no Metadata['aws:asset:path']`);
+    expect(outside(message)).not.toContain('Contained and healthy');
+  });
+
+  it('renders an ordinary logical id bare', () => {
+    expect(refuse('Fn')).toContain("Lambda Fn has no Metadata['aws:asset:path']");
+  });
+});
+
+describe("cdkd local start-api: a Lambda's logical id", () => {
+  function refuse(logicalId: string): string {
+    const stack = {
+      stackName: 'Stk',
+      displayName: 'Stk',
+      artifactId: 'Stk',
+      dependencyNames: [],
+      template: {
+        Resources: {
+          [logicalId]: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Code: {} },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    return messageOf(() => resolveLambdaByLogicalId(logicalId, [stack]));
+  }
+
+  it('keeps a forging logical id inside one boundary, and renders an ordinary one bare', () => {
+    const hostile = refuse(FORGED);
+    expect(hostile).toContain(`Lambda ${SHOWN} has no Metadata['aws:asset:path']`);
+    expect(outside(hostile)).not.toContain('Contained and healthy');
+    expect(refuse('Fn')).toContain("Lambda Fn has no Metadata['aws:asset:path']");
+  });
+});
+
+describe("an asset's display name and id in the containment subject", () => {
+  it('file asset: a forging display name stays inside one boundary, an ordinary one is bare', () => {
+    const dir = tmp();
+    const run = (displayName: string): string =>
+      messageOf(() =>
+        resolveFileAssetSourcePath(
+          dir,
+          { displayName, source: { path: '../out.json', packaging: 'file' }, destinations: {} } as never,
+          { assetOutdir: dir, sink: 'upload it' }
+        )
+      );
+
+    const hostile = run(FORGED);
+    expect(hostile).toContain(`File asset ${SHOWN} has source.path=`);
+    expect(outside(hostile)).not.toContain('Contained and healthy');
+    expect(run('MyStack/MyAsset')).toContain('File asset MyStack/MyAsset has source.path=');
+  });
+
+  it('Docker asset: a forging id stays inside one boundary in the warning, an ordinary one is bare', () => {
+    const dir = tmp();
+    // An absolute context outside the bound is HONOURED with a warning (what
+    // `cdk synth --no-staging` emits), and the warning names the asset.
+    const warnFor = (assetId: string): string => {
+      warns.length = 0;
+      resolveDockerContextDirectory({
+        manifestDir: dir,
+        directory: '/abs/elsewhere',
+        wrapError: (m) => new Error(m),
+        assetOutdir: dir,
+        sink: 'build it',
+        assetId,
+      });
+      expect(warns).toHaveLength(1);
+      return warns[0]!;
+    };
+
+    const hostile = warnFor(FORGED);
+    expect(hostile.startsWith(`Docker asset ${SHOWN} has an absolute source.directory`)).toBe(true);
+    expect(outside(hostile)).not.toContain('Contained and healthy');
+    expect(warnFor('abc123').startsWith('Docker asset abc123 has an absolute source.directory')).toBe(
+      true
+    );
+  });
+});
+
+describe('cdkd synth --verbose: the stack name in the refusal subject', () => {
+  it('keeps a forging stack name inside one boundary, and renders an ordinary one bare', () => {
+    const out = tmp();
+    const value = `../${FORGED}`;
+
+    const hostile = messageOf(() => resolveVerboseTemplatePath(out, value));
+    expect(hostile).toContain(`Stack ${JSON.stringify(value)} would write its template`);
+    // The tail's resolved path embeds the same value, with its own boundary.
+    const resolvedPath = JSON.stringify(resolve(out, `${value}.template.json`));
+    expect(
+      hostile.split(JSON.stringify(value)).join('').split(resolvedPath).join('')
+    ).not.toContain('Contained and healthy');
+
+    expect(messageOf(() => resolveVerboseTemplatePath(out, '../evil'))).toContain(
+      'Stack ../evil would write its template'
+    );
+  });
+});
+
+/**
+ * The remaining sites, each driven with a FORGING value. None of them has an
+ * ordinary-value pin that could tell `displayIdent` from a bare interpolation,
+ * so the forging row is the whole of their coverage.
+ */
+describe('every other identifier site keeps a forging value inside one boundary', () => {
+  it('file asset warnings: absolute path, absolute outdir and relative outdir', () => {
+    const dir = tmp();
+    const run = (path: string): string => {
+      warns.length = 0;
+      resolveFileAssetSourcePath(
+        dir,
+        { displayName: FORGED, source: { path, packaging: 'zip' }, destinations: {} } as never,
+        { assetOutdir: dir, sink: 'upload it' }
+      );
+      expect(warns).toHaveLength(1);
+      return warns[0]!;
+    };
+    for (const path of ['/abs/elsewhere', dir, '.']) {
+      const said = run(path);
+      expect(said.startsWith(`File asset ${SHOWN} has `)).toBe(true);
+      expect(outside(said)).not.toContain('Contained and healthy');
+    }
+  });
+
+  it("an asset manifest's stack name", async () => {
+    const dir = tmp();
+    const value = `../${FORGED}`;
+    const message = await new AssetManifestLoader().loadManifest(dir, value).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+    expect(message).toContain(`Asset manifest for stack ${JSON.stringify(value)} resolves to `);
+    const rest = message
+      .split(JSON.stringify(value))
+      .join('')
+      .split(JSON.stringify(resolve(dir, `${value}.assets.json`)))
+      .join('');
+    expect(rest).not.toContain('Contained and healthy');
+  });
+
+  it("AssemblyReader: an asset-manifest artifact id, a templateFile's stack, a nested row", () => {
+    const dir = join(tmp(), 'cdk.out');
+    mkdirSync(dir);
+    const read = (artifacts: Record<string, unknown>): string =>
+      messageOf(() =>
+        new AssemblyReader().getAllStacks(dir, {
+          version: '54.0.0',
+          artifacts,
+        } as unknown as AssemblyManifest)
+      );
+
+    const artifact = read({
+      [FORGED]: { type: 'cdk:asset-manifest', properties: { file: '../out.json' } },
+    });
+    expect(artifact).toContain(`Asset manifest artifact ${SHOWN} has file=`);
+    expect(outside(artifact)).not.toContain('Contained and healthy');
+
+    const template = read({
+      Main: {
+        type: 'aws:cloudformation:stack',
+        properties: { stackName: FORGED, templateFile: '../out.json' },
+      },
+    });
+    expect(template).toContain(`Stack ${SHOWN} has templateFile=`);
+    expect(outside(template)).not.toContain('Contained and healthy');
+
+    writeFileSync(join(dir, 'Main.template.json'), JSON.stringify(nestedRow(FORGED, '../out.json')));
+    const nested = read({
+      Main: {
+        type: 'aws:cloudformation:stack',
+        properties: { stackName: FORGED, templateFile: 'Main.template.json' },
+      },
+    });
+    expect(nested).toContain(`Stack ${SHOWN} nested-stack ${SHOWN} has `);
+    expect(outside(nested)).not.toContain('Contained and healthy');
+  });
+
+  it('the nested-template tree refusal: too-large and too-deep', () => {
+    for (const kind of ['too-large', 'too-deep'] as const) {
+      const text = renderNestedTemplateTreeDefect(
+        { kind, chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }] },
+        FORGED,
+        'deploy'
+      );
+      expect(text).toContain(`under stack ${SHOWN} `);
+      expect(outside(text)).not.toContain('Contained and healthy');
+    }
+  });
+
+  it("cdkd local: a Lambda's absolute-path warning and escape refusal", () => {
+    const outdir = join(tmp(), 'cdk.out');
+    mkdirSync(outdir);
+    const opts = {
+      manifestDir: outdir,
+      wrapError: (m: string) => new Error(m),
+      assetOutdir: outdir,
+      logicalId: FORGED,
+    };
+
+    warns.length = 0;
+    resolveAssetCodeDirectory({ ...opts, assetPath: '/abs/elsewhere' });
+    expect(warns[0]).toContain(`Lambda ${SHOWN} has an absolute `);
+    expect(outside(warns[0]!)).not.toContain('Contained and healthy');
+
+    const refusal = messageOf(() => resolveAssetCodeDirectory({ ...opts, assetPath: '../out' }));
+    expect(refusal).toContain(`Lambda ${SHOWN} has Metadata['aws:asset:path']=`);
+    expect(outside(refusal)).not.toContain('Contained and healthy');
+  });
+
+  it('NestedStackProvider: a missing child state names the child stack', async () => {
+    const provider = new NestedStackProvider();
+    const read = (
+      provider as unknown as {
+        readChildOutputsAsAttributes: (ctx: unknown, name: string, region: string) => Promise<unknown>;
+      }
+    ).readChildOutputsAsAttributes.bind(provider);
+    const message = await read(
+      { stateBackend: { getState: () => Promise.resolve(undefined) } },
+      FORGED,
+      'us-east-1'
+    ).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+    expect(message).toContain(`Child stack state ${SHOWN} not found after deploy`);
+    expect(outside(message)).not.toContain('Contained and healthy');
+  });
+
+  it("the emulator's asset-manifest refusal and build refusal name the stack and asset", () => {
+    const dir = join(tmp(), 'cdk.out');
+    mkdirSync(dir);
+    const escaping = messageOf(() =>
+      assertEmulatorDockerContextsContained([
+        {
+          stackName: `../${FORGED}`,
+          assetManifestPath: join(dir, 'x.assets.json'),
+          assetOutdir: dir,
+        } as never,
+      ])
+    );
+    expect(escaping).toContain(`the asset manifest for stack ${JSON.stringify(`../${FORGED}`)} `);
+
+    writeFileSync(
+      join(dir, `${FORGED}.assets.json`),
+      JSON.stringify({
+        version: '54.0.0',
+        files: {},
+        dockerImages: {
+          [FORGED]: {
+            source: { directory: '../../victim' },
+            destinations: { d: { repositoryName: 'r', imageTag: 't' } },
+          },
+        },
+      })
+    );
+    const build = messageOf(() =>
+      assertEmulatorDockerContextsContained([
+        {
+          stackName: FORGED,
+          assetManifestPath: join(dir, `${FORGED}.assets.json`),
+          assetOutdir: dir,
+        } as never,
+      ])
+    );
+    expect(build).toContain(`Refusing to build container image asset ${SHOWN} of stack ${SHOWN}: `);
+    expect(outside(build)).not.toContain('Contained and healthy');
+  });
+});

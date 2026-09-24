@@ -120,7 +120,7 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
       () => '',
       (e: unknown) => (e as Error).message
     );
-    expect(message).toContain("AgentCore Runtime 'Agent Runtime' code bundle (asset b ogus) was not found");
+    expect(message).toContain('AgentCore Runtime "Agent Runtime" code bundle (asset b ogus) was not found');
   });
 
   it('binds to the ASSEMBLY ROOT, not to `--output`', async () => {

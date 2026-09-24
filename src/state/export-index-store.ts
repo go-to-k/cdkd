@@ -48,7 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, displayStackName } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
@@ -769,9 +769,9 @@ export class ExportIndexStore {
       ) {
         this.logger.warn(
           `Exports index entry ownership changed under a patch; refusing to write it. ` +
-            `Expected producer '${displaySafe(requireOwner.producerStack)}' ` +
+            `Expected producer ${displayStackName(requireOwner.producerStack)} ` +
             `(${displaySafe(requireOwner.producerRegion)}), found ` +
-            `${current ? `'${displaySafe(current.producerStack)}' (${displaySafe(current.producerRegion)})` : 'no entry'}.`
+            `${current ? `${displayStackName(current.producerStack)} (${displaySafe(current.producerRegion)})` : 'no entry'}.`
         );
         return false;
       }

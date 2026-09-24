@@ -122,8 +122,8 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
 
       // The refusal still fires and still NAMES the row it refused.
       expect(message).toMatch(/which is absolute/);
-      expect(message).toContain(`Stack '${HOSTILE.stackName.clean}'`);
-      expect(message).toContain(`nested-stack '${HOSTILE.logicalId.clean}'`);
+      expect(message).toContain(`Stack ${JSON.stringify(HOSTILE.stackName.clean)}`);
+      expect(message).toContain(`nested-stack ${JSON.stringify(HOSTILE.logicalId.clean)}`);
       // `displaySafe` blanked the U+2028, so the value no longer arrived plain
       // and `displayAssemblyPath` gives it a boundary (go-to-k/cdkd#3590).
       expect(message).toContain(
@@ -166,7 +166,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
       expect(message).toContain(
-        `Stack 'MyStack' nested-stack 'ChildStack' has Metadata['aws:asset:path']=${longPath} which is absolute.`
+        `Stack MyStack nested-stack ChildStack has Metadata['aws:asset:path']=${longPath} which is absolute.`
       );
       // `displayIdent`'s 255-code-point cap would append `[cut: N ...]` here.
       expect(message).not.toContain('cut:');
@@ -270,7 +270,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
 
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
-      expect(message).toContain(`Failed to read template for stack '${HOSTILE.stackName.clean}'`);
+      expect(message).toContain(`Failed to read template for stack ${JSON.stringify(HOSTILE.stackName.clean)}`);
       expect(message).toContain(HOSTILE.readError.clean);
       expect(message).not.toMatch(FORGING);
     });
@@ -289,7 +289,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
       expect(message).toBe(
-        `Stack '${HOSTILE.stackName.clean}' has no templateFile property`
+        `Stack ${JSON.stringify(HOSTILE.stackName.clean)} has no templateFile property`
       );
       expect(message).not.toMatch(FORGING);
     });
@@ -315,7 +315,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
         reader.getStack('/tmp/cdk.out', manifest, HOSTILE.otherStack.raw)
       );
 
-      expect(message).toContain(`Stack '${HOSTILE.otherStack.clean}' not found in assembly.`);
+      expect(message).toContain(`Stack ${JSON.stringify(HOSTILE.otherStack.clean)} not found in assembly.`);
       // The LISTED names take `displayIdent`, not `displaySafe`
       // (go-to-k/cdkd#3482): a stack name is an identifier interpolated into
       // prose, and the denylist passes the spaces this C1 byte collapses to.
@@ -367,7 +367,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
         `Found asset manifest for ${HOSTILE.stackName.clean}: ${HOSTILE.assetArtifact.clean}`
       );
       expect(lines).toContain(
-        `Stack '${HOSTILE.stackName.clean}' depends on: [${HOSTILE.otherStack.clean}]`
+        `Stack ${JSON.stringify(HOSTILE.stackName.clean)} depends on: [${HOSTILE.otherStack.clean}]`
       );
       for (const line of lines) expect(line).not.toMatch(FORGING);
     });
@@ -395,7 +395,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       const lines = everyLoggedLine();
       expect(lines).toContain('Stack: MyStack, Resources: 1');
       expect(lines).toContain('Found asset manifest for MyStack: MyStackAssets');
-      expect(lines).toContain("Stack 'MyStack' depends on: [Producer]");
+      expect(lines).toContain("Stack MyStack depends on: [Producer]");
     });
   });
 });

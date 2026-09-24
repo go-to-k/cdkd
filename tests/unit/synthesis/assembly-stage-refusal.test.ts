@@ -116,7 +116,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/^Stage MyStage: Stack 'MyStage-Api' nested-stack 'Child'/);
+    ).toThrow(/^Stage MyStage: Stack MyStage-Api nested-stack Child/);
     // The tolerant arm must NOT have run: this is a refusal, not a read failure.
     expect(warn).not.toHaveBeenCalled();
   });
@@ -130,7 +130,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow("Stage MyStage: Stack 'MyStage-Api' has no templateFile property");
+    ).toThrow("Stage MyStage: Stack MyStage-Api has no templateFile property");
   });
 
   it('propagates an unreadable template under a Stage', () => {
@@ -144,7 +144,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Failed to read template for stack 'MyStage-Api'/);
+    ).toThrow(/Stage MyStage: Failed to read template for stack MyStage-Api/);
   });
 
   it('propagates an escaping asset-manifest file under a Stage', () => {
@@ -161,7 +161,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Asset manifest artifact 'MyStageApiAssets' has/);
+    ).toThrow(/Stage MyStage: Asset manifest artifact MyStageApiAssets has/);
   });
 
   it('renders a forging Stage displayName as a quoted value in the REFUSAL too', () => {
@@ -178,7 +178,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', forging) })
       )
     ).toThrow(
-      `Stage ${JSON.stringify(forging)}: Stack 'MyStage-Api' has no templateFile property`
+      `Stage ${JSON.stringify(forging)}: Stack MyStage-Api has no templateFile property`
     );
   });
 
@@ -193,7 +193,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Stack 'MyStage-Api' has templateFile=\.\.\/\.\.\/outside\.json which/);
+    ).toThrow(/Stage MyStage: Stack MyStage-Api has templateFile=\.\.\/\.\.\/outside\.json which/);
   });
 
   it('propagates the nested aws:asset:path CONTAINMENT escape under a Stage', () => {
@@ -210,7 +210,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: .*nested-stack 'Child'.*resolves to .*outside/s);
+    ).toThrow(/Stage MyStage: .*nested-stack Child.*resolves to .*outside/s);
   });
 
   it('propagates a DEEPER Stage\'s escaping directoryName', () => {
@@ -523,7 +523,7 @@ describe('stack selection reports the failed Stage instead of answering "not fou
       message = (error as Error).message;
     }
 
-    expect(message).toContain("Stack 'MyStage-Api' not found in assembly. Available: TopStack");
+    expect(message).toContain("Stack MyStage-Api not found in assembly. Available: TopStack");
     expect(message).toContain("Stage MyStage failed to load");
   });
 
@@ -542,7 +542,7 @@ describe('stack selection reports the failed Stage instead of answering "not fou
     }
 
     expect(message).toBe(
-      "Stack 'MyStage-Api' not found in assembly. The assembly has no stacks. " +
+      "Stack MyStage-Api not found in assembly. The assembly has no stacks. " +
         // Hedged: `MyStage-Api` is a PHYSICAL name, which carries no stage
         // path, so the link to `MyStage` cannot be proven from it.
         'Possibly unrelated: ' +
@@ -568,6 +568,6 @@ describe('stack selection reports the failed Stage instead of answering "not fou
       message = (error as Error).message;
     }
 
-    expect(message).toBe("Stack 'Absent' not found in assembly. Available: TopStack");
+    expect(message).toBe("Stack Absent not found in assembly. Available: TopStack");
   });
 });
