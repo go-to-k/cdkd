@@ -7906,8 +7906,9 @@ export class IntrinsicFunctionResolver {
           )
         );
       }
+      // Reached only when the position did not mask, so it renders as is.
       this.logger.warn(
-        `Fn::Select: index ${loggedPosition} out of bounds (array length: ${resolvedList.length})`
+        `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length})`
       );
       return `{{Fn::Select:${position}:OutOfBounds}}`;
     }
