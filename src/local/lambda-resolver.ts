@@ -952,9 +952,11 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
  * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field, where
  * base and bound coincide again.
  *
- * Exported for `local-start-api.ts`'s copy of the caller, and for unit testing.
+ * Exported for `local-start-api.ts`'s copy of the caller, for the Docker
+ * context check the ECS emulator commands run over cdk-local's `StackInfo`
+ * (which is why it takes only the two fields it reads), and for unit testing.
  */
-export function assetPathDirs(stack: StackInfo): {
+export function assetPathDirs(stack: Pick<StackInfo, 'assetManifestPath' | 'assetOutdir'>): {
   manifestDir: string;
   assetOutdir: string;
 } {

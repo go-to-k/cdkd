@@ -1307,6 +1307,10 @@ export async function resolveAgentCoreImage(
       const entry = getDockerImageBySourceHash(manifest, containerUri);
       if (entry) {
         return buildContainerImage(entry.asset, cdkOutDir, {
+          // `assemblyDir`, not `cdkOutDir`: the same bound, for the same Stage
+          // reason, as the code arm's `getAssetSourcePath` below
+          // (go-to-k/cdkd#3503).
+          assetOutdir: assemblyDir,
           architecture,
           noBuild: options.build === false,
         });

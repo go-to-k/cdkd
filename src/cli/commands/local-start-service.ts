@@ -10,6 +10,7 @@ import {
   type ServiceBoot,
 } from './ecs-service-emulator.js';
 import { cdkdExtraStateProviders } from './local-state-source.js';
+import { containEmulatorDockerContexts } from './emulator-docker-context.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
@@ -74,6 +75,18 @@ export function serviceStrategy(): EmulatorStrategy {
 }
 
 /**
+ * The `EmulatorStrategy` `cdkd local start-service` runs with:
+ * {@link serviceStrategy}, decorated by `containEmulatorDockerContexts` so the
+ * engine's own Docker builds are containment-checked (issue
+ * [#3503](https://github.com/go-to-k/cdkd/issues/3503)). A NAMED seam for the
+ * same reason `buildAlbEmulatorStrategy` is one: inline in the action, the
+ * decorator was deletable at its only call site.
+ */
+export function buildServiceEmulatorStrategy(): EmulatorStrategy {
+  return containEmulatorDockerContexts(serviceStrategy());
+}
+
+/**
  * `cdkl start-service <Stack/Service>...` — run one or more `AWS::ECS::Service`
  * resources locally as a long-running emulator. Spins up DesiredCount task
  * replicas per service (clamped by --max-tasks) using the same per-task
@@ -127,7 +140,12 @@ export function createLocalStartServiceCommand(): Command {
     )
     .action(
       withErrorHandling(async (targets: string[], options: LocalStartServiceOptions) => {
-        await runEcsServiceEmulator(targets, options, serviceStrategy(), cdkdExtraStateProviders);
+        await runEcsServiceEmulator(
+          targets,
+          options,
+          buildServiceEmulatorStrategy(),
+          cdkdExtraStateProviders
+        );
       })
     );
 

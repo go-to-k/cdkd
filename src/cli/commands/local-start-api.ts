@@ -2024,6 +2024,8 @@ export async function resolveContainerImageForStartApi(
   const localBuild = await resolveLocalBuildPlan(lambda);
   if (localBuild) {
     const imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
+      // The containment bound for `source.directory` (go-to-k/cdkd#3503).
+      assetOutdir: localBuild.assetOutdir,
       architecture: lambda.architecture,
     });
     return { imageRef };
@@ -2058,16 +2060,19 @@ export async function resolveContainerImageForStartApi(
  */
 async function resolveLocalBuildPlan(
   lambda: ResolvedStartApiImageLambda
-): Promise<{ asset: { source: DockerImageAssetSource }; cdkOutDir: string } | undefined> {
+): Promise<
+  { asset: { source: DockerImageAssetSource }; cdkOutDir: string; assetOutdir: string } | undefined
+> {
   const manifestPath = lambda.stack.assetManifestPath;
   if (!manifestPath) return undefined;
-  const cdkOutDir = path.dirname(manifestPath);
+  // BASE from the manifest, BOUND from the app outdir (go-to-k/cdkd#3489).
+  const { manifestDir: cdkOutDir, assetOutdir } = assetPathDirs(lambda.stack);
   const loader = new AssetManifestLoader();
   const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
-  return { asset: entry.asset, cdkOutDir };
+  return { asset: entry.asset, cdkOutDir, assetOutdir };
 }
 
 /**
