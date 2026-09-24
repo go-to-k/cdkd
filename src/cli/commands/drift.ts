@@ -3633,7 +3633,8 @@ async function runAccept(
         for (const change of accepted) {
           // `deepEqualUnordered` calls a NON-PLAIN value (a `Date` the raw
           // readback carries) equal only to ITSELF (issue #2897): a rebuilt
-          // stand-in for it — which the redaction pass can produce — is a
+          // stand-in for it — which the redaction pass still produces for any
+          // non-plain value but an unmodified `Date` (issue #2427) — is a
           // value the baseline does not hold, and the warning below is the
           // only signal that the accept did not land.
           if (deepEqualUnordered(getAtPath(redactedBaseline, change.path), change.awsValue)) {
