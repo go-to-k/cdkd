@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import { ccProtectionRegistryTypes } from '../../../src/provisioning/cc-protection-properties.js';
 import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/cli/commands/destroy-runner.js';
+import {
+  destroyRemoveProtectionHelp,
+  stateDestroyRemoveProtectionHelp,
+} from './remove-protection-help.js';
 
 const ROOT = join(import.meta.dirname, '../../..');
 const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
@@ -29,13 +33,14 @@ describe('CC protection registry cross-site consistency', () => {
     expect(missing).toEqual([]);
   });
 
-  for (const [label, rel] of [
-    ['options.ts --remove-protection help', 'src/cli/options.ts'],
-    ['state.ts state destroy --remove-protection help', 'src/cli/commands/state.ts'],
-    ['docs/cli-destroy.md type table', 'docs/cli-destroy.md'],
+  // The two help strings render from `removeProtectionTypes()` since
+  // go-to-k/cdkd#2660, so they are read as RENDERED help, not as source text.
+  for (const [label, content] of [
+    ['cdkd destroy --remove-protection help', destroyRemoveProtectionHelp()],
+    ['cdkd state destroy --remove-protection help', stateDestroyRemoveProtectionHelp()],
+    ['docs/cli-destroy.md type table', read('docs/cli-destroy.md')],
   ] as const) {
     it(`every registry type appears in ${label}`, () => {
-      const content = read(rel);
       const missing = types.filter((t) => !content.includes(t));
       expect(missing).toEqual([]);
     });
