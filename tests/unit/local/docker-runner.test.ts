@@ -85,6 +85,10 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 });
 
 import { pickFreePort, pullImage, runDetached } from '../../../src/local/docker-runner.js';
+import {
+  ALLOW_SECRETS_ON_ARGV_ENV,
+  resetFinchArgvWarningsForTest,
+} from '../../../src/utils/docker-cmd.js';
 
 describe('pickFreePort', () => {
   it('returns a positive port number', async () => {
@@ -676,5 +680,130 @@ describe('pullImage', () => {
     await expect(pullImage('image:tag', false)).rejects.toThrow(
       /docker pull image:tag exited with code 2: \(no output\)/
     );
+  });
+});
+
+// Issue #3600: under finch on macOS / Windows the value-less `-e KEY` is
+// rewritten to `-e KEY=<value>` on the limactl argv. A caller-marked secret is
+// refused (unless opted in); the AWS credential set is forwarded with a warning.
+describe('runDetached under finch on macOS (issue #3600)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+  let savedOptIn: string | undefined;
+
+  beforeEach(() => {
+    childProcessMock.execFile.mockReset();
+    warnSpy.mockClear();
+    resetFinchArgvWarningsForTest();
+    savedDocker = process.env['CDK_DOCKER'];
+    savedOptIn = process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+    delete process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+    process.env['CDK_DOCKER'] = '/opt/homebrew/bin/finch';
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+    if (savedOptIn === undefined) delete process.env[ALLOW_SECRETS_ON_ARGV_ENV];
+    else process.env[ALLOW_SECRETS_ON_ARGV_ENV] = savedOptIn;
+  });
+
+  const credsEnv = {
+    AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE',
+    AWS_SECRET_ACCESS_KEY: 'secret-key-value',
+    AWS_SESSION_TOKEN: 'session-token-value',
+  };
+
+  function warnings(): string {
+    return warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+  }
+
+  it('refuses a caller-marked secret before spawning anything', async () => {
+    await expect(
+      runDetached({
+        image: 'my-image:latest',
+        mounts: [],
+        env: { ...credsEnv, DB_PASSWORD: 'real-secret' },
+        sensitiveEnvKeys: new Set(['DB_PASSWORD']),
+        cmd: [],
+        hostPort: 9000,
+      })
+    ).rejects.toThrow(/refusing to forward secret\(s\) DB_PASSWORD under CDK_DOCKER=finch/);
+    expect(childProcessMock.execFile).not.toHaveBeenCalled();
+  });
+
+  it('the refusal names no value', async () => {
+    const err = await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { DB_PASSWORD: 'real-secret' },
+      sensitiveEnvKeys: new Set(['DB_PASSWORD']),
+      cmd: [],
+      hostPort: 9000,
+    }).catch((e: unknown) => e as Error);
+    expect(String(err)).not.toContain('real-secret');
+  });
+
+  it('forwards the secret when opted in, and warns naming keys but not values', async () => {
+    process.env[ALLOW_SECRETS_ON_ARGV_ENV] = '1';
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { ...credsEnv, DB_PASSWORD: 'real-secret' },
+      sensitiveEnvKeys: new Set(['DB_PASSWORD']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    expect(childProcessMock.execFile).toHaveBeenCalledTimes(1);
+    const msg = warnings();
+    expect(msg).toContain('CDK_DOCKER=finch on macOS / Windows puts the values of');
+    for (const k of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'DB_PASSWORD']) {
+      expect(msg).toContain(k);
+    }
+    for (const v of ['AKIAEXAMPLE', 'secret-key-value', 'session-token-value', 'real-secret']) {
+      expect(msg).not.toContain(v);
+    }
+  });
+
+  it('forwards the AWS credential set with a warning, once per process per key set', async () => {
+    const opts = { image: 'my-image:latest', mounts: [], env: credsEnv, cmd: [], hostPort: 9000 };
+    await runDetached(opts);
+    await runDetached(opts);
+    expect(childProcessMock.execFile).toHaveBeenCalledTimes(2);
+    const finchWarnings = warnSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('CDK_DOCKER=finch')
+    );
+    expect(finchWarnings).toHaveLength(1);
+    expect(String(finchWarnings[0]![0])).toContain('AWS_SECRET_ACCESS_KEY');
+  });
+
+  it('neither refuses nor warns for finch on Linux', async () => {
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { ...credsEnv, DB_PASSWORD: 'real-secret' },
+      sensitiveEnvKeys: new Set(['DB_PASSWORD']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    expect(childProcessMock.execFile).toHaveBeenCalledTimes(1);
+    expect(warnings()).not.toContain('CDK_DOCKER=finch');
+  });
+
+  it('neither refuses nor warns for docker on macOS', async () => {
+    process.env['CDK_DOCKER'] = 'docker';
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { ...credsEnv, DB_PASSWORD: 'real-secret' },
+      sensitiveEnvKeys: new Set(['DB_PASSWORD']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    expect(childProcessMock.execFile).toHaveBeenCalledTimes(1);
+    expect(warnings()).not.toContain('CDK_DOCKER=finch');
   });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   METADATA_ENDPOINT_IMAGE,
   METADATA_ENDPOINT_IP,
@@ -7,6 +7,8 @@ import {
   createTaskNetwork,
   destroyTaskNetwork,
 } from '../../../src/local/ecs-network.js';
+import { resetFinchArgvWarningsForTest } from '../../../src/utils/docker-cmd.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 // The mock must handle BOTH 3-arg (execFile(cmd, args, cb)) AND 4-arg
 // (execFile(cmd, args, opts, cb)) forms because promisify(execFile) uses
@@ -233,5 +235,50 @@ describe('createTaskNetwork — sidecar failure redaction (issue #2440)', () => 
     // Non-value-bearing argv survives: it is the diagnostic.
     expect(message).toContain(METADATA_ENDPOINT_IMAGE);
     expect(message).toContain(`--ip ${METADATA_ENDPOINT_IP}`);
+  });
+});
+
+// Issue #3600: under finch on macOS / Windows the sidecar's value-less
+// credential flags reach the limactl argv as `-e KEY=<value>`. The sidecar is
+// still started (credentials are warned about, not refused).
+describe('createTaskNetwork under finch on macOS (issue #3600)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+
+  beforeEach(() => {
+    savedDocker = process.env['CDK_DOCKER'];
+    resetFinchArgvWarningsForTest();
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+    vi.restoreAllMocks();
+  });
+
+  const credentials = {
+    accessKeyId: 'AKIAFAKEKEYID',
+    secretAccessKey: 'super-secret-value-xyz',
+    sessionToken: 'session-token-abc',
+  };
+
+  it('starts the sidecar and warns naming the credential keys, not their values', async () => {
+    process.env['CDK_DOCKER'] = 'finch';
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    await createTaskNetwork({ cluster: 'cdkd-local', credentials, skipPull: true });
+    expect(captured.calls.some((c) => c.args[0] === 'run')).toBe(true);
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('CDK_DOCKER=finch on macOS / Windows puts the values of');
+    expect(msg).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(msg).not.toContain('super-secret-value-xyz');
+  });
+
+  it('does not warn under docker', async () => {
+    process.env['CDK_DOCKER'] = 'docker';
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    await createTaskNetwork({ cluster: 'cdkd-local', credentials, skipPull: true });
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('CDK_DOCKER=finch');
   });
 });

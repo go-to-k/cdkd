@@ -205,6 +205,13 @@ dropped; `--from-state` reads cdkd's S3 state for the target stack, and
 `ListStackResources` for apps deployed through the upstream CDK CLI. The
 two flags are mutually exclusive, and `--env-vars` overrides win over both.
 
+A decrypted SecureString value reaches the container through the `docker run`
+spawn environment, not the command line. Under `CDK_DOCKER=finch` on macOS or
+Windows that no longer holds, so the invoke is refused before the container
+starts (the image is resolved and the value decrypted first) unless
+`CDKD_ALLOW_SECRETS_ON_ARGV=1` is set; see
+[finch on macOS and Windows](local-run-task.md#finch-on-macos-and-windows).
+
 A state source also feeds image resolution: a same-stack ECR repository
 referenced from the runtime's `ContainerUri` is reduced to the deployed image
 URI before the container is resolved.
