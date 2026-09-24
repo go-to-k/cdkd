@@ -47,6 +47,7 @@ import {
 } from '../../local/state-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { foldRegionOption } from '../region-options.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -286,7 +287,14 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // case-sensitive, so a raw `--region CN-NORTH-1` reached the COMMERCIAL
   // endpoint). The pseudo-parameter resolver folds again from its own four
   // sources; double-folding is a no-op.
-  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  //
+  // Issue #3622: `foldRegionOption` folds the `AWS_REGION` /
+  // `AWS_DEFAULT_REGION` env vars as well. Folding only the flag left the SDK
+  // clients this command builds with NO region (the `--from-state` S3 client
+  // when `--region` is absent, `applyRoleArnIfSet`'s STS client, the
+  // `--profile` credential resolver) reading the raw env spelling through the
+  // SDK's own region chain, and the synth subprocess inheriting it.
+  foldRegionOption(options);
   // Issue #1836: `--stack-region` needs the SAME fold, at the same point. It is
   // not a chain-local derivation — it is a flag whose raw value is COMPARED
   // against a state record's region (`local-state-loader.ts`) and forwarded to

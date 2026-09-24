@@ -335,6 +335,44 @@ if [[ "${LEFTOVER_NETWORKS}" -ne 0 ]]; then
 fi
 echo "[verify]   teardown clean: 0 containers (incl. exited), 0 task networks"
 
+# ─── Issue #3622: upper-cased AWS_REGION with NO --region ─────────────
+#
+# The handler folded only the flag, so the env spelling reached the SDK
+# clients cdkd builds with no region (the `--from-state` S3 client among
+# them), whose region the AWS SDK reads from AWS_REGION directly. The same
+# env task runs again under an upper-cased AWS_REGION / AWS_DEFAULT_REGION and
+# must resolve the same state-derived values, with `${AWS::Region}` canonical.
+UPPER_REGION="$(printf '%s' "${REGION}" | tr '[:lower:]' '[:upper:]')"
+[ "${UPPER_REGION}" != "${REGION}" ] || { echo "[verify] FAIL: region-case arm is vacuous for '${REGION}'"; exit 1; }
+echo "[verify] step 4c-env: AWS_REGION=${UPPER_REGION} --from-state (no --region), issue #3622"
+ENV_UPPER_OUT="$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" \
+  ${CDKD} local run-task "${TASK_PATH_ENV}" \
+  --from-state \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --state-bucket "${STATE_BUCKET}" 2>&1)" || {
+  echo "[verify] FAIL: run-task under AWS_REGION=${UPPER_REGION} exited non-zero:"
+  echo "${ENV_UPPER_OUT}" | tail -20
+  exit 1
+}
+echo "${ENV_UPPER_OUT}" | tail -5
+sleep 3
+ENV_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-env-fixture-printer-" --format '{{.ID}}' | head -n 1)"
+[ -n "${ENV_CONTAINER_ID}" ] || { echo "[verify] FAIL: env-task container not found (upper-cased AWS_REGION run)"; exit 1; }
+ENV_LOGS="$(docker logs "${ENV_CONTAINER_ID}" 2>&1)"
+echo "${ENV_LOGS}" | sed 's/^/[verify]     /'
+assert_in_logs "TABLE_NAME=${DEPLOYED_TABLE}"
+assert_in_logs "TABLE_ARN=arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${DEPLOYED_TABLE}"
+assert_in_logs "ENDPOINT=local-${REGION}-${DEPLOYED_TABLE}"
+if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
+  echo "[verify] FAIL: DB_SECRET was not resolved under AWS_REGION=${UPPER_REGION}"
+  exit 1
+fi
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+echo "[verify]   upper-cased AWS_REGION resolved the same state-derived values"
+
 # --- Issue #2189: a `:json-key:` ref to a NON-JSON secret must refuse -----
 #
 # The refusal is the POINT of this arm, so the run is EXPECTED to exit
