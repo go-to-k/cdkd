@@ -63,7 +63,8 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       drifted: (d) => expectTypeOf(d.changes).toExtend<unknown[]>(),
       clean: (c) => expectTypeOf(c.logicalId).toEqualTypeOf<string>(),
       // Issues #2151 / #1945 added `readFailed`; issue #2952 added
-      // `baselineRefused`; go-to-k/cdkd#3018 added `unreadableRecord`. Kept as
+      // `baselineRefused`; go-to-k/cdkd#3018 added `unreadableRecord`;
+      // go-to-k/cdkd#3595 added `uncertifiedBaseline` (exit 2). Kept as
       // an EXACT union rather than widened to `string`: this line failing on a
       // cause addition is the fence working -- `outcomeExitSignal`,
       // `notComparedReason`, `UNCOMPARED_REASONS` and `ANY_OF_IT_COMPARED` all
@@ -76,7 +77,12 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       // `ANY_OF_IT_COMPARED` replaced them for that reason.
       notCompared: (n) =>
         expectTypeOf(n.notComparedCause).toEqualTypeOf<
-          'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused' | 'unreadableRecord'
+          | 'refused'
+          | 'unresolvedToken'
+          | 'readFailed'
+          | 'baselineRefused'
+          | 'unreadableRecord'
+          | 'uncertifiedBaseline'
         >(),
       unsupported: () => {},
       skipped: () => {},
@@ -122,7 +128,29 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       awsProperties: {},
       secrets: new Map(),
       maskedPaths: new Set(),
+      // Present, so `notComparedCause` is the ONLY missing member and the
+      // directive above fails for the reason it names (issue #3595).
+      uncertifiedPaths: [],
+      secretsIncomplete: false,
     };
     void silentDrift;
+  });
+
+  it('requires `drifted` to STATE whether its secrets map is complete', () => {
+    // Issue #3595: the revert plan withholds live-derived key lists on this
+    // fact, so a construction site that forgot it must not compile.
+    // @ts-expect-error — `secretsIncomplete` is required.
+    const unstated: DriftOutcome = {
+      kind: 'drifted',
+      logicalId: 'Fn',
+      resourceType: 'AWS::Lambda::Function',
+      changes: [],
+      awsProperties: {},
+      secrets: new Map(),
+      maskedPaths: new Set(),
+      uncertifiedPaths: [],
+      notComparedCause: undefined,
+    };
+    void unstated;
   });
 });

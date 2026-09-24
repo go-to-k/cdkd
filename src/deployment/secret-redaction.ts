@@ -4799,6 +4799,88 @@ function subtreeHasDynamicReference(value: unknown): boolean {
 }
 
 /**
+ * Could the comparator's dotted `path` also be spelled, in `bag`, through an
+ * own key that itself contains a dot? Walks own keys as far as `bag` goes; at
+ * each level a dotted key equal to, or a dotted prefix of, the rest of the
+ * path makes the coordinate ambiguous. Exported so the drift report can ask it
+ * of the OBSERVED baseline too, where a readback-only dotted key can sit.
+ */
+export function pathCrossesDottedKey(bag: unknown, path: string): boolean {
+  const segments = path.split('.');
+  let cursor: unknown = bag;
+  for (let i = 0; i < segments.length; i++) {
+    if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return false;
+    const rest = segments.slice(i).join('.');
+    for (const key of Object.keys(cursor)) {
+      if (key.includes('.') && (rest === key || rest.startsWith(`${key}.`))) return true;
+    }
+    if (!Object.hasOwn(cursor, segments[i]!)) return false;
+    cursor = (cursor as Record<string, unknown>)[segments[i]!];
+  }
+  return false;
+}
+
+/**
+ * Could a {@link SECRET_MASK} in an `observedProperties` baseline at the dotted
+ * `path` be an UNCERTIFIED-POSITION mask (issue
+ * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s fail-closed refusal)
+ * rather than a `NoEcho` custom-resource mask (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274))? Issue
+ * [#3595](https://github.com/go-to-k/cdkd/issues/3595).
+ *
+ * Answered from the record's own `properties` — the SOURCE the refusal was
+ * positioned against — because nothing in the record names the mask's class.
+ * The two classes differ in where they land: a fail-closed mask is written
+ * into `observedProperties` only, at a position whose source spells a dynamic
+ * reference; a `NoEcho` mask is persisted into `properties` too, since there is
+ * no expression to store in its place. So:
+ *
+ * - the node `properties` holds at `path` must carry a `{{resolve:` string (a
+ *   raw `Fn::Join` object embedding one counts) and NO mask leaf; or
+ * - where `properties` has no node at `path` — the readback reshaped a scalar
+ *   the template spells as a reference into a container, and the comparator
+ *   reported a key below it — the deepest node it DOES have on the path must be
+ *   a STRING carrying a `{{resolve:`.
+ *
+ * An ancestor OBJECT whose sibling carries a reference is deliberately NOT
+ * enough: a `NoEcho` plaintext echoed into a readback-only key beside a
+ * templated reference would then read as the fail-closed class.
+ *
+ * `path` is the drift comparator's coordinate: object keys joined by `.`, never
+ * an array index (it compares arrays whole). Own keys only, for the reason
+ * `drift.ts`'s `getAtPath` gives. Homed here, beside the redaction that
+ * writes the mask, so any later writer-side check asks the SAME question.
+ */
+export function isUncertifiedBaselineMaskPosition(
+  properties: Record<string, unknown>,
+  path: string
+): boolean {
+  // A KEY containing a dot is one segment to the comparator but several here,
+  // so the path is AMBIGUOUS wherever such a key could spell the rest of it —
+  // and the walk could stop at a sibling string without seeing a mask the real
+  // node carries. Fail closed: an ambiguous position keeps the `NoEcho`
+  // disposition.
+  if (pathCrossesDottedKey(properties, path)) return false;
+  let cursor: unknown = properties;
+  for (const segment of path.split('.')) {
+    if (typeof cursor === 'string') break;
+    if (
+      cursor === null ||
+      typeof cursor !== 'object' ||
+      Array.isArray(cursor) ||
+      !Object.hasOwn(cursor, segment)
+    ) {
+      return false;
+    }
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  if (typeof cursor === 'string') {
+    return isDynamicReferenceString(cursor) && cursor !== SECRET_MASK;
+  }
+  return subtreeHasDynamicReference(cursor) && !carriesSecretMask(cursor);
+}
+
+/**
  * Every complete `{{resolve:...}}` token inside a string.
  *
  * This was a FOURTH spelling of the token pattern (`[^{}]*`, global) and is
