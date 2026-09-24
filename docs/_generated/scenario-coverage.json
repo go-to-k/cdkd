@@ -1149,6 +1149,13 @@
       ]
     },
     {
+      "name": "import-attribute-readback-misc",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-attribute-readback-network",
       "annotated": true,
       "scenarios": [
@@ -2679,6 +2686,7 @@
       "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).",
       "fixtures": [
         "import-attribute-readback",
+        "import-attribute-readback-misc",
         "import-attribute-readback-network",
         "import-lambda-url-attributes",
         "import-migrate-vpc",

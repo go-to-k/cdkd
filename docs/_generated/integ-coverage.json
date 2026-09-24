@@ -562,10 +562,14 @@
     {
       "resourceType": "AWS::BedrockAgentCore::Evaluator",
       "integs": [
-        "agentcore-tools"
+        "agentcore-tools",
+        "import-attribute-readback-misc"
       ],
       "signals": {
         "agentcore-tools": [
+          "literal"
+        ],
+        "import-attribute-readback-misc": [
           "literal"
         ]
       }
@@ -3670,9 +3674,13 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "import-attribute-readback-misc",
         "infra-security"
       ],
       "signals": {
+        "import-attribute-readback-misc": [
+          "l1"
+        ],
         "infra-security": [
           "l2"
         ]
@@ -3685,6 +3693,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "import-attribute-readback-misc",
         "propagation-races-2",
         "remove-protection"
       ],
@@ -3703,6 +3712,9 @@
         "emr-instance-fleets": [
           "l1",
           "literal"
+        ],
+        "import-attribute-readback-misc": [
+          "l1"
         ],
         "propagation-races-2": [
           "l1"
@@ -3794,6 +3806,7 @@
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "import-attribute-readback",
+        "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
         "infra-security",
         "intrinsic-functions",
@@ -3946,6 +3959,9 @@
           "l2",
           "literal"
         ],
+        "import-attribute-readback-misc": [
+          "l2"
+        ],
         "import-deployed-parameter-secret": [
           "l1"
         ],
@@ -4089,11 +4105,15 @@
       "resourceType": "AWS::IAM::User",
       "integs": [
         "iam-access-key",
+        "import-attribute-readback-misc",
         "infra-security"
       ],
       "signals": {
         "iam-access-key": [
           "l2"
+        ],
+        "import-attribute-readback-misc": [
+          "l1"
         ],
         "infra-security": [
           "l2"
@@ -4323,6 +4343,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "import-attribute-readback",
+        "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
         "import-lambda-url-attributes",
         "kinesis-esm-filter",
@@ -4515,6 +4536,9 @@
           "l2"
         ],
         "import-attribute-readback": [
+          "l2"
+        ],
+        "import-attribute-readback-misc": [
           "l2"
         ],
         "import-deployed-parameter-secret": [
@@ -5900,6 +5924,7 @@
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attribute-readback",
+        "import-attribute-readback-misc",
         "import-attribute-readback-network",
         "import-attributes",
         "import-deployed-parameter-secret",
@@ -6032,6 +6057,10 @@
           "l2"
         ],
         "import-attribute-readback": [
+          "l2"
+        ],
+        "import-attribute-readback-misc": [
+          "l1",
           "l2"
         ],
         "import-attribute-readback-network": [

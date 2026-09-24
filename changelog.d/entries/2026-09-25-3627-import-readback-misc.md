@@ -1,0 +1,6 @@
+- **`cdkd import` now records the attributes `create()` records for SSM parameters, IAM instance profiles / users / groups, and AgentCore evaluators (issue [#3627](https://github.com/go-to-k/cdkd/issues/3627))** -- `src/provisioning/providers/{ssm-parameter,iam-instance-profile,iam-user-group,agentcore-evaluator}-provider.ts`, their unit tests, and the new `tests/integration/import-attribute-readback-misc/` fixture. After `cdkd import`, including `--migrate-from-cloudformation`, a sibling's `Fn::GetAtt` got these values:
+  - **SSM parameter `Type` / `Value`**: the parameter name.
+  - **IAM instance profile / user / group `Arn` under a non-`/` `Path`**: a path-less ARN, silently. The resolver builds the ARN from the name.
+  - **Evaluator `Status` / `CreatedAt`**: the evaluator ARN.
+
+  Each `import()` now reads these back, and the #1852 deploy-time heal serves them for records imported earlier. The evaluator's ARN form now calls `GetEvaluator`, as its id form already did, and returns not-found for a missing evaluator. Importing an evaluator by ARN therefore now needs `bedrock-agentcore:GetEvaluator`. An SSM parameter's `Value` is recorded only when the template declares a plain literal. A `{{resolve:...}}` dynamic reference or a `Ref` (for example, to a `NoEcho` parameter) would put a plaintext into state that no redaction on the import or heal path covers.
