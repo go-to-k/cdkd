@@ -41,7 +41,10 @@ replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
-says, and none in a lane prompt. An edited PR re-runs CI, holding the merge.
+says, and none in a lane prompt. Edit the body BEFORE the push: an edit
+mid-CI CANCELS the in-flight runs, and a CANCELLED required context on the
+sha blocks `gh pr merge` even after the re-runs pass — `gh run rerun` each
+cancelled run to clear it (go-to-k/cdkd#3664).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file

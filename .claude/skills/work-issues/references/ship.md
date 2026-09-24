@@ -35,7 +35,9 @@ cat > "$MSGFILE" <<'EOF'
 <the squashed message>
 EOF
 git commit -F "$MSGFILE"
-git rebase origin/main                                   # at most one conflict
+git rebase origin/main   # its OWN call, then `git status`: at most one conflict,
+                         # and a regen / `commit --amend` chained after a STOPPED
+                         # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
@@ -66,6 +68,11 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
+
+- **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
+  merge the release PR, confirm the npm version, then comment on the issue in
+  English — thanks, the version it shipped in, "feel free to open an issue"
+  (maintainer direction, go-to-k/cdkd#3624).
 
 ### Pull, then rebuild the linked binary
 
