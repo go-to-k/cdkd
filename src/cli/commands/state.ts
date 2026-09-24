@@ -3219,6 +3219,60 @@ function createStateInfoCommand(): Command {
  */
 const STACK_HOLE = 'stack';
 
+/**
+ * `cdkd state refresh-observed <stack>` command implementation.
+ *
+ * Walks every resource in the given stack(s) and refreshes its
+ * `observedProperties` field by calling the matching provider's
+ * `readCurrentState`. The result is the same baseline that a fresh
+ * `cdkd deploy` would produce — but without re-deploying anything.
+ *
+ * Why this exists: state schema `version: 3` (`observedProperties`)
+ * shipped after many users had already deployed stacks under v2.
+ * `cdkd deploy` only populates `observedProperties` on resources that
+ * actually go through CREATE / UPDATE — `NO_CHANGE`-skipped resources
+ * stay with `observedProperties: undefined` indefinitely after the
+ * upgrade, and `cdkd drift` falls back to `properties` baseline for
+ * those (= the pre-v3 behavior, missing console-side changes to keys
+ * the user did not template). This command lets users opt into the
+ * richer drift baseline for the whole stack in one shot.
+ *
+ * Behavior:
+ *  - Acquires a per-stack lock (scope: `state-refresh-observed`).
+ *  - Calls `provider.readCurrentState` in parallel (Promise.all) for the
+ *    resources that REACH it. FOUR paths do not, and review had to correct
+ *    this sentence twice — first from "every resource", then from three arms
+ *    to four. A resource whose record carries `observedBaselineRefused` (v10)
+ *    is SKIPPED before the provider is consulted and warned about separately,
+ *    since refreshing it could persist a resolved secret in plaintext. The
+ *    other three all count as `unsupported`: a type
+ *    `ProviderRegistry.shouldSkipResource` declines (returning before the
+ *    lookup), a type with no registered provider, and a provider that does not
+ *    implement `readCurrentState`. A per-resource failure is
+ *    COUNTED and logged at
+ *    `warn` naming the resource and the error, the rest of the stack is
+ *    still refreshed and saved, and the affected resource keeps whatever
+ *    `observedProperties` it already had (or none). So drift keeps
+ *    comparing against that RETAINED baseline where one exists, and falls
+ *    back to `properties` only where there is none — review caught the
+ *    unqualified claim, which said it always falls back. The run
+ *    then ends in `PartialFailureError` (exit 2) naming the count, which
+ *    is what distinguishes it from a crash. (This block travelled here
+ *    from `src/utils/pasteable-command.ts`, where it documented nothing;
+ *    review measured that it also described the old, swallow-and-debug
+ *    behaviour rather than the current one.)
+ *  - Writes state with optimistic locking (`expectedEtag`).
+ *  - Prints a per-stack summary: `N refreshed, M unsupported, K failed`.
+ *
+ * Flag set mirrors `state destroy`:
+ *  - `--all` — refresh every stack in the state bucket.
+ *  - `--stack-region <region>` — disambiguate when the same stackName
+ *    has state in multiple regions.
+ *  - `--dry-run` — print the planned refresh count per stack and exit
+ *    without acquiring a lock or writing state.
+ *  - `-y` / `--yes` — skip the confirmation prompt.
+ *  - Standard state options + `--profile` / `--role-arn` / `--verbose`.
+ */
 async function stateRefreshObservedCommand(
   stackArgs: string[],
   options: {

@@ -6399,7 +6399,26 @@ async function runRevert(
         `reached provider.update; each per-resource message above names its cause and remedy, ` +
         `e.g. missing secretsmanager:GetSecretValue / ssm:GetParameter grants for an ` +
         `unresolvable reference). ` +
-        `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
+        // USAGE text in Commander's own spelling, matching the four sites in
+        // `state.ts` and `destroy.ts` this PR converts for the same reason: the
+        // reader supplies their own stack name, and `[stacks...]` is what
+        // `cdkd drift --help` prints. The old `<stack>` disagreed with it.
+        //
+        // **The fence does NOT report this site, and the first version of this
+        // comment said it did.** A hole inside a prose `'...'` span is inert
+        // under the model the fence's shape A rests on -- the operator selects
+        // the span WITH its quotes -- and it was reported only by an
+        // intermediate, wrong version of the command-tail walk that paired
+        // quotes naively. Review measured the over-report and the walk now
+        // blanks quoted runs before looking for holes. The reword is kept
+        // because it is right, not because a check demanded it.
+        //
+        // Quoting `[stacks...]` would be wrong for a different reason than a
+        // shell one: the brackets and the `...` are Commander's GRAMMAR --
+        // optional, variadic -- not characters to type, so wrapping them reads
+        // as a literal argument name.
+        `Re-run 'cdkd drift [stacks...]' to see the remaining drift, then ` +
+        `'cdkd drift [stacks...] --revert' to retry.`
     );
   }
 }
@@ -6735,11 +6754,25 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             // Masked for the same reason as the preserved-tag list above.
             out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
+          // The SENTENCE is gated with its command, not separately. A first
+          // cut printed "with the command below" unconditionally, so a
+          // withheld target left the reader looking for a line that was never
+          // written -- the arm's own test asserted the command's ABSENCE and
+          // was satisfied by the contradiction. Review caught it.
+          const refresh = mayNameTarget(report.stackName, report.region)
+            ? pasteableCommand('cdkd state refresh-observed', [
+                { value: report.stackName, hole: 'stack' },
+                { flag: '--stack-region', value: report.region, hole: 'region' },
+              ])
+            : undefined;
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
-              `Populate observedProperties with the command below, or re-deploy, if you want ` +
-              `them reverted too.\n`
+              (refresh === undefined
+                ? `Re-deploy if you want them reverted too; this record's identity cannot be ` +
+                  `named safely in a command, so none is offered.\n`
+                : `Populate observedProperties with the command below, or re-deploy, if you ` +
+                  `want them reverted too.\n`)
           );
           // go-to-k/cdkd#3307's `--stack-region` requirement for this site,
           // closed through go-to-k/cdkd#3436's fold-in. The issue's stated
@@ -6759,12 +6792,6 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           // of it. Three sites deciding "may I name this target" by three
           // hand-built conditions is the defect go-to-k/cdkd#3499 closed one
           // module over; one predicate means one probe can red all three.
-          const refresh = mayNameTarget(report.stackName, report.region)
-            ? pasteableCommand('cdkd state refresh-observed', [
-                { value: report.stackName, hole: 'stack' },
-                { flag: '--stack-region', value: report.region, hole: 'region' },
-              ])
-            : undefined;
           // `refresh !== undefined`, not `refresh.exact === true`: the second
           // is SUBSUMED and no mutant can red it. `isPasteableIdent` requires
           // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$` plus `displayIdent(v) === v`, which

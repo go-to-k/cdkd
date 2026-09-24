@@ -272,10 +272,12 @@ compare it at all and reports it under `notCompared` with the cause
 `baselineRefused`. Comparing it would have meant rendering the live AWS value —
 including a decrypted secret — as one side of a drift row that nothing could
 mask, because a refused record spells no `{{resolve:...}}` for the redaction to
-key on. Successful resources are in sync; re-run `cdkd drift <stack>`
-to see what is left, then either `cdkd drift <stack> --revert` for the
+key on. Successful resources are in sync; re-run `cdkd drift [stacks...]`
+to see what is left, then either `cdkd drift [stacks...] --revert` for the
 recoverable failures or `cdkd deploy <stack> --replace` for the
-update-not-supported ones.
+update-not-supported ones. (`[stacks...]` is the spelling `cdkd drift --help`
+and the partial-failure message both use; `cdkd deploy` declares its own
+positional differently.)
 
 ## Secret and redacted values
 

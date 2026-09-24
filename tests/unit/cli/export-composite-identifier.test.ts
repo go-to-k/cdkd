@@ -1151,6 +1151,48 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).not.toMatch(/Re-deploy the stack once/);
   });
 
+  it('names the logical id through the paste GATE, never the display renderer', async () => {
+    // The P1 this lane shipped and review probed. The remedy line is a
+    // `cdkd import` an operator PASTES, and the first cut rendered the logical
+    // id through `displayIdent` inside it, with a comment asserting the holes
+    // on either side kept the line inert. Both halves were wrong: `displayIdent`
+    // JSON-quotes, and JSON quotes do not stop COMMAND SUBSTITUTION -- measured,
+    // the pasted line created the file. That is go-to-k/cdkd#3486's round-3
+    // finding, reintroduced three PRs later.
+    //
+    // This id renders EXACTLY (printable ASCII, no leading `-`, no `*` or `/`),
+    // so the gate NAMES it -- shell-quoted. The distinction under test is the
+    // QUOTE KIND, not withholding: `'...'` makes `$( )` literal in argv,
+    // `"..."` does not.
+    const hostile = 'Tbl$(touch OWNED)';
+    const state = stateWith({
+      [hostile]: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: SECRET_MASK },
+      },
+    });
+    const template = {
+      Resources: { [hostile]: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    const reason = plan.blocked[0]!.reason;
+    // Positive control: the arm under test is the one that fired.
+    expect(reason).toMatch(/redaction mask/);
+    // SHELL-quoted by the gate...
+    expect(reason).toContain(`--resource 'Tbl$(touch OWNED)'=`);
+    // ...and NOT JSON-quoted, which is what `displayIdent` would have emitted
+    // and what ran when pasted.
+    expect(reason).not.toContain('--resource "Tbl$(touch OWNED)"');
+    // The positional is a HOLE, not the logical id: `cdkd import` declares it
+    // as `[stack]`, and an earlier cut passed the RESOURCE there -- a command
+    // naming a resource where a stack goes, from a function with no stack name
+    // in scope. A shape fence cannot see that; only reading the command can.
+    expect(reason).toContain(`Repair with: cdkd import '<stack>' --resource`);
+  });
+
   it('CONTROL: the same record with a real recorded ARN exports', async () => {
     const state = stateWith({
       Table: {
@@ -1233,6 +1275,54 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
       /import identifier cdkd resolved for this resource is the redaction mask/
     );
     expect(plan.blocked[0]!.reason).toMatch(/masked physical id/);
+  });
+
+  it('prints that refusal’s repair command on a labelled line, gated, not in the sentence', async () => {
+    // The SIBLING of the `maskedIdentifierAttributeReason` P1, and one nobody
+    // found for three PRs of this lane: the same `cdkd import` remedy, written
+    // independently, kept go-to-k/cdkd#3363's shape — a prose `'...'` span
+    // holding a `cdkd` verb AND an interpolated logical id, where the operator
+    // selects the span WITH its quotes and a value carrying `'` inverts the
+    // wrapper. The source fence reported it only once its `+` runs were folded,
+    // because the span's opening quote sat in one concatenated literal and the
+    // interpolation in the next.
+    const hostile = "Bkt'; touch OWNED; #";
+    const state = stateWith({
+      [hostile]: {
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: SECRET_MASK,
+        properties: { BucketName: 'my-bucket' },
+      },
+    });
+    const template = {
+      Resources: { [hostile]: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    const reason = plan.blocked[0]!.reason;
+    // Positive control: the arm under test fired.
+    expect(reason).toMatch(/import identifier cdkd resolved for this resource is the redaction/);
+    // The command is LAST, on its own labelled line, and unwrapped.
+    expect(reason).toMatch(/\nRepair with: cdkd import '<stack>' --resource /);
+    // Nothing runnable survives inside the prose. Keyed on `cdkd import` and
+    // on the VALUE, not on "a quoted span holding any cdkd verb" -- the first
+    // draft of this line used the latter and matched `('***'), ... cdkd state
+    // holds`, a pseudo-span opened by the possessive in `resource's`. That is
+    // the same false pairing the fence's own `isQuoteDelimiter` exists for,
+    // reinvented in an assertion.
+    const sentence = reason.split('\nRepair with: ')[0] ?? '';
+    expect(sentence).not.toContain('cdkd import');
+    expect(sentence).not.toContain(hostile);
+    // The gate NAMES this one, SHELL-quoted -- it renders exactly and is
+    // neither option- nor pattern-shaped, so withholding it would be the wrong
+    // verdict, and my first draft of this line asserted a hole and was wrong.
+    // What makes the payload inert is `shellQuote`'s `'\\''` escape: the whole
+    // value is one argv token, and the `;` inside it is literal. That is the
+    // distinction the whole class turns on -- quoting KIND, not withholding.
+    expect(reason).toContain(String.raw`--resource 'Bkt'\''; touch OWNED; #'=`);
+    // ...and the payload appears ONLY inside that quoted token, never loose in
+    // the sentence the operator might select on its own.
+    expect(sentence).not.toContain('touch OWNED');
   });
 });
 
