@@ -492,3 +492,55 @@ export function checkPasteableCommandShapes(root: string): PasteableReport {
     staleExemptions,
   };
 }
+
+/**
+ * The CLI, and the reason `runSelfProbes` has a FORCE_FAIL seam at all.
+ *
+ * Without an entry point that calls it, the probes are a function the test
+ * happens to invoke — they cannot fail a run, and the seam proves nothing
+ * about enforcement. This runs them BEFORE the tree is read, so a classifier
+ * that reports everything (leaving every floor satisfied and the counts
+ * LARGER) dies on a known verdict rather than on a magnitude.
+ *
+ * Exit codes: 0 clean, 1 findings or stale exemptions, 2 the probes or a floor
+ * failed — a distinction worth having, since the second means the critic is
+ * broken rather than the tree.
+ */
+export function main(argv: readonly string[] = process.argv.slice(2)): number {
+  const root = argv.find((a) => a.startsWith('--root='))?.slice('--root='.length) ?? 'src';
+  const probeFailures = runSelfProbes();
+  if (probeFailures.length > 0) {
+    for (const failure of probeFailures) process.stderr.write(`self-probe: ${failure}\n`);
+    return 2;
+  }
+  const report = checkPasteableCommandShapes(root);
+  if (
+    report.filesScanned < FLOORS.filesScanned ||
+    report.spansExamined < FLOORS.spansExamined ||
+    report.commandLiteralsExamined < FLOORS.commandLiteralsExamined
+  ) {
+    process.stderr.write(
+      `floor not met: ${report.filesScanned} files, ${report.spansExamined} spans, ` +
+        `${report.commandLiteralsExamined} command literals — the scan attests to nothing\n`
+    );
+    return 2;
+  }
+  for (const stale of report.staleExemptions) {
+    process.stderr.write(`stale exemption (its target is gone): ${stale}\n`);
+  }
+  for (const f of report.findings) {
+    process.stderr.write(`${f.file}:${f.line} [${f.shape}] ${f.excerpt}\n`);
+  }
+  if (report.findings.length > 0 || report.staleExemptions.length > 0) return 1;
+  process.stdout.write(
+    `check OK — ${report.filesScanned} files, ${report.spansExamined} quoted spans, ` +
+      `${report.commandLiteralsExamined} command literals, 0 findings\n`
+  );
+  return 0;
+}
+
+// `endsWith` rather than an equality: the path arrives differently under a
+// direct `node scripts/...` run and under a task runner.
+if (process.argv[1]?.endsWith('check-pasteable-command-shapes.ts') === true) {
+  process.exit(main());
+}

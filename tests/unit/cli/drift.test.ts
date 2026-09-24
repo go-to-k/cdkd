@@ -2485,6 +2485,48 @@ describe('cdkd drift', () => {
        * Under `--all` a throw here would skip every later stack's revert, a
        * regression against the pre-#1644 behavior of never writing at all.
        */
+      it('WITHHOLDS the revert command in that warning when the target cannot be named', async () => {
+        // The withheld direction of go-to-k/cdkd#3307's site-3 remedy, on the
+        // same `mayNameTarget` predicate as sites 2 and 4. It reuses the
+        // state-write-failure setup below rather than inventing one, because a
+        // review of an earlier revision of this lane found the first attempt at
+        // covering these two prose sites never reached either of them -- it
+        // drove an ordinary change and asserted on non-empty output.
+        const odd = makeState({
+          Ingress1: makeResource({
+            physicalId: 'sgr-1',
+            resourceType: 'AWS::EC2::SecurityGroupIngress',
+            properties: { IpProtocol: 6, FromPort: 443 },
+            observedProperties: { IpProtocol: 6, FromPort: 443 },
+          }),
+        });
+        odd.state.stackName = 'Test:Stack';
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'Test:Stack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(odd);
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+          update: async () => ({
+            physicalId: 'sgr-1',
+            wasReplaced: false,
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+          }),
+        });
+        mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+        await runDrift(['--all', '--revert', '--yes']);
+
+        const warned = warnSpy.mock.calls.flat().join('\n');
+        // POSITIVE control: the state write really failed and this really is
+        // the warning, so the negatives cannot pass by the path not running.
+        expect(
+          warned,
+          'the state-write warning did not fire -- the negatives below would be vacuous'
+        ).toMatch(/could not record the value the provider actually applied: PreconditionFailed/);
+        expect(warned).not.toMatch(/^Revert with: /m);
+        expect(warned).not.toContain("cdkd drift '<stack>'");
+        expect(warned).toContain(`re-run 'cdkd drift --revert' for this stack`);
+      });
+
       it('warns instead of failing the run when the state write fails', async () => {
         // The drift MUST come from a key other than IpProtocol (issue #1643):
         // `6` and `tcp` are two spellings of ONE protocol — AWS renames the

@@ -4,8 +4,10 @@ import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
+  displayIdent,
   displaySafe,
   truncateCodePoints,
+  IDENT_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import {
@@ -2210,17 +2212,29 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
     `granting cloudformation:DescribeType, or export ` +
     `the stack without this resource and adopt it into CloudFormation by hand. ` +
     `See https://github.com/go-to-k/cdkd/issues/2932.` +
-    // The command on its own labelled line, with the logical id gated. It used
-    // to sit inside the prose `'...'` span with `${logicalId}` interpolated
-    // ACROSS two concatenated literals — the go-to-k/cdkd#3363 shape, and the
-    // one case the shape fence classifies as `open-hole` rather than
-    // `quoted-command` because its recognizer reads one literal at a time.
-    `\nRepair with: ${
-      pasteableCommand('cdkd import', [
-        { value: logicalId, hole: 'stack' },
-        { flag: '--resource', hole: 'logicalId=physicalId' },
-      ]).command
-    } --force`
+    // The command on its own labelled line. It used to sit inside the prose
+    // `'...'` span with `${logicalId}` interpolated ACROSS two concatenated
+    // literals — the go-to-k/cdkd#3363 shape, and the one case the shape fence
+    // classifies as `open-hole` rather than `quoted-command` because its
+    // recognizer reads one literal at a time.
+    //
+    // The STACK stays a HOLE and the logical id goes where it belongs, inside
+    // `--resource`. A first cut of this passed `logicalId` as the positional,
+    // which `cdkd import` declares as `[stack]` — the command would have named
+    // a resource where a stack goes, and this function has no stack name in
+    // scope to put there. Review caught it; the fence could not, because both
+    // spellings are equally well-formed to a shape check. That is a real bound
+    // on what a shape fence buys: it moves a command out of the injection
+    // class without checking that the command MEANS anything.
+    //
+    // The id is rendered rather than gated-or-held because it is the subject
+    // of the sentence: a message that cannot name the key it is refusing to
+    // write says nothing useful. `displayIdent` quotes what it alters, so an
+    // altered spelling cannot read as a healthy sibling, and the holes on
+    // either side keep the line from being pasteable as-is.
+    `\nRepair with: cdkd import ${commandHole('stack')} --resource ` +
+    `${displayIdent(logicalId, { maxCodePoints: IDENT_MAX_CODE_POINTS })}=` +
+    `${commandHole('physicalId')} --force`
   );
 }
 

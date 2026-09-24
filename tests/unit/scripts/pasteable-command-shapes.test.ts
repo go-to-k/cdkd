@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from 'vite-plus/test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -134,18 +135,28 @@ describe('pasteable-command shape fence — it does not report everything', () =
     expect(runSelfProbes()).toEqual([]);
   });
 
-  it('consults those probes from the BINARY, not only from this file', () => {
-    // The seam. Without it, `main()` dropping its `runSelfProbes()` call is
-    // unobservable from here, because this file calls the function directly.
-    const previous = process.env['CDKD_SELF_PROBE_FORCE_FAIL'];
-    process.env['CDKD_SELF_PROBE_FORCE_FAIL'] = '1';
-    try {
-      expect(runSelfProbes()).toContain('forced by CDKD_SELF_PROBE_FORCE_FAIL');
-    } finally {
-      if (previous === undefined) delete process.env['CDKD_SELF_PROBE_FORCE_FAIL'];
-      else process.env['CDKD_SELF_PROBE_FORCE_FAIL'] = previous;
-    }
-  });
+  it('consults those probes from the SPAWNED binary, not only from this file', () => {
+    // SPAWNED, because calling `runSelfProbes` here proves only that the
+    // function works. The thing that has to hold is that the shipped entry
+    // point still CALLS it before reading the tree -- and a review of an
+    // earlier revision of this file found exactly that gap: the critic had no
+    // entry point at all, so the seam proved nothing about enforcement.
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const clean = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('0 findings');
+
+    const forced = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      env: { ...process.env, CDKD_SELF_PROBE_FORCE_FAIL: '1' },
+    });
+    // Exit 2, not 1: "the critic is broken" and "the tree is dirty" are
+    // different verdicts and the binary keeps them apart.
+    expect(forced.status).toBe(2);
+    expect(forced.stderr).toContain('forced by CDKD_SELF_PROBE_FORCE_FAIL');
+  }, 120_000);
 
   it('carries a NEGATIVE case for every accept arm', () => {
     // A probe suite of accepts only cannot fail on a classifier that reports
