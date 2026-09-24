@@ -768,7 +768,7 @@ function parseRouteEntries(value: string, previous: string[] | undefined, flag: 
       throw new Error(
         `Invalid ${flag} value "${token}": expected ` +
           `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
-          `(e.g. AWS::Lambda::Function:RuntimeManagementConfig).`
+          `(e.g. AWS::ApiGatewayV2::Api:Body).`
       );
     }
     if (token.startsWith('Custom::')) {
@@ -851,7 +851,7 @@ export const preferSdkRouteOption = new Option(
     'NOT written to AWS — the deployed resource is missing the field. Ignored for a ' +
     'resource that routes to Cloud Control for another reason (a sibling unwired ' +
     'property, or a sticky cc-api state record), where the values are written after all. ' +
-    'Example: --prefer-sdk-route AWS::Lambda::Function:RuntimeManagementConfig'
+    'Example: --prefer-sdk-route AWS::ApiGatewayV2::Api:Body'
 ).argParser(parsePreferSdkRouteToken);
 
 /**
