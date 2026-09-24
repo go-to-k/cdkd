@@ -322,14 +322,35 @@ describe('CloudFrontOAIProvider', () => {
       };
     }
 
-    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+    // Issue #3627: `S3CanonicalUserId` (what a bucket policy grants the OAI
+    // by) is read back, as `create()` records it.
+    it('records S3CanonicalUserId read back from GetCloudFrontOriginAccessIdentity', async () => {
+      mockSend.mockResolvedValueOnce({
+        CloudFrontOriginAccessIdentity: { Id: 'E1ABCDEF123456', S3CanonicalUserId: 'canon-123' },
+      });
       const result = await provider.import(makeInput({ knownPhysicalId: 'E1ABCDEF123456' }));
 
-      expect(result).toEqual({
+      expect(result).toStrictEqual({
         physicalId: 'E1ABCDEF123456',
-        attributes: { Id: 'E1ABCDEF123456' },
+        attributes: { Id: 'E1ABCDEF123456', S3CanonicalUserId: 'canon-123' },
       });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSend.mock.calls[0]![0].input).toEqual({ Id: 'E1ABCDEF123456' });
+    });
+
+    it('propagates any other GetCloudFrontOriginAccessIdentity failure', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
+      await expect(
+        provider.import(makeInput({ knownPhysicalId: 'E1ABCDEF123456' }))
+      ).rejects.toThrow('AccessDenied');
+    });
+
+    it('returns null when no OAI exists behind knownPhysicalId', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NoSuchCloudFrontOriginAccessIdentity({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.import(makeInput({ knownPhysicalId: 'EGONE' }));
+
+      expect(result).toBeNull();
     });
 
     it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {

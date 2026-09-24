@@ -7,6 +7,7 @@ import {
   NoSuchCloudFrontOriginAccessIdentity,
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -337,12 +338,29 @@ export class CloudFrontOAIProvider implements ResourceProvider {
    *
    * Users adopting an existing OAI should pass
    * `--resource <logicalId>=<oaiId>` (e.g. `E1ABCDEF123456`).
+   *
+   * The override is read back (issue #3627): `S3CanonicalUserId` is the
+   * attribute an S3 bucket policy grants the OAI by, `create()` records it,
+   * and the resolver cannot build it from the id. Returns `null` when no OAI
+   * exists behind the id.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+    if (!input.knownPhysicalId) return null;
+    let resp;
+    try {
+      resp = await this.cloudFrontClient.send(
+        new GetCloudFrontOriginAccessIdentityCommand({ Id: input.knownPhysicalId })
+      );
+    } catch (err) {
+      if (err instanceof NoSuchCloudFrontOriginAccessIdentity) return null;
+      throw err;
     }
-    return null;
+    return {
+      physicalId: input.knownPhysicalId,
+      attributes: definedAttributes({
+        Id: input.knownPhysicalId,
+        S3CanonicalUserId: resp.CloudFrontOriginAccessIdentity?.S3CanonicalUserId,
+      }),
+    };
   }
 }

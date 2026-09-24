@@ -652,9 +652,13 @@
     {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "integs": [
+        "import-attribute-readback-network",
         "s3-cloudfront"
       ],
       "signals": {
+        "import-attribute-readback-network": [
+          "l1"
+        ],
         "s3-cloudfront": [
           "l2"
         ]
@@ -2132,6 +2136,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-network",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2240,6 +2245,9 @@
         ],
         "fsx-windows": [
           "l2"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "infra-security": [
           "l2"
@@ -2532,6 +2540,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-network",
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
@@ -2653,6 +2662,9 @@
         "fsx-windows": [
           "l2",
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "infra-security": [
           "l2"
@@ -3133,7 +3145,8 @@
       "integs": [
         "ecs-fargate",
         "efs-lambda",
-        "efs-standalone"
+        "efs-standalone",
+        "import-attribute-readback-network"
       ],
       "signals": {
         "ecs-fargate": [
@@ -3144,6 +3157,9 @@
         ],
         "efs-standalone": [
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ]
       }
     },
@@ -3154,7 +3170,8 @@
         "ecs-fargate",
         "efs-immutable-replacement",
         "efs-lambda",
-        "efs-standalone"
+        "efs-standalone",
+        "import-attribute-readback-network"
       ],
       "signals": {
         "drift-revert-vpc": [
@@ -3175,6 +3192,9 @@
         "efs-standalone": [
           "l2",
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ]
       }
     },
@@ -3306,6 +3326,7 @@
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
+        "import-attribute-readback-network",
         "local-start-alb",
         "local-start-alb-from-state",
         "nlb-source-nat",
@@ -3329,6 +3350,9 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",
@@ -3355,6 +3379,7 @@
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
+        "import-attribute-readback-network",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
@@ -3371,6 +3396,9 @@
         "elbv2-same-name-replacement": [
           "l1",
           "literal"
+        ],
+        "import-attribute-readback-network": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",
@@ -5822,6 +5850,7 @@
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attribute-readback",
+        "import-attribute-readback-network",
         "import-attributes",
         "import-deployed-parameter-secret",
         "import-lambda-url-attributes",
@@ -5949,6 +5978,9 @@
           "l2"
         ],
         "import-attribute-readback": [
+          "l2"
+        ],
+        "import-attribute-readback-network": [
           "l2"
         ],
         "import-attributes": [

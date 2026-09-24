@@ -278,7 +278,7 @@ describe('ELBv2Provider', () => {
         expect(result.attributes).toEqual({
           TargetGroupArn:
             'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/1234567890abcdef',
-          TargetGroupFullName: 'my-tg/1234567890abcdef',
+          TargetGroupFullName: 'targetgroup/my-tg/1234567890abcdef',
           TargetGroupName: 'my-tg',
         });
         expect(mockSend).toHaveBeenCalledTimes(1);
@@ -339,7 +339,7 @@ describe('ELBv2Provider', () => {
         expect(result.attributes).toEqual({
           TargetGroupArn:
             'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/1234567890abcdef',
-          TargetGroupFullName: 'my-tg/1234567890abcdef',
+          TargetGroupFullName: 'targetgroup/my-tg/1234567890abcdef',
           TargetGroupName: 'my-tg',
         });
         expect(mockSend).toHaveBeenCalledTimes(2);
@@ -833,11 +833,30 @@ describe('ELBv2Provider', () => {
 
     it('LoadBalancer explicit override: DescribeLoadBalancers verifies and returns the ARN', async () => {
       const arn = 'arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/adopted/abc';
-      mockSend.mockResolvedValueOnce({ LoadBalancers: [{ LoadBalancerArn: arn }] });
+      mockSend.mockResolvedValueOnce({
+        LoadBalancers: [
+          {
+            LoadBalancerArn: arn,
+            DNSName: 'adopted-1.us-east-1.elb.amazonaws.com',
+            CanonicalHostedZoneId: 'Z35SXDOTRQ7X7K',
+            LoadBalancerName: 'adopted',
+          },
+        ],
+      });
 
       const result = await provider.import(makeInput({ knownPhysicalId: arn }));
 
-      expect(result).toEqual({ physicalId: arn, attributes: {} });
+      // Issue #3627: the same map `create()` records.
+      expect(result).toStrictEqual({
+        physicalId: arn,
+        attributes: {
+          DNSName: 'adopted-1.us-east-1.elb.amazonaws.com',
+          CanonicalHostedZoneID: 'Z35SXDOTRQ7X7K',
+          LoadBalancerArn: arn,
+          LoadBalancerFullName: 'app/adopted/abc',
+          LoadBalancerName: 'adopted',
+        },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('DescribeLoadBalancersCommand');
       expect(call.input).toEqual({ LoadBalancerArns: [arn] });
@@ -856,7 +875,9 @@ describe('ELBv2Provider', () => {
     it('TargetGroup explicit override: DescribeTargetGroups verifies and returns the ARN', async () => {
       const tgArn =
         'arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/my-tg/abcdef0123456789';
-      mockSend.mockResolvedValueOnce({ TargetGroups: [{ TargetGroupArn: tgArn }] });
+      mockSend.mockResolvedValueOnce({
+        TargetGroups: [{ TargetGroupArn: tgArn, TargetGroupName: 'my-tg' }],
+      });
 
       const result = await provider.import(
         makeInput({
@@ -866,7 +887,15 @@ describe('ELBv2Provider', () => {
         })
       );
 
-      expect(result).toEqual({ physicalId: tgArn, attributes: {} });
+      // Issue #3627: the same map `create()` records.
+      expect(result).toStrictEqual({
+        physicalId: tgArn,
+        attributes: {
+          TargetGroupArn: tgArn,
+          TargetGroupFullName: 'targetgroup/my-tg/abcdef0123456789',
+          TargetGroupName: 'my-tg',
+        },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('DescribeTargetGroupsCommand');
     });
