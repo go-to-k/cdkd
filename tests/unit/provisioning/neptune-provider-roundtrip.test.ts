@@ -278,7 +278,7 @@ describe('NeptuneProvider', () => {
 
     // Issue #3077: under --no-wait the attribute describe runs against a
     // `creating` instance whose Endpoint is unassigned; both keys are OMITTED
-    // (a Neptune DBInstance records only the two Endpoint attributes), never
+    // (a Neptune DBInstance records `Endpoint` / `Port`, the two dotted keys and `Arn`), never
     // `''` and never `Endpoint.Port: 'undefined'`.
     it('create under --no-wait records an empty map while the Endpoint is unassigned', async () => {
       mockSend

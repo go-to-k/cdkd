@@ -35,11 +35,19 @@ const schemaAttributes = (type: string): string[] => {
     readFileSync(new URL(`../../fixtures/cfn-schemas/${type.replaceAll('::', '-')}.json`, import.meta.url), 'utf8')
   ) as { schema?: { readOnlyProperties?: string[] }; readOnlyProperties?: string[] };
   const ro = (raw.schema ?? raw).readOnlyProperties ?? [];
-  return ro.map((p) => p.replace(/^\/properties\//, '')).filter((p) => /Endpoint|Port/.test(p));
+  const names = ro
+    .map((p) => p.replace(/^\/properties\//, ''))
+    .filter((p) => /Endpoint|Port/.test(p));
+  // `AWS::DocDB::DBCluster` declares `Port` as a WRITABLE property, so the
+  // schema's read-only list omits it, yet CloudFormation's `Fn::GetAtt` (and
+  // CDK's `attrPort`) serve it.
+  if (type === 'AWS::DocDB::DBCluster' && !names.includes('Port')) names.push('Port');
+  return names;
 };
 
 const CLUSTER = {
   DBClusterIdentifier: 'c',
+  Status: 'available',
   Endpoint: 'c.cluster-x.us-east-1.docdb.amazonaws.com',
   ReaderEndpoint: 'c.cluster-ro-x.us-east-1.docdb.amazonaws.com',
   Port: 27017,
@@ -48,6 +56,7 @@ const CLUSTER = {
 };
 const INSTANCE = {
   DBInstanceIdentifier: 'i',
+  DBInstanceStatus: 'available',
   DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:i',
   Endpoint: { Address: 'i.x.us-east-1.docdb.amazonaws.com', Port: 27017 },
 };
@@ -60,18 +69,36 @@ describe.each([
 ] as const)('%s records the schema Fn::GetAtt names (issue #3650)', (type, make, send, describe) => {
   beforeEach(() => send.mockReset());
 
-  it('import() records every endpoint-shaped schema attribute under its own name', async () => {
+  const props = (): Record<string, unknown> =>
+    type.endsWith('Cluster')
+      ? { DBClusterIdentifier: 'c', MasterUsername: 'u', MasterUserPassword: 'password1234' }
+      : { DBInstanceIdentifier: 'i', DBClusterIdentifier: 'c', DBInstanceClass: 'db.t3.medium' };
+  const physicalId = type.endsWith('Cluster') ? 'c' : 'i';
+
+  // Every attribute-map site: create(), update() and import() each build the
+  // map, and a site reverting to the dotted-only literal must go red.
+  const cases: ReadonlyArray<readonly [string, () => Promise<{ attributes?: Record<string, unknown> } | null>]> = [
+    ['create()', () => make().create('X', type, props())],
+    ['update()', () => make().update('X', physicalId, type, { ...props(), BackupRetentionPeriod: 3 }, props())],
+    [
+      'import()',
+      () =>
+        make().import({
+          logicalId: 'X',
+          resourceType: type,
+          stackName: 'S',
+          region: 'us-east-1',
+          properties: {},
+          knownPhysicalId: physicalId,
+        }),
+    ],
+  ];
+
+  it.each(cases)('%s records every endpoint-shaped schema attribute under its own name', async (_label, run) => {
     const names = schemaAttributes(type);
     expect(names.length).toBeGreaterThan(0);
-    send.mockResolvedValue(describe);
-    const result = await make().import({
-      logicalId: 'X',
-      resourceType: type,
-      stackName: 'S',
-      region: 'us-east-1',
-      properties: {},
-      knownPhysicalId: type.endsWith('Cluster') ? 'c' : 'i',
-    });
+    send.mockResolvedValue({ ...describe, DBCluster: CLUSTER, DBInstance: INSTANCE });
+    const result = await run();
     for (const name of names) expect(result?.attributes).toHaveProperty([name]);
   });
 });
