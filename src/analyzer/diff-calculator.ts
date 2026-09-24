@@ -18,7 +18,10 @@ import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
 } from '../provisioning/property-coverage.js';
-import { refuseMalformedResourceProperties } from '../state/malformed-resources-bag.js';
+import {
+  refuseMalformedResourceEntriesForDeploy,
+  refuseMalformedResourceProperties,
+} from '../state/malformed-resources-bag.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -205,6 +208,16 @@ export class DiffCalculator {
     // a decision made one layer up, where it also dominates every read of the
     // bag between the two (five, measured 2026-09-17 over comment-stripped
     // source; re-derive rather than trusting this figure).
+    //
+    // The ENTRY refusal comes first (go-to-k/cdkd#3314). A row that is not a
+    // readable resource record reads as absent at the lookup below and is
+    // planned as a CREATE of a resource cdkd already manages. A row with no
+    // `resourceType` is planned as a type-change replacement. Same placement
+    // and same no-identity decision as the `properties` refusal. It goes first
+    // so a typeless row with a torn map is reported as the row it is.
+    // `DeployEngine` also refuses at its state load, which a deploy reaches
+    // first: two walks between that load and this call died on such a row.
+    refuseMalformedResourceEntriesForDeploy(currentState, undefined, undefined);
     refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;

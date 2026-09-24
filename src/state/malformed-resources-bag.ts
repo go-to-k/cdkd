@@ -2064,9 +2064,9 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
  * entries FIRST ({@link repairMalformedResourceEntriesForReadOnly}), so the
  * row is reported once, as unreadable, rather than warned about as a preview
  * and then dropped. The object test stays here rather than
- * {@link isReadableResourceEntry} because the deploy path takes this
- * predicate WITHOUT the entry one, and narrowing it would let a typeless
- * object with a torn map reach the comparison unrefused. Likewise a `resources` bag that is not readable at all
+ * {@link isReadableResourceEntry} so this verdict does not depend on the entry
+ * guard running first: narrowing it would let a typeless object with a torn
+ * map through any caller that takes this predicate alone. Likewise a `resources` bag that is not readable at all
  * yields `[]` here rather than ids invented from a string's characters — that
  * class is {@link hasReadableResources}'s to report. What a caller must not do
  * is take only this one.
@@ -3115,6 +3115,73 @@ export function malformedResourceEntriesRefusalMessage(
     `refuses rather than skipping them: saving over the record would report a clean run for ` +
     `entries nothing could read, and would leave the next command to fail on them with no more ` +
     `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. Inspect it with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
+ * For `cdkd deploy`: refuse a record whose `resources` map holds a ROW that is
+ * not a readable resource record (go-to-k/cdkd#3314). TWO call sites, one
+ * verdict. `DeployEngine`'s state load is the one a deploy hits: two walks run
+ * between the load and the diff (the CLI's prefix-migration gate and the
+ * observed-state auto-refresh) and each died on a `null` row with a bare
+ * `TypeError`. `DiffCalculator.calculateDiff` also calls it, beside
+ * {@link refuseMalformedResourceProperties}, because that is where the verdict
+ * is made. Any other caller of the diff that forgets gets the refusal.
+ *
+ * The harm is the diff's verdict, not a save. The diff looks up each template
+ * resource by logical id, so a `null` (or any non-object) row reads as "not in
+ * state" and is planned as a CREATE. That either collides with the live
+ * resource's name or creates a SECOND copy and orphans the first. A row with no
+ * `resourceType` compares unequal to the template's type, so it is planned as a
+ * TYPE CHANGE, which is a replacement.
+ *
+ * A third entry point on the ENTRY class rather than a call to
+ * {@link refuseMalformedResourceEntries}, whose text is false here. That text
+ * says "Nothing was locked", but the deploy holds its lock at both sites. Same
+ * predicate, so the verdict cannot diverge.
+ *
+ * The engine passes its own resolved stack and region. `calculateDiff` holds no
+ * trusted pair and passes neither (see {@link stackClause}).
+ */
+export function refuseMalformedResourceEntriesForDeploy(
+  state: StackState,
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const unreadable = unreadableResourceEntries(state);
+  if (unreadable.length === 0) return;
+  // `markNonRetryable` for the reason `refuseMalformedResourceProperties`
+  // carries it: a nested child's deploy runs inside the parent's `withRetry`.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDeployResourceEntriesRefusalMessage(stackName, region, unreadable),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceEntriesForDeploy} raises. Like
+ * {@link malformedResourcePropertiesRefusalMessage}, it must be true under
+ * `--dry-run` too, since the dry-run return comes after the diff.
+ */
+export function malformedDeployResourceEntriesRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} 'cdkd deploy' can WRITE state and AWS ` +
+    `resources, so it refuses rather than continuing — under '--dry-run' too, because the plan ` +
+    `a dry run would print is the wrong one: a row that is not an object reads as a resource ` +
+    `cdkd does not manage, so the template's resource of that id is planned as a CREATE (a ` +
+    `second copy of a live resource, or a name collision), and a row with no resource type is ` +
+    `planned as a TYPE CHANGE, which replaces the live resource. Nothing was provisioned and no ` +
+    `state was written FOR THIS STACK. Repair or remove the record first; 'cdkd diff' previews ` +
+    `the rest of the stack without those rows and warns that it did. Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }

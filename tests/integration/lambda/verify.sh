@@ -80,9 +80,40 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Set while Phase 1b holds a deliberately damaged state record (issue #3314).
+# PLANTED_ORIGINAL is the record before the plant, PLANTED the damaged copy,
+# PLANTED_DLQ_URL the queue the nulled row named.
+PLANTED_ORIGINAL=""
+PLANTED=""
+PLANTED_DLQ_URL=""
+PLANTED_UPLOADED=0
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  if [ "${PLANTED_UPLOADED}" = 1 ] && [ -n "${STATE_BUCKET:-}" ]; then
+    live=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -c . 2>/dev/null)
+    [ -n "${live}" ] || live=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -c . 2>/dev/null)
+    if [ -z "${live}" ]; then
+      echo "WARNING: could not read s3://${STATE_BUCKET}/${STATE_KEY} to decide how to undo the Phase 1b plant; the destroy may meet the null row" >&2
+    elif [ "${live}" = "$(jq -c . "${PLANTED}" 2>/dev/null)" ]; then
+      # Still the planted copy: nothing ran over it, so put the original back
+      # and let the destroy below take every resource it names.
+      aws s3 cp "${PLANTED_ORIGINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 \
+        || echo "WARNING: could not restore the pre-plant state record" >&2
+    elif [ "${live}" != "$(jq -c . "${PLANTED_ORIGINAL}" 2>/dev/null)" ]; then
+      # A binary that did NOT refuse wrote over it: the record now names a
+      # SECOND queue, and nothing names the one the nulled row pointed at.
+      # Leave the record to the destroy and delete that first queue directly.
+      echo "    the planted record was rewritten; deleting the queue the nulled row named"
+      aws sqs delete-queue --queue-url "${PLANTED_DLQ_URL}" --region "${REGION}" >/dev/null \
+        || echo "LEAK?: could not delete ${PLANTED_DLQ_URL}; delete it by hand" >&2
+    fi
+  fi
+  PLANTED_UPLOADED=0
+  rm -f "${PLANTED_ORIGINAL}" "${PLANTED}"
+  PLANTED_ORIGINAL=""
+  PLANTED=""
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -172,6 +203,79 @@ if [ "${RESERVED_CC}" != "5" ]; then
   exit 1
 fi
 echo "    OK: Lambda ReservedConcurrentExecutions == 5 on AWS (SDK provider wired via PutFunctionConcurrency)"
+
+# --- Phase 1b: an unreadable resource ROW refuses the deploy (issue #3314) --
+# A `null` row in `resources` used to read as "not in state", so the deploy
+# planned a CREATE of a resource it already manages. For this unnamed DLQ that
+# is a SECOND queue, with the first one left unmanaged. A default deploy died
+# before the diff instead, on a bare `TypeError` in the CLI's prefix-migration
+# gate. Either way the refusal text below was absent, so this arm fails against
+# a pre-#3314 binary at the grep.
+echo "==> Phase 1b: plant a null resource row and expect the deploy to refuse it"
+DLQ_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SQS::Queue") | .key] | first')
+if [ -z "${DLQ_ID}" ] || [ "${DLQ_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the SQS dead-letter queue's logical id from state" >&2
+  exit 1
+fi
+PLANTED_DLQ_URL=$(echo "${STATE}" | jq -r --arg id "${DLQ_ID}" '.resources[$id].physicalId')
+PLANTED_ORIGINAL=$(mktemp)
+printf '%s\n' "${STATE}" > "${PLANTED_ORIGINAL}"
+PLANTED=$(mktemp)
+echo "${STATE}" | jq -c --arg id "${DLQ_ID}" '.resources[$id] = null' > "${PLANTED}"
+aws s3 cp "${PLANTED}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+PLANTED_UPLOADED=1
+echo "    planted resources[${DLQ_ID}] = null"
+
+for mode in default dry-run; do
+  extra=()
+  [ "${mode}" = "dry-run" ] && extra=(--dry-run)
+  set +e
+  refuse_out=$(node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${CDKD_REGION_SPELLING}" \
+    --yes ${extra[@]+"${extra[@]}"} 2>&1)
+  refuse_rc=$?
+  set -e
+  refuse_txt=$(printf '%s' "${refuse_out}" | sed $'s/\033\[[0-9;]*m//g')
+  if [ "${refuse_rc}" -ne 1 ]; then
+    echo "${refuse_txt}"
+    echo "FAIL: [${mode}] deploy over a null resource row exited ${refuse_rc}, expected 1 (a refusal)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${refuse_txt}" | grep -q "cannot be read as resources"; then
+    echo "${refuse_txt}"
+    echo "FAIL: [${mode}] the deploy failed without the unreadable-row refusal (issue #3314)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${refuse_txt}" | grep -q "planned as a CREATE"; then
+    echo "${refuse_txt}"
+    echo "FAIL: [${mode}] the refusal does not state the CREATE it prevented (issue #3314)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${refuse_txt}" | grep -qF "${DLQ_ID}"; then
+    echo "${refuse_txt}"
+    echo "FAIL: [${mode}] the refusal does not name the damaged row ${DLQ_ID}" >&2
+    exit 1
+  fi
+  # Nothing written: the record is still byte-for-byte the planted one.
+  after=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -c .) || { echo "FAIL: could not read state back" >&2; exit 1; }
+  if [ "${after}" != "$(jq -c . "${PLANTED}")" ]; then
+    echo "FAIL: [${mode}] the refused deploy rewrote the state record" >&2
+    exit 1
+  fi
+  # And the lock taken before the diff was released.
+  assert_gone "[${mode}] the refused deploy left its lock behind" aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/lock.json"
+  echo "    OK: [${mode}] refused naming ${DLQ_ID}, state untouched, lock released"
+done
+
+# Safe to restore unconditionally here: every pass of the loop above proved
+# the record still byte-identical to the planted copy.
+aws s3 cp "${PLANTED_ORIGINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+PLANTED_UPLOADED=0
+rm -f "${PLANTED_ORIGINAL}" "${PLANTED}"
+PLANTED_ORIGINAL=""
+PLANTED=""
+echo "    restored the original state record"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"
