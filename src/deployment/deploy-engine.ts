@@ -5054,6 +5054,11 @@ export class DeployEngine {
       logger: { debug: (m) => this.logger.debug(m) },
     });
 
+    // `notices` and `refusals` arrive already rendered through `displaySafe` /
+    // `displayIdent`: `planOrphanAdoption` sanitizes each state-chosen field
+    // where it builds the string, because `cdkd diff` consumes the same lines
+    // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
+    // is the one this method sanitizes.
     for (const notice of plan.notices) this.logger.info(notice);
 
     if (plan.refusals.length > 0) {
@@ -5066,8 +5071,8 @@ export class DeployEngine {
     for (const [logicalId, record] of Object.entries(plan.adopted)) {
       currentState.resources[logicalId] = record;
       this.logger.info(
-        `Adopting ${logicalId} (${record.resourceType}) left in AWS by an earlier rollback ` +
-          `as ${record.physicalId}`
+        `Adopting ${displayIdent(logicalId)} (${displaySafe(record.resourceType)}) left in AWS ` +
+          `by an earlier rollback as ${displaySafe(record.physicalId)}`
       );
     }
     // Assigned unconditionally when there WERE records, so an adopted or
