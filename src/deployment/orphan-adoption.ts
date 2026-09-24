@@ -36,6 +36,12 @@
 
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
+import {
+  displayAwsMessage,
+  displayIdent,
+  displayStackName,
+  displaySafe,
+} from '../utils/display-safe.js';
 import { carriesSecretMask } from './secret-redaction.js';
 
 /**
@@ -210,13 +216,39 @@ export async function planOrphanAdoption(params: {
 
   for (const record of params.records) {
     const { logicalId, state } = record;
+    // Every field below is STATE-CHOSEN — `state.json` is a hand-editable S3
+    // object — and each one is rendered into a notice the deploy prints at
+    // default verbosity, a refusal it throws, or a debug line (go-to-k/cdkd#3642).
+    // Rendered ONCE here, at the point the strings are BUILT, rather than at
+    // the deploy engine's log call: `cdkd diff` consumes the same `refusals`
+    // (into its `--json` payload as well as its terminal render), so the
+    // sanitizing has to travel with the string, and a second pass at a
+    // consumer would only re-run an idempotent rule.
+    //
+    // The logical id takes `displayIdent` — byte-identical to
+    // `displayLogicalId`, which the sibling orphan texts in
+    // `malformed-resources-bag.ts` and `cdkd diff` use — because every notice
+    // opens `<id> (<type>) ...`, exactly the same-line shape an id planting its
+    // own `(AWS::...)` annotation forges, and only the quoted boundary shows
+    // where the id ends. The type takes `displayIdent` for the same reason: a
+    // resource type is a plain-identifier grammar (`AWS::S3::Bucket`,
+    // `Custom::my-thing_v2@x`), so a legitimate one renders bare, and one
+    // carrying `) ... (` gains the quotes that stop it closing the annotation
+    // early. The physical id takes `displaySafe`: it is neither ASCII- nor
+    // length-bounded (a Custom Resource's is provider-defined text,
+    // `SnsTopicPolicyProvider` records a comma-joined ARN list), so
+    // `displayIdent`'s allowlist and 255 cap would rewrite or cut a legitimate
+    // one.
+    const shownId = displayIdent(logicalId);
+    const shownType = displayIdent(state.resourceType);
+    const shownPhysicalId = displaySafe(state.physicalId);
 
     // Already managed? Then the record describes a past that state has moved
     // on from — drop it, before any AWS call. Splicing over the live record
     // would replace it with an older snapshot of the same resource.
     if (params.managedLogicalIds.has(logicalId)) {
       params.logger.debug(
-        `orphan ${logicalId}: already present in state.resources — dropping the stale record`
+        `orphan ${shownId}: already present in state.resources — dropping the stale record`
       );
       continue;
     }
@@ -232,9 +264,10 @@ export async function planOrphanAdoption(params: {
     } catch (error) {
       outcome.remaining.push(record);
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}) is still in AWS as ${state.physicalId} from an ` +
+        `${shownId} (${shownType}) is still in AWS as ${shownPhysicalId} from an ` +
           `earlier rollback, but this build cannot route that type ` +
-          `(${error instanceof Error ? error.message : String(error)}) — cdkd is not adopting it.`
+          `(${displayAwsMessage(error instanceof Error ? error.message : String(error))}) — cdkd ` +
+          `is not adopting it.`
       );
       continue;
     }
@@ -246,8 +279,8 @@ export async function planOrphanAdoption(params: {
       // stack with no way to clear the record. Keep it and say so.
       outcome.remaining.push(record);
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}) was left in AWS by an earlier rollback as ` +
-          `${state.physicalId}, but its provider cannot verify it — cdkd is not adopting it.`
+        `${shownId} (${shownType}) was left in AWS by an earlier rollback as ` +
+          `${shownPhysicalId}, but its provider cannot verify it — cdkd is not adopting it.`
       );
       continue;
     }
@@ -274,10 +307,10 @@ export async function planOrphanAdoption(params: {
       // orphan but not the fact that cdkd HELD the evidence and could not
       // confirm it. "Never present and invisible" has to hold on this arm too.
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}) is recorded as left in AWS as ${state.physicalId}, ` +
+        `${shownId} (${shownType}) is recorded as left in AWS as ${shownPhysicalId}, ` +
           `but cdkd could not confirm it exists ` +
-          `(${error instanceof Error ? error.message : String(error)}) — keeping the record and ` +
-          `not adopting it this run.`
+          `(${displayAwsMessage(error instanceof Error ? error.message : String(error))}) — ` +
+          `keeping the record and not adopting it this run.`
       );
       outcome.remaining.push(record);
       continue;
@@ -289,14 +322,14 @@ export async function planOrphanAdoption(params: {
       // puts someone else's resource under this stack's `cdkd destroy`.
       outcome.remaining.push(record);
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}): cdkd asked about ${state.physicalId} and its ` +
-          `provider answered for ${found.physicalId} — not adopting.`
+        `${shownId} (${shownType}): cdkd asked about ${shownPhysicalId} and its ` +
+          `provider answered for ${displaySafe(found.physicalId)} — not adopting.`
       );
       continue;
     }
     if (found === null) {
       params.logger.debug(
-        `orphan ${logicalId}: ${state.physicalId} no longer exists in AWS — dropping the record`
+        `orphan ${shownId}: ${shownPhysicalId} no longer exists in AWS — dropping the record`
       );
       continue;
     }
@@ -342,7 +375,7 @@ export async function planOrphanAdoption(params: {
         : `cdkd does not derive that resource's physical name, so a new deploy mints a new ` +
           `resource instead of colliding`;
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}) is still in AWS as ${state.physicalId} from an ` +
+        `${shownId} (${shownType}) is still in AWS as ${shownPhysicalId} from an ` +
           `earlier rollback. cdkd does not re-adopt this type: ${why}. Delete it yourself when ` +
           `you no longer need it.`
       );
@@ -355,7 +388,7 @@ export async function planOrphanAdoption(params: {
     ) {
       outcome.remaining.push(record);
       outcome.notices.push(
-        `${logicalId} (${state.resourceType}) is still in AWS as ${state.physicalId} from an ` +
+        `${shownId} (${shownType}) is still in AWS as ${shownPhysicalId} from an ` +
           `earlier rollback. This deploy does not create it under that name, so cdkd is ` +
           `leaving it alone.`
       );
@@ -367,7 +400,7 @@ export async function planOrphanAdoption(params: {
     // `cdkd destroy` would then delete the other's live resource.
     if ((await claims()).has(state.physicalId)) {
       outcome.refusals.push(
-        `${logicalId}: ${state.physicalId} is already recorded by another cdkd stack. ` +
+        `${shownId}: ${shownPhysicalId} is already recorded by another cdkd stack. ` +
           `cdkd will not adopt a resource another stack manages.`
       );
       outcome.remaining.push(record);
@@ -499,7 +532,7 @@ export function makeSiblingClaimReader(params: {
     } catch (error) {
       logger.debug(
         `orphan adoption: could not list sibling stacks — ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
       );
       return claimed;
     }
@@ -529,8 +562,8 @@ export function makeSiblingClaimReader(params: {
         }
       } catch (error) {
         logger.debug(
-          `orphan adoption: skipping unreadable state for ${ref.stackName} — ` +
-            `${error instanceof Error ? error.message : String(error)}`
+          `orphan adoption: skipping unreadable state for ${displayStackName(ref.stackName)} — ` +
+            `${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
         );
       }
     }
