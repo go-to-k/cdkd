@@ -29,10 +29,14 @@ interface EmulatorStackAssets {
  * (issue [#3503](https://github.com/go-to-k/cdkd/issues/3503)).
  *
  * `cdkd local start-service` / `start-alb` hand the whole run to cdk-local's
- * `runEcsServiceEmulator`, which reads each stack's asset manifest itself and
- * joins `source.directory` onto the manifest directory raw — for an ECS
- * container image and for an ALB Lambda target's container image alike. No
- * argument reaches that join, so cdkd judges the manifests here instead.
+ * `runEcsServiceEmulator`, which reads each stack's asset manifest itself —
+ * for an ECS container image and for an ALB Lambda target's container image
+ * alike. Since cdk-local 0.149.3 the engine refuses an escaping
+ * `source.directory` at each build and each `--watch` soft reload
+ * (go-to-k/cdkd#3597). This check stays in front of it, for the whole
+ * assembly at once, because the engine's refusal quotes the assembly-chosen
+ * value in a boundary the value can close (go-to-k/cdk-local#758);
+ * go-to-k/cdkd#3652 removes it once that ships.
  *
  * `resolveBoots` is the seam because the engine calls it after every synth —
  * at boot, and again on every `--watch` reload — and before any image is
@@ -121,7 +125,7 @@ export function assertEmulatorDockerContextsContained(
  * only while the directory is named `assembly-*` AND its parent's
  * `manifest.json` declares it as a `cdk:cloud-assembly` artifact, and WARN
  * whenever a climb happens, since the predicate is read from the tree being
- * judged. Replace with the upstream export once one exists (go-to-k/cdkd#3597).
+ * judged. Deleted with this module by go-to-k/cdkd#3652.
  */
 export function engineAssemblyRoot(outdir: string): string {
   let dir = resolve(outdir);
