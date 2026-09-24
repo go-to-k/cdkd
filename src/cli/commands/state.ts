@@ -3247,27 +3247,33 @@ const STACK_HOLE = 'stack';
  *
  * Both unreachable arms stay, and are covered, because the REASON is the
  * gate's and not this site's: `pasteableCommand` can return either to a caller
- * whose value comes from somewhere else, and a missing arm would fall through
- * to the pattern sentence — the exact class of silent disagreement M11 closed.
+ * whose value comes from somewhere else. A missing arm is no longer a silent
+ * fall-through — the `switch` below is exhaustive over `WithholdReason`, so
+ * dropping one is a compile error (M13). What the cases buy on top of that is
+ * the SENTENCE: the type checker knows an arm exists, not that it says the
+ * right thing, and substituting one arm's text for another's is exactly the
+ * disagreement M11 closed.
  */
 function withheldNameClause(built: PasteableCommand): string {
   // Keyed on the hole NAME the call site passes, which couples the two (m22 of
   // the go-to-k/cdkd#3499 review). Renaming the hole there would drop this
   // sentence while the hole itself still printed — silently, since the message
-  // stays well-formed. `state-refresh-observed.test.ts` pins the pairing from
-  // the rendered message: every reason case asserts BOTH the hole in the
-  // command and the sentence about it, so a rename that broke the lookup reds
-  // five cases.
+  // stays well-formed. `STACK_HOLE` is the one spelling both sites use, and
+  // `state-refresh-observed.test.ts` pins the PAIRING per REASON — not per
+  // case: each of the five reasons has at least one case asserting both the
+  // hole in the command and the sentence about it, so a lookup that stopped
+  // matching cannot leave the suite green. (The hostile-name loop asserts the
+  // hole alone; it is about the gate, not about the sentence.)
   const reason = built.withheld.find((w) => w.hole === STACK_HOLE)?.reason;
   if (reason === undefined) return '';
   // A `switch` with a `never` default, not a ternary chain with a catch-all
-  // (M13 of the go-to-k/cdkd#3499 review). The header above says a missing arm
-  // would fall through to the pattern sentence and calls that the exact class
-  // M11 closed — a hazard identified and then left undefended, since a sixth
-  // `WithholdReason` member typechecks fine against a catch-all and silently
-  // renders the wrong sentence. Here it is a COMPILE error, which is the
-  // enforcement this change is about: the reason comes from one predicate, and
-  // every reason that predicate can return has to be answered on purpose.
+  // (M13 of the go-to-k/cdkd#3499 review). A sixth `WithholdReason` member
+  // typechecks fine against a catch-all and then silently renders whatever
+  // sentence the catch-all holds — the header above used to describe that as
+  // a hazard it had identified and left undefended. Here it is a COMPILE
+  // error, which is the enforcement this change is about: the reason comes
+  // from one predicate, and every reason that predicate can return has to be
+  // answered on purpose.
   let why: string;
   switch (reason) {
     case 'altered':

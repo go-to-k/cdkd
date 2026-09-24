@@ -1678,9 +1678,11 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       // 1024 bytes, so `cdkd/<name>/state.json` leaves the name at most 1008 —
       // `listStacks` can never hand this site an over-cap name. It is pinned
       // because the REASON belongs to `pasteableCommand`, not to this caller:
-      // the mock is how the sentence gets exercised at the SITE at all, and
-      // without it a change that dropped the arm would fall through to the
-      // pattern sentence with nothing red. The name here is neither altered by
+      // the mock is how the sentence gets exercised at the SITE at all. Since
+      // M13 the `switch` is exhaustive, so DROPPING the arm is a compile error
+      // rather than a silent fall-through — what this case buys on top of that
+      // is the arm's TEXT, which the type checker cannot see. The name here is
+      // neither altered by
       // sanitizing nor option- or pattern-shaped, so only its LENGTH withholds
       // it — the exactness sentence would be false and no sentence would leave
       // the hole unexplained.
@@ -1707,10 +1709,10 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       // drops a key whose stack segment is empty (`s3-state-backend.ts`'s
       // `if (!stackName) continue`) — and pinned for the same reason as the
       // over-cap one: the REASON is `pasteableCommand`'s, so a caller whose
-      // value comes from elsewhere can see it, and an arm with no case falls
-      // through to the pattern sentence with nothing red. The mock supplies
-      // what the backend filters out, which is the only way to drive the
-      // sentence at the SITE.
+      // value comes from elsewhere can see it, and the exhaustive `switch`
+      // guarantees the arm EXISTS but not that it says the right thing. The
+      // mock supplies what the backend filters out, which is the only way to
+      // drive the sentence at the SITE.
       mockListStacks.mockResolvedValueOnce([{ stackName: '' }]);
       mockGetState.mockResolvedValue(null);
 

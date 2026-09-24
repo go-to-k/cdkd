@@ -380,6 +380,39 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       { value: `-${'q'.repeat(STACK_REF_MAX_CODE_POINTS)}`, hole: 'stack' },
     ]);
     expect(longOption.withheld).toEqual([{ hole: 'stack', reason: 'too-long' }]);
+
+    // One case per adjacent pair that CAN overlap, not one case per "some pair
+    // overlaps". The first three above leave two relationships unpinned, and an
+    // in-memory probe confirmed both mutants survive them: moving `too-long`
+    // above `altered`, and moving `pattern-shaped` above `option-shaped`. A
+    // test crediting the whole first-match contract has to cover the chain link
+    // by link.
+    //
+    // `empty` before `altered` is the one link with NO case, because the two
+    // predicates cannot both hold: `displaySafe('') === ''`, so the only empty
+    // value is also unaltered. Swapping those two branches is behaviourally
+    // identical and correctly survives every probe — unfenceable rather than
+    // unfenced.
+    //
+    // `altered` before `too-long`: an over-cap value whose rendering ALSO
+    // changes reports the alteration, not the length. The non-breaking space is
+    // INTERIOR on purpose — `displaySafe` trims, so a trailing one is removed
+    // and the sanitized value lands back AT the cap, which is not an overlap at
+    // all. (Measured: the first draft of this case put it at the end and the
+    // reordering mutant survived.)
+    const longAltered = pasteableCommand('cdkd deploy', [
+      { value: `${'q'.repeat(STACK_REF_MAX_CODE_POINTS)}\u00a0q`, hole: 'stack' },
+    ]);
+    expect(longAltered.withheld).toEqual([{ hole: 'stack', reason: 'altered' }]);
+
+    // `option-shaped` before `pattern-shaped`: a value that is both reports the
+    // option, which is the more dangerous reading — `cdkd deploy` resolves a
+    // pattern to the stacks it matches, while a flag changes what the command
+    // DOES.
+    const optionPattern = pasteableCommand('cdkd deploy', [
+      { value: '-*', hole: 'stack', opts: { patternMatched: true } },
+    ]);
+    expect(optionPattern.withheld).toEqual([{ hole: 'stack', reason: 'option-shaped' }]);
   });
 
   describe('rendersExactly', () => {
