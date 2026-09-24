@@ -162,8 +162,8 @@ LEGACY_BUCKET="cdkd-lifecycle-legacy-${ACCOUNT_ID}"
 # The EventBridgeEnabled: true half of the issue #1430 pair (the `false` half
 # rides on LEGACY_BUCKET).
 EB_TRUE_BUCKET="cdkd-lifecycle-ebtrue-${ACCOUNT_ID}"
-# Issue #1748: the bucket carrying the TOLERATED key spellings (notification
-# `TopicArn` + the scalar `Event`, lifecycle `Days` / `NoncurrentDays`).
+# Issue #1748: the bucket carrying the TOLERATED key spellings (the notification
+# scalar `Event`, lifecycle `Days`).
 ALIAS_BUCKET="cdkd-lifecycle-alias-${ACCOUNT_ID}"
 # Issue #1759: the bucket whose EventBridgeEnabled becomes MALFORMED in phase 2.
 EB_MALFORMED_BUCKET="cdkd-lifecycle-ebmalformed-${ACCOUNT_ID}"
@@ -1087,11 +1087,11 @@ assert_no_drift() { # $1 = phase label
 # cdkd accepts more than one spelling on the DESIRED side while
 # `readCurrentState` emits only ONE, so a record written in the tolerated
 # spelling can never match the readback. Two halves in one bucket:
-#   - notification: the applier reads `t['Topic'] ?? t['TopicArn']` and CFn
-#     declares the event as the SCALAR `Event` where the SDK member is the LIST
-#     `Events`;
-#   - lifecycle: `t['TransitionInDays'] ?? t['Days']` and
-#     `nvt['TransitionInDays'] ?? nvt['NoncurrentDays']`.
+#   - notification: CFn declares the event as the SCALAR `Event` where the SDK
+#     member is the LIST `Events`;
+#   - lifecycle: `t['TransitionInDays'] ?? t['Days']`.
+# (`TopicArn` / `NoncurrentDays` are refused pre-flight by the nested-required
+# check and are no longer read — issue #3585.)
 #
 # Three sides are asserted, and all three are needed: the WIRE (the tolerance
 # must still reach AWS — a fix that stopped accepting the spelling would break
@@ -1120,11 +1120,10 @@ assert_alias_spellings() { # $1 = phase label, $2 = expected transition Days
   local phase="$1" expect_days="$2"
 
   # --- the WIRE: the tolerated spellings still reach AWS unchanged ---
-  local wire_days wire_nvt wire_topic wire_events
+  local wire_days wire_topic wire_events
   wire_days="$(LC "${ALIAS_BUCKET}" "Rules[?ID=='alias-transitions'].Transitions[0].Days | [0]")"
-  wire_nvt="$(LC "${ALIAS_BUCKET}" "Rules[?ID=='alias-transitions'].NoncurrentVersionTransitions[0].NoncurrentDays | [0]")"
-  if [ "${wire_days}" != "${expect_days}" ] || [ "${wire_nvt}" != "15" ]; then
-    echo "FAIL [${phase}]: alias bucket wire Days=${wire_days} (want ${expect_days}) NoncurrentDays=${wire_nvt} (want 15)" >&2
+  if [ "${wire_days}" != "${expect_days}" ]; then
+    echo "FAIL [${phase}]: alias bucket wire Days=${wire_days} (want ${expect_days})" >&2
     exit 1
   fi
   # `|| return 1` on every intermediate capture: errexit is CLEARED inside
@@ -1146,18 +1145,15 @@ assert_alias_spellings() { # $1 = phase label, $2 = expected transition Days
   local rec
   rec="$(alias_state '{
     topic: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Topic")),
-    topicArn: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("TopicArn")),
     event: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Event")),
     events: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Events")),
     tid: (.properties.LifecycleConfiguration.Rules[0].Transitions[0] | has("TransitionInDays")),
     days: (.properties.LifecycleConfiguration.Rules[0].Transitions[0] | has("Days")),
-    nvtid: (.properties.LifecycleConfiguration.Rules[0].NoncurrentVersionTransitions[0] | has("TransitionInDays")),
-    ncd: (.properties.LifecycleConfiguration.Rules[0].NoncurrentVersionTransitions[0] | has("NoncurrentDays")),
     tidValue: .properties.LifecycleConfiguration.Rules[0].Transitions[0].TransitionInDays
   } | tojson')"
   # Emptiness, not the exit code, is the read-failure signal (see `alias_state`).
   [ -n "${rec}" ] || { echo "FAIL [${phase}]: could not read the alias bucket state entry" >&2; exit 1; }
-  local want="{\"topic\":true,\"topicArn\":false,\"event\":true,\"events\":false,\"tid\":true,\"days\":false,\"nvtid\":true,\"ncd\":false,\"tidValue\":${expect_days}}"
+  local want="{\"topic\":true,\"event\":true,\"events\":false,\"tid\":true,\"days\":false,\"tidValue\":${expect_days}}"
   if [ "${rec}" != "${want}" ]; then
     echo "FAIL [${phase}]: recorded spellings ${rec}" >&2
     echo "      expected                  ${want}" >&2

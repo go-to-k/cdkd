@@ -221,12 +221,18 @@ export class S3LifecycleStack extends cdk.Stack {
     // `readCurrentState` emits only the CFn one, so a record written in the
     // tolerated spelling can never match the readback.
     //
-    // Raw `addPropertyOverride` on purpose (the memory rule an L1 validator
-    // refuses the shape): `CfnBucket`'s typed props declare `topicArn` nowhere
-    // and `transitionInDays` only, so the tolerated spellings are unreachable
-    // through the construct API and this is the only way a fixture can carry
-    // the population the fix exists for. A hand-written / imported /
-    // `cdkd import --migrate-from-cloudformation` template carries them.
+    // Raw `addPropertyOverride` on purpose for `Transitions[].Days` and the
+    // string `Enabled: 'false'`: `CfnBucket`'s typed props declare
+    // `transitionInDays` and a boolean `enabled` only, so those spellings are
+    // unreachable through the construct API. A hand-written / imported /
+    // `cdkd import --migrate-from-cloudformation` template carries them. The
+    // topic item is plain CFn shape and uses the override only to sit beside
+    // them.
+    //
+    // Only spellings the nested-required pre-flight does NOT refuse belong
+    // here. `TopicArn` (for the required `Topic`) and `NoncurrentDays` (for the
+    // required `TransitionInDays`) are refused before any AWS call, and the
+    // provider no longer reads them (issue #3585).
     const topic = new sns.Topic(this, 'NotifyTopic', {
       topicName: `cdkd-lifecycle-notify-${cdk.Stack.of(this).account}`,
     });
@@ -253,22 +259,17 @@ export class S3LifecycleStack extends cdk.Stack {
 
     const aliasBucket = new s3.CfnBucket(this, 'AliasSpellingBucket', {
       bucketName: `cdkd-lifecycle-alias-${cdk.Stack.of(this).account}`,
-      // NoncurrentVersionTransitions require a versioned bucket.
-      versioningConfiguration: { status: 'Enabled' },
     });
     aliasBucket.node.addDependency(topicPolicy);
-    // `TopicArn` + `Event`: the applier reads `t['Topic'] ?? t['TopicArn']`
-    // while `readNotification` emits `Topic`, and CFn declares the event as the
-    // SCALAR `Event` while the SDK member is the LIST `Events`. Both halves are
-    // in this one item.
+    // The scalar `Event`: CFn declares the event as the SCALAR `Event` while
+    // the SDK member is the LIST `Events`, and `readNotification` must emit the
+    // CFn spelling back.
     aliasBucket.addPropertyOverride('NotificationConfiguration.TopicConfigurations', [
-      { Id: 'alias-topic', TopicArn: topic.topicArn, Event: 's3:ObjectCreated:*' },
+      { Id: 'alias-topic', Topic: topic.topicArn, Event: 's3:ObjectCreated:*' },
     ]);
-    // `Days` / `NoncurrentDays`: the applier reads
-    // `t['TransitionInDays'] ?? t['Days']` and
-    // `nvt['TransitionInDays'] ?? nvt['NoncurrentDays']`, while `readLifecycle`
-    // emits `TransitionInDays` for both. The day count CHANGES in UPDATE mode
-    // so phase 2 exercises the update-path fold rather than re-reading a
+    // `Days`: the applier reads `t['TransitionInDays'] ?? t['Days']`, while
+    // `readLifecycle` emits `TransitionInDays`. The day count CHANGES in UPDATE
+    // mode so phase 2 exercises the update-path fold rather than re-reading a
     // persisted phase-1 value.
     // Issue #1751: a CFn STRING boolean. CloudFormation is stringly typed and
     // cdkd is not, so `Enabled: 'false'` is a legitimate hand-written /
@@ -300,7 +301,6 @@ export class S3LifecycleStack extends cdk.Stack {
         Status: 'Enabled',
         Prefix: 'alias/',
         Transitions: [{ Days: update ? 60 : 90, StorageClass: 'GLACIER' }],
-        NoncurrentVersionTransitions: [{ NoncurrentDays: 15, StorageClass: 'GLACIER' }],
       },
     ]);
   }

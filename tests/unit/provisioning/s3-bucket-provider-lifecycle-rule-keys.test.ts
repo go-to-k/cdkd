@@ -225,7 +225,10 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
       ]);
     });
 
-    it('still accepts the SDK spelling for imported / SDK-shaped input', async () => {
+    it('no longer reads the SDK NoncurrentDays spelling (issue #3585)', async () => {
+      // `TransitionInDays` is schema-required, so a template spelling it
+      // `NoncurrentDays` is refused pre-flight by `nested-required.ts`; the
+      // provider stopped reading the alias.
       const rules = await putRules([
         {
           Id: 'nvt',
@@ -234,7 +237,7 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
           NoncurrentVersionTransitions: [{ StorageClass: 'GLACIER', NoncurrentDays: 9 }],
         },
       ]);
-      expect(rules[0]!.NoncurrentVersionTransitions[0].NoncurrentDays).toBe(9);
+      expect(rules[0]!.NoncurrentVersionTransitions[0].NoncurrentDays).toBeUndefined();
     });
   });
 
