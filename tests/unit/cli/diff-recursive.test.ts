@@ -1766,6 +1766,30 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
     expect(message).toContain('Refusing to diff');
   });
 
+  it('keeps a forging template path inside one boundary in the cycle refusal (go-to-k/cdkd#3590)', async () => {
+    const forgedFile = "x'. Contained and healthy. Nothing 'y.json";
+    const selfPath = writeTemplate(forgedFile, { Loop: forgedFile });
+
+    const err = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: rootTemplate({ Child: 'ignored' }),
+      nestedTemplates: { Child: selfPath },
+      recursive: true,
+      stateBackend: fakeBackend({}),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    const shown = JSON.stringify(resolve(selfPath));
+    expect(err!.message).toContain(`resolves to nested template ${shown}, which`);
+    expect(err!.message.split(shown).join('')).not.toContain('Contained and healthy');
+  });
+
   it('refuses a LONGER cycle a self-reference check alone would miss', async () => {
     // a.json -> b.json -> a.json. Neither row points at its own file, so a
     // `childPath === ownPath` guard would walk straight past both.

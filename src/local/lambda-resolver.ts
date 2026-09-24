@@ -873,9 +873,10 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
       // user did NOT expect is visible rather than silent, so it names the
       // directory and says what is done with it.
       // cdkd-raw-beside-safe: every RENDERED operand is a `displaySafe(...)`
-      // call. What the fence reads as a raw neighbour is `escape.escape ===
-      // 'symlink'`, a DISCRIMINANT comparison choosing between two of this
-      // file's literals — it selects text, it does not render a value.
+      // or `displayAssemblyPath(...)` call. What the fence reads as a raw
+      // neighbour is `escape.escape === 'symlink'`, a DISCRIMINANT comparison
+      // choosing between two of this file's literals — it selects text, it
+      // does not render a value.
       getLogger().warn(
         `Lambda '${displaySafe(logicalId)}' has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +

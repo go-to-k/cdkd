@@ -108,6 +108,21 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
     ).rejects.toThrow(`code bundle source ${shown} does not exist`);
   });
 
+  it('sanitizes the logical id and asset hash in the asset-not-found refusal', async () => {
+    const { assemblyDir, manifestDir } = stageAssembly(`../asset.${HASH}`);
+    const runtime = {
+      logicalId: 'Agent\u009bRuntime',
+      codeArtifact: { codeAssetHash: 'b\u2028ogus', runtime: 'PYTHON_3_12', entryPoint: ['app.py'] },
+      stack: { stackName: 'StageStack', assetManifestPath: join(manifestDir, 'x.assets.json') },
+    } as unknown as ResolvedRuntime;
+
+    const message = await resolveAgentCoreImage(runtime, options(assemblyDir), assemblyDir).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+    expect(message).toContain("AgentCore Runtime 'Agent Runtime' code bundle (asset b ogus) was not found");
+  });
+
   it('binds to the ASSEMBLY ROOT, not to `--output`', async () => {
     // `-a <pre-synthesized dir>` leaves `--output` at its `cdk.out` default,
     // so a bound taken from `options.output` refuses an untouched assembly.
