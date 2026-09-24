@@ -15,8 +15,19 @@
  *    CLOSES that wrapper when the span is pasted WITH its quotes and the rest
  *    runs as shell: `'cdkd state orphan S --state-bucket 'b; printf X; #''`
  *    printed `X`. Quoting the value does not help — the wrapper is what
- *    inverts. So a command is printed LAST and UNWRAPPED on its own labelled
- *    line, and this module returns the text for exactly that.
+ *    inverts. So a command is printed UNWRAPPED on its own labelled line, and
+ *    this module returns the text for exactly that.
+ *
+ *    **UNWRAPPED always; LAST only when the message prints ONE command.** A
+ *    message offering a READ and a DESTRUCTIVE template prints one command per
+ *    LINE, and there the read ends a line while the TEMPLATE is last — the
+ *    rule `.claude/rules/state-malformed-containers.md` states for
+ *    go-to-k/cdkd#3516, and a shape this module already serves twice:
+ *    `deploy-engine.ts`'s `Inspect it with:` / `Drop the record with:` pair,
+ *    and `destroy-runner.ts`'s through `hintFor`. In both, the read command is
+ *    correctly NOT last. Collapsing such a pair onto one line is the defect
+ *    that rule names: the read must end a line, and the template must be last
+ *    with no substituted value after it.
  * 2. **A bare `<placeholder>`.** `<name>` is two redirections, not a word:
  *    `<name` reads stdin from a file and `>` truncates whatever word follows.
  *    {@link commandHole} quotes it, so it pastes as one literal argument.
@@ -189,8 +200,15 @@ export interface WithheldValue {
 /** What {@link pasteableCommand} returns. */
 export interface PasteableCommand {
   /**
-   * The command, ready to print LAST and UNWRAPPED on a labelled line. Never
+   * The command, ready to print UNWRAPPED on a labelled line of its own. Never
    * put it back inside quotes — that is the shape this module exists to close.
+   *
+   * LAST is a property of the MESSAGE, not of this string. A message printing
+   * one command prints it last; a message offering a read AND a destructive
+   * template gives each its own line and ends on the TEMPLATE, so the READ is
+   * legitimately not last (go-to-k/cdkd#3516, and M17 of go-to-k/cdkd#3499's
+   * review — this JSDoc is what a caller building the `Inspect it with:` line
+   * reads, and telling them LAST there is the wrong ordering).
    */
   readonly command: string;
   /**

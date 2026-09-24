@@ -388,11 +388,16 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     // test crediting the whole first-match contract has to cover the chain link
     // by link.
     //
-    // `empty` before `altered` is the one link with NO case, because the two
-    // predicates cannot both hold: `displaySafe('') === ''`, so the only empty
-    // value is also unaltered. Swapping those two branches is behaviourally
-    // identical and correctly survives every probe — unfenceable rather than
-    // unfenced.
+    // `empty` is the one branch with NO case, and its position is unobservable
+    // against EVERY other reason, not just its neighbour (m27 of the
+    // go-to-k/cdkd#3499 review): `''` is unaltered (`displaySafe('') === ''`),
+    // is not over-cap, does not start with `-`, and holds no `*` or `/`. So
+    // moving it anywhere in the chain is behaviourally identical and correctly
+    // survives every probe — unfenceable rather than unfenced.
+    //
+    // The near-miss that makes this worth stating: a whitespace-only `' '`
+    // sanitizes to `''` but is NOT `''`, so it reports `altered` — and it does
+    // so in either order, which is why it is not a case here either.
     //
     // `altered` before `too-long`: an over-cap value whose rendering ALSO
     // changes reports the alteration, not the length. The non-breaking space is

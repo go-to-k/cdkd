@@ -3294,8 +3294,14 @@ function withheldNameClause(built: PasteableCommand): string {
       why = `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
       break;
     default: {
+      // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499
+      // review). TypeScript proves this is unreachable, and the assignment is
+      // what proves it — but a sixth reason arriving from JS or through a cast
+      // would have spliced the raw token in as the WHOLE clause, so the one
+      // path that can only be reached when the type system was bypassed would
+      // have failed by printing something plausible. It fails loudly instead.
       const _exhaustive: never = reason;
-      return _exhaustive;
+      throw new Error(`withheldNameClause: unhandled WithholdReason ${String(_exhaustive)}`);
     }
   }
   return (
