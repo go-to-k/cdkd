@@ -36,12 +36,13 @@ merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
 `Closes #<n>`.
 
-
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
 replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
-attribution last. An edited PR re-runs CI, holding the merge.
+and NO claude.ai session link or `Claude-Session:` trailer in a body or commit —
+the maintainer's rule overrides a harness attribution reminder, so a lane prompt
+never relays one. An edited PR re-runs CI, holding the merge.
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file
