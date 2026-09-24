@@ -357,6 +357,36 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'AWS_CONTAINER_CREDENTIALS_FULL_URI',
     'AWS_ROLE_ARN',
     'AWS_EC2_METADATA_SERVICE_ENDPOINT',
+    'AWS_ECR_CACHE_DIR',
+    // Non-docker runtimes `CDK_DOCKER` may name (#2188), spelled as literals
+    // for the same deletion-detection reason as the rest of this list.
+    // podman / containers tooling:
+    'CONTAINER_HOST',
+    'CONTAINER_CONNECTION',
+    'CONTAINER_SSHKEY',
+    'PODMAN_CONNECTIONS_CONF',
+    'CONTAINERS_CONF',
+    'CONTAINERS_CONF_OVERRIDE',
+    'CONTAINERS_REGISTRIES_CONF',
+    'REGISTRIES_CONFIG_PATH',
+    'CONTAINERS_STORAGE_CONF',
+    'STORAGE_OPTS',
+    'CONTAINERS_HELPER_BINARY_DIR',
+    'REGISTRY_AUTH_FILE',
+    'DBUS_SESSION_BUS_ADDRESS',
+    // Base directories podman / nerdctl / finch derive config and sockets from:
+    'XDG_CONFIG_HOME',
+    'XDG_RUNTIME_DIR',
+    'APPDATA',
+    'PROGRAMDATA',
+    'LOCALAPPDATA',
+    // nerdctl / containerd:
+    'CONTAINERD_ADDRESS',
+    'CONTAINERD_NAMESPACE',
+    'NERDCTL_TOML',
+    'CNI_PATH',
+    'NETCONFPATH',
+    'ROOTLESSKIT_STATE_DIR',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'GODEBUG',
@@ -415,6 +445,38 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     expect(isDockerClientEnvKey(key)).toBe(true);
     expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).toBe(process.env[key]);
     expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
+  });
+
+  it('refuses a lowercase spelling of a non-docker runtime var (#2188)', () => {
+    // podman's `CONTAINER_HOST` is its `DOCKER_HOST`; detection is
+    // case-insensitive for the new runtimes' vars too, not only docker's.
+    for (const key of ['container_host', 'Containerd_Address', 'cni_path']) {
+      expect(isDockerClientEnvKey(key)).toBe(true);
+      expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).collisions).toEqual([key]);
+    }
+  });
+
+  // The #2188 additions are EXACT names, deliberately not `CONTAINER_` /
+  // `CONTAINERD_` / `XDG_` / `REGISTRY_` / `STORAGE_` prefixes: those
+  // families hold realistic secret names that must still be delivered. A
+  // drive-by widening to a prefix turns one of these red.
+  it.each([
+    'CONTAINER_NAME',
+    'CONTAINERD_TOKEN',
+    'XDG_SESSION_ID',
+    'REGISTRY_PASSWORD',
+    'STORAGE_ACCOUNT_KEY',
+    'CNI_VERSION',
+    'NERDCTL_PASSWORD',
+  ])('still delivers the neighbouring secret name %s', (key) => {
+    expect(isDockerClientEnvKey(key)).toBe(false);
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { [key]: 'v' },
+      new Set([key])
+    );
+    expect(flags).toEqual(['-e', key]);
+    expect(sensitiveEnv[key]).toBe('v');
+    expect(collisions).toEqual([]);
   });
 
   it('fences exactly the documented prefix families — no silent removals or additions', () => {

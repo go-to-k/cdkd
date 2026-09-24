@@ -297,14 +297,20 @@ process arguments. The secret's **name** decides whether it is forwarded at all.
 Two name shapes are dropped entirely — no `-e` flag and no spawn-environment
 entry:
 
-- **A name that collides with a variable the Docker CLI itself reads**, matched
-  case-insensitively. The set covers connection and TLS settings, behaviour
-  toggles, `PATH` / `PATHEXT` / `HOME` / `USERPROFILE`, the loader, trust and
-  runtime variables, the SSH exec-helper variables, and the AWS credential-helper
-  variables `docker-credential-ecr-login` reads, plus the `LD_`, `DYLD_` and
-  `AWS_ENDPOINT_URL_` prefix families. Forwarding such a name would let a
-  template-controlled secret name redirect the Docker client itself — a secret
-  named `DOCKER_HOST` could point it at a different daemon.
+- **A name that collides with a variable the container CLI itself reads**,
+  matched case-insensitively. That is the Docker CLI, or the podman, nerdctl or
+  finch binary `CDK_DOCKER` names. The set covers connection and TLS settings,
+  behaviour toggles, `PATH` / `PATHEXT` / `HOME` / `USERPROFILE`, the loader,
+  trust and runtime variables, the SSH exec-helper variables, the AWS
+  credential-helper variables `docker-credential-ecr-login` reads, podman's
+  connection and config-file variables (`CONTAINER_HOST`, `CONTAINERS_CONF`,
+  `REGISTRY_AUTH_FILE`, ...), nerdctl's (`CONTAINERD_ADDRESS`, `NERDCTL_TOML`,
+  `CNI_PATH`, ...), and the `XDG_CONFIG_HOME` / `XDG_RUNTIME_DIR` base
+  directories they fall back to, plus the `LD_`, `DYLD_` and `AWS_ENDPOINT_URL_`
+  prefix families. Forwarding such a name would let a template-controlled
+  secret name redirect the container client itself — a secret named
+  `DOCKER_HOST` (or `CONTAINER_HOST` under podman) could point it at a
+  different daemon.
 - **A malformed name** — empty, or containing `=` or NUL. The `=` case is the
   dangerous one: the OS parses an environment entry's name as everything before
   the first `=`, so a secret named `PATH=/tmp/evil:` would land as `PATH`, a
