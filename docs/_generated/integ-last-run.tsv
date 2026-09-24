@@ -175,8 +175,8 @@ launchtemplate-asg-inplace	2026-09-23T23:57:53Z	PASS	105	verify.sh	rc ok, orph c
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-09-24T06:59:33Z	PASS	50	verify.sh	rc ok, docker clean; #3503 PR 3598; DOCKER_CONFIG={} override
-local-invoke-agentcore	2026-09-24T06:59:33Z	PASS	125	verify.sh	rc ok, docker clean; #3503 PR 3598; DOCKER_CONFIG={} override; 1st try blocked pre-assertion by public.ecr.aws toomanyrequests
+local-invoke	2026-09-24T08:10:58Z	PASS	30	verify.sh	rc ok, docker sweep clean (#3611)
+local-invoke-agentcore	2026-09-24T08:10:58Z	PASS	173	verify.sh	rc ok, docker sweep clean (#3611)
 local-invoke-agentcore-from-state	2026-09-14T19:23:04Z	PASS	71	verify.sh	rc ok, orph clean, #3126 capture sweep
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-container	2026-09-24T06:59:33Z	PASS	30	verify.sh	rc ok, docker clean; #3503 PR 3598; DOCKER_CONFIG={} override (credsStore helper hang)
@@ -189,8 +189,8 @@ local-invoke-layers	2026-09-14T19:54:43Z	PASS	48	verify.sh	rc ok, orph clean, #3
 local-invoke-provided	2026-09-14T19:53:55Z	PASS	57	verify.sh	rc ok, orph clean, #3126 capture sweep (v2 helper re-run)
 local-invoke-python	2026-09-14T19:50:37Z	PASS	60	verify.sh	rc ok, orph clean, #3126 capture sweep (v2 helper re-run)
 local-invoke-ruby	2026-09-14T19:51:28Z	PASS	51	verify.sh	rc ok, orph clean, #3126 capture sweep (v2 helper re-run)
-local-run-task	2026-09-24T06:41:33Z	PASS	15	verify.sh	rc ok, docker sweep clean (#3606)
-local-run-task-awsvpc	2026-09-24T06:41:33Z	PASS	10	verify.sh	rc ok, docker sweep clean (#3606)
+local-run-task	2026-09-24T08:10:58Z	PASS	20	verify.sh	rc ok, docker sweep clean (#3611)
+local-run-task-awsvpc	2026-09-24T08:10:58Z	PASS	10	verify.sh	rc ok, docker sweep clean (#3611)
 local-run-task-cdkd-assets	2026-09-05T14:04:48Z	PASS	15	verify.sh	rc 0, asset marker OK, docker sweep clean
 local-run-task-from-state	2026-08-26T18:06:59Z	PASS	400	verify.sh	gating PR 2296, RE-RUN after rebasing onto 9 commits of main. integ-local uses hash:files, so PR 2293 landing in tests/integration/local-* invalidated the earlier marker even though that change passed this same gate in its own PR -- integ-destroy (hash:diff) stayed fresh through the same rebase. rc 0; destroy 15 deleted / 0 errors; 0 surviving state object versions; docker sweep empty on ps -a + task nets + svc nets; no IAM orphans
 local-run-task-multi-container	2026-08-24T16:35:48Z	PASS	11	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a, leftover assertion added (checks cdkd own sync teardown), and the OUT_FILE EXIT trap no longer CLOBBERS the container-cleanup trap; sweep empty incl. stopped
