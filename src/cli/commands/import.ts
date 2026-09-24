@@ -1761,10 +1761,10 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    same placeholder `Default`, so both now honour
  *    `ResourceState.observedBaselineRefusalReason`, which this arm's verdict
  *    is recorded as. A binary older than that field still clears the marker on
- *    any UPDATE. ARM 4 also WIDENS the population of
- *    [#2872](https://github.com/go-to-k/cdkd/issues/2872): a record preserved
- *    by a selective merge that a pre-#2854 import already gave a plaintext
- *    baseline is now refused, and a refusal leaves that old baseline in place;
+ *    any UPDATE. A pre-#2854 import's plaintext baseline on a record a
+ *    selective merge PRESERVES stays in `state.json` until an import refuses
+ *    that record, which DROPS it
+ *    ([#2872](https://github.com/go-to-k/cdkd/issues/2872));
  *  - `redactSecretsForState` cannot PAIR the readback against the source at a
  *    position the source carries NO leaf for -- an observed KEY beside a paired
  *    one -- so there is nothing to refuse from and the value scan has no needle
@@ -2861,14 +2861,19 @@ export async function captureObservedForImportedResources(
       // wrong, and this repo's rule is that a drifted count is DELETED rather
       // than recounted.
       //
-      // "Lands with `observedProperties: undefined`" holds for a FRESHLY
-      // imported record. It does NOT hold for one PRESERVED by a selective
-      // merge: `buildStackState` copies `existingState.resources` wholesale, so
-      // such a record keeps whatever baseline it already had — including a
-      // pre-GHSA plaintext one — and the skip below then leaves that baseline
-      // in place. `cdkd scrub` is the remedy, and issue
-      // [#2872](https://github.com/go-to-k/cdkd/issues/2872) records the
-      // narrow case where that is WORSE than not refusing.
+      // A REFUSED record ends with NO baseline, on BOTH skip arms below, and
+      // the arms DROP one rather than merely not writing it (issue
+      // [#2872](https://github.com/go-to-k/cdkd/issues/2872)). A FRESHLY
+      // imported record has none to drop: `buildStackState`'s literal
+      // enumerates its fields and `observedProperties` is not one. A record
+      // PRESERVED by a selective merge is copied wholesale from
+      // `existingState.resources`, so it arrives with whatever baseline it
+      // already had — including a pre-GHSA plaintext one, or one a pre-#2854
+      // import captured against a placeholder `Default` — and a bare skip would
+      // leave that baseline in `state.json`. It was captured against the very
+      // `properties` the refusal distrusts, so it is not evidence either. The
+      // accepted cost: drift has no baseline for that record until a
+      // CREATE / UPDATE deploy or a proving re-import restores one.
       //
       // THE MISSING BASELINE USED NOT TO BE PERMANENT, AND THAT WAS THE
       // RESIDUE: the deploy-start auto-refresh and `cdkd state
@@ -2906,6 +2911,8 @@ export async function captureObservedForImportedResources(
       const preservedRefusal =
         resource.observedBaselineRefused === true && !rebuiltLogicalIds.has(logicalId);
       if (preservedRefusal) {
+        // Issue #2872: `delete`, so the key is ABSENT from the persisted JSON.
+        delete resource.observedProperties;
         logger.debug(
           `observedProperties capture SKIPPED for preserved ${logicalId} (${resource.resourceType}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Re-import it, or deploy a change to it, to restore a baseline — unless its refusal is an unverifiable-parameter one, which only a replacement or a proving re-import discharges.`
         );
@@ -2939,6 +2946,9 @@ export async function captureObservedForImportedResources(
         resource.observedBaselineRefusalReason = parameterRefusalStands
           ? 'unverifiable-parameter'
           : 'incomplete-resolution';
+        // Issue #2872: a no-op for a rebuilt record; a PRESERVED one this run
+        // refused can carry a baseline the refusal distrusts.
+        delete resource.observedProperties;
         logger.debug(
           `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until ${
             parameterRefusalStands

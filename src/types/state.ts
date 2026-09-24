@@ -643,7 +643,9 @@ export interface ResourceState {
    * decrypted value, and clearing the marker would stand the other four writers
    * down permanently. `captureObservedForImportedResources` therefore skips
    * such a record without clearing it, keyed on the ids that run actually
-   * rebuilt.
+   * rebuilt — and DROPS any `observedProperties` it carried, since a baseline
+   * captured against distrusted `properties` is no evidence either (issue
+   * [#2872](https://github.com/go-to-k/cdkd/issues/2872)).
    *
    * `undefined` — the only other value, and the one every pre-v10 record
    * carries — means "not refused", which is the behaviour both writers had

@@ -5304,9 +5304,9 @@ async function runRevert(
         // resolved). Reverting would push that literal OVER the live secret.
         //
         // "A marked record has no baseline" is the COMMON shape, not an
-        // invariant: the import refusal fires regardless of an existing
-        // baseline, and a selective merge preserves one (the #2872 shape), so a
-        // record can carry both. The refusal is right either way -- the marker
+        // invariant: an import refusal now DROPS a baseline a selective merge
+        // preserved (issue #2872), but a record an older cdkd refused can
+        // still carry both. The refusal is right either way -- the marker
         // says this record's `properties` are untrustworthy, and a preserved
         // baseline beside them was captured by the run that already could not
         // vouch for them.
