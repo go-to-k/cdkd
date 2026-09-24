@@ -205,7 +205,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully added EMR instance group ${logicalId}: ${groupId}`);
-      return { physicalId: groupId, attributes: { Id: groupId } };
+      return { physicalId: groupId, attributes: { Id: groupId, InstanceGroupId: groupId } };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
@@ -351,7 +351,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated EMR instance group ${logicalId}`);
-      return { physicalId, wasReplaced: false, attributes: { Id: physicalId } };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: { Id: physicalId, InstanceGroupId: physicalId },
+      };
     } catch (error) {
       if (error instanceof ProvisioningError || error instanceof ResourceUpdateNotSupportedError) {
         throw error;
@@ -440,9 +444,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // The only readOnly / GetAtt-served attribute is `Id`, which equals the
-    // physical id (the instance group id). `Ref` resolves to the same value.
-    if (attributeName === 'Id') return physicalId;
+    // The only readOnly / GetAtt-served attribute is the instance group id,
+    // which equals the physical id. `Ref` resolves to the same value. The CFn
+    // schema renamed it `Id` -> `InstanceGroupId`; templates from an older
+    // aws-cdk-lib still read `Id` (`attrId`), so both names are served.
+    if (attributeName === 'Id' || attributeName === 'InstanceGroupId') return physicalId;
     return undefined;
   }
 
