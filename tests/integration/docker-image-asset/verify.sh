@@ -88,6 +88,9 @@ IMAGE_TAG=""
 DRIFT_JSON=""
 DRIFT_ERR=""
 RMC_OUT=""
+# The function's log group: Lambda creates it on the Phase 1b invoke, outside
+# the stack, so destroy cannot reach it and it outlived every run.
+FN_LOG_GROUP=""
 
 cleanup() {
   rc=$?
@@ -115,6 +118,9 @@ cleanup() {
   if [ -n "${ECR_REPO}" ] && [ -n "${IMAGE_TAG}" ]; then
     aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
       --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${FN_LOG_GROUP}" ]; then
+    aws logs delete-log-group --log-group-name "${FN_LOG_GROUP}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   set -eu
   exit "${rc}"
@@ -176,6 +182,7 @@ if [ -z "${FN_NAME}" ] || [ "${FN_NAME}" = "null" ]; then
   exit 1
 fi
 echo "    resolved Lambda function name: ${FN_NAME}"
+FN_LOG_GROUP="/aws/lambda/${FN_NAME}"
 
 # --- Assertion: Lambda is PackageType=Image pointing at an ECR image --------
 FN_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
@@ -400,6 +407,15 @@ fi
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+# The invoke's log group is not a stack resource; delete it here, then prove it
+# is gone (the `cleanup` trap repeats the delete on a failure exit).
+if ! gone_probe aws logs describe-log-streams --log-group-name "${FN_LOG_GROUP}" --region "${REGION}" --max-items 1; then
+  aws logs delete-log-group --log-group-name "${FN_LOG_GROUP}" --region "${REGION}"
+fi
+assert_gone "log group ${FN_LOG_GROUP} still exists after destroy + sweep" aws logs describe-log-streams --log-group-name "${FN_LOG_GROUP}" --region "${REGION}" --max-items 1
+echo "    OK: log group ${FN_LOG_GROUP} is gone"
+FN_LOG_GROUP=""
 
 echo ""
 echo "==> docker-image-asset test passed (deploy-time Docker build + ECR push verified end-to-end + image runs + clean destroy)"
