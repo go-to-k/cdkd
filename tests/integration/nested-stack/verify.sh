@@ -304,12 +304,26 @@ echo "PASS: the failure names the child stack"
 # negative half is what makes this discriminating -- pre-fix the summary named
 # the parent, so asserting only the child form could pass on a line that named
 # both.
-if ! grep -q "cdkd state orphan ${CHILD_STACK}" "${WORK_DIR}/destroy-fail.txt"; then
+#
+# Both halves are keyed on the TRAILING LABELLED LINE since go-to-k/cdkd#3436.
+# The command left the prose sentence, `shellQuote` quotes the child name
+# because `~` is deliberately outside its bare charset, and `--stack-region`
+# was appended (M2 of go-to-k/cdkd#3499's review). Asserting the old unquoted
+# mid-sentence spelling would pin the defect this change removes: an operator
+# selecting a prose `'...'` span pastes it WITH its quotes, and a value
+# carrying `'` then runs as shell. The real-AWS run is what caught the drift;
+# the unit suite and CI were both green over it.
+if ! grep -qE "^Drop the record with: cdkd state orphan '${CHILD_STACK}' --stack-region " \
+  "${WORK_DIR}/destroy-fail.txt"; then
   echo "FAIL: the failed-delete remedy did not name the child's state target" >&2
-  echo "      (expected 'cdkd state orphan ${CHILD_STACK}')" >&2
+  echo "      (expected a trailing line: Drop the record with: cdkd state orphan" >&2
+  echo "       '${CHILD_STACK}' --stack-region <region>)" >&2
   exit 1
 fi
-if grep -q "cdkd state orphan ${STACK}'" "${WORK_DIR}/destroy-fail.txt"; then
+# The negative half, re-keyed on the same shape so it can still FAIL. The old
+# form looked for the parent name followed by a prose close-quote, which no
+# code path can produce any more -- it passed vacuously.
+if grep -qE "cdkd state orphan '${STACK}'( |$)" "${WORK_DIR}/destroy-fail.txt"; then
   echo "FAIL: the remedy still names the PARENT state target -- following it" >&2
   echo "      would drop the Child row this fix preserves" >&2
   exit 1
