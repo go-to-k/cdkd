@@ -5071,7 +5071,7 @@ export class DeployEngine {
     for (const [logicalId, record] of Object.entries(plan.adopted)) {
       currentState.resources[logicalId] = record;
       this.logger.info(
-        `Adopting ${displayIdent(logicalId)} (${displaySafe(record.resourceType)}) left in AWS ` +
+        `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
           `by an earlier rollback as ${displaySafe(record.physicalId)}`
       );
     }

@@ -230,14 +230,17 @@ export async function planOrphanAdoption(params: {
     // `malformed-resources-bag.ts` and `cdkd diff` use — because every notice
     // opens `<id> (<type>) ...`, exactly the same-line shape an id planting its
     // own `(AWS::...)` annotation forges, and only the quoted boundary shows
-    // where the id ends. The physical id and the type take `displaySafe`: a
-    // physical id is neither ASCII- nor length-bounded (a Custom Resource's is
-    // provider-defined text, `SnsTopicPolicyProvider` records a comma-joined
-    // ARN list), so `displayIdent`'s allowlist and 255 cap would rewrite or cut
-    // a legitimate one; the type follows it so no field of a record renders
-    // with a narrower charset than its neighbour.
+    // where the id ends. The type takes `displayIdent` for the same reason: a
+    // resource type is a plain-identifier grammar (`AWS::S3::Bucket`,
+    // `Custom::my-thing_v2@x`), so a legitimate one renders bare, and one
+    // carrying `) ... (` gains the quotes that stop it closing the annotation
+    // early. The physical id takes `displaySafe`: it is neither ASCII- nor
+    // length-bounded (a Custom Resource's is provider-defined text,
+    // `SnsTopicPolicyProvider` records a comma-joined ARN list), so
+    // `displayIdent`'s allowlist and 255 cap would rewrite or cut a legitimate
+    // one.
     const shownId = displayIdent(logicalId);
-    const shownType = displaySafe(state.resourceType);
+    const shownType = displayIdent(state.resourceType);
     const shownPhysicalId = displaySafe(state.physicalId);
 
     // Already managed? Then the record describes a past that state has moved

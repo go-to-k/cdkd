@@ -2483,10 +2483,18 @@ export function renderDiffTree(
     // adopted record that already matches the template produces neither — it
     // is NO_CHANGE, which renders nothing. Measured against real AWS: the
     // fixture's adopted role matched, so the preview named it nowhere.
+    //
+    // The ids are STATE-CHOSEN (an orphan record's `logicalId`), so they take
+    // `displayLogicalId`, as the unreadable-row line below does — not
+    // `stripControlChars`, which keeps U+2028 / U+2029 and draws no boundary,
+    // so an id spelled `A (AWS::IAM::Role), B` read as two adoptions on the
+    // `', '`-joined line (go-to-k/cdkd#3642 review). `--json`'s
+    // `adoptedOrphans` keeps the raw keys: a machine payload needs the id
+    // itself, and a many-to-one rendering there would be a collision.
     if (node.adoptedOrphans.length > 0) {
       logFn(
         `${node.adoptedOrphans.length} resource(s) to adopt from a previous rollback: ` +
-          `${node.adoptedOrphans.map(stripControlChars).join(', ')}`
+          `${node.adoptedOrphans.map((id) => displayLogicalId(id)).join(', ')}`
       );
     }
     // A FOURTH line, for the rows the diff could not read (go-to-k/cdkd#3018).

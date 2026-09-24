@@ -70,23 +70,37 @@ const PHYS = 'MyStack-KeptRole\r\n\x1b[1Aforged\u2066';
 const FOUND_PHYS = 'Other\n\x1b[31mRole\u202d';
 const ERROR_TEXT = 'Rate\n\x1b[2Kexceeded\u202e';
 
-// What each renders as. Quoted for the id only: `displayIdent` shows where a
-// sanitized id ENDS, which an id planting its own `(AWS::...)` would otherwise
-// hide.
+// What each renders as. The id and the type are QUOTED (`displayIdent` shows
+// where a sanitized identifier ENDS, which one planting its own `(AWS::...)`
+// would otherwise hide); the physical ids and the error text are not
+// (`displaySafe` / `displayAwsMessage`, since neither is an identifier grammar).
 const SHOWN_ID = '"Kept  [2KRole"';
-const SHOWN_TYPE = 'AWS::IAM::Role  ]0;pwn';
+const SHOWN_TYPE = '"AWS::IAM::Role  ]0;pwn"';
 const SHOWN_PHYS = 'MyStack-KeptRole   [1Aforged';
 const SHOWN_FOUND_PHYS = 'Other  [31mRole';
 const SHOWN_ERROR = 'Rate  [2Kexceeded';
+
+const UNDECLARED_NOTICE =
+  `${SHOWN_ID} (${SHOWN_TYPE}) is still in AWS as ${SHOWN_PHYS} from an earlier rollback. ` +
+  `This deploy does not create it under that name, so cdkd is leaving it alone.`;
+const CLAIMED_REFUSAL =
+  `${SHOWN_ID}: ${SHOWN_PHYS} is already recorded by another cdkd stack. ` +
+  `cdkd will not adopt a resource another stack manages.`;
 
 /** Every character `displaySafe` strips — C0, DEL, C1, U+2028/9, bidi. */
 // eslint-disable-next-line no-control-regex
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
-function expectSafe(text: string | undefined, ...shown: string[]): void {
+/**
+ * The WHOLE line, not a substring: a `toContain` of an unquoted rendering is
+ * also satisfied by a quoted one, which is how a swapped helper survived the
+ * first cut of this file. The control-character check is kept beside it so a
+ * failure says which of the two properties broke.
+ */
+function expectLine(text: string | undefined, expected: string): void {
   expect(text).toBeDefined();
   expect(UNSAFE.test(text as string)).toBe(false);
-  for (const part of shown) expect(text).toContain(part);
+  expect(text).toBe(expected);
 }
 
 function hostileRecord(): StackOrphanRecord {
@@ -140,19 +154,30 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
     const { promise, debug } = plan({ managed: [ID] });
     await promise;
     expect(debug).toHaveBeenCalledTimes(1);
-    expectSafe(debug.mock.calls[0]?.[0] as string, SHOWN_ID);
+    expectLine(
+      debug.mock.calls[0]?.[0] as string,
+      `orphan ${SHOWN_ID}: already present in state.resources — dropping the stale record`
+    );
   });
 
   it('unroutable-type notice, including the thrown message', async () => {
     const { notices } = await plan({ getProviderThrows: true }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS, SHOWN_ERROR);
+    expectLine(
+      notices[0],
+      `${SHOWN_ID} (${SHOWN_TYPE}) is still in AWS as ${SHOWN_PHYS} from an earlier rollback, ` +
+        `but this build cannot route that type (${SHOWN_ERROR}) — cdkd is not adopting it.`
+    );
   });
 
   it('no-import notice', async () => {
     const { notices } = await plan({ provider: {} }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
+    expectLine(
+      notices[0],
+      `${SHOWN_ID} (${SHOWN_TYPE}) was left in AWS by an earlier rollback as ${SHOWN_PHYS}, ` +
+        `but its provider cannot verify it — cdkd is not adopting it.`
+    );
   });
 
   it('import-threw notice, including the provider error text', async () => {
@@ -164,7 +189,11 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
       },
     }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS, SHOWN_ERROR);
+    expectLine(
+      notices[0],
+      `${SHOWN_ID} (${SHOWN_TYPE}) is recorded as left in AWS as ${SHOWN_PHYS}, but cdkd could ` +
+        `not confirm it exists (${SHOWN_ERROR}) — keeping the record and not adopting it this run.`
+    );
   });
 
   it('provider-answered-for-another-id notice, including the returned physical id', async () => {
@@ -172,20 +201,33 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
       provider: { import: vi.fn(async () => ({ physicalId: FOUND_PHYS })) },
     }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS, SHOWN_FOUND_PHYS);
+    expectLine(
+      notices[0],
+      `${SHOWN_ID} (${SHOWN_TYPE}): cdkd asked about ${SHOWN_PHYS} and its provider answered ` +
+        `for ${SHOWN_FOUND_PHYS} — not adopting.`
+    );
   });
 
   it('no-longer-exists debug line', async () => {
     const { promise, debug } = plan({ provider: { import: vi.fn(async () => null) } });
     await promise;
     expect(debug).toHaveBeenCalledTimes(1);
-    expectSafe(debug.mock.calls[0]?.[0] as string, SHOWN_ID, SHOWN_PHYS);
+    expectLine(
+      debug.mock.calls[0]?.[0] as string,
+      `orphan ${SHOWN_ID}: ${SHOWN_PHYS} no longer exists in AWS — dropping the record`
+    );
   });
 
   it('refused-type notice', async () => {
     const { notices } = await plan({ nameProperties: [] }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
+    expectLine(
+      notices[0],
+      `${SHOWN_ID} (${SHOWN_TYPE}) is still in AWS as ${SHOWN_PHYS} from an earlier rollback. ` +
+        `cdkd does not re-adopt this type: cdkd does not derive that resource's physical name, ` +
+        `so a new deploy mints a new resource instead of colliding. Delete it yourself when you ` +
+        `no longer need it.`
+    );
   });
 
   it('template-does-not-declare notice', async () => {
@@ -193,22 +235,23 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
       template: { Resources: {} } as unknown as CloudFormationTemplate,
     }).promise;
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
+    expectLine(notices[0], UNDECLARED_NOTICE);
   });
 
   it('claimed-by-another-stack refusal', async () => {
     const { refusals } = await plan({ claims: [PHYS] }).promise;
     expect(refusals).toHaveLength(1);
-    expectSafe(refusals[0], SHOWN_ID, SHOWN_PHYS);
+    expectLine(refusals[0], CLAIMED_REFUSAL);
   });
 
   it('keeps a long, comma-joined physical id WHOLE — no ASCII rewrite, no cap', async () => {
     // `SnsTopicPolicyProvider` records a comma-joined ARN list, and a Custom
     // Resource's id is provider-defined. `displayIdent`'s 255 cap would cut the
-    // very id the notice exists to name.
+    // very id the notice exists to name, and its ASCII allowlist would blank
+    // the `é` a provider-defined id may legitimately carry.
     const arns = Array.from(
       { length: 12 },
-      (_, i) => `arn:aws:sns:us-east-1:111122223333:topic-${i}-${'x'.repeat(40)}`
+      (_, i) => `arn:aws:sns:us-east-1:111122223333:topic-${i}-caf\u00e9-${'x'.repeat(40)}`
     ).join(',');
     const record = hostileRecord();
     record.state.physicalId = arns;
@@ -225,6 +268,55 @@ describe('planOrphanAdoption renders state-chosen fields display-safe (#3642)', 
     });
     expect(arns.length).toBeGreaterThan(255);
     expect(notices[0]).toContain(` ${arns}, `);
+  });
+
+  it('BOUNDS a provider error that echoes an oversized value, marking the cut', async () => {
+    // `displayAwsMessage`, not `displaySafe`: an error that quotes a submitted
+    // value back has a caller-chosen length, and the notice would carry all of it.
+    const huge = `No such resource: ${'y'.repeat(5000)}`;
+    const { notices } = await plan({
+      provider: {
+        import: vi.fn(async () => {
+          throw new Error(huge);
+        }),
+      },
+    }).promise;
+    expect(notices[0]).toMatch(/\[cut: \d+ more characters withheld\]\) — keeping the record/);
+    expect(notices[0]).not.toContain(huge);
+  });
+
+  it('renders ORDINARY values byte-identically — no quotes, nothing rewritten', async () => {
+    // The adoption notices of a real stack must read exactly as they did
+    // before this change: a legitimate id, type and physical id are plain, so
+    // none of them may gain quotes or lose a character.
+    const { notices } = await planOrphanAdoption({
+      records: [
+        {
+          logicalId: 'My-KeptRole',
+          orphanedAt: 1,
+          state: {
+            physicalId: 'MyStack-MyKeptRole-1A2B3C',
+            resourceType: 'AWS::IAM::Role',
+            properties: {},
+            deletionPolicy: 'Retain',
+          },
+        },
+      ],
+      managedLogicalIds: new Set(),
+      template: { Resources: {} } as unknown as CloudFormationTemplate,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      getProvider: () =>
+        ({ import: vi.fn(async () => ({ physicalId: 'MyStack-MyKeptRole-1A2B3C' })) }) as never,
+      nameProperties: () => ['RoleName'],
+      readSiblingClaims: async () => new Set(),
+      logger: { debug: vi.fn() },
+    });
+    expect(notices).toEqual([
+      'My-KeptRole (AWS::IAM::Role) is still in AWS as MyStack-MyKeptRole-1A2B3C from an ' +
+        'earlier rollback. This deploy does not create it under that name, so cdkd is leaving ' +
+        'it alone.',
+    ]);
   });
 });
 
@@ -243,7 +335,10 @@ describe('makeSiblingClaimReader debug lines render display-safe (#3642)', () =>
       logger: { debug },
     })();
     expect(debug).toHaveBeenCalledTimes(1);
-    expectSafe(debug.mock.calls[0]?.[0] as string, SHOWN_ERROR);
+    expectLine(
+      debug.mock.calls[0]?.[0] as string,
+      `orphan adoption: could not list sibling stacks — ${SHOWN_ERROR}`
+    );
   });
 
   it('the unreadable-sibling line, naming the stack', async () => {
@@ -260,7 +355,10 @@ describe('makeSiblingClaimReader debug lines render display-safe (#3642)', () =>
       logger: { debug },
     })();
     expect(debug).toHaveBeenCalledTimes(1);
-    expectSafe(debug.mock.calls[0]?.[0] as string, '"Sib  [2Kling"', SHOWN_ERROR);
+    expectLine(
+      debug.mock.calls[0]?.[0] as string,
+      `orphan adoption: skipping unreadable state for "Sib  [2Kling" — ${SHOWN_ERROR}`
+    );
   });
 });
 
@@ -319,7 +417,10 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
     expect(state.resources[ID]).toBeDefined();
     const adopting = infoLines().filter((l) => l.startsWith('Adopting '));
     expect(adopting).toHaveLength(1);
-    expectSafe(adopting[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
+    expectLine(
+      adopting[0],
+      `Adopting ${SHOWN_ID} (${SHOWN_TYPE}) left in AWS by an earlier rollback as ${SHOWN_PHYS}`
+    );
   });
 
   it('the logged notices', async () => {
@@ -328,7 +429,7 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
     await adopt(stackState(), { Resources: {} } as unknown as CloudFormationTemplate);
     const notices = infoLines().filter((l) => l.includes('earlier rollback'));
     expect(notices).toHaveLength(1);
-    expectSafe(notices[0], SHOWN_ID, SHOWN_TYPE, SHOWN_PHYS);
+    expectLine(notices[0], UNDECLARED_NOTICE);
   });
 
   it('the thrown refusal', async () => {
@@ -347,6 +448,30 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
     // the one line break the join adds, then require nothing else remain.
     const lines = message.split('\n  ');
     expect(lines).toHaveLength(2);
-    expectSafe(lines[1], SHOWN_ID, SHOWN_PHYS);
+    expectLine(lines[1], CLAIMED_REFUSAL);
+  });
+
+  it('an ORDINARY adoption logs byte-identically — no quotes, nothing rewritten', async () => {
+    importFn.mockResolvedValue({ physicalId: 'MyStack-KeptRole-1A2B3C' });
+    const state = stackState();
+    state.orphans = [
+      {
+        logicalId: 'KeptRole',
+        orphanedAt: 1,
+        state: {
+          physicalId: 'MyStack-KeptRole-1A2B3C',
+          resourceType: 'AWS::IAM::Role',
+          properties: {},
+          deletionPolicy: 'Retain',
+        },
+      },
+    ];
+    await adopt(state, {
+      Resources: { KeptRole: { Type: 'AWS::IAM::Role', Properties: {} } },
+    } as unknown as CloudFormationTemplate);
+    expect(infoLines().filter((l) => l.startsWith('Adopting '))).toEqual([
+      'Adopting KeptRole (AWS::IAM::Role) left in AWS by an earlier rollback as ' +
+        'MyStack-KeptRole-1A2B3C',
+    ]);
   });
 });
