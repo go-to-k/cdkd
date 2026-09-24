@@ -1640,12 +1640,27 @@ interface CachedAccountIdentity {
   fabricated?: boolean;
 }
 
-let cachedAccountIdentity: CachedAccountIdentity | null = null;
+/**
+ * The real (non-fabricated) account identity, per CREDENTIAL IDENTITY: keyed by
+ * {@link credentialFingerprint} of the active `AwsClients`' credential
+ * configuration (issue [#3660](https://github.com/go-to-k/cdkd/issues/3660)).
+ *
+ * Process-wide, and a CLI run has one identity, so for the CLI this holds one
+ * entry. A LIBRARY caller can install `AwsClients` for account A, deploy, then
+ * install account B's in the same process (or run both in per-stack scopes);
+ * keyed by nothing, B's `AWS::AccountId` and every ARN built from it resolved
+ * as A's. The fabricated window and the in-flight slot below share the key.
+ */
+const cachedAccountIdentities = new Map<string, CachedAccountIdentity>();
 
 /**
- * Cache for availability zones per region
+ * Availability-zone names per (credential identity, region): keyed by
+ * `injectiveKey(credentialFingerprint, region)` (issue
+ * [#3660](https://github.com/go-to-k/cdkd/issues/3660)). The zone list is an
+ * ACCOUNT's answer — an opt-in or restricted zone is visible to one account and
+ * not another — so a region-only key served one identity's list to the next.
  */
-const cachedAvailabilityZones: Record<string, string[]> = {};
+const cachedAvailabilityZones = new Map<string, string[]>();
 
 /**
  * One resolved dynamic reference, as remembered by
@@ -2277,10 +2292,16 @@ export function isClientSafeRegion(region: string): boolean {
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
 
-let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: number } | null = null;
+/** The bounded fabricated-answer window, per credential identity (see {@link cachedAccountIdentities}). */
+const fabricatedAccountIdentities = new Map<
+  string,
+  { identity: CachedAccountIdentity; expiresAt: number }
+>();
 
 /**
- * The single in-flight lookup, so N concurrent callers share ONE round trip.
+ * The single in-flight lookup PER CREDENTIAL IDENTITY, so N concurrent callers
+ * of one identity share ONE round trip, and a second identity never joins the
+ * first's (issue #3660).
  *
  * The TTL above collapses SEQUENTIAL callers; this collapses PARALLEL ones
  * (PR review). `cdkd deploy --concurrency 10` resolves ten resources' intrinsics
@@ -2288,14 +2309,14 @@ let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: num
  * each with the SDK's own 3-attempt retry — and ten identical warnings per
  * window. Cleared in a `finally` so a failure cannot wedge it.
  */
-let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
+const accountInfoInFlight = new Map<string, Promise<CachedAccountIdentity>>();
 
 /**
  * Bumped by {@link resetAccountInfoCache}, so a lookup that was already in
  * flight cannot write the cache it was asked to forget.
  *
  * Without it the reset only cleared the SETTLED caches: an in-flight resolve
- * would land afterwards and re-populate `cachedAccountIdentity`, so the next
+ * would land afterwards and re-populate `cachedAccountIdentities`, so the next
  * caller read the pre-reset account. That is the `*Once`-leak shape one layer
  * down — a later test silently inheriting an earlier one's answer — and the
  * reset's own comment already claimed to forget it.
@@ -2303,41 +2324,51 @@ let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
 let accountInfoGeneration = 0;
 
 /**
- * Get AWS account information from STS
+ * Get AWS account information from STS, for the ACTIVE credential identity.
+ *
+ * `identityKey` is read FIRST and synchronously, and `resolveAccountIdentity`
+ * reads `getAwsClients().sts` before its first `await`, so the key and the
+ * client that answers come from ONE reading of the active clients (issue
+ * #3660). Never log the key.
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
-  if (cachedAccountIdentity) return accountInfoFor(cachedAccountIdentity, overrideRegion);
+  const identityKey = credentialFingerprint(ambientCredentialConfig());
+  const cached = cachedAccountIdentities.get(identityKey);
+  if (cached) return accountInfoFor(cached, overrideRegion);
 
   // A fabricated answer inside its TTL is reused (see the constant above) —
-  // WITHOUT promoting it to `cachedAccountIdentity`, so it still expires.
-  if (fabricatedAccountIdentity && accountInfoClock.now() < fabricatedAccountIdentity.expiresAt) {
-    return accountInfoFor(fabricatedAccountIdentity.identity, overrideRegion);
+  // WITHOUT promoting it to `cachedAccountIdentities`, so it still expires.
+  const fabricated = fabricatedAccountIdentities.get(identityKey);
+  if (fabricated && accountInfoClock.now() < fabricated.expiresAt) {
+    return accountInfoFor(fabricated.identity, overrideRegion);
   }
 
-  if (accountInfoInFlight) return accountInfoFor(await accountInfoInFlight, overrideRegion);
+  const pending = accountInfoInFlight.get(identityKey);
+  if (pending) return accountInfoFor(await pending, overrideRegion);
 
   // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
   // caller's region is applied by `accountInfoFor` afterwards — so sharing one
   // in-flight promise across callers with different `overrideRegion`s is safe.
   // Since issue #1746 that is structural rather than a property to preserve:
   // `resolveAccountIdentity` takes no region at all.
-  const inFlight = resolveAccountIdentity();
-  accountInfoInFlight = inFlight;
+  const inFlight = resolveAccountIdentity(identityKey);
+  accountInfoInFlight.set(identityKey, inFlight);
   try {
     return accountInfoFor(await inFlight, overrideRegion);
   } finally {
-    // Only clear the slot we still OWN. `resetAccountInfoCache` nulls it too, so
+    // Only clear the slot we still OWN. `resetAccountInfoCache` clears it too, so
     // a reset mid-flight lets a later caller install its own promise — an
     // unconditional clear here would drop THAT one and cost a redundant
     // `GetCallerIdentity`.
-    if (accountInfoInFlight === inFlight) accountInfoInFlight = null;
+    if (accountInfoInFlight.get(identityKey) === inFlight) accountInfoInFlight.delete(identityKey);
   }
 }
 
-async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
+async function resolveAccountIdentity(identityKey: string): Promise<CachedAccountIdentity> {
   const generation = accountInfoGeneration;
   const stillCurrent = (): boolean => generation === accountInfoGeneration;
   const logger = getLogger().child('IntrinsicFunctionResolver');
+  // Read before the first `await`: the same reading `identityKey` was taken from.
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
 
@@ -2365,13 +2396,13 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
       // A reset landed while this lookup was in flight — return the answer to
       // our own caller but do NOT re-populate the cache it cleared.
     } else if (resolved.fabricated) {
-      fabricatedAccountIdentity = {
+      fabricatedAccountIdentities.set(identityKey, {
         identity: resolved,
         expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-      };
+      });
     } else {
-      cachedAccountIdentity = resolved;
-      fabricatedAccountIdentity = null;
+      cachedAccountIdentities.set(identityKey, resolved);
+      fabricatedAccountIdentities.delete(identityKey);
     }
     // not-in-class(accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
     logger.debug(`Retrieved AWS account info: ${accountId}`);
@@ -2398,19 +2429,19 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
       return fallback;
     }
     if (fallback.fabricated) {
-      // Guarded on `!cachedAccountIdentity` so a late failure arm cannot install
-      // a fabricated window over a real answer a concurrent call already cached
-      // (PR review). Benign either way — the cached branch is read first — but
-      // the invariant should be enforced rather than accidental.
-      if (!cachedAccountIdentity) {
-        fabricatedAccountIdentity = {
+      // Guarded on the SAME identity's real answer so a late failure arm cannot
+      // install a fabricated window over a real answer a concurrent call already
+      // cached (PR review). Benign either way — the cached branch is read first —
+      // but the invariant should be enforced rather than accidental.
+      if (!cachedAccountIdentities.has(identityKey)) {
+        fabricatedAccountIdentities.set(identityKey, {
           identity: fallback,
           expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-        };
+        });
       }
     } else {
-      cachedAccountIdentity = fallback;
-      fabricatedAccountIdentity = null;
+      cachedAccountIdentities.set(identityKey, fallback);
+      fabricatedAccountIdentities.delete(identityKey);
     }
     return fallback;
   }
@@ -2450,22 +2481,20 @@ export function isImpossibleEmptyStoredAttribute(
  * Reset cached account info (useful for testing)
  */
 export function resetAccountInfoCache(): void {
-  cachedAccountIdentity = null;
+  cachedAccountIdentities.clear();
   // The bounded fabricated-answer window is part of the same cache and must
   // clear with it, or a test (or a later phase) would keep reading a fabricated
   // answer it just asked to forget.
-  fabricatedAccountIdentity = null;
+  fabricatedAccountIdentities.clear();
   // Invalidate any lookup already in flight so its resolve cannot write the
   // caches this call just cleared.
   accountInfoGeneration += 1;
   // ...and so is the in-flight promise: a reset while a lookup is pending would
   // otherwise hand the next caller the identity this call asked to forget, and
   // the resolve arm would re-populate the cache AFTER the reset.
-  accountInfoInFlight = null;
+  accountInfoInFlight.clear();
   // Also reset AZ cache
-  for (const key of Object.keys(cachedAvailabilityZones)) {
-    delete cachedAvailabilityZones[key];
-  }
+  cachedAvailabilityZones.clear();
   // Resolved dynamic-reference VALUES are no longer cleared here: they live on
   // the resolver instance (issue #1933), so their lifetime already ends with
   // the stack / region context that chose the AWS clients behind the lookup.
@@ -2946,10 +2975,10 @@ export class IntrinsicFunctionResolver {
    * ({@link cfnExportsPromises}, {@link cfnStackOutputsCache}) carry the
    * fingerprint too.
    *
-   * THE CLIENT HALF IS CLOSED, NOT THE WHOLE CLASS: {@link cachedDynamicReferences}
-   * (keyed by the expression alone) and the PROCESS-GLOBAL account identity
-   * behind `getAccountInfo` still assume one identity per resolver and per
-   * process respectively — a value one identity read is served to the next.
+   * The VALUE caches carry the fingerprint as well (issue
+   * [#3660](https://github.com/go-to-k/cdkd/issues/3660)):
+   * {@link cachedDynamicReferences}, and the process-global account identity
+   * behind `getAccountInfo` and `cachedAvailabilityZones`.
    */
   private readonly regionScopedClients = new Map<string, AwsClients>();
   /**
@@ -2967,9 +2996,9 @@ export class IntrinsicFunctionResolver {
    *
    * A whole resolver rather than a client bag, because what has to be
    * region-scoped is not only the lookup but the VALUE CACHE behind it:
-   * {@link cachedDynamicReferences} is keyed by the expression alone and is
-   * sound only because one resolver stands for one stack in one region (issue
-   * #1933). Resolving a producer's expression inside THIS resolver would put a
+   * {@link cachedDynamicReferences} is keyed by the expression (plus the
+   * credential identity, issue #3660) and is sound only because one resolver
+   * stands for one stack in one region (issue #1933). Resolving a producer's expression inside THIS resolver would put a
    * foreign region's answer under a key the consumer's own lookups read — the
    * exact cross-region leak that field's instance scope closed. A separate
    * resolver per producer region keeps that invariant by construction.
@@ -3071,7 +3100,11 @@ export class IntrinsicFunctionResolver {
 
   /**
    * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
-   * keyed by the full expression — INSTANCE-scoped, which closes the CACHE half
+   * keyed by the full expression and the credential identity that read it
+   * (`injectiveKey(credentialFingerprint, expression)`, issue
+   * [#3660](https://github.com/go-to-k/cdkd/issues/3660): a library caller can
+   * drive one resolver under two `AwsClients` identities, and the same NAME
+   * read by two accounts is two values) — INSTANCE-scoped, which closes the CACHE half
    * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
    * only PARTIALLY addressed by this field: see "what this does NOT settle"
    * below.
@@ -10721,8 +10754,11 @@ export class IntrinsicFunctionResolver {
       clientRegion = this.explicitRegion;
     }
 
-    // Check cache
-    const cached = cachedAvailabilityZones[region];
+    // Check cache. The key is read HERE, synchronously beside the
+    // `clientsForRegion` selection below, and reused at the `set`, so the list is
+    // filed under the identity whose client read it (issue #3660). Never log it.
+    const azCacheKey = injectiveKey(credentialFingerprint(ambientCredentialConfig()), region);
+    const cached = cachedAvailabilityZones.get(azCacheKey);
     if (cached) {
       // `region` masked for the reason the two throws below state: it has
       // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
@@ -10792,7 +10828,8 @@ export class IntrinsicFunctionResolver {
     // account. Neither is a value to hand back — and it must certainly not be
     // CACHED, because `cachedAvailabilityZones` is module-global, so one
     // degenerate answer would be replayed as the resolved value of every later
-    // `Fn::GetAZs` for that region in the process (issue #1957 review).
+    // `Fn::GetAZs` for that region and identity in the process (issue #1957
+    // review).
     if (azNames.length === 0) {
       throw new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
@@ -10802,7 +10839,7 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    cachedAvailabilityZones[region] = azNames;
+    cachedAvailabilityZones.set(azCacheKey, azNames);
     this.logger.debug(
       `Resolved Fn::GetAZs: ${this.displayMasked(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(azNames, context))}`
     );
@@ -11926,8 +11963,16 @@ export class IntrinsicFunctionResolver {
 
         // Check cache first. INSTANCE-scoped, so a hit can only ever be a value
         // THIS resolver resolved — i.e. one from its own stack and its own region
-        // (issue #1933; see the field's own doc).
-        const cached = this.cachedDynamicReferences.get(fullMatch);
+        // (issue #1933; see the field's own doc) — and keyed by the credential
+        // identity too (issue #3660). The key is read ONCE here and reused at the
+        // `set` below: every service arm's first `await` is its lookup helper,
+        // which selects `clientsForRegion(...)` before ITS first `await`, so the
+        // key and the client that answers come from one reading. Never log it.
+        const dynamicReferenceCacheKey = injectiveKey(
+          credentialFingerprint(ambientCredentialConfig()),
+          fullMatch
+        );
+        const cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
         if (cached) {
           // The `cached.value` test excludes the empty string: an empty secret is
           // not a usable redaction needle (it would match every empty leaf).
@@ -12161,7 +12206,10 @@ export class IntrinsicFunctionResolver {
         // process-global verdict store another stack's resolver can retract from
         // under it (issue #1933).
         if (cacheable) {
-          this.cachedDynamicReferences.set(fullMatch, { value: resolved, secret: isSecret });
+          this.cachedDynamicReferences.set(dynamicReferenceCacheKey, {
+            value: resolved,
+            secret: isSecret,
+          });
         }
         if (isSecret && resolved) {
           context?.recordedSecretValues?.set(resolved, fullMatch);
