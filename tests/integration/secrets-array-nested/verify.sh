@@ -65,6 +65,28 @@
 #   3. Destroy + assert the task definition has no ACTIVE revision left, the
 #      secret is deleted/scheduled, and the state file is gone.
 #
+# THE DRIFT ARM (issue #1947), gated on `CDKD_INTEG_DRIFT_ARM=1`, exported below
+# for every phase. `cdkd drift` resolves its baseline before comparing (#1914),
+# and both of its secret-path walks descend ARRAYS — the scalar-shape arm in
+# `secrets-dynamic-ref` cannot see that half. Two stops:
+#
+#   1d. Between phases 1 and 2, on the `properties` baseline (no observed one
+#       yet, and no mask). (a) the freshly deployed stack is CLEAN, with both
+#       array consumers reported compared-and-matched; then a console edit of
+#       the MUTABLE consumer's array-nested secret (the CodeBuild project —
+#       task definition revisions are immutable, so drift cannot be injected
+#       into one and `--revert` refuses it) is (b) reported with no plaintext,
+#       (d) refused by `--accept`, which persists no plaintext, and (c)
+#       reverted by `--revert` to the RESOLVED value. Last, (b) again with the
+#       project's reference made UNRESOLVABLE: the value map is then empty and
+#       only the offline array-descending path seed can mask the live array.
+#   2d. After phase 2, on the observed baseline. Its #2852 fail-closed mask at
+#       the anchor arm's refused positions cannot equal the live value, so the
+#       task definition does not read clean there; this stop asserts only what
+#       must hold whichever way that is reported — no plaintext from the
+#       report, `--json`, either dry-run plan or `--accept`, and the masked
+#       baseline left as it was.
+#
 # SECURITY: the resolved secret value is never printed. Assertions compare
 # against a masked representation; only PASS/FAIL + a masked snippet is shown.
 #
@@ -163,6 +185,18 @@ AMBIG_BRAVO_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:ambigBrav
 EXPECTED_ANCHOR_PW="cdkd-anchor-corroborated-pw-741"
 EXPECTED_AMBIG_ALPHA="cdkd-anchor-ambiguous-alpha-742"
 EXPECTED_AMBIG_BRAVO="cdkd-anchor-ambiguous-bravo-743"
+
+# --- issue #1947 drift arm -------------------------------------------------
+# Exported ahead of every phase for the anchor arm's reason.
+export CDKD_INTEG_DRIFT_ARM=1
+DRIFT_PROJECT="cdkd-test-array-drift-${ACCOUNT_ID}"
+DRIFT_ROLE="cdkd-test-array-drift-${ACCOUNT_ID}"
+DRIFT_PW_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:driftPw}}"
+# Disjoint from every needle above, for the reason the anchor arm gives.
+EXPECTED_DRIFT_PW="cdkd-drift-array-pw-744"
+# What the console edit writes. Not a secret, but at a secret-bearing position
+# cdkd cannot tell it from last week's rotated-away value, so it must be masked.
+DRIFT_SENTINEL="cdkd-drift-injected-not-the-secret"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -304,6 +338,12 @@ cleanup() {
   # the one cdkd cannot leave "gone" — deregistration is the only delete AWS
   # offers — so it is swept by FAMILY rather than by a remembered ARN.
   deregister_family
+  # The drift arm's project, then its role (in use by the project until then).
+  # Both are exact NAMES, not a listed prefix, so there is no scope to widen.
+  aws codebuild delete-project --name "${DRIFT_PROJECT}" --region "${REGION}" >/dev/null 2>&1
+  aws iam delete-role --role-name "${DRIFT_ROLE}" >/dev/null 2>&1
+  if [ -n "${DRIFT_ERR_FILE:-}" ]; then rm -f "${DRIFT_ERR_FILE}"; fi
+  if [ -n "${SECRET_VALUE_FILE:-}" ]; then rm -f "${SECRET_VALUE_FILE}"; fi
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
   aws secretsmanager delete-secret --secret-id "${TOKEN_SECRET_NAME}" \
@@ -629,6 +669,388 @@ for anchor_needle in "${EXPECTED_ANCHOR_PW}" "${EXPECTED_AMBIG_ALPHA}" "${EXPECT
 done
 echo "    OK: no resolved plaintext in the consumer record after phase 1"
 
+# --- Phase 1d: `cdkd drift` on the array shape (issue #1947) ----------------
+# Here, before phase 2, because this is the one point where the drift baseline
+# is `properties` for every consumer: phase 1 captured no observed baseline, so
+# no #2852 fail-closed mask exists yet for the comparison to trip over. The
+# task definition must end the stop exactly as it began — no observed baseline,
+# same revision — or phase 2's premises go vacuous; that is re-asserted below.
+echo "==> Phase 1d: cdkd drift on the array-nested secret (issue #1947)"
+
+# Every plaintext the two consumers hold. The injected sentinel is checked on
+# its own, where it is expected to be live.
+DRIFT_NEEDLES=("${EXPECTED_PASSWORD}" "${EXPECTED_ANCHOR_PW}" "${EXPECTED_AMBIG_ALPHA}"
+  "${EXPECTED_AMBIG_BRAVO}" "${EXPECTED_DRIFT_PW}" "cdkd-decoy-never-created")
+DRIFT_ERR_FILE=$(mktemp)
+
+# assert_no_drift_plaintext "<what>" "<text>" -- grep -qF, so a match is never
+# echoed.
+assert_no_drift_plaintext() {
+  local what="$1" text="$2" needle
+  for needle in "${DRIFT_NEEDLES[@]}"; do
+    if grep -qF "${needle}" <<< "${text}"; then
+      echo "FAIL: ${what} carries a resolved secret plaintext" >&2
+      exit 1
+    fi
+  done
+  echo "    OK: ${what} carries no plaintext"
+}
+
+# The injected value, at a secret-bearing position, is indistinguishable from a
+# rotated-away secret, so no output may carry it verbatim while it is live.
+assert_no_sentinel() { # assert_no_sentinel "<what>" "<text>"
+  if grep -qF "${DRIFT_SENTINEL}" <<< "$2"; then
+    echo "FAIL: $1 carried the AWS-current value at a secret-bearing array verbatim" >&2
+    exit 1
+  fi
+}
+
+# A diagnostic dump with every needle and the sentinel masked out.
+diag_masked() {
+  local out="$1" needle
+  for needle in "${DRIFT_NEEDLES[@]}" "${DRIFT_SENTINEL}"; do
+    out=${out//"${needle}"/***}
+  done
+  printf '%s\n' "${out}" >&2
+}
+
+run_drift() { # run_drift <extra args...> -> DRIFT_OUT / DRIFT_RC, stderr folded in
+  set +e
+  DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" "$@" 2>&1)
+  DRIFT_RC=$?
+  set -e
+}
+
+run_drift_json() { # -> DRIFT_JSON (stdout only) / DRIFT_JSON_ERR / DRIFT_JSON_RC
+  set +e
+  DRIFT_JSON=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json 2>"${DRIFT_ERR_FILE}")
+  DRIFT_JSON_RC=$?
+  set -e
+  DRIFT_JSON_ERR=$(cat "${DRIFT_ERR_FILE}")
+  if ! printf '%s' "${DRIFT_JSON}" | jq -e 'type == "array" and length == 1' >/dev/null; then
+    echo "FAIL: 'cdkd drift --json' did not print one stack's report (rc=${DRIFT_JSON_RC})" >&2
+    diag_masked "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+    exit 1
+  fi
+}
+
+# project_env <var> -> the live value of one of the project's env vars.
+project_env() {
+  aws codebuild batch-get-projects --names "${DRIFT_PROJECT}" --region "${REGION}" \
+    | jq -r --arg k "$1" \
+      '[.projects[0].environment.environmentVariables[]? | select(.name==$k) | .value] | (.[0] // empty)'
+}
+
+# The console edit: re-send the project's WHOLE environment with one variable's
+# value replaced. Nothing here is echoed: the readback it is built from carries
+# the resolved secret.
+set_project_env() { # set_project_env <var> <value>
+  local env_json
+  env_json=$(aws codebuild batch-get-projects --names "${DRIFT_PROJECT}" --region "${REGION}" \
+    | jq -c --arg k "$1" --arg v "$2" \
+      '.projects[0].environment | .environmentVariables |= map(if .name == $k then .value = $v else . end)') \
+    || return 1
+  aws codebuild update-project --name "${DRIFT_PROJECT}" --region "${REGION}" \
+    --environment "${env_json}" >/dev/null
+}
+
+# project_state_env <bag-json> <var> -- BY NAME, for the reason env_value_of
+# gives.
+project_state_env() {
+  printf '%s' "$1" | jq -r --arg v "$2" \
+    '[(.Environment.EnvironmentVariables // [])[] | select(.Name==$v) | .Value] | (.[0] // null)'
+}
+
+read_record() { # read_record <resourceType> -> that record from a fresh `state show`
+  node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json \
+    | jq -c --arg t "$1" '[.state.resources | to_entries[] | select(.value.resourceType==$t) | .value] | (.[0] // null)'
+}
+
+# PREMISE, asserted: the project's reference reached AWS resolved, and its
+# record holds the expression with no observed baseline -- so the comparison
+# below really is resolved-`properties` against the live plaintext.
+LIVE_DRIFT_PW=$(project_env DB_PASSWORD)
+assert_read "the live CodeBuild env DB_PASSWORD" "${LIVE_DRIFT_PW}"
+if [ "${LIVE_DRIFT_PW}" != "${EXPECTED_DRIFT_PW}" ]; then
+  echo "FAIL: the project's array-nested reference did not reach AWS resolved: $(mask "${LIVE_DRIFT_PW}")" >&2
+  exit 1
+fi
+PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
+assert_read "the CodeBuild project record" "${PROJECT_RECORD}"
+P1D_PROJECT_SECRET=$(project_state_env "$(printf '%s' "${PROJECT_RECORD}" | jq -c '.properties')" DB_PASSWORD)
+if [ "${P1D_PROJECT_SECRET}" != "${DRIFT_PW_EXPR}" ]; then
+  echo "FAIL: the project's state properties must hold the expression at the array-nested leaf" >&2
+  echo "      got:  $(mask "${P1D_PROJECT_SECRET}")" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${PROJECT_RECORD}" | jq -r '.observedProperties == null')" != "true" ]; then
+  echo "FAIL: the project already carries an observed baseline, so this stop is not on the properties baseline" >&2
+  exit 1
+fi
+echo "    OK: premise -- the project reached AWS resolved, and state holds the expression with no observed baseline"
+
+# (a) + (b): a freshly deployed stack is CLEAN, and says so without printing
+# anything state deliberately does not hold. rc=0 alone is also what a
+# resource cdkd never compared produces, so the JSON must name BOTH array
+# consumers as compared-and-matched.
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' reported drift on the freshly deployed stack (rc=${DRIFT_RC})" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' on the clean stack" "${DRIFT_OUT}"
+run_drift_json
+if [ "${DRIFT_JSON_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --json' exited ${DRIFT_JSON_RC} on the freshly deployed stack" >&2
+  diag_masked "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+  exit 1
+fi
+for consumer_type in AWS::ECS::TaskDefinition AWS::CodeBuild::Project; do
+  if [ "$(printf '%s' "${DRIFT_JSON}" | jq -r --arg t "${consumer_type}" '[.[0].clean[] | select(.type==$t)] | length')" != "1" ]; then
+    echo "FAIL: '${consumer_type}' is not reported compared-and-matched on the freshly deployed stack" >&2
+    diag_masked "${DRIFT_JSON}"
+    exit 1
+  fi
+done
+if [ "$(printf '%s' "${DRIFT_JSON}" | jq -r '(.[0].drifted | length) + (.[0].notCompared | length)')" != "0" ]; then
+  echo "FAIL: the freshly deployed stack has a drifted or not-compared resource" >&2
+  diag_masked "${DRIFT_JSON}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --json' on the clean stack" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+echo "    OK: no drift -- both array consumers compared and matched"
+
+echo "==> Injecting out-of-band drift on the project's array-nested DB_PASSWORD"
+set_project_env DB_PASSWORD "${DRIFT_SENTINEL}"
+# Proven to have taken: a silent no-op leaves a clean stack, and every
+# assertion below would pass for the wrong reason.
+if [ "$(project_env DB_PASSWORD)" != "${DRIFT_SENTINEL}" ]; then
+  echo "FAIL: the console edit of DB_PASSWORD did not land -- the assertions below would be vacuous" >&2
+  exit 1
+fi
+if [ "$(project_env MODE)" != "production" ]; then
+  echo "FAIL: the console edit disturbed the non-secret sibling MODE" >&2
+  exit 1
+fi
+
+# (b) on a DRIFTED secret: reported, and masked. The comparator does not
+# descend an array, so the change sits at the ARRAY's path and both sides are
+# the whole array -- plaintext included, unless the path mask catches it.
+run_drift
+if [ "${DRIFT_RC}" -eq 0 ]; then
+  echo "FAIL: 'cdkd drift' saw no drift after DB_PASSWORD was changed out of band" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' on the drifted array" "${DRIFT_OUT}"
+assert_no_sentinel "'cdkd drift'" "${DRIFT_OUT}"
+# The report's AWS-side line for the array itself must carry the mask: a `***`
+# anywhere else in the output would not show that THIS value was masked.
+DRIFT_AWS_LINE=$(grep -F "+ Environment.EnvironmentVariables:" <<< "${DRIFT_OUT}" || true)
+if [ -z "${DRIFT_AWS_LINE}" ] || ! grep -qF '***' <<< "${DRIFT_AWS_LINE}"; then
+  echo "FAIL: 'cdkd drift' did not report the drifted array's AWS side masked" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+run_drift_json
+DRIFT_SET=$(printf '%s' "${DRIFT_JSON}" \
+  | jq -r '[.[0].drifted[] | .type as $t | .changes[] | "\($t) \(.path)"] | sort | join(",")')
+if [ "${DRIFT_SET}" != "AWS::CodeBuild::Project Environment.EnvironmentVariables" ]; then
+  # Types and paths only -- no value -- so it is safe to print.
+  echo "FAIL: expected exactly one drifted path, the project's env-var array; got: '${DRIFT_SET}'" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --json' on the drifted array" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+assert_no_sentinel "'cdkd drift --json'" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+echo "    OK: the console edit is reported at the array, masked, with no phantom drift elsewhere"
+
+# (d): --accept must REFUSE the masked array rather than persist what it just
+# masked -- the live array carries the sentinel AND nothing else could have
+# told cdkd whether it is a rotated secret.
+echo "==> Asserting --accept refuses the secret-bearing array"
+run_drift --accept --yes
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' failed instead of refusing the array (rc=${DRIFT_RC})" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --accept'" "${DRIFT_OUT}"
+assert_no_sentinel "'cdkd drift --accept'" "${DRIFT_OUT}"
+if ! grep -qF "not accepting" <<< "${DRIFT_OUT}"; then
+  echo "FAIL: --accept did not say it was refusing the secret-bearing array" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
+assert_read "the CodeBuild project record after --accept" "${PROJECT_RECORD}"
+assert_no_drift_plaintext "the project record after --accept" "${PROJECT_RECORD}"
+if grep -qF "${DRIFT_SENTINEL}" <<< "${PROJECT_RECORD}"; then
+  echo "FAIL: --accept persisted the injected value at a secret-bearing array" >&2
+  exit 1
+fi
+if grep -qF '"***"' <<< "${PROJECT_RECORD}"; then
+  echo "FAIL: --accept persisted the MASK into the project record" >&2
+  exit 1
+fi
+if [ "$(project_state_env "$(printf '%s' "${PROJECT_RECORD}" | jq -c '.properties')" DB_PASSWORD)" != "${DRIFT_PW_EXPR}" ]; then
+  echo "FAIL: --accept did not leave DB_PASSWORD on its own {{resolve:...}} expression" >&2
+  exit 1
+fi
+echo "    OK: --accept refused the array and left the expression in state"
+
+# (c): --revert must RE-RESOLVE the expression before handing it to the
+# provider; shipping the literal token is the live-breakage half of #1914.
+echo "==> Reverting the injected drift"
+run_drift --revert --yes
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --revert' failed (rc=${DRIFT_RC})" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --revert'" "${DRIFT_OUT}"
+assert_no_sentinel "'cdkd drift --revert'" "${DRIFT_OUT}"
+REVERTED_PW=$(project_env DB_PASSWORD)
+case "${REVERTED_PW}" in
+  *'{{resolve:'*)
+    echo "FAIL: --revert wrote the LITERAL {{resolve:...}} token into the live array" >&2
+    exit 1
+    ;;
+esac
+if [ "${REVERTED_PW}" != "${EXPECTED_DRIFT_PW}" ]; then
+  echo "FAIL: --revert left DB_PASSWORD as $(mask "${REVERTED_PW}"), expected the resolved secret" >&2
+  exit 1
+fi
+if [ "$(project_env MODE)" != "production" ]; then
+  echo "FAIL: --revert corrupted the non-secret sibling MODE it re-sent in the same array" >&2
+  exit 1
+fi
+echo "    OK: --revert restored the RESOLVED secret into the live array"
+PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
+assert_read "the CodeBuild project record after --revert" "${PROJECT_RECORD}"
+assert_no_drift_plaintext "the project record after --revert" "${PROJECT_RECORD}"
+if [ "$(project_state_env "$(printf '%s' "${PROJECT_RECORD}" | jq -c '.properties')" DB_PASSWORD)" != "${DRIFT_PW_EXPR}" ]; then
+  echo "FAIL: the revert's state write did not keep DB_PASSWORD's expression" >&2
+  exit 1
+fi
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' still reports drift after --revert (rc=${DRIFT_RC})" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' after --revert" "${DRIFT_OUT}"
+echo "    OK: the stack is clean again after --revert"
+
+# (b) on the resolution-FAILURE path. When a reference cannot be resolved,
+# drift compares the UNRESOLVED baseline, clears its value map, and the only
+# thing masking the live array is the offline path seed
+# `collectDynamicReferencePaths` -- whose array descent is the other half of
+# the claim #1947 rests on. Stripping the project's key from the secret fails
+# that one resource's resolution (the task definition's keys stay), while the
+# live array holds the RESOLVED plaintext the revert just restored. The value
+# is restored right after the two runs and before the assertions below; a
+# setup failure in between exits with the key still stripped, which is safe
+# because `cleanup` force-deletes the secret.
+echo "==> Asserting the resolution-failure path masks the array too"
+ORIG_SECRET_STRING=$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query SecretString --output text)
+assert_read "the fixture secret's SecretString" "${ORIG_SECRET_STRING}"
+STRIPPED_SECRET_STRING=$(printf '%s' "${ORIG_SECRET_STRING}" | jq -c 'del(.driftPw)')
+# Both values go to put-secret-value through a 0600 file, not argv, where
+# `ps` would show every key's plaintext for the life of the call.
+SECRET_VALUE_FILE=$(umask 077 && mktemp)
+put_secret_string() { # put_secret_string <value>
+  printf '%s' "$1" > "${SECRET_VALUE_FILE}"
+  aws secretsmanager put-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+    --secret-string "file://${SECRET_VALUE_FILE}" >/dev/null
+  : > "${SECRET_VALUE_FILE}"
+}
+if [ "$(printf '%s' "${STRIPPED_SECRET_STRING}" | jq -r 'has("driftPw") or (has("password") | not)')" != "false" ]; then
+  echo "FAIL: could not build a secret value lacking only driftPw -- the failure path would not be reached" >&2
+  exit 1
+fi
+# secret_has_drift_pw -> "true" / "false" for the CURRENT version. Polled
+# below: a read straight after a PutSecretValue can still answer with the
+# previous version, which would run the failure path against the wrong value.
+secret_has_drift_pw() {
+  aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+    --query SecretString --output text | jq -r 'has("driftPw")'
+}
+wait_secret_has_drift_pw() { # wait_secret_has_drift_pw <true|false>
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(secret_has_drift_pw)" = "$1" ] && return 0
+    sleep 3
+  done
+  echo "FAIL: the fixture secret never reported has(driftPw)=$1" >&2
+  exit 1
+}
+put_secret_string "${STRIPPED_SECRET_STRING}"
+wait_secret_has_drift_pw false
+run_drift
+FAILPATH_OUT="${DRIFT_OUT}"
+FAILPATH_RC="${DRIFT_RC}"
+run_drift_json
+put_secret_string "${ORIG_SECRET_STRING}"
+rm -f "${SECRET_VALUE_FILE}"
+wait_secret_has_drift_pw true
+if [ "$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+    --query SecretString --output text | jq -r '.driftPw // empty')" != "${EXPECTED_DRIFT_PW}" ]; then
+  echo "FAIL: could not restore the fixture secret's driftPw after the failure-path runs" >&2
+  exit 1
+fi
+if [ "${FAILPATH_RC}" -eq 0 ]; then
+  echo "FAIL: 'cdkd drift' exited 0 with the project's reference unresolvable -- the failure path never reported it" >&2
+  diag_masked "${FAILPATH_OUT}"
+  exit 1
+fi
+# POSITIVE marker that the failure path ran, in cdkd's own words: absent, the
+# no-plaintext checks below would be satisfied by a run that resolved fine.
+if ! grep -qF "could not resolve the dynamic reference" <<< "${FAILPATH_OUT}"; then
+  echo "FAIL: 'cdkd drift' did not report the unresolvable reference, so the failure path is unproven" >&2
+  diag_masked "${FAILPATH_OUT}"
+  exit 1
+fi
+if [ "$(printf '%s' "${DRIFT_JSON}" | jq -r '[.[0].notCompared[] | select(.type=="AWS::CodeBuild::Project")] | length')" != "1" ]; then
+  echo "FAIL: 'cdkd drift --json' does not report the project as not fully compared" >&2
+  diag_masked "${DRIFT_JSON}"
+  exit 1
+fi
+# ...and the ARRAY must be reported, masked. Without this, a project reported
+# not-compared with no change at all satisfies every check above and below,
+# and the path seed this stop exists for would never have masked anything.
+FAILPATH_SET=$(printf '%s' "${DRIFT_JSON}" \
+  | jq -r '[.[0].drifted[] | select(.type=="AWS::CodeBuild::Project") | .changes[] | "\(.path) \(.awsValue == "***")"] | join(",")')
+if [ "${FAILPATH_SET}" != "Environment.EnvironmentVariables true" ]; then
+  # Paths and a boolean only -- safe to print.
+  echo "FAIL: expected the project's env-var array reported once with a masked AWS side; got: '${FAILPATH_SET}'" >&2
+  exit 1
+fi
+FAILPATH_AWS_LINE=$(grep -F "+ Environment.EnvironmentVariables:" <<< "${FAILPATH_OUT}" || true)
+if [ -z "${FAILPATH_AWS_LINE}" ] || ! grep -qF '***' <<< "${FAILPATH_AWS_LINE}"; then
+  echo "FAIL: 'cdkd drift' did not report the array's AWS side masked on the resolution-failure path" >&2
+  diag_masked "${FAILPATH_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' on the resolution-failure path" "${FAILPATH_OUT}"
+assert_no_drift_plaintext "'cdkd drift --json' on the resolution-failure path" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+echo "    OK: with the reference unresolvable, the array is still masked by position"
+
+# Phase 2's premises, re-asserted: this stop must not have given the task
+# definition an observed baseline, nor a new revision.
+TD_RECORD=$(read_record AWS::ECS::TaskDefinition)
+assert_read "the task definition record after phase 1d" "${TD_RECORD}"
+if [ "$(printf '%s' "${TD_RECORD}" | jq -r '.observedProperties == null')" != "true" ] \
+  || [ "$(printf '%s' "${TD_RECORD}" | jq -r '.physicalId')" != "${P1_PHYSICAL_ID}" ]; then
+  echo "FAIL: phase 1d changed the task definition record, so phase 2 would prove nothing" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "the task definition record after phase 1d" "${TD_RECORD}"
+echo "    OK: the task definition record is as phase 1 left it"
+
 # --- Phase 2: REDEPLOY UNCHANGED, with the observed capture on --------------
 # Nothing in the template changed, so the task definition takes the UNCHANGED
 # path: it is never resolved this deploy, its `perResourceSecrets` entry stays
@@ -812,6 +1234,10 @@ if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_AMBIG_ALPHA}" \
   exit 1
 fi
 echo "    OK: no resolved plaintext in the consumer record after phase 2"
+# The drift arm's consumer took the same unchanged-path capture.
+PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
+assert_read "the CodeBuild project record after phase 2" "${PROJECT_RECORD}"
+assert_no_drift_plaintext "the CodeBuild project record after phase 2" "${PROJECT_RECORD}"
 
 # A redaction that stores the wrong thing shows up as a diff that never
 # converges, so the stack must still read clean right after its own deploy.
@@ -836,6 +1262,98 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: no spurious change after redaction"
+
+# --- Phase 2d: `cdkd drift` over the MASKED observed baseline (issue #1947) --
+# The task definition's baseline now holds `***` at the anchor arm's refused
+# EntryPoint positions (asserted above), which no live value equals. Whether
+# that reads `drifted` (today: the #2274 design, a mask is "cdkd does not know
+# the value here") or is reclassified as not-compared, the stack cannot exit
+# 0 -- that non-zero exit and the record's presence in the report are the
+# positive markers that the comparison REACHED the mask. Nothing else about
+# the disposition is pinned. What must hold either way: no plaintext out of
+# any mode, and `--accept` writing none over the mask.
+echo "==> Phase 2d: cdkd drift over the masked observed baseline (issue #1947)"
+TD_LOGICAL_ID=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json \
+  | jq -r '[.state.resources | to_entries[] | select(.value.resourceType=="AWS::ECS::TaskDefinition") | .key] | (.[0] // empty)')
+assert_read "the task definition's logical id" "${TD_LOGICAL_ID}"
+
+run_drift
+if [ "${DRIFT_RC}" -eq 0 ]; then
+  echo "FAIL: 'cdkd drift' exited 0 over a baseline holding the literal mask -- the comparison never reached it" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' over the masked baseline" "${DRIFT_OUT}"
+run_drift_json
+TD_DISPOSITION=$(printf '%s' "${DRIFT_JSON}" | jq -r --arg id "${TD_LOGICAL_ID}" \
+  'if ([.[0].drifted[] | select(.logicalId==$id)] | length) > 0 then "drifted"
+   elif ([.[0].notCompared[] | select(.logicalId==$id)] | length) > 0 then "notCompared"
+   else "absent" end')
+if [ "${TD_DISPOSITION}" = "absent" ]; then
+  echo "FAIL: 'cdkd drift --json' reports the task definition neither drifted nor not-compared" >&2
+  diag_masked "${DRIFT_JSON}"
+  exit 1
+fi
+echo "    task definition over the masked baseline: ${TD_DISPOSITION} (disposition deliberately not pinned -- #3595)"
+assert_no_drift_plaintext "'cdkd drift --json' over the masked baseline" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+
+# The two plans. Both exit 0 whatever they print, so an early failure is the
+# only thing rc can reveal; while the record is DRIFTED each plan must also
+# name the array, or "no plaintext" would be satisfied by a plan that printed
+# nothing about it.
+for plan_mode in --accept --revert; do
+  run_drift "${plan_mode}" --dry-run
+  if [ "${DRIFT_RC}" -ne 0 ]; then
+    echo "FAIL: 'cdkd drift ${plan_mode} --dry-run' failed over the masked baseline (rc=${DRIFT_RC})" >&2
+    diag_masked "${DRIFT_OUT}"
+    exit 1
+  fi
+  # The detection report printed ahead of the plan names the array too, so
+  # only the text from the plan's own header on counts.
+  PLAN_TEXT=$(printf '%s\n' "${DRIFT_OUT}" | sed -n "/^Plan (${plan_mode})/,\$p")
+  if [ "${TD_DISPOSITION}" = "drifted" ] && ! grep -qF "ContainerDefinitions" <<< "${PLAN_TEXT}"; then
+    echo "FAIL: the ${plan_mode} plan does not name the drifted ContainerDefinitions array" >&2
+    diag_masked "${DRIFT_OUT}"
+    exit 1
+  fi
+  assert_no_drift_plaintext "'cdkd drift ${plan_mode} --dry-run' over the masked baseline" "${DRIFT_OUT}"
+done
+
+run_drift --accept --yes
+# `--accept` exits 0 once it has run, whether it accepted, refused, or found
+# nothing comparable; anything else is an error, which must not pass as
+# "wrote no plaintext".
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' failed over the masked baseline (rc=${DRIFT_RC})" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+# While the record is DRIFTED the mask must be REFUSED, and saying so is the
+# direct evidence: a rewrite through the fail-closed redaction would put the
+# same `***` back and satisfy the baseline checks below just as well.
+if [ "${TD_DISPOSITION}" = "drifted" ] && ! grep -qF "not accepting 'ContainerDefinitions'" <<< "${DRIFT_OUT}"; then
+  echo "FAIL: --accept did not refuse the masked ContainerDefinitions array" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --accept' over the masked baseline" "${DRIFT_OUT}"
+TD_RECORD=$(read_record AWS::ECS::TaskDefinition)
+assert_read "the task definition record after --accept" "${TD_RECORD}"
+assert_no_drift_plaintext "the task definition record after --accept" "${TD_RECORD}"
+PROJECT_RECORD=$(read_record AWS::CodeBuild::Project)
+assert_read "the CodeBuild project record after --accept" "${PROJECT_RECORD}"
+assert_no_drift_plaintext "the CodeBuild project record after --accept" "${PROJECT_RECORD}"
+P2D_OBSERVED=$(printf '%s' "${TD_RECORD}" | jq -c '.observedProperties')
+P2D_EP=$(cd_field_of "${P2D_OBSERVED}" anchorprobe EntryPoint)
+assert_read "observedProperties anchorprobe EntryPoint after --accept" "${P2D_EP}"
+if [ "$(json_index "${P2D_EP}" 1)" != "***" ] || [ "$(json_index "${P2D_EP}" 3)" != "***" ] \
+  || [ "$(json_index "$(cd_field_of "${P2D_OBSERVED}" anchorprobe Command)" 1)" != "${ANCHOR_PW_EXPR}" ] \
+  || [ "$(env_value_of "${P2D_OBSERVED}" app DB_PASSWORD)" != "${SECRET_EXPR}" ]; then
+  echo "FAIL: --accept rewrote the masked observed baseline instead of leaving it as it was" >&2
+  exit 1
+fi
+echo "    OK: --accept left the mask, the paired expression and the keyed expression in place"
 
 # --- Phase 3: destroy -------------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -866,6 +1384,18 @@ if [ "${ACTIVE_TDS}" != "0" ]; then
   exit 1
 fi
 echo "    OK: no ACTIVE task definition revision remains"
+
+# The drift arm's project and role. `batch-get-projects` SUCCEEDS for a
+# missing name (it lists it under `projectsNotFound`), so it is not a
+# gone-probe: the assertion is a strict count of what it found.
+DRIFT_PROJECTS_LEFT=$(aws codebuild batch-get-projects --names "${DRIFT_PROJECT}" \
+  --region "${REGION}" --query 'length(projects)' --output text)
+if [ "${DRIFT_PROJECTS_LEFT}" != "0" ]; then
+  echo "FAIL: CodeBuild project '${DRIFT_PROJECT}' still exists after destroy" >&2
+  exit 1
+fi
+assert_gone "IAM role ${DRIFT_ROLE} still exists after destroy" aws iam get-role --role-name "${DRIFT_ROLE}"
+echo "    OK: the drift arm's project and role are gone"
 
 # SecretsManager DeleteSecret SCHEDULES deletion with a recovery window by
 # default, and cdkd matches CloudFormation rather than force-deleting. So
@@ -943,4 +1473,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
-echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, clean destroy"
+echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, cdkd drift on the array shape is clean when fresh, masks a drifted array, refuses to --accept it and --reverts it RESOLVED, and leaks nothing over a masked baseline (issue #1947), clean destroy"

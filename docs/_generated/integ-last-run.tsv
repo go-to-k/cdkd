@@ -273,7 +273,7 @@ schema-v8-to-v9-migration	2026-08-26T02:45:22Z	PASS	171	verify.sh	maintainer-sid
 schema-v9-to-v10-migration	2026-09-23T18:49:39Z	PASS	162	verify.sh	rc ok, orph clean (#3568; 54 assertions, 0 state versions)
 sdk-ccapi-crossref	2026-09-19T20:26:58Z	PASS	104	verify.sh	rc ok, orph clean; CC side rebuilt on AWS::Events::Archive + a flag-seeded Lambda after the DesiredShardLevelMetrics premise rotted
 sdk-to-cc-autoroute	2026-09-19T20:26:58Z	PASS	136	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
-secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
+secrets-array-nested	2026-09-24T06:05:43Z	PASS	300	verify.sh	rc ok, orph clean; #1947 drift arm (1d clean/masked/accept-refused/revert-resolved/failure-path, 2d masked baseline: drifted)
 secrets-dynamic-ref	2026-09-24T05:35:12Z	PASS	516	verify.sh	rc ok, orph clean, 0 state versions, PR #3586
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-14T04:47:25Z	PASS	74	verify.sh	rc ok, orph clean, 0 surviving versions (3068 lane: the new recipe's output accepted by the live service)
