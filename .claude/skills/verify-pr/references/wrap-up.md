@@ -46,7 +46,10 @@ file (with its MEMORY.md index entry) or explicitly de-prioritized.
 **Auto-close audit**: read the PR body; for every `(#N)` parens-form reference
 adjacent to a close keyword, the merge will NOT auto-close — rewrite to the
 parens-free `Closes #N`, or add a manual `gh issue close <N>` step.
-`pr-content-checks.yml` warns on it, but a warning reds nothing.
+`pr-content-checks.yml` warns on it, but a warning reds nothing. The reverse
+trap closes: GitHub ignores negation, so "does not close #N" closes it
+(PR #3575). Diff the intended set against
+`gh api graphql -f query='{repository(owner:"go-to-k",name:"cdkd"){pullRequest(number:<N>){closingIssuesReferences(first:20){nodes{number}}}}}'`.
 
 ## 12. PR title + body freshness
 
