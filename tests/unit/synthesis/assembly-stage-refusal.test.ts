@@ -17,7 +17,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const warn = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -249,6 +249,17 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
 
     expect(message).toContain(`Nested assembly ${JSON.stringify(forging)} `);
     expect(message).not.toContain("assembly '../x'. Contained and healthy");
+    // The SECOND copy: the resolved path in the shared containment tail embeds
+    // the same value, and was wrapped in cdkd's own `'...'` there too
+    // (go-to-k/cdkd#3509).
+    const resolved = resolve(dir, forging);
+    expect(message).toContain(`resolves to ${JSON.stringify(resolved)}, outside `);
+    const rest = message
+      .split(JSON.stringify(forging))
+      .join('<VALUE>')
+      .split(JSON.stringify(resolved))
+      .join('<VALUE>');
+    expect(rest).not.toContain('Contained and healthy');
   });
 
   it('propagates the metadata side-file refusal under a Stage', () => {

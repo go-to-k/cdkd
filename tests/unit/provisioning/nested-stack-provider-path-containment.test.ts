@@ -53,14 +53,14 @@ function template(assetPath: string): unknown {
   };
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 describe('NestedStackProvider.indexGrandchildTemplates containment', () => {
   it('refuses an asset path that leaves the child template directory', () => {
     const { child } = assembly();
 
     expect(() => indexer()(template('../outside.json'), child)).toThrow(
-      /NestedStackProvider: nested-stack 'Grand' has Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to '.*outside\.json', outside/
+      /NestedStackProvider: nested-stack 'Grand' has Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
     );
   });
 
@@ -113,7 +113,7 @@ describe('NestedStackProvider.indexGrandchildTemplates containment', () => {
     symlinkSync(dirname(dir), join(dir, 'link'), 'dir');
 
     expect(() => indexer()(template('link/outside.json'), child)).toThrow(
-      /leads through a symbolic link to '.*outside\.json', outside/
+      /leads through a symbolic link to .*outside\.json, outside/
     );
   });
 

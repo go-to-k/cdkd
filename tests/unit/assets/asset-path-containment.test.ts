@@ -79,7 +79,7 @@ function fileAsset(path: string): FileAsset {
   };
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 const wrapErr = (m: string): Error => new Error(m);
 
@@ -109,7 +109,7 @@ describe("a file asset's source.path", () => {
     const { dir } = assembly();
 
     expect(() => resolveFile(dir, fileAsset('../../outside.json'), dir)).toThrow(
-      /File asset 'MyAsset' has source\.path='\.\.\/\.\.\/outside\.json' which resolves to '.*', outside/
+      /File asset 'MyAsset' has source\.path='\.\.\/\.\.\/outside\.json' which resolves to .*, outside/
     );
   });
 
@@ -118,7 +118,7 @@ describe("a file asset's source.path", () => {
     symlinkSync(outer, join(dir, 'link'), 'dir');
 
     expect(() => resolveFile(dir, fileAsset('link/outside.json'), dir)).toThrow(
-      /leads through a symbolic link to '.*outside\.json', outside/
+      /leads through a symbolic link to .*outside\.json, outside/
     );
   });
 
@@ -283,7 +283,7 @@ describe("a Docker asset's source.directory", () => {
     await expect(
       buildDockerImage({ source: { directory: '../outside-dir' } }, dir, options)
     ).rejects.toThrow(
-      /asset source\.directory='\.\.\/outside-dir' which resolves to '.*outside-dir', outside/
+      /asset source\.directory='\.\.\/outside-dir' which resolves to .*outside-dir, outside/
     );
 
     // The message alone does not prove the guard PRECEDES the build: a guard
@@ -316,7 +316,7 @@ describe("a Docker asset's source.directory", () => {
 
     await expect(
       buildDockerImage({ source: { directory: 'link/outside-dir' } }, dir, options)
-    ).rejects.toThrow(/leads through a symbolic link to '.*outside-dir', outside/);
+    ).rejects.toThrow(/leads through a symbolic link to .*outside-dir, outside/);
 
     expect(runDockerStreaming).not.toHaveBeenCalled();
   });
@@ -789,7 +789,7 @@ describe('the asset manifest filename, built from a manifest-chosen stackName', 
     const { dir } = assembly();
 
     await expect(new AssetManifestLoader().loadManifest(dir, '../../evil')).rejects.toThrow(
-      /Asset manifest for stack '\.\.\/\.\.\/evil' resolves to '.*', outside/
+      /Asset manifest for stack '\.\.\/\.\.\/evil' resolves to .*, outside/
     );
   });
 
@@ -814,7 +814,7 @@ describe('the asset manifest filename, built from a manifest-chosen stackName', 
 
     await expect(
       new AssetManifestLoader().loadManifest(dir, 'link/Reachable')
-    ).rejects.toThrow(/leads through a symbolic link to '.*Reachable\.assets\.json', outside/);
+    ).rejects.toThrow(/leads through a symbolic link to .*Reachable\.assets\.json, outside/);
   });
 
   it('keeps the outer directory out of reach even when it exists', async () => {

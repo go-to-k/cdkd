@@ -40,14 +40,14 @@ function template(assetPath: string): CloudFormationTemplate {
   } as unknown as CloudFormationTemplate;
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 describe('indexNestedChildTemplates containment', () => {
   it('refuses an asset path that leaves the parent template directory', () => {
     const { parent } = assembly();
 
     expect(() => indexNestedChildTemplates(template('../outside.json'), parent)).toThrow(
-      /Nested stack 'Child' has Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to '.*outside\.json', outside/
+      /Nested stack 'Child' has Metadata\['aws:asset:path'\]='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
     );
   });
 
@@ -56,7 +56,7 @@ describe('indexNestedChildTemplates containment', () => {
     symlinkSync(dirname(dir), join(dir, 'link'), 'dir');
 
     expect(() => indexNestedChildTemplates(template('link/outside.json'), parent)).toThrow(
-      /leads through a symbolic link to '.*outside\.json', outside/
+      /leads through a symbolic link to .*outside\.json, outside/
     );
   });
 

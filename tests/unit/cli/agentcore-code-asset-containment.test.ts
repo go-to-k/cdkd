@@ -79,7 +79,7 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
 
     await expect(
       resolveAgentCoreImage(resolved(manifestDir), options(assemblyDir), assemblyDir)
-    ).rejects.toThrow(/resolves to '.*victim', outside/);
+    ).rejects.toThrow(/resolves to .*victim, outside/);
   });
 
   it("ACCEPTS a Stage's `../asset.<hash>` and resolves it INSIDE the assembly root", async () => {

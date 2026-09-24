@@ -1655,8 +1655,8 @@ export function resolveInlineCodeFilePath(
   const resolved = resolveAssemblyPath(dir, `${modulePath}${fileExtension}`);
   if (!resolved.contained) {
     // cdkd-raw-beside-safe: `renderAssemblyPathEscape` is a safe RENDERER, not
-    // a value — it `displaySafe`s every path it interpolates and the rest of
-    // its text is this file's own literal. The population fence sees a
+    // a value — it renders every path through `displayAssemblyPath` and the
+    // rest of its text is this file's own literal. The population fence sees a
     // bare call beside a `displaySafe(...)` and cannot tell the two apart.
     throw new Error(
       `Handler '${displaySafe(handler)}' names a module path that ` +

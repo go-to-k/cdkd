@@ -634,7 +634,7 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     expect(text).toContain("nested stack 'E' (reached through 'Child' (/out/a.json))");
     expect(text).toContain(
-      "Metadata['aws:asset:path']='../../etc/passwd' which resolves to '/etc/passwd', outside '/out'."
+      "Metadata['aws:asset:path']='../../etc/passwd' which resolves to /etc/passwd, outside /out."
     );
     expect(text).toContain('Refusing to deploy.');
     expect(text).not.toContain('is absolute');
@@ -659,7 +659,7 @@ describe('renderNestedTemplateTreeDefect', () => {
       'diff'
     );
 
-    expect(text).toContain("leads through a symbolic link to '/etc/t.json', outside '/out'.");
+    expect(text).toContain("leads through a symbolic link to /etc/t.json, outside /out.");
     expect(text).toContain('Refusing to diff.');
   });
 

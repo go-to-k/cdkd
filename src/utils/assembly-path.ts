@@ -497,6 +497,102 @@ export function assemblyPathEscape(
 }
 
 /**
+ * A letter or digit that neither draws as a blank nor reads as a quote.
+ * `\p{L}` alone admits both, so two classes are carved out: the
+ * default-ignorables, which hold letters that draw as a blank (the Hangul
+ * fillers U+3164 and U+FFA0), and the quote-shaped letters — the Spacing
+ * Modifier Letters block (U+02BA reads as `"`, U+02BC as `'`) plus the ones
+ * outside it (U+0374, U+0559, U+07F4-U+07F5, U+A78B-U+A78C, and the halfwidth
+ * sound marks U+FF9E-U+FF9F). Not all of `\p{Lm}`: U+30FC is in it, and it is
+ * an ordinary character of a Japanese directory name.
+ */
+const VISIBLE_LETTER = new RegExp(
+  String.raw`^(?![\p{Default_Ignorable_Code_Point}\u02b0-\u02ff\u0374\u0559\u07f4\u07f5\ua78b\ua78c\uff9e\uff9f])[\p{L}\p{N}]$`,
+  'u'
+);
+
+/**
+ * A combining mark, which counts only DIRECTLY after a visible letter (or a
+ * mark that itself counted): on a space or on punctuation it draws on its own,
+ * and U+030B / U+030E there look like a quote.
+ */
+const COMBINING_MARK = /^\p{M}$/u;
+
+/**
+ * The ASCII a bare path may carry besides letters and digits. Everything else —
+ * any whitespace, any quote, any other symbol — takes the boundary, which
+ * costs a legitimate path nothing but a pair of quotes.
+ */
+const BARE_PUNCTUATION = /^[/\\._~+@:=-]$/;
+
+/**
+ * Classify each code point: `bare` (allowed in a bare path), `shown` (shown as
+ * itself inside the boundary), or `escaped`. An ALLOWLIST, because a denylist
+ * has to enumerate every character that draws as a blank or reads as a quote,
+ * and JS `\s` alone already misses U+2800 and U+3164.
+ *
+ * Each test is ONE character and this walks the value — never `^(...)+$` over
+ * the whole of it: alternatives that overlap (ASCII letters are in both
+ * classes) under a quantifier backtrack exponentially on a long path that
+ * fails near its end, which hangs the process uncatchably.
+ */
+function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'> {
+  let afterLetter = false;
+  return chars.map((ch) => {
+    if (COMBINING_MARK.test(ch)) return afterLetter ? 'bare' : 'escaped';
+    afterLetter = VISIBLE_LETTER.test(ch);
+    if (afterLetter || BARE_PUNCTUATION.test(ch)) return 'bare';
+    return ch >= ' ' && ch <= '~' ? 'shown' : 'escaped';
+  });
+}
+
+/**
+ * Render a filesystem path that an assembly chose, or that embeds a value it
+ * chose, into cdkd's own prose (go-to-k/cdkd#3509). The caller writes NO
+ * quotes around the result.
+ *
+ * `displaySafe` alone is not enough inside quotes of cdkd's: it is a denylist
+ * of control characters and passes `'`, so a value carrying one closed cdkd's
+ * quote and wrote a clause of its own into the refusal. This keeps a plain path
+ * bare and puts any other one inside a JSON string literal. Inside it, `"` and
+ * `\` are escaped as JSON escapes them, and so is every character that is
+ * neither printable ASCII nor a visible letter — a curly or fullwidth quote
+ * that could pass for the boundary's own closing `"`, and a blank that could
+ * pass for a space. The result stays valid JSON: `JSON.parse` returns the
+ * sanitized value.
+ *
+ * Deliberately NOT `displayIdent`, which go-to-k/cdkd#3506 used for a Stage
+ * path: that one is ASCII-only and capped at 255 code points, and a legitimate
+ * path is neither — a non-ASCII directory name would render as spaces, naming
+ * a path that does not exist. Here nothing is truncated and a non-ASCII letter
+ * is shown as itself. A legitimate path with a space or any symbol outside
+ * `/ \ . _ ~ + @ : = -` (`/Users/me/My Project/cdk.out`,
+ * `C:\Program Files (x86)\app`) renders quoted, and a non-letter non-ASCII
+ * character in it (an emoji, `©`) is shown as its `\u` escape.
+ */
+export function displayAssemblyPath(value: string): string {
+  const clean = displaySafe(value);
+  // `Array.from` walks CODE POINTS, so a lone surrogate arrives alone and is
+  // escaped rather than shown.
+  const chars = Array.from(clean);
+  const kinds = classify(chars);
+  // `clean === value`: a value `displaySafe` altered (padding trimmed, a
+  // control character blanked) did not arrive plain, so it gets the boundary.
+  if (clean === value && chars.length > 0 && kinds.every((k) => k === 'bare')) return clean;
+  let body = '';
+  chars.forEach((ch, i) => {
+    if (ch === '"' || ch === '\\') body += `\\${ch}`;
+    else if (kinds[i] !== 'escaped') body += ch;
+    else {
+      for (let u = 0; u < ch.length; u++) {
+        body += `\\u${ch.charCodeAt(u).toString(16).padStart(4, '0')}`;
+      }
+    }
+  });
+  return `"${body}"`;
+}
+
+/**
  * The shared tail of every containment refusal: what the value resolved to,
  * what it escaped, and why that means the assembly is not CDK-generated. Each
  * call site supplies its own subject ("Stack 'X' has templateFile='...' which
@@ -505,12 +601,12 @@ export function assemblyPathEscape(
  * other than loading the file — `renderNestedTemplateTreeDefect` says "deploy"
  * or "diff", matching its own sibling refusals.
  *
- * Every interpolation goes through `displaySafe` for the reason
- * `AssemblyReader`'s own refusals give (go-to-k/cdkd#3277): this text exists
- * FOR a hand-modified assembly, so the candidate, the resolved path and even
- * `dir` (below a Stage it derives from the manifest's `directoryName`) are all
- * attacker-chosen, and `formatError` sanitizes only an error's `cause`, never
- * its own `message`.
+ * Every path goes through {@link displayAssemblyPath}, with no quotes of this
+ * function's own, for the reason `AssemblyReader`'s own refusals give
+ * (go-to-k/cdkd#3277): this text exists FOR a hand-modified assembly, so the
+ * candidate, the resolved path and even `dir` (below a Stage it derives from
+ * the manifest's `directoryName`) are all attacker-chosen, and `formatError`
+ * sanitizes only an error's `cause`, never its own `message`.
  */
 export function renderAssemblyPathEscape(
   escape: Extract<ResolvedAssemblyPath, { contained: false }>,
@@ -534,32 +630,31 @@ export function renderAssemblyPathEscape(
   // The SYMLINK arm compares against the base as the KERNEL sees it, because
   // that is what `escape.realPath` is. With `-a /tmp/cdk.out` on macOS
   // (`/tmp -> /private/tmp`) a link to the directory itself otherwise printed
-  // "outside '/tmp/cdk.out'", a false clause about a path that IS the
+  // "outside /tmp/cdk.out", a false clause about a path that IS the
   // directory.
   const realBase = resolveThroughLinks(base) ?? base;
+  const shownPath = displayAssemblyPath(escape.path);
+  const shownBase = displayAssemblyPath(base);
   if (escape.escape === 'symlink') {
     // A link pointing AT the directory reaches here with `realPath === base`,
     // where the "outside" clause below would be a false statement — the same
     // correction the lexical branch carries.
     if (escape.realPath === realBase) {
       return (
-        `resolves to '${displaySafe(escape.path)}', a symbolic link to the directory ` +
-        `'${displaySafe(base)}' itself rather than to a file inside it. ${provenance}`
+        `resolves to ${shownPath}, a symbolic link to the directory ` +
+        `${shownBase} itself rather than to a file inside it. ${provenance}`
       );
     }
     return (
-      `resolves to '${displaySafe(escape.path)}', which leads through a symbolic link to ` +
-      `'${displaySafe(escape.realPath)}', outside '${displaySafe(base)}'. ${provenance}`
+      `resolves to ${shownPath}, which leads through a symbolic link to ` +
+      `${displayAssemblyPath(escape.realPath)}, outside ${shownBase}. ${provenance}`
     );
   }
   // `.`, `./` and `sub/..` are refused because a directory is never a file to
   // read — but they resolve TO the base, so the "outside" clause below would
   // be a false statement about them.
   if (escape.path === base) {
-    return (
-      `names the directory '${displaySafe(base)}' itself rather than a file inside it. ` +
-      `${provenance}`
-    );
+    return `names the directory ${shownBase} itself rather than a file inside it. ${provenance}`;
   }
-  return `resolves to '${displaySafe(escape.path)}', outside '${displaySafe(base)}'. ${provenance}`;
+  return `resolves to ${shownPath}, outside ${shownBase}. ${provenance}`;
 }

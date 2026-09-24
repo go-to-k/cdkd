@@ -183,7 +183,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     const { outdir } = assembly('../outside-dir');
 
     await expect(call(outdir)).rejects.toThrow(
-      /asset source\.directory='\.\.\/outside-dir' which resolves to '.*outside-dir', outside/
+      /asset source\.directory='\.\.\/outside-dir' which resolves to .*outside-dir, outside/
     );
   });
 
@@ -192,7 +192,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     symlinkSync(outer, join(outdir, 'link'), 'dir');
 
     await expect(call(outdir)).rejects.toThrow(
-      /leads through a symbolic link to '.*outside-dir', outside/
+      /leads through a symbolic link to .*outside-dir, outside/
     );
   });
 

@@ -4501,7 +4501,7 @@ describe('cdkd import', () => {
           const lastError = String(errorSpy.mock.calls.at(-1)?.[0]);
           expect(lastError).toMatch(/grandchild nested-stack/);
           expect(lastError).toMatch(/Grandchild/);
-          expect(lastError).toMatch(/resolves to '.*outside\.json', outside '.*'\./);
+          expect(lastError).toMatch(/resolves to .*outside\.json, outside .*\./);
           // Distinguishable from the tripwire beside it.
           expect(lastError).not.toMatch(/which is absolute/);
         } finally {

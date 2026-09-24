@@ -68,7 +68,7 @@ function nestedTemplate(assetPath: string | undefined): string {
   });
 }
 
-const CONTAINMENT = /resolves to '.*', outside '.*'\./;
+const CONTAINMENT = /resolves to .*, outside .*\./;
 
 describe('AssemblyReader: a nested assembly directoryName', () => {
   it('refuses one that escapes the assembly directory', () => {
@@ -92,7 +92,7 @@ describe('AssemblyReader: a nested assembly directoryName', () => {
       // supplies its OWN quotes only for a value that is not one. cdkd's own
       // `'...'` were what let a crafted `directoryName` close them and write a
       // clause asserting the opposite of this refusal.
-    ).toThrow(/Nested assembly \.\.\/outside-assembly resolves to '.*outside-assembly', outside/);
+    ).toThrow(/Nested assembly \.\.\/outside-assembly resolves to .*outside-assembly, outside/);
   });
 
   it('THROWS rather than degrading to the warn-and-skip the read failure takes', () => {
@@ -157,7 +157,7 @@ describe('AssemblyReader: a nested assembly directoryName', () => {
           } as ArtifactManifest,
         })
       )
-    ).toThrow(/leads through a symbolic link to '.*outside-assembly', outside/);
+    ).toThrow(/leads through a symbolic link to .*outside-assembly, outside/);
   });
 });
 
@@ -171,7 +171,7 @@ describe('AssemblyReader: a stack templateFile', () => {
         manifest({ MainStack: stackArtifact({ templateFile: outside }) })
       )
     ).toThrow(
-      /Stack 'MainStack' has templateFile='\.\.\/outside\.json' which resolves to '.*outside\.json', outside/
+      /Stack 'MainStack' has templateFile='\.\.\/outside\.json' which resolves to .*outside\.json, outside/
     );
   });
 
@@ -198,7 +198,7 @@ describe('AssemblyReader: a stack templateFile', () => {
         dir,
         manifest({ MainStack: stackArtifact({ templateFile: 'link/outside.json' }) })
       )
-    ).toThrow(/leads through a symbolic link to '.*outside\.json', outside/);
+    ).toThrow(/leads through a symbolic link to .*outside\.json, outside/);
   });
 });
 
@@ -239,7 +239,7 @@ describe('AssemblyReader: an asset-manifest artifact file', () => {
           MainStack: stackArtifact({ templateFile: 'MainStack.template.json' }),
         })
       )
-    ).toThrow(/leads through a symbolic link to '.*outside\.json', outside/);
+    ).toThrow(/leads through a symbolic link to .*outside\.json, outside/);
   });
 
   it('still resolves a value that normalises back inside', () => {
@@ -317,7 +317,7 @@ describe("AssemblyReader: a nested-stack row's aws:asset:path", () => {
     writeFileSync(join(dir, 'MainStack.template.json'), nestedTemplate('link/outside.json'));
 
     expect(() => read(dir)).toThrow(
-      /leads through a symbolic link to '.*outside\.json', outside/
+      /leads through a symbolic link to .*outside\.json, outside/
     );
   });
 
@@ -346,7 +346,7 @@ describe('collectStackMessages: additionalMetadataFile', () => {
     expect(() =>
       collectStackMessages(dir, stackArtifact({}, { additionalMetadataFile: outside }))
     ).toThrow(
-      /Stack metadata file '\.\.\/outside\.json' resolves to '.*outside\.json', outside .* Refusing to load\./
+      /Stack metadata file '\.\.\/outside\.json' resolves to .*outside\.json, outside .* Refusing to load\./
     );
   });
 
