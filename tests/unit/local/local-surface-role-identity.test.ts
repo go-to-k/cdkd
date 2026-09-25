@@ -33,10 +33,10 @@ import {
  * from the code, and a site added later fails until someone decides. Neither
  * verdict is the default — a site either opts out or says why it does not.
  *
- * TWO SHAPES REACH `awsClientDefaults`, and counting only the first made this
- * file's headline claim false for the second. `clientSiteKind` in
- * `_local-surface-scope.ts` owns that distinction and why the `new AwsClients`
- * bag's only available verdict is the annotation.
+ * THREE SHAPES REACH `awsClientDefaults`, and counting only the first made this
+ * file's headline claim false for the others. `clientSiteKind` in
+ * `_local-surface-scope.ts` owns that distinction and why a `new AwsClients`
+ * bag and a spread of the credential helper take only the annotation.
  *
  * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a client
  * CONSTRUCTED ELSEWHERE and injected. `resolveEcsSecrets` accepts
@@ -85,7 +85,9 @@ function collectSites(): Site[] {
         line: i + 1,
         text: text.trim(),
         kind,
-        optsOut: code.includes('ignoreAssumedRole: true'),
+        // Only a direct `awsClientDefaults(...)` spread can take the option; the
+        // other two shapes never accept it, so the text there opts out of nothing.
+        optsOut: kind === 'awsClientDefaults' && code.includes('ignoreAssumedRole: true'),
         // Issue #3250 item 6: a fixed 4-line window, which FOUR of the sites
         // below sat exactly on. `hasAnnotationAbove` walks the enclosing
         // statement instead, so a rewrapped word cannot drop a decided site to
@@ -102,9 +104,8 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
 
   it('sees the population it claims to guard', () => {
     // Floors, so a broken walk or a renamed helper reports a failure rather
-    // than a vacuous pass. Measured 2026-09-18: 24 sites across 8 files — 21
-    // `awsClientDefaults(` and 3 `new AwsClients(`. The floors sit below that
-    // so ordinary deletions do not trip them, and each SHAPE carries its own:
+    // than a vacuous pass. The floors sit below the measured population so
+    // ordinary deletions do not trip them, and each SHAPE carries its own:
     // an aggregate floor stays green while one shape stops being matched at
     // all, which is how the `new AwsClients(` shape went unseen.
     expect(sites.length).toBeGreaterThanOrEqual(18);
@@ -147,6 +148,21 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       sites.filter((s) => s.annotated && !s.optsOut).length,
       'sites carrying an annotation instead'
     ).toBeGreaterThanOrEqual(6);
+  });
+
+  it('classifies each spelling of each site shape, and none inside a comment', () => {
+    // Per SPELLING, not per shape: the population floor for the helper shape is
+    // met by `clientDefaultsFor(` alone, so a dropped `ambientClientDefaults(`
+    // arm would stay green on the floor.
+    expect(clientSiteKind('  ...awsClientDefaults({ ignoreAssumedRole: true }),')).toBe(
+      'awsClientDefaults'
+    );
+    expect(clientSiteKind('  const c = new AwsClients({ region });')).toBe('AwsClients');
+    expect(clientSiteKind('  ...ambientClientDefaults(),')).toBe('ambientClientDefaults');
+    expect(clientSiteKind('  ...clientDefaultsFor(credentialConfig),')).toBe(
+      'ambientClientDefaults'
+    );
+    expect(clientSiteKind(stripComments('  x(); // ...ambientClientDefaults(),'))).toBeUndefined();
   });
 
   it('refuses a trailing comment as a verdict, and an empty reason as an annotation', () => {

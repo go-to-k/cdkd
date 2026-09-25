@@ -236,6 +236,10 @@ export class Synthesizer {
     const region = explicitRegion || (await resolveSdkDefaultRegion(options.profile));
     let accountId: string | undefined;
     try {
+      // The ACCOUNT comes from the active `AwsClients` identity, while the
+      // region fallback above reads `options.profile`: a library caller that
+      // passes one profile here and installs `AwsClients` with another gets
+      // the two halves of the default env from different identities.
       const stsClient = new STSClient({ ...ambientClientDefaults(), ...(region && { region }) });
       const identity = await stsClient.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

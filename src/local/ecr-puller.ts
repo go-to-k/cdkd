@@ -309,8 +309,8 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // client below builds from it and both caches key on it, so a value is always
   // filed under the identity that obtained it (issue #3588).
   const credentialConfig = ambientCredentialConfig();
-  const identity = credentialFingerprint(credentialConfig);
-  const callerIdentityKey = injectiveKey(identity, callerRegion ?? '_unset');
+  const identityFingerprint = credentialFingerprint(credentialConfig);
+  const callerIdentityKey = injectiveKey(identityFingerprint, callerRegion ?? '_unset');
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
     const sts = new STSClient({
@@ -363,10 +363,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     // pass here would make two distinct ARNs collide on one entry -- the
     // opposite of what the key is for.
     const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
-    let roleCache = ASSUMED_ROLE_CACHE.get(identity);
+    let roleCache = ASSUMED_ROLE_CACHE.get(identityFingerprint);
     if (roleCache === undefined) {
       roleCache = new Map<string, TempCredentials>();
-      ASSUMED_ROLE_CACHE.set(identity, roleCache);
+      ASSUMED_ROLE_CACHE.set(identityFingerprint, roleCache);
     }
     const cached = roleCache.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
