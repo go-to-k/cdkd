@@ -13,12 +13,20 @@ LANE_TREE=$(cd "$(git rev-parse --show-toplevel)" && pwd -P)
 MAIN_CHECKOUT=$(dirname "$COMMON")
 LAUNCH_BRANCH=$(git branch --show-current)   # empty when launched detached
 [ "$GITDIR" = "$COMMON" ] && MODE=MAIN-CHECKOUT || MODE=IN-PLACE
-printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\nLAUNCH_BRANCH=%s\n' \
-  "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT" "$LAUNCH_BRANCH"
+printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\nLAUNCH_BRANCH=%s\nORIGIN=%s\n' \
+  "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT" "$LAUNCH_BRANCH" "$(git remote get-url origin)"
 ```
 
 Run it in the parent, pass all four values into the triage dispatch and into
 every lane dispatch, and state all four in the opening report.
+
+**`ORIGIN` not `go-to-k/cdkd` is a FORK run** — the fork's issues are off and
+its `main` lags. Before triage, `git remote add upstream
+https://github.com/go-to-k/cdkd.git && git fetch upstream main`, and pass the
+fork layout into every dispatch: each `gh` call takes `-R go-to-k/cdkd`,
+`origin/main` in any stage file reads `upstream/main`, lanes push to `origin`
+and open with `--head <fork-owner>:<branch>`, and without upstream `push` the
+merge and its integ are the maintainer's — lanes stop at merge-ready.
 
 ### Reading the four values
 
