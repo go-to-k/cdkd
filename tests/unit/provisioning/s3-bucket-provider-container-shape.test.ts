@@ -526,8 +526,14 @@ describe('replay create (`replayingState`): warn and skip instead of stranding t
 });
 
 describe('update path: warn and skip (the desired bag can be a historical state record)', () => {
-  async function update(properties: Record<string, unknown>): Promise<void> {
-    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET });
+  // A template-path update, except where a row passes a context: the
+  // versioning row's warn-and-skip is a state-borne caller's arm since issue
+  // #3728 (a template-path update refuses that value before any call).
+  async function update(
+    properties: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ): Promise<void> {
+    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET }, context);
   }
 
   it('lifecycle: warns and does NOT send the Put', async () => {
@@ -564,7 +570,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     await update({
       BucketName: BUCKET,
       VersioningConfiguration: { 'Fn::If': ['C', { Status: 'Enabled' }, { Status: 'Suspended' }] },
-    });
+    }, { replayingState: true });
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('got an unresolved Fn::If intrinsic')
     );

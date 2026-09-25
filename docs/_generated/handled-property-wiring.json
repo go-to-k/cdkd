@@ -6013,6 +6013,7 @@
             "AWS::DynamoDB::Table"
           ],
           "evidence": [
+            "delegated",
             "element-read",
             "table-loop"
           ],
@@ -16847,7 +16848,8 @@
             "applyAllSubConfigsForCreate",
             "applySubConfigDiffs",
             "create",
-            "update"
+            "update",
+            "versioningOrLoggingRefusal"
           ]
         },
         {
@@ -16996,7 +16998,8 @@
             "applyConfiguration",
             "applySubConfigDiffs",
             "create",
-            "update"
+            "update",
+            "versioningOrLoggingRefusal"
           ]
         },
         {
@@ -17022,12 +17025,14 @@
         "computed key in applyAllSubConfigsForCreate()",
         "computed key in applySubConfigDiffs()",
         "computed key in canonicalizeItemList()",
+        "computed key in versioningOrLoggingRefusal()",
         "hasCdkAutoDeleteTag(...) in delete()",
         "hasObjectLock(...) in applySubConfigDiffs()",
         "object spread in applyEffectiveOverrides()",
         "object spread in canonicalizeItemList()",
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",
-        "S3BucketProvider.applyEffectiveOverrides(...) in update()"
+        "S3BucketProvider.applyEffectiveOverrides(...) in update()",
+        "S3BucketProvider.versioningOrLoggingRefusal(...) in update()"
       ]
     },
     {

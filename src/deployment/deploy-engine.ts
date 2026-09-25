@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesSameResource,
@@ -138,6 +138,11 @@ import {
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../utils/ambient-client-defaults.js';
+import { injectiveKey } from '../state/record-keys.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
@@ -988,7 +993,7 @@ function deepEqualValue(a: unknown, b: unknown): boolean {
  * escaping silently, so the authority on "where is this applied" is a grep the
  * test performs, not a number anybody has to maintain.
  */
-function crossStackReadsForPartialSave(
+export function crossStackReadsForPartialSave(
   previous: StackState,
   recordedImports: readonly StateImportEntry[],
   recordedOutputReads: readonly StateOutputReadEntry[],
@@ -1023,10 +1028,26 @@ function crossStackReadsForPartialSave(
   // whose plaintexts share one expression collapse onto one key, and the union
   // drops a genuinely distinct destroy-blocking import. That also contradicts
   // this change's own argument for leaving that field alone.
+  //
+  // ENCODED, not separated (go-to-k/cdkd#3496). `previous` comes from
+  // persisted JSON that `parseState` only casts, so no half is guaranteed free
+  // of a NUL. The old NUL-joined key could collide only when an entry's
+  // STACK or REGION half carries a NUL (splitting at the first two NULs
+  // recovers every field otherwise, whatever the name half holds). No
+  // CDK-synthesized stack name or canonical region does; cdkd validates no
+  // prebuilt-assembly stack-name charset, so only a hand-written assembly or a
+  // hand-edited / corrupted record can. So this is defence against a MALFORMED
+  // entry shadowing a genuine one, not a live fail-open: the union keeps the
+  // first of two colliding entries, and `state.imports` is what
+  // `destroy-runner` refuses a destroy on. `injectiveKey` cannot collide.
   const importKey = (e: StateImportEntry): string =>
-    `${e.sourceStack}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.exportName)}`;
+    injectiveKey(e.sourceStack, canonicalizeRegion(e.sourceRegion), normalizeName(e.exportName));
   const outputReadKey = (e: StateOutputReadEntry): string =>
-    `${normalizeName(e.sourceStack)}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.outputName)}`;
+    injectiveKey(
+      normalizeName(e.sourceStack),
+      canonicalizeRegion(e.sourceRegion),
+      normalizeName(e.outputName)
+    );
   const imports = unionCrossStackReads(previous.imports, recordedImports, importKey);
   const outputReads = unionCrossStackReads(
     previous.outputReads,
@@ -1728,11 +1749,15 @@ export class DeployEngine {
     redacted: Record<string, unknown>
   ): void {
     if (resolved === redacted) return;
+    // Recorded UNDER the identity that produced it (go-to-k/cdkd#3691): the
+    // readers compute the same fingerprint from the clients they resolve with,
+    // so another identity's same-named stack in this process misses.
+    const identity = credentialFingerprint(ambientCredentialConfig());
     for (const [key, redactedValue] of Object.entries(redacted)) {
       if (!carriesSecretMask(redactedValue)) continue;
       const plaintext = resolved[key];
       if (plaintext === undefined || carriesSecretMask(plaintext)) continue;
-      recordRecoverableMaskedOutput(stackName, this.stackRegion, key, plaintext);
+      recordRecoverableMaskedOutput(identity, stackName, this.stackRegion, key, plaintext);
     }
   }
 
@@ -2158,11 +2183,20 @@ export class DeployEngine {
       }
       if (withheld.length > 0) {
         parts.push(
+          // NO backtick wrapper around the command. Pasted WITH its wrapper a
+          // backtick span is command SUBSTITUTION -- a worse wrapper than
+          // `'...'`, and one the source fence could not see until
+          // go-to-k/cdkd#3613's M8 named it. Every placeholder here is a hole,
+          // so nothing untrusted ran, but the shape is the one this class is
+          // about and it should not be modelled in a message that exists to
+          // explain the class. The command is DESCRIBED rather than offered,
+          // because this arm's whole point is that it is withheld.
           `Re-import the record that HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
-            `the command is withheld: that is not a plain CloudFormation logical id, so a pasted ` +
-            `'cdkd import <stack> --resource <id>=<physicalId> --force' could be reshaped by the ` +
-            `shell or name a different resource. Read the id from 'cdkd state show' and quote it ` +
-            `yourself.`
+            `the command is withheld: that is not a plain CloudFormation logical id, so a ` +
+            `pasted cdkd import line could be reshaped by the shell or name a different ` +
+            `resource. Read the id from 'cdkd state show' and quote it yourself, in ` +
+            `cdkd import ${commandHole('stack')} --resource ` +
+            `${commandHole('id')}=${commandHole('physicalId')} --force.`
         );
       }
     }
@@ -2403,7 +2437,8 @@ export class DeployEngine {
    * Re-read a STALE record's attributes from AWS (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — the resolver calls
    * this, through `ResolverContext.attributeHealer`, only when `Fn::GetAtt` is
-   * about to take the physical-id fallback.
+   * about to take the physical-id fallback, or reaches one of the resolver's
+   * heal-first arms (issue [#3627](https://github.com/go-to-k/cdkd/issues/3627)).
    *
    * The read is the provider's `import()` with `knownPhysicalId` — the same
    * primitive `orphan-adoption.ts` verifies a record with. It is READ-ONLY by
@@ -2431,7 +2466,17 @@ export class DeployEngine {
     if (!this.isHealEligible(logicalId, resource)) {
       return Promise.resolve({ kind: 'not-attempted' });
     }
-    const key = `${logicalId}\u0000${resource.physicalId}`;
+    // Encoded (go-to-k/cdkd#3496): a physical id is whatever AWS or the
+    // template produced, and the record is an unchecked cast, so a separator
+    // could let two records share one memo entry — one resource's read served
+    // as another's heal. For string halves the old `<logicalId>\0<physicalId>`
+    // key was already injective unless the logical id itself contains a NUL,
+    // since the split point is then the FIRST NUL. cdkd validates no
+    // logical-id charset, so a hand-written template or a hand-edited state
+    // can carry one; encoding removes that precondition (and the
+    // `[object Object]` conflation of non-string physical ids a template
+    // literal had). Nothing else reads this key.
+    const key = injectiveKey(logicalId, resource.physicalId);
     const inFlight = this.attributeHeals.get(key);
     if (inFlight) return inFlight;
     const heal = this.readStaleAttributes(logicalId, resource, stackName).catch(
@@ -2686,7 +2731,7 @@ export class DeployEngine {
    *
    * REDACTION HAPPENS HERE, at the persist choke point, and must not move to
    * record time: `crossStackReadsForPartialSave` / `unionCrossStackReads` dedup
-   * on `${sourceStack}\0${region}\0${name}`, so changing a value mid-run makes
+   * on the (source stack, region, name) triple, so changing a value mid-run makes
    * the union write BOTH spellings, and its first-seen-wins merge would keep
    * whichever arrived first.
    *

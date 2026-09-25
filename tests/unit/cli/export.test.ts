@@ -3760,7 +3760,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       (m: string) => {
         // WITHHELD: `displaySafe` trims, so `Root~A ` renders as `Root~A` and a
         // substituted command would delete the intact record of that name.
-        expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+        expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
         expect(m).toContain('cdkd state list --long');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
       },
@@ -3838,7 +3838,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
 
       const message = (thrown as Error).message;
       expect(message).toContain('missing nested-child');
-      expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
+      expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
       expect(message).not.toMatch(/cdkd state orphan [^\n]*--state-bucket=attacker/);
     }
   );
@@ -4993,7 +4993,7 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
     ).toBe(false);
     // And the suggested command is withheld, because the name does not render
     // exactly once sanitized.
-    expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
   });
 
   it('loads a child template via the nested-template path index', () => {

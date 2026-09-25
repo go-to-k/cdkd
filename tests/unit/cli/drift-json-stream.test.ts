@@ -773,13 +773,95 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     expect(() => JSON.parse(stdout)).not.toThrow();
     expect(stderr).toContain('this resource has no observed-capture baseline');
     expect(stderr).toContain('Parameters.metadata_location');
-    // The command names no stack since go-to-k/cdkd#3307: this block carries
-    // values that cannot be gated, so it has not earned a pasteable line, and
-    // the name is what a pasted span ran.
-    expect(stderr).toContain("Run 'cdkd state refresh-observed' for this stack");
-    expect(stderr).not.toContain("cdkd state refresh-observed TestStack");
+    // go-to-k/cdkd#3307's `--stack-region` requirement for this site, closed
+    // through go-to-k/cdkd#3436's fold-in. The issue's stated harm is that
+    // `for this stack` gives the operator neither NAME nor REGION, and a name
+    // held in several regions is ambiguous. The command is now gated and on a
+    // labelled line of its own, carrying BOTH.
+    expect(stderr).toMatch(
+      /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+    );
+    // ...and the prose points at it rather than naming a command inline, so a
+    // pasted sentence carries nothing runnable.
+    expect(stderr).toContain('Populate observedProperties with the command below');
+    expect(stderr).not.toContain("Run 'cdkd state refresh-observed' for this stack");
+    expect(stderr).not.toMatch(/'cdkd state refresh-observed[^']*'/);
     expect(stdout).not.toContain('observed-capture baseline');
     expect(stdout).not.toContain('metadata_location');
+  });
+
+  it('WITHHOLDS the populate command for a REGION isPasteableIdent refuses', async () => {
+    // The other direction of go-to-k/cdkd#3436's fold-in at this site, and the
+    // one that decides whether the gate is real -- and the name says
+    // `isPasteableIdent` rather than "the paste gate", because the paste gate
+    // ACCEPTS this value. `us-east-1:1` renders exactly and is not option- or
+    // pattern-shaped, so `pasteableCommand` alone would NAME it; what refuses
+    // it is `isPasteableIdent`, through `mayNameTarget`, because exactness keeps
+    // a space and a `:`, and an identifier carrying either can spell one of
+    // this block's own labels and forge it once the terminal wraps
+    // (`.claude/rules/state-malformed-containers.md`, go-to-k/cdkd#3328).
+    //
+    // The REGION and not the NAME, deliberately. `mayNameTarget` is a
+    // CONJUNCTION over two identifiers and review measured that all three of
+    // this lane's withholding cases poisoned the stack name, so deleting the
+    // region half reddened nothing -- an unprobeable half of a predicate the
+    // whole fold-in rests on, and exactly the shape this lane has twice
+    // removed a guard for. Sites 2 and 3 keep their name-poisoned cases, so
+    // one predicate still has both of its halves pinned.
+    //
+    // Withheld means the line is NOT PRINTED, rather than printed with a hole:
+    // this block displays the stack name in its own plan header, so a hole
+    // beside it invites the operator to fill it from a name the block already
+    // shows — the misdirection the corrected go-to-k/cdkd#3486 criterion
+    // forbids.
+    const odd = makeState({
+      Table: {
+        physicalId: 'tbl-1',
+        resourceType: 'AWS::Glue::Table',
+        properties: { Parameters: { classification: 'parquet' } },
+      },
+    });
+    // The region go-to-k/cdkd#3307 asks this site to CARRY is the one that
+    // cannot be named: a record whose region spells a `:` is exactly the case
+    // where naming it would be worse than saying nothing. The stack name stays
+    // ordinary, so nothing but the region half can be doing the refusing.
+    mockGetState.mockResolvedValue(odd);
+    // `--all` with a planted listing, which is how a REGION is driven here.
+    // `cdkd drift` DOES declare `--stack-region` -- an earlier version of this
+    // comment said it did not, and review corrected it -- but that flag only
+    // FILTERS `resolveTargetRefs`'s candidates; the region the report carries
+    // is always `ref.region`, straight out of `listStacks()`. So the listing is
+    // the only place a test can put one.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1:1' }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async (): Promise<Record<string, unknown>> => ({
+        Parameters: { classification: 'json', metadata_location: 's3://b/metadata/00000.json' },
+      }),
+    });
+
+    const { stderr } = await runDrift([
+      '--all',
+      '--state-bucket',
+      'b',
+      '--region',
+      'us-east-1',
+      '--json',
+      '--revert',
+      '--dry-run',
+    ]);
+
+    // Positive: the block was REACHED, so the negatives below cannot be
+    // satisfied by an empty or unrelated message.
+    expect(stderr).toContain('this resource has no observed-capture baseline');
+    // No command line at all, and no hole standing in for one.
+    expect(stderr).not.toMatch(/^ *Populate with: /m);
+    expect(stderr).not.toContain('cdkd state refresh-observed');
+    // And the SENTENCE moved with it. A first cut printed `with the command
+    // below` unconditionally, so this arm pointed at a line it had just
+    // withheld; asserting only the command's absence was satisfied by that
+    // contradiction, which is how review found it.
+    expect(stderr).not.toContain('with the command below');
+    expect(stderr).toContain('cannot be named safely in a command');
   });
 
   /**

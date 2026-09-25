@@ -16,6 +16,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
@@ -329,9 +330,20 @@ async function deployCommand(
       // path) — the lock TTL reclaims them automatically otherwise.
       process.stderr.write(
         '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run this for EACH stack it names ' +
-          '(the region-qualified form — see the message that run prints): ' +
-          'cdkd force-unlock <stackName> --stack-region <region>\n'
+          'If the next run reports a lock, run this for EACH stack it names, ' +
+          'in the region-qualified form — see the message that run prints.' +
+          // The holes are QUOTED, and on a labelled line of their own. A bare
+          // `<stackName>` is two shell redirections: `<stackName` reads stdin
+          // from a file and the `>` takes the next word as an output TARGET
+          // and creates it (measured on go-to-k/cdkd#3436). `commandHole`
+          // prints `'<stackName>'`, so this line is inert BY DESIGN and stays
+          // inert if a flag is appended. An earlier version of this comment
+          // described the unquoted text it replaced — "inert by where the
+          // command happens to stop ... one appended flag from being silent" —
+          // which is true of a BARE trailing hole and not of what this prints
+          // (go-to-k/cdkd#3613's M8).
+          `\nRelease with: cdkd force-unlock ${commandHole('stackName')} ` +
+          `--stack-region ${commandHole('region')}\n`
       );
       process.exit(130);
     }

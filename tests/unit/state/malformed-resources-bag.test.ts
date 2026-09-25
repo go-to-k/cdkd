@@ -794,7 +794,7 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // bounded by the LINE, so each command must end its own.
       expectDestroyCommandLines(destroy, {
         inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
-        drop: 'cdkd state orphan <stack> --stack-region <region>',
+        drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
       });
       // ...and the sibling's legacy-record clause, because for such a record
       // the `--stack-region` flag must be OMITTED or it selects nothing.
@@ -1404,7 +1404,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       // QUOTED, because `~` is shell-significant (tilde expansion) — the
       // gate admits the name, and `shellQuote` still does its job on it.
       inspect: "cdkd state show 'Parent~Child' --stack-region us-east-1 --json",
-      drop: 'cdkd state orphan <stack> --stack-region <region>',
+      drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
     });
   });
 
@@ -1416,7 +1416,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // only the distance case without this).
     expectDestroyCommandLines(malformedDestroyResourcesRefusalMessage('MyStack', 'us-east-1'), {
       inspect: 'cdkd state show MyStack --stack-region us-east-1 --json',
-      drop: 'cdkd state orphan <stack> --stack-region <region>',
+      drop: "cdkd state orphan '<stack>' --stack-region '<region>'",
     });
     // The withhold arm keeps the read as a TEMPLATE and offers no destructive
     // line: it has just said another record may render identically, so it has
@@ -1573,7 +1573,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
   it('spells the DESTRUCTIVE remedy as a template, so a record-supplied region cannot aim it', () => {
     const PLANTED = 'zz-planted-1';
     const m = malformedDestroyResourcesRefusalMessage('MyStack', PLANTED);
-    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     // Non-vacuity first: the region really is in the message, so the bound
     // below is a POSITION test rather than an absence test.
     expect(m).toContain(PLANTED);
@@ -1717,7 +1717,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     // Without this, a gate that withheld unconditionally would satisfy every
     // case above while making the remedy unreachable.
     const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
-    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     expect(m).not.toContain('does NOT render exactly');
     // The region's own edge, from below: exactly its cap still renders
     // exactly, so a gate measuring the region at a SMALLER cap cannot pass.
@@ -2376,7 +2376,7 @@ describe('the entry-level text', () => {
   it('withholds the target when an identifier forges the destructive template', () => {
     // The same forgery go-to-k/cdkd#3516's review closed on the two DESTROY
     // refusals, one function over: this message NAMES a target and ends on the
-    // same `cdkd state orphan <stack> --stack-region <region>` template, and
+    // same `cdkd state orphan '<stack>' --stack-region '<region>'` template, and
     // exactness alone keeps a space and a `:`. The KEY REGION is the reachable
     // half — it is an S3 key segment.
     const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1';
@@ -6187,21 +6187,17 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    */
   const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
     [
-      'src/deployment/deploy-engine.ts',
-      7,
-      'the cross-stack 3-part keys, (logicalId, physicalId), and one COMMENT quoting ' +
-        'the key shape. HELD by open PRs at the time of go-to-k/cdkd#3496 — this is ' +
-        'a WAIT, not a verdict, and the rows are still open there',
-    ],
-    [
       'src/deployment/secret-redaction.ts',
-      4,
-      'maskedOutputKey, CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
-        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY: this module imports ' +
-        'NOTHING by a recorded decision, the encoding lives in a module it would have ' +
-        'to import, and the collision adds no reach — whoever can forge such a ' +
-        'coordinate can aim the real one. Its two FALSE justifications are fixed; see ' +
-        'go-to-k/cdkd#3496',
+      5,
+      'maskedOutputKey (four parts since go-to-k/cdkd#3691: a credential-identity ' +
+        'fingerprint, JSON and so NUL-free, then stack / region / output key), ' +
+        'CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
+        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY, on REACH alone: the ' +
+        'identity part cannot carry a NUL, so no collision crosses identities, and within ' +
+        'one the collision adds nothing — whoever can forge such a coordinate can aim the ' +
+        'real one. (Not on layering: JSON.stringify would encode it with no import; what ' +
+        'keeping one spelling in record-keys.ts protects is the reason it is not ' +
+        're-spelled here.) See go-to-k/cdkd#3496',
     ],
     [
       'src/provisioning/providers/efs-provider.ts',
@@ -6399,12 +6395,6 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
       'src/cli/upload-cfn-template.ts',
       1,
       'an S3 OBJECT key being written, not a key anything is looked up by',
-    ],
-    [
-      'src/deployment/deploy-engine.ts',
-      1,
-      'a NUL-joined key, classified in NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS above ' +
-        '-- go-to-k/cdkd#3496',
     ],
     [
       'src/deployment/intrinsic-function-resolver.ts',

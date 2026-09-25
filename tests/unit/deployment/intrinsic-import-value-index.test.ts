@@ -15,6 +15,13 @@ import {
   redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../src/utils/ambient-client-defaults.js';
+import { AwsClients, runWithStackAwsClients } from '../../../src/utils/aws-clients.js';
+/** The credential identity the code under test keys the recovery store by (go-to-k/cdkd#3691). */
+const AMBIENT_ID = (): string => credentialFingerprint(ambientCredentialConfig());
 
 /**
  * Helper: build a barely-functional ExportIndexStore mock with the
@@ -365,6 +372,67 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       expect(redactedAttributeReads).toEqual([]);
     });
 
+    it('does NOT recover a value another credential identity recorded (go-to-k/cdkd#3691)', async () => {
+      // A library caller that switched `AwsClients` to another account in this
+      // process: that account's same-named producer is not the one this run
+      // masked, so the read is refused rather than handed the other plaintext.
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput(
+        JSON.stringify(['another-account', null]),
+        'Producer',
+        'us-east-1',
+        'Token',
+        'in-run-plaintext-2274'
+      );
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      expect(result).toBe('***');
+      expect(redactedAttributeReads).toHaveLength(1);
+      clearRecoverableMaskedOutputs();
+    });
+
+    it('recovers under the identity the resolution RUNS with, and only that one (go-to-k/cdkd#3691)', async () => {
+      // The reader must key the store by the ACTIVE clients' identity. Inside
+      // a stack scope for account B, B's recording is served; outside it, the
+      // same coordinate under the default identity misses and is refused.
+      clearRecoverableMaskedOutputs();
+      const clientsB = new AwsClients({ region: 'us-east-1', profile: 'account-b-3691' });
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const resolveToken = (reads: RedactedAttributeRead[]): Promise<unknown> =>
+        new IntrinsicFunctionResolver('us-east-1').resolve(
+          { 'Fn::ImportValue': 'Token' },
+          buildContext({
+            stateBackend: backend,
+            recordedImports: [],
+            redactedAttributeReads: reads,
+            recordedSecretValues: new Map(),
+          })
+        );
+
+      const inScope = await runWithStackAwsClients(clientsB, () => {
+        recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-east-1', 'Token', 'b-plain');
+        return resolveToken([]);
+      });
+      const outsideReads: RedactedAttributeRead[] = [];
+      const outside = await resolveToken(outsideReads);
+
+      expect(inScope).toBe('b-plain');
+      expect(outside).toBe('***');
+      expect(outsideReads).toHaveLength(1);
+      clearRecoverableMaskedOutputs();
+    });
+
     it('RECOVERS the plaintext when THIS RUN masked that producer output', async () => {
       // Review round 2, blocker 3. The refusal above is right only when the
       // plaintext is genuinely gone. Under `cdkd deploy --all` the producer was
@@ -372,7 +440,7 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       // still in memory — and refusing there is a REGRESSION on a template that
       // deployed before this feature existed.
       clearRecoverableMaskedOutputs();
-      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', 'in-run-plaintext-2274');
+      recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-east-1', 'Token', 'in-run-plaintext-2274');
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
@@ -409,11 +477,11 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
     });
 
     it('does NOT recover a DIFFERENT producer output that happens to be masked', async () => {
-      // The store is keyed by (stack, region, output key), never by the bare
+      // The store is keyed by (identity, stack, region, output key), never by the bare
       // plaintext — the shape PR #2415 had to withdraw. A hit for one
       // coordinate must not answer for another.
       clearRecoverableMaskedOutputs();
-      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Other', 'in-run-plaintext-2274');
+      recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-east-1', 'Other', 'in-run-plaintext-2274');
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },

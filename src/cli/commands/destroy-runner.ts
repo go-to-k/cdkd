@@ -2,6 +2,7 @@ import * as readline from 'node:readline/promises';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -2426,8 +2427,14 @@ export async function scanActiveConsumers(
         const got = await ctx.stateBackend.getState(ref.stackName, region);
         const imports = got?.state.imports;
         if (!imports || imports.length === 0) return null;
+        // The region is compared CANONICALIZED (go-to-k/cdkd#3746), the rule
+        // the deploy side keys and dedups these entries by: an entry stored
+        // in another case was kept there as the same reference, and a strict
+        // `===` here let a destroy through over it.
         const matches = imports.filter(
-          (entry) => entry.sourceStack === producerStack && entry.sourceRegion === producerRegion
+          (entry) =>
+            entry.sourceStack === producerStack &&
+            canonicalizeRegion(entry.sourceRegion) === canonicalizeRegion(producerRegion)
         );
         if (matches.length === 0) return null;
         return matches.map<ActiveImportConsumer>((entry) => ({

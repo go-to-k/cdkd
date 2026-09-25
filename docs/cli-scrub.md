@@ -176,9 +176,11 @@ forward.
 
 **Run `scrub` BEFORE rotating.** It matches the CURRENT resolved secret value
 against what state holds, so once the secret is rotated the stale value in
-state no longer matches and `scrub` reports nothing to scrub. The rotation
-invalidates the stale value; a redeploy then rewrites the record with the
-expression.
+state no longer matches and `scrub` cannot rewrite it. In most positions it
+then reports nothing to scrub; a cross-stack read name is the exception, and is
+reported while your template still reads a secret-bearing name of its shape (see [What this does not repair](#what-this-does-not-repair)). The
+rotation invalidates the stale value; a redeploy then rewrites the record with
+the expression.
 
 ### Scrubbing supersedes the plaintext, it does not erase it
 
@@ -322,7 +324,7 @@ without materializing `{}`.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Three shapes qualify, and all three are also reported in words:
+cannot rewrite. Four shapes qualify, and all four are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -373,6 +375,10 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   sitting behind such a token survives a scan that finds nothing. cdkd cannot
   rewrite it (there is no needle to match) and does not refuse the stack, so it
   is reported and counted instead. Restore the parameter or secret and re-run.
+
+- a **cross-stack read name holding a secret's value from before a
+  rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
+  could NOT repair`. See [What this does not repair](#what-this-does-not-repair).
 
 ### A scan `--fail` warns about but does not count
 
@@ -755,7 +761,24 @@ A name whose secret has since been **rotated** is left as it is. Scrub learns
 which plaintexts to look for by re-resolving your template, so it holds the
 secret's CURRENT value, while the stored name holds the one it had when that
 record was written — a value nothing in the run can see. Rotating again does
-not help; a redeploy that re-resolves the reference rewrites the record.
+not help; a deploy that updates the stack rewrites both lists from the reads
+it performs. A deploy that finds nothing to change keeps the stale entry.
+
+Scrub still **reports** such a name, so the stack is not called clean and
+`--fail` exits `1`. The warning names the list and index
+(`state.imports[1]`), never the stored value. A stored entry counts when all
+of these hold:
+
+| Condition | Why |
+| --- | --- |
+| No read in today's template produces the same entry | An ordinary import this run re-read is healthy, even from a producer that also publishes a secret. |
+| A read in today's template of the same producer and region has a name that carries a secret | The stored entry has to be tied to a secret-bearing reference. |
+| The stored name matches that read's name, each secret reference standing for any text, and one such position still holds text | A rotated name differs only where the secret sits; with two secrets and one rotated, the old one stays text. |
+
+An entry left behind by a reference you REMOVED from the template can also
+match, when its name happens to have the same shape as a secret-bearing read
+of the same producer. It is reported the same way; a deploy that updates the
+stack drops it.
 
 A name that is never re-resolved is the case this repair exists for: a stable
 stack resolves its cross-stack reference once and the resource never changes

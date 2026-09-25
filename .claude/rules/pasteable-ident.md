@@ -39,7 +39,7 @@ round-trip that is half of the rule. Do not re-spell the predicate in a
 consumer; `state-file-keys.ts` re-exports the name. It is the repo's rule for a
 PASTEABLE value generally — `PASTEABLE_STATE_IDENT`'s name is narrower than its
 job — so an edit tightening it must check every caller
-(`grep -rl isPasteableIdent src`), deploy-path error messages included. Its cap
+(`grep -rl isPasteableIdent src`), deploy-path error messages and `pasteable-command.ts`'s `plainIdent` arm included. Its cap
 is `STACK_REF_MAX_CODE_POINTS`, looser than a profile name needs and harmless,
 since every character it admits is already plain.
 

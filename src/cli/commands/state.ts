@@ -1,6 +1,9 @@
 import * as readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
-import type { PasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -28,6 +31,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   safeMsg,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
@@ -349,6 +353,27 @@ function formatStackRefSafe(ref: StackStateRef): string {
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
+ * `state resources` / `state show` refusing a legacy region-less record. The
+ * name is the operator's own positional, rendered through `safe` in the prose;
+ * the `cdkd deploy` beside the labelled line takes `plainIdent`, as
+ * `refresh-observed`'s legacy refusal does (go-to-k/cdkd#3696), so all three
+ * decide "may I name this target" by one predicate and explain a hole with the
+ * gate's own reason.
+ */
+function legacyRecordRefusal(stackName: string): Error {
+  const migrate = pasteableCommand('cdkd deploy', [
+    { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+  ]);
+  return new Error(
+    `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
+      `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
+      `after it.` +
+      withheldTargetClause(migrate, 'stack', 'cdkd deploy') +
+      `\nMigrate with: ${migrate.command}`
+  );
 }
 
 /**
@@ -905,16 +930,7 @@ async function stateResourcesCommand(
     const refs = await setup.stateBackend.listStacks();
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
-      throw new Error(
-        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
-          `after it.` +
-          `\nMigrate with: ${
-            pasteableCommand('cdkd deploy', [
-              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-            ]).command
-          }`
-      );
+      throw legacyRecordRefusal(stackName);
     }
     const stateResult = await setup.stateBackend.getState(stackName, ref.region);
     if (!stateResult) {
@@ -1292,16 +1308,7 @@ async function stateShowCommand(
     const refs = await setup.stateBackend.listStacks();
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
-      throw new Error(
-        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
-          `after it.` +
-          `\nMigrate with: ${
-            pasteableCommand('cdkd deploy', [
-              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-            ]).command
-          }`
-      );
+      throw legacyRecordRefusal(stackName);
     }
 
     const [stateResult, lockInfo] = await Promise.all([
@@ -2075,7 +2082,7 @@ async function stateOrphanCommand(
   if (options.verbose) logger.setLevel('debug');
 
   if (stackArgs.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd state orphan <stack> [<stack>...]');
+    throw new Error(`Stack name is required. Usage: cdkd state orphan ${commandHole('stacks...')}`);
   }
 
   const setup = await setupStateBackend(options);
@@ -2205,15 +2212,18 @@ async function stateOrphanCommand(
         // space — which `formatStackRefSafe` records as a residual on
         // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
+        // `plainIdent` for the same reason as the legacy refusals in this file
+        // (go-to-k/cdkd#3696): a labelled `Destroy with:` line names a target
+        // only when it is a plain identifier, and a hole says why.
+        const destroyCmd = pasteableCommand('cdkd destroy', [
+          { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+        ]);
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
-            `Delete the actual resources instead with the command below.\n` +
-            `Destroy with: ${
-              pasteableCommand('cdkd destroy', [
-                { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-              ]).command
-            }\n\n`
+            `Delete the actual resources instead with the command below.` +
+            withheldTargetClause(destroyCmd, 'stack', 'cdkd destroy') +
+            `\nDestroy with: ${destroyCmd.command}\n\n`
         );
         const ok = await confirmStateOrphanRemoval(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
@@ -2372,7 +2382,7 @@ async function stateDestroyCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      'Stack name is required. Usage: cdkd state destroy <stack> [<stack>...] | --all'
+      `Stack name is required. Usage: cdkd state destroy ${commandHole('stacks...')} | --all`
     );
   }
 
@@ -3212,99 +3222,10 @@ function createStateInfoCommand(): Command {
 
 /**
  * The hole the legacy refusal's `cdkd deploy` prints for a name it cannot
- * name, and the key {@link withheldNameClause} reads the reason back by. ONE
+ * name, and the key {@link withheldTargetClause} reads the reason back by. ONE
  * spelling so the two cannot drift apart (m22 of the go-to-k/cdkd#3499 review).
  */
 const STACK_HOLE = 'stack';
-
-/**
- * The sentence for a name `pasteableCommand` would not print, rendered from the
- * REASON it gave rather than from a predicate of this site's own — M11 of the
- * go-to-k/cdkd#3499 review. Keying it on a second predicate got both directions
- * wrong at once: `Old;Stack` renders exactly, so a rendering-based clause called
- * a command that names it "not exact", and `--all` also renders exactly, so the
- * same clause said nothing above a hole the operator was then invited to fill
- * with the name printed beside it.
- *
- * THREE of the five reasons are reachable from this call site, and the other
- * two are bounded out by where the name comes from — an S3 key segment:
- *
- * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
- *   planted key can spell a name any of those ways in a handful of bytes.
- * - `empty` is not. `listStacks` drops a key whose stack segment is empty
- *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
- *   is non-empty by the time the refusal is built.
- * - `too-long` is not either, and the bound is not obvious: the cap is
- *   `STACK_REF_MAX_CODE_POINTS` (1152), while S3 caps the WHOLE key at 1024
- *   bytes, leaving at most 1008 for the name inside `cdkd/<name>/state.json`.
- *   A multi-byte character only lowers the code-point count further, so a name
- *   arriving through `listStacks` can never reach the cap.
- *
- * Both unreachable arms stay, and are covered, because the REASON is the
- * gate's and not this site's: `pasteableCommand` can return either to a caller
- * whose value comes from somewhere else. A missing arm is no longer a silent
- * fall-through — the `switch` below is exhaustive over `WithholdReason`, so
- * dropping one is a compile error (M13). What the cases buy on top of that is
- * the SENTENCE: the type checker knows an arm exists, not that it says the
- * right thing, and substituting one arm's text for another's is exactly the
- * disagreement M11 closed.
- */
-function withheldNameClause(built: PasteableCommand): string {
-  // Keyed on the hole NAME the call site passes, which couples the two (m22 of
-  // the go-to-k/cdkd#3499 review). Renaming the hole there would drop this
-  // sentence while the hole itself still printed — silently, since the message
-  // stays well-formed. `STACK_HOLE` is the one spelling both sites use, and
-  // `state-refresh-observed.test.ts` pins the PAIRING per REASON — not per
-  // case: each of the five reasons has at least one case asserting both the
-  // hole in the command and the sentence about it, so a lookup that stopped
-  // matching cannot leave the suite green. (The hostile-name loop asserts the
-  // hole alone; it is about the gate, not about the sentence.)
-  const reason = built.withheld.find((w) => w.hole === STACK_HOLE)?.reason;
-  if (reason === undefined) return '';
-  // A `switch` with a `never` default, not a ternary chain with a catch-all
-  // (M13 of the go-to-k/cdkd#3499 review). A sixth `WithholdReason` member
-  // typechecks fine against a catch-all and then silently renders whatever
-  // sentence the catch-all holds — the header above used to describe that as
-  // a hazard it had identified and left undefended. Here it is a COMPILE
-  // error, which is the enforcement this change is about: the reason comes
-  // from one predicate, and every reason that predicate can return has to be
-  // answered on purpose.
-  let why: string;
-  switch (reason) {
-    case 'altered':
-      why = `does NOT render exactly, so another record may render identically`;
-      break;
-    case 'empty':
-      why = `is empty`;
-      break;
-    case 'too-long':
-      why = `is too long to print`;
-      break;
-    case 'option-shaped':
-      why =
-        `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
-        `name like '--all' is parsed as the FLAG and targets every stack`;
-      break;
-    case 'pattern-shaped':
-      why = `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
-      break;
-    default: {
-      // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499
-      // review). TypeScript proves this is unreachable, and the assignment is
-      // what proves it — but a sixth reason arriving from JS or through a cast
-      // would have spliced the raw token in as the WHOLE clause, so the one
-      // path that can only be reached when the type system was bypassed would
-      // have failed by printing something plausible. It fails loudly instead.
-      const _exhaustive: never = reason;
-      throw new Error(`withheldNameClause: unhandled WithholdReason ${String(_exhaustive)}`);
-    }
-  }
-  return (
-    ` This record's name ${why} — so it is not named in the command below; ` +
-    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
-    `matches.`
-  );
-}
 
 /**
  * `cdkd state refresh-observed <stack>` command implementation.
@@ -3326,10 +3247,28 @@ function withheldNameClause(built: PasteableCommand): string {
  *
  * Behavior:
  *  - Acquires a per-stack lock (scope: `state-refresh-observed`).
- *  - Calls every resource's `provider.readCurrentState` in parallel
- *    (Promise.all). Errors are swallowed per-resource and logged at
- *    debug — drift falls back to `properties` for that resource until
- *    the next call succeeds.
+ *  - Calls `provider.readCurrentState` in parallel (Promise.all) for the
+ *    resources that REACH it. FOUR paths do not, and review had to correct
+ *    this sentence twice — first from "every resource", then from three arms
+ *    to four. A resource whose record carries `observedBaselineRefused` (v10)
+ *    is SKIPPED before the provider is consulted and warned about separately,
+ *    since refreshing it could persist a resolved secret in plaintext. The
+ *    other three all count as `unsupported`: a type
+ *    `ProviderRegistry.shouldSkipResource` declines (returning before the
+ *    lookup), a type with no registered provider, and a provider that does not
+ *    implement `readCurrentState`. A per-resource failure is
+ *    COUNTED and logged at
+ *    `warn` naming the resource and the error, the rest of the stack is
+ *    still refreshed and saved, and the affected resource keeps whatever
+ *    `observedProperties` it already had (or none). So drift keeps
+ *    comparing against that RETAINED baseline where one exists, and falls
+ *    back to `properties` only where there is none — review caught the
+ *    unqualified claim, which said it always falls back. The run
+ *    then ends in `PartialFailureError` (exit 2) naming the count, which
+ *    is what distinguishes it from a crash. (This block travelled here
+ *    from `src/utils/pasteable-command.ts`, where it documented nothing;
+ *    review measured that it also described the old, swallow-and-debug
+ *    behaviour rather than the current one.)
  *  - Writes state with optimistic locking (`expectedEtag`).
  *  - Prints a per-stack summary: `N refreshed, M unsupported, K failed`.
  *
@@ -3362,7 +3301,7 @@ async function stateRefreshObservedCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      'Stack name is required. Usage: cdkd state refresh-observed <stack> [<stack>...] | --all'
+      `Stack name is required. Usage: cdkd state refresh-observed ${commandHole('stacks...')} | --all`
     );
   }
 
@@ -3473,43 +3412,34 @@ async function stateRefreshObservedCommand(
     // prose owes the reader is a faithful IDENTITY, not a shell word.
     for (const target of targets) {
       if (!target.region) {
-        // `displayIdent`, not `shellQuote(safeStackName(...))` (M9 of the
-        // go-to-k/cdkd#3499 review). `safeStackName` is `displaySafe`, which
-        // TRIMS: a planted v1 key `cdkd/ProdStack /state.json` printed as
-        // `Stack ProdStack`, byte-identical to a healthy sibling, directly
-        // above a `Migrate with: cdkd deploy '<stack>'` template. The operator
-        // fills the hole with the name they were shown and WRITES to the real
-        // `ProdStack`. `displayIdent` quotes what it altered, so the two cannot
-        // read alike, and `shellQuote` is gone because nothing here is a shell
-        // word any more.
-        //
-        // This is NOT an argument for aligning the prose with the two sibling
-        // refusals in this file: they render a user-typed CLI argument, this
-        // one an S3 key segment an attacker can plant. What M5 made uniform is
-        // the COMMAND — its label, its placement, hole-vs-withhold. Prose
-        // rendering is a different axis and the sites differ on it for a
-        // reason.
-        // ONE `displayIdent` read, not two — `displayIdent`'s own header asks
-        // for that, since each call re-reads `value.toString()` and a hostile
-        // object can answer differently each time (m18 of the
-        // go-to-k/cdkd#3499 review). There is nothing to compare it against
-        // here any more: since M11 the decision about whether the name is
-        // safe to NAME belongs to `pasteableCommand`, which reads the RAW
-        // value, and this rendering is only what the PROSE shows.
-        const stack = displayIdent(target.stackName, {
-          maxCodePoints: STACK_REF_MAX_CODE_POINTS,
-        });
-        // The gate this site spelled out by hand is `pasteableCommand`'s
-        // (go-to-k/cdkd#3436), and every clause of it survives: the name is
-        // named only when it renders EXACTLY (an altered one can name a
-        // DIFFERENT stack in the user's app, and `cdkd deploy` WRITES), it is
-        // withheld when `cdkd deploy` would read it as a PATTERN — a legacy key
-        // named `*` renders exactly and would deploy every stack — or as an
-        // OPTION, since quoting does not stop Commander parsing `'--all'` as a
-        // flag. Withheld, the hole is printed rather than the altered spelling.
-        // The command is LAST and UNWRAPPED on its own labelled line.
+        // The name is an S3 KEY segment an attacker can plant, and it sits
+        // beside a labelled `Migrate with:` line, so BOTH the prose and the
+        // command take `isPasteableIdent` — the rule for naming a target
+        // beside a labelled line (`state-malformed-containers.md`,
+        // go-to-k/cdkd#3328; go-to-k/cdkd#3696). `displayIdent` is not
+        // enough for the prose: it folds a newline and quotes what it alters,
+        // but keeps interior spaces, so `ProdStack` + padding + `Migrate
+        // with: cdkd destroy --all --force #` still wraps into a counterfeit
+        // row. A name the predicate refuses is described, not shown — the
+        // clause below gives the gate's own reason, and `cdkd state list
+        // --long` shows it. `plainIdent` makes the command's verdict the
+        // same one, so the prose never names a value the command withholds.
+        const named = isPasteableIdent(target.stackName);
+        const subject = named
+          ? `Stack ${target.stackName}`
+          : `A stack whose name is not a plain identifier (see 'cdkd state list --long')`;
+        // The command is LAST and UNWRAPPED on its own labelled line, named
+        // only when the gate names it: not when it would not render EXACTLY
+        // (an altered name can name a DIFFERENT stack, and `cdkd deploy`
+        // WRITES), is a PATTERN (`*` deploys every stack), an OPTION (quoting
+        // does not stop Commander parsing `'--all'`), or not a plain
+        // identifier.
         const migrate = pasteableCommand('cdkd deploy', [
-          { value: target.stackName, hole: STACK_HOLE, opts: { patternMatched: true } },
+          {
+            value: target.stackName,
+            hole: STACK_HOLE,
+            opts: { patternMatched: true, plainIdent: true },
+          },
         ]);
         // The SAME shape as the two sibling refusals in this file, deliberately
         // (M5 of the go-to-k/cdkd#3499 review). `main` withheld the example
@@ -3520,7 +3450,7 @@ async function stateRefreshObservedCommand(
         // sentences. Per-site judgement about what is safe HERE is the habit
         // this PR exists to end.
         throw new Error(
-          `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
+          `${subject} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
             // The clause comes from the GATE's own reason, not from a second
             // predicate here (M11 of the go-to-k/cdkd#3499 review). Keyed on
@@ -3530,7 +3460,7 @@ async function stateRefreshObservedCommand(
             // admits — rendered bare and authoritative above an unexplained
             // hole, inviting the operator to type the name that deploys every
             // stack in the app.
-            withheldNameClause(migrate) +
+            withheldTargetClause(migrate, STACK_HOLE, 'cdkd deploy') +
             `\nMigrate with: ${migrate.command}`
         );
       }

@@ -483,6 +483,43 @@ describe('cdkd state resources', () => {
     expect(held).not.toContain("cdkd deploy 'Prod*'");
   });
 
+  it('holds an exact but NON-PLAIN legacy name out of the migrate command, and says why (go-to-k/cdkd#3696)', async () => {
+    // `Old;Stack` renders exactly, so the command gate alone would name it
+    // shell-quoted. Beside a labelled line the rule is `isPasteableIdent`
+    // (go-to-k/cdkd#3328): the hole prints with the `not-plain` reason, and
+    // the command is still the message's last line.
+    mockListStacks.mockResolvedValue([{ stackName: 'Old;Stack', region: undefined }]);
+    await runStateResources(['resources', 'Old;Stack']).catch(() => undefined);
+    const held = errorSpy.mock.calls.map(String).join('\n');
+    expect(held).toContain('only a legacy state record');
+    expect(held).toContain('is not a plain identifier');
+    expect(held).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(held.trimEnd().endsWith("Migrate with: cdkd deploy '<stack>'")).toBe(true);
+    expect(held).not.toContain("cdkd deploy 'Old;Stack'");
+
+    // The PATTERN reason keeps its own sentence, naming the verb.
+    errorSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod*', region: undefined }]);
+    await runStateResources(['resources', 'Prod*']).catch(() => undefined);
+    const pattern = errorSpy.mock.calls.map(String).join('\n');
+    expect(pattern).toContain("would be read as a PATTERN by 'cdkd deploy'");
+    expect(pattern).not.toContain('is not a plain identifier');
+  });
+
+  it('names no padded legacy name on the `Migrate with:` line (go-to-k/cdkd#3696)', async () => {
+    // Exact, `*`-free and not option-shaped, so only `plainIdent` withholds
+    // it. The prose still echoes the operator's own positional (mid-line);
+    // what must hold is that the ONE line starting with the label is the
+    // real command, carrying the hole.
+    const forged = `ProdStack${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+    mockListStacks.mockResolvedValue([{ stackName: forged, region: undefined }]);
+    await runStateResources(['resources', forged]).catch(() => undefined);
+    const message = errorSpy.mock.calls.map(String).join('\n');
+    expect(message).toContain('only a legacy state record');
+    const labelled = message.split('\n').filter((l) => l.startsWith('Migrate with:'));
+    expect(labelled).toEqual(["Migrate with: cdkd deploy '<stack>'"]);
+  });
+
   it('emits a JSON array of full resource details with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(

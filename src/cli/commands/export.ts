@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
-  displaySafe,
-  truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
+  displaySafe,
+  isPasteableIdent,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import {
   displayAssemblyPath,
@@ -94,6 +95,7 @@ import {
 } from '../yaml-cfn.js';
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 
 interface ExportOptions {
   app?: string;
@@ -479,12 +481,17 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // `ResourceIdentifier` naming a different resource and fail opaquely at
   // changeset-create.
   //
-  // The BARE `<Id>` form is accepted too, and is not hypothetical: CloudFormation
-  // reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as the association
-  // id alone, so a stack adopted via `cdkd import --migrate-from-cloudformation`
-  // carries that shape in state. `VpcId` is then recovered from the recorded
-  // properties, exactly as the `AWS::ApiGateway::Resource` entry above recovers
-  // `RestApiId`.
+  // The BARE `<Id>` form is accepted DEFENSIVELY — no cdkd writer records it.
+  // CloudFormation reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as
+  // the association id alone, but Cloud Control rejects that as an identifier
+  // (`ValidationException: Identifier vpc-cidr-assoc-… is not valid for
+  // identifier [/properties/Id, /properties/VpcId]`, measured us-east-1,
+  // 2026-09-25), and `CloudControlProvider.import()` records a physicalId only
+  // after `GetResource` succeeds. So an import that passed the bare id through
+  // adopted nothing, and since #3701 (issue #3672) a migrate completes it to
+  // `<Id>|<VpcId>` first. A hand-edited state record is what remains. `VpcId`
+  // is then recovered from the recorded properties, exactly as the
+  // `AWS::ApiGateway::Resource` entry above recovers `RestApiId`.
   //
   // Without this entry the type's mere PRESENCE aborted the whole
   // `cdkd export` command — and any VPC carrying a secondary IPv4 CIDR or an
@@ -1190,36 +1197,6 @@ const ROUTE_PREFIX_LIST_ID_PATTERN = /^pl-[0-9a-f]+$/;
  */
 function routeDestinationNormalizationIsModelled(value: string): boolean {
   return canonicalizeIpv4Cidr(value) !== undefined || ROUTE_PREFIX_LIST_ID_PATTERN.test(value);
-}
-
-/**
- * Return the host-bit-cleared form of an IPv4 CIDR (`100.68.0.18/18` ->
- * `100.68.0.0/18`), or `undefined` when the input is not an IPv4 CIDR at all
- * (an IPv6 CIDR, a `pl-…` prefix-list id, or anything malformed).
- *
- * This exists to recognize the ONE benign reason an `AWS::EC2::Route`'s stored
- * destination can differ from its physicalId segment: AWS rewrites a
- * non-canonical CIDR on `CreateRoute`, and the Cloud Control path records what
- * AWS returned while the template kept what the user wrote. Returning
- * `undefined` for the shapes it does not model is load-bearing — the caller
- * uses it to decide whether a divergence is conclusive or merely unexplained.
- */
-function canonicalizeIpv4Cidr(value: string): string | undefined {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value);
-  if (!match) return undefined;
-  const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
-  const prefixLength = Number(match[5]!);
-  if (prefixLength > 32 || octets.some((octet) => octet > 255)) return undefined;
-  const address = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
-  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
-  const network = (address & mask) >>> 0;
-  const networkOctets = [
-    network >>> 24,
-    (network >>> 16) & 0xff,
-    (network >>> 8) & 0xff,
-    network & 0xff,
-  ];
-  return `${networkOctets.join('.')}/${prefixLength}`;
 }
 
 /**
@@ -2182,7 +2159,10 @@ async function resolveIdentifierValue(
     // shipped. Tested only when NO backfill ran — a live read that answered
     // has already replaced the state-only question.
     if (carriesSecretMask(ctx.attributes[entry.field])) {
-      throw new Error(maskedIdentifierAttributeReason(entry.field, ctx.logicalId));
+      throw new RepairableRefusal(
+        maskedIdentifierAttributeReason(entry.field, ctx.logicalId),
+        importRepairCommand(ctx.logicalId)
+      );
     }
     throw stateOnlyError;
   }
@@ -2199,18 +2179,90 @@ async function resolveIdentifierValue(
  * today and would never stop being blocked by a re-import.
  */
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
+  // The id is NAMED in this sentence only when `isPasteableIdent` admits it
+  // (M21 of the go-to-k/cdkd#3613 review) -- the predicate the `Repair with:`
+  // line `groupBlockedReasons` appends from the refusal's `repair` already
+  // takes, so the prose and the command answer as one. The
+  // sentence predates this PR; the labelled line it can imitate does not. M18
+  // rendered the id through `displayIdent` here, which folds a newline and
+  // quotes, so a key spelled `X\nRepair with: cdkd destroy --all --force #`
+  // could no longer start a forged row ABOVE the genuine one. That closed the
+  // newline route and not the terminal-wrap route: `displayIdent` keeps
+  // interior spaces, and `'Tbl' + 60 spaces + 'Repair with: cdkd destroy --all
+  // --force #'` rendered unchanged inside its quotes (the maintainer measured
+  // it), so a wrap still put `Repair with: cdkd destroy --all --force #", and
+  // that attribute...` on a screen row of its own, the `#` commenting out the
+  // tail -- and since the genuine line carries only holes, the forged row was
+  // the only runnable one. go-to-k/cdkd#3328's class, in prose. A plain
+  // identifier has no space, newline or quote to wrap or fold, so it prints
+  // bare; anything else is described, and the operator is sent to `cdkd state
+  // show`, which lists the record's logical ids: the text view with control
+  // characters stripped, enough to identify the record, and `--json` with
+  // the key JSON-escaped, byte-for-byte.
+  const subject = isPasteableIdent(logicalId)
+    ? logicalId
+    : `this resource (its logical id is not a plain identifier; read it with 'cdkd state show')`;
   return (
-    `cdkd state holds only the redaction mask ('***') at attributes.${field} for '${logicalId}', ` +
+    `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
     `import identifier (${field}); nothing masked may reach the exported template, since ` +
     `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +
     `next update. The mask is what 'cdkd import' writes for a Cloud Control model key it could ` +
     `not certify as read-only — every key when cloudformation:DescribeType was unavailable. ` +
-    `Re-deploying does NOT clear it. Repair the record with 'cdkd import <stack> --resource ` +
-    `${logicalId}=<physicalId> --force' after granting cloudformation:DescribeType, or export ` +
+    `Re-deploying does NOT clear it. Repair the record with the command below, after ` +
+    `granting cloudformation:DescribeType, or export ` +
     `the stack without this resource and adopt it into CloudFormation by hand. ` +
     `See https://github.com/go-to-k/cdkd/issues/2932.`
   );
+}
+
+/**
+ * The `cdkd import` command a redaction-mask refusal carries in
+ * {@link BlockedResource.repair}, which `groupBlockedReasons` prints on the
+ * row's one `Repair with:` line.
+ *
+ * Two refusals carry this remedy, and both build it here so there is one
+ * spelling of its gate: `resolveIdentifierValue`'s masked-attribute refusal
+ * (a `RepairableRefusal` beside `maskedIdentifierAttributeReason`'s prose) and
+ * `buildImportPlan`'s resolved-identifier refusal (go-to-k/cdkd#3736). The
+ * second used to spell it independently inside a prose `'...'` span with the
+ * logical id interpolated (go-to-k/cdkd#3363's shape).
+ *
+ * The POSITIONAL is a hole on purpose, and the load-bearing half is what it is
+ * NOT: an earlier cut passed the LOGICAL ID there, producing a command that
+ * names a resource where `cdkd import`'s declared `[stack]` goes. No shape
+ * check can see that — both spellings are equally well-formed to one — and only
+ * reading the command can.
+ *
+ * It is a hole rather than a name because one caller,
+ * `resolveIdentifierValue`, has no stack name in scope at all.
+ * (`buildImportPlan` does have one, but filling it is a separate gating
+ * question, and a second spelling here is what this helper exists to avoid.)
+ */
+function importRepairCommand(logicalId: string): string {
+  // `isPasteableIdent`, not the command gate alone, and the reason is an
+  // ARGUMENT GRAMMAR rather than a shell one (M9 of the go-to-k/cdkd#3613
+  // review). `cdkd import` splits `--resource` on the FIRST `=`
+  // (`parseResourceFlags` in `import.ts`), and the gate does not refuse `=`:
+  // it is an ordinary character that renders exactly and needs no quoting. So
+  // a state key `A=B` renders `--resource 'A=B'='<physicalId>'`, which parses
+  // as logical id `A` with physical id `B=<whatever the operator filled in>`
+  // -- and the `--force` then lands on a DIFFERENT, real resource `A`.
+  //
+  // Shell-safe and argument-safe are different questions, and this is the
+  // second time on this lane that a command was moved out of the injection
+  // class while still MEANING the wrong thing (the first was passing a logical
+  // id where `cdkd import` declares `[stack]`). `isPasteableIdent` admits
+  // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$`, which has no `=`, so it answers both.
+  const named = isPasteableIdent(logicalId);
+  return `${
+    pasteableCommand('cdkd import', [
+      { hole: 'stack' },
+      named
+        ? { flag: '--resource', value: logicalId, hole: 'logicalId' }
+        : { flag: '--resource', hole: 'logicalId' },
+    ]).command
+  }=${commandHole('physicalId')} --force`;
 }
 
 /**
@@ -3450,6 +3502,30 @@ interface BlockedResource {
   logicalId: string;
   resourceType: string;
   reason: string;
+  /**
+   * The gated command a `Repair with:` line runs, built only by
+   * `importRepairCommand`. It travels OUTSIDE `reason` because
+   * `groupBlockedReasons` folds every control character out of a reason, so
+   * no NEWLINE in an interpolated value can start a line; the one labelled
+   * line a row may carry is the renderer's own (go-to-k/cdkd#3736). Padding
+   * that wraps on screen inside a reason is go-to-k/cdkd#3760's.
+   */
+  repair?: string;
+}
+
+/**
+ * A resolver refusal that carries a repair command, so the `buildImportPlan`
+ * catch can move it into {@link BlockedResource.repair} instead of the
+ * message text.
+ */
+class RepairableRefusal extends Error {
+  readonly repair: string;
+
+  constructor(message: string, repair: string) {
+    super(message);
+    this.name = 'RepairableRefusal';
+    this.repair = repair;
+  }
 }
 
 /**
@@ -3637,7 +3713,8 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
     // Names no target: the identity above it may not be this record's. List the
     // records AS STORED and act on the one whose key matches.
     return (
-      `cdkd state orphan <stack> --stack-region <region> — spelled out because this record's ` +
+      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
+      `spelled out because this record's ` +
       `name or region does NOT render exactly, so another record may render identically; ` +
       `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
     );
@@ -4362,8 +4439,14 @@ export async function buildImportPlan(
           'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
-          'Repair the record that HOLDS the mask ' +
-          "('cdkd import <stack> --resource <logicalId>=<physicalId> --force', granting " +
+          // NO backtick wrapper. Pasted WITH its wrapper a backtick span is
+          // command SUBSTITUTION -- a worse wrapper than `'...'`, and one the
+          // source fence could not see until go-to-k/cdkd#3613's M8 named it.
+          // Every placeholder here is a hole, so nothing untrusted ran; the
+          // shape is the point.
+          'Repair the record that HOLDS the mask with ' +
+          `cdkd import ${commandHole('stack')} --resource ` +
+          `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
           'schema), then re-run whichever command wrote this property. Either way you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
@@ -4479,6 +4562,7 @@ export async function buildImportPlan(
         reason:
           'could not resolve resource identifier: ' +
           (err instanceof Error ? err.message : String(err)),
+        ...(err instanceof RepairableRefusal ? { repair: err.repair } : {}),
       });
       continue;
     }
@@ -4507,16 +4591,20 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
+        // The repair command goes on its own labelled line through
+        // `importRepairCommand`, the gate `maskedIdentifierAttributeReason`
+        // uses (go-to-k/cdkd#3736). Inside a prose `'...'` span the
+        // interpolated logical id RAN when pasted (go-to-k/cdkd#3363's shape).
         reason:
           'the CloudFormation import identifier cdkd resolved for this resource is the redaction ' +
           "mask ('***'), so the exported template would declare the mask as the resource's " +
           'identity — CloudFormation would either refuse it at IMPORT or write it onto the live ' +
           'resource at the next update. cdkd state holds only the mask where the identifier ' +
-          "should be (a masked attribute, or a masked physical id). Repair the record ('cdkd " +
-          `import <stack> --resource ${logicalId}=<physicalId> --force', granting ` +
-          'cloudformation:DescribeType first if the import warned that it could not read the ' +
-          'schema), or export the stack without this resource and adopt it into CloudFormation ' +
-          'by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
+          'should be (a masked attribute, or a masked physical id). Repair the record with the ' +
+          'command below, granting cloudformation:DescribeType first if the import warned that ' +
+          'it could not read the schema, or export the stack without this resource and adopt it ' +
+          'into CloudFormation by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
+        repair: importRepairCommand(logicalId),
       });
       continue;
     }
@@ -4571,14 +4659,41 @@ export function groupBlockedReasons(blocked: readonly BlockedResource[]): string
   const byResource = new Map<string, { resourceType: string; reasons: string[] }>();
   for (const b of blocked) {
     const entry = byResource.get(b.logicalId) ?? { resourceType: b.resourceType, reasons: [] };
-    entry.reasons.push(b.reason);
+    // Each reason is FOLDED to one line: reasons interpolate template keys and
+    // state values (resolver messages echo physical ids and attributes), and
+    // a newline in any of them would otherwise start a counterfeit labelled
+    // row. The one labelled line a reason may carry is appended here, from
+    // the gated `repair` field (go-to-k/cdkd#3736).
+    const text = displaySafe(b.reason);
+    entry.reasons.push(b.repair === undefined ? text : `${text}\nRepair with: ${b.repair}`);
     byResource.set(b.logicalId, entry);
   }
-  return [...byResource].map(([logicalId, { resourceType, reasons }]) =>
-    reasons.length === 1
-      ? `  - ${logicalId} (${resourceType}): ${reasons[0]}`
-      : `  - ${logicalId} (${resourceType}):\n${reasons.map((r) => `      - ${r}`).join('\n')}`
-  );
+  return [...byResource].map(([logicalId, { resourceType, reasons }]) => {
+    const header = `${blockedRowId(logicalId)} (${blockedRowType(resourceType)})`;
+    return reasons.length === 1
+      ? `  - ${header}: ${reasons[0]}`
+      : `  - ${header}:\n${reasons.map((r) => `      - ${r}`).join('\n')}`;
+  });
+}
+
+/**
+ * A blocked row's identifiers come from the synthesized template's keys and
+ * print beside reasons that end in a labelled `Repair with:` line, so the row
+ * names them only in a shape that cannot forge that line — by a newline, or by
+ * interior padding that wraps on screen (go-to-k/cdkd#3736). A CloudFormation
+ * logical id is always a plain identifier, and a type always matches
+ * `BLOCKED_ROW_TYPE`, so a real template loses nothing.
+ */
+function blockedRowId(logicalId: string): string {
+  return isPasteableIdent(logicalId)
+    ? logicalId
+    : 'a resource whose logical id is not a plain identifier';
+}
+
+const BLOCKED_ROW_TYPE = /^[A-Za-z0-9]+(?:::[A-Za-z0-9_@-]+)+$/;
+
+function blockedRowType(resourceType: string): string {
+  return BLOCKED_ROW_TYPE.test(resourceType) ? resourceType : 'an unrecognized type';
 }
 
 /**
@@ -7412,7 +7527,9 @@ export async function runPerStackImportLoop(args: {
             // The FULL template: omitting `--stack-region` drops the record for
             // that name in EVERY region, which is wider than this list
             // describes and is the widening `orphanCommandFor` refuses to emit.
-            `Recover with 'cdkd state orphan <stack> --stack-region <region>' per record.`
+            `Recover with the command below, once per record.` +
+            `\nRecover with: cdkd state orphan ${commandHole('stack')} ` +
+            `--stack-region ${commandHole('region')}`
         );
       }
 

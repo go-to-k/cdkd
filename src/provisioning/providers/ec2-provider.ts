@@ -193,6 +193,20 @@ export function narrowRouteDestinations(properties: Record<string, unknown>): {
   return { declared, narrowed };
 }
 
+/**
+ * The multi-destination refusal sentence, shared by `createRoute`'s guard and
+ * `updateRoute`'s template-path pre-flight (issue #3728) so the two cannot
+ * word the same fault differently.
+ */
+function routeMultipleDestinationsMessage(logicalId: string, declared: string[]): string {
+  return (
+    `Route ${logicalId} declares more than one destination (${declared.join(', ')}). ` +
+    'CloudFormation and EC2 accept exactly one of ' +
+    'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
+    'remove the extra keys from the template.'
+  );
+}
+
 /** The `AuthorizeSecurityGroupIngress` default protocol: "all protocols". */
 const SG_INGRESS_IP_PROTOCOL_DEFAULT = '-1';
 
@@ -780,7 +794,7 @@ export class EC2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.updateSubnetRouteTableAssociation(logicalId, physicalId);
@@ -2485,11 +2499,7 @@ export class EC2Provider implements ResourceProvider {
     let effectiveProperties: Record<string, unknown> | undefined;
 
     if (declaredDestinations.length > 1) {
-      const message =
-        `Route ${logicalId} declares more than one destination (${declaredDestinations.join(', ')}). ` +
-        'CloudFormation and EC2 accept exactly one of ' +
-        'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
-        'remove the extra keys from the template.';
+      const message = routeMultipleDestinationsMessage(logicalId, declaredDestinations);
       if (onMultipleDestinations) {
         // The message states WHAT happened and nothing about WHY, because the
         // two callers reach it for different reasons: the create arm is a
@@ -2600,9 +2610,10 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: MaskerFn
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route ${logicalId}: ${physicalId}`);
+    const maskSecrets: MaskerFn | undefined = context?.maskSecrets;
 
     // No-op short-circuit: a `cdkd drift --revert` round-trip can call
     // update() with new == old when only sibling resources drifted.
@@ -2610,6 +2621,40 @@ export class EC2Provider implements ResourceProvider {
     // needlessly churn a Route that AWS already has in the right shape.
     if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
       return { physicalId, wasReplaced: false };
+    }
+
+    // The multi-destination refusal, on the TEMPLATE path, BEFORE the delete
+    // (issue #3728). The re-create below would refuse it anyway were it not
+    // handed the warn callback, but only AFTER `deleteRoute` has run, which is
+    // why that callback used to downgrade it on every update.
+    //
+    // WHO reaches it: a template carrying extra destination keys behind
+    // intrinsics that all resolved (the deploy pre-flight,
+    // `mutually-exclusive-properties.ts`, already refuses LITERAL duplicates),
+    // on an update that changes something else, such as the target. The
+    // recorded route may hold only one key: `canonicalizeDesiredProperties`
+    // narrows BOTH diff sides to the winning key, so a losing key is never
+    // compared, never a createOnly change, and reaches here only in the raw
+    // resolved bag `update()` receives.
+    //
+    // WHY refuse: the value is template-borne, and the remedy (remove the
+    // losing keys; cdkd sends only the first declared one) replaces nothing —
+    // the diff sees no destination change, so it is this method's ordinary
+    // update. That is unlike the `|` separator below, whose segments are the
+    // route's identity. The two state-borne callers (the rollback executor's
+    // revert arms set `replayingState`, `cdkd drift --revert` sets
+    // `desiredFromAwsReadback`) keep the warning: their bag has no
+    // template-side remedy.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      const { declared } = narrowRouteDestinations(properties);
+      if (declared.length > 1) {
+        throw new ProvisioningError(
+          `${routeMultipleDestinationsMessage(logicalId, declared)} The route was not changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
     }
 
     // Route updates require replacement (DestinationCidrBlock and RouteTableId are immutable)
@@ -2620,23 +2665,26 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         resourceType,
         properties,
-        // NOTE: this downgrades ONLY the multi-destination guard. The
-        // required-field check at the top of createRoute is deliberately NOT
-        // downgraded and can still throw on this post-delete path (a bag
-        // missing RouteTableId or every destination has nothing to create
-        // from) — that is pre-existing behavior, not something this callback
-        // claims to cover.
+        // NOTE: this downgrades the multi-destination guard and the composite
+        // id's separator refusal, nothing else. The required-field check at
+        // the top of createRoute is deliberately NOT downgraded and can still
+        // throw on this post-delete path (a bag missing RouteTableId or every
+        // destination has nothing to create from) — that is pre-existing
+        // behavior, not something this callback claims to cover.
         //
-        // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
-        // call update() with a cdkd STATE record as the desired bag, and this
-        // method receives only a MASKER from the update context (issue #2176),
-        // not `replayingState`, so it still cannot tell that apart from a
-        // template update. (`update()` itself can since issue #3141 —
-        // `replayingState` / `desiredFromAwsReadback` — but neither is threaded
-        // into this method; this arm was not re-decided, issue #3728.) So the
-        // refusal downgrades to a warning on every update, per
-        // the "an UPDATE-path refusal is a replay refusal too" rule. The route
-        // was already deleted above; throwing here would strand it.
+        // Passed on EVERY update, because the route was already deleted above
+        // and a throw here would strand it. What that costs differs per guard
+        // (issue #3728):
+        //  - multi-destination: nothing on the template path, which refused
+        //    it before the delete (above); only the two state-borne callers
+        //    reach this warning with one.
+        //  - the `|` separator: kept a warning on the template path too, by
+        //    decision. Both segments are createOnly (`RouteTableId`, the
+        //    destination keys), so a changed value is a replacement and never
+        //    reaches `update()`: the id packed here is always the one the
+        //    recorded route already carries, which only an older binary could
+        //    have written, and the template can change it only by replacing
+        //    the route. Neither segment is realistically pipe-capable anyway.
         (message) => this.logger.warn(message),
         // Issue #2176 round 3: the re-create is what packs the composite id, so
         // the masker has to reach IT rather than being used in this frame.

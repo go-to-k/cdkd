@@ -2301,15 +2301,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * modify or remove an existing attribute — those changes require replacement
    * and are rejected with ResourceUpdateNotSupportedError.
    *
-   * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
+   * The `context` parameter is read for two things: `maskSecrets` (issue
    * #1932 item 3), forwarded to `applyMfaConfig` so the MFA warnings mask a
-   * resolved secret the same way they do on the create path. It deliberately
-   * does NOT consult `desiredFromAwsReadback` -- this provider has no
-   * empty-collection-means-delete shape, so reading that flag would be a
-   * behavior change with no motivating case, and the `MfaConfiguration`
-   * refusal below stays UNCONDITIONALLY downgraded for the reason its own
-   * comment gives (a refusal against a state-borne bag leaves the resource
-   * un-rollbackable). Accepting the context does not change that.
+   * resolved secret the same way they do on the create path; and the ORIGIN
+   * of the desired bag (`replayingState` / `desiredFromAwsReadback`), which
+   * decides whether the `MfaConfiguration` shape guard below refuses (a
+   * template-path update) or warns (a rollback revert or `cdkd drift
+   * --revert`) — issue #3728. It reads `desiredFromAwsReadback` for that
+   * origin question ONLY: this provider has no empty-collection-means-delete
+   * shape, so nothing here treats a readback value as a removal.
    */
   async update(
     logicalId: string,
@@ -2321,26 +2321,47 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
-    // The update-path twin of `create()`'s guard (issue #1925 item 2). The
-    // downgrade is UNCONDITIONAL here rather than gated on a replay context.
-    // When it was written nothing on `UpdateContext` distinguished a template
-    // push from the state-borne bag `cdkd drift --revert` and the rollback
-    // executor's revert arm hand it: `desiredFromAwsReadback` is set by
-    // `drift --revert` ALONE and is deliberately NOT set by the rollback arms
-    // (see its own doc), so gating on it would re-introduce the refusal on
-    // exactly the rollback path — and a refusal against a historical state
-    // record leaves the resource not merely un-updatable but UN-ROLLBACKABLE,
-    // with no template-side remedy. Since issue #3141 the revert arms DO set
-    // `UpdateContext.replayingState`, so gating on BOTH flags is now possible
-    // (the per-index `OnDemandThroughput` refusal in
-    // `dynamodb-table-provider.ts` does exactly that); this site was not
-    // re-decided, and doing so would turn a template-path warning into a
-    // refusal — a behaviour change, not a comment edit (issue #3728). Same
-    // shape as `IAMAccessKeyProvider`'s `Status` and
-    // `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
-    const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
-      onUnusable: (message) => this.logger.warn(message),
-    });
+    // The update-path twin of `create()`'s guard (issue #1925 item 2), split
+    // on the ORIGIN of the desired bag (issue #3728). The value is read off the
+    // DESIRED side only, so on a template-path update it is template-borne and
+    // the template is where it gets fixed: REFUSE, before any call, as
+    // `create()` does. The two state-borne callers keep the warning — the
+    // rollback executor's revert arms (`replayingState`, since issue #3141)
+    // and `cdkd drift --revert` (`desiredFromAwsReadback`) — because a refusal
+    // against a bag the user cannot edit from the template leaves the pool not
+    // merely un-updatable but UN-ROLLBACKABLE. Gating on `desiredFromAwsReadback`
+    // alone would re-introduce the refusal on exactly the rollback path, which
+    // is why this arm was an unconditional warning until #3141 gave the revert
+    // arms a flag of their own.
+    //
+    // NOT gated on the value having changed, unlike the DynamoDB / S3 splits:
+    // `UpdateUserPool` re-sends the pool's configuration on every update, so
+    // the value is always pending. The cost, stated rather than glossed: a
+    // pool whose malformed value an earlier update deployed with a warning now
+    // refuses its next template-path update, whatever it changes, until the
+    // template value is fixed (an unchanged template diffs NO_CHANGE — the
+    // value is canonicalized on both sides — and never reaches here).
+    //
+    // Wrapped the way `create()`'s read is: outside the try below, so the
+    // refusal is not re-labelled as an AWS update failure.
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    let mfaConfiguration: string;
+    try {
+      mfaConfiguration = readDeclaredMfaConfiguration(
+        properties['MfaConfiguration'],
+        stateBorneDesired ? { onUnusable: (message) => this.logger.warn(message) } : {}
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+          `user pool ${physicalId}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
     this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
 
     // The pre-flight (issues #1975 / #1977), and THIS is the path it exists

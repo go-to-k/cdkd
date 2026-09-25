@@ -127,7 +127,10 @@ describe('DynamoDBTableProvider GSI write path (issues #1767 / #1768)', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         { GlobalSecondaryIndexes: [staleIndexEntry] },
-        { GlobalSecondaryIndexes: [trimmedIndexEntry] }
+        { GlobalSecondaryIndexes: [trimmedIndexEntry] },
+        // The `drift --revert` flag this shape carries in production. Since
+        // issue #3728 a TEMPLATE-path update refuses the placeholder instead.
+        { desiredFromAwsReadback: true }
       );
 
       expect(gsiUpdates()).toEqual([]);
@@ -163,7 +166,8 @@ describe('DynamoDBTableProvider GSI write path (issues #1767 / #1768)', () => {
               ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
             },
           ],
-        }
+        },
+        { desiredFromAwsReadback: true }
       );
 
       expect(gsiUpdates()).toEqual([]);
@@ -192,7 +196,8 @@ describe('DynamoDBTableProvider GSI write path (issues #1767 / #1768)', () => {
             },
           ],
         },
-        { GlobalSecondaryIndexes: [trimmedIndexEntry] }
+        { GlobalSecondaryIndexes: [trimmedIndexEntry] },
+        { desiredFromAwsReadback: true }
       );
 
       expect(gsiUpdates()).toEqual([]);
@@ -239,7 +244,10 @@ describe('DynamoDBTableProvider GSI write path (issues #1767 / #1768)', () => {
         // EMPTY recorded previous: the index is absent from cdkd state, which
         // is what routes this through the adopted arm rather than the
         // same-name one.
-        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] }
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] },
+        // A rollback revert replaying a record: the adopted arm's state-borne
+        // caller. The template path refuses this at pre-flight (issue #3728).
+        { replayingState: true }
       );
 
       expect(gsiUpdates()).toEqual([]);
@@ -802,7 +810,8 @@ describe('DynamoDBTableProvider GSI write path (issues #1767 / #1768)', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         { GlobalSecondaryIndexes: [staleBlob] },
-        { GlobalSecondaryIndexes: [declaredIndex()] }
+        { GlobalSecondaryIndexes: [declaredIndex()] },
+        { desiredFromAwsReadback: true }
       );
 
       expect(gsiUpdates()).toEqual([]);

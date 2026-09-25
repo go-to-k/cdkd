@@ -4449,6 +4449,55 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * The refusal a TEMPLATE-path `update()` raises for a malformed
+   * `VersioningConfiguration.Status` or `LoggingConfiguration` member, or
+   * `undefined` (issue [#3728](https://github.com/go-to-k/cdkd/issues/3728)).
+   *
+   * It asks exactly what the two warn-and-skip arms in
+   * {@link applySubConfigDiffs} ask, with the same predicate, key, fallback and
+   * path, and only where those arms would ACT:
+   *
+   * - versioning: the block CHANGED (nullish on both sides, the arm's own
+   *   `versioningChanged`), and `configStringRefusal` refuses `Status`;
+   * - logging: the block CHANGED, and `DestinationBucketName` or
+   *   `LogFilePrefix` refuses, in the applier's order. An ABSENT block (the
+   *   legitimate removal, `diffSubConfig`'s clear arm) needs no gate of its
+   *   own: `configStringRefusal` answers `undefined` for a nullish container.
+   *
+   * An unchanged malformed value is not a pending operation, so it is not
+   * refused either — the same gate the arms' own warnings take.
+   */
+  private static versioningOrLoggingRefusal(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): string | undefined {
+    const changed = (key: string): boolean =>
+      JSON.stringify(previousProperties[key] ?? null) !== JSON.stringify(properties[key] ?? null);
+    if (changed('VersioningConfiguration')) {
+      const refusal = configStringRefusal(
+        properties['VersioningConfiguration'],
+        'Status',
+        'Suspended',
+        'AWS::S3::Bucket VersioningConfiguration'
+      );
+      if (refusal !== undefined) return refusal;
+    }
+    const logging = properties['LoggingConfiguration'];
+    if (changed('LoggingConfiguration')) {
+      return (
+        configStringRefusal(
+          logging,
+          'DestinationBucketName',
+          '',
+          'AWS::S3::Bucket LoggingConfiguration'
+        ) ??
+        configStringRefusal(logging, 'LogFilePrefix', '', 'AWS::S3::Bucket LoggingConfiguration')
+      );
+    }
+    return undefined;
+  }
+
+  /**
    * Turn a set of per-property overrides into the `effectiveProperties` bag the
    * deploy engine records in place of the desired one (issues #1612 / #1670).
    *
@@ -4891,18 +4940,17 @@ export class S3BucketProvider implements ResourceProvider {
     // desired value used to resolve to 'Suspended' here and take the SUSPEND
     // branch below, turning versioning off on a live bucket.
     //
-    // The refusal is probed rather than thrown (issue #1605). This read is on
-    // the UPDATE path, which `rollback-executor.ts`'s revert arm and
-    // `cdkd drift --revert` both drive with a cdkd STATE record as the DESIRED
-    // bag — so a throw here is un-actionable, the user cannot edit a state
-    // record from their template. The downgrade is UNCONDITIONAL, like
-    // `EC2Provider.updateRoute`'s. `update()` DOES take a context as of issue
-    // #1732, and when this was decided it did not help here:
-    // `desiredFromAwsReadback` distinguishes a readback from everything else,
-    // not a REPLAY from a template, and this guard's question is the latter.
-    // Since issue #3141 `UpdateContext.replayingState` answers exactly that
-    // question for the rollback revert arms; this arm was not re-decided
-    // (issue #3728). And it must be a SKIP of
+    // The refusal is probed rather than thrown (issue #1605) — on the paths
+    // that still reach it. A TEMPLATE-path update never does with a malformed
+    // value: `update()` refuses it before any call (issue #3728,
+    // `versioningOrLoggingRefusal`). What arrives here is the rollback
+    // executor's revert arms (`replayingState`) and `cdkd drift --revert`
+    // (`desiredFromAwsReadback`), whose desired bag the user cannot edit from
+    // the template, so a throw would be un-actionable. The downgrade was
+    // UNCONDITIONAL until #3141 gave the revert arms a flag:
+    // `desiredFromAwsReadback` alone distinguishes a readback from everything
+    // else, not a REPLAY from a template, and this guard's question is the
+    // latter. And it must be a SKIP of
     // BOTH arms, not a default: taking the Suspended fallback here would route
     // a malformed record straight into the suspend branch below and turn
     // versioning off on a live bucket — the very thing computing this value
@@ -5167,10 +5215,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       properties['LoggingConfiguration'] as Record<string, unknown> | undefined,
-      // Same unconditional update-path warn as the per-item appliers below:
-      // this arm is replay-reachable, and it was decided when `update()` could
-      // not tell a replay from a template edit (since issue #3141 it can, via
-      // `UpdateContext.replayingState`; not re-decided — issue #3728).
+      // Warn-and-skip, reached only by the state-borne callers with a
+      // malformed block: a TEMPLATE-path update refuses one before any call
+      // (issue #3728, `versioningOrLoggingRefusal`), since throwing here —
+      // mid-update — would strand everything applied above. The rollback
+      // revert arms and `cdkd drift --revert` keep this warning: their desired
+      // bag has no template-side remedy.
       async (cfg) => {
         const applied = await this.applyLoggingConfiguration(bucketName, cfg, (m) =>
           this.logger.warn(m)
@@ -6587,6 +6637,29 @@ export class S3BucketProvider implements ResourceProvider {
         physicalId,
         wasReplaced: true,
       };
+    }
+
+    // The template-path half of the versioning / logging shape guards (issue
+    // #3728), before ANY call. `applySubConfigDiffs` warn-SKIPS a malformed
+    // `VersioningConfiguration.Status` or `LoggingConfiguration` member on
+    // every caller; that skip stays for the two state-borne callers (the
+    // rollback executor's revert arms set `replayingState`, `cdkd drift
+    // --revert` sets `desiredFromAwsReadback`), whose bag the user cannot edit
+    // from the template. On a template-path update the value IS template-borne,
+    // so it is refused the way a template-path create refuses it — and HERE
+    // rather than at the arm, because the arms run mid-update: throwing from
+    // the logging arm would leave versioning, ownership, encryption, lifecycle,
+    // CORS and website already applied.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      const refusal = S3BucketProvider.versioningOrLoggingRefusal(properties, previousProperties);
+      if (refusal !== undefined) {
+        throw new ProvisioningError(
+          `${refusal}. Nothing was applied to bucket ${displaySafe(physicalId)}; fix the template value`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
     }
 
     // Confirm the recorded physical id denotes a bucket in THIS region before

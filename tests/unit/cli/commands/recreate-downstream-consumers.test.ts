@@ -168,6 +168,39 @@ describe('findDownstreamConsumers (#650)', () => {
     expect(out).toEqual([]);
   });
 
+  it('matches an import and an output read whose region is recorded in another CASE (go-to-k/cdkd#3746)', async () => {
+    const backend = mockBackend(
+      [{ stackName: 'StackB', region: 'us-east-1' }],
+      new Map([
+        [
+          'StackB|us-east-1',
+          st(
+            'StackB',
+            'us-east-1',
+            [{ sourceStack: 'Producer', sourceRegion: 'US-EAST-1', exportName: 'ArnA' }],
+            [
+              { sourceStack: 'Producer', sourceRegion: 'Us-East-1', outputName: 'OutB' },
+              // A REDACTED producer name is reported on the region alone; that
+              // region is compared canonicalized too.
+              { sourceStack: '***', sourceRegion: 'US-EAST-1', outputName: 'OutC' },
+            ]
+          ),
+        ],
+      ])
+    );
+    const out = await findDownstreamConsumers({
+      producerStack: 'Producer',
+      producerRegion: 'us-east-1',
+      stateBackend: backend,
+      baseRegion: 'us-east-1',
+    });
+    expect(out.map((c) => [c.exportName, c.intrinsic])).toEqual([
+      ['ArnA', 'ImportValue'],
+      ['OutB', 'GetStackOutput'],
+      ['OutC', 'GetStackOutput'],
+    ]);
+  });
+
   it('soft-fails on unreadable state (returns what was read)', async () => {
     const backend = mockBackend(
       [

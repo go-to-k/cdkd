@@ -197,6 +197,24 @@ describe('cdkd state show', () => {
     expect(message).toMatch(/No state found for stack 'Missing'/);
   });
 
+  it('names a plain legacy name in its migrate command and holds a non-plain one (go-to-k/cdkd#3696)', async () => {
+    // `state show` shares `legacyRecordRefusal` with `state resources`; this
+    // pins the wiring from THIS command, both arms.
+    mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack', region: undefined }]);
+    await expect(runStateShow(['show', 'LegacyStack'])).rejects.toThrow();
+    const named = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(named).toMatch(/^Migrate with: cdkd deploy LegacyStack$/m);
+    expect(named).not.toContain('is not a plain identifier');
+
+    errorSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'Old;Stack', region: undefined }]);
+    await expect(runStateShow(['show', 'Old;Stack'])).rejects.toThrow();
+    const held = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(held).toContain('is not a plain identifier');
+    expect(held).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(held).not.toContain("cdkd deploy 'Old;Stack'");
+  });
+
   it('errors when the stack has multiple regions and --stack-region is missing', async () => {
     mockListStacks.mockResolvedValue([
       { stackName: 'MyStack', region: 'us-west-2' },

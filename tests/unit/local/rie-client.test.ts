@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
-import { invokeRie, waitForRieReady } from '../../../src/local/rie-client.js';
+import { invokeRie, invokeRieStreaming, waitForRieReady } from '../../../src/local/rie-client.js';
 
 let server: Server;
 let port: number;
@@ -97,5 +97,67 @@ describe('invokeRie', () => {
 
   it('throws a friendly error when the server is unreachable', async () => {
     await expect(invokeRie('127.0.0.1', 1, {}, 200)).rejects.toThrow();
+  });
+});
+
+// go-to-k/cdkd#2338: an IPv6 `--container-host` used to be joined bare, so
+// `fetch('http://::1:<port>/...')` threw `Invalid URL` before any request left.
+describe('IPv6 container host', () => {
+  let v6Server: Server;
+  let v6Port: number;
+  let received = '';
+
+  beforeAll(async () => {
+    v6Server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        received = body;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ via: 'ipv6' }));
+      });
+    });
+    await new Promise<void>((resolve) => v6Server.listen(0, '::1', resolve));
+    const address = v6Server.address();
+    if (!address || typeof address === 'string') throw new Error('server has no address');
+    v6Port = address.port;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) =>
+      v6Server.close((err) => (err ? reject(err) : resolve()))
+    );
+  });
+
+  it('waitForRieReady reaches a server bound to ::1', async () => {
+    await expect(waitForRieReady('::1', v6Port, 2000)).resolves.toBeUndefined();
+  });
+
+  it('invokeRie reaches a server bound to ::1', async () => {
+    const result = await invokeRie('::1', v6Port, { hello: 'v6' }, 5000);
+    expect(result.payload).toEqual({ via: 'ipv6' });
+    expect(received).toBe(JSON.stringify({ hello: 'v6' }));
+  });
+
+  it('invokeRieStreaming reaches a server bound to ::1', async () => {
+    const result = await invokeRieStreaming('::1', v6Port, { hello: 'v6s' }, 5000);
+    expect(received).toBe(JSON.stringify({ hello: 'v6s' }));
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.body) chunks.push(Buffer.from(chunk as Uint8Array));
+    expect(Buffer.concat(chunks).toString()).toContain('ipv6');
+  });
+
+  it('names the raw host in the not-ready error', async () => {
+    await expect(waitForRieReady('::1', 1, 200)).rejects.toThrow(
+      /did not become ready on ::1 port 1 /
+    );
+  });
+
+  it('keeps the zone id the URL form drops in the not-ready error', async () => {
+    await expect(waitForRieReady('fe80::1%lo0', 1, 200)).rejects.toThrow(
+      /did not become ready on fe80::1%lo0 port 1 /
+    );
   });
 });
