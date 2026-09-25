@@ -420,7 +420,8 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     });
     const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
-    expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['A', 'B', 'C']);
+    // Failed ops replay newest-first, so the order is B, A, then the completed C.
+    expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['B', 'A', 'C']);
     expect(h.saveState, 'a save landed after the decline').toHaveBeenCalledTimes(1);
     expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect((thrown as Error).message).toContain('Rollback stopped');
