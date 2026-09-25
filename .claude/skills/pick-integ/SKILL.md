@@ -144,9 +144,8 @@ truncated, and the wrap-up names exactly which tests were not run.
 
 ## Running a large plan across sessions
 
-A big plan will NOT finish in one session (~15–20 deploy/destroy cycles before
-context degrades; the tell is garbled tool calls, and pushing past it drops
-orphans). Treat a large sweep as a **multi-session relay**:
+A large plan may span sessions. Treat it as a **relay** whose hand-off points
+are batch boundaries:
 
 - Batches of ~4–5 tests. After EACH batch: (a) verify the account is
   orphan-clean (`aws s3 ls s3://<bucket>/cdkd/ --recursive | grep state.json`
@@ -156,9 +155,9 @@ orphans). Treat a large sweep as a **multi-session relay**:
   destroy, leaving a full orphan (a NAT GW included) — the post-batch state scan
   is what catches it, and the orphan's stack NAME often differs from the fixture
   directory (read it from the deploy log or synth).
-- When context gets heavy: **STOP cleanly.** Commit the ledger, report "ran N
-  more (list), account clean, ~M remain", and leave a memory with the remaining
-  list and findings.
+- Stop only at a batch boundary: commit the ledger, report "ran N more (list),
+  account clean, ~M remain", and leave a memory with the remaining list and
+  findings.
 - The sweep is DONE only when `/pick-integ` shows no stale tests left; the
   committed ledger is the source of truth.
 - **A `FAIL` that never reached the fixture's assertions is not a cdkd bug** —

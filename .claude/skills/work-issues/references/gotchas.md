@@ -1,6 +1,6 @@
 <!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL at stage entry. -->
 
-## Gotchas (learned the hard way)
+## Gotchas
 
 - **Claim before editing, always** — an unclaimed lane races a parallel agent
   onto the same file, and **claiming is not winning**: read it back, yield to an

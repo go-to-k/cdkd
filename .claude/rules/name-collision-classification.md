@@ -34,7 +34,7 @@ the bounded `cause` chain for the error name:
 
 1. **The message is read at depth 0 ONLY, and only off a real `Error`.**
    Dropping `instanceof Error` makes a thrown `{ message: 'X already exists' }`
-   match where it used to stringify to `[object Object]`.
+   match; with the check it stringifies to `[object Object]` and does not.
 2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of both
    reads; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.

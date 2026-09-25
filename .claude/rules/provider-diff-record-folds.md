@@ -23,7 +23,7 @@ Preceded by [provider-property-fidelity.md](provider-property-fidelity.md).
 
 ## `UpdateContext`
 
-Optional, so no `update()` implementation had to change. Its fields assert something about the CALLER and must not be merged:
+Optional; an `update()` that does not read it needs no change. Its fields assert something about the CALLER and must not be merged:
 
 - `desiredFromAwsReadback` — set only by `drift --revert`, where `{Rules: []}` means "restore the unset state" while the same bag from a template means "a collapsed array, do not touch". It is named for what it ASSERTS: the rollback revert arms are state-borne too, but their desired bag is a TEMPLATE recorded earlier, so widening this to `stateBorne` would delete a live configuration during a rollback.
 - `replayingState` — set by the rollback executor's two revert arms ([#3141](https://github.com/go-to-k/cdkd/issues/3141)). It asserts only that the desired bag is a cdkd STATE record, licensing the `CreateContext.replayingState` refusal downgrade and nothing about the values' provenance.

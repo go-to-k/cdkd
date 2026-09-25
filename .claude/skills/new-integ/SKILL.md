@@ -69,7 +69,7 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    `tests/unit/scripts/integ-cdk-lib-floor.test.ts` reds CI (issue
    [#2839](https://github.com/go-to-k/cdkd/issues/2839)). Raising it is always
    safe; lowering it, or letting it stay put while the corpus moves past it,
-   re-creates the drift this template caused. The rule, and why it is not an
+   reds CI. The rule, and why it is not an
    equality fence, is in [.claude/rules/testing.md](../../rules/testing.md).
 
    **`tsconfig.json`** — copy it verbatim from the reference fixture chosen in
@@ -178,9 +178,9 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    - `chmod +x verify.sh`.
 
 7. **Regenerate the coverage matrices** (adding/removing a Construct changes
-   them, and CI hard-fails on a stale matrix — `/check` does NOT catch this):
+   them, and CI hard-fails on a stale matrix):
    ```bash
-   vp run integ-coverage && vp run scenario-coverage && vp run format
+   vp run gen:all-matrices && vp run format
    ```
    Commit the regenerated `docs/_generated/*.json` alongside the fixture.
 

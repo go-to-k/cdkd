@@ -13,8 +13,8 @@ parses `manifest.json`; **context-providers/** resolves missing context.
 - **`displaySafe` is the DEFAULT at every render of an assembly-, manifest- or
   template-derived value, in thrown messages AND in ordinary `logger.info` /
   `debug` lines** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) — not a
-  judgement per message: the "only where the input is untrusted" boundary was
-  drawn wrong repeatedly, and the helper neither quotes nor truncates, so it is
+  judgement per message: an "only where untrusted" boundary is not
+  decidable per message, and the helper neither quotes nor truncates, so it is
   the identity on every legitimate value. Adopted in `synthesizer.ts`,
   `macro-expander.ts` and `src/synthesis/context-providers/index.ts` (where the
   `provider` / `key` LOOKUP stays raw and the provider failure text takes

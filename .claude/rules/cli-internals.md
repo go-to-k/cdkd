@@ -115,9 +115,8 @@ reason, so a new unguarded copy cannot be written.
   stays destroyable.
 - **`--allow-unsupported-properties <entries>`** (deploy only) — the
   property-level analogue over the generated
-  `src/provisioning/property-coverage.generated.ts`. Since
-  [#614](https://github.com/go-to-k/cdkd/issues/614) a silent-drop property
-  REPORTS rather than rejects and auto-routes that resource through Cloud
+  `src/provisioning/property-coverage.generated.ts`. A silent-drop property
+  ([#614](https://github.com/go-to-k/cdkd/issues/614)) REPORTS rather than rejects and auto-routes that resource through Cloud
   Control; each `<ResourceType>:<PropertyName>` token opts back INTO the drop,
   keeping the resource on the SDK route — and the property is then not written to
   the STATE record either, so removing the flag lets the auto-route deliver it

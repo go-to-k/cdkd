@@ -11,7 +11,7 @@ AGENTS.md's "cost is not a tiebreaker" is what settles it.
 ## Baseline
 
 - Account: `aws sts get-caller-identity --query Account --output text`;
-  `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
+  `aws s3 ls s3://cdkd-state-{accountId}/cdkd/ --recursive --region us-east-1 | grep state.json`
   — no leftover state.
 
 ## Deletion-touching PRs

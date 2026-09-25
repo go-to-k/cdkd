@@ -49,9 +49,8 @@ Sections a page has nothing to say about are omitted, never left empty. A page
 that is not a CLI reference keeps the H1 + intro and then uses whatever H2
 sequence its subject calls for.
 
-**Every page needs an H1.** Several CLI pages historically opened at H2, which
-makes their first heading smaller than every other page's and leaves the
-browser tab title as the only page name.
+**Every page needs an H1.** A page opening at H2 has a first heading smaller
+than every other page's, and the browser tab title becomes its only page name.
 
 **A section documenting one flag is headed by the flag alone** — `` ## `--fail` ``
 — with two allowed extensions, both of which carry information the flag name

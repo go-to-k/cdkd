@@ -108,7 +108,7 @@ const EXPECTED: readonly Expected[] = [
 /** Compare EXPRESSIONS, not source text: YAML folding decides where the breaks land. */
 const norm = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
 
-describe('the CI checks that replaced PreToolUse gates are still wired up', () => {
+describe('the CI checks on GitHub artifacts are still wired up', () => {
   it.each(EXPECTED.map((e) => [e.file, e] as const))('%s declares its jobs', (_name, expected) => {
     const doc = wf(expected.file);
     expect(Object.keys((doc['jobs'] ?? {}) as object).sort()).toEqual([...expected.jobs].sort());

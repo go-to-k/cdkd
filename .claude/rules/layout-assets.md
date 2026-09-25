@@ -9,9 +9,8 @@ paths:
 - **file-asset-publisher.ts** / **docker-asset-publisher.ts** — S3 ZIP upload;
   ECR image build and push.
 - **Three manifest-supplied paths are containment-checked
-  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the rest of the
-  manifest is NOT, and that is a known gap
-  ([#3497](https://github.com/go-to-k/cdkd/issues/3497)).** Checked:
+  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the passthroughs
+  listed below are WARNED about, never refused (#3497).** Checked:
   `source.path` through `resolveFileAssetSourcePath` and `source.directory`
   through `resolveDockerContextDirectory` — each THE one spelling its two call
   sites share, since a second hand-written copy is how a guard on one twin
@@ -26,8 +25,7 @@ paths:
   `assetOutdir` is REQUIRED there and on `FileAssetPublisher.publish` /
   `DockerAssetPublisher.build`. Required catches a DROP; the bag catches a
   TRANSPOSITION, which required does not — the values are all `string`, so
-  `(…, assetOutdir, assetId)` used to compile and print
-  `cdkd will cdkd-asset-<hash>`
+  a transposed positional `(…, assetOutdir, assetId)` would compile
   ([#3537](https://github.com/go-to-k/cdkd/issues/3537)).
   **`resolveDockerContextDirectory` takes EVERY parameter in the bag**, because
   it had a second transposable pair and that one was not cosmetic:
@@ -43,7 +41,7 @@ paths:
   same pair on the same decision, for a value that gets bind-mounted, and took
   the whole call into an `AssetCodeResolveOptions` bag
   ([#3549](https://github.com/go-to-k/cdkd/issues/3549)).
-  **It does NOT hold one layer down, and saying it did was wrong twice.**
+  **It does NOT hold one layer down.**
   `src/utils/assembly-path.ts` still has three:
   `assemblyPathEscape(base, bound, candidate)` — where `(base, bound)` IS the
   resolve-from / contain-within pair, and its own doc says the two "differ for
@@ -67,9 +65,8 @@ paths:
   `resolveAssemblyPath` cannot answer for an absolute value — `path.join`
   ignores a leading separator, so it folded one INTO the outdir and reported
   `contained: true` over a path that exists nowhere — so the arm calls
-  `absoluteAssemblyPathEscape`. **The local twin's line that a relative refusal
-  "buys nothing against an adversary" is TRUE there and FALSE here, and copying
-  it was the defect**: `resolveAssetCodeDirectory` already honoured absolute
+  `absoluteAssemblyPathEscape`. **A relative refusal buys nothing in the local
+  twin but is load-bearing here**: `resolveAssetCodeDirectory` already honoured absolute
   paths before [#3494](https://github.com/go-to-k/cdkd/issues/3494), while here
   the fold plus the lexical and symlink refusals meant NO spelling reached a
   file outside the assembly. Honouring one opens that; the warning is the whole
@@ -86,9 +83,9 @@ paths:
   SINK clause is caller-supplied — the resolvers are shared by callers that
   upload, that build an image, and that only read, so a baked-in clause
   narrates something half of them do not do. `resolveFileAssetSourcePath` runs at the TOP of
-  `publish`, above the `objectExists` short-circuit: below it, an
-  already-present object skipped the check entirely and the HeadObject itself
-  went to a manifest-named bucket. **WARNED but never refused**
+  `publish`, above the `objectExists` short-circuit, so an
+  already-present object cannot skip it, and a refused path sends no HeadObject
+  to the manifest-named bucket. **WARNED but never refused**
   ([#3497](https://github.com/go-to-k/cdkd/issues/3497),
   `manifest-passthrough-warnings.ts`): every BuildKit passthrough
   (`dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`,
@@ -100,7 +97,7 @@ paths:
   on the issue, not an unfinished state. It is CDK-CLI parity territory, the
   attack presupposes someone who already controls the assembly and therefore
   the account, and a default-deny plus flag reduces who HOLDS the capability
-  without protecting who USES it. What was cdkd's to fix was the silence.
+  without protecting who USES it.
   Every path judgement there goes through `assemblyPathEscape`
   ([layout-utils.md](layout-utils.md)), which picks the absolute or relative
   arm; a warn-only caller must not re-derive that branch.

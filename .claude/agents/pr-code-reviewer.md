@@ -18,9 +18,7 @@ You find bugs the implementing agent might have missed. The caller provides a PR
 `add`, `commit`, `restore`, `stash`, `clean` and `reset` all mutate the tree you
 were asked to READ. A copy is not an escape: a linked worktree's `.git` is a
 FILE holding `gitdir: <repo>/.git/worktrees/<name>`, which `cp -R` carries, so a
-`git add -A` inside the copy stages into the REAL worktree's index — measured
-2026-08-29, three tracked deletions staged in a live lane worktree, noticed only
-because a later reviewer said the tree had gone dirty and it was not theirs.
+`git add -A` inside the copy stages into the REAL worktree's index.
 Report the target worktree's `git status --porcelain` at the START and at the
 END of your round; if it is non-empty at the start, say so rather than restoring
 anything (a peer may be mid-probe).
@@ -38,11 +36,11 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names which reviewers ran, and "am I the only reviewer" does not answer it either (the security add-on runs alongside whatever else was dispatched and defers spec except on a security-surface acceptance item or filed-issue claim, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
+- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether that axis ran, so do a SECONDARY pass and label it that way.
 
   Secondary means: read `Closes #N` / `Refs #N` off the PR body first (`gh pr view <N> --json body`) — **`Refs` is an issue the PR explicitly disclaims closing, so demanding full satisfaction from it manufactures blockers** — and raise a spec finding only where the code plainly contradicts a `Closes` issue's stated acceptance. Do NOT rule on whether a `Closes` is "earned"; that is the spec axis's bar and it has calibration you do not.
 
-  **If the body declares no `Closes`, SAY SO rather than staying silent.** A pass that iterates zero times and reports nothing is indistinguishable from one that checked and found nothing — the same vacuous-clean defect the spec axis carries a `No spec declared` arm for. go-to-k/cdkd#3169 is that shape.
+  **If the body declares no `Closes`, SAY SO rather than staying silent.** A pass that iterates zero times and reports nothing is indistinguishable from one that checked and found nothing — the same vacuous-clean defect the spec axis carries a `No spec declared` arm for.
 
   Mark any such finding `spec (secondary)` and say it defers to `pr-spec-reviewer` if that axis ran. **Cap it at `minor` unless it is independently a code defect**: the parent sorts on SEVERITY alone, so a `blocker` here blocks the marker whatever the defer sentence says, and this pass does not have the calibration to earn that.
 - Documentation prose.
@@ -53,4 +51,4 @@ Return ONE of:
 - **Clean**: no issues worth flagging.
 - **Issues**: list each issue with file:line, what's wrong, suggested fix, severity (blocker = ships a bug / minor = should fix in same PR / nit = could fix later).
 
-Keep the report under 500 words. Be direct — no "consider" / "might want to" hedging.
+Keep the report scannable: findings first, each with its citation; no restated diff. Be direct — no "consider" / "might want to" hedging.
