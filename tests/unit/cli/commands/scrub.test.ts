@@ -349,6 +349,7 @@ describe('cdkd scrub - scrubStack', () => {
       unverifiableReads: 0,
       unverifiableProducerRecords: 0,
       unverifiableLeaves: 0,
+      unrepairedReadNames: 0,
       // Issue #2667 review: an export name is an outputs-bag KEY, so every
       // message naming one is masked through the stack's own secrets bag
       // rather than merely control-stripped. The field is REQUIRED so no

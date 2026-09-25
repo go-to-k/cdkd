@@ -177,7 +177,10 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd scrub '<stack>' --dry-run --f
 
 `--fail` exits `1` for a finding scrub cannot REMEDY as well as for plaintext it
 can — a state KEY holding a secret, a cross-stack read cdkd declines to perform,
-and a record whose `{{resolve:...}}` scan was ABANDONED because a reference did
+a cross-stack read NAME still holding a secret's value from before a rotation,
+while the template still reads a secret-bearing name of that shape (scrub matches only the current value, so it reports that name without printing
+it and cannot rewrite it; a deploy that updates the stack does), and a record
+whose `{{resolve:...}}` scan was ABANDONED because a reference did
 not resolve (a deleted SSM parameter, a secret with no `SecretString`). The last
 one matters most as a gate result: the resolver stops at the first failing token,
 so a real secret AFTER it in the same value was never fetched, recorded no

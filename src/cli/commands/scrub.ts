@@ -65,7 +65,8 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
 import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
-import type { StackState } from '../../types/state.js';
+import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../types/state.js';
+import { escapeRegExp } from '../../utils/regexp.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 // Issue #2133 review: the SAME edge inference `cdkd deploy` orders with, so
@@ -505,10 +506,11 @@ async function repairExportIndexForStack(
  *
  * ORDERING: scrub matches the CURRENT resolved secret value against what state
  * holds, so run it BEFORE rotating. Once the secret is rotated, the value in
- * state no longer matches the current one and scrub cannot find it (it reports
- * "nothing to scrub"). A rotated-away stale value in state is invalidated by
- * the rotation, but to remove it, redeploy the stack (which rewrites the record
- * with the expression).
+ * state no longer matches the current one and scrub cannot rewrite it. Only a
+ * cross-stack read NAME left that way is REPORTED (go-to-k/cdkd#3382,
+ * `findUnrepairedCrossStackReadNames`); elsewhere a rotated-away value is
+ * invisible to scrub. To remove it, redeploy the stack (which rewrites the
+ * record with the expression).
  */
 // Exported for tests: the `--dry-run --fail` CI gate lives in this function, not
 // in `scrubStack`, so pinning it at the helper's return value proves nothing
@@ -618,6 +620,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
   let totalStacksWithUnverifiableLeaves = 0;
+  // Stacks holding a cross-stack read name whose secret ROTATED away
+  // (go-to-k/cdkd#3382). Counted like `totalStacksWithUnverifiableReads`: a
+  // finding no scrub re-run clears, so neither the summary nor `--fail` may
+  // read as clean over it.
+  let totalStacksWithUnrepairedReadNames = 0;
   /**
    * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
    * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
@@ -880,6 +887,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       scrubbed.secretBearingKeys === 0 &&
       scrubbed.unverifiableReads === 0 &&
       scrubbed.unverifiableLeaves === 0 &&
+      scrubbed.unrepairedReadNames === 0 &&
       indexConverged === 0
     ) {
       // A CONVERGE finding gates this line for the same reason the two below
@@ -938,6 +946,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // tells the operator there is nothing to do.
         `${scrubbed.unverifiableReads} cross-stack read(s) in ${shownStack} could NOT be ` +
           `verified (see the warnings above for which, and why) — so this stack is not ` +
+          `reported clean.`
+      );
+    }
+    if (scrubbed.unrepairedReadNames > 0) {
+      totalStacksWithUnrepairedReadNames++;
+      logger.warn(
+        `${scrubbed.unrepairedReadNames} cross-stack read name(s) in ${shownStack} hold a ` +
+          `plaintext scrub could NOT repair (see the warnings above) — so this stack is not ` +
           `reported clean.`
       );
     }
@@ -1005,6 +1021,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
+    totalStacksWithUnrepairedReadNames === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
     indexUnreadable.length === 0 &&
@@ -1076,6 +1093,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `be verified, so their imported values were not checked — see the warnings above for ` +
         `which read, why, and what to do about it.`
       : '';
+  const readNameNote =
+    totalStacksWithUnrepairedReadNames > 0
+      ? ` ${totalStacksWithUnrepairedReadNames} stack(s) hold a cross-stack read name in ` +
+        `plaintext that scrub could NOT repair, most likely a secret's value from before a ` +
+        `rotation — see the warnings above.`
+      : '';
   // The exports index half (issue #2667). Three separate statements, because
   // they carry different obligations: an entry this run wrote, an entry it
   // read a name for and wrote nothing, and an entry it never read. Kept out of
@@ -1118,11 +1141,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1191,11 +1214,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -1239,6 +1262,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     options.fail &&
     (totalStacksWithUnscrubbableKeys > 0 ||
       totalStacksWithUnverifiableReads > 0 ||
+      totalStacksWithUnrepairedReadNames > 0 ||
       totalStacksWithUnverifiableLeaves > 0)
   ) {
     throw new ScrubNeededError();
@@ -3177,6 +3201,204 @@ interface CrossStackPrePassFindings {
    * 1, which `docs/cli-reference.md` teaches as the opposite remedy.
    */
   damagedProducerRecords: string[];
+  /**
+   * Every cross-stack read today's template PERFORMED this run, as the
+   * resolver recorded it (plaintext names), with whether its position can
+   * refuse (go-to-k/cdkd#3382). Read by {@link findUnrepairedCrossStackReadNames}.
+   */
+  performedReads: PerformedCrossStackReads;
+}
+
+/**
+ * The cross-stack reads one stack's template performed during this scrub.
+ * `canRefuse: false` marks a position the deploy may never have read from (a
+ * condition-suppressed output, a malformed `Fn::If`): such a read still counts
+ * as REPRODUCING a stored entry, but is never the secret-bearing read a stored
+ * entry is flagged against, for the reason a finding is never recorded there.
+ */
+export interface PerformedCrossStackReads {
+  imports: Array<{ entry: StateImportEntry; canRefuse: boolean }>;
+  outputReads: Array<{ entry: StateOutputReadEntry; canRefuse: boolean }>;
+}
+
+/** A stored cross-stack read entry {@link findUnrepairedCrossStackReadNames} flagged. */
+export interface UnrepairedCrossStackReadName {
+  list: 'imports' | 'outputReads';
+  index: number;
+  /** The entry as stored. Its names may hold a secret this run cannot mask: never print them. */
+  entry: StateImportEntry | StateOutputReadEntry;
+}
+
+/**
+ * How a stored name relates to the REDACTED spelling of a name today's
+ * template produced, with every `{{resolve:...}}` token standing for a
+ * non-empty run of characters: `wildcard` when the stored name matches and at
+ * least one token position holds TEXT rather than a whole token; `equal` when
+ * it is that spelling exactly; `no` otherwise.
+ */
+/** The text between (and around) `tokens`, which are `value`'s own tokens in order. */
+function literalParts(value: string, tokens: readonly string[]): string[] {
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const token of tokens) {
+    const at = value.indexOf(token, cursor);
+    parts.push(value.slice(cursor, at));
+    cursor = at + token.length;
+  }
+  parts.push(value.slice(cursor));
+  return parts;
+}
+
+function crossStackNameFit(stored: unknown, currentRedacted: string): 'equal' | 'wildcard' | 'no' {
+  if (typeof stored !== 'string') return 'no';
+  const tokens = dynamicReferenceTokens(currentRedacted);
+  if (tokens.length === 0) return stored === currentRedacted ? 'equal' : 'no';
+  // A stored name made of today's literal parts and WHOLE tokens holds no
+  // text, whatever tokens they are. Decided before the regex, whose greedy
+  // groups can split a token that contains a literal separator (a secret id
+  // with `-`) and read half of it as text.
+  const storedTokens = dynamicReferenceTokens(stored);
+  if (
+    storedTokens.length === tokens.length &&
+    literalParts(stored, storedTokens).join('\u0000') ===
+      literalParts(currentRedacted, tokens).join('\u0000')
+  ) {
+    return storedTokens.every((t, i) => t === tokens[i]) ? 'equal' : 'no';
+  }
+  let pattern = '^';
+  let cursor = 0;
+  for (const token of tokens) {
+    // `dynamicReferenceTokens` returns the matches in order and without
+    // overlap, so the first occurrence at or after the cursor IS that match.
+    const at = currentRedacted.indexOf(token, cursor);
+    pattern += `${escapeRegExp(currentRedacted.slice(cursor, at))}([\\s\\S]+)`;
+    cursor = at + token.length;
+  }
+  pattern += `${escapeRegExp(currentRedacted.slice(cursor))}$`;
+  const match = new RegExp(pattern).exec(stored);
+  if (!match) return 'no';
+  // A position the stored name fills with a whole `{{resolve:...}}` token is
+  // REPAIRED; one filled with anything else still holds text. Refusing every
+  // stored name that carries a token missed a name built from two secrets with
+  // only one of them rotated: the walk repairs the current one, and the old
+  // value beside it survived as clean.
+  const filled = match.slice(1).map((f) => f ?? '');
+  const holdsText = filled.some((f) => {
+    const inner = dynamicReferenceTokens(f);
+    return !(inner.length === 1 && inner[0] === f);
+  });
+  // Every position holding one whole token is the all-token shape the check
+  // above already decided, so this arm answers only for a name it did not.
+  return holdsText ? 'wildcard' : 'no';
+}
+
+/**
+ * The stored cross-stack read entries that still hold a plaintext this run
+ * could not repair because the secret behind it has ROTATED (go-to-k/cdkd#3382).
+ *
+ * Scrub's needles are the secret's CURRENT value, so a name stored while the
+ * secret held an earlier value matches none of them and the repair walk leaves
+ * it alone. Nothing in the record says the name was secret-bearing, so the
+ * verdict is taken from today's template instead. An entry is flagged when ALL
+ * of these hold:
+ *
+ * - no read today's template performed REPRODUCES it (same identity key the
+ *   deploy's union uses, on the redacted spelling). This is what keeps an
+ *   ordinary import green even when it shares a producer — and even a name
+ *   shape — with a secret-bearing one: this run re-read it and it matched;
+ * - a read today's template performed from a position that can refuse has a
+ *   name that carries a secret (its redacted spelling holds a token), reads
+ *   the same producer (`imports[].sourceStack`, which is never redacted) in
+ *   the same region;
+ * - the stored entry FITS that read's name: every literal part equal, every
+ *   token position filled by a non-empty run, and at least one position
+ *   holding text rather than a whole token (a name built from two secrets with
+ *   one rotated keeps its old half as text after the walk repairs the other).
+ *   Every other field must equal the read's spelling.
+ *
+ * Residual, in the over-reporting direction: a stale entry left by a REMOVED
+ * ordinary reference to the same producer whose name happens to fit a
+ * secret-bearing read's shape is flagged too. Stale entries survive only a
+ * deploy that changed nothing or failed — a deploy that updates the stack
+ * replaces both lists — so that needs a removed read, no successful change
+ * since, and a coincident shape. Reads made while evaluating `Conditions`
+ * count as reproducing (the deploy records them too) but are never flagged
+ * against, since the pre-pass does not walk conditions.
+ *
+ * `stored` is the POST-repair list, so an entry this run just rewrote carries
+ * its token and is never flagged. `redact` is the same function the repair
+ * walk used, so a performed read's spelling and a repaired stored one agree.
+ */
+export function findUnrepairedCrossStackReadNames(
+  stored: {
+    imports?: readonly StateImportEntry[] | undefined;
+    outputReads?: readonly StateOutputReadEntry[] | undefined;
+  },
+  performed: PerformedCrossStackReads,
+  redact: (name: string) => string
+): UnrepairedCrossStackReadName[] {
+  const found: UnrepairedCrossStackReadName[] = [];
+  const region = (r: unknown): string => canonicalizeRegion(String(r));
+
+  const currentImports = performed.imports.map(({ entry, canRefuse }) => ({
+    sourceStack: entry.sourceStack,
+    sourceRegion: region(entry.sourceRegion),
+    exportName: redact(entry.exportName),
+    canRefuse,
+  }));
+  // `JSON.stringify` of a tuple rather than a separator join: injective for
+  // any field content (`src/state/record-keys.ts` explains why that matters).
+  const importKey = (e: {
+    sourceStack: unknown;
+    sourceRegion: unknown;
+    exportName: unknown;
+  }): string => JSON.stringify([e.sourceStack, region(e.sourceRegion), e.exportName]);
+  const reproducedImports = new Set(currentImports.map(importKey));
+  const secretImports = currentImports.filter(
+    (c) => c.canRefuse && dynamicReferenceTokens(c.exportName).length > 0
+  );
+  (stored.imports ?? []).forEach((entry, index) => {
+    if (reproducedImports.has(importKey(entry))) return;
+    const flagged = secretImports.some(
+      (c) =>
+        c.sourceStack === entry.sourceStack &&
+        c.sourceRegion === region(entry.sourceRegion) &&
+        crossStackNameFit(entry.exportName, c.exportName) === 'wildcard'
+    );
+    if (flagged) found.push({ list: 'imports', index, entry });
+  });
+
+  const currentOutputReads = performed.outputReads.map(({ entry, canRefuse }) => ({
+    sourceStack: redact(entry.sourceStack),
+    sourceRegion: region(entry.sourceRegion),
+    outputName: redact(entry.outputName),
+    canRefuse,
+  }));
+  const outputReadKey = (e: {
+    sourceStack: unknown;
+    sourceRegion: unknown;
+    outputName: unknown;
+  }): string => JSON.stringify([e.sourceStack, region(e.sourceRegion), e.outputName]);
+  const reproducedOutputReads = new Set(currentOutputReads.map(outputReadKey));
+  const secretOutputReads = currentOutputReads.filter(
+    (c) =>
+      c.canRefuse &&
+      (dynamicReferenceTokens(c.sourceStack).length > 0 ||
+        dynamicReferenceTokens(c.outputName).length > 0)
+  );
+  (stored.outputReads ?? []).forEach((entry, index) => {
+    if (reproducedOutputReads.has(outputReadKey(entry))) return;
+    const flagged = secretOutputReads.some((c) => {
+      if (c.sourceRegion !== region(entry.sourceRegion)) return false;
+      const fits = [
+        crossStackNameFit(entry.sourceStack, c.sourceStack),
+        crossStackNameFit(entry.outputName, c.outputName),
+      ];
+      return !fits.includes('no') && fits.includes('wildcard');
+    });
+    if (flagged) found.push({ list: 'outputReads', index, entry });
+  });
+  return found;
 }
 
 /**
@@ -4280,6 +4502,15 @@ function makeCrossStackPrePass(deps: {
         }
         throw unresolvableCrossStackReadError(origin, stackName, key, path, err, secrets);
       }
+      // Every read this node performed, the argument's nested ones included —
+      // the verdict on a stored entry this run could not repair asks which
+      // reads today's template makes (go-to-k/cdkd#3382).
+      for (const entry of probe.recordedImports ?? []) {
+        findings.performedReads.imports.push({ entry, canRefuse: nodeCanRefuse });
+      }
+      for (const entry of probe.recordedOutputReads ?? []) {
+        findings.performedReads.outputReads.push({ entry, canRefuse: nodeCanRefuse });
+      }
       // FIVE declining arms used to return in silence -- issue #2163 named
       // three of them and reasoned from "every arm that classifies and then
       // declines logs a debug line" that the failing live run must have taken
@@ -4609,6 +4840,15 @@ export interface ScrubStackResult {
    */
   unverifiableLeaves: number;
   /**
+   * Stored `imports` / `outputReads` entries whose name still holds a
+   * plaintext this run could not repair — most likely a secret's value from
+   * before a ROTATION (go-to-k/cdkd#3382, see
+   * {@link findUnrepairedCrossStackReadNames}). A FINDING like
+   * {@link ScrubStackResult.unverifiableReads}: no re-run of scrub clears it,
+   * so the stack is not reported clean and `--fail` exits 1.
+   */
+  unrepairedReadNames: number;
+  /**
    * `state.outputs` as this run leaves it — the bag written on a real run, and
    * the bag a real run WOULD write under `--dry-run` (issue #2667).
    *
@@ -4725,6 +4965,7 @@ export async function scrubStack(
   const prePassFindings: CrossStackPrePassFindings = {
     unverifiable: [],
     damagedProducerRecords: [],
+    performedReads: { imports: [], outputReads: [] },
   };
   /**
    * Leaves whose dynamic-reference scan was ABANDONED mid-token (issue
@@ -4811,6 +5052,7 @@ export async function scrubStack(
         unverifiableReads: 0,
         unverifiableProducerRecords: 0,
         unverifiableLeaves: 0,
+        unrepairedReadNames: 0,
         // No record, so nothing was resolved and the bag is empty — every name
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
@@ -5079,7 +5321,27 @@ export async function scrubStack(
       // context carries a `stateBackend` (issue #2133), and a masker with an
       // empty map is a no-op that reads as safe in a diff. `outputSecrets` is
       // the run-scoped map, registered before anything that can throw.
-      conditions = await resolver.evaluateConditions(resolverContext(outputSecrets));
+      // Fresh recording bags: the deploy records a cross-stack read made while
+      // evaluating a condition, so such a read must count as REPRODUCING a
+      // stored entry, or an ordinary import read only there is flagged on
+      // every run (go-to-k/cdkd#3382). `canRefuse: false` — the pre-pass never
+      // walks conditions, so none of these is a read a stored entry is flagged
+      // against.
+      const conditionContext: ResolverContext = {
+        ...resolverContext(outputSecrets),
+        recordedImports: [],
+        recordedOutputReads: [],
+      };
+      try {
+        conditions = await resolver.evaluateConditions(conditionContext);
+      } finally {
+        for (const entry of conditionContext.recordedImports ?? []) {
+          prePassFindings.performedReads.imports.push({ entry, canRefuse: false });
+        }
+        for (const entry of conditionContext.recordedOutputReads ?? []) {
+          prePassFindings.performedReads.outputReads.push({ entry, canRefuse: false });
+        }
+      }
     } catch (err) {
       // MASKED (issue #2803), and UNREACHABLE for a resolver error today —
       // measured, not assumed. `evaluateConditions` wraps every
@@ -5862,6 +6124,10 @@ export async function scrubStack(
         unverifiableReads: prePassFindings.unverifiable.length,
         unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
         unverifiableLeaves,
+        // Provably 0: a read whose name carries a secret records a needle, and
+        // with none recorded no performed read's spelling holds a token, so
+        // `findUnrepairedCrossStackReadNames` has nothing to flag against.
+        unrepairedReadNames: 0,
         ...(malformedResources ? { malformedResources } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
         ...(malformedOrphans ? { malformedOrphans } : {}),
@@ -5999,12 +6265,11 @@ export async function scrubStack(
     // this landed rather than after. Of the four across-deploy cases,
     // SAME-VALUE self-repairs and DUPLICATE is closed by the union normalizer;
     // this walk closes NEVER-AGAIN, where the reference is never re-resolved so
-    // no later deploy rewrites it. **ROTATED is NOT closed and is not claimed
-    // to be**: scrub derives its needles by re-resolving the live template, so
-    // it holds the CURRENT secret value, and the stale plaintext on disk is a
-    // value nothing in this run knows. Closing it needs something that can
-    // recognise a value that WAS a secret without holding it, which the value
-    // scan structurally cannot do.
+    // no later deploy rewrites it. **ROTATED is NOT repaired**: scrub derives
+    // its needles by re-resolving the live template, so it holds the CURRENT
+    // secret value, and the stale plaintext on disk is a value nothing in this
+    // run knows. It is REPORTED instead (go-to-k/cdkd#3382) — see
+    // `findUnrepairedCrossStackReadNames` below.
     //
     // The needle set is `allRecordedSecrets` — the union — for the same reason
     // `redactUnaccountedOutputs` uses it: a cross-stack NAME is not positioned
@@ -6054,6 +6319,34 @@ export async function scrubStack(
       recordsChanged++;
       return { ...entry, sourceStack, outputName };
     });
+    // The entries the walk above could NOT repair although today's template
+    // still reads a secret-bearing name of their shape (go-to-k/cdkd#3382).
+    // Counted into the verdict so `--fail` does not exit 0 over them. Nothing
+    // is written for them: their plaintext is a value this run never learned.
+    const unrepairedReadNames = findUnrepairedCrossStackReadNames(
+      { imports: newImports, outputReads: newOutputReads },
+      prePassFindings.performedReads,
+      redactCrossStackName
+    );
+    for (const { list, index, entry } of unrepairedReadNames) {
+      // The stored NAME is never printed: it holds a secret's earlier value,
+      // which no needle this run holds can mask. `imports[].sourceStack` is a
+      // producer record's own stack name, equal to a read this run performed,
+      // and is masked anyway; `outputReads[].sourceStack` is template-derived
+      // and may be the very field holding the old value, so it is omitted.
+      const producer =
+        list === 'imports'
+          ? `producer ${displayStackName(maskSecretsInText(entry.sourceStack, crossStackNeedles))}, `
+          : '';
+      logger.warn(
+        `Scrub of ${shownStack}: state.${list}[${index}] (${producer}${displayIdent(String(entry.sourceRegion))}) ` +
+          `holds a cross-stack read name in plaintext that has the shape of a secret-bearing ` +
+          `read in today's template but not the secret's current value — most likely a value ` +
+          `from before the secret was ROTATED. Scrub cannot repair it (it matches only the ` +
+          `current value) and does not print it; treat that earlier value as exposed. A deploy ` +
+          `that updates ${shownStack} rewrites this list from the reads it performs.`
+      );
+    }
 
     // `TEMPLATE_SOURCED_RULES`, converging this call with its deploy-side twin
     // `DeployEngine.redactOutputs` (issues
@@ -6184,6 +6477,7 @@ export async function scrubStack(
       unverifiableReads: prePassFindings.unverifiable.length,
       unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
       unverifiableLeaves,
+      unrepairedReadNames: unrepairedReadNames.length,
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
       ...(malformedOrphans ? { malformedOrphans } : {}),

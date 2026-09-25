@@ -77,13 +77,17 @@ template-derived names and rewrites any that matches a plaintext the run
 recorded, so a reference no later deploy re-resolves — the ordinary shape for a
 stable stack — is repaired without one.
 
-**ROTATED remains OPEN**, and is the harder of the two for a reason no walk
-placed in scrub can get around: scrub derives its needles by re-resolving the
-live template and therefore holds the CURRENT value, while the stored name
-holds the one it had when the record was written. Closing it needs something
-that recognises a value that WAS a secret without holding it, which the value
-scan structurally cannot do. `tests/unit/cli/commands/scrub-cross-stack-read-repair.test.ts`
-asserts the limit rather than leaving it to be met as a silent miss.
+**ROTATED is REPORTED, not repaired** (go-to-k/cdkd#3382). No walk placed in
+scrub can repair it: scrub derives its needles by re-resolving the live
+template and therefore holds the CURRENT value, while the stored name holds the
+one it had when the record was written.
+`tests/unit/cli/commands/scrub-cross-stack-read-repair.test.ts` asserts that
+limit. What scrub can do is refuse to call the stack clean:
+`findUnrepairedCrossStackReadNames` flags a stored entry that no read in
+today's template reproduces and whose name fits the shape of a secret-bearing
+read of the same producer, and `--fail` exits 1 over it. The "not reproduced"
+conjunct is what keeps an ordinary import from the same producer green — a
+sibling-coordinate test alone reddens on it.
 
 One narrowing in the safe direction, measured in review: the union runs only on
 the NON-terminal-success saves. An ordinary successful deploy replaces both
