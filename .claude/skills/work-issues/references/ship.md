@@ -105,8 +105,8 @@ the offending path, which is another session's uncommitted work.
 **Remove every worktree YOU created — and only those.** For one you do not
 recognise, each of `session-owner`, uncommitted work, its branch's PR state and
 the claim thread is evidence of LIFE only; an absent `session-owner` is NO
-signal, and a claim younger than the 12h TTL means the owner is presumed LIVE —
-leave it.
+signal, and a claim younger than `CDKD_WORKTREE_OWNER_TTL_HOURS` (default 12)
+means the owner is presumed LIVE — leave it.
 
 MAIN-CHECKOUT — run THIS block, and not the next one:
 

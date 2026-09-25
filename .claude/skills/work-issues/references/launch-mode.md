@@ -84,7 +84,7 @@ on a branch NAMING ANOTHER WORKSPACE, which reads as a trespass and is noise.
 ### The values are RECORDED, never re-derived
 
 Later stages run in a fresh shell whose cwd may have silently reset to the main
-checkout (appendix, "Bash cwd silent reset"), so a stage that re-derives
+checkout (gotchas.md, "A Bash cwd silently drifts back"), so a stage that re-derives
 `LANE_TREE` from `$(git rev-parse --show-toplevel)` or from `pwd` answers "the
 main checkout" in precisely the case the value exists to guard.
 

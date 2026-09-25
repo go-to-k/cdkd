@@ -55,8 +55,8 @@ Index of every area: [code-layout.md](code-layout.md).
   route through it** ([#3479](https://github.com/go-to-k/cdkd/issues/3479)) —
   its display id puts `displayName` FIRST, and `displayIdent` would quote a
   legitimate `My Stack` into a stream a shell loop reads, so `formatDisplayId`
-  sanitizes locally with `displaySafe`. `toLongRecord` does too: measured per
-  character, NEITHER `JSON.stringify` nor `yaml` escapes DEL, C1, `U+2028` or the
+  sanitizes locally with `displaySafe`. `toLongRecord` does too:
+  NEITHER `JSON.stringify` nor `yaml` escapes DEL, C1, `U+2028` or the
   bidi overrides, so the encoder is not the boundary for the `--long` /
   `--show-dependencies` payloads. They disagree about C0, which is not what that
   rests on. Two

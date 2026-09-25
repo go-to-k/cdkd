@@ -29,7 +29,7 @@ Run each check and report pass/fail:
      `tests/**`), `vp run build` — all pass.
    - When piping to `tail` / `head` / `grep`, check the output CONTENT for
      `Error` / `Command failed`: `$?` after a pipeline reflects the last stage.
-     When in doubt: `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
+     When in doubt: `out=$(mktemp); vp run X > "$out" 2>&1; rc=$?; tail -3 "$out"; echo "[rc=$rc]"`.
 
 2. **Tests**
    - `vp test run` — all unit tests pass (preferred over `vp run test`; `/check`

@@ -24,35 +24,18 @@ needing a clause the issue does not name. On a trip, STATE the call in one line
 when it would more than double the diff. What the fix would leave WRONG if
 omitted is a FORCED parallel change.
 
-**The rule is about what a HUMAN files into the triaged backlog — and the one
-attempt to exempt a GENERATED set from it was reversed. Do not re-fan the
-backfill campaign into per-type issues.** go-to-k/cdkd#2949 split the silent-drop
-umbrella into ~44 generated per-resource-type sub-issues on the reasoning that a
-bot pays the fixed cost, so the split is free. It is not, and the cost lands
-where no listing can filter it:
-
-- **The public issue COUNT is a reader nobody can exclude.** 44 of the
-  repository's 240 open issues were bot-filed slices of one campaign, and from
-  outside they are indistinguishable from defects nobody has fixed. The campaign
-  is ONE issue again, with a generated checklist block in its body
-  (`.github/workflows/backfill-umbrella-sync.yml` rewrites the region between
-  `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, and nothing
-  else on the page).
-- **Filtering inside the corpus still costs every listing.**
-  Every backlog listing in `triage.md` — §1's, §3-0's cutoff query and §3-a's
-  two signal queries — EXCLUDES the label for that reason,
-  and so does §10's folded-finding count in `retro.md`, where it matters MOST:
-  that one selects issues whose body gained a `- [ ] ` row, and a sync rewrites
-  a body region that is nothing else. A listing added to either file must carry
-  it — and now also the `backfill-umbrella` label, since the rows moved into
-  that one body.
-- **What the split genuinely bought was a `Closes` target**, and that is the part
-  worth remembering before proposing this shape for another set. The umbrella has
-  to stay open for the other 43 types, so a pull request wiring one type has
-  nothing to `Closes` — the exact failure this rule's own evidence names, where
-  the four oldest open issues are umbrella-shaped because no lane can close one.
-  It writes `Refs`, and the type's row disappears when the coverage map says it
-  is done; a per-type issue is not the only way to make progress legible.
+**Do not fan one campaign out into generated per-item issues** (go-to-k/cdkd#2949).
+A bot pays no triage cost, but every slice counts in the public open-issue total
+and every backlog listing must then filter it out. The backfill campaign is ONE
+umbrella issue: `.github/workflows/backfill-umbrella-sync.yml` rewrites only the
+region between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`,
+one `- [ ]` row per type. Every backlog listing in `triage.md` — §1's, §3-0's
+cutoff query and §3-a's two signal queries — EXCLUDES the label (`backfill-type`),
+and so does §10's folded-finding count in `retro.md`, where it matters most: it
+selects issues whose body gained a `- [ ] ` row, so it also excludes
+`backfill-umbrella`, whose body a sync rewrites. A listing added to either file
+carries both. A PR wiring one type writes `Refs`, not `Closes`; the row
+disappears when the coverage map says the type is done.
 
 **Resolve whatever you file against the issues ALREADY OPEN** — a sibling
 ISSUE, not a sibling site.
@@ -102,14 +85,10 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
-**A `next` reason must still be true when someone reads it.** Seven deferrals
-filed across one run were re-opened by the orchestrator and every one had
-expired or was wrong at filing: a gate named as the blocker had been deleted;
-"the files are cold" named files the same run's own PR had edited; "the session
-ended" is not one of the two licensed reasons at all. Write the reason as a
+**A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
-<repo>`), never as a state of the lane, and check it yourself before writing
-`next` rather than after.
+<repo>`), never as a state of the lane ("the files are cold", "the session
+ended"), and check it yourself before writing `next`.
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`

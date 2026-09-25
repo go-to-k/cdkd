@@ -21,12 +21,12 @@ the only mechanical merge conditions.
   reliably persist, and the `integ-destroy` marker store is PER-WORKTREE: one set
   in the main checkout is ABSENT from the lane.
 - **A hook-gated command carries no SIDE-EFFECTING preamble, and "gated" means
-  EVERY surviving PreToolUse hook**: a denial aborts the whole string before any
-  of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
+  EVERY PreToolUse hook in `.claude/settings.json`**: a denial aborts the whole
+  string before any of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
   in one call, run the gated command in the next, re-creating not appending.
   - A blocked `cp` restore leaves a file MID-PROBE (failing in the suite, passing
-    alone, reading as pollution), so verify a restore in the same call; and name
-    consumables like `/tmp/pr-body.md` per LANE, or a retry eats another's.
+    alone, reading as pollution), so verify a restore in the same call; and make
+    `/tmp` consumables per LANE (`mktemp`), or a retry eats another's.
 - **"All green" is the EXIT CODE, not the summary** — a run can print every test
   passing and exit 1 (test-file type errors show as `Errors`), and
   `vp run typecheck` skips `**/*.test.ts`: run `typecheck:test`, read ITS rc.

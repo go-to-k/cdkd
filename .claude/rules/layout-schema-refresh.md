@@ -36,9 +36,9 @@ from. Two capture SOURCES, one fixture shape.
   treats "not in the schema" as a typo or an `addPropertyOverride` escape hatch),
   the resource stays on the SDK provider, and the property is **silently
   dropped** while the deploy reports success.
-- **`DescribeType` mode** (the original): `node scripts/refresh-cfn-schemas.mjs
+- **`DescribeType` mode**: `node scripts/refresh-cfn-schemas.mjs
   [type-filter] [--only-missing]`, needs `cloudformation:DescribeType`, rewrites
-  every type it captures. Still the ONLY route for types the public bundle does
+  every type it captures. The ONLY route for types the public bundle does
   not carry.
 - **`--from-zip` mode** (`vp run gen:cfn-schemas-from-zip`): reads AWS's PUBLIC
   `CloudformationSchema.zip` with **no AWS identity at all**, which is what made
@@ -125,11 +125,9 @@ only unattended `contents: write` job
   generated region that can reach human provenance is the only write here that
   could destroy something no run can recompute
   ([#2998](https://github.com/go-to-k/cdkd/issues/2998)).
-- Issue [#2949](https://github.com/go-to-k/cdkd/issues/2949) had made it a SET —
-  a parent plus one generated sub-issue per type — and the fold-back traded that
-  for a public open-issue count nobody can read wrong: 44 of 240 open issues were
-  bot-filed slices of one campaign, indistinguishable from unfixed defects. A PR
-  now writes `Refs` and the row disappears on its own.
+- One issue, not one per type: a per-type set is indistinguishable from unfixed
+  defects in the open-issue count. A PR writes `Refs` and its row disappears on
+  its own.
 - The `backfill-type` label is LEGACY: nothing generates it, and it stays on each
   slice the one-shot migration (`node scripts/sync-backfill-umbrella.ts
   --close-legacy`, run by hand) closes — that pass skips any labelled issue whose

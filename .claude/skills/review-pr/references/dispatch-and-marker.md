@@ -8,10 +8,7 @@ The orchestrator dispatches the recommended reviewers via the Agent tool, waits
 for all of them, and synthesizes.
 
 Apply the PRE-FILTERS first — they discount findings and FALL THROUGH — then the
-two VERDICT arms, which are mutually exclusive and one of which always runs. As
-first-match-wins alternatives instead, a run whose only finding is a discounted
-one matches an arm stating what does NOT happen and gets no instruction, leaving
-the merge decision unstated.
+two VERDICT arms, which are mutually exclusive; exactly one always runs.
 
 ## Pre-filters
 
@@ -37,10 +34,9 @@ primary verdict exists on that question, judge the finding on its own merits.
 **Condition 2 is what makes this safe, and severity is NOT a substitute.**
 `pr-security-reviewer.md` caps its secondary findings at `minor` *unless the
 finding is independently a security defect*, so the label may carry a `blocker` —
-a label-keyed discount would dismiss exactly what must never be dismissed (a
-redaction not inverted on the rollback replay path, noticed off a spec acceptance
-walk). A severity-keyed one is no better: minor findings never blocked a merge,
-so keying on "minor or below" makes the rule inert.
+a label-keyed discount would dismiss exactly what must never be dismissed. A
+severity-keyed one is no better: minor findings never blocked a merge, so keying
+on "minor or below" makes the rule inert.
 
 For a COMPLIANT reviewer this filter is unreachable; it is a BACKSTOP against a
 reviewer definition that overshoots its own cap. If that stops being the right
@@ -63,5 +59,3 @@ division of labour, the caps are what to revisit, not this filter.
 **Security add-on dispatch**: when the step-3 trigger fired, dispatch
 `pr-security-reviewer` in the same parallel batch and fold its findings in — a
 security blocker stops the merge like any other.
-
-**NEVER report a round closed without dispatching the reviewers first.**

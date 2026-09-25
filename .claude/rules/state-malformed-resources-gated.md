@@ -11,13 +11,13 @@ Sibling containers:
 [state-malformed-properties.md](state-malformed-properties.md). Index:
 [code-layout.md](code-layout.md).
 
-## THREE call sites, not two
+## THREE call sites
 
 `destroy-runner.ts`, `deploy-engine.ts`, and
 `src/provisioning/providers/nested-stack-provider.ts`: that `delete()` counts the
 CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
-runner's guard could not see a `null` or absent child bag — the bare `TypeError`
-fired first. Same helper, so a child's refusal reads identically.
+runner's guard alone cannot see a `null` or absent child bag — the bare `TypeError`
+fires first. Same helper, so a child's refusal reads identically.
 
 ## Three refusal entry points, one predicate
 
@@ -100,9 +100,9 @@ refusals do not. That pointer's premise is fenced: `stateOrphanCommand` reads
 the `cdkd state show` line in the same message is the decision: `state orphan`
 DELETES a record, `state show` reads one. The `region` handed to the destroy
 refusal is `state.region ?? ctx.baseRegion` — record-BODY content — so
-substituting it once rendered a pasteable
-`cdkd state orphan <stack> --stack-region eu-west-1` for a record stored under
-`us-east-1`, aiming a destructive command at a different region's record. Fenced
+substituting it can render a pasteable
+`cdkd state orphan <stack> --stack-region <body region>` for a record stored under
+another region, aiming a destructive command at a different region's record. Fenced
 by a POSITION case (no occurrence of the region at or after the orphan command),
 with the region's presence in the message asserted first so the bound is not an
 absence test.
@@ -116,7 +116,7 @@ both identifiers rendering EXACTLY (compared against the raw values); when eithe
 does not, the text names no removal target and sends the reader to
 `cdkd state list --long`.
 
-`S3StateBackend.getState` now normalizes a region-scoped record's `region` to its
+`S3StateBackend.getState` normalizes a region-scoped record's `region` to its
 KEY's region and warns on a body that disagreed (`adoptKeyRegion`), so every
 `state.region` consumer gets the key's. **The template stays anyway**: a key
 segment is bucket-plantable in its own right

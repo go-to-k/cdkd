@@ -28,9 +28,7 @@ reviewers the PR resolved to.
 `add`, `commit`, `restore`, `stash`, `clean` and `reset` all mutate the tree you
 were asked to READ. A copy is not an escape: a linked worktree's `.git` is a
 FILE holding `gitdir: <repo>/.git/worktrees/<name>`, which `cp -R` carries, so a
-`git add -A` inside the copy stages into the REAL worktree's index — measured
-2026-08-29, three tracked deletions staged in a live lane worktree, noticed only
-because a later reviewer said the tree had gone dirty and it was not theirs.
+`git add -A` inside the copy stages into the REAL worktree's index.
 Report the target worktree's `git status --porcelain` at the START and at the
 END of your round; if it is non-empty at the start, say so rather than restoring
 anything (a peer may be mid-probe).
@@ -52,9 +50,9 @@ grepping for the field, not by trusting the diff. For each reader decide:
 
 A reader that re-applies or compares a TRANSFORMED value (redacted, masked,
 escaped, encoded) needs the INVERSE transform, or it ships the placeholder as if
-it were real. This is the exact class the GHSA-p5qg-v9gv-hc7w rollback blocker
-fell into: the redaction stored a `{{resolve:...}}` expression, and the rollback
-replay sent that literal token to AWS. Name every reader you checked and its
+it were real. Example (GHSA-p5qg-v9gv-hc7w): a redaction stores a
+`{{resolve:...}}` expression and a rollback replay sends that literal token to
+AWS. Name every reader you checked and its
 verdict; a reader you did not reach is a gap, say so.
 
 ### 2. Data exposure
@@ -107,5 +105,5 @@ Return ONE of:
   severity (blocker = ships an exposure or a corruption / minor = should fix in
   same PR / nit = could fix later).
 
-Keep the report under 600 words. Be direct — no "consider" / "might want to"
-hedging. Lead with the flow-trace result.
+Keep the report scannable: findings first, each with its citation. Be direct —
+no "consider" / "might want to" hedging. Lead with the flow-trace result.

@@ -111,8 +111,8 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 
 - **Sweep by CLAIM, over NORMALISED text** (every TRACKED file, comment leaders
   stripped, whitespace collapsed, matched across line breaks — never
-  `git grep`), then stop hardening it: a claim falsified ONCE becomes a FENCE
-  in `FALSIFIED_CLAIMS`.
+  `git grep`), and fix the prose. A fence on it follows AGENTS.md's Tooling
+  Policy, not one falsification.
 - **A COUNT is never repaired by recounting** — delete it (preferred), fence it
   with a floor AND a cap from a test that reads the code, or attribute it as a
   dated measurement. A correction is itself a claim: RUN it, and re-derive

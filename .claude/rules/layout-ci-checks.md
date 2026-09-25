@@ -1,5 +1,5 @@
 ---
-description: cdkd CI checks that replaced PreToolUse gates - the PR-diff, PR-title and issue/comment/body checkers under scripts/, and the three workflows that run them
+description: cdkd CI checks on GitHub artifacts - the PR-diff, PR-title and issue/comment/body checkers under scripts/, and the three workflows that run them
 paths:
   - 'scripts/check-pr-*.ts'
   - 'scripts/check-issue-*.ts'
@@ -17,7 +17,7 @@ paths:
   - 'tests/unit/scripts/non-english-class-sync.test.ts'
 ---
 
-# The CI checks that replaced PreToolUse gates
+# The CI checks on GitHub artifacts
 
 These take a GITHUB ARTIFACT — a PR title, a changed-file list, an issue body —
 and report by failing a workflow job. That is a different subject and a different
@@ -44,7 +44,7 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
   `revert:` and every non-release type pass. The grammar is
   `^([a-z]+)(\([^)]+\))?!?: ` — lowercase-only type and a REQUIRED space after
   the colon, so `Fix:`, `feat2:` and `fix:x` are not release prefixes.
-- **Why ONE title check replaces two hooks**: the repo squash-merges, so the PR
+- **Why the title is the right subject**: the repo squash-merges, so the PR
   title becomes the squash subject release-please parses and branch commit
   subjects never reach `main` as their own objects. That is a claim about GitHub
   SETTINGS: `allow_merge_commit: false`, `allow_rebase_merge: false`,
@@ -72,9 +72,6 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
   `git diff --name-only origin/main...HEAD`. Read its OUTPUT, not just its exit
   code — on a branch with no commits the diff is empty and every title passes
   through the `no-diff` arm at rc=0. Probe with `--files-from <path>`.
-- What CI buys over the hook: it re-runs on `synchronize` (a title that stops
-  being correct when a later push drops the last `src/**` file) and on `edited`
-  (a web-UI retitle, invisible to a `gh`-shaped hook in principle).
 
 ## The issue / comment / PR-body checks
 
@@ -89,18 +86,15 @@ shared `gh-subject.ts`, run from `issue-conventions.yml` on `issues` /
   base-repo secrets for zero extra capability. The usual `pull_request` residual
   — a fork shipping a modified copy of the checker — is closed by checking out
   `base.sha` while fetching the body from the API.
-- **`issue-classification-labels` REPAIRS where the hook could only refuse**: it
+- **`issue-classification-labels` REPAIRS rather than refuses**: it
   reads `Severity:` / `Effort:` off the body and APPLIES the matching label. It
   REPORTS instead of applying when body and an existing family label contradict —
   silently overwriting a deliberate human label is the one case where applying is
   wrong. `unlabeled` is deliberately NOT a trigger: a removal is
   indistinguishable from a label never applied, so it would be re-applied.
   `Session-fit` and `Estimate` stay out.
-- **Timing is the structural loss**: a PreToolUse gate refused BEFORE the
-  artifact existed; a workflow speaks after it is public, so for an issue or
+- **A workflow speaks after the artifact is public**, so for an issue or
   comment the check reports on text every reader can already see.
-- **Two things got stronger**: the web UI and any non-`gh` client are covered,
-  and the `-b` / `-t` / `-n` short-flag blind spot is gone.
 - **Coverage losses, not recoverable here**: a workflow sees only its own
   repository's events, so cross-repo filing needs a copy in each sibling repo;
   and subscribing to `issues` / `issue_comment` / `pull_request` leaves PR REVIEW

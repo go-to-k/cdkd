@@ -105,8 +105,7 @@ verifier may be host-bound, account/region-bound, not yet existing (write it NOW
 while the subsystem is loaded), or unnameable. Put the named command in the issue
 body beside `Session-fit`.
 
-**Calibration: RUNNING an existing integ is never a deferral reason** (median run
-under two minutes). What is genuinely expensive is WRITING a new fixture and an
+**Calibration: RUNNING an existing integ is never a deferral reason.** What is genuinely expensive is WRITING a new fixture and an
 integ that FAILS — both `Effort` / `Estimate` lines, not reasons.
 
 **Classify by PURPOSE, never by MEANS**, and hold your own regressions to no
@@ -153,7 +152,7 @@ Only these two: `Session-fit` is re-decided at claim, `Estimate` is free-form.
 A DERIVED label is a ranking INPUT, never a measurement — where label and body
 disagree the BODY wins.
 
-## State — WAITING or STOPPED, stated every turn end
+## State — WAITING or STOPPED
 
 - **WAITING (on: ...)** — you resume WITHOUT user input when the condition is met
   and carry the work to its goal. Name three things, one line each: what you wait
@@ -213,10 +212,10 @@ with nothing to say gets `none` / `n/a`.
 
 ### The not-this-session line
 
-Lead with the decision, then the literal start command:
+Under `## Not this session`, lead with the literal start command:
 
 ```text
-Not this session — start a fresh session with: fix issue <N> (Estimate: ~1-3 h)
+- Start with: fix issue <N> (Estimate: ~1-3 h)
 ```
 
 Never label it "Handoff" / "Next steps"; never condition it on this session's

@@ -67,13 +67,14 @@ citations, wording contradicting current docs, and stale numeric claims. If
 stale, rewrite and patch:
 
 ```bash
-cat > /tmp/pr-body.md <<'EOF'
+body=$(mktemp)
+cat > "$body" <<'EOF'
 ## Summary
 ...
 ## Test plan
 ...
 EOF
-gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@/tmp/pr-body.md" -q '.html_url'
+gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@$body" -q '.html_url'
 ```
 
 (`gh pr edit --body-file` works too; the `gh api` form is kept because

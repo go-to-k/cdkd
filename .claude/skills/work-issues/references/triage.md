@@ -22,13 +22,10 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
-**The `backfill-type` exclusion is not noise-trimming — those issues are not
-backlog.** They were the ~44 generated per-type slices of the silent-drop
-backfill campaign (go-to-k/cdkd#2949), FOLDED BACK into one generated checklist
-in the umbrella issue. They are retired and the label is legacy. The filter
-stays because such a slice is still no decision a triage pass can make, and its
-`created_at` is whenever the map last moved, so §3-0's quarantine and rule 7's
-ranking read it wrong.
+**The `backfill-type` exclusion keeps legacy per-type slices off the shortlist**
+(go-to-k/cdkd#2949): a slice is no decision triage can make, and its
+`created_at` moves with the coverage map, so §3-0's quarantine and rule 7's
+ranking would read it wrong.
 
 To WORK the campaign, take the umbrella deliberately (`gh issue list --label
 backfill-umbrella`) and wire the type you intend to. Write `Refs`, never
@@ -113,10 +110,7 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 [ -n "$CUT" ] || { echo 'CUTOFF FAILED — not an empty backlog'; exit 1; }
 
 # §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
-# `--arg`, so the cutoff expands into the filter. The `backfill-type` exclusion
-# is carried too: this listing produces the eligible set, so dropping it here
-# puts any reopened legacy slice back on the shortlist however carefully §1
-# filtered them.
+# `--arg`, so the cutoff expands into the filter.
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
         | select([.labels[].name] | index(\"backfill-type\") | not)
@@ -152,8 +146,7 @@ Tiebreakers, not a formula — never average them. `Effort` / `Estimate` rank
 nothing; they gate what this run can AFFORD. A user-reported breakage outranks
 the whole table except rule 1.
 
-Detecting the signals, from the listings §1 already fetched (the `backfill-type`
-exclusion is carried in every one of them, for §1's reason):
+Detecting the signals, from the listings §1 already fetched:
 
 ```bash
 # type + area from the conventional-commit title prefix: fix(deploy): ...

@@ -52,10 +52,7 @@ Erring toward reviewing is the safe direction — an extra round costs a comment
 missed one costs the contributor a stall.
 
 The rule is on the REVIEWER side on purpose: it asks nothing of the contributor,
-is not opt-in, and applies uniformly. Contributor-side signals (draft the PR
-while responding, apply a `review ok` label) were refused — nothing enforces
-either, the label needs triage permission a fork contributor lacks, and both fail
-silently.
+is not opt-in, and applies uniformly.
 
 Skip the wait outright when: the maintainer asked for this review in the current
 turn; the PR is yours (`[ "$ME" = "$THEM" ]`); or `MINE` is empty.
