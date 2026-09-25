@@ -1,6 +1,7 @@
 import { stripControlChars } from '../../utils/regexp.js';
 import { displayIdent, displayStackName } from '../../utils/display-safe.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -332,14 +333,14 @@ export function readNestedTemplate(templatePath: string): CloudFormationTemplate
     raw = fs.readFileSync(templatePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
   try {
     return JSON.parse(raw) as CloudFormationTemplate;
   } catch (err) {
     throw new Error(
-      `Failed to parse nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
 }

@@ -345,8 +345,8 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         buildContext({ stateBackend: makeBackend([]) })
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: output 'Missing' not found in CloudFormation stack " +
-        "'CfnProducer' (us-east-1). Available outputs: Other"
+      "Fn::GetStackOutput: output Missing not found in CloudFormation stack " +
+        "CfnProducer (us-east-1). Available outputs: Other"
     );
   });
 
@@ -359,7 +359,7 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         buildContext({ stateBackend: makeBackend([]) })
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: stack 'Producer' not found in region 'us-east-1'. " +
+      "Fn::GetStackOutput: stack Producer not found in region us-east-1. " +
         'Make sure the producer stack has been deployed via cdkd.'
     );
     expect(cfnMockSend).not.toHaveBeenCalled();
@@ -381,7 +381,7 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         buildContext({ stateBackend: makeBackend([]) })
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: stack 'Producer' not found in region 'us-east-1'. " +
+      "Fn::GetStackOutput: stack Producer not found in region us-east-1. " +
         'Searched cdkd state and CloudFormation stacks.'
     );
     // The expected miss is not a lookup failure — no warning.
@@ -406,7 +406,7 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'ApiUrl' } },
         buildContext({ stateBackend: makeBackend([]) })
       )
-    ).rejects.toThrow("stack 'Producer' not found");
+    ).rejects.toThrow("stack Producer not found");
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('CloudFormation DescribeStacks fallback failed')
     );
@@ -458,7 +458,7 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'A' } },
         context
       )
-    ).rejects.toThrow("stack 'CfnProducer' not found");
+    ).rejects.toThrow("stack CfnProducer not found");
     const retried = await resolver.resolve(
       { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'A' } },
       context
@@ -480,7 +480,7 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
         { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'ApiUrl' } },
         buildContext({ stateBackend: makeBackend([]) })
       )
-    ).rejects.toThrow("Fn::GetStackOutput: stack 'Producer' not found in region 'us-east-1'");
+    ).rejects.toThrow("Fn::GetStackOutput: stack Producer not found in region us-east-1");
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('CloudFormation DescribeStacks fallback failed')
     );

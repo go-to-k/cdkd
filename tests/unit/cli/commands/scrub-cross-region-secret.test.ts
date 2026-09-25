@@ -1211,9 +1211,14 @@ describe('the cross-region refusals name the stack and the record inside their o
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_REGION_SECRET_UNRESOLVED');
     expect(err.message).toContain(`in the region its ARN names (${JSON.stringify(REGA)}): `);
-    // No "nothing outside the boundary" check here: the resolver's own region
-    // guard, quoted into the cause this message carries, still renders the
-    // region inside plain quotes -- a held site on go-to-k/cdkd#3617.
+    // The cause this message carries is the resolver's own region guard, which
+    // bounds the region the same way (go-to-k/cdkd#3617), so no clause of it
+    // appears outside a boundary anywhere in the message. The guard prints the
+    // CANONICAL (lower-cased) spelling, so that is the second boundary.
+    expect(err.message).toContain(`for the region ${JSON.stringify(REGA.toLowerCase())}: `);
+    // Every forged value in this message (stack, reference, region) is one JSON
+    // string; with those removed, nothing of any of them is left.
+    expect(err.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toMatch(/nothing refused/i);
   });
 
   it('names a forging output inside its boundary when a named-region reference in its Export.Name cannot answer', async () => {

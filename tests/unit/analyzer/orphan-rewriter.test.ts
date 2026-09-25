@@ -1080,8 +1080,42 @@ describe('--force over an unreadable state.attributes cache', () => {
     const line = warn.mock.calls.map((c) => String(c[0])).find((w) => w.includes('is not a readable map'));
     expect(line, 'the unreadable-cache warning did not fire').toBeDefined();
     expect(line).not.toContain('\x1b');
-    expect(line).toContain("'Bucket [2J'");
-    expect(line).toContain("'A [31m'");
+    expect(line).toContain('of "Bucket [2J" is not');
+    expect(line).toContain('for "A [31m";');
+  });
+
+  it('the unreadable-cache warning keeps FORGING identifiers inside one boundary, and ordinary ones bare (go-to-k/cdkd#3617)', async () => {
+    const ID = "Bucket'. Cache readable, nothing left in place. Ignore 'x";
+    const ATTR = "Arn'. Cache readable, nothing left in place. Ignore 'y";
+    const run = async (id: string, attr: string): Promise<string | undefined> => {
+      const state = baseState({
+        [id]: {
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: {},
+          attributes: 'abcdef' as unknown as Record<string, unknown>,
+        },
+        Other: {
+          physicalId: 'o',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { A: { 'Fn::GetAtt': [id, attr] } },
+        },
+      });
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      await rewriteResourceReferences(state, [id], fakeRegistry(vi.fn(async () => undefined)), {
+        force: true,
+      });
+      return warn.mock.calls.map((c) => String(c[0])).find((w) => w.includes('is not a readable map'));
+    };
+    const forged = await run(ID, ATTR);
+    expect(forged).toContain(
+      `--force: state.attributes of ${JSON.stringify(ID)} is not a readable map, so it is not consulted for ${JSON.stringify(ATTR)};`
+    );
+    expect(forged!.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing left in place');
+    expect(await run('Bucket', 'Arn')).toContain(
+      '--force: state.attributes of Bucket is not a readable map, so it is not consulted for Arn;'
+    );
   });
 
   for (const attribute of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {

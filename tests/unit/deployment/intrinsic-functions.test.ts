@@ -984,7 +984,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
         context
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: stack 'Producer' not found in region 'us-east-1'"
+      "Fn::GetStackOutput: stack Producer not found in region us-east-1"
     );
   });
 
@@ -1013,7 +1013,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
         context
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: output 'Missing' not found in stack 'Producer' (us-east-1). Available outputs: Other"
+      "Fn::GetStackOutput: output Missing not found in stack Producer (us-east-1). Available outputs: Other"
     );
   });
 
@@ -1072,7 +1072,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
         context
       )
     ).rejects.toThrow(
-      "Fn::GetStackOutput: cannot reference own stack 'Consumer' in the same region 'us-east-1'"
+      "Fn::GetStackOutput: cannot reference own stack Consumer in the same region us-east-1"
     );
   });
 
@@ -1117,7 +1117,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
         },
         context
       )
-    ).rejects.toThrow(/cannot reference own stack 'Consumer'/);
+    ).rejects.toThrow(/cannot reference own stack Consumer/);
   });
 
   /**
@@ -1157,7 +1157,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
         { 'Fn::GetStackOutput': { StackName: 'Consumer', OutputName: 'Foo' } },
         context
       )
-    ).rejects.toThrow(/cannot reference own stack 'Consumer'/);
+    ).rejects.toThrow(/cannot reference own stack Consumer/);
   });
 
   /**

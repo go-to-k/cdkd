@@ -84,7 +84,7 @@ This document summarizes common issues when using cdkd and their solutions.
 **Symptoms:**
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
+LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
 ```
 
 **Causes:**
@@ -348,7 +348,7 @@ for a lock to expire does not affect it.
 **Symptoms:**
 
 ```
-StateError: State file for stack 'MyStack' is not valid JSON: Unexpected token } in JSON at position 123
+StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
 Caused by: Unexpected token } in JSON at position 123
 ```
 
@@ -357,7 +357,7 @@ different problem with a different fix — upgrade cdkd rather than restoring a
 backup:
 
 ```
-StateError: Unsupported state schema version 12 for stack 'MyStack'. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
+StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
 ```
 
 **Causes:**
@@ -487,7 +487,7 @@ the HTTP status, so the state-bucket path names the region rather than the
 placeholder. The lock path does not rewrite, and surfaces the raw 301 instead:
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (ap-northeast-1):
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
 The bucket you are attempting to access must be addressed using the
 specified endpoint. Please send all future requests to this endpoint.
 ```

@@ -553,7 +553,7 @@ fi
 # branch. It is byte-identical before and after the fix and the error path does
 # no wrapping, so asserting it costs nothing and is strictly stronger.
 for needle in "jsonkey" "DB_PASS" "password" "not valid JSON" \
-  "secret 'DB_PASS' specified json-key 'password' but the secret value is not valid JSON"; do
+  "secret DB_PASS specified json-key password but the secret value is not valid JSON"; do
   if ! echo "${JSONKEY_OUT}" | grep -qF "${needle}"; then
     # Plain single quotes: they are literal inside a double-quoted string. The
     # `'"'"'` idiom escapes a quote inside SINGLE quotes, and using it here

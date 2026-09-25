@@ -228,7 +228,7 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
         { 'Fn::GetStackOutput': { StackName: 'Missing', OutputName: 'X' } },
         buildContext({ stateBackend: backend, recordedOutputReads: recorded })
       )
-    ).rejects.toThrow(/stack 'Missing' not found/);
+    ).rejects.toThrow(/stack Missing not found/);
     expect(recorded).toEqual([]);
   });
 
@@ -291,7 +291,7 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
         { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'BucketArn' } },
         buildContext({ stateBackend: backend, recordedOutputReads: recorded })
       )
-    ).rejects.toThrow(/output 'BucketArn' not found/);
+    ).rejects.toThrow(/output BucketArn not found/);
     expect(recorded).toEqual([]);
   });
 });

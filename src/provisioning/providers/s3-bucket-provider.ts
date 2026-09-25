@@ -72,7 +72,7 @@ import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
@@ -1835,6 +1835,16 @@ function noRecordedRegionCause(): UnverifiedIdentityCause {
   };
 }
 
+/**
+ * A lifecycle rule's `Id` as the warnings print it (go-to-k/cdkd#3617). The id
+ * is template-chosen and free-form, so it renders through `displayIdent` --
+ * bare when plain, otherwise one JSON string -- rather than inside cdkd's own
+ * quotes, which a `'` in it would close. An absent or empty id is named in
+ * words.
+ */
+function shownLifecycleRuleId(id: unknown): string {
+  return id === undefined || id === null || id === '' ? '(no Id)' : displayIdent(id);
+}
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketProvider');
@@ -2362,7 +2372,7 @@ export class S3BucketProvider implements ResourceProvider {
           // S3 rejects ExpiredObjectDeleteMarker combined with Days / Date, so
           // one of the two has to go. Warn instead of dropping in silence.
           this.logger.warn(
-            `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} sets ` +
+            `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} sets ` +
               `ExpiredObjectDeleteMarker alongside an expiration Days/Date; S3 forbids ` +
               `combining them, so the delete-marker cleanup was not applied.`
           );
@@ -2413,7 +2423,7 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined;
       const allNvts = mergeLegacySingular(nvts, singularNvt, (sc) =>
         this.logger.warn(
-          `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} declares ` +
+          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
             `both NoncurrentVersionTransitions and the legacy NoncurrentVersionTransition for ` +
             `storage class ${displaySafe(sc)}; S3 rejects duplicates, so the legacy singular was ignored.`
         )
@@ -2436,7 +2446,7 @@ export class S3BucketProvider implements ResourceProvider {
       const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
       const allTransitions = mergeLegacySingular(transitions, singularTransition, (sc) =>
         this.logger.warn(
-          `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} declares ` +
+          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
             `both Transitions and the legacy Transition for storage class ${displaySafe(sc)}; S3 rejects ` +
             `duplicates, so the legacy singular was ignored.`
         )

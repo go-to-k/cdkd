@@ -143,7 +143,7 @@ async function resolveOne(
       return resolveSsm(entry, shape, ssmClient);
     case 'unknown':
       throw new EcsSecretsResolutionError(
-        `Container '${displayIdent(entry.containerName)}' secret '${displayIdent(entry.name)}' references an unsupported ValueFrom shape ${displayIdent(arn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}. ` +
+        `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} references an unsupported ValueFrom shape ${displayIdent(arn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}. ` +
           'Expected Secrets Manager ARN (optionally with :<json-key>::) or SSM Parameter ARN.'
       );
   }
@@ -208,14 +208,14 @@ async function resolveSecretsManager(
     secretString = resp.SecretString;
   } catch (err) {
     throw new EcsSecretsResolutionError(
-      `Failed to resolve Secrets Manager secret for container '${displayIdent(entry.containerName)}' / env '${displayIdent(entry.name)}' (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
+      `Failed to resolve Secrets Manager secret for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
         err instanceof Error ? err.message : String(err)
       )}`
     );
   }
   if (secretString === undefined) {
     throw new EcsSecretsResolutionError(
-      `Secrets Manager returned no SecretString for container '${displayIdent(entry.containerName)}' / env '${displayIdent(entry.name)}' (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}). ` +
+      `Secrets Manager returned no SecretString for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}). ` +
         'Binary secrets are not supported.'
     );
   }
@@ -238,19 +238,19 @@ async function resolveSecretsManager(
     // lie the moment it becomes reachable.
     const kind = err instanceof Error ? err.name : 'unknown';
     throw new EcsSecretsResolutionError(
-      `Container '${displayIdent(entry.containerName)}' secret '${displayIdent(entry.name)}' specified json-key '${displaySafe(shape.jsonKey)}' but the secret value is not valid JSON (${displayIdent(kind)}). ` +
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but the secret value is not valid JSON (${displayIdent(kind)}). ` +
         'The parser detail is withheld because it would echo the secret plaintext.'
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new EcsSecretsResolutionError(
-      `Container '${displayIdent(entry.containerName)}' secret '${displayIdent(entry.name)}' specified json-key '${displaySafe(shape.jsonKey)}' but the secret root is not a JSON object.`
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but the secret root is not a JSON object.`
     );
   }
   const value = (parsed as Record<string, unknown>)[shape.jsonKey];
   if (value === undefined) {
     throw new EcsSecretsResolutionError(
-      `Container '${displayIdent(entry.containerName)}' secret '${displayIdent(entry.name)}' specified json-key '${displaySafe(shape.jsonKey)}' but no such key exists in the secret JSON.`
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but no such key exists in the secret JSON.`
     );
   }
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -264,14 +264,14 @@ async function resolveSsm(entry: SecretEntry, shape: SsmShape, client: SSMClient
     const value = resp.Parameter?.Value;
     if (value === undefined) {
       throw new EcsSecretsResolutionError(
-        `SSM parameter '${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}' returned no Value for container '${displayIdent(entry.containerName)}' / env '${displayIdent(entry.name)}'.`
+        `SSM parameter ${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })} returned no Value for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)}.`
       );
     }
     return value;
   } catch (err) {
     if (err instanceof EcsSecretsResolutionError) throw err;
     throw new EcsSecretsResolutionError(
-      `Failed to resolve SSM parameter for container '${displayIdent(entry.containerName)}' / env '${displayIdent(entry.name)}' (${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
+      `Failed to resolve SSM parameter for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
         err instanceof Error ? err.message : String(err)
       )}`
     );
