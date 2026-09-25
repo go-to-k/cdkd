@@ -68,6 +68,7 @@ import {
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
   carriesSecretMask,
+  carriesFreshNoEchoValue,
   recordMaskOnlyValuesIn,
   recordRecoverableMaskedOutput,
   wholeStringLeavesOf,
@@ -108,6 +109,7 @@ import {
   type ResourceState,
   type ResourceChange,
   type ChangeType,
+  type PropertyChange,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import {
@@ -883,6 +885,18 @@ export function deriveLabelRouting(
 }
 
 /**
+ * Whether a property change's `requiresReplacement` is only a CEILING the diff
+ * set before the value could be known — a synthetic change from in-place
+ * attribute propagation or replacement propagation (go-to-k/cdkd#3662). The
+ * UPDATE arm lowers such a ceiling when the resolved value equals the record.
+ */
+function isReplacementCeiling(pc: PropertyChange): boolean {
+  return (
+    pc.requiresReplacement && (pc.inPlacePropagated === true || pc.replacementPropagated === true)
+  );
+}
+
+/**
  * Structural equality for resolved Outputs maps (issue #875).
  *
  * Output values are intrinsic-resolved primitives or nested objects/arrays
@@ -1260,6 +1274,19 @@ export class DeployEngine {
   private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * The live-progress label `provisionResource` gave each resource, and whether
+   * its verb said `Replacing` (go-to-k/cdkd#3662). The label is chosen before
+   * resolution, so a resource whose only replacement is a CEILING (a synthetic
+   * change, see `isReplacementCeiling`) is labelled `Updating`; the UPDATE arm
+   * re-labels it here if the resolved value keeps the replacement, and the
+   * slow-resource warning reads the current label rather than the first one.
+   */
+  private liveTaskLabels = new Map<
+    string,
+    { label: string; replacing: boolean; warnSuffix?: string }
+  >();
+
+  /**
    * Logical ids whose replacement this deploy DELIBERATELY left the old
    * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
    * [#2603](https://github.com/go-to-k/cdkd/issues/2603)).
@@ -1400,6 +1427,7 @@ export class DeployEngine {
     // otherwise journal the PREVIOUS run's bag against today's template and
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
+    this.liveTaskLabels = new Map();
     this.outputSecrets = new Map();
     this.outputsPassSecretMaps = [];
     // Null-prototype for the same reason as the outputs bag it positions
@@ -2420,6 +2448,10 @@ export class DeployEngine {
       resourceType: resource.resourceType,
       properties: resource.properties,
       provisionedBy: resource.provisionedBy,
+      // The record is its own baseline (issue #3713): an unrecognized key it
+      // carries is by definition unchanged, so the read stays on the layer
+      // that wrote the record instead of moving to Cloud Control.
+      previousProperties: resource.properties,
     });
     if (!provider.import) return { kind: 'not-attempted' };
     const found = await provider.import({
@@ -3599,6 +3631,9 @@ export class DeployEngine {
           // resources demote the info-log to debug (avoids "routing via
           // Cloud Control API" repeated on every redeploy).
           provisionedBy: currentState.resources[logicalId]?.provisionedBy,
+          // The baseline an unrecognized property is compared against, so the
+          // routing lines describe the route `getProviderFor` takes (#3713).
+          previousProperties: currentState.resources[logicalId]?.properties,
         }));
       this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
       this.logger.debug(`All resource properties validated`);
@@ -5296,9 +5331,17 @@ export class DeployEngine {
     // recorded type that differs from the template's as a replacement whatever
     // `propertyChanges` says.
     const labelRecordedType = stateResources[logicalId]?.resourceType;
+    //
+    // A CEILING (go-to-k/cdkd#3662) does not count here: whether it stands is
+    // decided only once the UPDATE arm resolves the value, and a label saying
+    // `Replacing` over an in-place update narrates something that does not
+    // happen. The UPDATE arm re-labels the resource when the ceiling stands.
     const needsReplacement =
       (change.changeType === 'UPDATE' &&
-        ((change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false) ||
+        ((change.propertyChanges?.some(
+          (pc) => pc.requiresReplacement && !isReplacementCeiling(pc)
+        ) ??
+          false) ||
           (labelRecordedType !== undefined && labelRecordedType !== resourceType))) ||
       labelRecreateDirection !== undefined;
     const verb =
@@ -5333,6 +5376,7 @@ export class DeployEngine {
     const routingTag = labelRouting === 'cc-api' ? ' [CC API]' : '';
     const baseLabel = `${verb} ${logicalId} (${resourceType})${routingTag}`;
     renderer.addTask(logicalId, baseLabel);
+    this.liveTaskLabels.set(logicalId, { label: baseLabel, replacing: needsReplacement });
 
     // Operation classification for the timeout error message. UPDATE and
     // its replacement-replacement form are both surfaced as 'UPDATE' since
@@ -5432,7 +5476,9 @@ export class DeployEngine {
             const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
             // Mutate the live renderer's task label in place (TTY mode)
             // and emit a warn line above the live area (non-TTY / verbose).
-            renderer.updateTaskLabel(logicalId, `${baseLabel}${warnSuffix}`);
+            const current = this.liveTaskLabels.get(logicalId);
+            if (current !== undefined) current.warnSuffix = warnSuffix;
+            renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
             renderer.printAbove(() => {
               this.logger.warn(
                 `${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
@@ -5661,19 +5707,17 @@ export class DeployEngine {
     // lesson of {@link recreateDirectionFor}'s docstring.
     if (needsReplacement) {
       // Mirror `replaceDecision` argument for argument: it routes the NEW
-      // physical resource, so it passes NO `previousProperties` (stickiness
-      // exists to spare an EXISTING resource from churn, and a replacement is
-      // not that), the recreate hint as `provisionedBy`, and `forceCcApi` only
-      // for the CC direction. Passing `existingState: undefined` drops the
-      // record-derived inputs in one move, since `deriveLabelRouting` derives
-      // both from it.
-      // The synthetic record carries ONLY `provisionedBy`, which is exactly the
-      // mirror: `deriveLabelRouting` derives `provisionedBy` and
-      // `previousProperties` from this argument, so a record with the hint and
-      // no `properties` reproduces `replaceDecision`'s
-      // `{ ...(hint && { provisionedBy: hint }) }` with no `previousProperties`.
-      const hintRecord =
-        recreateDirection === undefined ? undefined : { provisionedBy: recreateDirection };
+      // physical resource, so it passes the recreate hint as `provisionedBy`
+      // (never the record's layer — stickiness exists to spare an EXISTING
+      // resource from churn, and a replacement is not that), `forceCcApi` only
+      // for the CC direction, and the record's bag as `previousProperties` —
+      // the baseline an unrecognized property is compared against (issue
+      // #3713). `deriveLabelRouting` derives both from this synthetic record,
+      // so it carries the hint and the record's `properties`, nothing else.
+      const hintRecord = {
+        ...(recreateDirection !== undefined && { provisionedBy: recreateDirection }),
+        ...(existingState?.properties !== undefined && { properties: existingState.properties }),
+      };
       return deriveLabelRouting(
         change,
         hintRecord,
@@ -6279,10 +6323,8 @@ export class DeployEngine {
           string,
           unknown
         >;
-        // Issue #2274: the UPDATE twin of the CREATE arm's refusal — same
-        // reason, and needed on BOTH because an existing dependent whose OTHER
-        // properties changed is the commonest way to reach a redacted read.
-        this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+        // The #2274 refusal of a redacted read runs BELOW the no-change skip
+        // (go-to-k/cdkd#3662), not here; see the note at that call.
         // Same position source on the UPDATE path (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
         this.perResourceResolvedType.set(logicalId, resourceType);
@@ -6303,11 +6345,6 @@ export class DeployEngine {
         );
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
-
-        // #1198: snapshot the attempted (resolved) properties so a failed
-        // UPDATE can be journaled with what it tried to apply (load-bearing
-        // for the --revert-failed patch generation).
-        this.attemptedResolvedProps.set(logicalId, resolvedProps);
 
         // Re-check diff after resolving intrinsic functions
         // DiffCalculator compares unresolved template vs resolved state, which may produce false positives.
@@ -6377,6 +6414,25 @@ export class DeployEngine {
         // (issue #3036): two types whose bags compare equal are still two
         // different resources, and skipping left AWS and the record on the OLD
         // type under a green deploy.
+        //
+        // The MASK-ONLY class is the exception to "compare the redacted bag"
+        // (go-to-k/cdkd#3662). A `NoEcho` custom resource's value redacts to
+        // `***`, which identifies nothing, so `***` equal to a recorded `***`
+        // says nothing about the value: a handler that re-ran in THIS deploy and
+        // returned a new token compared equal, the update was skipped, and the
+        // live resource kept the old token under a green deploy. A resolved
+        // bag carrying a `NoEcho` value supplied in THIS deploy (a handler
+        // that ran in this process, or an output recovered from one) therefore
+        // never takes the skip; a value from an earlier run resolves as the
+        // mask itself, a redacted read. Only that population counts: the
+        // mask-only class also holds DERIVED needles (`Fn::Base64` over a
+        // `{{resolve:...}}` input), and counting those updated such a resource
+        // on every deploy. The cost is a redundant update when the handler
+        // returned the same value, and a redundant REPLACEMENT where the
+        // value sits in a create-only property: the record holds only the
+        // mask, so there is nothing to compare the value with (a stored value
+        // fingerprint would close that: go-to-k/cdkd#3729).
+        const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
           updateSecrets,
@@ -6388,11 +6444,13 @@ export class DeployEngine {
             ? withoutAcceptedSilentDropProperties(
                 resourceType,
                 desiredForSkipCheck,
-                allowedSilentDrops
+                allowedSilentDrops,
+                currentResource.properties
               )
             : desiredForSkipCheck;
         if (
           !typeChanged &&
+          !suppliesFreshMaskOnlyValue &&
           JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
@@ -6422,6 +6480,52 @@ export class DeployEngine {
           );
           if (counts) counts.skipped++;
           break;
+        }
+
+        // Issue #2274: the UPDATE twin of the CREATE arm's refusal — same
+        // reason, and needed on BOTH because an existing dependent whose OTHER
+        // properties changed is the commonest way to reach a redacted read.
+        //
+        // AFTER the no-change skip, not before it (go-to-k/cdkd#3662). The
+        // refusal exists so the literal `***` is never SENT; a skip sends
+        // nothing and leaves the record as it was. Refusing first failed a
+        // deploy over a dependent the diff promoted only speculatively (a
+        // reader of a nested stack's `Outputs.<Key>`, issue #3631) whose
+        // resolved bag, masked read included, equals its record. A redacted
+        // read resolves to the literal mask, so it passes the skip only where
+        // the record holds the mask at that same position and nothing else
+        // moved, which is exactly the case with nothing to send.
+        this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+
+        // #1198: snapshot the attempted (resolved) properties so a failed
+        // UPDATE can be journaled with what it tried to apply (load-bearing
+        // for the --revert-failed patch generation). Below the refusal, as it
+        // was before the refusal moved: a refused UPDATE attempted nothing.
+        this.attemptedResolvedProps.set(logicalId, resolvedProps);
+
+        // A synthetic change's `requiresReplacement` is a CEILING
+        // (go-to-k/cdkd#3662): the diff promoted this reader because an
+        // attribute it reads MAY move (`inPlacePropagated`, e.g. a custom
+        // resource's `Data`, a nested stack's outputs) or because a resource it
+        // references was to be replaced (`replacementPropagated`), and a
+        // create-only reading property then asked for a replacement whatever
+        // the value turned out to be. The skip above only covers a reader with
+        // NOTHING else moving; once another property changes, an unmoved value
+        // would have destroyed and re-created the resource. The resolved value
+        // is in hand now, so a path whose redacted value equals the record is
+        // lowered to an in-place change. A path carrying a `NoEcho` value
+        // supplied in this deploy cannot be compared (its record is the mask)
+        // and keeps the ceiling — a redundant replacement when the value did
+        // not in fact move, tracked in go-to-k/cdkd#3729 (value fingerprint).
+        if (change.propertyChanges?.some((pc) => isReplacementCeiling(pc)) === true) {
+          change.propertyChanges = change.propertyChanges.map((pc) => {
+            if (!isReplacementCeiling(pc)) return pc;
+            if (carriesFreshNoEchoValue(resolvedProps[pc.path], updateSecrets)) return pc;
+            const moved =
+              JSON.stringify(desiredForSkipCheckAsWritten[pc.path]) !==
+              JSON.stringify(currentPropsAsWritten[pc.path]);
+            return moved ? pc : { ...pc, requiresReplacement: false };
+          });
         }
 
         // Check if this update requires resource replacement (immutable property changed)
@@ -6462,6 +6566,29 @@ export class DeployEngine {
         const recreateViaSdkProvider = recreateTargets?.viaSdkProvider.has(logicalId) ?? false;
         const recreateFlagged = recreateViaCcApi || recreateViaSdkProvider;
         const needsReplacement = propertyDrivenReplacement || recreateFlagged;
+
+        // The label `provisionResource` chose left ceilings out; one that
+        // stood (the value moved, or it is a fresh `NoEcho` value that cannot
+        // be compared) turns this into a replacement, so say so.
+        const liveLabel = this.liveTaskLabels.get(logicalId);
+        if (needsReplacement && liveLabel !== undefined && !liveLabel.replacing) {
+          const routing = this.peekRoutingForLabel(
+            change,
+            currentResource,
+            stackName,
+            logicalId,
+            true,
+            this.recreateDirectionFor(stackName, logicalId)
+          );
+          const label = `Replacing ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
+          this.liveTaskLabels.set(logicalId, {
+            label,
+            replacing: true,
+            ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
+          });
+          // Keep a slow-resource warning the deadline wrapper already added.
+          renderer.updateTaskLabel(logicalId, `${label}${liveLabel.warnSuffix ?? ''}`);
+        }
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         const dependencies = this.extractAllDependencies(template, logicalId);
@@ -6586,6 +6713,14 @@ export class DeployEngine {
             resourceType,
             properties: resolvedProps,
             ...(recreateDirectionHint && { provisionedBy: recreateDirectionHint }),
+            // Issue #3713: the baseline an unrecognized property is compared
+            // against. A replacement mints a NEW physical resource, but one
+            // replacing a resource that deployed with the key unchanged keeps
+            // its route — on presence, a typo CloudFormation would reject but
+            // the SDK route tolerated would fail the replacement instead.
+            // Inert for the sticky-escape: without a `'cc-api'` record hint
+            // rule 2 is not consulted, and with one `forceCcApi` pins it.
+            previousProperties: currentResource.properties,
             // Issue #2719: `--recreate-via-cc-api` passes `provisionedBy:
             // 'cc-api'` as a HINT, and for a type with an `'sdk-coverage'`
             // exemption the sticky-escape would read that hint and divert the
@@ -7569,10 +7704,13 @@ export class DeployEngine {
                   );
                 }
               }
-              // The replacement create gets a fresh routing decision.
+              // The replacement create gets a fresh routing decision, against
+              // the record as its unrecognized-property baseline (issue #3713,
+              // same reason as `replaceDecision`).
               const replDecision = this.providerRegistry.getProviderFor({
                 resourceType,
                 properties: resolvedProps,
+                previousProperties: currentResource.properties,
               });
               const replProvider = replDecision.provider;
               const replProps =

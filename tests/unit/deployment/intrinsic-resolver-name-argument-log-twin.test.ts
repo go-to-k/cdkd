@@ -45,7 +45,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { isThrottlingError } from '../../../src/deployment/retryable-errors.js';
-import { displaySafe } from '../../../src/utils/display-safe.js';
+import { displaySafe, displayStackName } from '../../../src/utils/display-safe.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -879,11 +879,11 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       },
       makeContext({ stateBackend: emptyBackend() })
     );
-    expect(message).toContain("not found in region 'us-west-***'");
+    expect(message).toContain("not found in region \"us-west-***\"");
     expect(everyLine()).toContain(
       'Resolving Fn::GetStackOutput: StackName=Producer, Region=us-west-***, OutputName=Out'
     );
-    expect(everyLine().some((l) => l.includes("fallback failed for stack 'Producer' (us-west-***)"))).toBe(true);
+    expect(everyLine().some((l) => l.includes('fallback failed for stack Producer ("us-west-***")'))).toBe(true);
     expectNowhere(`us-west-${PIN}`, message);
   });
 
@@ -892,7 +892,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Out', Region: sub('BAD_${P}') } },
       makeContext({ stateBackend: emptyBackend() })
     );
-    expect(message).toMatch(/^Fn::GetStackOutput: '\*\*\*' is not a valid AWS region name/);
+    expect(message).toMatch(/^Fn::GetStackOutput: "\*\*\*" is not a valid AWS region name/);
   });
 
   it('CONTROL: an invalid unrecorded region prints verbatim', async () => {
@@ -901,7 +901,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       makeContext({ stateBackend: emptyBackend() })
     );
     expect(message).toMatch(
-      new RegExp(`^Fn::GetStackOutput: 'BAD_${UNRECORDED}' is not a valid AWS region name`)
+      new RegExp(`^Fn::GetStackOutput: BAD_${UNRECORDED} is not a valid AWS region name`)
     );
   });
 
@@ -927,7 +927,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       logSpies.info.mock.calls
         .map((c) => String(c[0]))
         .some((l) =>
-          l.startsWith('Resolved Fn::GetStackOutput: StackName=stack-***, Region=us-east-1, OutputName=out-*** (from CloudFormation')
+          l.startsWith('Resolved Fn::GetStackOutput: StackName="stack-***", Region=us-east-1, OutputName="out-***" (from CloudFormation')
         )
     ).toBe(true);
     expectNowhere(`-${PIN}`);
@@ -954,11 +954,11 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       { 'Fn::GetStackOutput': { StackName: sub('stack-${P}'), OutputName: sub('out-${P}') } },
       makeContext({ stateBackend: emptyBackend() })
     );
-    expect(message).toContain("stack 'stack-***' not found in region");
+    expect(message).toContain('stack "stack-***" not found in region');
     expect(everyLine()).toContain(
-      'Resolving Fn::GetStackOutput: StackName=stack-***, Region=us-east-1, OutputName=out-***'
+      'Resolving Fn::GetStackOutput: StackName="stack-***", Region=us-east-1, OutputName="out-***"'
     );
-    expect(everyLine().some((l) => l.includes("fallback failed for stack 'stack-***' (us-east-1)"))).toBe(true);
+    expect(everyLine().some((l) => l.includes('fallback failed for stack "stack-***" (us-east-1)'))).toBe(true);
     expectNowhere(`stack-${PIN}`, message);
   });
 
@@ -968,7 +968,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       makeContext({ stackName: `stack-${PIN}`, stateBackend: emptyBackend() })
     );
     expect(message).toBe(
-      "Fn::GetStackOutput: cannot reference own stack 'stack-***' in the same region 'us-east-1'"
+      "Fn::GetStackOutput: cannot reference own stack \"stack-***\" in the same region us-east-1"
     );
   });
 
@@ -978,7 +978,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       makeContext({ stackName: 'Producer', stateBackend: emptyBackend() })
     );
     expect(message).toBe(
-      "Fn::GetStackOutput: cannot reference own stack 'Producer' in the same region 'us-east-***'"
+      "Fn::GetStackOutput: cannot reference own stack Producer in the same region \"us-east-***\""
     );
   });
 
@@ -1000,7 +1000,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
     expect(
       logSpies.info.mock.calls
         .map((c) => String(c[0]))
-        .some((l) => l.startsWith('Resolved Fn::GetStackOutput: StackName=stack-***, Region=us-east-***, OutputName=out-***'))
+        .some((l) => l.startsWith('Resolved Fn::GetStackOutput: StackName="stack-***", Region=us-east-***, OutputName="out-***"'))
     ).toBe(true);
     expect(everyLine()).toContain(
       "Re-resolving dynamic reference(s) in Fn::GetStackOutput 'out-***' (producer stack-*** / us-east-***)"
@@ -1448,7 +1448,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       makeContext()
     );
     expect(message).toBe(
-      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+      "Refusing to build AWS clients for the region \"us-west-2_***\": it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
     expectNowhere(`us-west-2_${PIN}`, message);
@@ -1465,7 +1465,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       makeContext()
     );
     expect(message).toBe(
-      `Refusing to build AWS clients for the region 'us-west-2_${UNRECORDED}': it is not a valid AWS ` +
+      `Refusing to build AWS clients for the region us-west-2_${UNRECORDED}: it is not a valid AWS ` +
         'region name, and a region is substituted into the AWS service hostname.'
     );
   });
@@ -1478,7 +1478,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       new IntrinsicFunctionResolver(`us-west-2_${UNRECORDED}`)
     );
     expect(message).toBe(
-      `Refusing to build AWS clients for the region 'us-west-2_${UNRECORDED}': it is not a valid AWS ` +
+      `Refusing to build AWS clients for the region us-west-2_${UNRECORDED}: it is not a valid AWS ` +
         'region name, and a region is substituted into the AWS service hostname.'
     );
   });
@@ -1504,7 +1504,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       resolver
     );
     expect(message).toBe(
-      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+      "Refusing to build AWS clients for the region \"us-west-2_***\": it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
     expect(
@@ -1535,7 +1535,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       resolver
     );
     expect(message).toBe(
-      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+      "Refusing to build AWS clients for the region \"us-west-2_***\": it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
     expect(
@@ -1567,7 +1567,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     await resolver.resolve(ref('stone'), context as never);
     const token = `{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_s${String.fromCharCode(1)}t-1:210987654321:secret:x:SecretString:k}}`;
     const expected =
-      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+      "Refusing to build AWS clients for the region \"us-west-2_***\": it is not a valid AWS " +
       'region name, and a region is substituted into the AWS service hostname.';
     expect(await messageOf(token, context, resolver), 'premise: the first refusal').toBe(expected);
     expect(await messageOf(token, context, resolver)).toBe(expected);
@@ -1584,7 +1584,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       resolver
     );
     expect(literal, 'premise: the literal region prints as the template spells it').toBe(
-      `Refusing to build AWS clients for the region 'us-west-2_${PIN}': it is not a valid AWS ` +
+      `Refusing to build AWS clients for the region us-west-2_${PIN}: it is not a valid AWS ` +
         'region name, and a region is substituted into the AWS service hostname.'
     );
     const assembled = await messageOf(
@@ -1593,7 +1593,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       resolver
     );
     expect(assembled).toBe(
-      "Refusing to build AWS clients for the region '***': it is not a valid AWS " +
+      "Refusing to build AWS clients for the region \"***\": it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
   });
@@ -2246,6 +2246,73 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
       "Failed to get state for stack '***' (us-east-1): Access Denied"
     );
     expect(error.message).not.toContain('y7');
+  });
+
+  it('the JSON-ESCAPED spelling is substituted too, since the state backend bounds a name that way (go-to-k/cdkd#3617)', async () => {
+    // `S3StateBackend` renders a stack name through `displayStackName`, so a
+    // name carrying `"` reaches the message as `\"` inside a JSON string, and
+    // neither the raw nor the sanitized spelling matches it there.
+    const raw = `svc-"${PIN}`;
+    const error = await errorOf(
+      producer(sub('svc-"${P}')),
+      makeContext({
+        stateBackend: {
+          listStacks: vi.fn(async () => []),
+          getState: vi.fn(async () => {
+            throw new StateError(
+              `Failed to get state for stack ${displayStackName(raw)} (us-east-1): Access Denied`
+            );
+          }),
+        } as unknown as S3StateBackend,
+      })
+    );
+    expect(error.message).toBe(
+      'Failed to get state for stack "svc-\\"***" (us-east-1): Access Denied'
+    );
+    expectNowhere(PIN, error.message);
+  });
+
+  it('...and when the name ALSO carries a control character, so the escaped spelling is of the SANITIZED one', async () => {
+    const raw = `svc-"x${String.fromCharCode(1)}${PIN}`;
+    const error = await errorOf(
+      producer(sub(`svc-"x${String.fromCharCode(1)}\${P}`)),
+      makeContext({
+        stateBackend: {
+          listStacks: vi.fn(async () => []),
+          getState: vi.fn(async () => {
+            throw new StateError(
+              `Failed to get state for stack ${displayStackName(raw)} (us-east-1): Access Denied`
+            );
+          }),
+        } as unknown as S3StateBackend,
+      })
+    );
+    expect(error.message).toBe(
+      'Failed to get state for stack "svc-\\"x***" (us-east-1): Access Denied'
+    );
+    expectNowhere(PIN, error.message);
+  });
+
+  it('...and when the backend CUTS a long name, the cut rendering is masked whole', async () => {
+    // `displayStackName` cuts past STACK_REF_MAX_CODE_POINTS, and a cut prefix
+    // matches none of the whole-name keys.
+    const pad = 'a'.repeat(1200);
+    const raw = `svc-${PIN}-${pad}`;
+    const error = await errorOf(
+      producer(sub(`svc-\${P}-${pad}`)),
+      makeContext({
+        stateBackend: {
+          listStacks: vi.fn(async () => []),
+          getState: vi.fn(async () => {
+            throw new StateError(
+              `Failed to get state for stack ${displayStackName(raw)} (us-east-1): Access Denied`
+            );
+          }),
+        } as unknown as S3StateBackend,
+      })
+    );
+    expect(error.message).toContain('Failed to get state for stack "svc-***-aaa');
+    expectNowhere(PIN, error.message);
   });
 
   it('THE INVARIANT: nothing this masker prints is less sanitized than what the sink printed', async () => {

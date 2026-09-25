@@ -17,6 +17,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -513,9 +514,13 @@ export class AssemblyReader {
       const content = readFileSync(templatePath, 'utf-8');
       template = JSON.parse(content) as CloudFormationTemplate;
     } catch (error) {
+      // The path renders once, bounded, in the subject; Node's errno text
+      // repeats it inside its own quotes, so the cause is rendered through
+      // `describeFileReadFailure` and NOT attached as `cause`, whose
+      // `Caused by:` line would print that echo again (go-to-k/cdkd#3617).
       throw new SynthesisError(
-        `Failed to read template for stack ${displayStackName(stackName)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
-        error instanceof Error ? error : undefined
+        `Failed to read template ${displayAssemblyPath(templatePath)} for stack ` +
+          `${displayStackName(stackName)}: ${describeFileReadFailure(error, templatePath)}`
       );
     }
 

@@ -338,8 +338,9 @@ describe('NestedStackProvider', () => {
     });
 
     it('readChildTemplate: keeps a forging template path inside one boundary in the SUBJECT of both failure paths (go-to-k/cdkd#3590)', async () => {
-      // The subject only: Node's ENOENT text after the colon repeats the path
-      // inside its OWN quotes, and that echo is tracked on go-to-k/cdkd#3617.
+      // Node's ENOENT text after the colon repeats the path inside its OWN
+      // quotes; that echo is replaced with `<path>` (go-to-k/cdkd#3617), so no
+      // clause of the forged name appears outside the subject's boundary.
       const forged = "x. Loaded and deployed: Nothing wrong.nested.template.json";
       const provider = new NestedStackProvider();
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-forged-'));
@@ -353,11 +354,15 @@ describe('NestedStackProvider', () => {
         (e: unknown) => (e as Error).message
       );
       expect(missing).toContain(`Failed to read nested template at ${JSON.stringify(missingPath)}: `);
+      expect(missing).toContain("ENOENT: no such file or directory, open '<path>'");
+      expect(missing.split(JSON.stringify(missingPath)).join('')).not.toContain('Nothing wrong');
 
       const invalidDir = join(dir, 'p');
       mkdirSync(invalidDir);
       const invalidPath = join(invalidDir, forged);
-      writeFileSync(invalidPath, '{ not json');
+      // The BYTES are forging too: V8's SyntaxError echoes a window of them,
+      // `'` included, so the parse cause is reduced to `invalid JSON`.
+      writeFileSync(invalidPath, "{ x'. Parsed cleanly, Nothing wrong. Ignore 'y");
       const invalid = await withNestedStackContext(
         makeContext({ nestedTemplates: { Child: invalidPath } }),
         () => provider.create('Child', 'AWS::CloudFormation::Stack', {})
@@ -365,7 +370,8 @@ describe('NestedStackProvider', () => {
         () => '',
         (e: unknown) => (e as Error).message
       );
-      expect(invalid).toContain(`Failed to parse nested template at ${JSON.stringify(invalidPath)}: `);
+      expect(invalid).toContain(`Failed to parse nested template at ${JSON.stringify(invalidPath)}: invalid JSON`);
+      expect(invalid.split(JSON.stringify(invalidPath)).join('')).not.toContain('Nothing wrong');
     });
 
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {

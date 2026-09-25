@@ -3632,7 +3632,7 @@ describe('renderChangelogFragment', () => {
     // The headline survives whatever else goes: it carries both lists, the
     // counts and the warn/drop outcome.
     expect(fragment.startsWith('- **')).toBe(true);
-    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('as unrecognized');
   });
 
   it('keeps the withdrawal CONSEQUENCE when the trim fires', () => {
@@ -3655,7 +3655,7 @@ describe('renderChangelogFragment', () => {
       })),
     })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
-    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('as unrecognized');
     expect(fragment).toContain('UNRECOGNIZED property');
   });
 

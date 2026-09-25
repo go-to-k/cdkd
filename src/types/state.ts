@@ -1166,4 +1166,16 @@ export interface PropertyChange {
    * than a literal value edit.
    */
   replacementPropagated?: boolean;
+
+  /**
+   * Set on synthetic changes created by IN-PLACE attribute propagation
+   * (`DiffCalculator.promoteInPlaceAttributeDependents`, every arm): the
+   * property's template value did not change, but an attribute it reads of an
+   * updated resource may move. Whether it DID is known only once the deploy
+   * resolves the reader, so `requiresReplacement` here is a CEILING, not a
+   * verdict: the deploy engine drops it for a path whose resolved value equals
+   * the record (go-to-k/cdkd#3662). `replacementPropagated` changes get the
+   * same treatment, since their seed can be such a ceiling too.
+   */
+  inPlacePropagated?: boolean;
 }

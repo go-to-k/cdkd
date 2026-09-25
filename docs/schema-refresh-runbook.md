@@ -7,9 +7,11 @@ unlisted: true
 # CFn schema refresh runbook
 
 A scheduled job keeps `tests/fixtures/cfn-schemas/*.json` current with what AWS
-publishes, because those fixtures decide SDK-vs-Cloud-Control routing and a
-property missing from them is dropped silently. This page is the operator's
-side of it: what arrives, and what to do with it.
+publishes. A property missing from them still reaches AWS, because it routes
+through Cloud Control; the fixtures are what let an SDK provider take a
+property over and what keep the read-only, create-only and nested-required
+data current. This page is the operator's side of it: what arrives, and what
+to do with it.
 
 The reasoning behind the design — why a scheduled PR rather than a CI check,
 why the job is allowed to fail — is in
@@ -90,11 +92,13 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
 
    **A cycle that only REMOVES properties gets an entry too**, because it
    ships a delta of its own: a withdrawn property loses the row that made it
-   route through Cloud Control, so a template still carrying it is dropped
-   with a warn from that merge on. The entry says which of the two things
+   route through Cloud Control and becomes unrecognized. A new resource, or a
+   changed value, still routes and Cloud Control rejects the key AWS withdrew;
+   an existing resource carrying it unchanged stays on the SDK path with a
+   warn. The entry says which of the two things
    follows for each type — it keeps auto-routing on another property, or a new
-   resource of that type returns to the SDK path while one already recorded
-   `provisionedBy: 'cc-api'` stays where it is. A property the provider
+   resource of that type without the withdrawn key returns to the SDK path
+   while one already recorded `provisionedBy: 'cc-api'` stays where it is. A property the provider
    DECLARES is not in that population: its removal makes the declaration
    bogus, which the pull request escalates as a decision instead.
 7. Marks the pull request with how many decisions are left, or clears the
@@ -124,10 +128,10 @@ nothing, forever, is the failure mode worth being noisy about.
 
 Merge it. Properties were added and nothing else.
 
-From the merge on, a template using one of those properties routes through
-Cloud Control instead of being dropped. Before it, the same template got a
-deploy-time warning — the value was never silently lost, but it did not work
-either.
+A template using one of those properties already routes through Cloud
+Control before the merge, as an unrecognized property. The merge records them
+as known properties the SDK provider does not wire, which puts them on the
+backfill list and brings their create-only and nested-required data in.
 
 Newly unaccounted **writable** properties are listed in the pull request. They
 reach the standing backfill checklist when this PR MERGES, not when the job runs

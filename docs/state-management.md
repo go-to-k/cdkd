@@ -1335,6 +1335,19 @@ masking at resolution time would make a template feeding such a value into
 `AWS::SecretsManager::Secret.SecretString` store the literal `***` as the
 secret.)
 
+**A new value reaches every consumer.** When the handler runs and returns a
+value, each resource reading it is updated with it, although the stored value
+and the new one both read `***` in state: two masks say nothing about the
+values behind them. When the handler returns the same value again, cdkd cannot
+tell, so:
+
+- each consumer takes one redundant update;
+- a consumer that is itself a custom resource has its OWN handler invoked
+  again, with whatever side effects that handler has;
+- a consumer holding the value in a property that cannot change in place is
+  replaced, because cdkd keeps only the mask and cannot compare the new value
+  with the old one.
+
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no
 `{{resolve:...}}` reference behind it — so once the mask is in state, cdkd will

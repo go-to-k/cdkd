@@ -2181,6 +2181,11 @@
       ]
     },
     {
+      "name": "unrecognized-key-autoroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "update-policy-mutations",
       "annotated": true,
       "scenarios": [
@@ -3063,6 +3068,7 @@
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",
-    "synthetics-canary"
+    "synthetics-canary",
+    "unrecognized-key-autoroute"
   ]
 }

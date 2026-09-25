@@ -26,7 +26,12 @@ import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
-import { displaySafe, truncateCodePoints, IDENT_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  displayStackName,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
 // The LEAF directly, not the re-export: this module needs one pure function,
@@ -411,7 +416,7 @@ export class S3StateBackend {
     // own reachability, tracked as issue #3027. Hoisted above the `try` because
     // the catch and the legacy-fallback branch below need them too.
     const shownStackName = this.displayName(stackName);
-    const shownRegionName = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+    const shownRegionName = displayIdent(region);
 
     // 1. Try new region-scoped key first.
     try {
@@ -433,12 +438,12 @@ export class S3StateBackend {
       // segment in the message.
       if (!response.Body) {
         throw new StateError(
-          `State file for stack '${shownStackName}' (${shownRegionName}) has no body`
+          `State file for stack ${shownStackName} (${shownRegionName}) has no body`
         );
       }
       if (!response.ETag) {
         throw new StateError(
-          `State file for stack '${shownStackName}' (${shownRegionName}) has no ETag`
+          `State file for stack ${shownStackName} (${shownRegionName}) has no ETag`
         );
       }
 
@@ -468,7 +473,7 @@ export class S3StateBackend {
             asciiOnly: true,
           }) || UNRENDERABLE;
         throw new StateError(
-          `Failed to get state for stack '${shownStackName}' (${shownRegionName}): ${detail}`,
+          `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${detail}`,
           error instanceof Error ? error : undefined
         );
       }
@@ -484,10 +489,11 @@ export class S3StateBackend {
       // The KEY is built from the real name and sanitized AFTER. Building it
       // from the sanitized name substitutes a DIFFERENT name into the middle of
       // the key, which is a wrong key rather than a redacted one.
-      const shownKey =
-        displaySafe(this.getLegacyStateKey(stackName), { asciiOnly: true }) || UNRENDERABLE;
+      const shownKey = displayIdent(this.getLegacyStateKey(stackName), {
+        maxCodePoints: STACK_REF_MAX_CODE_POINTS,
+      });
       this.logger.warn(
-        `Loaded legacy state for stack '${shownStackName}' from '${shownKey}'. ` +
+        `Loaded legacy state for stack ${shownStackName} from ${shownKey}. ` +
           `It will be migrated to the region-scoped layout on next save.`
       );
       return { ...legacy, migrationPending: true };
@@ -643,7 +649,7 @@ export class S3StateBackend {
         // survived it.
         const safeName = this.displayName(stackName);
         this.logger.warn(
-          `Could not read the legacy state record for '${safeName}' while cleaning up ` +
+          `Could not read the legacy state record for ${safeName} while cleaning up ` +
             `(${legacyProbe.reason}). If one exists it was left in place. ` +
             `Re-run with --verbose for the details.`
         );
@@ -725,9 +731,9 @@ export class S3StateBackend {
       // sanitization downstream (issue #2170's class).
       // `key` embeds `stackName` verbatim, so logging it raw would defeat
       // the sanitization on the line it sits in.
-      const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+      const safeStack = displayStackName(stackName);
       this.logger.debug(
-        `Deleting legacy state: ${safeStack} (${displaySafe(key, { asciiOnly: true }) || UNRENDERABLE})`
+        `Deleting legacy state: ${safeStack} (${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })})`
       );
       await this.s3Client.send(
         new DeleteObjectCommand({
@@ -744,7 +750,7 @@ export class S3StateBackend {
       });
       throw new StateError(
         `Failed to delete legacy state for stack ` +
-          `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}': ` +
+          `${displayStackName(stackName)}: ` +
           `${normalized.message}`,
         normalized
       );
@@ -1263,7 +1269,9 @@ export class S3StateBackend {
    * message that renders one goes through here (issue #2170's class).
    */
   private displayName(stackName: string): string {
-    return displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+    // Bare when plain, otherwise one JSON string: callers write NO quotes of
+    // their own around it (go-to-k/cdkd#3617).
+    return displayStackName(stackName);
   }
 
   /**
@@ -1357,10 +1365,10 @@ export class S3StateBackend {
     // are not collapsed).
     const kind = describeRegionValueKind(raw);
     this.logger.warn(
-      `State record for stack '${shownStackName}' carries a 'region' of its own (${kind}) that ` +
-        `is not the region of the S3 key it was read from ('${shownRegionName}'). cdkd stamps ` +
+      `State record for stack ${shownStackName} carries a 'region' of its own (${kind}) that ` +
+        `is not the region of the S3 key it was read from (${shownRegionName}). cdkd stamps ` +
         `the key's region into every record it writes, so this record was not written by cdkd. ` +
-        `Continuing against '${shownRegionName}' — the key is authoritative. Re-run with ` +
+        `Continuing against ${shownRegionName} — the key is authoritative. Re-run with ` +
         `--verbose to see the recorded value, where it has one to show.`
     );
     // Sanitized even at debug, for the reason `tryGetLegacy`'s sibling gives:
@@ -1374,15 +1382,15 @@ export class S3StateBackend {
     // debug line that adds nothing for them would make the warn's
     // "--verbose to see it" a false promise. The KIND is the whole answer for
     // those two, and this says so instead of implying a value was withheld.
-    const shownBodyRegion = truncateCodePoints(
-      displaySafe(raw, { asciiOnly: true }),
-      IDENT_MAX_CODE_POINTS
-    );
+    //
+    // A non-empty region renders through `displayIdent`, which carries its own
+    // cap and cut marker and a boundary of its own, never inside cdkd's quotes
+    // (go-to-k/cdkd#3617).
     this.logger.debug(
-      `State record for stack '${shownStackName}' carries body region ` +
-        (shownBodyRegion.text === ''
+      `State record for stack ${shownStackName} carries body region ` +
+        (displaySafe(raw, { asciiOnly: true }) === ''
           ? `${kind}, which renders as nothing — its kind above is the whole of it.`
-          : `'${shownBodyRegion.text}'${shownBodyRegion.truncated ? ' [cut]' : ''}.`)
+          : `${displayIdent(raw)}.`)
     );
     return { state: { ...state, region }, divergentBodyRegion: raw };
   }
@@ -1398,7 +1406,7 @@ export class S3StateBackend {
       );
       if (!response.Body) {
         this.logger.debug(
-          `Legacy state probe for '${this.displayName(stackName)}': response carried no body`
+          `Legacy state probe for ${this.displayName(stackName)}: response carried no body`
         );
         return { kind: 'unreadable', reason: 'the response carried no body' };
       }
@@ -1426,7 +1434,7 @@ export class S3StateBackend {
         // tells the operator whether the field is a number, an array or an
         // object without showing them any of it.
         this.logger.debug(
-          `Legacy state probe for '${this.displayName(stackName)}': ` +
+          `Legacy state probe for ${this.displayName(stackName)}: ` +
             `'region' is ${typeof raw}, not a string`
         );
         return { kind: 'unreadable', reason: `its 'region' field is ${typeof raw}, not a string` };
@@ -1450,7 +1458,7 @@ export class S3StateBackend {
       // `s3Client.send`, so this `detail` is AWS's own wording as well as a
       // parse snippet -- an earlier revision claimed only the latter.)
       this.logger.debug(
-        `Could not read legacy state region for '${this.displayName(stackName)}': ` +
+        `Could not read legacy state region for ${this.displayName(stackName)}: ` +
           `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
       );
       const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
@@ -1524,9 +1532,8 @@ export class S3StateBackend {
         // that one gives: debug is quieter than warn, not a different terminal.
         // `state.region` here is state-BODY content, not just a key segment.
         this.logger.debug(
-          `Legacy state for stack '${this.displayName(stackName)}' has region ` +
-            `'${displaySafe(state.region, { asciiOnly: true }) || UNRENDERABLE}', ` +
-            `not '${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}' — skipping legacy fallback.`
+          `Legacy state for stack ${this.displayName(stackName)} has region ` +
+            `${displayIdent(state.region)}, not ${displayIdent(region)} — skipping legacy fallback.`
         );
         return null;
       }
@@ -1556,7 +1563,7 @@ export class S3StateBackend {
       // identity so the ordinary path allocates nothing.
       if (legacyRegion !== undefined && (typeof legacyRegion !== 'string' || legacyRegion === '')) {
         this.logger.debug(
-          `Legacy state for stack '${this.displayName(stackName)}' names no usable region ` +
+          `Legacy state for stack ${this.displayName(stackName)} names no usable region ` +
             `(${describeRegionValueKind(legacyRegion)}); reading it as region-less.`
         );
         // `region` is OPTIONAL on `StackState`, so the rest object is already
@@ -1576,7 +1583,7 @@ export class S3StateBackend {
           asciiOnly: true,
         }) || UNRENDERABLE;
       throw new StateError(
-        `Failed to get legacy state for stack '${this.displayName(stackName)}': ${detail}`,
+        `Failed to get legacy state for stack ${this.displayName(stackName)}: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1615,7 +1622,7 @@ export class S3StateBackend {
       // no longer tries: the checker is the authority, it runs in CI, and it
       // says so when an edit here un-anchors the sample.
       throw new StateError(
-        `State file for stack '${this.displayName(stackName)}' is not valid JSON: ${detail}`,
+        `State file for stack ${this.displayName(stackName)} is not valid JSON: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1648,7 +1655,7 @@ export class S3StateBackend {
     if (root === null || typeof root !== 'object' || Array.isArray(root)) {
       const got = root === null ? 'null' : Array.isArray(root) ? 'an array' : `a ${typeof root}`;
       throw new StateError(
-        `State file for stack '${this.displayName(stackName)}' is not a JSON object (it parses to ${got}), ` +
+        `State file for stack ${this.displayName(stackName)} is not a JSON object (it parses to ${got}), ` +
           `so cdkd cannot read it as a state record.`
       );
     }
@@ -1669,7 +1676,7 @@ export class S3StateBackend {
       const shown =
         displaySafe(vShown === null ? 'null' : vShown, { asciiOnly: true }) || UNRENDERABLE;
       throw new StateError(
-        `Unsupported state schema version ${shown} for stack '${this.displayName(stackName)}'. ` +
+        `Unsupported state schema version ${shown} for stack ${this.displayName(stackName)}. ` +
           `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +
           `Upgrade cdkd to a version that supports schema ${shown}.`
       );

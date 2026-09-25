@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import type { ArtifactManifest, MetadataEntry } from '../types/assembly.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayStackName } from '../utils/display-safe.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -104,10 +105,10 @@ export function collectStackMessages(
       }
       for (const [path, entries] of Object.entries(sideFile)) {
         if (!Array.isArray(entries)) {
-          // Raw on purpose: this Error never escapes the surrounding `catch`,
-          // which is the only thing a user sees and which sanitizes the whole
-          // text. Sanitizing here too would leave a guard nothing can probe.
-          throw new Error(`entry for path '${path}' is not an array`);
+          // Bounded, not quoted: the surrounding `catch` only SANITIZES this
+          // text, and a side-file key carrying `'` would close cdkd's quote
+          // and write a clause of its own (go-to-k/cdkd#3617).
+          throw new Error(`entry for path ${displayStackName(path)} is not an array`);
         }
         merged[path] = [...(merged[path] ?? []), ...entries];
       }
@@ -131,9 +132,12 @@ export function collectStackMessages(
       // What blocks the fix here is that an annotation legitimately carries
       // newlines, so `displaySafe` (which maps them to spaces) is the wrong
       // helper and the right one does not exist yet.
+      // NO `cause`: `formatError` prints a cause's message on a `Caused by:`
+      // line, and Node's errno text repeats the path there inside its own
+      // quotes -- the echo `describeFileReadFailure` just removed from this
+      // line (go-to-k/cdkd#3617). The message already carries the reason.
       throw new SynthesisError(
-        `Failed to read stack metadata file ${displayAssemblyPath(metadataPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
-        error instanceof Error ? error : undefined
+        `Failed to read stack metadata file ${displayAssemblyPath(metadataPath)}: ${describeFileReadFailure(error, metadataPath)}`
       );
     }
   }

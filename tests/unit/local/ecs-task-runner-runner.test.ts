@@ -202,6 +202,17 @@ vi.mock('../../../src/local/ecs-secrets-resolver.js', () => ({
   resolveEcsSecrets: secretsStubs.resolveEcsSecrets,
 }));
 
+// docker-cmd: `runDockerStreaming` is SPIED on and runs the real helper by
+// default; only the re-tag case below makes it reject.
+const dockerCmdStubs = vi.hoisted(() => ({ runDockerStreaming: vi.fn() }));
+vi.mock('../../../src/utils/docker-cmd.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
+    '../../../src/utils/docker-cmd.js'
+  );
+  dockerCmdStubs.runDockerStreaming.mockImplementation(actual.runDockerStreaming);
+  return { ...actual, runDockerStreaming: dockerCmdStubs.runDockerStreaming };
+});
+
 // asset-manifest-loader: mock the class so the cdk-asset image branch
 // doesn't try to read cdk.out from disk.
 const manifestStubs = vi.hoisted(() => ({
@@ -508,7 +519,7 @@ describe('runEcsTask — image preparation (G1)', () => {
     expect(wrapped.message).toContain('--build-arg GH_TOKEN=***');
     // Both halves of the diagnostic survive: which container, and what docker
     // actually said.
-    expect(wrapped.message).toContain(`docker build failed for ECS container '${c.name}'`);
+    expect(wrapped.message).toContain(`docker build failed for ECS container ${c.name} (`);
     expect(wrapped.message).toContain('docker: BOOM');
   });
 
@@ -536,6 +547,60 @@ describe('runEcsTask — image preparation (G1)', () => {
     const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
     expect(wrapped.message).toContain(`(${JSON.stringify(forged)}): docker: BOOM`);
     expect(wrapped.message.split(JSON.stringify(forged)).join('')).not.toContain('Build succeeded');
+  });
+
+  it('cdk-asset → wrapError keeps a FORGING container name inside one boundary (go-to-k/cdkd#3617)', async () => {
+    const NAME = "app'). Build succeeded (docker: 'ok";
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ name: NAME, image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    await runEcsTask(makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    }), baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).toContain(`docker build failed for ECS container ${JSON.stringify(NAME)} (`);
+    expect(wrapped.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('Build succeeded');
+  });
+
+  it('a failed re-tag keeps a FORGING script tag and container name inside one boundary each (go-to-k/cdkd#3617)', async () => {
+    const NAME = "app'). Tagged cleanly ('x";
+    const SCRIPT_TAG = "img:v2' -> 'ok'. Tagged cleanly ('y";
+    captured.responder = happyDockerResponder();
+    dockerBuildStubs.buildDockerImage.mockImplementationOnce(async () => SCRIPT_TAG);
+    dockerCmdStubs.runDockerStreaming.mockRejectedValueOnce(new Error('tag: BOOM'));
+    const c = makeContainer({ name: NAME, image: { kind: 'cdk-asset', assetHash: 'h0' } });
+
+    const err = await runEcsTask(makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    }), baseOptions(), createEcsRunState()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(err).toBeDefined();
+    const m = String(err?.message ?? '');
+    expect(m).toContain(
+      `docker tag failed re-tagging ${JSON.stringify(SCRIPT_TAG)} → cdkd-local-`
+    );
+    expect(m).toContain(`for ECS container ${JSON.stringify(NAME)}: `);
+    expect(m.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('Tagged cleanly');
   });
 
   it('cdk-asset with a plain `directory` source → wrapError renders it bare', async () => {

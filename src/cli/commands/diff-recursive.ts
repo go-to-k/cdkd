@@ -1,6 +1,7 @@
 import { stripControlChars } from '../../utils/regexp.js';
 import { displayIdent, displayStackName } from '../../utils/display-safe.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -332,14 +333,14 @@ export function readNestedTemplate(templatePath: string): CloudFormationTemplate
     raw = fs.readFileSync(templatePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
   try {
     return JSON.parse(raw) as CloudFormationTemplate;
   } catch (err) {
     throw new Error(
-      `Failed to parse nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
 }
@@ -1941,7 +1942,14 @@ export function collectCcApiRoutes(
     if (!resource) continue;
     if (resource.Type === 'AWS::CDK::Metadata') continue;
     if (resource.Type === NESTED_STACK_RESOURCE_TYPE) continue;
-    const drops = findActionableSilentDrops(resource.Type, resource.Properties, EMPTY_ALLOW_SET);
+    // The record's bag is the baseline an unrecognized property is compared
+    // against, as `getProviderFor` does on the update path (issue #3713).
+    const drops = findActionableSilentDrops(
+      resource.Type,
+      resource.Properties,
+      EMPTY_ALLOW_SET,
+      state.resources[logicalId]?.properties
+    );
     if (drops.length > 0) {
       hits.set(
         logicalId,
@@ -2366,7 +2374,16 @@ export function renderChangeLines(
             // references will change after the upstream replacement. Label
             // it so the apparent string -> {Ref} delta is not misread as a
             // literal value edit.
-            const propagated = propChange.replacementPropagated ? ' [replacement propagated]' : '';
+            // go-to-k/cdkd#3662: the in-place twin — the reader was promoted
+            // because an attribute it reads of an updated resource (a nested
+            // stack output, a custom resource's `Data`) MAY move, which only
+            // the deploy learns; the old side is the resolved value, the new
+            // side the reading intrinsic.
+            const propagated = propChange.replacementPropagated
+              ? ' [replacement propagated]'
+              : propChange.inPlacePropagated
+                ? ' [attribute propagated]'
+                : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,

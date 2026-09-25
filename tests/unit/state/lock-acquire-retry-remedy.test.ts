@@ -75,7 +75,7 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
 
   it('still names the evidence it always did', async () => {
     const message = await failureMessage('MyStack', 'us-east-1', LIVE_LOCK());
-    expect(message).toContain("Failed to acquire lock for stack 'MyStack' (us-east-1)");
+    expect(message).toContain('Failed to acquire lock for stack MyStack (us-east-1)');
     expect(message).toContain('Locked by: alice@host');
     expect(message).toContain('operation: deploy');
   });
@@ -123,13 +123,14 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     // pin; asserting the words are absent would be asserting something
     // `displaySafe` does not do.
     expect(message.split('\n')).toHaveLength(1);
-    // The whole payload is inside the quoted stack name of the head sentence.
+    // The whole payload is inside the stack name's own JSON boundary in the
+    // head sentence (go-to-k/cdkd#3617).
     // The `> -1` is load-bearing: without it a head that DROPPED the name
     // entirely gives `-1 < 48` and the case passes while establishing nothing
     // (measured in the round-2 review).
     const payloadAt = message.indexOf('run: cdkd force-unlock');
     expect(payloadAt).toBeGreaterThan(-1);
-    expect(payloadAt).toBeLessThan(message.indexOf("' (us-east-1)"));
+    expect(payloadAt).toBeLessThan(message.indexOf('" (us-east-1)'));
     // ...and the suppression branch still fires, so no command is offered.
     expect(message).toContain('would address a different lock');
   });
@@ -143,7 +144,7 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     // Without this, a head that replaced everything with `<unrenderable>` would
     // satisfy every assertion above.
     const message = await failureMessage('MyStack', 'ap-northeast-1', LIVE_LOCK());
-    expect(message).toContain("Failed to acquire lock for stack 'MyStack' (ap-northeast-1)");
+    expect(message).toContain('Failed to acquire lock for stack MyStack (ap-northeast-1)');
   });
 
   it('sanitizes the RETRY line too, not only the throw (sibling site)', async () => {
@@ -175,7 +176,7 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     await manager
       .acquireLockWithRetry('MyStack', 'ap-northeast-1', undefined, 'deploy', 1, 0)
       .catch(() => undefined);
-    expect(lines.join('\n')).toContain("Stack 'MyStack' (ap-northeast-1) is locked by alice@host");
+    expect(lines.join('\n')).toContain('Stack MyStack (ap-northeast-1) is locked by alice@host');
   });
 
   it('quotes a stack name that needs it, so the suggestion is pastable', async () => {
@@ -223,7 +224,7 @@ describe("acquireLock's own throw, on the same call path (site 14 sibling)", () 
 
   it('leaves an ORDINARY name and region byte-identical (negative control)', async () => {
     const message = await acquireMessage('MyStack', 'ap-northeast-1');
-    expect(message).toContain("Failed to acquire lock for stack 'MyStack' (ap-northeast-1)");
+    expect(message).toContain('Failed to acquire lock for stack MyStack (ap-northeast-1)');
   });
 
   it('falls back to <unrenderable> for a REGION with nothing renderable left', async () => {
@@ -241,8 +242,15 @@ describe("acquireLock's own throw, on the same call path (site 14 sibling)", () 
     // than one that cannot be shown — and `lock-contention-message.ts` makes
     // exactly that distinction for exactly this reason.
     const message = await acquireMessage('\u0000\u0001\u0002', 'us-east-1');
-    expect(message).toContain(`for stack '${UNRENDERABLE}'`);
+    expect(message).toContain(`for stack ${UNRENDERABLE} `);
     expect(message).not.toContain("for stack ''");
+  });
+
+  it('names a long nested stack name WHOLE, at the stack cap rather than the 255 default (go-to-k/cdkd#3617)', async () => {
+    const name = `Parent~${'C'.repeat(300)}`;
+    const message = await acquireMessage(name, 'us-east-1');
+    expect(message).toContain(`for stack ${name} (us-east-1)`);
+    expect(message).not.toContain('[cut:');
   });
 
   it('sanitizes the SDK error text on the same line', async () => {

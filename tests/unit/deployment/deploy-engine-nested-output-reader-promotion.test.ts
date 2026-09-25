@@ -220,11 +220,10 @@ describe('DeployEngine - readers of a moved nested output (issue #3631)', () => 
   // the in-run recovery can hand the plaintext back only when the child
   // re-invoked the handler THIS run. Here it did not (the child changed
   // elsewhere), so the child's output — and the `Child` row — still read `***`.
-  // A promoted reader's UPDATE arm resolves its WHOLE bag and refuses a read of
-  // the mask before the no-change skip, failing a deploy that used to leave the
-  // reader alone; so a reader with a masked read anywhere is not promoted. The
-  // mixed shapes are the ones a per-ATTRIBUTE exclusion let through: an
-  // unmasked output in the same reader promoted it.
+  // The diff promotes such a reader like any other (go-to-k/cdkd#3662), and the
+  // engine takes its no-change skip BEFORE refusing the redacted read: the
+  // resolved bag, mask included, equals the record, so nothing is sent and the
+  // deploy succeeds. The mixed shapes put an unmasked output in the same reader.
   const secretReaderShapes: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
     [
       'reading only the masked output',
@@ -256,63 +255,134 @@ describe('DeployEngine - readers of a moved nested output (issue #3631)', () => 
     ],
   ];
 
-  it.each(secretReaderShapes)(
-    'does not refuse the deploy over a reader %s the child did not re-mint',
-    async (_shape, readerProps, recordedProps) => {
-      const state = priorState();
-      state.resources['Child']!.attributes = {
-        ...state.resources['Child']!.attributes,
-        'Outputs.Secret': '***',
-      };
-      const recorded = { Name: '/app/secret', Type: 'String', ...recordedProps };
-      state.resources['SecretReader'] = {
-        physicalId: '/app/secret',
-        resourceType: 'AWS::SSM::Parameter',
-        properties: recorded,
-        observedProperties: recorded,
-        attributes: {},
-        dependencies: ['Child'],
-      };
-      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
-      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
-        Promise.resolve(
-          logicalId === 'Child'
-            ? {
-                physicalId,
-                wasReplaced: false,
-                attributes: {
-                  'Outputs.Moved': 'moved-v2',
-                  'Outputs.Static': 'static-v1',
-                  'Outputs.Secret': '***',
-                },
-              }
-            : { physicalId, wasReplaced: false }
-        )
-      );
-      const withSecretReader: CloudFormationTemplate = {
-        Resources: {
-          ...template.Resources,
-          SecretReader: {
-            Type: 'AWS::SSM::Parameter',
-            Properties: { Name: '/app/secret', Type: 'String', ...readerProps },
-          },
+  /**
+   * Prior state and template with a `SecretReader` whose record is
+   * `recordedProps`, and a `Child` update returning `childOutputs` (plus
+   * `noEchoAttributeNames` when given, the way `NestedStackProvider.update`
+   * reports an output it recovered from a child `NoEcho` value this run).
+   */
+  function withSecretReader(
+    readerProps: Record<string, unknown>,
+    recordedProps: Record<string, unknown>,
+    childOutputs: Record<string, unknown>,
+    noEchoAttributeNames?: string[]
+  ): CloudFormationTemplate {
+    const state = priorState();
+    state.resources['Child']!.attributes = {
+      ...state.resources['Child']!.attributes,
+      'Outputs.Secret': '***',
+    };
+    const recorded = { Name: '/app/secret', Type: 'String', ...recordedProps };
+    state.resources['SecretReader'] = {
+      physicalId: '/app/secret',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: recorded,
+      observedProperties: recorded,
+      attributes: {},
+      dependencies: ['Child'],
+    };
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+      Promise.resolve(
+        logicalId === 'Child'
+          ? {
+              physicalId,
+              wasReplaced: false,
+              attributes: childOutputs,
+              ...(noEchoAttributeNames && { noEchoAttributeNames }),
+            }
+          : { physicalId, wasReplaced: false }
+      )
+    );
+    return {
+      Resources: {
+        ...template.Resources,
+        SecretReader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/secret', Type: 'String', ...readerProps },
         },
-      };
+      },
+    };
+  }
 
-      await makeEngine().deploy(STACK, withSecretReader);
+  it.each(secretReaderShapes)(
+    'promotes and then SKIPS a reader %s the child did not re-mint, rather than refusing it',
+    async (_shape, readerProps, recordedProps) => {
+      const withReader = withSecretReader(readerProps, recordedProps, {
+        'Outputs.Moved': 'moved-v2',
+        'Outputs.Static': 'static-v1',
+        'Outputs.Secret': '***',
+      });
 
-      expect(updateCallFor('SecretReader')).toBeUndefined();
-      // NOT promoted, rather than promoted and skipped: the skip is what
-      // go-to-k/cdkd#3662 changes, and the refusal sits in front of it today.
-      expect(logged.debug).not.toContain(
+      await makeEngine().deploy(STACK, withReader);
+
+      expect(logged.debug.some((m) => m.includes('in-place attr propagated): SecretReader'))).toBe(
+        true
+      );
+      expect(logged.debug).toContain(
         'Skipping SecretReader: no actual changes after intrinsic function resolution'
       );
+      expect(updateCallFor('SecretReader')).toBeUndefined();
       // The unmasked sibling in the same deploy is still carried.
       expect((updateCallFor('MovedReader')![3] as Record<string, unknown>)['Value']).toBe(
         'moved-v2'
       );
     }
   );
+
+  it('sends a NoEcho output the child RE-MINTED this run, though its record and its redaction are both ***', async () => {
+    const withReader = withSecretReader(
+      { Value: { 'Fn::GetAtt': ['Child', 'Outputs.Secret'] } },
+      { Value: '***' },
+      {
+        'Outputs.Moved': 'moved-v2',
+        'Outputs.Static': 'static-v1',
+        'Outputs.Secret': 'secret-token-v2',
+      },
+      ['Outputs.Secret']
+    );
+
+    await makeEngine().deploy(STACK, withReader);
+
+    const call = updateCallFor('SecretReader');
+    expect(call).toBeDefined();
+    expect((call![3] as Record<string, unknown>)['Value']).toBe('secret-token-v2');
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['SecretReader']?.properties?.['Value']).toBe('***');
+    expect(JSON.stringify(saved)).not.toContain('secret-token-v2');
+  });
+
+  it('refuses a promoted reader whose OTHER read moved while its masked read was not re-minted', async () => {
+    // The refusal's own case, reached now that such a reader is promoted: the
+    // reader is stale (Static moved) and sending it would write the literal
+    // mask. Before go-to-k/cdkd#3662 it was left alone, stale, under a green
+    // deploy.
+    const withReader = withSecretReader(
+      {
+        Value: { 'Fn::GetAtt': ['Child', 'Outputs.Secret'] },
+        Description: { 'Fn::GetAtt': ['Child', 'Outputs.Static'] },
+      },
+      { Value: '***', Description: 'static-v1' },
+      {
+        'Outputs.Moved': 'moved-v2',
+        'Outputs.Static': 'static-v2',
+        'Outputs.Secret': '***',
+      }
+    );
+
+    const failure = await makeEngine()
+      .deploy(STACK, withReader)
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error & { cause?: Error }
+      );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure!.cause?.message ?? failure!.message)).toContain(
+      'Cannot resolve Child.Outputs.Secret for SecretReader'
+    );
+    expect(updateCallFor('SecretReader')).toBeUndefined();
+  });
 
   it('issues NO provider call for the reader of an output the child deploy did not move', async () => {
     await makeEngine().deploy(STACK, template);

@@ -270,9 +270,55 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
 
       const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
 
-      expect(message).toContain(`Failed to read template for stack ${JSON.stringify(HOSTILE.stackName.clean)}`);
+      expect(message).toContain(
+        `Failed to read template /tmp/cdk.out/Artifact.template.json for stack ${JSON.stringify(HOSTILE.stackName.clean)}: `
+      );
       expect(message).toContain(HOSTILE.readError.clean);
       expect(message).not.toMatch(FORGING);
+    });
+
+    it('keeps a FORGING templateFile inside its boundary, and out of the errno cause (go-to-k/cdkd#3617)', () => {
+      const FILE = "t'. Template read and verified, nothing wrong. Ignore '.json";
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          Artifact: {
+            type: 'aws:cloudformation:stack',
+            properties: { templateFile: FILE, stackName: 'S' },
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        throw new Error(`ENOENT: no such file or directory, open '${String(p)}'`);
+      });
+
+      const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
+
+      const shown = JSON.stringify(`/tmp/cdk.out/${FILE}`);
+      expect(message).toContain(
+        `Failed to read template ${shown} for stack S: ENOENT: no such file or directory, open '<path>'`
+      );
+      expect(message.split(shown).join('')).not.toContain('nothing wrong');
+    });
+
+    it('reduces a template PARSE failure to `invalid JSON`, never echoing the file\'s bytes (go-to-k/cdkd#3617)', () => {
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          Artifact: {
+            type: 'aws:cloudformation:stack',
+            properties: { templateFile: 'Artifact.template.json', stackName: 'S' },
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockImplementation(() => "{ x'. Parsed cleanly, nothing wrong. Ignore 'y");
+
+      const message = messageOf(() => reader.getAllStacks('/tmp/cdk.out', manifest));
+
+      expect(message).toContain(
+        'Failed to read template /tmp/cdk.out/Artifact.template.json for stack S: invalid JSON'
+      );
+      expect(message).not.toContain('nothing wrong');
     });
 
     it('sanitizes the stack name in the missing-templateFile refusal', () => {

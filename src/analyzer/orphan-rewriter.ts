@@ -5,7 +5,7 @@ import {
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
 import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -381,9 +381,9 @@ class AttributeFetcher {
     const bag: unknown = orphan.attributes;
     if (bag !== undefined && !isReadableBag(bag)) {
       this.logger.warn(
-        `--force: state.attributes of '${displaySafe(orphanLogicalId, { asciiOnly: true })}' is ` +
+        `--force: state.attributes of ${displayIdent(orphanLogicalId)} is ` +
           `not a readable map, so it is not consulted for ` +
-          `'${displaySafe(attribute, { asciiOnly: true })}'; leaving the original intrinsic in place.`
+          `${displayIdent(attribute)}; leaving the original intrinsic in place.`
       );
       return {
         ok: false,

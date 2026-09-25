@@ -5533,6 +5533,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations"
       ],
       "signals": {
@@ -5662,6 +5663,10 @@
           "literal"
         ],
         "type-change-replacement": [
+          "literal"
+        ],
+        "unrecognized-key-autoroute": [
+          "l1",
           "literal"
         ],
         "update-policy-mutations": [

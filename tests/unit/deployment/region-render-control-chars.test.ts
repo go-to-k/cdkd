@@ -161,6 +161,25 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
-    expect(message).toContain("'us-east-1_bogus'");
+    expect(message).toContain('region us-east-1_bogus:');
+  });
+
+  it('quotes a region the sanitizer ALTERED, and one that forges a clause (go-to-k/cdkd#3617)', () => {
+    const refusal = (region: string): string => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+      try {
+        (resolver as unknown as PrivateResolver).clientsForRegion(region);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+      throw new Error('the refusal did not fire');
+    };
+    // Trimmed to a plain `us-east-1_x`; printed bare it would read as that region.
+    expect(refusal('us-east-1_x ')).toContain('for the region "us-east-1_x": ');
+    const forged = "us-east-1'. Region verified, nothing refused. Ignore 'x";
+    const m = refusal(forged);
+    // The canonical (lower-cased) spelling is what the guard names.
+    expect(m).toContain(`for the region ${JSON.stringify(forged.toLowerCase())}: `);
+    expect(m.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing refused');
   });
 });

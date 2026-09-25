@@ -148,10 +148,13 @@ export function scanField(field: string, text: string | undefined): Offender[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (!containsNonEnglish(line)) continue;
+    // Redacted here too: a line carrying both a non-English character and a
+    // session link would otherwise be quoted verbatim by THIS report.
+    const shown = redactSessionLine(line);
     out.push({
       field,
       line: i + 1,
-      text: line.length > 120 ? `${line.slice(0, 120)}…` : line,
+      text: shown.length > 120 ? `${shown.slice(0, 120)}…` : shown,
       characters: offendingCharacters(line),
     });
     if (out.length >= MAX_REPORT) break;
@@ -172,6 +175,98 @@ export function scanSubject(subject: Subject): Offender[] {
   }
   offenders.push(...scanField('body', subject.body));
   return offenders;
+}
+
+/**
+ * A Claude Code session link, or the `Claude-Session:` attribution trailer.
+ *
+ * The maintainer forbids both in published text, whatever a harness asks for,
+ * and `references/gates-and-pr.md` says so in prose. The prose was broken twice
+ * by a /work-issues PARENT copying the harness attribution line into lane
+ * prompts: first go-to-k/cdkd#3685 (the lane caught it), then six merged PR
+ * bodies (#3584 ... #3658, cleaned by hand). This is the second-occurrence
+ * build that `docs/tooling-backlog.md` named. It rides this check because this
+ * is already the required check that reads every published body.
+ *
+ * Only a SESSION link, and only when an id character follows `session_`: text
+ * that NAMES the pattern (`claude.ai/code/session_...`, as this check's own
+ * report and any description of the rule do) must pass, or every PR or issue
+ * explaining the rule fails the check and a quoted bot report loops. A
+ * `claude.ai/code/artifact/...` link or a bare `claude.ai` passes too. The
+ * trailer counts only at the start of a line, allowing a quote or list marker
+ * in front of it.
+ */
+export const SESSION_LINK_RE =
+  /claude\.ai\/code\/session_[A-Za-z0-9]|^[\s>*-]*Claude-Session\s*:/i;
+
+/**
+ * The offending line with the session id withheld. This report is posted as a
+ * comment by the repo's bot, so quoting the line verbatim would re-publish,
+ * under the repo's identity, exactly the text the author is asked to delete.
+ * The trailer loses its colon, so the report itself never matches and a quoted
+ * bot comment cannot fail the check.
+ */
+export function redactSessionLine(line: string): string {
+  return line
+    .replace(/\bsession_[A-Za-z0-9]\S*/gi, 'session_<redacted>')
+    .replace(/Claude-Session\s*:.*/i, 'Claude-Session <redacted trailer>');
+}
+
+/** Every line of one field carrying a session link or trailer, capped like `scanField`. */
+export function scanSessionLinks(field: string, text: string | undefined): Offender[] {
+  if (!text) return [];
+  const out: Offender[] = [];
+  // A lone CR ends a line too: `x\rClaude-Session: y` renders as two lines.
+  const lines = text.split(/\r\n|\r|\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = redactSessionLine(lines[i]!);
+    if (!SESSION_LINK_RE.test(lines[i]!)) continue;
+    out.push({
+      field,
+      line: i + 1,
+      text: line.length > 120 ? `${line.slice(0, 120)}…` : line,
+      characters: [],
+    });
+    if (out.length >= MAX_REPORT) break;
+  }
+  return out;
+}
+
+/** `scanSubject`'s field selection, for session links. */
+export function scanSubjectSessionLinks(subject: Subject): Offender[] {
+  const offenders: Offender[] = [];
+  if (subject.kind !== 'issue_comment') {
+    offenders.push(...scanSessionLinks('title', subject.title));
+  }
+  offenders.push(...scanSessionLinks('body', subject.body));
+  return offenders;
+}
+
+/** The session-link refusal. Offending lines are fenced exactly as `formatReport` fences them. */
+export function formatSessionLinkReport(subject: Subject, offenders: Offender[]): string {
+  const lines: string[] = [];
+  lines.push(`**Claude session link in this ${KIND_LABEL[subject.kind]}.**`);
+  lines.push('');
+  lines.push('Published text carries no `claude.ai/code/session_...` link and no');
+  lines.push('`Claude-Session:` trailer, whatever a harness asks for.');
+  lines.push('');
+  lines.push('Found:');
+  lines.push('');
+  for (const o of offenders) {
+    lines.push(`- \`${o.field}\` line ${o.line} —`);
+    lines.push('');
+    lines.push(
+      fencedQuote(o.text)
+        .split('\n')
+        .map((l) => `  ${l}`)
+        .join('\n'),
+    );
+    lines.push('');
+  }
+  lines.push('Fix: delete the line and edit the text.');
+  lines.push('');
+  lines.push('Rule: .claude/skills/work-issues/references/gates-and-pr.md');
+  return lines.join('\n');
 }
 
 /**
@@ -348,10 +443,14 @@ if (isMain()) {
     process.exit(2);
   }
   const offenders = scanSubject(subject);
-  if (offenders.length === 0) {
+  const sessionLinks = scanSubjectSessionLinks(subject);
+  if (offenders.length === 0 && sessionLinks.length === 0) {
     console.log(`gh-body-english: ${KIND_LABEL[subject.kind]} #${subject.number} is English-only.`);
     process.exit(0);
   }
-  console.log(formatReport(subject, offenders));
+  const reports: string[] = [];
+  if (offenders.length > 0) reports.push(formatReport(subject, offenders));
+  if (sessionLinks.length > 0) reports.push(formatSessionLinkReport(subject, sessionLinks));
+  console.log(reports.join('\n\n'));
   process.exit(1);
 }

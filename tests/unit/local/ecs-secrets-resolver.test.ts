@@ -224,9 +224,7 @@ describe('resolveEcsSecrets', () => {
     expect(err.message).not.toContain("Unexpected token 's'");
     // Positive: the message is still actionable — it names the container,
     // the env var, the requested json-key and a safe discriminator.
-    expect(err.message).toContain("Container 'app'");
-    expect(err.message).toContain("'DB_PASS'");
-    expect(err.message).toContain("'password'");
+    expect(err.message).toContain('Container app secret DB_PASS specified json-key password but');
     expect(err.message).toContain('not valid JSON');
     expect(err.message).toContain('SyntaxError');
   });
@@ -253,9 +251,7 @@ describe('resolveEcsSecrets', () => {
 
     expect(err).toBeInstanceOf(EcsSecretsResolutionError);
     expect(err.message).not.toContain(secret);
-    expect(err.message).toContain("'web'");
-    expect(err.message).toContain("'TOKEN'");
-    expect(err.message).toContain("'tok'");
+    expect(err.message).toContain('Container web secret TOKEN specified json-key tok but');
     expect(err.message).toContain('not valid JSON');
   });
 });
@@ -390,4 +386,63 @@ describe('secret reads run as the CALLER, never as the CLI-wide assumed role', (
       expect(config).not.toHaveProperty('credentials');
     }
   });
+});
+
+describe('names stay inside one boundary each (go-to-k/cdkd#3617)', () => {
+  it('keeps a FORGING container, env name and json-key out of cdkd\'s own quotes', async () => {
+    // All three are template-chosen and used to render inside cdkd's '...',
+    // which a `'` in any of them closed.
+    sends.secrets.mockResolvedValueOnce({ SecretString: 'not-json' });
+    const C = "app'. Secret resolved, nothing withheld. Ignore 'a";
+    const E = "PASS'. Secret resolved, nothing withheld. Ignore 'b";
+    const K = "key'. Secret resolved, nothing withheld. Ignore 'c";
+
+    const err = await resolveEcsSecrets([
+      {
+        containerName: C,
+        name: E,
+        valueFrom: `arn:aws:secretsmanager:us-east-1:123456789012:secret:foo:${K}::`,
+      },
+    ]).then(
+      () => {
+        throw new Error('expected resolveEcsSecrets to reject');
+      },
+      (e: unknown) => e as Error
+    );
+
+    expect(err.message).toContain(
+      `Container ${JSON.stringify(C)} secret ${JSON.stringify(E)} specified json-key ${JSON.stringify(K)} but`
+    );
+    expect(err.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing withheld');
+  });
+});
+
+describe('every refusal keeps a FORGING container and env name out of cdkd\'s own quotes (go-to-k/cdkd#3617)', () => {
+  const C = "app'. Secret resolved, nothing withheld. Ignore 'a";
+  const E = "PASS'. Secret resolved, nothing withheld. Ignore 'b";
+  const SM = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo';
+  const SSM = 'arn:aws:ssm:us-east-1:123456789012:parameter/p';
+  const K = "key'. Secret resolved, nothing withheld. Ignore 'c";
+  const cases: Array<[string, string, () => void, string]> = [
+    ['unsupported ValueFrom shape', 'arn:aws:s3:::nope', () => {}, `Container ${JSON.stringify(C)} secret ${JSON.stringify(E)} references`],
+    ['Secrets Manager failure', SM, () => sends.secrets.mockRejectedValueOnce(new Error('denied')), `for container ${JSON.stringify(C)} / env ${JSON.stringify(E)} (`],
+    ['no SecretString', SM, () => sends.secrets.mockResolvedValueOnce({}), `no SecretString for container ${JSON.stringify(C)} / env ${JSON.stringify(E)} (`],
+    ['JSON root not an object', `${SM}:${K}::`, () => sends.secrets.mockResolvedValueOnce({ SecretString: '[1]' }), `Container ${JSON.stringify(C)} secret ${JSON.stringify(E)} specified json-key ${JSON.stringify(K)} but the secret root`],
+    ['json-key absent', `${SM}:${K}::`, () => sends.secrets.mockResolvedValueOnce({ SecretString: '{"o":1}' }), `Container ${JSON.stringify(C)} secret ${JSON.stringify(E)} specified json-key ${JSON.stringify(K)} but no such key`],
+    ['SSM returned no Value', SSM, () => sends.ssm.mockResolvedValueOnce({ Parameter: {} }), `returned no Value for container ${JSON.stringify(C)} / env ${JSON.stringify(E)}.`],
+    ['SSM failure', SSM, () => sends.ssm.mockRejectedValueOnce(new Error('denied')), `SSM parameter for container ${JSON.stringify(C)} / env ${JSON.stringify(E)} (`],
+  ];
+  for (const [label, valueFrom, arm, expected] of cases) {
+    it(label, async () => {
+      arm();
+      const err = await resolveEcsSecrets([{ containerName: C, name: E, valueFrom }]).then(
+        () => {
+          throw new Error('expected resolveEcsSecrets to reject');
+        },
+        (e: unknown) => e as Error
+      );
+      expect(err.message).toContain(expected);
+      expect(err.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing withheld');
+    });
+  }
 });

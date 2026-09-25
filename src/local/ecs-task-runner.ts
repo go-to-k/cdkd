@@ -863,8 +863,10 @@ async function prepareOneImage(
             // its population from identifiers matching `/profile/i` and does
             // not reach these two statements; it only flagged them once
             // `displaySafe` appeared in this file. Keeping them sanitized is
-            // a rule followed by hand.
-            `docker build failed for ECS container '${displaySafe(container.name)}' (${
+            // a rule followed by hand. Names and tags render through
+            // `displayIdent`, never inside cdkd's own quotes, which a `'` in
+            // either would close (go-to-k/cdkd#3617).
+            `docker build failed for ECS container ${displayIdent(container.name)} (${
               asset.source.directory !== undefined
                 ? // `source.directory` is an assembly-supplied path and the
                   // containment refusal (go-to-k/cdkd#3489) is raised BEFORE
@@ -891,8 +893,8 @@ async function prepareOneImage(
             // `actualTag` is the `executable` build script's own STDOUT, so
             // it is the least trusted value on this line; `container.name` is
             // a template key. Both sanitized beside the composed docker text.
-            `docker tag failed re-tagging '${displaySafe(actualTag)}' → '${displaySafe(tag)}' ` +
-              `for ECS container '${displaySafe(container.name)}': ${displaySafe(describeDockerFailure(err, tagArgs))}`
+            `docker tag failed re-tagging ${displayIdent(actualTag)} → ${displayIdent(tag)} ` +
+              `for ECS container ${displayIdent(container.name)}: ${displaySafe(describeDockerFailure(err, tagArgs))}`
           );
         }
       }

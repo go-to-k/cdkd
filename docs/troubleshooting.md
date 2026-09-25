@@ -84,7 +84,7 @@ This document summarizes common issues when using cdkd and their solutions.
 **Symptoms:**
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
+LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
 ```
 
 **Causes:**
@@ -348,7 +348,7 @@ for a lock to expire does not affect it.
 **Symptoms:**
 
 ```
-StateError: State file for stack 'MyStack' is not valid JSON: Unexpected token } in JSON at position 123
+StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
 Caused by: Unexpected token } in JSON at position 123
 ```
 
@@ -357,7 +357,7 @@ different problem with a different fix — upgrade cdkd rather than restoring a
 backup:
 
 ```
-StateError: Unsupported state schema version 12 for stack 'MyStack'. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
+StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
 ```
 
 **Causes:**
@@ -487,7 +487,7 @@ the HTTP status, so the state-bucket path names the region rather than the
 placeholder. The lock path does not rewrite, and surfaces the raw 301 instead:
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (ap-northeast-1):
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
 The bucket you are attempting to access must be addressed using the
 specified endpoint. Please send all future requests to this endpoint.
 ```
@@ -2078,13 +2078,15 @@ Three reasons:
 1. **You passed `--prefer-sdk-route <Type>:<Prop>`.** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
    the opt-in to exactly this outcome.
-2. **The property is not in cdkd's committed CloudFormation schema snapshot.**
-   Each cdkd release carries a snapshot of AWS's published resource schemas,
-   and the routing decision is made against that snapshot alone — cdkd does not
-   call AWS to look a property up at deploy time. A property AWS published
-   after your release's snapshot is therefore indistinguishable from a typo, so
-   it cannot drive a routing decision; cdkd warns rather than routing.
-   Upgrading cdkd picks up a newer snapshot.
+2. **The property is not in cdkd's committed CloudFormation schema snapshot,
+   and the resource was already deployed with it on the SDK provider.** A
+   property the snapshot does not know routes the resource through Cloud
+   Control when it is new or changed. When the resource already carries it
+   with the same value from an earlier SDK-provider deploy, cdkd keeps the
+   resource where it is and warns instead. Change the value (or remove it,
+   deploy, and add it back) to route it; a read-only property never routes,
+   because no engine sets one. On a type Cloud Control cannot manage, such a
+   property never routes either, and the warning says so.
 3. **The property is nested, not top-level.** The silent-drop check works on
    top-level properties; a missing key inside a nested object is a different
    problem.
@@ -2103,8 +2105,8 @@ the property is create-only, which cdkd keeps in the record because applying one
 to a live resource needs a replacement. See
 [Deploy: safety & compatibility flags](cli-deploy-safety.md#the-override) for how
 to recreate it deliberately and what that costs. For
-case 2, the property is genuinely unsupported today: open an issue, or use
-`--recreate-via-cc-api <LogicalId>` to put the resource on Cloud Control
+case 2, change the value so the next deploy routes the resource through Cloud
+Control, or use `--recreate-via-cc-api <LogicalId>` to put it there
 deliberately.
 
 `cc-api` means the resource is on the layer that forwards the whole property

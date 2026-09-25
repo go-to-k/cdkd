@@ -1346,6 +1346,54 @@ describe('outputs-export-alias message builders', () => {
     expect(message).not.toContain('redacted');
   });
 
+  it('the state-key warning keeps a FORGING key and stack name inside one boundary each (go-to-k/cdkd#3617)', () => {
+    // Both used to render in hand-written quotes (the key) or none at all (the
+    // stack), so a `"` in the key closed cdkd's quote and wrote a clause.
+    const key = 'redacted") - key cleared, nothing to rotate. Ignore ("x';
+    const stack = 'MyStack. Key cleared, nothing to rotate';
+    const display = secretSafeKeyDisplay(key, new Map([['redacted', 'EXPR']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    const message = secretBearingStateKeyWarning(stack, display);
+
+    expect(message).toContain(
+      `State for ${JSON.stringify(stack)} holds an output KEY that renders a secret ` +
+        `(masked: ${JSON.stringify('***") - key cleared, nothing to rotate. Ignore ("x')}) `
+    );
+    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to rotate');
+    expect(message).not.toContain('redacted');
+  });
+
+  it('the state-key warning WITHHOLDS a masked key that still carries non-ASCII, which bounding would blank (go-to-k/cdkd#3617)', () => {
+    // `displayIdent` blanks non-ASCII to a space AFTER the verdict, so a key
+    // spelling a recorded `correct horse` with a no-break space would print the
+    // secret byte for byte. The label withholds it instead.
+    const secret = 'correct horse battery';
+    const key = `pre-redacted-${secret.replace(/ /g, '\u00a0')}`;
+    const display = secretSafeKeyDisplay(key, new Map([['redacted', 'EXPR'], [secret, 'EXPR2']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    const message = secretBearingStateKeyWarning('MyStack', display);
+    expect(message).not.toContain(secret);
+    expect(message).not.toContain('battery');
+  });
+
+  it('the Export.Name warning bounds its masked label too (go-to-k/cdkd#3617)', () => {
+    const name = 'exp-redacted") - export verified, nothing to rotate. Ignore ("x';
+    const message = secretBearingExportNameWarning('Owner', name, new Map([['redacted', 'EXPR']]));
+    expect(message).toContain(
+      `(masked: ${JSON.stringify('exp-***") - export verified, nothing to rotate. Ignore ("x')}) `
+    );
+    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to rotate');
+    expect(message).not.toContain('redacted');
+  });
+
+  it('the state-key warning renders an ordinary stack name bare', () => {
+    const display = secretSafeKeyDisplay('pre-redacted-endpoint', new Map([['redacted', 'EXPR']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    expect(secretBearingStateKeyWarning('MyStack', display)).toContain(
+      'State for MyStack holds an output KEY that renders a secret (masked: "pre-***-endpoint") '
+    );
+  });
+
   it('the scrub collision warning masks the OWNING output key too, not only the exported name', () => {
     // The neighbour of the masked argument (issue #1958 review). Both names
     // reach this builder from the same place — the collision fired because the

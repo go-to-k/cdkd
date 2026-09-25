@@ -11,9 +11,12 @@ import {
   NON_ENGLISH_RE,
   containsNonEnglish,
   formatReport,
+  formatSessionLinkReport,
   offendingCharacters,
   scanField,
+  scanSessionLinks,
   scanSubject,
+  scanSubjectSessionLinks,
 } from '../../../scripts/check-gh-body-english.js';
 import { parseSubject } from '../../../scripts/gh-subject.js';
 
@@ -380,6 +383,103 @@ describe('the CLI, as the workflow invokes it', () => {
     // is the failure mode a CI port is most likely to reintroduce.
     expect(runCli('{ not json').status).toBe(2);
     expect(runCli({ kind: 'nonsense', number: 1, body: '' }).status).toBe(2);
+  });
+});
+
+describe('Claude session links', () => {
+  const LINK = 'https://claude.ai/code/session_01AbCdEf';
+
+  it('flags a session link and a Claude-Session trailer, naming field and line', () => {
+    const found = scanSubjectSessionLinks(
+      subject({ title: 'fix(x): y', body: `Summary.\n\n${LINK}\n\nClaude-Session: ${LINK}` }),
+    );
+    expect(found.map((o) => [o.field, o.line])).toEqual([
+      ['body', 3],
+      ['body', 5],
+    ]);
+  });
+
+  it('flags a bare trailer line with no URL, and a link in a title', () => {
+    expect(scanSessionLinks('body', '  claude-session: abc')).toHaveLength(1);
+    expect(scanSubjectSessionLinks(subject({ title: `see ${LINK}`, body: 'x' }))).toHaveLength(1);
+  });
+
+  it('passes other claude.ai links and a mid-line mention of the trailer name', () => {
+    expect(
+      scanSessionLinks(
+        'body',
+        'https://claude.ai/code/artifact/abc\nclaude.ai\nthe Claude-Session: trailer is forbidden',
+      ),
+    ).toEqual([]);
+  });
+
+  it('passes text that NAMES the pattern, so a description of the rule does not fail', () => {
+    expect(
+      scanSessionLinks(
+        'body',
+        'refuses a `claude.ai/code/session_` link\nno `claude.ai/code/session_...` link\nclaude.ai/code/session_',
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not flag its own report, so a quoted bot comment cannot loop', () => {
+    const s = subject({ title: 't', body: `${LINK}\nClaude-Session: ${LINK}` });
+    const report = formatSessionLinkReport(s, scanSubjectSessionLinks(s));
+    expect(scanSessionLinks('body', report)).toEqual([]);
+  });
+
+  it('withholds the session id from the report the bot posts', () => {
+    const s = subject({ title: 't', body: `see ${LINK}\nClaude-Session: ${LINK}` });
+    const report = formatSessionLinkReport(s, scanSubjectSessionLinks(s));
+    expect(report).not.toContain('01AbCdEf');
+    expect(report).toContain('claude.ai/code/session_<redacted>');
+    expect(report).toContain('Claude-Session <redacted trailer>');
+  });
+
+  it('withholds the id from the ENGLISH report when one line carries both violations', () => {
+    const { status, stdout } = runCli({ kind: 'issue', number: 9, title: 'x', body: `${HANGUL} ${LINK}` });
+    expect(status).toBe(1);
+    expect(stdout).toContain('Non-English text');
+    expect(stdout).not.toContain('01AbCdEf');
+  });
+
+  it('withholds a bare copy of the id elsewhere on the line', () => {
+    const s = subject({ title: 't', body: `${LINK} (id session_01AbCdEf)` });
+    expect(formatSessionLinkReport(s, scanSubjectSessionLinks(s))).not.toContain('01AbCdEf');
+  });
+
+  it('flags a trailer behind a quote or list marker, a spaced colon, and one after a lone CR', () => {
+    expect(scanSessionLinks('body', '> Claude-Session: x')).toHaveLength(1);
+    expect(scanSessionLinks('body', '- Claude-Session: x')).toHaveLength(1);
+    expect(scanSessionLinks('body', 'Claude-Session : x')).toHaveLength(1);
+    expect(scanSessionLinks('body', 'x\rClaude-Session: y').map((o) => o.line)).toEqual([2]);
+  });
+
+  it('skips a comment title, like the English scan', () => {
+    expect(
+      scanSubjectSessionLinks({ kind: 'issue_comment', number: 5, title: LINK, body: 'x', labels: [] }),
+    ).toEqual([]);
+  });
+
+  it('fences the offending line in the report', () => {
+    const s = subject({ title: 't', body: `${LINK} [x](http://evil)` });
+    const report = formatSessionLinkReport(s, scanSubjectSessionLinks(s));
+    expect(report).toContain('Claude session link');
+    expect(marked.lexer(report).some((t) => JSON.stringify(t).includes('"type":"link"'))).toBe(false);
+  });
+
+  it('the CLI exits 1 on an English body carrying a session link, and prints only that report', () => {
+    const { status, stdout } = runCli({ kind: 'pull_request', number: 9, title: 'fix(x): y', body: `Body.\n${LINK}` });
+    expect(status).toBe(1);
+    expect(stdout).toContain('Claude session link');
+    expect(stdout).not.toContain('Non-English text');
+  });
+
+  it('the CLI prints both reports when both violations are present', () => {
+    const { status, stdout } = runCli({ kind: 'issue', number: 9, title: 'x', body: `${HANGUL}\n${LINK}` });
+    expect(status).toBe(1);
+    expect(stdout).toContain('Non-English text');
+    expect(stdout).toContain('Claude session link');
   });
 });
 

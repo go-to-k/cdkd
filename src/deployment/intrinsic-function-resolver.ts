@@ -29,6 +29,9 @@ import {
   displayIdent,
   displaySafe,
   ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  UNRENDERABLE,
+  displayStackName,
 } from '../utils/display-safe.js';
 import {
   s3BucketArn,
@@ -73,7 +76,8 @@ import {
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
   recordMaskOnlyValue,
-  recordMaskOnlyValuesIn,
+  recordFreshNoEchoValuesIn,
+  embedsFreshNoEchoValue,
   recoverMaskedOutput,
   carriesSecretMask,
   errorCauseChain,
@@ -2886,6 +2890,21 @@ function stringifyParameterForLog(
 }
 
 /**
+ * `displayIdent` over text THIS file already sanitized, keeping its rule that
+ * an ALTERED value takes a boundary (go-to-k/cdkd#3617). `displayIdent` tests
+ * alteration against its own input, which here is already trimmed and blanked
+ * -- so `ProdStack ` or `ProdStack<NBSP>` would print bare, byte-identical to
+ * a genuine `ProdStack` (the #3164 spoof). Compared against the ORIGINAL, an
+ * altered value is quoted even when what is left is plain.
+ */
+function boundAltered(original: string, shown: string, maxCodePoints?: number): string {
+  const bounded = displayIdent(shown, maxCodePoints === undefined ? undefined : { maxCodePoints });
+  return shown !== original && !bounded.startsWith('"') && bounded !== UNRENDERABLE
+    ? `${JSON.stringify(bounded.split(' [cut: ')[0])}${bounded.includes(' [cut: ') ? bounded.slice(bounded.indexOf(' [cut: ')) : ''}`
+    : bounded;
+}
+
+/**
  * Behavior knobs for {@link IntrinsicFunctionResolver}.
  */
 export interface IntrinsicFunctionResolverOptions {
@@ -3345,7 +3364,7 @@ export class IntrinsicFunctionResolver {
       // reads as line terminators, and this refusal prints a region text a
       // template can supply — the same residual the ten binding sites had, one
       // sanitizer short rather than none.
-      // not-in-class(displaySafe(stripControlChars(loggedTarget)).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
+      // not-in-class(boundAltered(targetRegion ?? loggedTarget, displaySafe(stripControlChars(loggedTarget)), 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
       // The refusal CLASS, not a plain Error, and `markNonRetryable` beside it
       // (issue go-to-k/cdkd#3181 security review). This decides from a region
       // name a retry cannot change, and the per-unit recovery partitions on
@@ -3359,7 +3378,7 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Refusing to build AWS clients for the region ` +
-            `'${displaySafe(stripControlChars(loggedTarget)).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+            `${boundAltered(targetRegion ?? loggedTarget, displaySafe(stripControlChars(loggedTarget)), 64)}: it is not a valid AWS region name, and a ` +
             `region is substituted into the AWS service hostname.`
         )
       );
@@ -5355,7 +5374,8 @@ export class IntrinsicFunctionResolver {
     const attributeIsDeclared =
       declared === true || (declared !== undefined && declared.has(attributeName));
     if (attributeIsDeclared && context.recordedSecretValues) {
-      recordMaskOnlyValuesIn(value, context.recordedSecretValues);
+      // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
+      recordFreshNoEchoValuesIn(value, context.recordedSecretValues);
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
@@ -8626,7 +8646,8 @@ export class IntrinsicFunctionResolver {
             );
       if (recovered !== undefined) {
         if (context.recordedSecretValues) {
-          recordMaskOnlyValuesIn(recovered, context.recordedSecretValues);
+          // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
+          recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues);
         }
         return recovered;
       }
@@ -9376,8 +9397,11 @@ export class IntrinsicFunctionResolver {
       // masks) and left these pairs on the bare masker, so the same name could
       // render two ways in one message — bare in the AWS echo this rewrites,
       // stripped where we print it ourselves. go-to-k/cdkd#3426 removed that
-      // second spelling from the file entirely; the pairs stay written as the
-      // rendering below spells it, so whoever edits one must edit the other.
+      // second spelling from the file entirely. The pairs' replacement is the
+      // PRE-BOUNDARY masked spelling (the line below bounds it further through
+      // `displayMaskedIdent`), as at `maskStateReadError`'s call site: it
+      // rewrites text another module rendered, where a second boundary would
+      // only nest quotes.
       const cfnNameMask = this.positionalNameMask([
         [stackName, this.displayMasked(stackName, context)],
         [region, this.displayMasked(loggedRegionText, context)],
@@ -9409,8 +9433,8 @@ export class IntrinsicFunctionResolver {
           // prints at DEFAULT verbosity where a throw at least accompanies a
           // failure. Measured emitting a live `ESC[2K` + CR from a hostile
           // `StackName`.
-          `'${this.displayMasked(stackName, context)}' ` +
-          `(${this.displayMasked(loggedRegionText, context)}): ` +
+          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} ` +
+          `(${this.displayMaskedIdent(loggedRegionText, context)}): ` +
           // The AWS text is BOUNDED as well: `DescribeStacks` quotes the
           // submitted stack name back, so its length is the template author's
           // choice — the same reason `role-arn.ts` bounds STS's reply.
@@ -9648,7 +9672,7 @@ export class IntrinsicFunctionResolver {
         // gate — see the comment there for why the order is load-bearing
         // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
         throw new Error(
-          `Fn::GetStackOutput: '${this.displayMasked(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context).slice(0, 64)}' is not a ` +
+          `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         );
@@ -9726,8 +9750,8 @@ export class IntrinsicFunctionResolver {
       // masking suffices is what the round-1 measurement disproved.
       throw new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
-          `'${this.displayMasked(stackName, context)}' in the same region ` +
-          `'${this.displayMasked(loggedRegionText, context)}'`
+          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
+          `${this.displayMaskedIdent(loggedRegionText, context)}`
       );
     }
 
@@ -9765,8 +9789,8 @@ export class IntrinsicFunctionResolver {
     // plaintext split by an invisible would be reconstituted contiguous by a
     // strip applied after a single mask. Masking on both sides of it closes
     // that, and it is a no-op on any ordinary name.
-    const loggedStackName = this.displayMasked(stackName, context);
-    const loggedOutputName = this.displayMasked(outputName, context);
+    const loggedStackName = this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS);
+    const loggedOutputName = this.displayMaskedIdent(outputName, context);
     // The THIRD resolved value of this trio (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): a `Region`
     // argument also comes back from `resolveValue`, and the shape gate above
@@ -9835,7 +9859,10 @@ export class IntrinsicFunctionResolver {
       this.maskStateReadError(
         error,
         [
-          [stackName, loggedStackName],
+          // The pair's replacement is the MASKED spelling, not the bounded
+          // one: it rewrites the name inside text another module already
+          // rendered, where a second boundary would only nest quotes.
+          [stackName, this.displayMasked(stackName, context)],
           [region, loggedRegion],
         ],
         context
@@ -9863,8 +9890,8 @@ export class IntrinsicFunctionResolver {
             const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
             // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
             throw new Error(
-              `Fn::GetStackOutput: output '${loggedOutputName}' not found in CloudFormation stack ` +
-                `'${loggedStackName}' (${loggedRegion}). Available outputs: ${available}`
+              `Fn::GetStackOutput: output ${loggedOutputName} not found in CloudFormation stack ` +
+                `${loggedStackName} (${displayIdent(loggedRegion)}). Available outputs: ${available}`
             );
           }
           const value = cfnOutputs[outputName];
@@ -9896,7 +9923,7 @@ export class IntrinsicFunctionResolver {
       // in a substitution and cannot tell a test from a render.
       // not-in-class(roleArn ? ` (cross-account via ${shownRoleArn})` : ''): the RoleArn argument, refused unless it is a literal template string.
       throw new Error(
-        `Fn::GetStackOutput: stack '${loggedStackName}' not found in region '${loggedRegion}'${
+        `Fn::GetStackOutput: stack ${loggedStackName} not found in region ${displayIdent(loggedRegion)}${
           roleArn ? ` (cross-account via ${shownRoleArn})` : ''
         }. ${
           !roleArn && this.cfnFallback
@@ -9936,8 +9963,8 @@ export class IntrinsicFunctionResolver {
     if (!hasReadableOutputs(stateData.state)) {
       throw markNonRetryable(
         new MalformedProducerRecordRefusalError(
-          `Fn::GetStackOutput: the state record of producer stack '${loggedStackName}' ` +
-            `(${loggedRegion}) has no readable 'outputs' map — the record is malformed or ` +
+          `Fn::GetStackOutput: the state record of producer stack ${loggedStackName} ` +
+            `(${displayIdent(loggedRegion)}) has no readable 'outputs' map — the record is malformed or ` +
             `truncated. cdkd refuses to resolve from it rather than reading it as a map: ` +
             `'Object.hasOwn' answers TRUE for '0' on a string and for an index on a list, so ` +
             `continuing would resolve ONE CHARACTER or element of the record as this ` +
@@ -9954,7 +9981,7 @@ export class IntrinsicFunctionResolver {
       const available = this.describeAvailableOutputs(Object.keys(outputs), context);
       // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
       throw new Error(
-        `Fn::GetStackOutput: output '${loggedOutputName}' not found in stack '${loggedStackName}' (${loggedRegion}). ` +
+        `Fn::GetStackOutput: output ${loggedOutputName} not found in stack ${loggedStackName} (${displayIdent(loggedRegion)}). ` +
           `Available outputs: ${available}`
       );
     }
@@ -10029,7 +10056,7 @@ export class IntrinsicFunctionResolver {
       // not-in-class(shownRoleArn): the RoleArn argument, refused unless it is a literal template string.
       throw markNonRetryable(
         new CrossAccountSecretRefusalError(
-          `Fn::GetStackOutput: output '${loggedOutputName}' of stack '${loggedStackName}' (${loggedRegion}) is a ` +
+          `Fn::GetStackOutput: output ${loggedOutputName} of stack ${loggedStackName} (${displayIdent(loggedRegion)}) is a ` +
             `redacted dynamic reference, and this is a CROSS-ACCOUNT reference (RoleArn ` +
             `${shownRoleArn}). cdkd will not resolve a producer account's secret with the consumer's ` +
             `credentials — a same-named secret in the consumer account would answer instead. ` +
@@ -10116,6 +10143,7 @@ export class IntrinsicFunctionResolver {
    *
    * A pair that DOES carry a mask contributes its raw spelling AND the spelling
    * the reader will actually see. `S3StateBackend` prints names through
+   * `displayStackName`, whose first step is
    * `displaySafe(..., { asciiOnly: true })`, which REPLACES every non-printable
    * character with a space and then trims, so a secret carrying one is a
    * DIFFERENT string by the time it is quoted back and matching the raw form
@@ -10202,7 +10230,27 @@ export class IntrinsicFunctionResolver {
         // characters the printer had just removed back into the message, in
         // the top-level text neither `formatError` nor the logger sanitizes.
         const shown = displaySafe(raw, { asciiOnly: true });
-        if (shown === raw) return [[raw, masked] as const];
+        // A THIRD spelling (go-to-k/cdkd#3617): `S3StateBackend` now renders a
+        // name through `displayStackName`, which puts a non-plain name inside a
+        // JSON string -- so a `"` or `\` in it reaches the message ESCAPED, and
+        // neither spelling above matches it there. Its replacement is escaped
+        // the same way, so it is as sanitized and as masked as its key.
+        const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
+        // ...and a FOURTH, the whole rendered token: `displayStackName` CUTS a
+        // name past `STACK_REF_MAX_CODE_POINTS`, and a cut prefix matches none
+        // of the whole-name keys -- a sub-floor secret inside it, or the shown
+        // half of a secret straddling the cut, would print. The rendered token
+        // is replaced with the rendering of the masked text, so it fails closed.
+        const rendered = displayStackName(raw);
+        const escapedPair = [
+          ...(shown !== '' && escaped(shown) !== shown
+            ? [[escaped(shown), escaped(displaySafe(masked, { asciiOnly: true }))] as const]
+            : []),
+          ...(rendered !== raw && rendered !== shown && rendered !== escaped(shown)
+            ? [[rendered, displayStackName(displaySafe(masked, { asciiOnly: true }))] as const]
+            : []),
+        ];
+        if (shown === raw) return [[raw, masked] as const, ...escapedPair];
         // Empty after sanitizing: substituting `''` splices the replacement
         // between every character, so that key contributes nothing. The
         // `shownMask` half of that test is UNREACHABLE and kept as the other
@@ -10212,10 +10260,7 @@ export class IntrinsicFunctionResolver {
         const shownMask = displaySafe(masked, { asciiOnly: true });
         return shown === '' || shownMask === ''
           ? [[raw, masked] as const]
-          : ([
-              [raw, masked],
-              [shown, shownMask],
-            ] as const);
+          : ([[raw, masked] as const, [shown, shownMask] as const, ...escapedPair] as const);
       })
       .sort(([a], [b]) => b.length - a.length);
     if (substitutions.length === 0) return undefined;
@@ -10665,6 +10710,14 @@ export class IntrinsicFunctionResolver {
         this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
       recordMaskOnlyValue(context.recordedSecretValues, result);
+      // The encoding of a FRESH `NoEcho` value is fresh too (go-to-k/cdkd#3662),
+      // or a Base64 consumer of a re-minted token would be skipped as
+      // `***` == `***`. The encoding of an ordinary secret is NOT: its record
+      // already positions the reference, and marking it would update that
+      // resource on every deploy.
+      if (embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)) {
+        recordFreshNoEchoValuesIn(result, context.recordedSecretValues);
+      }
     }
 
     this.logger.debug(
@@ -11651,6 +11704,29 @@ export class IntrinsicFunctionResolver {
    */
   private displayMasked(value: string, context?: ResolverContext): string {
     return displaySafe(this.maskThenStripThenMask(value, context));
+  }
+
+  /**
+   * {@link displayMasked}, then bounded as an IDENTIFIER (go-to-k/cdkd#3617):
+   * bare when plain, otherwise one JSON string, so a template- or state-chosen
+   * name cannot close a quote of cdkd's own and write a clause into the
+   * message. Masked FIRST: `displayIdent` blanks non-ASCII and cuts, either of
+   * which would stop a recorded plaintext inside the name from matching.
+   */
+  private displayMaskedIdent(
+    value: string,
+    context?: ResolverContext,
+    maxCodePoints?: number
+  ): string {
+    // The ASCII allowlist runs BETWEEN two masks: `displayIdent` would blank a
+    // non-ASCII character to a space after the mask, and a recorded secret
+    // spelled with that space (`correct horse` beside `correct<NBSP>horse`)
+    // would then print byte for byte.
+    const asciiMasked = this.displayMasked(
+      displaySafe(this.displayMasked(value, context), { asciiOnly: true }),
+      context
+    );
+    return boundAltered(value, asciiMasked, maxCodePoints);
   }
 
   /**

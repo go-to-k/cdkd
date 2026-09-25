@@ -2631,7 +2631,10 @@ export class EC2Provider implements ResourceProvider {
         // call update() with a cdkd STATE record as the desired bag, and this
         // method receives only a MASKER from the update context (issue #2176),
         // not `replayingState`, so it still cannot tell that apart from a
-        // template update — so the refusal downgrades to a warning on every update, per
+        // template update. (`update()` itself can since issue #3141 —
+        // `replayingState` / `desiredFromAwsReadback` — but neither is threaded
+        // into this method; this arm was not re-decided, issue #3728.) So the
+        // refusal downgrades to a warning on every update, per
         // the "an UPDATE-path refusal is a replay refusal too" rule. The route
         // was already deleted above; throwing here would strand it.
         (message) => this.logger.warn(message),
@@ -5641,9 +5644,10 @@ export class EC2Provider implements ResourceProvider {
    * narrowing here the template's extra keys read as an ADDED property on the
    * next deploy — and every destination key is create-only in the registry
    * schema, so the diff would classify a REPLACEMENT and the engine's
-   * replacement create (which passes no context, and so gets no
-   * `onMultipleDestinations` downgrade) would hit the #1566 refusal. A
-   * previously-green no-op deploy would start failing.
+   * replacement create (whose context carries a `maskSecrets` capability but
+   * never `replayingState`, and so gets no `onMultipleDestinations`
+   * downgrade) would hit the #1566 refusal. A previously-green no-op deploy
+   * would start failing.
    *
    * Shares `narrowRouteDestinations` with the provisioning path so the two
    * cannot disagree about which key survives.
@@ -5652,8 +5656,8 @@ export class EC2Provider implements ResourceProvider {
    * half for the same reason: `IpProtocol` is create-only on that type in the
    * registry schema, so normalizing state alone would make the template's
    * original value read as a changed immutable property — a REPLACEMENT, whose
-   * create passes no context and so gets no `onUnusable` downgrade, turning a
-   * previously-green no-op deploy into a hard failure. Normalizing BOTH sides
+   * create never sets `replayingState` and so gets no `onUnusable` downgrade,
+   * turning a previously-green no-op deploy into a hard failure. Normalizing BOTH sides
    * is also what keeps the fix correct for records written BEFORE it existed,
    * which still carry the un-narrowed value.
    */

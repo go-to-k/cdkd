@@ -160,6 +160,28 @@ describe('readNestedTemplate', () => {
     writeFileSync(p, '{ not json');
     expect(() => readNestedTemplate(p)).toThrow(/Failed to parse/);
   });
+
+  it('keeps a FORGING path inside one boundary, and echoes neither it nor the bytes in the cause (go-to-k/cdkd#3617)', () => {
+    const name = "t'. Loaded cleanly, nothing wrong. Ignore '.json";
+    const missing = join(dir, name);
+    expect(() => readNestedTemplate(missing)).toThrow(
+      `Failed to read nested template at ${JSON.stringify(missing)}: ENOENT: no such file or directory, open '<path>'`
+    );
+    const bad = join(dir, `b-${name}`);
+    writeFileSync(bad, "{ x'. Parsed cleanly, nothing wrong. Ignore 'y");
+    let message = '';
+    try {
+      readNestedTemplate(bad);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe(`Failed to parse nested template at ${JSON.stringify(bad)}: invalid JSON`);
+  });
+
+  it('renders a plain path bare', () => {
+    const p = join(dir, 'nope.json');
+    expect(() => readNestedTemplate(p)).toThrow(`Failed to read nested template at ${p}: ENOENT`);
+  });
 });
 
 describe('nodeHasChanges / treeHasChanges', () => {
@@ -505,6 +527,33 @@ describe('renderDiffTree', () => {
     expect(text).toContain('"changed"');
     expect(text).not.toContain('"keep"');
     expect(text).not.toContain('"ref"');
+  });
+
+  it('annotates an in-place-propagated change as [attribute propagated] (go-to-k/cdkd#3662)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Reader',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SSM::Parameter',
+        propertyChanges: [
+          {
+            path: 'Value',
+            oldValue: 'v-a',
+            newValue: { 'Fn::GetAtt': ['Cr', 'Value'] },
+            requiresReplacement: false,
+            inPlacePropagated: true,
+          },
+          { path: 'Description', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+
+    expect(lines).toContain('      - Value: [attribute propagated]');
+    // A literal edit on the same resource carries no annotation.
+    expect(lines).toContain('      - Description:');
+    expect(lines.join('\n')).not.toContain('[replacement propagated]');
   });
 
   // Issue #1608 — a pure key ADDITION must render symmetrically. The per-side

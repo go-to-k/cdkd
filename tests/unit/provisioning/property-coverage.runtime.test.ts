@@ -394,9 +394,28 @@ describe('withoutAcceptedSilentDropProperties (#2750, the DESIRED side)', () => 
       withoutAcceptedSilentDropProperties(
         fx.resourceType,
         { [fx.property]: 'x', SomeFakeUnknownProperty: 'kept' },
-        new Set([`${fx.resourceType}:${fx.property}`])
+        new Set([`${fx.resourceType}:${fx.property}`]),
+        // Recorded unchanged, so the unknown key does not route (#3713).
+        { SomeFakeUnknownProperty: 'kept' }
       )
     ).toEqual({ SomeFakeUnknownProperty: 'kept' });
+  });
+
+  /**
+   * Issue #3713: an unrecognized key absent from the record routes the
+   * resource through Cloud Control, which writes the accepted drop too — so
+   * narrowing it would hide a real difference, exactly like an un-allowed drop.
+   */
+  it('keeps the opted-into drop when an unrecognized key routes the resource', () => {
+    const fx = pickPlainSilentDropFixture();
+    const props = { [fx.property]: 'x', SomeFakeUnknownProperty: 'new' };
+    const allow = new Set([`${fx.resourceType}:${fx.property}`]);
+    expect(withoutAcceptedSilentDropProperties(fx.resourceType, props, allow)).toBe(props);
+    expect(
+      withoutAcceptedSilentDropProperties(fx.resourceType, props, allow, {
+        SomeFakeUnknownProperty: 'old',
+      })
+    ).toBe(props);
   });
 
   /**
@@ -445,5 +464,38 @@ describe('withoutAcceptedSilentDropProperties (#2750, the DESIRED side)', () => 
         new Set([`${fx.resourceType}:${fx.property}`])
       )
     ).toBe(props);
+  });
+});
+
+describe('unrecognized keys and the narrowings (issue #3713)', () => {
+  const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
+
+  /**
+   * The record-side narrowing stays FIXTURE-ONLY. Removing an unrecognized key
+   * from an SDK record would make it read as an ADDITION next deploy — and its
+   * create-only status is unknown offline, so that could classify as a
+   * REPLACEMENT of a resource nobody touched. It also erases the baseline the
+   * route compares against.
+   */
+  it('withoutSilentDropProperties KEEPS an unrecognized key', () => {
+    const fx = pickPlainSilentDropFixture();
+    const props = { [fx.property]: 'x', [UNKNOWN]: 'kept' };
+    expect(withoutSilentDropProperties(fx.resourceType, props)).toEqual({ [UNKNOWN]: 'kept' });
+  });
+
+  it('actionable and accepted stay complements over a mixed bag with an unrecognized key', () => {
+    const fx = pickPlainSilentDropFixture();
+    const allow = new Set([`${fx.resourceType}:${fx.property}`]);
+    const bag = { [fx.property]: 'x', [UNKNOWN]: 'v' };
+    // Routes (unknown key absent from the record): actionable non-empty, accepted empty.
+    expect(findActionableSilentDrops(fx.resourceType, bag, allow, {}).map((d) => d.property)).toEqual(
+      [UNKNOWN]
+    );
+    expect(findAcceptedSilentDrops(fx.resourceType, bag, allow, {})).toEqual([]);
+    // Stays (recorded unchanged): actionable empty, accepted = the allowed drop.
+    expect(findActionableSilentDrops(fx.resourceType, bag, allow, { [UNKNOWN]: 'v' })).toEqual([]);
+    expect(findAcceptedSilentDrops(fx.resourceType, bag, allow, { [UNKNOWN]: 'v' })).toEqual([
+      fx.property,
+    ]);
   });
 });
