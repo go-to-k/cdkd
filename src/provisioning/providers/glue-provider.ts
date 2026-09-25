@@ -115,6 +115,38 @@ const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
 };
 
 /**
+ * Decode an `AWS::Glue::Table` physicalId `<databaseName>|<tableName>`.
+ *
+ * The separator is unescaped (issue #1672), so a bare split of an id whose
+ * table name carries a `|` returns a DIFFERENT table — `mydb|a|b` splits to
+ * `mydb.a`, both halves non-empty, and a delete of it would hit the wrong
+ * table. Such ids exist: a state-replay create warns and packs one anyway, and
+ * binaries before the #1719 refusal recorded them. The recorded `DatabaseName`
+ * disambiguates the id without re-deriving the identity from the bag: it is
+ * used only when the id starts with it, and the table name is the remainder.
+ *
+ * `bags` are tried in order, so pass the one describing what was DEPLOYED
+ * first. With no usable anchor only an id with exactly one separator decodes;
+ * anything longer is ambiguous and returns `undefined`, the malformed-id arm
+ * every caller already has.
+ */
+function decodeTableId(
+  physicalId: string,
+  ...bags: (Record<string, unknown> | undefined)[]
+): { databaseName: string; tableName: string } | undefined {
+  for (const bag of bags) {
+    const databaseName = bag?.['DatabaseName'];
+    if (typeof databaseName !== 'string' || databaseName === '') continue;
+    if (!physicalId.startsWith(`${databaseName}|`)) continue;
+    const tableName = physicalId.slice(databaseName.length + 1);
+    if (tableName !== '') return { databaseName, tableName };
+  }
+  const parts = physicalId.split('|');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+  return { databaseName: parts[0], tableName: parts[1] };
+}
+
+/**
  * Read a template-borne value that is about to be forwarded to a Glue read
  * API as a string.
  *
@@ -336,12 +368,10 @@ function logCatalogScopedDeleteSkip(
  * and `DatabaseName` as separate values, whereas cdkd's `ResourceProvider`
  * passes a single identity string, so this provider PACKS both into
  * `<db>|<table>` with no escaping. `updateTable` / `deleteTable` / `readTable`
- * then destructure exactly two segments, so a three-segment `<db>|a|b` decodes
- * as database `<db>`, table `a` — a DIFFERENT table, which `deleteTable` would
- * delete. Issue #1672 tracks the real fix (the three decode sites already
- * receive the properties bag carrying `DatabaseName`, so the packing is not
- * even necessary for them) and notes that `createTable` has the SAME defect on
- * the deploy path, unguarded.
+ * decode it by anchoring on the recorded `DatabaseName` ({@link decodeTableId}),
+ * but the `Ref` resolver still takes the segment after the LAST `|`, so a
+ * `<db>|a|b` record would hand `b` to every `{Ref: <Table>}` consumer. Issue
+ * #1672 tracks lifting that; `createTable` refuses the same shape until then.
  *
  * Until then, refusing is right: writing a record cdkd cannot decode is the
  * failure mode of issue #1658 (`AWS::Route53::RecordSet` accepted
@@ -357,7 +387,11 @@ function logCatalogScopedDeleteSkip(
  */
 type TableIdentityResult =
   | { ok: true; databaseName: string; tableName: string }
-  /** A name contains `|`, cdkd's own separator — no id shape can represent it. */
+  /**
+   * A name contains `|`, cdkd's own separator. The decode sites could anchor
+   * such an id, but the `Ref` resolver takes its last segment, and an imported
+   * bag with an unresolved `DatabaseName` leaves no anchor at all.
+   */
   | { ok: false; reason: 'pipe-in-name' }
   /** An id was supplied but no usable `(database, table)` pair came out of it. */
   | { ok: false; reason: 'unpairable' }
@@ -411,12 +445,14 @@ function resolveTableIdentity(input: {
   }
 
   // Neither segment may itself contain `|`, or the composite this becomes is
-  // not decodable by the two-way `split('|')` in `updateTable` / `deleteTable` /
-  // `readTable`. The composite and bare branches above are `|`-free by
+  // ambiguous: an imported record's `DatabaseName` can be an unresolved
+  // intrinsic, which leaves `decodeTableId` no anchor and only the exact
+  // two-segment form decodable, and the `Ref` resolver takes the last segment
+  // regardless. The composite and bare branches above are `|`-free by
   // construction (one is the product of a 2-part split, the other only runs for
   // a pipe-free id), so in practice this catches the TEMPLATE branch — a
-  // `TableInput.Name` of `a|b` would otherwise be recorded as `<db>|a|b` and
-  // decode to a different table. It is written as an unconditional post-check
+  // `TableInput.Name` of `a|b` would otherwise be recorded as `<db>|a|b`. It is
+  // written as an unconditional post-check
   // rather than a per-branch one so a future branch cannot forget it.
   if (databaseName.includes('|') || tableName.includes('|')) {
     return { ok: false, reason: 'pipe-in-name' };
@@ -807,9 +843,9 @@ export class GlueProvider implements ResourceProvider {
     // Refuse a `|` in either segment BEFORE `CreateTable` runs (issue #1672).
     // This is the ONE site in the composite-id family with LIVE evidence that
     // the hazard is real: `glue:CreateTable` with `TableInput.Name: 'a|b'`
-    // SUCCEEDS (probe, us-east-1 2026-08-12), so the recorded `<db>|a|b` would
-    // decode to a DIFFERENT table — which `deleteTable` would then delete, or
-    // warn-and-skip while reporting success. `DatabaseName` is guarded on the
+    // SUCCEEDS (probe, us-east-1 2026-08-12). This provider's own decode sites
+    // read `<db>|a|b` back correctly, but the `Ref` resolver would hand `b` to
+    // every consumer. `DatabaseName` is guarded on the
     // same footing but was NOT probed: both segments are user-chosen and the
     // Athena / Data Catalog "lowercase alphanumerics and underscore" rule that
     // would rule it out is a convention rather than an API constraint, so
@@ -880,8 +916,8 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Table ${logicalId}: ${physicalId}`);
 
-    const [databaseName, tableName] = physicalId.split('|');
-    if (!databaseName || !tableName) {
+    const decoded = decodeTableId(physicalId, previousProperties, properties);
+    if (!decoded) {
       throw new ProvisioningError(
         compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId),
         resourceType,
@@ -889,6 +925,7 @@ export class GlueProvider implements ResourceProvider {
         physicalId
       );
     }
+    const { databaseName, tableName } = decoded;
 
     const tableInput = properties['TableInput'] as Record<string, unknown> | undefined;
     if (!tableInput) {
@@ -1017,18 +1054,12 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
 
-    // DECISION on issue #1675's "decide together with #1672" note: the
-    // `DatabaseName` this arm is missing IS reachable from the `properties` bag
-    // below, so this skip could be replaced by a bag-derived fallback. It is
-    // deliberately NOT done here. #1672 is about the id PACKING (an unescaped
-    // `|` making a legally-named table undestroyable), and its fix changes what
-    // a decodable id even is — a fallback added now would have to be reworked
-    // by it, and would meanwhile make an id cdkd cannot decode look survivable.
-    // Every id cdkd itself writes is a well-formed 2-segment composite
-    // (`createTable` and `importTable`'s round-trip fence both guarantee it), so
-    // this arm is only reachable from a hand-edited state record today.
-    const [databaseName, tableName] = physicalId.split('|');
-    if (!databaseName || !tableName) {
+    // The bag's `DatabaseName` only DISAMBIGUATES the id; it never stands in
+    // for one. An id that does not start with it and is not an exact
+    // two-segment composite still skips, since deleting a table named by the
+    // bag rather than by the record risks deleting one cdkd never created.
+    const decoded = decodeTableId(physicalId, properties);
+    if (!decoded) {
       this.logger.warn(
         compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
       );
@@ -1037,6 +1068,7 @@ export class GlueProvider implements ResourceProvider {
       // destroy summary counted this table as deleted while it stayed alive.
       return compositeIdSkipResult();
     }
+    const { databaseName, tableName } = decoded;
 
     // `CatalogId` must be threaded here or the delete silently targets this
     // account's DEFAULT Data Catalog — see {@link deleteCatalogId} for the leak
@@ -1922,7 +1954,7 @@ export class GlueProvider implements ResourceProvider {
       case 'AWS::Glue::Database':
         return this.readDatabase(physicalId, catalogId);
       case 'AWS::Glue::Table':
-        return this.readTable(physicalId, catalogId);
+        return this.readTable(physicalId, catalogId, properties);
       default:
         return undefined;
     }
@@ -2045,10 +2077,12 @@ export class GlueProvider implements ResourceProvider {
 
   private async readTable(
     physicalId: string,
-    catalogId?: string
+    catalogId?: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
-    const [databaseName, tableName] = physicalId.split('|');
-    if (!databaseName || !tableName) return undefined;
+    const decoded = decodeTableId(physicalId, properties);
+    if (!decoded) return undefined;
+    const { databaseName, tableName } = decoded;
 
     let table;
     try {
@@ -2213,7 +2247,8 @@ export class GlueProvider implements ResourceProvider {
         })
       );
       // Always normalize to cdkd's composite form: `updateTable` /
-      // `deleteTable` / `readTable` all split the stored physicalId on `|`, so
+      // `deleteTable` / `readTable` all decode the stored physicalId as
+      // `<db>|<table>` ({@link decodeTableId}), so
       // recording CloudFormation's bare table name would adopt the resource
       // into a state record the rest of the provider cannot use — trading a
       // visible not-found for a silent one. That is the #1658 failure mode

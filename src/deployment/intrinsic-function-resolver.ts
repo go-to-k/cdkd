@@ -292,10 +292,10 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // that refusal deliberately downgrades to a warning (a state record cannot be
   // edited from the template, so refusing would leave the resource
   // unrestorable — see `.claude/rules/providers.md`). For such an id this
-  // extraction returns the last segment while `deleteTable` / `updateTable` /
-  // `readTable`'s two-way `split('|')` target the first; that resource is
-  // already broken independently of this entry, which neither widens nor
-  // narrows the damage (issue #1712).
+  // extraction returns the last segment, while `deleteTable` / `updateTable` /
+  // `readTable` decode it correctly by anchoring on the recorded
+  // `DatabaseName`. This mismatch is why `createTable` still refuses a `|`
+  // (issue #1672).
   //
   // Pre-#1651 the Ref path was unreachable for `cdk deploy`-managed stacks
   // (they could not be imported at all); making them adoptable is what widened

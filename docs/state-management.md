@@ -1633,9 +1633,9 @@ Two more types **accept** a composite id without producing one:
 > [!IMPORTANT]
 > The separator is **not escaped**, so cdkd cannot manage a resource whose own
 > name contains a `|` even where AWS and CloudFormation can. A Glue table named
-> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which decodes to
-> database `mydb`, table `a` — both halves non-empty, so nothing downstream can
-> tell it is wrong. Rather than record an id that names a different resource,
+> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which is ambiguous:
+> a `Ref` to it would resolve to `b`, and a reader without the recorded
+> database name would read it as table `a`. Rather than record an ambiguous id,
 > `cdkd deploy` **refuses at pre-flight** with a message naming the offending
 > segment. Rename the resource, or manage it with the CDK CLI. This is a
 > known limitation.

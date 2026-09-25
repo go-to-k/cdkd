@@ -661,8 +661,8 @@ toward `N deleted`, **dropped the state record**, and exited 0 — over a
 resource that may still be alive and billing. Report the skip instead:
 
 ```typescript
-const [databaseName, tableName] = physicalId.split('|');
-if (!databaseName || !tableName) {
+const decoded = decodeTableId(physicalId, properties);
+if (!decoded) {
   this.logger.warn(
     compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
   );
