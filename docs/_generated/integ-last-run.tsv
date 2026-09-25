@@ -80,9 +80,6 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-24T22:46:12Z	PASS	1863	verify.sh	rc ok, 0 orphans (#3663)
 docker-image-asset	2026-09-25T01:26:49Z	PASS	100	verify.sh	rc ok, 0 orphans; lazy login ran under scratch DOCKER_CONFIG, auths=push host (#3681)
-drift-revert	2026-09-25T03:58:06Z	PASS	176	verify.sh	rc ok, orph clean
-drift-revert-arrays	2026-09-24T09:09:49Z	PASS	190	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group
-drift-revert-vpc	2026-09-25T04:03:01Z	PASS	281	verify.sh	rc ok, orph clean
 drift-revert	2026-09-25T05:24:16Z	PASS	160	verify.sh	rc ok, 0 orphans (#3692)
 drift-revert-arrays	2026-09-24T09:09:49Z	PASS	190	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group
 drift-revert-vpc	2026-09-25T05:24:16Z	PASS	276	verify.sh	rc ok, 0 orphans (#3692)
@@ -124,7 +121,6 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-09-25T03:52:31Z	PASS	225	verify.sh	rc ok, orph clean
 export	2026-09-25T05:24:16Z	PASS	230	verify.sh	rc ok, 0 orphans (#3692)
 export-nested-stack	2026-09-24T18:20:06Z	PASS	165	verify.sh	rc ok, orph clean; PR #3668 head
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
@@ -166,7 +162,6 @@ intrinsics-torture-2	2026-09-24T00:57:33Z	PASS	54	verify.sh	PR #3579; rc ok, des
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-09-24T22:46:12Z	PASS	108	verify.sh	rc ok, 0 orphans (#3663)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-25T03:54:56Z	PASS	115	verify.sh	rc ok, orph clean
 lambda	2026-09-25T05:24:16Z	PASS	100	verify.sh	rc ok, 0 orphans (#3692)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -251,7 +246,6 @@ recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc 
 recreate-via-cc-api	2026-09-24T22:46:12Z	PASS	112	verify.sh	rc ok, 0 orphans (#3663)
 recreate-via-sdk-provider	2026-09-19T18:00:07Z	PASS	91	verify.sh	rc ok, orph clean; baseline re-seeded via --recreate-via-cc-api after the RuntimeManagementConfig premise rotted
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-25T04:25:08Z	PASS	1308	verify.sh	rc ok, orph clean
 remove-protection	2026-09-25T05:24:16Z	PASS	1302	verify.sh	rc ok, 0 orphans (#3692)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
