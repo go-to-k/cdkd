@@ -10,6 +10,7 @@ import {
 } from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /**
  * Issue [#1659](https://github.com/go-to-k/cdkd/issues/1659) — `cdkd export`'s
@@ -1471,6 +1472,48 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(rendered).toContain('no matching nested-stack entry');
     expect(rendered).not.toMatch(/^Repair with:/m);
   });
+
+  it('pastes nothing runnable at any granularity, through buildImportPlan itself', async () => {
+    // The paste fence for THIS site: the refusal rendered by `buildImportPlan`
+    // with each payload family as the logical id (withheld) and a plain one
+    // (named), fed to bash at line, sentence and clause granularity with decoys
+    // planted for every hole — `tests/unit/utils/paste-harness.ts`.
+    const reasonFor = async (logicalId: string): Promise<string> => {
+      const state = stateWith({
+        [logicalId]: { resourceType: 'AWS::S3::Bucket', physicalId: SECRET_MASK, properties: {} },
+      });
+      const template = {
+        Resources: { [logicalId]: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      };
+      const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+      expect(plan.blocked, logicalId).toHaveLength(1);
+      // Positive control: THIS arm, not one of the five earlier `blocked`
+      // sites, which a `toHaveLength(1)` alone would also satisfy.
+      expect(plan.blocked[0]!.reason, logicalId).toMatch(/import identifier cdkd resolved/);
+      // What the operator SEES is the grouped bullet, one layer above the raw
+      // reason: it renders the id at its head, so the paste runs on that.
+      return groupBlockedReasons(plan.blocked).join('\n');
+    };
+    const named = await reasonFor('Plain');
+    // A long PLAIN id: head and command agree at the stack-ref cap, so it is
+    // shown whole at the head AND named whole in the command (the head used
+    // to cut at 255 while the command named it -- review round 2).
+    for (const long of ['p'.repeat(256), 'p'.repeat(1152)]) {
+      const bullet = await reasonFor(long);
+      expect(bullet).toContain(`  - ${long} (AWS::S3::Bucket):`);
+      expect(bullet).toContain(`--resource ${long}='<physicalId>' --force`);
+    }
+    const withheld: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) withheld.push(await reasonFor(value));
+    withPasteDir((dir) => {
+      // The NAMED bullet is inert everywhere; a WITHHELD one prints a hole in
+      // its command and never names the id at all (`blockedRowId` describes
+      // it, go-to-k/cdkd#3736), so it is inert everywhere too — the stronger
+      // assertion, and the per-block criterion is not needed here.
+      expect(spansThatRun(named, dir)).toEqual([]);
+      for (const reason of withheld) expect(spansThatRun(reason, dir)).toEqual([]);
+    });
+  }, 120_000);
 });
 
 // -----------------------------------------------------------------------------

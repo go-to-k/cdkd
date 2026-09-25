@@ -1,5 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  type CommandArg,
+  type PasteableCommand,
+} from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
@@ -20,8 +25,7 @@ import {
   isReadableResourceEntry,
   malformedResourcesWarning,
   displayLogicalId,
-  safeRegion,
-  safeStackName,
+  SHORT_NAME_MAX_CODE_POINTS,
 } from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
@@ -5613,6 +5617,58 @@ export function applyImportOverlayForPhase2(
 const NAMED_BASELINE_IDS = 10;
 
 /**
+ * The sentence `reportDriftBaselineGaps` prints in place of a withheld
+ * `cdkd state refresh-observed`, rendered from the gate's REASON so the prose
+ * and the hole cannot disagree (M3 of the go-to-k/cdkd#3764 review). Keyed on
+ * the FIRST value the gate refused — the stack name before the region, the
+ * gate's own order — and named as that value, and exhaustive over
+ * `WithholdReason` so a new reason is a compile error here rather than a
+ * silently borrowed sentence. Not `withheldTargetClause`: that sentence is
+ * about a record's NAME alone and points at `cdkd state list --long`, and this
+ * one has to speak of the region too.
+ */
+function refreshWithheldReason(built: PasteableCommand): string {
+  const first = built.withheld[0];
+  // `exact` is false with nothing refused only when a caller asked for a bare
+  // hole, which the report never does; the exactness sentence is the
+  // conservative one should a future caller do so.
+  const what = first?.hole === 'region' ? "this stack's region" : "this stack's name";
+  const reason = first?.reason;
+  switch (reason) {
+    case 'option-shaped':
+      return (
+        `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
+        `an option however it is quoted ('--all' would rewrite every record in the region ` +
+        `rather than this one).`
+      );
+    case 'not-plain':
+      return (
+        `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
+        `'_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
+        `can run as shell or read as a line of this message once the terminal wraps.`
+      );
+    case 'pattern-shaped':
+      // Unreachable — `refArgs` passes no `patternMatched`, since this
+      // command resolves by exact name — and answered on purpose, because the
+      // reason is the gate's and a caller passing that option would otherwise
+      // borrow a sentence that is false of it.
+      return `${what} carries a '*' or '/', which cdkd refuses as a pattern character.`;
+    case 'altered':
+    case 'empty':
+    case 'too-long':
+    case undefined:
+      return (
+        `${what} as cdkd loaded it cannot be rendered exactly, and a near-match could ` +
+        `rewrite a different stack's baseline.`
+      );
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`refreshWithheldReason: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/**
  * Pre-flight check for missing drift baselines (`observedProperties`)
  * in the exporting stack's state. cdkd state schema v3 captures
  * `observedProperties` on every successful create / update / import so
@@ -5691,56 +5747,76 @@ export function reportDriftBaselineGaps(
   // warning above is the exception to "last": its text comes from the shared
   // module, which appends a sentence after the command, and follows the same
   // no-region rule there.
-  const stackRef =
-    shellQuote(safeStackName(stackName)) +
-    (region !== undefined ? ` --stack-region ${shellQuote(safeRegion(region))}` : '');
+  // Built by the SHARED gate since go-to-k/cdkd#3436's fold-in, ONE argument
+  // list for the two commands rendered here, so they cannot disagree about a
+  // name. Both values are held to `plainIdent`: the `cdkd state show` line
+  // sits beside prose, the shape `.claude/rules/state-malformed-containers.md`
+  // governs, and exactness alone admits a name with interior padding that
+  // spells a labelled line once the terminal wraps (`Prod<60 spaces>Migrate
+  // with: cdkd destroy --all --force #`) — the wrap-forge the option exists
+  // for, closed here at its one-flag place (M2 of the go-to-k/cdkd#3764
+  // review). Real CDK names pass `isPasteableIdent`. The region keeps its own
+  // cap through `maxCodePoints`: a region is displayed at 128 (`safeRegion`)
+  // everywhere cdkd shows one, and the gate's default is the 1152 stack-name
+  // cap, so without it this report would NAME a 200-character region in full
+  // in a command while every display of it is cut (the rule file's "borrowing
+  // a gate UPWARD").
+  const refArgs: readonly CommandArg[] =
+    region === undefined
+      ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+      : [
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          {
+            flag: '--stack-region',
+            value: region,
+            hole: 'region',
+            opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+          },
+        ];
 
-  // The EXACTNESS GATE, for the one command here that WRITES. `cdkd state
-  // show` is printed with a sanitized name because it only reads: a near-miss
-  // either finds no state or DISPLAYS another stack's record, neither of which
-  // changes anything, and the reader can see which record came back. `cdkd state
-  // refresh-observed` locks a record and rewrites its `observedProperties`, so
-  // a name that sanitizing CHANGED — a non-breaking space where the real stack
-  // has an ordinary one, a control byte, a cut at the cap — can resolve to a
-  // DIFFERENT stack that exists and rewrite that stack's baseline. The same
-  // reasoning `buildForceUnlockCommand` applies to a lock it would delete: when
-  // rendering altered either value, the command is withheld and the advice
-  // names the command in prose instead.
+  // The one command here that WRITES prints ONLY when the gate named both
+  // values — keyed on the gate's own verdict, not on a local re-spelling of
+  // it (M3 of the go-to-k/cdkd#3764 review: a re-spelling let the region's
+  // `maxCodePoints` hole print as `--stack-region '<region>'` with no sentence
+  // saying why). `cdkd state show` only reads, so it is printed for every name
+  // the gate can render, with a hole where it could not: a near-miss there at
+  // worst DISPLAYS another stack's record, which the reader can see. `cdkd
+  // state refresh-observed` locks a record and rewrites its
+  // `observedProperties`, so a name that sanitizing CHANGED — a non-breaking
+  // space where the real stack has an ordinary one, a control byte, a cut at
+  // the cap — can resolve to a DIFFERENT stack that exists and rewrite that
+  // stack's baseline. The same reasoning `buildForceUnlockCommand` applies to
+  // a lock it would delete: when any value is withheld, the command is
+  // withheld and the advice names the command in prose instead, with the
+  // sentence rendered from the gate's REASON so the two cannot disagree.
   //
-  // A record with NO region is withheld too, for a different reason:
-  // `cdkd state refresh-observed` refuses a legacy region-less record outright,
-  // so a command for one could only fail. The advice says to migrate first.
-  const rendersExactly =
-    region !== undefined && safeStackName(stackName) === stackName && safeRegion(region) === region;
-  // Exact is not enough on its own, the second half of the rule the legacy
+  // The option-shaped reason is the second half of the rule the legacy
   // refusal in `state.ts` states: shell quoting does not stop Commander from
   // parsing `'--all'` as the `--all` FLAG, and on this command that flag targets
   // every record in the region — so a stack named `--all` would print a command
   // that rewrites every baseline instead of the one the sentence names. A name
   // a prebuilt cloud assembly supplies is unvalidated (`extractStackInfo` takes
-  // `props?.stackName || artifactId`), so this is reachable, not theoretical.
-  //
-  // Only the LEADING `-` half of that sibling's test applies here, and the
+  // `props?.stackName || artifactId`), so this is reachable, not theoretical;
+  // the region is read raw off the state body, so `--stack-region --all` is
+  // too. Only the LEADING `-` half of that sibling's test applies here, and the
   // difference is the command, not the caution: `cdkd deploy` reads its
   // argument as a PATTERN, while `cdkd state refresh-observed` resolves it by
   // exact name equality (`r.stackName === stackName`), so a `*` or `/` selects
   // at most the one record literally named that — it cannot widen the target
-  // the way a pattern does.
-  const readsAsAnOption = /^-/.test(stackName);
-  const refreshCommand =
-    rendersExactly && !readsAsAnOption ? `cdkd state refresh-observed ${stackRef}` : undefined;
+  // the way a pattern does, and `patternMatched` is deliberately NOT passed.
+  //
+  // A record with NO region is withheld too, for a different reason:
+  // `cdkd state refresh-observed` refuses a legacy region-less record outright,
+  // so a command for one could only fail. The advice says to migrate first.
+  const refresh = pasteableCommand('cdkd state refresh-observed', refArgs);
+  const refreshCommand = region !== undefined && refresh.exact ? refresh.command : undefined;
   const refreshWithheld =
     region === undefined
       ? `'cdkd state refresh-observed' for this stack once it is migrated: this record has ` +
         `no region, the legacy layout that command refuses, so migrate it first with any cdkd ` +
         `write, such as a deploy.`
-      : rendersExactly
-        ? `'cdkd state refresh-observed' for this stack. The command is not printed: this ` +
-          `stack's name starts with '-', which the CLI reads as an option however it is ` +
-          `quoted, and '--all' would rewrite every record in the region rather than this one.`
-        : `'cdkd state refresh-observed' for this stack. The command is not printed: the ` +
-          `stack name or region cdkd loaded cannot be rendered exactly, and a near-match could ` +
-          `rewrite a different stack's baseline.`;
+      : `'cdkd state refresh-observed' for this stack. The command is not printed: ` +
+        `${refreshWithheldReason(refresh)}`;
 
   // go-to-k/cdkd#3018. An ENTRY that is not a readable object is a different
   // shape from the unreadable BAG tested above, and `r.observedProperties` on
@@ -5777,6 +5853,7 @@ export function reportDriftBaselineGaps(
   );
   const unreadableCount = entries.length - readable.length;
   if (unreadableCount > 0) {
+    const inspect = pasteableCommand('cdkd state show', refArgs);
     const unreadable = entries
       .filter(([, r]) => !isReadableResourceEntry(r))
       .map(([logicalId]) => logicalId);
@@ -5784,12 +5861,20 @@ export function reportDriftBaselineGaps(
       `${unreadable.length} of ${entries.length} resource(s) in cdkd state have a record that is ` +
         `not readable as a resource — not an object, or carrying no resource type — so their ` +
         `drift baseline cannot be reported on. The state record is malformed or truncated. ` +
+        // A hole in a READ command still needs saying, and it is said BEFORE
+        // the command so the command stays last and pasteable: an operator
+        // handed `'<region>'` with no reason fills it from whatever is
+        // nearest, and prose after the command is what a paste picks up.
+        (inspect.exact
+          ? ''
+          : `A quoted '<...>' hole in the command below stands for a value cdkd could not ` +
+            `print safely; fill it from 'cdkd state list --long'. `) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
         // type, so that claim would contradict the plan printed beside it.
         `Inspect it with: ` +
-        `cdkd state show ${stackRef} --json`
+        `${inspect.command} --json`
     );
     for (const logicalId of unreadable.slice(0, NAMED_BASELINE_IDS)) {
       logger.warn(`  ${displayLogicalId(logicalId)}`);

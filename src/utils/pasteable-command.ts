@@ -62,10 +62,10 @@
  * - **Its own copy of the gate.** `buildForceUnlockCommand`
  *   (`state/lock-contention-message.ts`), the `cdkd orphan` properties refusal
  *   (`state/malformed-resources-bag.ts`), `orphanCommandFor` (`cli/commands/
- *   export.ts`), and others in `deployment/deploy-engine.ts`,
- *   `deployment/rollback-executor.ts` and `cli/commands/gc.ts`. They behave the
- *   same way; they are not this function, so a rule change reaches them only by
- *   hand.
+ *   export.ts`), and others in `deployment/deploy-engine.ts` and
+ *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts` left this list in
+ *   go-to-k/cdkd#3436's second half). They behave the same way; they are not
+ *   this function, so a rule change reaches them only by hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
  *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
  *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
@@ -185,6 +185,19 @@ export interface ValueGateOptions {
    * so ONE predicate decides both lines.
    */
   readonly plainIdent?: boolean;
+  /**
+   * The cap this value is DISPLAYED at in the caller's own prose, when it is
+   * not `STACK_REF_MAX_CODE_POINTS`. A command must not name a value its
+   * message renders truncated — `.claude/rules/state-malformed-containers.md`'s
+   * "borrowing a gate across sites is safe only DOWNWARD" — and a REGION is
+   * displayed at 128 (`safeRegion`) where a stack name is displayed at 1152, so
+   * the two `--stack-region` callers that folded onto this gate in
+   * go-to-k/cdkd#3436's second half pass 128 here rather than re-spelling the
+   * cap as a gate of their own. Without it a fold-in widens the cap to 1152
+   * silently: `'r'.repeat(200)` is named in full under a clause that displays
+   * it cut.
+   */
+  readonly maxCodePoints?: number;
 }
 
 /**
@@ -206,7 +219,7 @@ export type WithholdReason =
   | 'altered'
   /** Empty: an empty argument is not "not supplied" to every reader. */
   | 'empty'
-  /** Past `STACK_REF_MAX_CODE_POINTS`. */
+  /** Past the caller's `maxCodePoints`, or `STACK_REF_MAX_CODE_POINTS` when none was given. */
   | 'too-long'
   /**
    * A leading `-`, refused CONSERVATIVELY rather than by parsing. `--all` and
@@ -340,7 +353,17 @@ function withholdReason(
   if (value === '') return 'empty';
   const safe = displaySafe(value, { asciiOnly: true });
   if (safe !== value) return 'altered';
-  if (truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated) return 'too-long';
+  // Floored at 1 and defaulted when not finite, as `displayIdent` treats its
+  // own cap: a `0` would make every value too long, and `NaN` or `Infinity`
+  // would reach `truncateCodePoints` unasked (both unreachable from the
+  // constant callers). No rounding clause: a fractional cap already behaves
+  // as its integer part inside `truncateCodePoints`, so one would be an
+  // equivalent mutation, stated rather than pinned.
+  const cap =
+    opts?.maxCodePoints !== undefined && Number.isFinite(opts.maxCodePoints)
+      ? Math.max(1, opts.maxCodePoints)
+      : STACK_REF_MAX_CODE_POINTS;
+  if (truncateCodePoints(safe, cap).truncated) return 'too-long';
   // See `WithholdReason`'s `'option-shaped'` member for why this refuses on the
   // LEADING `-` rather than on whether the value parses as an option. In short:
   // `--all` does parse as the flag — quoting stops the shell, not Commander,

