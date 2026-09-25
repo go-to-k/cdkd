@@ -148,7 +148,7 @@ import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr 
 import-auto-mode	2026-09-24T08:37:51Z	PASS	90	verify.sh	rc ok, orph clean; #2872 lane
 import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, orph clean; #2872 stale-baseline arm (pre-fix probe red at 6c RootPwParam marked)
 import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
-import-migrate-vpc	2026-09-24T16:49:36Z	PASS	350	verify.sh	rc ok, orph clean; 30 imported 0 not found; origin/main ec2-provider: 20 not found
+import-migrate-vpc	2026-09-25T05:37:37Z	PASS	335	verify.sh	rc ok, orph clean; 31 imported 0 failed; VPCCidrBlock recorded as <assoc>|<vpc> (#3672)
 import-nested-stack	2026-09-24T18:20:06Z	PASS	145	verify.sh	rc ok, orph clean; PR #3668 head
 import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
 import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
