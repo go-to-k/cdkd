@@ -170,6 +170,7 @@ lambda	2026-09-25T12:53:43Z	PASS	100	verify.sh	rc ok, orph clean; #3761 comment-
 lambda	2026-09-25T11:38:41Z	PASS	101	verify.sh	rc 0, state clean, PR 3613 head
 lambda	2026-09-25T11:35:49Z	PASS	139	verify.sh	rc ok, 9 deleted 0 errors, orph clean; sha 7f3ebd731 (#3202)
 lambda	2026-09-25T14:26:00Z	PASS	130	verify.sh	rc ok, 9 deleted 0 errors, orph clean; PR 3758 round-1 tree (#3202)
+lambda	2026-09-25T15:43:57Z	PASS	132	verify.sh	rc ok, 9 deleted 0 errors, orph clean; PR 3758 round-2 tree (#3202)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0

@@ -2629,10 +2629,93 @@ describe('cdkd import', () => {
       // The pre-flight text is NOT the one raised here: the lock is held and
       // AWS was read by then, which that text denies.
       expect(errored).not.toContain('Nothing was locked');
+      // ...and the lock IS released on the way out: this is the one new
+      // refusal raised while it is held (maintainer round 2, optional).
+      expect(mockReleaseLock).toHaveBeenCalled();
       expect(
         mockSaveState,
         'cdkd import saved a record still carrying the row it could not re-import'
       ).not.toHaveBeenCalled();
+    });
+
+    it('refuses BEFORE the confirmation prompt on a real run without --yes', async () => {
+      // Maintainer round 2, M4 (b): the re-check sits above the prompt, so the
+      // user is never asked "Write state?" for a record the run then refuses.
+      // Stdin is interactive here (the file's `beforeEach` sets it so), so the
+      // prompt WOULD be asked through the readline mock if the ordering were
+      // wrong — the assertion that it was never asked is what proves the order.
+      readlineQuestion.mockResolvedValue('y');
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('their import did not succeed');
+      expect(readlineQuestion, 'the prompt was asked before the refusal').not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('refuses the same way under --dry-run, so the preview cannot say "re-run without --dry-run" for a run that then refuses', async () => {
+      // Maintainer round 2, M4: the re-check sits ABOVE the `--dry-run` return
+      // and the confirmation prompt, on the map `buildStackState` assembles
+      // once `rows` is final — so the preview and the real run agree, and the
+      // real run never asks "Write state?" for a record it then refuses.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+          '--dry-run',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('MyBucket');
+      expect(errored).toContain('their import did not succeed');
+      // The dry-run verdict line must NOT have been printed: the refusal
+      // comes first, which is the whole point of the placement.
+      const infos = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(infos).not.toContain('Re-run without --dry-run to apply');
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
     });
 
     it('does NOT refuse a whole-stack --force import over the same row, which replaces the map', async () => {

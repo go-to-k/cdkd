@@ -819,6 +819,39 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         writeRecordedMapping(options.recordResourceMapping, rows);
       }
 
+      // The state record this run would write, assembled HERE — once `rows`
+      // is final and BEFORE the `--dry-run` return and the confirmation
+      // prompt — rather than below them (go-to-k/cdkd#3202, maintainer round
+      // 2, M4). `buildStackState` is a pure assembly, so building it early
+      // costs nothing, and it is what lets the re-check below decide the same
+      // way on a dry run and on the real run: the pre-flight above exempted
+      // the LISTED rows from the unreadable-row refusal on the promise that
+      // this assembly replaces them, and it replaces only a row whose import
+      // SUCCEEDED, keeping the stored row for one that failed or was skipped.
+      // Checked below the assembly and above everything that acts on it —
+      // the dry-run verdict (which would otherwise say "re-run without
+      // --dry-run" for a run that then refuses), the prompt (which would
+      // otherwise ask "Write state?" for a record the run then refuses to
+      // write), the property resolution (which reads every row) and the
+      // save. Every unreadable row still present is a listed one the run
+      // could not repair; an unlisted one was refused pre-flight, and a
+      // whole-stack rebuild starts from `{}`.
+      //
+      // `stateTemplate` is the PRE-asset-rewrite snapshot in cdkd-assets mode
+      // (issue #1652) and `template` itself otherwise — identical in every
+      // respect except that its asset references still name CDK bootstrap
+      // storage, which is what AWS holds for the resources being adopted.
+      const stackState = buildStackState(
+        stackInfo.stackName,
+        targetRegion,
+        rows,
+        templateParser,
+        stateTemplate,
+        existingState,
+        selectiveMode
+      );
+      refuseMalformedResourceEntriesForImportSave(stackState, stackInfo.stackName, targetRegion);
+
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
         return;
@@ -855,29 +888,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         }
       }
 
-      // `stateTemplate` is the PRE-asset-rewrite snapshot in cdkd-assets mode
-      // (issue #1652) and `template` itself otherwise — identical in every
-      // respect except that its asset references still name CDK bootstrap
-      // storage, which is what AWS holds for the resources being adopted.
-      const stackState = buildStackState(
-        stackInfo.stackName,
-        targetRegion,
-        rows,
-        templateParser,
-        stateTemplate,
-        existingState,
-        selectiveMode
-      );
-
-      // The pre-flight above exempted the LISTED rows from the unreadable-row
-      // refusal on the promise that `buildStackState` replaces them — and it
-      // replaces only a row whose import SUCCEEDED, keeping the stored row for
-      // one that failed or was skipped. So the ASSEMBLED map is checked once
-      // more here, above the property resolution (which reads every row) and
-      // the save (go-to-k/cdkd#3202, Codex review of round 1). Every unreadable
-      // row still present is a listed one the run could not repair; an unlisted
-      // one was refused pre-flight, and a whole-stack rebuild starts from `{}`.
-      refuseMalformedResourceEntriesForImportSave(stackState, stackInfo.stackName, targetRegion);
+      // `stackState` was assembled and re-checked above the `--dry-run` return
+      // and the prompt; from here on this run WRITES it.
 
       // Resolve CFn intrinsics (Ref / Fn::GetAtt / Fn::Sub / ...) in every
       // freshly-imported resource's `properties` against the assembled
