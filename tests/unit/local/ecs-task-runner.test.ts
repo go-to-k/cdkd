@@ -230,6 +230,28 @@ describe('buildDockerRunArgs', () => {
     expect(args).toContain('OVR=o');
   });
 
+  it('passes a resolved SECRET named __proto__ through the spawn env, never the argv (#3515)', () => {
+    const c = makeContainer({ name: 'svc', environment: { PLAIN: 'p' } });
+    const { args, sensitiveEnv } = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [{ name: '__proto__', value: 'proto-secret-value' }],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    // Value-less flag on the argv; the value only in the spawn env.
+    expect(args).toContain('__proto__');
+    expect(args.join(' ')).not.toContain('proto-secret-value');
+    expect(Object.hasOwn(sensitiveEnv, '__proto__')).toBe(true);
+    expect(sensitiveEnv['__proto__']).toBe('proto-secret-value');
+  });
+
   it('applies an --env-vars override named __proto__ (#3515)', () => {
     const c = makeContainer({ name: 'svc', environment: { PLAIN: 'p' } });
     const overrides = JSON.parse('{"svc": {"__proto__": "from-override"}}') as Record<
