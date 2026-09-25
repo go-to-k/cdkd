@@ -3421,8 +3421,8 @@ async function stateRefreshObservedCommand(
         // with: cdkd destroy --all --force #` still wraps into a counterfeit
         // row. A name the predicate refuses is described, not shown — the
         // clause below gives the gate's own reason, and `cdkd state list
-        // --long` shows it. `plainIdent` makes the command's verdict the same one, so
-        // the prose never names a value the command withholds.
+        // --long` shows it. `plainIdent` makes the command's verdict the
+        // same one, so the prose never names a value the command withholds.
         const named = isPasteableIdent(target.stackName);
         const subject = named
           ? `Stack ${target.stackName}`

@@ -444,8 +444,9 @@ export function withheldTargetClause(
   // can return has at least one case asserting both the hole in the command
   // and the sentence about it, so a lookup that stopped matching cannot leave
   // the suite green; the sixth, `not-plain`, which only a `plainIdent`
-  // caller reaches, is pinned in `drift.test.ts` and in the `state` suites. (The hostile-name loop asserts the hole
-  // alone; it is about the gate, not about the sentence.)
+  // caller reaches, is pinned in `drift.test.ts` and in the `state` suites.
+  // (The hostile-name loop asserts the hole alone; it is about the gate, not
+  // about the sentence.)
   const reason = built.withheld.find((w) => w.hole === hole)?.reason;
   if (reason === undefined) return '';
   // A `switch` with a `never` default, not a ternary chain with a catch-all
@@ -478,11 +479,12 @@ export function withheldTargetClause(
     case 'not-plain':
       // The clause names the SHAPE the operator can check by eye, because the
       // command line beside it shows a hole, so the sentence is where the
-      // reader learns what disqualified the name. It states the RULE and why the rule
-      // exists, not a hazard of this value (M22 of the go-to-k/cdkd#3613
-      // review): a padded name can wrap into a labelled line and `$(...)` can
-      // run, but `_x` reaches this arm too and does neither, and a reason
-      // that is true of only part of the population misleads the rest.
+      // reader learns what disqualified the name. It states the RULE and why
+      // the rule exists, not a hazard of this value (M22 of the
+      // go-to-k/cdkd#3613 review): a padded name can wrap into a labelled
+      // line and `$(...)` can run, but `_x` reaches this arm too and does
+      // neither, and a reason that is true of only part of the population
+      // misleads the rest.
       why =
         `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' ` +
         `or '-'), the only shape named in a command here, since a name outside it can run as ` +
