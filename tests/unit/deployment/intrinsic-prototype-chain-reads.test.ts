@@ -30,9 +30,9 @@
  * Reached HERE by a bare `Ref` / `Fn::GetAtt`. `Fn::Sub` reaches them too since
  * issue [#2739](https://github.com/go-to-k/cdkd/issues/2739) gave `resolveSub`'s
  * variable map a null prototype — before that, `${constructor}` was answered as
- * BOUND and never arrived. This file pins the arms themselves; the `Fn::Sub`
- * route to them is [#2776](https://github.com/go-to-k/cdkd/issues/2776)'s,
- * along with `Fn::Sub`'s own first-element guard.
+ * BOUND and never arrived. The `Fn::Sub` route to them, and `Fn::Sub`'s own
+ * template-string guard, are pinned below under issue
+ * [#2776](https://github.com/go-to-k/cdkd/issues/2776).
  */
 
 import { describe, it, expect, vi } from 'vite-plus/test';
@@ -492,6 +492,113 @@ describe('template-controlled bag reads do not walk the prototype chain (#2767)'
       expect(await resolver.resolve({ 'Fn::GetAtt': ['constructor', 'Arn'] }, context)).toBe(
         'arn:aws:s3:::phys-ctor'
       );
+    });
+  });
+
+  // Issue #2776: the `Fn::Sub` route to the arms above. `resolveSub`'s variable
+  // map has had a null prototype since issue #2739, so `${constructor}` is no
+  // longer answered as BOUND; what these pin is the value the fall-through
+  // then RENDERS, which the #2739 suite deliberately left to this file (it
+  // asserts only "no function source").
+  describe('Fn::Sub placeholders naming an Object.prototype member', () => {
+    it.each([
+      ['the one-argument form', { 'Fn::Sub': 'arn:${constructor}' }, 'arn:${constructor}'],
+      [
+        'the two-argument form',
+        { 'Fn::Sub': ['arn:${constructor}', { Lit: 'y' }] },
+        'arn:${constructor}',
+      ],
+      ['the two-argument form, another member', { 'Fn::Sub': ['arn:${toString}', {}] }, 'arn:${toString}'],
+    ])('keeps the placeholder on %s rather than rendering a prototype member', async (_l, value, expected) => {
+      const resolver = new IntrinsicFunctionResolver();
+
+      // Undeclared name -> `Ref` misses -> warn-and-keep, like any unknown
+      // name. Before #2739 this rendered `arn:function Object() { [native
+      // code] }`; between #2739 and #2767 it rendered `arn:undefined`.
+      expect(await resolver.resolve(value, emptyContext())).toBe(expected);
+    });
+
+    it('substitutes a variable-map entry genuinely named constructor', async () => {
+      const resolver = new IntrinsicFunctionResolver();
+      // The positive twin: own-key membership must still ACCEPT a declared
+      // variable whose name collides with a prototype member. Parsed from a
+      // string for symmetry with the `__proto__` cases; `constructor` would
+      // survive an object literal too.
+      const value = JSON.parse('{"Fn::Sub":["arn:${constructor}",{"constructor":"own"}]}') as {
+        'Fn::Sub': [string, Record<string, unknown>];
+      };
+
+      expect(await resolver.resolve(value, emptyContext())).toBe('arn:own');
+    });
+
+    it('resolves a placeholder naming a resource genuinely called constructor, on both forms', async () => {
+      const resolver = new IntrinsicFunctionResolver();
+      const context: ResolverContext = {
+        template: {
+          Resources: { constructor: { Type: 'AWS::S3::Bucket' } },
+        } as unknown as CloudFormationTemplate,
+        resources: {
+          constructor: {
+            physicalId: 'phys-ctor',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: { Arn: 'arn:aws:s3:::phys-ctor' },
+          },
+        },
+      };
+
+      for (const [value, expected] of [
+        [{ 'Fn::Sub': 'x-${constructor}' }, 'x-phys-ctor'],
+        [{ 'Fn::Sub': ['x-${constructor}', { Lit: 'y' }] }, 'x-phys-ctor'],
+        // The dotted arm reaches `resolveGetAtt` rather than `resolveRef`.
+        [{ 'Fn::Sub': 'x-${constructor.Arn}' }, 'x-arn:aws:s3:::phys-ctor'],
+      ] as const) {
+        expect(await resolver.resolve(value, context)).toBe(expected);
+      }
+    });
+  });
+
+  // Issue #2776's other deferred item: the FIRST element (or the scalar form)
+  // gains the non-string refusal the second element already had. Without it a
+  // non-string template died at `template.matchAll is not a function` — a
+  // TypeError naming cdkd's internals rather than the template's shape.
+  describe('Fn::Sub template-string guard', () => {
+    it.each([
+      ['a number first element', { 'Fn::Sub': [5, {}] }, 'the first element', 'number'],
+      ['a null first element', { 'Fn::Sub': [null, {}] }, 'the first element', 'null'],
+      ['an object first element', { 'Fn::Sub': [{ Ref: 'X' }, {}] }, 'the first element', 'object'],
+      ['an array first element', { 'Fn::Sub': [['a'], {}] }, 'the first element', 'array'],
+      ['an empty pair', { 'Fn::Sub': [] }, 'the first element', 'undefined'],
+      ['a number scalar', { 'Fn::Sub': 5 }, 'the template', 'number'],
+      ['a boolean scalar', { 'Fn::Sub': false }, 'the template', 'boolean'],
+      ['a null scalar', { 'Fn::Sub': null }, 'the template', 'null'],
+      ['an object scalar', { 'Fn::Sub': { Ref: 'X' } }, 'the template', 'object'],
+    ])('refuses %s by name, non-retryably', async (_label, value, subject, kind) => {
+      const resolver = new IntrinsicFunctionResolver();
+
+      const error = await resolveError(resolver, value, emptyContext());
+
+      // The WHOLE message: it names the TYPE, never the value.
+      expect(error.message).toBe(`Fn::Sub: ${subject} must be a string, got ${kind}`);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+    });
+
+    it('checks the template before the variable map', async () => {
+      const resolver = new IntrinsicFunctionResolver();
+
+      // Both elements are wrong; the first one is named. Pinned so the two
+      // guards' order is a decision rather than an accident.
+      const error = await resolveError(resolver, { 'Fn::Sub': [5, null] }, emptyContext());
+
+      expect(error.message).toBe('Fn::Sub: the first element must be a string, got number');
+    });
+
+    it('still resolves an EMPTY template string on both forms', async () => {
+      const resolver = new IntrinsicFunctionResolver();
+
+      // A falsy string is a string: a truthiness-shaped guard would refuse it.
+      expect(await resolver.resolve({ 'Fn::Sub': '' }, emptyContext())).toBe('');
+      expect(await resolver.resolve({ 'Fn::Sub': ['', {}] }, emptyContext())).toBe('');
     });
   });
 

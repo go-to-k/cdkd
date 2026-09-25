@@ -104,6 +104,7 @@ import {
 } from './retryable-errors.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 
 /**
  * Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762): turn a
@@ -1562,9 +1563,22 @@ async function resolveReplayProps(
       return out;
     }
     if (v !== null && typeof v === 'object') {
+      // `defineOwnKey`, never `out[k] = ...` (issue #2776). The journal and the
+      // state record are `JSON.parse`d, which makes a property literally named
+      // `__proto__` an OWN key, and assigning it onto a `{}` literal runs
+      // `Object.prototype`'s setter: the key vanished from the bag the provider
+      // is handed, with no error. The resolver's object walk had the same
+      // defect one layer up (issue #2767) and this is the same remedy.
+      //
+      // NOT `nullPrototypeRecord()`, which is what the drift walks use: this
+      // bag goes to EVERY provider's `update()` / `create()`, and a
+      // null-prototype object throws on `String()` / a template literal and
+      // has no `.hasOwnProperty()` method, which no provider audit rules out.
+      // Keeping the ordinary prototype makes the key's survival the only
+      // behaviour change.
       const out: Record<string, unknown> = {};
       for (const [k, val] of Object.entries(v))
-        out[k] = await walk(val, path === '' ? k : `${path}.${k}`);
+        defineOwnKey(out, k, await walk(val, path === '' ? k : `${path}.${k}`));
       return out;
     }
     return v;

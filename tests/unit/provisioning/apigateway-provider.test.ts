@@ -1135,6 +1135,33 @@ describe('ApiGatewayProvider', () => {
         ]);
       });
 
+      it('removes a dropped /variables key named after an Object.prototype member (#2776 sweep)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        // A stage variable may legally be named `constructor`. The removal
+        // pass tested membership with `in`, which answers TRUE through the
+        // prototype chain, so dropping the variable emitted no `remove` op
+        // and the stale variable stayed live on the stage.
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123', Variables: { keep: 'k' } },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            Variables: { keep: 'k', constructor: 'old', toString: 'old' },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'remove', path: '/variables/constructor' },
+          { op: 'remove', path: '/variables/toString' },
+        ]);
+      });
+
       it('should not emit a /variables patch op for an unchanged key (#609 backfill)', async () => {
         const result = await provider.update(
           'MyStage',
@@ -1701,6 +1728,29 @@ describe('ApiGatewayProvider', () => {
           },
           { op: 'replace', path: '/canarySettings/stageVariableOverrides/added', value: 'yes' },
           { op: 'remove', path: '/canarySettings/stageVariableOverrides/stale' },
+        ]);
+      });
+
+      it('removes a dropped StageVariableOverrides key named after an Object.prototype member (#2776 sweep)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        // The override twin of the /variables case: `key in overrides`
+        // answered TRUE for `constructor` through the prototype chain.
+        const canary = { PercentTraffic: 25, DeploymentId: 'deploy-canary', UseStageCache: true };
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { ...base, CanarySetting: { ...canary, StageVariableOverrides: { keep: 'k' } } },
+          {
+            ...base,
+            CanarySetting: { ...canary, StageVariableOverrides: { keep: 'k', constructor: 'old' } },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'remove', path: '/canarySettings/stageVariableOverrides/constructor' },
         ]);
       });
 

@@ -1464,7 +1464,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         }
       }
       for (const key of Object.keys(prevOverrides)) {
-        if (!(key in overrides)) {
+        // `Object.hasOwn`, not `in` (issue #2776's sweep): a key named
+        // `constructor` / `toString` answers `in` through the prototype chain,
+        // so dropping it from the template emitted no `remove` op.
+        if (!Object.hasOwn(overrides, key)) {
           patchOperations.push({
             op: 'remove',
             path: `/canarySettings/stageVariableOverrides/${key}`,
@@ -1485,7 +1488,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
     }
     for (const key of Object.keys(prevVariables)) {
-      if (!(key in variables)) {
+      // `Object.hasOwn` for the reason given at the overrides twin above.
+      if (!Object.hasOwn(variables, key)) {
         patchOperations.push({ op: 'remove', path: `/variables/${key}` });
       }
     }
