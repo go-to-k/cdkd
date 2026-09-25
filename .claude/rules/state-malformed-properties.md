@@ -50,7 +50,8 @@ SECOND time after splicing adopted rollback orphans in, since those come from
 `state.orphans[].state`, which it never walks. The ENTRY guard on that
 container runs BEFORE the adoption preview, which throws on a `null` / absent
 `state` or a `null` record; dropped records join the node's `unreadable`, so
-`--fail` counts them.
+`--fail` counts them, and add a top-level blocking reason, since the deploy
+refuses them (go-to-k/cdkd#3512).
 
 `cdkd orphan` runs no diff, and keeps its orphan-set parameter so recovery stays
 open
