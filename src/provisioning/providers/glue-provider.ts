@@ -105,6 +105,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 
@@ -462,6 +463,99 @@ function resolveTableIdentity(input: {
 }
 
 /**
+ * Describe an unresolved name by SHAPE only. Its leaves can be resolved
+ * secrets, and the engine's masker matches a secret's full plaintext, which a
+ * JSON rendering (escaping) or a cut (a fragment) would defeat.
+ */
+function describeUnresolvedName(value: unknown): string {
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'object' && value !== null) {
+    const keys = Object.keys(value).slice(0, 5);
+    return keys.length === 0 ? 'an empty object' : `an object with keys [${keys.join(', ')}]`;
+  }
+  if (typeof value === 'number') return 'a number that is not a safe integer';
+  return `a ${typeof value}`;
+}
+
+/**
+ * Refuse an UPDATE whose nested `Name` renames the recorded Glue entity
+ * (issue #3724).
+ *
+ * CDK emits the NESTED name (`TableInput.Name`, `DatabaseInput.Name`,
+ * `ConnectionInput.Name`), and none of the registry schemas marks it
+ * createOnly (Table marks its top-level `Name`, Database its `DatabaseName`,
+ * Connection only `CatalogId`), so a rename diffs as an in-place UPDATE. For
+ * a table that update is a wrong-target write: `UpdateTable` addresses the
+ * table BY `TableInput.Name`, so it would rewrite whichever table holds the new
+ * name — possibly one cdkd does not manage — while the state record kept the
+ * old id. `UpdateDatabase` / `UpdateConnection` address the recorded name, but
+ * whatever AWS does with a different name inside the definition, cdkd keeps
+ * recording the old one. No arm is licensed to downgrade this on a replay: the
+ * alternative is a write to a resource the record does not name.
+ *
+ * `ResourceUpdateNotSupportedError` is what the deploy engine's `--replace`
+ * fallback reacts to, so the remedy it names is a real path. An ABSENT name
+ * passes: the builders then send the recorded one. Any other non-string value
+ * still reaches the wire uncoerced, so a safe integer is compared by its string
+ * form (the one spelling JS and Glue cannot disagree on) and anything else is
+ * refused with an untyped error, since a `--replace` CREATE would carry the
+ * same value — cdkd cannot tell which entity it addresses.
+ * `foldCase` is set for tables and databases, whose names Glue folds to
+ * lowercase: a case-only difference addresses the same entity, and a
+ * `drift --revert` bag read back from AWS carries the folded spelling. Only
+ * ASCII is folded, so a guess wrong about Glue's folding over-refuses rather
+ * than letting a different entity through.
+ */
+function refuseNestedRename(args: {
+  resourceType: string;
+  logicalId: string;
+  field: string;
+  noun: string;
+  recordedName: string;
+  desiredName: unknown;
+  foldCase: boolean;
+  consequence: (desiredName: string) => string;
+  stateful: boolean;
+}): void {
+  const { desiredName: raw, recordedName } = args;
+  if (raw == null) return;
+  const comparable =
+    typeof raw === 'string' || (typeof raw === 'number' && Number.isSafeInteger(raw));
+  if (!comparable) {
+    // NOT `ResourceUpdateNotSupportedError`: `--replace` reacts to that type, and
+    // its DELETE would retire the recorded entity before a CREATE carrying the
+    // same unaddressable value.
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${args.field} is not a resolved name (${describeUnresolvedName(raw)}), so cdkd cannot ` +
+          `tell which Glue ${args.noun} the update of ${args.logicalId} would address and will ` +
+          `not send it. Declare ${args.field} as a string ('${recordedName}' keeps the ` +
+          `recorded ${args.noun})`,
+        args.resourceType,
+        args.logicalId
+      )
+    );
+  }
+  const desiredName = String(raw);
+  const fold = (name: string): string =>
+    args.foldCase ? name.replace(/[A-Z]/g, (c) => c.toLowerCase()) : name;
+  if (fold(desiredName) === fold(recordedName)) return;
+  const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
+  throw new ResourceUpdateNotSupportedError(
+    args.resourceType,
+    args.logicalId,
+    `${args.field} changed from '${recordedName}' to '${desiredName}', and cdkd cannot rename ` +
+      `a Glue ${args.noun} in place — ${args.consequence(desiredName)}. To rename it, re-deploy ` +
+      `with ${remedyFlags}, which DELETEs the ${args.noun} '${recordedName}' and then CREATEs ` +
+      `'${desiredName}' (under UpdateReplacePolicy: Retain the old one is kept instead); the ` +
+      `CREATE fails if a ${args.noun} named '${desiredName}' already exists, after the DELETE. ` +
+      `If the template did not change this name, the state record was left by an earlier ` +
+      `deploy that wrote to '${desiredName}' (issue #3724): check that ${args.noun} before ` +
+      `re-deploying. Otherwise keep the name '${recordedName}'`
+  );
+}
+
+/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -658,6 +752,20 @@ export class GlueProvider implements ResourceProvider {
         physicalId
       );
     }
+
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'DatabaseInput.Name',
+      noun: 'database',
+      recordedName: physicalId,
+      desiredName: databaseInput['Name'],
+      foldCase: true,
+      consequence: () =>
+        `UpdateDatabase would address '${physicalId}' with a different name inside its ` +
+        `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
+      stateful: true,
+    });
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
@@ -936,6 +1044,23 @@ export class GlueProvider implements ResourceProvider {
         physicalId
       );
     }
+
+    // Before the pre-read: `readLiveTableState` reads the RECORDED table, and
+    // its `VersionId` would then ride an `UpdateTable` aimed at another one.
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'TableInput.Name',
+      noun: 'table',
+      recordedName: tableName,
+      desiredName: tableInput['Name'],
+      foldCase: true,
+      consequence: (desired) =>
+        `UpdateTable addresses the table by TableInput.Name, so it would write to the table ` +
+        `named '${desired}' in database '${databaseName}' (possibly one cdkd ` +
+        `does not manage) while the state record kept '${tableName}'`,
+      stateful: true,
+    });
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
@@ -4344,6 +4469,20 @@ export class GlueConnectionProvider implements ResourceProvider {
         physicalId
       );
     }
+    // Exact comparison: Glue documents no case folding for connection names.
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'ConnectionInput.Name',
+      noun: 'connection',
+      recordedName: physicalId,
+      desiredName: connectionInput['Name'],
+      foldCase: false,
+      consequence: () =>
+        `UpdateConnection would address '${physicalId}' with a different name inside its ` +
+        `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
+      stateful: false,
+    });
     const catalogId = properties['CatalogId'] as string | undefined;
     try {
       await this.getClient().send(

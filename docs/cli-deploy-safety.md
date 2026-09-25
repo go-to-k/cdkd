@@ -656,6 +656,16 @@ a DELETE + CREATE, the same replacement path the Cloud Control
 `UnsupportedActionException` auto-fallback already uses, and matching what
 CloudFormation would do.
 
+A rename through a nested name takes the same path. None of `TableInput.Name`
+(`AWS::Glue::Table`), `DatabaseInput.Name` (`AWS::Glue::Database`) or
+`ConnectionInput.Name` (`AWS::Glue::Connection`) is create-only, so a change
+diffs as an in-place UPDATE, which the provider refuses: `UpdateTable`
+addresses a table by its new name, so the update would rewrite a different
+table. A table or database is stateful, so its rename also needs
+`--force-stateful-recreation`. The replacement deletes the old resource before
+it creates the renamed one (unless `UpdateReplacePolicy: Retain` keeps it), so
+if a resource with the new name exists, the create fails after the delete.
+
 Unlike `--recreate-via-cc-api` / `--recreate-via-sdk-provider`, which name a
 specific logical id and force a routing migration, `--replace` is a stack-wide
 opt-in that fires only for resources whose update genuinely hard-rejects. A

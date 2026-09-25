@@ -37,6 +37,9 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     named only Description / LocationUri / Parameters, so both blocks were
  *     dropped silently. CDKD_TEST_UPDATE flips the granted permission set so
  *     the update path is covered with a second distinct payload.
+ *  8. A Glue Table `TableInput.Name` rename (issue #3724) is refused rather
+ *     than written onto the table holding the new name; CDKD_TEST_RENAME
+ *     flips the name, and `--replace --force-stateful-recreation` renames it.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -191,6 +194,24 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
     skewedTable.addDependency(tableDb);
+
+    // 8. A `TableInput.Name` rename (issue #3724). Only the TOP-LEVEL name is
+    //    createOnly, so the rename diffs as an in-place UPDATE, and
+    //    `UpdateTable` addresses the table BY `TableInput.Name` — it rewrote
+    //    whichever table held the NEW name. CDKD_TEST_RENAME flips the name;
+    //    verify.sh plants an unmanaged decoy under it first. The description
+    //    is what an overwrite would stamp onto that decoy.
+    const renameSuffix = process.env.CDKD_TEST_RENAME === 'true' ? 'b' : 'a';
+    const renameTable = new glue.CfnTable(this, 'RenameTable', {
+      catalogId: this.account,
+      databaseName: `${this.stackName}-table-db`.toLowerCase(),
+      tableInput: {
+        name: `${this.stackName}-rename-${renameSuffix}`.toLowerCase(),
+        tableType: 'EXTERNAL_TABLE',
+        description: 'managed by cdkd',
+      },
+    });
+    renameTable.addDependency(tableDb);
 
     // 7. Glue Database `TargetDatabase` / `CreateTableDefaultPermissions`
     //    (issue #1807). `buildDatabaseInput` named only Description /
