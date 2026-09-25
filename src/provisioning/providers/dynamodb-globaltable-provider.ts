@@ -5244,9 +5244,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // #1436 / #1420) with nowhere to land, so their drift detection was
       // silently dead for exactly the single-region case. Synthesize the
       // local entry; the sub-spec / Tags reads below work on it unchanged.
+      //
+      // A MULTI-region table needs the same synthesis (issue #3573): the
+      // `Replicas` list `DescribeTable` returns in the deploy region names the
+      // OTHER regions only (measured us-east-1 + eu-west-1, 2026-09-24), so the
+      // local entry -- and every member homed on it -- was never read back.
+      // Appended LAST, where CDK's `TableV2` renders the deploy region; the
+      // comparison does not depend on it, since `getDriftUnorderedPaths`
+      // declares `Replicas` a set. An unresolved `currentRegion` adds nothing:
+      // an entry for region `''` would name no replica.
       const sdkReplicas =
         table.Replicas && table.Replicas.length > 0
-          ? table.Replicas
+          ? currentRegion && !table.Replicas.some((r) => r.RegionName === currentRegion)
+            ? [...table.Replicas, { RegionName: currentRegion }]
+            : table.Replicas
           : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
         sdkReplicas.map(async (r) => {
@@ -5859,9 +5870,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * it is order-SIGNIFICANT (HASH before RANGE), so sorting it would silently
    * hide a real key change — the failure direction this file's sibling rules
    * call the worse one.
+   *
+   * `Replicas` is a set too (issue #3573): the registry schema declares it
+   * `insertionOrder: false` (measured via `DescribeType`, us-east-1,
+   * 2026-09-25), and each entry is keyed by `Region`. Templates disagree on
+   * where the deploy region goes -- CDK's `TableV2` renders it LAST, a
+   * hand-written `CfnGlobalTable` often FIRST -- while the readback appends it
+   * after the replicas `DescribeTable` lists, so one of the two always
+   * compared positionally unequal on a `properties` baseline. Declared
+   * LEAF-ONLY (`[]`) so the arrays inside each entry keep their own rules.
    */
   getDriftUnorderedPaths(_resourceType: string): string[] {
-    return ['AttributeDefinitions'];
+    return ['AttributeDefinitions', 'Replicas[]'];
   }
 
   /**
@@ -5975,6 +5995,68 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (stripped) result = { ...result, [listKey]: canonical };
     }
     return result;
+  }
+
+  /**
+   * Complete a LEGACY drift baseline's missing local replica (issue #3573).
+   *
+   * Before #3573, `readCurrentState` left the deploy-region entry out of
+   * `Replicas` on a multi-region table, so every `observedProperties` record a
+   * deploy captured then lacks it, while the readback now carries it. Compared
+   * as is, the first `cdkd drift` after upgrading would report `Replicas` on
+   * every untouched multi-region GlobalTable.
+   *
+   * The rule (maintainer decision on the issue: absorb at comparison time):
+   * when the BASELINE's `Replicas` has no entry for the local region, copy the
+   * READBACK's local entry into the baseline. The AWS side is untouched. State
+   * is not rewritten; the next deploy captures the new shape.
+   *
+   * Completing the baseline, rather than dropping the entry from the AWS side,
+   * is what keeps the two write paths that consume these bags safe:
+   * - `drift --revert` runs this on its DESIRED bag too (the legacy record),
+   *   so the local entry it sends equals the live one. Sent without it,
+   *   `update()` would read the local replica's tags as removed and untag
+   *   the table.
+   * - `--accept` persists the reported `awsValue`, which comes from the
+   *   untouched AWS side, so an accepted `Replicas` change heals the record to
+   *   the current shape instead of freezing the legacy one.
+   *
+   * Why it hides nothing that was visible: a current-shape baseline always
+   * has the local entry, so it is compared in full; and the local replica is
+   * the table itself, so its ABSENCE from a legacy baseline cannot be a real
+   * removal -- the one thing this suppresses is the local entry's own members,
+   * which that baseline never recorded. A replica added out of band in ANOTHER
+   * region still differs. It is per-side-inexpressible, hence the pair hook:
+   * {@link canonicalizeDriftProperties} sees one bag and cannot tell a legacy
+   * baseline from a current one.
+   *
+   * "Local" is the region this provider's own client resolves -- the same
+   * expression `readCurrentState` keys its local entry on -- so the two cannot
+   * disagree about which entry is local. A baseline or AWS side whose
+   * `Replicas` is not an array, or an unresolved region, is left untouched.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return { baseline, aws };
+    const key = 'Replicas';
+    const baselineReplicas = baseline[key];
+    const awsReplicas = aws[key];
+    if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) {
+      return { baseline, aws };
+    }
+    const localRegion = (await this.dynamoDBClient.config.region()) ?? '';
+    if (!localRegion) return { baseline, aws };
+    const isLocal = (element: unknown): boolean => asRecord(element)?.['Region'] === localRegion;
+    if (baselineReplicas.some(isLocal)) return { baseline, aws };
+    const liveLocal = awsReplicas.find(isLocal);
+    if (liveLocal === undefined) return { baseline, aws };
+    return {
+      baseline: { ...baseline, [key]: [...baselineReplicas, structuredClone(liveLocal)] },
+      aws,
+    };
   }
 
   /**

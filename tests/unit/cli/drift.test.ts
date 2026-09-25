@@ -1008,6 +1008,149 @@ describe('cdkd drift', () => {
     expect(JSON.stringify(persisted)).not.toContain('ItemCount');
   });
 
+  // Issue #3573: the provider's PAIR canonicalizer, for a rule that reads the
+  // baseline to decide what the readback means.
+  describe('canonicalizeDriftPair (issue #3573)', () => {
+    const legacyBaseline = {
+      Replicas: [{ Region: 'eu-west-1', Tags: [] }],
+    };
+    const readback = {
+      Replicas: [
+        { Region: 'eu-west-1', Tags: [] },
+        { Region: 'us-east-1', Tags: [] },
+      ],
+    };
+    function stageGlobalTable(): void {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Table1: makeResource({
+            physicalId: 'table-1',
+            resourceType: 'AWS::DynamoDB::GlobalTable',
+            properties: readback,
+            observedProperties: legacyBaseline,
+          }),
+        })
+      );
+    }
+
+    it('compares the bags the pair hook returns, handed the per-side output', async () => {
+      stageGlobalTable();
+      const canonicalizeDriftPair = vi.fn(
+        async (
+          _type: string,
+          baseline: Record<string, unknown>,
+          aws: Record<string, unknown>
+        ) => ({
+          baseline,
+          aws: {
+            ...aws,
+            Replicas: (aws['Replicas'] as Array<Record<string, unknown>>).filter(
+              (entry) => entry['Region'] !== 'us-east-1'
+            ),
+          },
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => readback,
+        // Marks each bag, so the pair hook's inputs prove the per-side pass ran first.
+        canonicalizeDriftProperties: (_type: string, properties: Record<string, unknown>) => ({
+          ...properties,
+          Marked: true,
+        }),
+        canonicalizeDriftPair,
+      });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(canonicalizeDriftPair).toHaveBeenCalledTimes(1);
+      const [type, baseline, aws] = canonicalizeDriftPair.mock.calls[0]!;
+      expect(type).toBe('AWS::DynamoDB::GlobalTable');
+      expect(baseline).toEqual({ ...legacyBaseline, Marked: true });
+      expect(aws).toEqual({ ...readback, Marked: true });
+    });
+
+    /** A pair hook that completes a baseline lacking us-east-1 from the readback. */
+    const completingPairHook = async (
+      _type: string,
+      baseline: Record<string, unknown>,
+      aws: Record<string, unknown>
+    ) => {
+      const isLocal = (entry: unknown) =>
+        (entry as Record<string, unknown>)['Region'] === 'us-east-1';
+      const recorded = baseline['Replicas'] as unknown[];
+      const live = (aws['Replicas'] as unknown[]).find(isLocal);
+      if (recorded.some(isLocal) || live === undefined) return { baseline, aws };
+      return { baseline: { ...baseline, Replicas: [...recorded, live] }, aws };
+    };
+    const driftedReadback = {
+      Replicas: [
+        { Region: 'eu-west-1', Tags: [{ Key: 'oob', Value: 'x' }] },
+        { Region: 'us-east-1', Tags: [{ Key: 'side', Value: 'local' }] },
+      ],
+    };
+
+    it('--revert sends the desired bag the pair hook returns', async () => {
+      // Without this the legacy record (no us-east-1 entry) is the desired
+      // side, and a provider reads every local-replica member as REMOVED.
+      stageGlobalTable();
+      const updateMock = vi.fn(async () => ({ physicalId: 'table-1', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => driftedReadback,
+        canonicalizeDriftPair: completingPairHook,
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      const [, , , newProps, previousProps] = updateMock.mock.calls[0]! as unknown as [
+        string,
+        string,
+        string,
+        Record<string, unknown>,
+        Record<string, unknown>,
+      ];
+      expect(newProps['Replicas']).toEqual([
+        { Region: 'eu-west-1', Tags: [] },
+        { Region: 'us-east-1', Tags: [{ Key: 'side', Value: 'local' }] },
+      ]);
+      expect(previousProps).toEqual(driftedReadback);
+    });
+
+    it('--accept persists the readback side, so a legacy record heals', async () => {
+      stageGlobalTable();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => driftedReadback,
+        canonicalizeDriftPair: completingPairHook,
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      const persisted = (
+        savedState as {
+          resources: Record<string, { observedProperties?: Record<string, unknown> }>;
+        }
+      ).resources['Table1']?.observedProperties?.['Replicas'];
+      expect(persisted).toEqual(driftedReadback.Replicas);
+    });
+
+    it('reports the same pair as drift when the provider declares no pair hook', async () => {
+      // Negative control: identical fixture minus the hook.
+      stageGlobalTable();
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => readback });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('Replicas');
+    });
+  });
+
   it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
     // Originally: when a stack contains a `Custom::*` resource (e.g.
     // CDK's S3 auto-delete-objects helper), the provider has no

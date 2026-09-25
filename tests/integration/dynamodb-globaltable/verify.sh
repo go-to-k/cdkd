@@ -237,6 +237,10 @@ DELETE_RETRY_DRIVER_PID=""
 # them inline — cannot leak two `mktemp` files per run.
 DESTROY_LOG=""
 DELETE_RETRY_MARKER=""
+# Step 12c-3's scratch directory (a state.json copy and two drift logs), swept
+# by `cleanup()` for the same reason: every FAIL in that step exits past the
+# success-path `rm`.
+DRIFT_3573_DIR=""
 
 cleanup() {
   rc=$?
@@ -256,6 +260,10 @@ cleanup() {
   if [ -n "${DELETE_RETRY_MARKER}" ]; then
     rm -f "${DELETE_RETRY_MARKER}"
     DELETE_RETRY_MARKER=""
+  fi
+  if [ -n "${DRIFT_3573_DIR}" ]; then
+    rm -rf "${DRIFT_3573_DIR}"
+    DRIFT_3573_DIR=""
   fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
@@ -690,6 +698,147 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
     exit 1
   fi
   echo "[verify] step 12c-2 ok: eu-west-1 ProvisionedThroughputOverride = 7"
+
+  # --- step 12c-3 (Issue #3573): the LOCAL replica on a multi-region table ---
+  # `DescribeTable` in the deploy region lists only the OTHER regions, so the
+  # readback used to leave the local entry out of `Replicas` and drift on it
+  # was invisible. Two halves, one arm each:
+  #   (a) an out-of-band tag on the LOCAL table must be reported. Pre-fix the
+  #       local entry, and so its Tags, were never read back: this is the
+  #       assertion that can only pass after the fix.
+  #   (b) a LEGACY observed baseline (no local entry, what an older binary
+  #       captured) must compare clean against the new readback, via the
+  #       provider's canonicalizeDriftPair. Without it, (b) reports Replicas.
+  # Both read the HistoryTable's drift row only, so an unrelated phantom on a
+  # sibling resource cannot be read as a verdict on this change.
+  echo "[verify] step 12c-3 (Issue #3573): local-replica drift on a multi-region table"
+  HISTORY_LID="$(echo "${STATE_JSON}" | python3 -c '
+import json, sys
+for logical_id, resource in json.load(sys.stdin).get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("HistoryTable"):
+        print(logical_id)
+        break
+')"
+  if [ -z "${HISTORY_LID}" ]; then
+    echo "[verify] FAIL (#3573): no HistoryTable logical id in cdkd state" >&2
+    exit 1
+  fi
+  LOCAL_ARN="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableArn' --output text)"
+  DRIFT_3573_DIR="$(mktemp -d)"
+  echo "[verify] step 12c-3 scratch: ${DRIFT_3573_DIR}"
+  PROBE_TAG_KEY="cdkd-3573-probe"
+
+  # (a) Tag reads are eventually consistent, so poll the report rather than
+  # read it once; each attempt is a full drift run.
+  aws dynamodb tag-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+    --tags "Key=${PROBE_TAG_KEY},Value=out-of-band"
+  SAW_LOCAL_DRIFT=0
+  for _ in $(seq 1 6); do
+    set +e
+    ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+      > "${DRIFT_3573_DIR}/drift-a.log" 2>&1
+    set -e
+    if grep -qE "^[[:space:]]+~ ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-a.log" &&
+       grep -qF "${PROBE_TAG_KEY}" "${DRIFT_3573_DIR}/drift-a.log"; then
+      SAW_LOCAL_DRIFT=1
+      break
+    fi
+    sleep 10
+  done
+  aws dynamodb untag-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+    --tag-keys "${PROBE_TAG_KEY}"
+  if [ "${SAW_LOCAL_DRIFT}" != "1" ]; then
+    echo "[verify] FAIL (#3573 a): an out-of-band tag on the LOCAL replica of ${TABLE_NAME} was not reported by cdkd drift -- the readback still drops the local entry" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-a.log" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-3 (a) ok: the local replica's out-of-band tag is reported"
+  # Wait for the untag to be visible before (b), or (b) reads the tag as drift.
+  # Rows of a projection, not `length(...)`: under `--output text` that
+  # aggregates per PAGE. An absent tag prints nothing.
+  for _ in $(seq 1 30); do
+    TAG_LEFT="$(aws dynamodb list-tags-of-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+      --query "Tags[?Key=='${PROBE_TAG_KEY}'].Key" --output text)"
+    [ -z "${TAG_LEFT}" ] && break
+    sleep 5
+  done
+  if [ -n "${TAG_LEFT}" ]; then
+    echo "[verify] FAIL (#3573): the probe tag ${PROBE_TAG_KEY} is still on ${TABLE_NAME} after untag" >&2
+    exit 1
+  fi
+
+  # (b) Rewrite the recorded observed baseline into the legacy shape. First
+  # pin that the deploy just captured the NEW shape: exactly one local entry.
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${DRIFT_3573_DIR}/state.json" >/dev/null
+  CAPTURED_LOCAL="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '.resources[$lid].observedProperties.Replicas // [] | map(select(.Region == $r)) | length' \
+    "${DRIFT_3573_DIR}/state.json")"
+  if [ "${CAPTURED_LOCAL}" != "1" ]; then
+    echo "[verify] FAIL (#3573 b): the deploy captured ${CAPTURED_LOCAL} local (${REGION}) entries in ${HISTORY_LID}'s observed Replicas, want 1" >&2
+    exit 1
+  fi
+  # The other regions the record holds, read rather than named, so the shape
+  # check below follows the arm if its replica region ever changes.
+  OTHER_REGIONS="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '[.resources[$lid].observedProperties.Replicas[] | select(.Region != $r) | .Region] | join(",")' \
+    "${DRIFT_3573_DIR}/state.json")"
+  if [ -z "${OTHER_REGIONS}" ]; then
+    echo "[verify] FAIL (#3573 b): ${HISTORY_LID}'s observed Replicas holds no cross-region entry, so there is no legacy shape to build" >&2
+    exit 1
+  fi
+  jq --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '.resources[$lid].observedProperties.Replicas |= map(select(.Region != $r))' \
+    "${DRIFT_3573_DIR}/state.json" > "${DRIFT_3573_DIR}/state-legacy.json"
+  # Fail loudly if the rewrite did not take: a baseline that still carries the
+  # local entry makes (b) pass for the wrong reason.
+  LEGACY_SHAPE="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '[(.resources[$lid].observedProperties.Replicas | map(.Region)),
+      (.resources[$lid].observedProperties.Replicas | map(select(.Region == $r)) | length)]
+     | "\(.[0] | join(","))|\(.[1])"' "${DRIFT_3573_DIR}/state-legacy.json")"
+  if [ "${LEGACY_SHAPE}" != "${OTHER_REGIONS}|0" ]; then
+    echo "[verify] FAIL (#3573 b): the legacy baseline is not in the shape the arm needs (got '${LEGACY_SHAPE}', want '${OTHER_REGIONS}|0')" >&2
+    exit 1
+  fi
+  aws s3 cp "${DRIFT_3573_DIR}/state-legacy.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+  set +e
+  ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    > "${DRIFT_3573_DIR}/drift-b.log" 2>&1
+  DRIFT_B_RC=$?
+  set -e
+  # Restore the recorded state before judging, so a FAIL leaves it as cdkd wrote it.
+  aws s3 cp "${DRIFT_3573_DIR}/state.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+  if grep -qE "^[[:space:]]+~ ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): a legacy observed baseline (no local replica entry) drifted against the new readback -- the upgrade phantom was not absorbed" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  # The absence of a `~` row proves the table compared clean only if it WAS
+  # compared: rule out every other outcome that prints no such row -- an
+  # unreadable resource (`! <lid>` under "NOT fully compared"), an unsupported
+  # one, and a run that produced no report at all. Exit 1 is still accepted,
+  # for a drifted SIBLING, but then the report must say drift was detected.
+  if grep -qE "^[[:space:]]+! ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-b.log" ||
+     grep -qF 'drift unknown' "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): ${HISTORY_LID} was not fully compared, so the absence of a drift row proves nothing" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  # Exit 0 alone is not enough either: the "NOTHING was compared" summary
+  # also exits 0, and prints `0 of N resources checked`.
+  case "${DRIFT_B_RC}" in
+    0) B_REPORT='\([0-9]+ resources checked, 0 unsupported\)' ;;
+    1) B_REPORT='drift detected on' ;;
+    *) B_REPORT='' ;;
+  esac
+  if [ -z "${B_REPORT}" ] || ! grep -qE "${B_REPORT}" "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): cdkd drift exited ${DRIFT_B_RC} without the report that exit code implies, so the run compared nothing provable" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-3 (b) ok: a legacy observed baseline compares clean"
+  rm -rf "${DRIFT_3573_DIR}"
+  DRIFT_3573_DIR=""
 
   echo "[verify] step 12d: remove the eu-west-1 replica"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
