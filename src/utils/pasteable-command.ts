@@ -385,9 +385,11 @@ export function pasteableCommand(
  *
  * SCOPE: the sentence is about a STATE RECORD's name — it opens "This record's
  * name" and ends by pointing at `cdkd state list --long` — so it fits a caller
- * whose value is a state-key stack segment and nothing else. Both live callers
- * are exactly that (the two legacy-key migrate refusals); a caller naming
- * anything else needs its own sentence, not this one with a different verb.
+ * whose value names a state record and nothing else. Every live caller does:
+ * the legacy-key migrate refusals in `drift.ts` and `state.ts`, and
+ * `state orphan`'s `Destroy with:` warning, whose positional must equal a
+ * record's stack name. A caller naming anything else needs its own sentence,
+ * not this one with a different verb.
  *
  * WHICH reasons are reachable is the CALLER's question, not this function's,
  * and every arm is answered here because the gate can return any of them. For
@@ -398,8 +400,8 @@ export function pasteableCommand(
  * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
  *   planted key can spell a name any of those ways in a handful of bytes.
  * - `not-plain` is reachable only from a caller passing `plainIdent` —
- *   `drift`'s site does (M17 of the go-to-k/cdkd#3613 review), `state.ts`'s
- *   three do not yet (go-to-k/cdkd#3696) — and there it is the reason for
+ *   `drift`'s site (M17 of the go-to-k/cdkd#3613 review) and every `state.ts`
+ *   caller (go-to-k/cdkd#3696) — and there it is the reason for
  *   every name the five arms above admit but `isPasteableIdent` refuses:
  *   `$(printf INJECTED)`, or a padded name spelling a labelled line.
  * - `empty` is not. `listStacks` drops a key whose stack segment is empty
@@ -424,13 +426,11 @@ export function withheldTargetClause(
   built: PasteableCommand,
   hole: string,
   /**
-   * The verb the two shape-specific arms name — `'cdkd deploy'` at both live
-   * callers, so the hardcoded spelling this replaced was CORRECT for both. A
-   * PARAMETER since M13 of the go-to-k/cdkd#3613 review for the caller that
-   * does not exist yet: this helper is shared now, and a third site building a
-   * different command would have inherited a sentence naming the wrong one,
-   * silently, with the message still well-formed. (An earlier version of this
-   * comment said `state.ts` had already hit that; it had not.)
+   * The verb the two shape-specific arms name — `'cdkd deploy'` at the legacy
+   * region-less refusals, `'cdkd destroy'` at `state orphan`'s warning
+   * (go-to-k/cdkd#3696). A PARAMETER since M13 of the go-to-k/cdkd#3613
+   * review: a hardcoded verb would name the wrong command at any caller
+   * building a different one, silently, with the message still well-formed.
    */
   verb: string
 ): string {
@@ -443,9 +443,10 @@ export function withheldTargetClause(
   // PAIRING per REASON — not per case: each of the five reasons that site
   // can return has at least one case asserting both the hole in the command
   // and the sentence about it, so a lookup that stopped matching cannot leave
-  // the suite green; `drift.test.ts` pins the sixth, `not-plain`, which only
-  // a `plainIdent` caller reaches. (The hostile-name loop asserts the hole
-  // alone; it is about the gate, not about the sentence.)
+  // the suite green; the sixth, `not-plain`, which only a `plainIdent`
+  // caller reaches, is pinned in `drift.test.ts` and in the `state` suites.
+  // (The hostile-name loop asserts the hole alone; it is about the gate, not
+  // about the sentence.)
   const reason = built.withheld.find((w) => w.hole === hole)?.reason;
   if (reason === undefined) return '';
   // A `switch` with a `never` default, not a ternary chain with a catch-all
@@ -477,13 +478,13 @@ export function withheldTargetClause(
       break;
     case 'not-plain':
       // The clause names the SHAPE the operator can check by eye, because the
-      // command line beside it shows a hole and nothing else: no line of this
-      // message prints the name, so the sentence is the only place the reader
-      // learns what disqualified it. It states the RULE and why the rule
-      // exists, not a hazard of this value (M22 of the go-to-k/cdkd#3613
-      // review): a padded name can wrap into a labelled line and `$(...)` can
-      // run, but `_x` reaches this arm too and does neither, and a reason
-      // that is true of only part of the population misleads the rest.
+      // command line beside it shows a hole, so the sentence is where the
+      // reader learns what disqualified the name. It states the RULE and why
+      // the rule exists, not a hazard of this value (M22 of the
+      // go-to-k/cdkd#3613 review): a padded name can wrap into a labelled
+      // line and `$(...)` can run, but `_x` reaches this arm too and does
+      // neither, and a reason that is true of only part of the population
+      // misleads the rest.
       why =
         `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' ` +
         `or '-'), the only shape named in a command here, since a name outside it can run as ` +
