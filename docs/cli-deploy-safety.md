@@ -1310,8 +1310,7 @@ deliberately not guarded — deleting an alias removes a pointer, not key
 material.
 
 `AWS::S3Tables::Namespace` is deliberately **not** guarded, on a measurement
-taken on 2026-09-25 (issue [#2539](https://github.com/go-to-k/cdkd/issues/2539)):
-AWS refuses to delete a namespace that still holds a table, answering
+taken on 2026-09-25: AWS refuses to delete a namespace that still holds a table, answering
 `BadRequestException: The namespace that you tried to delete is not empty.`, and
 the Cloud Control delete fails the same way. cdkd's own delete for a namespace
 issues a bare `DeleteNamespace` and enumerates no tables, so a namespace rename
