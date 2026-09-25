@@ -403,11 +403,15 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     const h = install({
       resources: {
         A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
+        B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
         C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
       },
       segment: {
+        // TWO failed ops, so a flag routed through the failed-op replay's
+        // `isInterrupted` would stop before B and red here.
         failedOperations: [
           { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
+          { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
         ],
         operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
       },
@@ -416,7 +420,7 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     });
     const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
-    expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['A', 'C']);
+    expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['A', 'B', 'C']);
     expect(h.saveState, 'a save landed after the decline').toHaveBeenCalledTimes(1);
     expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect((thrown as Error).message).toContain('Rollback stopped');
