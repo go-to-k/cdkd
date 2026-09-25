@@ -66,7 +66,6 @@
   "src/local/websocket-server.ts": 12,
   "src/provisioning/canonicalize-properties.ts": 1,
   "src/provisioning/cloud-control-provider.ts": 85,
-  "src/provisioning/create-only-properties.ts": 1,
   "src/provisioning/dynamodb-index-busy-delete.ts": 6,
   "src/provisioning/ec2-termination-protection.ts": 2,
   "src/provisioning/ec2-volume-delete.ts": 4,
