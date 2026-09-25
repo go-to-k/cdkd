@@ -5,14 +5,16 @@
  * it cannot tell cdkd's own newline from one a value carried in; only
  * `safeMsg` at the call site can. So a message built with an untagged template
  * literal or a `+` over a non-literal is counted per file, and a file may not
- * gain one. A file that loses some FAILS until the baseline is lowered with
- * `--update`, so the ratchet cannot quietly stop turning.
+ * gain one. A file that loses some only WARNS: failing there would make every
+ * unrelated PR that deletes a raw line lower the baseline. The cost is that a
+ * stale baseline leaves headroom, so a later raw call in that file passes until
+ * someone runs `--update`.
  *
  * Not counted: a message passed in a variable, which this cannot see through.
  *
  * Usage:
  *   node scripts/check-raw-log-interpolation.ts            # summary
- *   node scripts/check-raw-log-interpolation.ts --check    # exit 1 on a change
+ *   node scripts/check-raw-log-interpolation.ts --check    # exit 1 on a gain
  *   node scripts/check-raw-log-interpolation.ts --update   # rewrite the baseline
  */
 
@@ -102,22 +104,23 @@ export function measure(srcDir = SRC_DIR): Record<string, number> {
   return counts;
 }
 
-/** Per-file differences from the baseline; empty when they agree exactly. */
+/** Per-file differences from the baseline: `gained` fails the check, `stale` only warns. */
 export function compare(
   actual: Record<string, number>,
   baseline: Record<string, number>
-): string[] {
-  const problems: string[] = [];
+): { gained: string[]; stale: string[] } {
+  const gained: string[] = [];
+  const stale: string[] = [];
   for (const file of new Set([...Object.keys(actual), ...Object.keys(baseline)])) {
     const now = actual[file] ?? 0;
     const was = baseline[file] ?? 0;
     if (now > was) {
-      problems.push(`${file}: ${now} raw interpolations (baseline ${was}) -- build the message with safeMsg`);
+      gained.push(`${file}: ${now} raw interpolations (baseline ${was}) -- build the message with safeMsg`);
     } else if (now < was) {
-      problems.push(`${file}: ${now} raw interpolations (baseline ${was}) -- lower the baseline with --update`);
+      stale.push(`${file}: ${now} raw interpolations (baseline ${was}) -- lower the baseline with --update`);
     }
   }
-  return problems;
+  return { gained, stale };
 }
 
 function main(): void {
@@ -127,11 +130,12 @@ function main(): void {
     return;
   }
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>;
-  const problems = compare(actual, baseline);
+  const { gained, stale } = compare(actual, baseline);
   const total = Object.values(actual).reduce((a, b) => a + b, 0);
   console.log(`raw log interpolations: ${total} in ${Object.keys(actual).length} files`);
-  for (const p of problems) console.log(`  ${p}`);
-  if (process.argv.includes('--check') && problems.length > 0) process.exit(1);
+  for (const p of gained) console.log(`  ${p}`);
+  for (const p of stale) console.log(`  warning: ${p}`);
+  if (process.argv.includes('--check') && gained.length > 0) process.exit(1);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();

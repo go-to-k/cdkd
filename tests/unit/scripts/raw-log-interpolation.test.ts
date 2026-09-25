@@ -23,16 +23,19 @@ describe('check-raw-log-interpolation (go-to-k/cdkd#3479)', () => {
     expect(countRawLogInterpolations(source)).toBe(expected);
   });
 
-  it('reports a file that gained or lost a raw site', () => {
-    expect(compare({ a: 2, b: 1 }, { a: 2, b: 1 })).toEqual([]);
-    expect(compare({ a: 3 }, { a: 2 })).toEqual([expect.stringContaining('safeMsg')]);
-    expect(compare({}, { a: 2 })).toEqual([expect.stringContaining('--update')]);
+  it('fails a file that gained a raw site and only warns on one that lost some', () => {
+    expect(compare({ a: 2, b: 1 }, { a: 2, b: 1 })).toEqual({ gained: [], stale: [] });
+    expect(compare({ a: 3 }, { a: 2 }).gained).toEqual([expect.stringContaining('safeMsg')]);
+    expect(compare({}, { a: 2 })).toEqual({
+      gained: [],
+      stale: [expect.stringContaining('--update')],
+    });
   });
 
-  it('agrees with the committed baseline', () => {
+  it('no file exceeds the committed baseline', () => {
     const baseline = JSON.parse(
       readFileSync(join(import.meta.dirname, '../../raw-log-interpolation-baseline.json'), 'utf8')
     ) as Record<string, number>;
-    expect(compare(measure(), baseline)).toEqual([]);
+    expect(compare(measure(), baseline).gained).toEqual([]);
   });
 });
