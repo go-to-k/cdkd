@@ -4887,9 +4887,12 @@ export class S3BucketProvider implements ResourceProvider {
     // bag — so a throw here is un-actionable, the user cannot edit a state
     // record from their template. The downgrade is UNCONDITIONAL, like
     // `EC2Provider.updateRoute`'s. `update()` DOES take a context as of issue
-    // #1732, but it does not help here: `desiredFromAwsReadback` distinguishes
-    // a readback from everything else, not a REPLAY from a template, and this
-    // guard's question is the latter. And it must be a SKIP of
+    // #1732, and when this was decided it did not help here:
+    // `desiredFromAwsReadback` distinguishes a readback from everything else,
+    // not a REPLAY from a template, and this guard's question is the latter.
+    // Since issue #3141 `UpdateContext.replayingState` answers exactly that
+    // question for the rollback revert arms; this arm was not re-decided
+    // (issue #3728). And it must be a SKIP of
     // BOTH arms, not a default: taking the Suspended fallback here would route
     // a malformed record straight into the suspend branch below and turn
     // versioning off on a live bucket — the very thing computing this value
@@ -5155,8 +5158,9 @@ export class S3BucketProvider implements ResourceProvider {
       previousProperties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       properties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       // Same unconditional update-path warn as the per-item appliers below:
-      // this arm is replay-reachable and `update()` cannot tell a replay from
-      // a template edit.
+      // this arm is replay-reachable, and it was decided when `update()` could
+      // not tell a replay from a template edit (since issue #3141 it can, via
+      // `UpdateContext.replayingState`; not re-decided — issue #3728).
       async (cfg) => {
         const applied = await this.applyLoggingConfiguration(bucketName, cfg, (m) =>
           this.logger.warn(m)
