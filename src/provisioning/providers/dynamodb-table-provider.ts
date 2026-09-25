@@ -5834,7 +5834,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    on exactly that pair of flags (the go-to-k/cdkd#3401 review). This arm
    *    was not re-decided when that became possible; splitting it the same way
    *    would turn a template-path warn-skip into a refusal, a behaviour change
-   *    that needs its own review rather than a comment edit.
+   *    that needs its own review rather than a comment edit (issue #3728).
    *  - The repo's general rule for the UPDATE path is WARN-never-throw (issues
    *    #1545 / #1552): the desired bag here can BE a historical cdkd state
    *    record, and a refusal would make the table un-updatable and

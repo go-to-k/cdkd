@@ -646,7 +646,7 @@ export class GlueProvider implements ResourceProvider {
         // `update()` could not tell a template push from the state-borne bag
         // `drift --revert` and the rollback revert arm hand it. Since issue
         // #3141 it can (`UpdateContext.replayingState` plus
-        // `desiredFromAwsReadback`); this arm was not re-decided (issue #1999).
+        // `desiredFromAwsReadback`); this arm was not re-decided (issue #3728).
         onUnusable: (message) => this.logger.warn(message),
         previousDatabaseInput,
       });
@@ -2881,7 +2881,10 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * builds a `CreateContext` from it, and none of those providers does. An
  * earlier revision said `update()` had "no context parameter to carry the
  * flag" — issue #1999.) Were GlueProvider ever to re-create inside `update()`,
- * it would have to forward `context.replayingState` into that `create()`.
+ * it would have to forward a replay signal into that `create()` —
+ * `context.replayingState` on the rollback path — and decide separately what
+ * this refusal means for the `desiredFromAwsReadback` bag `cdkd drift --revert`
+ * hands it, since that path sets no `replayingState`.
  *
  * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
  * pre-flight, so it only runs on the SDK route. When a table's state record

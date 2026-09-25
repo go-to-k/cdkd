@@ -791,8 +791,11 @@ export interface CreateContext extends SecretMaskingContext {
    * false since issue #1732 — and then that `UpdateContext` "carries no
    * `replayingState`" — false since #3141; issue #1999.) So a provider with a
    * create-side pre-flight refusal MUST NOT re-create inside `update()` unless
-   * it forwards `context.replayingState` into that `create()` — otherwise the
-   * refusal would fire on a replay. None of the five listed above has such a
+   * it forwards a replay signal into that `create()` — `context.replayingState`
+   * on the rollback path — and decides separately what the refusal means for
+   * the `desiredFromAwsReadback` bag `cdkd drift --revert` hands it (that path
+   * sets no `replayingState`). Otherwise the refusal would fire on a replay or
+   * a revert. None of the five listed above has such a
    * refusal (they validate required fields only, which stays a hard error by
    * the rule above).
    *

@@ -2631,7 +2631,10 @@ export class EC2Provider implements ResourceProvider {
         // call update() with a cdkd STATE record as the desired bag, and this
         // method receives only a MASKER from the update context (issue #2176),
         // not `replayingState`, so it still cannot tell that apart from a
-        // template update — so the refusal downgrades to a warning on every update, per
+        // template update. (`update()` itself can since issue #3141 —
+        // `replayingState` / `desiredFromAwsReadback` — but neither is threaded
+        // into this method; this arm was not re-decided, issue #3728.) So the
+        // refusal downgrades to a warning on every update, per
         // the "an UPDATE-path refusal is a replay refusal too" rule. The route
         // was already deleted above; throwing here would strand it.
         (message) => this.logger.warn(message),

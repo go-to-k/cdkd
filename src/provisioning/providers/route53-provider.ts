@@ -1129,7 +1129,7 @@ export class Route53Provider implements ResourceProvider {
     // --revert` both hand it. Since issue #3141 it can
     // (`UpdateContext.replayingState` plus `desiredFromAwsReadback`); this arm
     // was not re-decided, since gating it would turn a template-path warning
-    // into a refusal (issue #1999). Refusing would make a record an
+    // into a refusal (issue #3728). Refusing would make a record an
     // older binary already wrote under the ambiguous id un-revertable, with
     // no template edit that repairs it. So the pre-guard behavior stands here
     // and the ambiguous id becomes ANNOUNCED rather than silent, while the

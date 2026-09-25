@@ -2335,7 +2335,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // (the per-index `OnDemandThroughput` refusal in
     // `dynamodb-table-provider.ts` does exactly that); this site was not
     // re-decided, and doing so would turn a template-path warning into a
-    // refusal — a behaviour change, not a comment edit (issue #1999). Same
+    // refusal — a behaviour change, not a comment edit (issue #3728). Same
     // shape as `IAMAccessKeyProvider`'s `Status` and
     // `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
     const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
