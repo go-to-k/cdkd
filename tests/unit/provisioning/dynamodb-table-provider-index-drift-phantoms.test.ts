@@ -761,6 +761,15 @@ describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', (
       ).toEqual({ ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 });
     });
 
+    it('drops a stale capacity block the trim leaves empty, as the readback never emits one', () => {
+      const out = provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+        GlobalSecondaryIndexes: [
+          { ...TEMPLATE_GSI, ProvisionedThroughput: { NumberOfDecreasesToday: 0 } },
+        ],
+      });
+      expect(out['GlobalSecondaryIndexes']).toEqual([TEMPLATE_GSI]);
+    });
+
     it('does not mutate its input, and passes malformed or foreign bags through', () => {
       const stale = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION, 'x', null] };
       const before = structuredClone(stale);

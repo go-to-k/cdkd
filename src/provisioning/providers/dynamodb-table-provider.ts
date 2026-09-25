@@ -1244,13 +1244,14 @@ function canonicalizeStaleIndexDescription(element: unknown): unknown {
   const pt = copy['ProvisionedThroughput'];
   if (isPlainCapacityBlock(pt) && SDK_ONLY_THROUGHPUT_MEMBERS.some((member) => member in pt)) {
     changed = true;
-    if (pt['ReadCapacityUnits'] === 0 && pt['WriteCapacityUnits'] === 0) {
-      delete copy['ProvisionedThroughput'];
-    } else {
-      const trimmed = { ...pt };
-      for (const member of SDK_ONLY_THROUGHPUT_MEMBERS) delete trimmed[member];
-      copy['ProvisionedThroughput'] = trimmed;
-    }
+    const trimmed = { ...pt };
+    for (const member of SDK_ONLY_THROUGHPUT_MEMBERS) delete trimmed[member];
+    // The readback never emits an empty block, so a trim that leaves nothing
+    // must drop the key like the `{0, 0}` placeholder does.
+    const placeholder =
+      (trimmed['ReadCapacityUnits'] ?? 0) === 0 && (trimmed['WriteCapacityUnits'] ?? 0) === 0;
+    if (placeholder) delete copy['ProvisionedThroughput'];
+    else copy['ProvisionedThroughput'] = trimmed;
   }
   const warm = copy['WarmThroughput'];
   if (isPlainCapacityBlock(warm) && 'Status' in warm) {
