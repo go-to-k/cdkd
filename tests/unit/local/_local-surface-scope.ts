@@ -183,17 +183,22 @@ export function hasAnnotationAbove(lines: string[], index: number, marker: strin
  * the "these two fences are not subsets" claim easier to satisfy than the claim
  * it printed, so it could not detect the subsetting it exists to detect.
  *
- * TWO shapes reach `awsClientDefaults`, and counting only the first made the
- * role fence's headline claim false for the second. A direct
+ * THREE shapes reach `awsClientDefaults`, and counting only the first made the
+ * role fence's headline claim false for the others. A direct
  * `new XxxClient({ ...awsClientDefaults(...) })` can pass `ignoreAssumedRole`;
- * a `new AwsClients({...})` bag CANNOT — it spreads the helper internally — so
- * its only available verdict is the annotation.
+ * a `new AwsClients({...})` bag CANNOT — it spreads the helper internally — and
+ * neither can a spread of `ambientClientDefaults()` / `clientDefaultsFor(...)`
+ * (go-to-k/cdkd#3588), which calls it with the profile alone. Those two shapes'
+ * only available verdict is the annotation.
  */
-export type ClientSiteKind = 'awsClientDefaults' | 'AwsClients';
+export type ClientSiteKind = 'awsClientDefaults' | 'AwsClients' | 'ambientClientDefaults';
 
 export function clientSiteKind(code: string): ClientSiteKind | undefined {
   if (code.includes('awsClientDefaults(')) return 'awsClientDefaults';
   if (code.includes('new AwsClients(')) return 'AwsClients';
+  if (code.includes('ambientClientDefaults(') || code.includes('clientDefaultsFor(')) {
+    return 'ambientClientDefaults';
+  }
   return undefined;
 }
 

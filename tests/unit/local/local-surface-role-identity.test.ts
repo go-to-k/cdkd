@@ -111,6 +111,11 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     expect(new Set(sites.map((s) => s.file)).size).toBeGreaterThanOrEqual(5);
     expect(sites.filter((s) => s.kind === 'awsClientDefaults').length).toBeGreaterThanOrEqual(15);
     expect(sites.filter((s) => s.kind === 'AwsClients').length).toBeGreaterThanOrEqual(3);
+    // The credential helper's spreads (go-to-k/cdkd#3588): `ecr-puller.ts`'s
+    // three clients. Without this shape they left the population silently.
+    expect(sites.filter((s) => s.kind === 'ambientClientDefaults').length).toBeGreaterThanOrEqual(
+      3
+    );
   });
 
   it('has every site either opting out or saying why it keeps the role', () => {

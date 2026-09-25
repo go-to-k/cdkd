@@ -190,27 +190,27 @@ interface TempCredentials {
 }
 
 /**
- * Module-level cache for STS-issued AssumeRole credentials, keyed by
- * `(ecrRoleArn, callerRegion)`. Closes the reviewer's MAJOR finding: ECS
+ * Module-level cache for STS-issued AssumeRole credentials, per SOURCE credential
+ * identity and then per `(ecrRoleArn, callerRegion)`. Closes the reviewer's MAJOR finding: ECS
  * run-task with N containers under one `--ecr-role-arn` would otherwise issue
  * N× `AssumeRole` and N× `GetCallerIdentity` for identical credentials valid
  * for 3600s. The cache keeps a 5-minute safety margin against the recorded
  * `Expiration` so STS-side / local-clock skew never lets a stale entry through.
  *
- * Keyed by `(source credential identity, roleArn, region)`: STS issues
- * per-region session creds, so a switch of `--region` between two `local
- * invoke` calls in the same process must re-issue; and the SOURCE identity is
- * part of the key (issue [#3588](https://github.com/go-to-k/cdkd/issues/3588),
- * as in `role-arn.ts`), so a library caller that installs `AwsClients` with
- * other explicit credentials is never handed credentials the first identity
- * obtained. The identity half is {@link credentialFingerprint} — profile plus
- * access key id, never a secret — and the key is never rendered.
+ * The inner key is `(roleArn, region)`: STS issues per-region session creds,
+ * so a switch of `--region` between two `local invoke` calls in the same
+ * process must re-issue. The OUTER key is the source identity (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588), as in `role-arn.ts`),
+ * so a library caller that installs `AwsClients` with other explicit
+ * credentials is never handed credentials the first identity obtained. It is
+ * {@link credentialFingerprint} — profile plus access key id, never a secret —
+ * and neither key is ever rendered.
  *
  * NOT cleared on process exit — Node's module scope evaporates with the
  * process, and no inter-process sharing is desired (each `cdkd local invoke`
  * is its own isolated runtime).
  */
-const ASSUMED_ROLE_CACHE = new Map<string, TempCredentials>();
+const ASSUMED_ROLE_CACHE = new Map<string, Map<string, TempCredentials>>();
 
 /**
  * Module-level cache for `STS:GetCallerIdentity`, keyed by
@@ -358,12 +358,17 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   if (options.ecrRoleArn) {
     // cdkd-arn-display: a Map KEY, never rendered. It is built from the ARN
     // so two different roles cannot share a credential cache entry, and from
-    // the source identity's fingerprint (profile + access key id) so two
-    // source identities cannot either; nothing logs or displays it, and a
-    // sanitizing pass here would make two distinct ARNs collide on one entry
-    // -- the opposite of what the key is for.
-    const cacheKey = injectiveKey(identity, options.ecrRoleArn, callerRegion ?? '_unset');
-    const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
+    // the source identity's own map (keyed by its fingerprint) so two source
+    // identities cannot either; nothing logs or displays it, and a sanitizing
+    // pass here would make two distinct ARNs collide on one entry -- the
+    // opposite of what the key is for.
+    const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
+    let roleCache = ASSUMED_ROLE_CACHE.get(identity);
+    if (roleCache === undefined) {
+      roleCache = new Map<string, TempCredentials>();
+      ASSUMED_ROLE_CACHE.set(identity, roleCache);
+    }
+    const cached = roleCache.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
       assumed = cached;
       logger.debug(
@@ -371,7 +376,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
       );
     } else {
       assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, credentialConfig, logger);
-      ASSUMED_ROLE_CACHE.set(cacheKey, assumed);
+      roleCache.set(cacheKey, assumed);
       logger.info(
         // cdkd-raw-beside-safe: `parsed.accountId` / `parsed.region` come out
         // of `parseEcrUri`, which delegates to `parseEcrRegistryHost` and refuses a region segment that is
