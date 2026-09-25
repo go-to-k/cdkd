@@ -1,4 +1,5 @@
 import type { IndeterminateGuard, ResourceDeleteResult } from '../types/resource.js';
+import { displaySafe } from '../utils/display-safe.js';
 
 /**
  * Shared helpers over {@link ResourceDeleteResult} — originally the deploy-side
@@ -95,9 +96,13 @@ export function deleteSkippedMessage(
   reason: string,
   duringClause: string
 ): string {
+  // The three values are state- or provider-sourced, and callers log this
+  // beside `formatResourceLine`'s folded status line: each is folded too, so a
+  // newline in one cannot start a line of the destroy or deploy output
+  // (go-to-k/cdkd#3773). `duringClause` is a caller literal.
   return (
-    `cdkd could not address ${logicalId} (${physicalId}) ${duringClause}, so it was NOT ` +
-    `deleted and may still exist: ${reason}`
+    `cdkd could not address ${displaySafe(logicalId)} (${displaySafe(physicalId)}) ` +
+    `${duringClause}, so it was NOT deleted and may still exist: ${displaySafe(reason)}`
   );
 }
 

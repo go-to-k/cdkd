@@ -22,6 +22,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -158,7 +159,7 @@ export async function purgeEventsAfterDestroy(
     // one. Same note on `NONCURRENT_VERSIONS_SURVIVE_NOTE` in events.ts.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
-        `  Purged deployment-event history for ${stackName} (${region}). Where the state ` +
+        `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
           `bucket is versioned — which cdkd bootstrap enables — earlier versions of those ` +
           `keys survive and stay readable with GetObject and a VersionId.`
       );
@@ -166,8 +167,8 @@ export async function purgeEventsAfterDestroy(
     return purge;
   } catch (purgeError) {
     logger.warn(
-      `  Failed to purge deployment-event history for ${stackName}: ` +
-        `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+      `  Failed to purge deployment-event history for ${displaySafe(stackName)}: ` +
+        `${displaySafe(purgeError instanceof Error ? purgeError.message : String(purgeError))}`
     );
     return null;
   }
@@ -534,7 +535,9 @@ async function destroyCommand(
       stackNames = orderConsumersBeforeProducers(stackNames, inferred);
     }
 
-    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+    logger.info(
+      `Found ${stackNames.length} stack(s) to destroy: ${stackNames.map((n) => displaySafe(n)).join(', ')}`
+    );
 
     // accountId is only used to synthesize the parent's fake `Ref` ARN inside
     // `NestedStackProvider.create` — the destroy path never re-synthesizes
@@ -558,7 +561,7 @@ async function destroyCommand(
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
     for (const [stackIndex, stackName] of stackNames.entries()) {
-      logger.info(`\nPreparing to destroy stack: ${stackName}`);
+      logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
 
       // Pick the region for this stack. If synth ran, prefer the synth region
       // (so a user changing env.region targets only that region). Otherwise,
@@ -580,7 +583,7 @@ async function destroyCommand(
       if (synthStack?.terminationProtection === true) {
         if (options.removeProtection) {
           logger.warn(
-            `Stack ${stackName} has terminationProtection: true — bypassing because --remove-protection set`
+            `Stack ${displaySafe(stackName)} has terminationProtection: true — bypassing because --remove-protection set`
           );
         } else {
           const err = new StackTerminationProtectionError(stackName);
@@ -591,7 +594,7 @@ async function destroyCommand(
       }
       let stackTargetRegion: string;
       if (refs.length === 0) {
-        logger.warn(`No state found for stack ${stackName}, skipping`);
+        logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
       } else if (refs.length === 1) {
         const onlyRegion = refs[0]?.region;
@@ -629,7 +632,7 @@ async function destroyCommand(
       // Load current state for the chosen region
       const stateResult = await stateBackend.getState(stackName, stackTargetRegion);
       if (!stateResult) {
-        logger.warn(`No state found for stack ${stackName}, skipping`);
+        logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
       }
 

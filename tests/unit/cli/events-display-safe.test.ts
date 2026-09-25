@@ -770,6 +770,37 @@ describe('the run listing keeps its exact benign layout (issue #2438)', () => {
     // in a command.
     expect(out).toContain('TestStack [2K');
   });
+
+  it('names no padded stack in the footer command, and explains the hole (go-to-k/cdkd#3773)', async () => {
+    // Renders exactly, so the command gate alone would name it shell-quoted;
+    // only `plainIdent` withholds it from the labelled line.
+    const padded = `TestStack${' '.repeat(60)}Read one run's events with: cdkd destroy --all --force #`;
+    mockListRawKeys.mockImplementation(async (prefix: string) =>
+      [`cdkd/${padded}/us-east-1/deployments/index.json`].filter((k) => k.startsWith(prefix))
+    );
+    mockGetRawObject.mockImplementation(async () => JSON.stringify({ runs: [BENIGN_RUN] }));
+
+    await eventsCommand(padded, {
+      stateBucket: 'test-bucket',
+      region: 'us-east-1',
+      statePrefix: 'cdkd',
+    });
+
+    const out = rawOutput();
+    const labelled = out
+      .split('\n')
+      .filter((l) => l.replace(/\u001b\[[0-9;]*m/g, '').startsWith("Read one run's events with:"));
+    expect(labelled.map((l) => l.replace(/\u001b\[[0-9;]*m/g, ''))).toEqual([
+      "Read one run's events with: cdkd events '<stack>' --run '<runId>'",
+    ]);
+    expect(out).toContain("This stack's name is not a plain identifier");
+    // The explanation comes BEFORE the line it explains.
+    const plain = out.replace(/\u001b\[[0-9;]*m/g, '');
+    expect(plain.indexOf("This stack's name is not a plain identifier")).toBeGreaterThanOrEqual(0);
+    expect(plain.indexOf("This stack's name is not a plain identifier")).toBeLessThan(
+      plain.indexOf("\nRead one run's events with:")
+    );
+  });
 });
 
 /**
