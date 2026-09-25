@@ -131,10 +131,8 @@ cleanup() {
   # leaves its /aws/lambda/${STACK}* log group behind (not stack-managed; CFn
   # leaves it too). Sweep it so the run is orphan-zero, refusing an empty or
   # foreign scope, which would widen the prefix to every Lambda log group.
-  # Only after a clean destroy: a failed one keeps the log group, which is the
-  # best evidence of why it failed.
-  case "${destroy_rc}:${STACK}" in
-    0:GlueUpdateHardening?*)
+  case "${STACK}" in
+    GlueUpdateHardening?*)
       local lg
       for lg in $(aws logs describe-log-groups \
         --log-group-name-prefix "/aws/lambda/${STACK}" --region "${REGION}" \
@@ -142,11 +140,8 @@ cleanup() {
         aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
       done
       ;;
-    0:*)
-      echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
-      ;;
     *)
-      echo "WARN: teardown sweep skipped: state destroy exited ${destroy_rc}; the auto-delete Lambda log group is kept for diagnosis" >&2
+      echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
       ;;
   esac
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
