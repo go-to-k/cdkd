@@ -198,11 +198,11 @@ local-invoke-layers	2026-09-24T13:20:03Z	PASS	20	verify.sh	rc ok, docker clean, 
 local-invoke-provided	2026-09-24T13:20:38Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-python	2026-09-24T13:21:29Z	PASS	51	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-ruby	2026-09-24T13:22:19Z	PASS	50	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-run-task	2026-09-25T09:36:54Z	PASS	20	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-local-run-task-awsvpc	2026-09-24T13:17:26Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-run-task-cdkd-assets	2026-09-25T05:52:32Z	PASS	16	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
-local-run-task-from-state	2026-09-25T18:24:47Z	PASS	161	verify.sh	rc ok, orph clean, docker sweep clean; #3515 secret env own-key handoff (docker-cmd + runner + secrets resolver), tree acbd47b90
-local-run-task-multi-container	2026-09-24T13:17:42Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-run-task	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
+local-run-task-awsvpc	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
+local-run-task-cdkd-assets	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
+local-run-task-from-state	2026-09-25T23:53:54Z	PASS	156	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
+local-run-task-multi-container	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-start-agentcore	2026-09-24T15:26:58Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb	2026-09-24T15:27:48Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb-from-state	2026-09-25T05:52:32Z	PASS	187	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
