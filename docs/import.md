@@ -568,6 +568,10 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::EC2::SecurityGroup
 - AWS::EC2::NatGateway
 - AWS::EC2::EIP (accepts an `eipalloc-...` allocation id, a public IP, or the composite `<publicIp>|<allocationId>`; cdkd normalizes and stores the composite)
+- AWS::EC2::InternetGateway (the `igw-...` id)
+- AWS::EC2::RouteTable (the `rtb-...` id)
+- AWS::EC2::NetworkAcl (the `acl-...` id)
+- AWS::EC2::Instance (the `i-...` id; a terminated or shutting-down instance is not adopted)
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBProxy
@@ -662,6 +666,7 @@ and match on — no name, no tags, nothing to look it up by. Use
 - AWS::IAM::AccessKey (keys are not taggable and the template carries no property equal to the key id; pass the `AKIA...` id via `--resource`, which cdkd verifies with `GetAccessKeyLastUsed`. Note: the imported record has no cached `SecretAccessKey` — IAM returns it only from `CreateAccessKey` — so `Fn::GetAtt [<key>, SecretAccessKey]` cannot resolve for an imported key; mint a new key via replacement if the secret is needed)
 - AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
 - AWS::CloudFormation::WaitConditionHandle (no AWS-queryable resource exists behind a handle; an explicit `--resource` id — or CloudFormation's pre-signed-URL physical id during `--migrate-from-cloudformation` — is recorded verbatim, and a synthesized placeholder is used otherwise)
+- AWS::ApiGateway::Account (the API Gateway settings are one per account and region, with no id of their own; any `--resource` id is recorded as given without an AWS call, and a `cdkd deploy` CREATE records `ApiGatewayAccount`. `cdkd destroy` clears the region's `CloudWatchRoleArn`)
 - AWS::CloudFront::OriginAccessControl (OACs are not taggable and the config's `Name` is a display field AWS does not accept as a lookup key; pass the `E...` id via `--resource`, which cdkd verifies with `GetOriginAccessControl`)
 
 ### Override-only — sub-resources without a standalone identity
@@ -691,6 +696,8 @@ name or list API cdkd can resolve them by, so provide the physical id via
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
 - AWS::RDS::DBProxyTargetGroup
+- AWS::EC2::Route (composite: `--resource <logicalId>=<routeTableId>|<destination>`, where `<destination>` is the IPv4 CIDR, IPv6 CIDR or prefix-list id; CloudFormation's own id for a route has the same shape)
+- AWS::EC2::NetworkAclEntry (cdkd records the composite `<networkAclId>|<ruleNumber>|<egress>`, and `--resource` accepts it. CloudFormation's id for an entry is a generated name carrying no AWS information, so with that id the entry is located from the template's `NetworkAclId`, `RuleNumber` and `Egress` — which needs the parent ACL's id resolved too: pass the ACL's own `--resource` as well, or add `--auto` so a same-named CloudFormation stack supplies it)
 - AWS::EC2::SecurityGroupIngress (pass the `sgr-...` rule id — CloudFormation's own identifier for the type and the id the EC2 console shows. cdkd verifies it with `DescribeSecurityGroupRules`, declines an EGRESS rule id, and records its own composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>` as the physical id plus the rule id as the `Id` attribute. The composite itself is deliberately NOT accepted here: the same tuple can name several rules)
 
 ### Override-only — attachments
@@ -709,6 +716,9 @@ taggable identity either, so provide the physical id via `--resource`.
 - AWS::Lambda::Url
 - AWS::Lambda::EventInvokeConfig (composite: `--resource <logicalId>=<functionName>|<qualifier>`; a bare function name is read as qualifier `$LATEST`)
 - AWS::CloudFormation::CustomResource
+- AWS::EC2::SubnetRouteTableAssociation (the `rtbassoc-...` association id)
+- AWS::EC2::SubnetNetworkAclAssociation (the `aclassoc-...` association id)
+- AWS::EC2::VPCGatewayAttachment (internet gateways only; cdkd records the composite `<internetGatewayId>|<vpcId>`, and `--resource` accepts it. CloudFormation's `IGW|<vpcId>` is accepted too: the gateway then comes from the template's `InternetGatewayId`, or else from the one gateway attached to that VPC. A VPN gateway attachment is not adopted)
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (adopt by ARN via `--resource`)
 - AWS::BedrockAgentCore::Evaluator (accepts the evaluator ARN or bare id; an id is resolved to the canonical ARN via `GetEvaluator`)
@@ -727,6 +737,19 @@ API supports it. It can be imported via the same
 over Cloud Control API by default — that would issue an
 `aws-cloudcontrol:ListResources` call per type, which is too expensive for
 whole-stack adoption.
+
+**Composite identifiers.** When a type's schema `primaryIdentifier` has more
+than one field, Cloud Control identifies the resource by the field values joined
+with `|` (`AWS::EC2::VPCCidrBlock` is `<Id>|<VpcId>`), and cdkd records that
+value as the physical id. CloudFormation's physical id for such a resource is
+often one field only (the bare `vpc-cidr-assoc-…` for a VPCCidrBlock). So under
+`--migrate-from-cloudformation`, or with a bare `--resource` value, cdkd builds
+the rest of the identifier from the template's own values for the other fields,
+after substituting `Ref`s to other imported resources. It needs the same
+`cloudformation:DescribeType` permission described below. When the template
+does not supply exactly the other fields as literal values, the import of that
+resource fails and names the composite to pass instead, for example
+`--resource 'VpcIpv6Cidr=<Id>|<VpcId>'`.
 
 **What lands in `attributes`.** Cloud Control's `GetResource` returns the
 resource's whole model — every readable property, not just its attributes — so
@@ -793,7 +816,7 @@ table to predict behavior when migrating from `cdk import`.
 | Topic | `cdk import` (upstream) | `cdkd import` |
 | --- | --- | --- |
 | Mechanism | CloudFormation `CreateChangeSet` with `ResourcesToImport` — atomic, all-or-nothing. | Per-resource SDK calls (e.g. `s3:HeadBucket`, `lambda:GetFunction`, IAM `ListRoleTags`). **Not atomic.** |
-| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan <stack>` (drops the state record only). |
+| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan '<stack>'` (drops the state record only). |
 | Selective mode (`--resource-mapping <file>`) | Supported. Listed resources are imported; unlisted resources cause the changeset to fail. | Supported. Listed resources are imported; unlisted resources are reported as `out of scope` and left out of state (next `cdkd deploy` will CREATE them). |
 | Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
 | `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
@@ -827,7 +850,7 @@ table to predict behavior when migrating from `cdk import`.
   (and after confirmation), so a partial run is bounded, but if a
   later resource fails after several earlier ones already returned
   successfully and you confirm the write, those earlier ones are
-  in cdkd state. Use `cdkd state orphan <stack>` to back out.
+  in cdkd state. Use `cdkd state orphan '<stack>'` to back out.
 - If you import nested stacks: neither tool supports this. Convert
   to top-level CDK stacks first.
 

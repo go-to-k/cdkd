@@ -21,12 +21,14 @@ the only mechanical merge conditions.
   reliably persist, and the `integ-destroy` marker store is PER-WORKTREE: one set
   in the main checkout is ABSENT from the lane.
 - **A hook-gated command carries no SIDE-EFFECTING preamble, and "gated" means
-  EVERY surviving PreToolUse hook**: a denial aborts the whole string before any
-  of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
+  EVERY PreToolUse hook in `.claude/settings.json`**: a denial aborts the whole
+  string before any of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
   in one call, run the gated command in the next, re-creating not appending.
   - A blocked `cp` restore leaves a file MID-PROBE (failing in the suite, passing
-    alone, reading as pollution), so verify a restore in the same call; and name
-    consumables like `/tmp/pr-body.md` per LANE, or a retry eats another's.
+    alone, reading as pollution), so verify a restore in the same call; and make
+    `/tmp` consumables per LANE (`mktemp`, print the path, and pass it LITERALLY
+    to the next call — shell variables do not survive between calls), or a
+    retry eats another's.
 - **"All green" is the EXIT CODE, not the summary** — a run can print every test
   passing and exit 1 (test-file type errors show as `Errors`), and
   `vp run typecheck` skips `**/*.test.ts`: run `typecheck:test`, read ITS rc.
@@ -34,14 +36,18 @@ the only mechanical merge conditions.
 All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
-`Closes #<n>`.
+`Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll, not
+a recipe of your own.
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
 replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
-says, and none in a lane prompt. An edited PR re-runs CI, holding the merge.
+says, and none in a lane prompt. Edit the body BEFORE the push: an edit
+mid-CI CANCELS the in-flight runs, and a CANCELLED required context on the
+sha blocks `gh pr merge` even after the re-runs pass — `gh run rerun` each
+cancelled run to clear it (go-to-k/cdkd#3664).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file

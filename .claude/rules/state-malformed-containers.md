@@ -47,13 +47,86 @@ per-container table cannot classify, and the partition that owns it is by CLASS
 
 Its verdict is independent of the BAG guard, which a caller still owes; a
 read-only caller taking both drops entries AFTER the bag repair, so an
-unreadable bag has no rows to walk. `cdkd diff` also runs the entry predicate
-over `orphans[]` before previewing an adoption, with its OWN warning text
-(`malformedOrphanRecordsWarning`) because the shared one names `resources`; the
-dropped records join the node's `unreadable`, so `--fail` counts them. The
-CONTAINER those rows sit in is the table's third row, guarded one level above
-them (go-to-k/cdkd#3379): the entry pass runs only once the container is known
-to be a list.
+unreadable bag has no rows to walk. These entries sit in the table's FIRST row,
+the `resources` map — not in a list.
+
+**The `orphans` ROW class is its own, one level under the table's THIRD
+container (go-to-k/cdkd#3500).** That container is guarded above the rows, so a row pass runs only once the field is known to be a
+list — which is why `unreadableOrphanRecords`, `unpreviewableOrphanRecords` and
+`previewableOrphanRecords`, the helpers that ENUMERATE, return `[]` for a
+container that is not one. The
+predicates themselves answer per RECORD and say nothing about the container. `isReadableOrphanRecord` is the predicate and
+`unreadableOrphanRecords` names every row a state fails on — PLUS every row
+whose string `logicalId` another row carries (go-to-k/cdkd#3643), the one
+LIST-level defect no per-record predicate can see, so never filter a list with
+the predicate alone: take `unreadableOrphanRecords` /
+`previewableOrphanRecords`. The disposition
+splits the way the container's does — `refuseMalformedOrphanRecords` for a
+writer, `refuseMalformedOrphanRecordsForDestroy` for the destroy,
+`refuseMalformedOrphansForOrphan` for `cdkd orphan` (which answers for the
+container in the same call), and `repairMalformedOrphanRecordsForReadOnly` for
+`cdkd scrub --dry-run`, which DROPS the row and names it through
+`malformedOrphanRecordsWarning`. That warning serves TWO predicates, so its
+`alsoRejectsTornMaps` flag is REQUIRED rather than defaulted, and it governs the
+CONSEQUENCE clause as well as the diagnosis — what continuing without the row
+costs is per command (excluded from the secret scan, versus not previewed for
+adoption), and a defaulted flag lets a third caller under-report silently.
+
+**`cdkd diff` takes a NARROWER predicate, and that is deliberate.**
+`isPreviewableOrphanRecord` / `unpreviewableOrphanRecords` /
+`previewableOrphanRecords` ask only what the
+adoption preview dereferences — an object, a string `logicalId`, a readable
+`state` with a NON-EMPTY string `physicalId` — and say nothing about that state's
+`properties` / `attributes`. The
+reason is `properties` alone: `computeStackDiff` repairs and names that map a
+second time over the adopted records
+([state-malformed-properties.md](state-malformed-properties.md)), and does NOT
+touch `attributes`, so a torn `attributes` map is still not REPAIRED or named by
+that pass.
+
+**What `cdkd diff` owes for a row it keeps is the DEPLOY's verdict, and that is
+not optional**. The writers refuse the whole record over
+such a row, so a preview that keeps it and says nothing lets `cdkd diff --fail`
+exit 0 and the deploy the operator runs next refuse — the contract `cdkd diff`
+states for the adoption preview. `deployRefusesOrphanRowsReason` is that verdict:
+`diff-recursive.ts` computes the rows the NARROW predicate accepts and the FULL
+one rejects — from the ROWS the preview kept — and then SUBTRACTS
+the names the adopted-`properties` arm already reported, because `countBlocking` counts one reason per row
+(go-to-k/cdkd#3335). So what this arm
+covers is the two cases nothing else does: a torn `attributes` map, and a torn
+`properties` map on a row the adoption did NOT take. Subtracting by NAME is
+exact because rows sharing an id are DROPPED before the preview
+(go-to-k/cdkd#3643) — dropped rather than kept-and-warned, so the preview never
+shows one adoption for two rows and `--fail` counts them.
+
+**The REASON is top-level only and the WARNING is not**, and that asymmetry is
+load-bearing (go-to-k/cdkd#3641). "Every node" means every node the RUN
+REACHES with an adoption preview, which is narrower in two ways: `buildDiffTree` returns before visiting any child unless `recursive`,
+so a plain `cdkd diff` warns for the top-level stack only; and
+`buildDeletedSubtree` calls `computeStackDiff` with no `previewOrphanAdoption`,
+which the whole row block is gated on, so a state-only child being DELETED gets
+neither orphan warning — its removal goes
+through `NestedStackProvider.delete` → `runDestroyForStack`, which refuses the
+row; no message may claim that child is warned for. The reason follows
+go-to-k/cdkd#3335's scope decision: the deploy skips an unchanged nested-stack
+row, so a reason there would report a refusal over a deploy that succeeds. What
+makes that split SAFE is that every class still WARNS at every node; a KEPT row
+gets no word from `malformedOrphanRecordsWarning` (DROPPED rows only), so
+`malformedOrphanRowsKeptWarning` carries it.
+Handing `cdkd diff` the writers' full predicate DROPS such a row instead, which
+retires that report rather than tightening it; a case in
+`tests/unit/cli/diff-recursive-malformed-orphans.test.ts` reds on exactly that
+substitution. **Both row predicates ask for a NON-EMPTY string `physicalId`, which
+`isReadableResourceEntry` does NOT** (go-to-k/cdkd#3641): that one stops at
+`resourceType` because a `resources` row failing per-resource is reported by its
+own command, while an `orphans` row's physical id is the only handle on a
+resource cdkd deliberately left LIVE — `cdkd destroy`'s listing is the one notice
+before the record is deleted, and `planOrphanAdoption` resolves that id against
+AWS and against other stacks' claims. The WRITERS' predicate asks MORE still —
+readable `properties` / `attributes` — because
+these rows are reached as a whole and a row MISSING its id collapses with every other such row
+in `orphansAfterRollback`'s merge map. Do not re-spell the test at a call site: one asking only about `state`
+previews an adoption for a row the writers refuse.
 
 ## One refusal here is NOT about a container
 
@@ -75,13 +148,18 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   byte-identically to a healthy sibling. **Any message here that names a target
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
+- **`cdkd rollback` refuses the same record with its OWN message**
+  (`refuseDivergentRecordRegionForRollback` in `rollback.ts`,
+  go-to-k/cdkd#3370), not this builder — whose opening, consequence and remedy
+  speak about a DESTROY. Same conjunction, same code, kind-only; it offers no
+  command, so it needs no exactness gate. ONE command-level refusal covers every
+  replay arm because every AWS-calling arm needs a current state row.
 
 ## Where a pasteable command goes (go-to-k/cdkd#3516)
 
 **A message offering only a READ ends ON it**, `inspectCommand`. Mid-sentence it
 sits one space from the next clause and a line-select paste carries that clause
-in as arguments, so the fence is `endsWith`; `toContain` is what let four
-consumers bury it.
+in as arguments, so the fence is `endsWith`, never `toContain`, which passes a buried command.
 
 **A message offering a read AND the destructive template puts one command per
 LINE** (`Inspect the record:` / `Drop the record:`). One line cannot do both:
@@ -128,9 +206,7 @@ something false; ONE private implementation, which is the property the
 "one spelling" rule is about.
 
 They live in this module because their callers already import it for the
-guards. **What a collision COSTS is per site, not a property of the key**, and
-the JSDoc says so after a note claiming otherwise shipped with
-go-to-k/cdkd#3308: at the two warned-once sets it drops a warning line, at
+guards. **What a collision COSTS is per site, not a property of the key**: at the two warned-once sets it drops a warning line, at
 `cdkd scrub`'s read memoizer, chain walk and verdict cache it is a wrong ANSWER
 that can end a run at `No plaintext secrets found` over surviving plaintext.
 So is whether a SEPARATOR was ever injective — it depends on where each half

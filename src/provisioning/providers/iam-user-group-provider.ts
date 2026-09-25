@@ -35,6 +35,7 @@ import {
   DeleteUserPermissionsBoundaryCommand,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -1767,8 +1768,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'UserName');
     if (explicit) {
       try {
-        await this.iamClient.send(new GetUserCommand({ UserName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.iamClient.send(new GetUserCommand({ UserName: explicit }));
+        // Issue #3627: the `Arn` `create()` records. The resolver's arm builds
+        // `user/<name>` and drops a non-`/` `Path`, silently.
+        return { physicalId: explicit, attributes: definedAttributes({ Arn: resp.User?.Arn }) };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;
         throw err;
@@ -1787,8 +1790,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'GroupName');
     if (explicit) {
       try {
-        await this.iamClient.send(new GetGroupCommand({ GroupName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.iamClient.send(new GetGroupCommand({ GroupName: explicit }));
+        // Issue #3627: the `Arn` `create()` records (the resolver's arm drops a
+        // non-`/` `Path`).
+        return { physicalId: explicit, attributes: definedAttributes({ Arn: resp.Group?.Arn }) };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;
         throw err;

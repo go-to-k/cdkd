@@ -64,7 +64,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
 import type { StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -96,7 +96,11 @@ import {
   malformedStateRefusalMessage,
   producerCoordinateKey,
   producerRecordKey,
+  malformedOrphanRecordsRefusalMessage,
+  malformedOrphanRecordsWarning,
+  repairMalformedOrphanRecordsForReadOnly,
   repairMalformedOrphansForReadOnly,
+  unreadableOrphanRecords,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
@@ -222,7 +226,7 @@ function describeFailure(err: unknown): string {
 function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>): CdkdError {
   return new ScrubRefusalError(
     `${failures.length} stack(s) could not be scrubbed: ` +
-      `${failures.map((f) => f.stackName).join(', ')}. ` +
+      `${failures.map((f) => displayStackName(f.stackName)).join(', ')}. ` +
       `Each one's reason was logged as it happened — see the ` +
       `'Scrub of <stack> failed:' line above for it.`,
     'SCRUB_STACKS_FAILED'
@@ -345,13 +349,13 @@ function exportIndexIncompleteError(
   if (unwritten.length > 0) {
     parts.push(
       `${unwritten.length} exports index entr${unwritten.length === 1 ? 'y' : 'ies'} unwritten ` +
-        `(${unwritten.map((u) => `${u.shown} in ${u.region}`).join(', ')})`
+        `(${unwritten.map((u) => `${u.shown} in ${displayIdent(u.region)}`).join(', ')})`
     );
   }
   if (unreadable.length > 0) {
     parts.push(
       `${unreadable.length} region(s) whose exports index could not be read ` +
-        `(${unreadable.map((u) => `${u.region}: ${u.reason}`).join('; ')})`
+        `(${unreadable.map((u) => `${displayIdent(u.region)}: ${u.reason}`).join('; ')})`
     );
   }
   return new ScrubRefusalError(
@@ -690,6 +694,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const indexUnreadable: Array<{ region: string; reason: string }> = [];
 
   for (const stack of targetStacks) {
+    const shownStack = displayStackName(stack.stackName);
     const stackRegion = stack.region || region;
     let scrubbed: Awaited<ReturnType<typeof scrubStack>>;
     try {
@@ -717,7 +722,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // against everything it recorded; this loop holds no secrets map and
       // could not mask anything itself.
       failures.push({ stackName: stack.stackName });
-      logger.error(`Scrub of ${stack.stackName} failed: ${describeFailure(err)}`);
+      logger.error(`Scrub of ${shownStack} failed: ${describeFailure(err)}`);
       // Verbose-only, mirroring `handleError`: the trace is what locates a
       // failure that is a cdkd bug rather than an AWS refusal, and `scrubStack`
       // masked it along with the messages.
@@ -757,9 +762,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         const shown = scrubbed.exportNameDisplay(exportName);
         switch (shown.kind) {
           case 'safe':
-            return `'${shown.text}'`;
+            return displayIdent(shown.text);
           case 'masked':
-            return `(masked: "${shown.text}")`;
+            return `(masked: ${displayIdent(shown.text)})`;
           // Masking left the name unchanged, so printing it would publish the
           // secret under a label claiming it had been masked. The name is
           // WITHHELD and the message still identifies the stack and region.
@@ -788,8 +793,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           // conditional-tense for every finding.
           if (!options.dryRun && unwrittenNames.has(finding.exportName)) {
             logger.warn(
-              `Exports index entry ${named(finding.exportName)} (${stackRegion}) differs from ` +
-                `${stack.stackName}'s state.outputs and could NOT be written — it keeps the ` +
+              `Exports index entry ${named(finding.exportName)} (${displayIdent(stackRegion)}) differs from ` +
+                `${shownStack}'s state.outputs and could NOT be written — it keeps the ` +
                 `value it holds.`
             );
           } else {
@@ -813,17 +818,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             totalIndexEntriesConverged++;
             logger.info(
               `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
-                `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
+                `${named(finding.exportName)} (${displayIdent(stackRegion)}) to ${shownStack}'s ` +
                 `state.outputs value.`
             );
           }
         } else {
           totalIndexEntriesAbsent++;
           logger.warn(
-            `Exports index entry ${named(finding.exportName)} (${stackRegion}) is ` +
-              `published by ${stack.stackName}, whose state.outputs has no key of that name — ` +
+            `Exports index entry ${named(finding.exportName)} (${displayIdent(stackRegion)}) is ` +
+              `published by ${shownStack}, whose state.outputs has no key of that name — ` +
               `nothing was written for it and it keeps the value it holds. Redeploy ` +
-              `${stack.stackName} to rewrite the index from its own outputs.`
+              `${shownStack} to rewrite the index from its own outputs.`
           );
         }
       }
@@ -846,7 +851,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         const reason = displaySafe(err instanceof Error ? err.message : String(err));
         indexUnreadable.push({ region: stackRegion, reason });
         logger.error(
-          `Exports index for ${stackRegion} could not be read (first seen while scrubbing ${stack.stackName}): ${reason}`
+          `Exports index for ${displayIdent(stackRegion)} could not be read (first seen while scrubbing ${shownStack}): ${reason}`
         );
       }
     }
@@ -869,7 +874,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // gain does not pay for breaking three phase assertions. Rename it with
         // those fixtures, their re-run, and this doc's example output together.
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
-          `in ${stack.stackName}`
+          `in ${shownStack}`
       );
     } else if (
       scrubbed.secretBearingKeys === 0 &&
@@ -891,7 +896,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // already prevents for a key holding plaintext. The warning below still
       // fires either way; this only stops the two lines contradicting each
       // other.
-      logger.info(`No plaintext secrets found in ${stack.stackName}`);
+      logger.info(`No plaintext secrets found in ${shownStack}`);
     }
     if (scrubbed.malformedResources) {
       malformedRecords.push(stack.stackName);
@@ -899,13 +904,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.malformedOutputs) {
       malformedOutputRecords.push(stack.stackName);
     }
-    if (scrubbed.malformedOrphans) {
+    // Either shape of orphan damage lands in ONE list, because the verdict is
+    // one: this stack's orphan evidence could not be read, exit 2, repair the
+    // record (go-to-k/cdkd#3500). The WARNINGS above already distinguish the
+    // container from the rows, which is where the remedy differs.
+    if (scrubbed.malformedOrphans || scrubbed.malformedOrphanRows) {
       malformedOrphanRecords.push(stack.stackName);
     }
     if (scrubbed.unverifiableLeaves > 0) {
       totalStacksWithUnverifiableLeaves++;
       logger.warn(
-        `${scrubbed.unverifiableLeaves} scan(s) in ${stack.stackName} were ` +
+        `${scrubbed.unverifiableLeaves} scan(s) in ${shownStack} were ` +
           `ABANDONED mid-value because a {{resolve:...}} reference could not be resolved (see the ` +
           `warnings above). The resolver stops at the first failing token, so a real secret ` +
           `after it in the same value recorded no needle — this stack is not reported clean. ` +
@@ -927,7 +936,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // points at the per-read warnings for the reason rather than asserting
         // one, since asserting the by-design reason over a repairable finding
         // tells the operator there is nothing to do.
-        `${scrubbed.unverifiableReads} cross-stack read(s) in ${stack.stackName} could NOT be ` +
+        `${scrubbed.unverifiableReads} cross-stack read(s) in ${shownStack} could NOT be ` +
           `verified (see the warnings above for which, and why) — so this stack is not ` +
           `reported clean.`
       );
@@ -941,7 +950,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // stack can both hold scrubbable records AND carry such a key.
       totalStacksWithUnscrubbableKeys++;
       logger.warn(
-        `${scrubbed.secretBearingKeys} output KEY(s) in ${stack.stackName} hold plaintext and CANNOT be scrubbed — ` +
+        `${scrubbed.secretBearingKeys} output KEY(s) in ${shownStack} hold plaintext and CANNOT be scrubbed — ` +
           `rename the Export.Name and redeploy (see the warning above).`
       );
     }
@@ -974,7 +983,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       const reason = displaySafe(err instanceof Error ? err.message : String(err));
       indexUnreadable.push({ region: indexRegion, reason });
       logger.error(
-        `Exports index for ${indexRegion} could not be read for the coverage report: ${reason}`
+        `Exports index for ${displayIdent(indexRegion)} could not be read for the coverage report: ${reason}`
       );
       continue;
     }
@@ -984,7 +993,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (unexamined.length === 0) continue;
     totalIndexEntriesUnexamined += unexamined.length;
     logger.info(
-      `Exports index (${indexRegion}): ${unexamined.length} entr${unexamined.length === 1 ? 'y is' : 'ies are'} ` +
+      `Exports index (${displayIdent(indexRegion)}): ${unexamined.length} entr${unexamined.length === 1 ? 'y is' : 'ies are'} ` +
         `published by a producer this run did not scrub, so nothing here read ${unexamined.length === 1 ? 'its' : 'their'} ` +
         `value. Coverage composes across the apps sharing this bucket and region — run each app's ` +
         `own cdkd scrub to reach its entries.`
@@ -1592,13 +1601,14 @@ function regionAmbiguousScrubSecretError(
   stackName: string,
   secretName: string,
   foreignProducerRegions: readonly string[],
-  stackRegion: string
+  stackRegion: string,
+  secrets: RecordedSecretValues
 ): CdkdError {
   return new ScrubRefusalError(
-    `Scrub of ${stackName} cannot re-resolve the secret reference '${secretName}' in ${origin}: ` +
+    `Scrub of ${displayStackName(stackName)} cannot re-resolve the secret reference ${maskedIdent(secretName, secrets)} in ${origin}: ` +
       `the reference carries no region of its own, and this stack read across a region boundary ` +
-      `(producer region(s) on record: ${foreignProducerRegions.join(', ')}), so it may have been ` +
-      `resolved in one of those rather than in '${stackRegion}'. A secret of the same name in two ` +
+      `(producer region(s) on record: ${foreignProducerRegions.map((r) => displayIdent(r)).join(', ')}), so it may have been ` +
+      `resolved in one of those rather than in ${displayIdent(stackRegion)}. A secret of the same name in two ` +
       `regions is two independent values, so scrub would look for the WRONG plaintext — leaving ` +
       `the real one in state while reporting the stack clean, and using the foreign value as a ` +
       `needle that can rewrite an unrelated literal. Refusing instead. Spell the reference as a ` +
@@ -1631,8 +1641,8 @@ function unresolvableForeignScrubSecretError(
   secrets: RecordedSecretValues
 ): CdkdError {
   return new ScrubRefusalError(
-    `Scrub of ${stackName} could not resolve the secret reference '${secretName}' in ${origin} ` +
-      `in the region its ARN names ('${region}'): ` +
+    `Scrub of ${displayStackName(stackName)} could not resolve the secret reference ${maskedIdent(secretName, secrets)} in ${origin} ` +
+      `in the region its ARN names (${displayIdent(region)}): ` +
       `${maskSecretsInText(cause instanceof Error ? cause.message : String(cause), secrets)}. ` +
       `Refusing rather than resolving ` +
       `it in the stack's own region, which would look for a different secret's value and report ` +
@@ -1800,6 +1810,7 @@ async function resolveForeignRegionTokens(
   stackName: string,
   ctx: CrossRegionSecretContext
 ): Promise<string> {
+  const shownStackName = displayStackName(stackName);
   // ONE spelling of the token scan, shared with `secret-redaction.ts` and the
   // rollback replay (issue #1936): a private regex here would answer a
   // different question from the one the resolver is about to ask.
@@ -1901,7 +1912,8 @@ async function resolveForeignRegionTokens(
         stackName,
         verdict.secretName,
         verdict.foreignProducerRegions,
-        ctx.stackRegion
+        ctx.stackRegion,
+        ctx.recordedSecretValues
       );
     }
   }
@@ -1919,9 +1931,9 @@ async function resolveForeignRegionTokens(
     // #2109 reintroduced by the guard meant to prevent a regression.
     if (at < 0) {
       throw new ScrubRefusalError(
-        `Scrub of ${stackName} could not locate a scanned dynamic reference in ${ctx.origin}, ` +
+        `Scrub of ${shownStackName} could not locate a scanned dynamic reference in ${ctx.origin}, ` +
           `in the value it was scanned from. Refusing rather than resolving it in ` +
-          `'${ctx.stackRegion}', which would be the wrong region for a reference that names ` +
+          `${displayIdent(ctx.stackRegion)}, which would be the wrong region for a reference that names ` +
           `another one. This is an internal invariant failure — please report it with the ` +
           `resource type and property path.`,
         'SCRUB_SECRET_TOKEN_SCAN_MISMATCH'
@@ -1964,7 +1976,7 @@ async function resolveForeignRegionTokens(
     surviving.some((token, i) => token !== localTokens[i])
   ) {
     throw new ScrubRefusalError(
-      `Scrub of ${stackName} refused ${ctx.origin}: resolving a cross-region secret reference ` +
+      `Scrub of ${shownStackName} refused ${ctx.origin}: resolving a cross-region secret reference ` +
         `produced a value that is itself dynamic-reference shaped, which the stack's own ` +
         `resolver would then resolve as if it were a reference of this stack's. Refusing rather ` +
         `than passing it on.`,
@@ -2254,8 +2266,8 @@ function malformedRecordsAuditedError(
   // precisely because there is no `shellQuote` to conflict with: this message
   // contains no pasteable command.
   //
-  // This closes THESE TWO sentences only. Other raw `${stackName}`
-  // interpolations remain elsewhere in this file and are out of scope here.
+  // Every other stack name in this file renders through `displayStackName`
+  // (go-to-k/cdkd#3638).
   const safeNames = (names: readonly string[]): string =>
     names.map((n) => displayIdent(n)).join(', ');
   const parts: string[] = [];
@@ -2278,10 +2290,12 @@ function malformedRecordsAuditedError(
   }
   if (orphanStackNames.length > 0) {
     parts.push(
-      `${orphanStackNames.length} stack(s) were audited with an EMPTY orphan list because ` +
-        `their state record has no readable 'orphans' list: ${safeNames(orphanStackNames)}. ` +
-        `Nothing is known about resources an earlier failed deploy may have left live in AWS ` +
-        `for them, so this run cannot certify them clean.`
+      `${orphanStackNames.length} stack(s) were audited with an INCOMPLETE orphan list because ` +
+        `their state record has no readable 'orphans' list, or a record inside it that no ` +
+        `reader can use: ${safeNames(orphanStackNames)}. Whichever it was, the warning above ` +
+        `names it per stack. Nothing is known about the resources those records describe — ` +
+        `resources an earlier failed deploy may have left live in AWS — so this run cannot ` +
+        `certify them clean.`
     );
   }
   return new ScrubRefusalError(
@@ -2459,8 +2473,8 @@ function unresolvableCrossStackReadError(
   secrets: RecordedSecretValues
 ): CdkdError {
   return new ScrubRefusalError(
-    `Scrub of ${stackName} could not resolve the ${intrinsic} in ${origin}` +
-      `${path ? ` at ${path}` : ''}: ` +
+    `Scrub of ${displayStackName(stackName)} could not resolve the ${intrinsic} in ${origin}` +
+      `${path ? ` at ${maskedIdent(path, secrets)}` : ''}: ` +
       `${maskSecretsInText(cause instanceof Error ? cause.message : String(cause), secrets)}. ` +
       `Refusing rather than continuing: the value that reference carries may be a secret, and ` +
       `scrub would then have no plaintext to look for — reporting the stack clean over state ` +
@@ -2517,28 +2531,32 @@ export function scrubRefusalWording(
 ): { templateClaim: string; remedy: string; remedyCommands: string[] } {
   const chain = dedupePreservingOrder(loggedVia, 'first');
   const chainRoot = chain[chain.length - 1];
+  // The PROSE renders each name with its own boundary (go-to-k/cdkd#3638); the
+  // remedy COMMANDS below take the raw values through the pasteable gate.
+  const shownKey = displayIdent(loggedExportKey);
+  const shownRoot = chainRoot === undefined ? undefined : displayStackName(chainRoot);
   const through =
     chain.length > 1
       ? ` (through ${chain
           .slice(0, -1)
-          .map((s) => `'${s}'`)
+          .map((s) => displayStackName(s))
           .join(', ')})`
       : '';
   const templateClaim =
     verdict.kind === 'declared'
-      ? `declares '${loggedExportKey}' from a {{resolve:...}} expression`
+      ? `declares ${shownKey} from a {{resolve:...}} expression`
       : verdict.kind === 'chained'
         ? chainRoot !== undefined
-          ? `publishes '${loggedExportKey}' by RE-EXPORTING a value that '${chainRoot}' declares ` +
+          ? `publishes ${shownKey} by RE-EXPORTING a value that ${shownRoot} declares ` +
             `from a {{resolve:...}} expression${through}`
-          : `publishes '${loggedExportKey}' by RE-EXPORTING a value another stack of this app ` +
+          : `publishes ${shownKey} by RE-EXPORTING a value another stack of this app ` +
             `declares from a {{resolve:...}} expression`
         : chainRoot !== undefined
-          ? `publishes at least one output that RE-EXPORTS a value '${chainRoot}' declares from ` +
+          ? `publishes at least one output that RE-EXPORTS a value ${shownRoot} declares from ` +
             `a {{resolve:...}} expression${through} (this run could not match ` +
-            `'${loggedExportKey}' to a declared output, so it cannot say which)`
+            `${shownKey} to a declared output, so it cannot say which)`
           : `publishes at least one output from a {{resolve:...}} expression (this run could not ` +
-            `match '${loggedExportKey}' to a declared output, so it cannot say which)`;
+            `match ${shownKey} to a declared output, so it cannot say which)`;
   // A CHAIN is scrubbed from its HEAD, and naming only the direct producer would
   // send the user into a second refusal: that producer can only store the
   // expression once ITS own producer has been scrubbed down to one.
@@ -2689,9 +2707,9 @@ function plaintextProducerCrossStackReadError(
     verdict.via.map((s) => maskSecretsInText(s, secrets))
   );
   return new ScrubRefusalError(
-    `Scrub of ${stackName} resolved the ${intrinsic} in ${origin}` +
-      `${path ? ` at ${path}` : ''} to a PLAINTEXT value: the producer stack ` +
-      `'${loggedProducerStack}' ` +
+    `Scrub of ${displayStackName(stackName)} resolved the ${intrinsic} in ${origin}` +
+      `${path ? ` at ${maskedIdent(path, secrets)}` : ''} to a PLAINTEXT value: the producer stack ` +
+      `${displayStackName(loggedProducerStack)} ` +
       `${templateClaim}, but its own state still stores ` +
       `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
@@ -3347,6 +3365,17 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
 // changes what the counter claims about every leaf, not just this one.
 // Recorded rather than papered over: go-to-k/cdkd#3178 security review.
 /**
+ * An assembly-chosen NAME (a logical id, a property or output name, a property
+ * path, a secret reference's name) rendered into scrub's prose: MASKED FIRST,
+ * then bounded (go-to-k/cdkd#3638). `displayIdent` JSON-escapes, blanks
+ * non-ASCII and cuts at 255, any of which would stop a recorded plaintext
+ * embedded in the name from matching a mask that ran over the rendered text.
+ */
+function maskedIdent(value: string, secrets: RecordedSecretValues): string {
+  return displayIdent(maskSecretsInText(value, secrets));
+}
+
+/**
  * The per-record line each counting site prints. Deliberately ONE SHORT
  * SENTENCE, and that is a fix rather than a style choice: the first cut emitted
  * a ~440-character paragraph PER RECORD at default verbosity, and the arm it
@@ -3361,11 +3390,9 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
  * it through `maskSecretsInText`, and a resolver error echoes what it was
  * handed — which, after `pinCrossRegionSecrets`, can be a foreign plaintext.
  *
- * RESIDUAL on the `subject` the call sites pass. They compose
- * `maskSecretsInText(... displaySafe(id) ...)` — sanitise, then mask — and
- * `displaySafe` REPLACES a control character with a space rather than deleting
- * it, so it cannot JOIN a split needle (the go-to-k/cdkd#2874 direction) but it
- * can BREAK one, and it leaves `U+200B`-`U+200D` / `U+FEFF` untouched. A secret
+ * The `subject` the call sites pass renders each name through
+ * {@link maskedIdent} — masked, then bounded — so bounding cannot break a needle.
+ * RESIDUAL: the mask sees only what this run has recorded SO FAR, and a secret
  * would have to sit inside a template logical id or Outputs key to be reachable,
  * which is why `secretSafeKeyDisplay` is not used here — that one is for RESOLVED
  * state-bag keys. Recorded rather than closed: go-to-k/cdkd#3178 security review.
@@ -3856,6 +3883,8 @@ function makeCrossStackPrePass(deps: {
   opts?: { canRefuse?: boolean }
 ) => Promise<void> {
   const { stackName, resolver, producerTemplates, findings, logger } = deps;
+  // One rendering of this stack's name for every message below (go-to-k/cdkd#3638).
+  const shownStackName = displayStackName(stackName);
   // Built once per stack scrub: every cross-stack read this pass performs asks
   // the same question of the same set of templates (issue #2146).
   const exportOwners = buildExportOwnerIndex(producerTemplates);
@@ -4043,14 +4072,16 @@ function makeCrossStackPrePass(deps: {
       nodeCanRefuse: boolean
     ): Promise<{ stored: unknown } | undefined> => {
       if (!backend) return undefined;
+      // Masked first, then bounded, once for every message below.
+      const shownProducer = displayStackName(maskSecretsInText(producer.stack, secrets));
       let loaded: Awaited<ReturnType<NonNullable<ResolverContext['stateBackend']>['getState']>>;
       try {
         loaded = await backend.getState(producer.stack, producer.region);
       } catch (err) {
         logger.debug(
-          `Scrub of ${stackName}: could not re-read producer ` +
-            `'${maskSecretsInText(producer.stack, secrets)}' ` +
-            `(${producer.region}) to classify its stored value: ` +
+          `Scrub of ${shownStackName}: could not re-read producer ` +
+            `${shownProducer} ` +
+            `(${displayIdent(producer.region)}) to classify its stored value: ` +
             `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
         );
         return undefined;
@@ -4107,8 +4138,8 @@ function makeCrossStackPrePass(deps: {
         // consumes the one-warning-per-record budget a refusable one needs.
         if (!nodeCanRefuse) {
           logger.debug(
-            `Scrub of ${stackName}: producer ` +
-              `'${maskSecretsInText(producer.stack, secrets)}' (${producer.region}) has no ` +
+            `Scrub of ${shownStackName}: producer ` +
+              `${shownProducer} (${displayIdent(producer.region)}) has no ` +
               `readable 'outputs' map, and this position cannot refuse.`
           );
           return undefined;
@@ -4135,8 +4166,8 @@ function makeCrossStackPrePass(deps: {
           // reintroduced by its own fix. `--dry-run --fail` reads the exit
           // code, not the warning.
           const detail =
-            `the stored value of producer '${maskSecretsInText(producer.stack, secrets)}' ` +
-            `(${producer.region}), whose 'outputs' map cannot be read`;
+            `the stored value of producer ${shownProducer} ` +
+            `(${displayIdent(producer.region)}), whose 'outputs' map cannot be read`;
           findings.unverifiable.push(detail);
           // ...and into the EXIT-CODE list as well. `unverifiable` alone gates
           // the clean-verdict line and `--fail`; this second list is what
@@ -4155,11 +4186,11 @@ function makeCrossStackPrePass(deps: {
           // stated a consequence that does not happen here and never stated the
           // one that does.
           logger.warn(
-            `Scrub of ${stackName}: producer ` +
-              `'${maskSecretsInText(producer.stack, secrets)}' (${producer.region}) has no ` +
+            `Scrub of ${shownStackName}: producer ` +
+              `${shownProducer} (${displayIdent(producer.region)}) has no ` +
               `readable 'outputs' map, so its stored value could NOT be classified — this run ` +
-              `cannot tell whether it still holds plaintext for the value ${stackName} imports ` +
-              `from it. ${stackName} is scrubbed for everything else. Repair that record and ` +
+              `cannot tell whether it still holds plaintext for the value ${shownStackName} imports ` +
+              `from it. ${shownStackName} is scrubbed for everything else. Repair that record and ` +
               `scrub it first.`
           );
         }
@@ -4189,7 +4220,7 @@ function makeCrossStackPrePass(deps: {
       // nine log/finding sites below share one spelling (issue #2163 review --
       // the first cut hoisted it only past the `catch`, leaving four re-spelled
       // copies of the identical expression behind).
-      const where = `${key} in ${origin}${path ? ` at ${path}` : ''}`;
+      const where = `${key} in ${origin}${path ? ` at ${maskedIdent(path, secrets)}` : ''}`;
       try {
         await resolver.resolve({ [key]: node[key] }, probe);
       } catch (err) {
@@ -4203,7 +4234,7 @@ function makeCrossStackPrePass(deps: {
         // {@link isOutputSuppressed} exists to spare.
         if (!nodeCanRefuse) {
           logger.debug(
-            `Scrub of ${stackName}: ${where} could not be resolved, and this position ` +
+            `Scrub of ${shownStackName}: ${where} could not be resolved, and this position ` +
               `cannot refuse: ${maskSecretsInText(
                 err instanceof Error ? err.message : String(err),
                 secrets
@@ -4218,7 +4249,7 @@ function makeCrossStackPrePass(deps: {
           )}`;
           findings.unverifiable.push(detail);
           logger.warn(
-            `Scrub of ${stackName} cannot verify ${detail} — cdkd declines this read by design, ` +
+            `Scrub of ${shownStackName} cannot verify ${detail} — cdkd declines this read by design, ` +
               `so no re-run can change it. The rest of the stack is still scrubbed; this stack ` +
               `is NOT reported clean.`
           );
@@ -4240,7 +4271,7 @@ function makeCrossStackPrePass(deps: {
           // UNCONDITIONAL exit 2 this shape carried before it was guarded.
           findings.damagedProducerRecords.push(detail);
           logger.warn(
-            `Scrub of ${stackName} cannot verify ${detail} — the PRODUCER's state record is ` +
+            `Scrub of ${shownStackName} cannot verify ${detail} — the PRODUCER's state record is ` +
               `malformed or truncated, so this run cannot tell whether that producer still ` +
               `holds the plaintext. The rest of the stack is still scrubbed; this stack is NOT ` +
               `reported clean. Repair the producer's record and scrub it first, then re-run.`
@@ -4258,7 +4289,7 @@ function makeCrossStackPrePass(deps: {
       const producer = recordedProducer(key, probe);
       if (!producer) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved, but the resolver recorded no cdkd ` +
+          `Scrub of ${shownStackName}: ${where} resolved, but the resolver recorded no cdkd ` +
             `cross-stack read for it — the value came from a CloudFormation fallback or a ` +
             `cross-account arm that records nothing, so scrub cannot name a producer to ` +
             `classify. Not classified as a plaintext producer.`
@@ -4306,24 +4337,25 @@ function makeCrossStackPrePass(deps: {
       // which no `{{resolve:...}}` token can satisfy) and THROWS rather than
       // falling back; `Fn::ImportValue` takes it from the same state-bucket
       // listing the stack name comes from.
-      const loggedKey = maskSecretsInText(producer.key, secrets);
-      const loggedStack = maskSecretsInText(producer.stack, secrets);
+      // Masked FIRST, then bounded: the mask must see the raw text it matches.
+      const loggedKey = displayIdent(maskSecretsInText(producer.key, secrets));
+      const loggedStack = displayStackName(maskSecretsInText(producer.stack, secrets));
       // The producer is not a stack of this app, so scrub has no template to
       // classify the export with — and no chain to follow out of it either.
       // Documented residual — see {@link producerPublishesSecretExpression}.
       if (!producerTemplates.has(producer.stack)) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}' ` +
-            `(${producer.region}), which is not a stack of this app — scrub has no template to ` +
-            `classify export '${loggedKey}' with. Not classified as a plaintext producer.`
+          `Scrub of ${shownStackName}: ${where} resolved through producer ${loggedStack} ` +
+            `(${displayIdent(producer.region)}), which is not a stack of this app — scrub has no template to ` +
+            `classify export ${loggedKey} with. Not classified as a plaintext producer.`
         );
         return;
       }
       const verdict = secretExpressionVerdict(producer.stack, producer.key);
       if (verdict.kind === 'no') {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', whose ` +
-            `template declares no {{resolve:...}} expression for '${loggedKey}' and no ` +
+          `Scrub of ${shownStackName}: ${where} resolved through producer ${loggedStack}, whose ` +
+            `template declares no {{resolve:...}} expression for ${loggedKey} and no ` +
             `re-export chain reaching one. Not classified as a plaintext producer.`
         );
         return;
@@ -4372,9 +4404,9 @@ function makeCrossStackPrePass(deps: {
       // produce. Kept as the fail-open guard for a future caller that does.
       if (!stored) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}' ` +
-            `(${producer.region}), whose state record could not be read or does not carry the ` +
-            `key '${loggedKey}' — cannot classify, so this is not classified as a plaintext ` +
+          `Scrub of ${shownStackName}: ${where} resolved through producer ${loggedStack} ` +
+            `(${displayIdent(producer.region)}), whose state record could not be read or does not carry the ` +
+            `key ${loggedKey} — cannot classify, so this is not classified as a plaintext ` +
             `producer.`
         );
         return;
@@ -4383,8 +4415,8 @@ function makeCrossStackPrePass(deps: {
       // read handed this stack a resolvable secret, and there is nothing wrong.
       if (carriesDynamicReference(stored.stored)) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', whose ` +
-            `stored value for '${loggedKey}' already carries a {{resolve:...}} expression — ` +
+          `Scrub of ${shownStackName}: ${where} resolved through producer ${loggedStack}, whose ` +
+            `stored value for ${loggedKey} already carries a {{resolve:...}} expression — ` +
             `the producer is scrubbed and there is nothing wrong with this read.`
         );
         return;
@@ -4408,7 +4440,7 @@ function makeCrossStackPrePass(deps: {
       // which no shape here can distinguish from a populated one worth testing.
       if (storedValueCarriesNoPlaintext(stored.stored)) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', ` +
+          `Scrub of ${shownStackName}: ${where} resolved through producer ${loggedStack}, ` +
             `whose stored value for that key carries no ` +
             `text — nothing to redact, so this is not classified as a plaintext producer.`
         );
@@ -4416,8 +4448,8 @@ function makeCrossStackPrePass(deps: {
       }
       if (!nodeCanRefuse) {
         logger.debug(
-          `Scrub of ${stackName}: ${where} resolved to a plaintext from unscrubbed ` +
-            `producer '${loggedStack}', and this position cannot refuse.`
+          `Scrub of ${shownStackName}: ${where} resolved to a plaintext from unscrubbed ` +
+            `producer ${loggedStack}, and this position cannot refuse.`
         );
         return;
       }
@@ -4524,6 +4556,13 @@ export interface ScrubStackResult {
    * resources live in AWS.
    */
   malformedOrphans?: true;
+
+  /**
+   * A readable `orphans` list held a record no reader can use, dropped under
+   * `--dry-run` (go-to-k/cdkd#3500). Separate from {@link malformedOrphans}: a
+   * run can meet either alone and the remedies differ.
+   */
+  malformedOrphanRows?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -4644,6 +4683,7 @@ export async function scrubStack(
   }
 ): Promise<ScrubStackResult> {
   const { logger } = opts;
+  const shownStack = displayStackName(stack.stackName);
   const acquired = !opts.dryRun;
   if (acquired) {
     await lockManager.acquireLockWithRetry(stack.stackName, region, undefined, 'scrub');
@@ -4660,9 +4700,23 @@ export async function scrubStack(
   const outputSecrets = new Map<string, string>();
   /**
    * Needles derived from each rollback-orphan record's OWN recorded bag
-   * (issue go-to-k/cdkd#2943), keyed by logical id — per-record for the same
-   * reason `perResourceSecrets` is per-resource: one record's secret must not
-   * rewrite another's coinciding literal.
+   * (issue go-to-k/cdkd#2943) — per-record for the same reason
+   * `perResourceSecrets` is per-resource: one record's secret must not rewrite
+   * another's coinciding literal.
+   *
+   * Keyed by the row's INDEX in `orphans`, never by its `logicalId`
+   * (go-to-k/cdkd#3500 security review). Two rows sharing an id are a MALFORMED
+   * record — no cdkd writer produces one, since `orphansAfterRollback` keeps one
+   * row per id — and both arms of this command meet it before this map is read:
+   * a real run refuses the record and `--dry-run` drops every such row
+   * (go-to-k/cdkd#3643). The index keying stays as defense in depth, because it
+   * is still the only identity that cannot collide: on an id key the second row's
+   * empty map REPLACED the first row's filled one. Both halves broke: the first
+   * row's needles left the union that the rewrite and the error boundary read, and
+   * its own lookup returned the OTHER row's map, so where two rows resolve one
+   * plaintext through different expressions the wrong expression was written. The
+   * index is the only identity the collecting loop and the rewrite can agree on,
+   * since both walk `state.orphans` in order and neither reorders it.
    */
   const orphanSecrets = new Map<string, Map<string, string>>();
   // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted
@@ -4749,7 +4803,7 @@ export async function scrubStack(
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
-      logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
+      logger.debug(`No state for ${shownStack} (${displayIdent(region)}) — skipping`);
       return {
         recordsChanged: 0,
         secretsFound: 0,
@@ -4834,16 +4888,39 @@ export async function scrubStack(
     // AWS. `--dry-run` repairs and reports instead, for the reason the two
     // branches above give.
     let malformedOrphans: true | undefined;
+    let malformedOrphanRows: true | undefined;
     if (opts.dryRun) {
       if (repairMalformedOrphansForReadOnly(state)) {
         malformedOrphans = true;
         logger.warn(malformedOrphansWarning(stack.stackName, region));
+      }
+      // The ROWS of a readable list, dropped and reported on the same arm
+      // (go-to-k/cdkd#3500). A SEPARATE finding from the container one because a
+      // run can meet either alone and the remedies differ — a non-list field has
+      // to be rewritten, a torn row repaired inside an otherwise good list. What
+      // distinguishes them for the operator is the WARNING above; the
+      // audited-record refusal takes one list of stack names either way.
+      const droppedRows = repairMalformedOrphanRecordsForReadOnly(state);
+      if (droppedRows.length > 0) {
+        malformedOrphanRows = true;
+        logger.warn(malformedOrphanRecordsWarning(stack.stackName, region, droppedRows, true));
       }
     } else if (!hasReadableOrphans(state)) {
       throw new ScrubRefusalError(
         malformedOrphansRefusalMessage(stack.stackName, region),
         STATE_RESOURCES_MALFORMED
       );
+    } else {
+      // A real run REFUSES the rows for the reason it refuses the container: the
+      // rewrite below reads `record.state` per row, and its save writes the
+      // whole record.
+      const unreadableRows = unreadableOrphanRecords(state);
+      if (unreadableRows.length > 0) {
+        throw new ScrubRefusalError(
+          malformedOrphanRecordsRefusalMessage(stack.stackName, region, unreadableRows),
+          STATE_RESOURCES_MALFORMED
+        );
+      }
     }
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
@@ -4873,7 +4950,7 @@ export async function scrubStack(
       // unchanged on an empty map. Kept so that adding a context argument later
       // does not also require remembering this line.
       logger.debug(
-        `Parameter resolution skipped for ${stack.stackName}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+        `Parameter resolution skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
       );
     }
     // Issue #2133: the ONE resolve context every resolution in this function
@@ -5016,7 +5093,7 @@ export async function scrubStack(
       // The four sibling catches in this function mask for a reachable reason;
       // this one is uniformity.
       logger.debug(
-        `Condition evaluation skipped for ${stack.stackName}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+        `Condition evaluation skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
       );
     }
 
@@ -5081,7 +5158,7 @@ export async function scrubStack(
             producerRegions,
             resolvers,
             recordedSecretValues,
-            origin: `resource '${logicalId}'`,
+            origin: `resource ${maskedIdent(logicalId, recordedSecretValues)}`,
           }
         );
         const resourceContext = resolverContext(recordedSecretValues);
@@ -5094,7 +5171,11 @@ export async function scrubStack(
         // record EXISTS — the deploy created it and may have persisted the
         // imported plaintext into it. A suppressed OUTPUT was never written at
         // all, so a read it needs is one the deploy never made.
-        await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
+        await resolveCrossStackReads(
+          resolveInput,
+          resourceContext,
+          `resource ${maskedIdent(logicalId, recordedSecretValues)}`
+        );
         // PER TOP-LEVEL PROPERTY, not per bag (issue go-to-k/cdkd#3196).
         // `resolver.resolve` walks whatever it is handed and ONE throw aborts
         // the rest of it, so handing it the whole `Properties` bag meant an
@@ -5231,10 +5312,10 @@ export async function scrubStack(
             reportAbandonedBag(
               abandoned,
               propertyName
-                ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
-                : `resource '${displaySafe(logicalId)}'`,
+                ? `resource ${maskedIdent(logicalId, recordedSecretValues)} property ${maskedIdent(propertyName, recordedSecretValues)}`
+                : `resource ${maskedIdent(logicalId, recordedSecretValues)}`,
               recordedSecretValues,
-              `${displaySafe(logicalId)}${propertyName ? `.${displaySafe(propertyName)}` : ''}`
+              `${maskedIdent(logicalId, recordedSecretValues)}${propertyName ? `.${maskedIdent(propertyName, recordedSecretValues)}` : ''}`
             );
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
@@ -5253,8 +5334,8 @@ export async function scrubStack(
                 maskSecretsInText(
                   abandonedScanWarning(
                     propertyName
-                      ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
-                      : `resource '${displaySafe(logicalId)}'`,
+                      ? `resource ${maskedIdent(logicalId, recordedSecretValues)} property ${maskedIdent(propertyName, recordedSecretValues)}`
+                      : `resource ${maskedIdent(logicalId, recordedSecretValues)}`,
                     leafVerdict
                   ),
                   recordedSecretValues
@@ -5267,8 +5348,8 @@ export async function scrubStack(
             // error that echoes what it was handed can carry one.
             logger.debug(
               maskSecretsInText(
-                `Resolution of ${displaySafe(logicalId)}` +
-                  `${propertyName ? `.${displaySafe(propertyName)}` : ''} during scrub was ` +
+                `Resolution of ${maskedIdent(logicalId, recordedSecretValues)}` +
+                  `${propertyName ? `.${maskedIdent(propertyName, recordedSecretValues)}` : ''} during scrub was ` +
                   `partial: ${err instanceof Error ? err.message : String(err)}`,
                 recordedSecretValues
               )
@@ -5302,7 +5383,9 @@ export async function scrubStack(
       // are the dynamic references redaction put back, which the resolve below
       // handles. If that is ever wrong the cost is a missed needle, not a
       // wrong rewrite, and the union in the rewrite pass is the backstop.
-      for (const record of state.orphans ?? []) {
+      // `entries()` for the INDEX, which is the key `orphanSecrets` is declared
+      // with — its doc comment carries why an id key lost a row's needles.
+      for (const [orphanIndex, record] of (state.orphans ?? []).entries()) {
         const recordedSecretValues = new Map<string, string>();
         // Registered before the pin for the same reason the resource loop
         // registers early: `pinCrossRegionSecrets` can throw AFTER recording a
@@ -5310,7 +5393,7 @@ export async function scrubStack(
         // function masks against `allRecordedSecrets(..., orphanSecrets)` —
         // which reads this map. Registering after the pin would leave that
         // throw with no needle for what it had already recorded.
-        orphanSecrets.set(record.logicalId, recordedSecretValues);
+        orphanSecrets.set(String(orphanIndex), recordedSecretValues);
         const resolveInput = await pinCrossRegionSecrets(
           {
             properties: record.state.properties,
@@ -5327,7 +5410,7 @@ export async function scrubStack(
             producerRegions,
             resolvers,
             recordedSecretValues,
-            origin: `orphan record '${record.logicalId}'`,
+            origin: `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)}`,
           }
         );
         // PER SUB-BAG, for the same reason the resource loop resolves per
@@ -5353,9 +5436,9 @@ export async function scrubStack(
             });
             reportAbandonedBag(
               abandoned,
-              `orphan record '${displaySafe(record.logicalId)}' ${bagName}`,
+              `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
               recordedSecretValues,
-              `orphan record ${displaySafe(record.logicalId)} ${bagName}`
+              `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`
             );
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
@@ -5368,7 +5451,7 @@ export async function scrubStack(
               logger.warn(
                 maskSecretsInText(
                   abandonedScanWarning(
-                    `orphan record '${displaySafe(record.logicalId)}' ${bagName}`,
+                    `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
                     leafVerdict
                   ),
                   recordedSecretValues
@@ -5377,7 +5460,7 @@ export async function scrubStack(
             }
             logger.debug(
               maskSecretsInText(
-                `Resolution of orphan record ${displaySafe(record.logicalId)} ${bagName} during ` +
+                `Resolution of orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName} during ` +
                   `scrub was partial: ${err instanceof Error ? err.message : String(err)}`,
                 recordedSecretValues
               )
@@ -5489,7 +5572,7 @@ export async function scrubStack(
             producerRegions,
             resolvers,
             recordedSecretValues: nameSecrets,
-            origin: `Export.Name of output '${name}'`,
+            origin: `Export.Name of output ${maskedIdent(name, nameSecrets)}`,
           });
           const nameContext = resolverContext(nameSecrets);
           // Issue #2133, same treatment and same placement as the resource bag
@@ -5497,9 +5580,14 @@ export async function scrubStack(
           // perform is a name it cannot reproduce, and swallowing that is how
           // the whole outputs pass came to be positioned against a key the
           // deploy never wrote.
-          await resolveCrossStackReads(nameSource, nameContext, `Export.Name of output '${name}'`, {
-            canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
-          });
+          await resolveCrossStackReads(
+            nameSource,
+            nameContext,
+            `Export.Name of output ${maskedIdent(name, nameSecrets)}`,
+            {
+              canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+            }
+          );
           try {
             exportName = await resolver.resolve(nameSource, nameContext);
           } catch (err) {
@@ -5513,7 +5601,7 @@ export async function scrubStack(
               logger.warn(
                 maskSecretsInText(
                   abandonedScanWarning(
-                    `the Export.Name of output '${displaySafe(name)}'`,
+                    `the Export.Name of output ${maskedIdent(name, outputSecrets)}`,
                     leafVerdict
                   ),
                   outputSecrets
@@ -5539,7 +5627,7 @@ export async function scrubStack(
             // everything the pin and the resolution recorded (the view writes
             // through), so it is the right needle set.
             logger.warn(
-              `Export.Name of output ${name} could not be resolved during scrub ` +
+              `Export.Name of output ${maskedIdent(name, outputSecrets)} could not be resolved during scrub ` +
                 `(${maskSecretsInText(nameError instanceof Error ? nameError.message : String(nameError), outputSecrets)}) — ` +
                 `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
             );
@@ -5586,7 +5674,7 @@ export async function scrubStack(
         if (exportNameUnresolved) {
           outputsSourceUntrusted = true;
           logger.warn(
-            `Export.Name of output ${name} did not fully resolve during scrub — ` +
+            `Export.Name of output ${maskedIdent(name, outputSecrets)} did not fully resolve during scrub — ` +
               `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
           );
         } else if (
@@ -5647,15 +5735,20 @@ export async function scrubStack(
           producerRegions,
           resolvers,
           recordedSecretValues: outputSecrets,
-          origin: `output '${name}'`,
+          origin: `output ${maskedIdent(name, outputSecrets)}`,
         });
         const valueContext = resolverContext(outputSecrets);
         // Issue #2133, same treatment and same placement as the two above. An
         // output that re-publishes an imported value is the ordinary shape here,
         // and its plaintext becomes a needle only if the read succeeds.
-        await resolveCrossStackReads(valueSource, valueContext, `output '${name}'`, {
-          canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
-        });
+        await resolveCrossStackReads(
+          valueSource,
+          valueContext,
+          `output ${maskedIdent(name, outputSecrets)}`,
+          {
+            canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+          }
+        );
         // Opts in for the same reason as the resource and orphan loops: the
         // resolved value is discarded, only the needles matter, and an output
         // Value is a common place for `postgres://u:{{resolve:A}}@h/{{resolve:B}}`
@@ -5669,9 +5762,9 @@ export async function scrubStack(
           });
           reportAbandonedBag(
             abandonedOutput,
-            `output '${displaySafe(name)}'`,
+            `output ${maskedIdent(name, outputSecrets)}`,
             outputSecrets,
-            `output ${displaySafe(name)}`
+            `output ${maskedIdent(name, outputSecrets)}`
           );
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
@@ -5683,7 +5776,7 @@ export async function scrubStack(
             else ungateableAbandonedScans++;
             logger.warn(
               maskSecretsInText(
-                abandonedScanWarning(`output '${displaySafe(name)}'`, leafVerdict),
+                abandonedScanWarning(`output ${maskedIdent(name, outputSecrets)}`, leafVerdict),
                 outputSecrets
               )
             );
@@ -5691,7 +5784,7 @@ export async function scrubStack(
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(
-            `Resolution of output ${name} during scrub was partial: ` +
+            `Resolution of output ${maskedIdent(name, outputSecrets)} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
           );
         }
@@ -5772,6 +5865,7 @@ export async function scrubStack(
         ...(malformedResources ? { malformedResources } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
         ...(malformedOrphans ? { malformedOrphans } : {}),
+        ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
@@ -5867,8 +5961,8 @@ export async function scrubStack(
     // Residual, stated rather than implied by a clean verdict: a record whose
     // logical id is gone from the template AND whose bag holds plaintext
     // matches neither source. Nothing in this run knows that plaintext.
-    const newOrphans = (state.orphans ?? []).map((record) => {
-      const own = orphanSecrets.get(record.logicalId);
+    const newOrphans = (state.orphans ?? []).map((record, orphanIndex) => {
+      const own = orphanSecrets.get(String(orphanIndex));
       const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
@@ -6093,6 +6187,7 @@ export async function scrubStack(
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
       ...(malformedOrphans ? { malformedOrphans } : {}),
+      ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };
@@ -6120,7 +6215,7 @@ export async function scrubStack(
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {
         logger.warn(
-          `Failed to release lock for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to release lock for ${shownStack}: ${err instanceof Error ? err.message : String(err)}`
         );
       });
     }

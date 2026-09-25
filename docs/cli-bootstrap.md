@@ -96,7 +96,7 @@ purely about naming policy.
 - Re-bootstrapping a region with names that **differ** from its marker is a hard
   error (`ASSET_STORAGE_NAME_CONFLICT`): changing names would strand the
   existing storage and everything published to it. Run
-  `cdkd bootstrap --destroy --region <r>` first, then re-bootstrap with the new
+  `cdkd bootstrap --destroy --region '<r>'` first, then re-bootstrap with the new
   names.
 - Both flags are rejected together with `--no-assets` (which skips the storage
   they name) and with `--destroy` (teardown reads the names from the marker).
@@ -206,7 +206,7 @@ ordering included — instead of falling back to legacy mode. That is what keeps
 
 ## Teardown (`cdkd bootstrap --destroy`)
 
-`cdkd bootstrap --destroy --region <r>` is the reverse of bootstrap for ONE
+`cdkd bootstrap --destroy --region '<r>'` is the reverse of bootstrap for ONE
 region's asset storage — the cdkd equivalent of deleting the CDK CLI's
 `CDKToolkit` stack, replacing a manual `aws s3 rb` / `aws ecr
 delete-repository` / marker-delete sequence.
@@ -279,7 +279,7 @@ refused while:
 "Other" is decided case-insensitively, so a region whose marker was written under
 a different spelling of its own name is not mistaken for a second region. The
 refusal still NAMES each one by the spelling its marker key actually uses,
-because that is the spelling `cdkd bootstrap --destroy --region <r>` needs in
+because that is the spelling `cdkd bootstrap --destroy --region '<r>'` needs in
 order to find it. The same refusal covers a marker for THIS region under another
 spelling: the teardown deletes one marker key, so deleting the state bucket while
 a sibling is still in it would remove that record while the asset storage it

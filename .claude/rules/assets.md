@@ -25,8 +25,8 @@ refusal is in [asset-bucket-region.md](asset-bucket-region.md). Design:
 - **The deploy region is canonicalized at `AssetModeResolver.resolve`'s own
   boundary** (issue [#2021](https://github.com/go-to-k/cdkd/issues/2021)), so an
   env-agnostic stack deployed under `--region US-EAST-1` cannot miss the marker
-  and downgrade silently to legacy, and `us-east-1` / `US-EAST-1` no longer
-  occupy two cache slots. The RAW spelling travels on to the MARKER READ alone,
+  and downgrade silently to legacy, and `us-east-1` / `US-EAST-1` share
+  one cache slot. The RAW spelling travels on to the MARKER READ alone,
   through the shared `readBootstrapMarkerBody` two-probe helper, because the
   WRITE side does not fold; that helper's JSDoc holds the reachability
   conditions.

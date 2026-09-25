@@ -624,7 +624,7 @@ describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)'
     expect(err).toBeInstanceOf(Error);
     const message = (err as Error).message;
     expect(message).toContain('Fn::ImportValue');
-    expect(message).toContain("resource 'Db'");
+    expect(message).toContain("resource Db");
     expect(message).toContain('MasterUserPassword');
     // A `CdkdError` with a code is what maps to a NON-ZERO exit rather than a
     // debug line under a "nothing to scrub" summary.
@@ -647,7 +647,7 @@ describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)'
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("output 'DbUrl'");
+    expect((err as Error).message).toContain("output DbUrl");
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
@@ -664,7 +664,7 @@ describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)'
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("Export.Name of output 'DbUrl'");
+    expect((err as Error).message).toContain("Export.Name of output DbUrl");
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
@@ -744,7 +744,7 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
     }).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("resource 'Db'");
+    expect((err as Error).message).toContain("resource Db");
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
@@ -953,7 +953,7 @@ describe('a state backend that THROWS refuses at every site (issue #2133)', () =
     }).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("resource 'Db'");
+    expect((err as Error).message).toContain("resource Db");
     expect((err as Error).message).toContain('s3:ListBucket');
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
@@ -967,7 +967,7 @@ describe('a state backend that THROWS refuses at every site (issue #2133)', () =
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("output 'DbUrl'");
+    expect((err as Error).message).toContain("output DbUrl");
   });
 
   it('intrinsic Export.Name: listStacks rejecting refuses', async () => {
@@ -983,7 +983,7 @@ describe('a state backend that THROWS refuses at every site (issue #2133)', () =
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
-    expect((err as Error).message).toContain("Export.Name of output 'DbUrl'");
+    expect((err as Error).message).toContain("Export.Name of output DbUrl");
   });
 
   it('Fn::GetStackOutput: getState rejecting refuses', async () => {
@@ -1811,7 +1811,7 @@ describe('THE DISCRIMINATOR reads the PRODUCER STATE, not the needle count (issu
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     // POSITIVE: it names the OUTER producer and the OUTER key.
-    expect((err as Error).message).toContain(`producer stack '${PRODUCER}'`);
+    expect((err as Error).message).toContain(`producer stack ${PRODUCER}`);
     expect((err as Error).message).toContain(OUTPUT_NAME);
   });
 
@@ -1852,7 +1852,7 @@ describe('the refusal message never over-claims what the template says (issue #2
       { appStacks: [makeProducerStackInfo(SECRET_PRODUCER_OUTPUTS)] }
     ).catch((e: unknown) => e);
 
-    expect((err as Error).message).toContain(`declares '${EXPORT_NAME}' from a {{resolve:...}}`);
+    expect((err as Error).message).toContain(`declares ${EXPORT_NAME} from a {{resolve:...}}`);
   });
 
   it('says so instead when the verdict came from the WIDENED scan', async () => {
@@ -1881,7 +1881,7 @@ describe('the refusal message never over-claims what the template says (issue #2
     // all) AND it does not claim the unchecked thing.
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     expect((err as Error).message).toContain('could not match');
-    expect((err as Error).message).not.toContain(`declares '${EXPORT_NAME}'`);
+    expect((err as Error).message).not.toContain(`declares ${EXPORT_NAME}`);
   });
 });
 
@@ -1898,7 +1898,7 @@ describe('the plaintext-producer refusal respects POSITION (issue #2133 review)'
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect((err as Error).message).toContain("output 'DbUrl'");
+    expect((err as Error).message).toContain("output DbUrl");
   });
 
   it('does NOT refuse from an output value when the producer state holds the expression', async () => {
@@ -2277,8 +2277,8 @@ describe('the cross-stack pre-pass MASKS the export name it declines (issue #216
     //    ordinary one, not because the name can never be a secret — it can, and
     //    the sibling describe below fences that. Asserting it survives is what
     //    tells a masked line apart from one that simply never carried the name.
-    expect(line).toContain(`expression for '${SECRET_MASK}'`);
-    expect(line).toContain(`producer '${PRODUCER}'`);
+    expect(line).toContain(`expression for ${JSON.stringify(SECRET_MASK)}`);
+    expect(line).toContain(`producer ${PRODUCER}`);
     expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
   });
 
@@ -2290,7 +2290,7 @@ describe('the cross-stack pre-pass MASKS the export name it declines (issue #216
 
     const line = logLines.find((l) => l.includes('which is not a stack of this app'));
     expect(line).toBeDefined();
-    expect(line).toContain(`classify export '${SECRET_MASK}' with`);
+    expect(line).toContain(`classify export ${JSON.stringify(SECRET_MASK)} with`);
     expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
   });
 
@@ -2314,7 +2314,7 @@ describe('the cross-stack pre-pass MASKS the export name it declines (issue #216
       l.includes('already carries a {{resolve:...}} expression')
     );
     expect(line).toBeDefined();
-    expect(line).toContain(`stored value for '${SECRET_MASK}'`);
+    expect(line).toContain(`stored value for ${JSON.stringify(SECRET_MASK)}`);
     expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
   });
 });
@@ -2398,8 +2398,8 @@ describe('the pre-pass masks the PRODUCER STACK NAME too, which is reachable (is
     // 4. THE assertion, both polarities. The export name beside it is an
     //    ordinary one here, so it survives — which is what distinguishes a
     //    masked stack name from a line that masked everything indiscriminately.
-    expect(line).toContain(`producer '${SECRET_MASK}'`);
-    expect(line).toContain(`classify export '${OUTPUT_NAME}' with`);
+    expect(line).toContain(`producer ${JSON.stringify(SECRET_MASK)}`);
+    expect(line).toContain(`classify export ${OUTPUT_NAME} with`);
     expect(logLines.join('\n')).not.toContain(SECRET_STACK);
   });
 
@@ -2459,7 +2459,7 @@ describe('the pre-pass masks the PRODUCER STACK NAME too, which is reachable (is
     // The refusal really is the plaintext-producer one, not some other failure.
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     // THE assertion: the message names the producer as the mask...
-    expect((err as Error).message).toContain(`producer stack '${SECRET_MASK}'`);
+    expect((err as Error).message).toContain(`producer stack ${JSON.stringify(SECRET_MASK)}`);
     // ...and the plaintext appears nowhere in it, nor in the debug trail.
     expect((err as Error).message).not.toContain(`'${SHORT_STACK}'`);
     expect(logLines.join('\n')).not.toContain(`'${SHORT_STACK}'`);
@@ -2670,10 +2670,10 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     const message = (err as Error).message;
     // It names the DIRECT producer (whose state holds the plaintext) ...
-    expect(message).toContain(`producer stack '${MID}'`);
+    expect(message).toContain(`producer stack ${MID}`);
     // ... says the evidence came through a re-export rather than claiming MID
     // declares an expression it does not ...
-    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect(message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
     // ... and prescribes the order that actually clears it: MID cannot store
     // the expression until ROOT has been scrubbed down to one.
     // The WHOLE trailing sequence, in order and ending the message: the
@@ -2760,8 +2760,8 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     const message = (err as Error).message;
-    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
-    expect(message).toContain(`(through '${SECOND_MID}')`);
+    expect(message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
+    expect(message).toContain(`(through ${SECOND_MID})`);
     // One labelled line per hop, in scrub order (go-to-k/cdkd#3436).
     expect(message.split('\n').slice(-4)).toEqual([
       `Scrub with: cdkd scrub ${ROOT}`,
@@ -2818,7 +2818,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     // It came back at all (a non-terminating walk times this test out), and it
     // came back with the RIGHT answer rather than by giving up.
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
   });
 
   it('TERMINATES on a cycle with no secret anywhere, and does not refuse over it', async () => {
@@ -2872,7 +2872,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     ).catch((e: unknown) => e);
 
     const message = (err as Error).message;
-    expect(message).toContain(`declares '${EXPORT_NAME}' from a {{resolve:...}}`);
+    expect(message).toContain(`declares ${EXPORT_NAME} from a {{resolve:...}}`);
     expect(message).not.toContain('RE-EXPORTING');
     expect(message).toContain('Scrub the producer first');
     expect(message).toMatch(new RegExp(`^Scrub with: cdkd scrub ${PRODUCER}$`, 'm'));
@@ -2916,7 +2916,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     // (issue #2146 review; the first cut dropped `via` on the widened verdict
     // and asserted exactly the falsified claim).
     expect(message).toContain(
-      `publishes at least one output that RE-EXPORTS a value '${ROOT}' declares from a ` +
+      `publishes at least one output that RE-EXPORTS a value ${ROOT} declares from a ` +
         `{{resolve:...}} expression`
     );
     expect(message).not.toContain('output from a {{resolve:...}} expression');
@@ -3025,7 +3025,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect((err as Error).message).toContain(`producer stack '${MID}'`);
+    expect((err as Error).message).toContain(`producer stack ${MID}`);
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
@@ -3247,7 +3247,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
   });
 
   it('refuses through an Fn::GetStackOutput re-export, not only an Fn::ImportValue one', async () => {
@@ -3276,7 +3276,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     ).catch((e: unknown) => e);
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
   });
 
   it('RESOLVES through a TWO-HOP chain, not only through one hop', async () => {
@@ -3318,7 +3318,7 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
   });
 
   it('lists EVERY intermediate stack when the chain is three hops long', async () => {
-    // Pins the `through 'A', 'B'` join and the four-command scrub order — the
+    // Pins the `through A, B` join and the four-command scrub order — the
     // two-hop case can be satisfied by a builder that only ever emits one
     // intermediate.
     useChainState({
@@ -3357,8 +3357,8 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
 
     const message = (err as Error).message;
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
-    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
-    expect(message).toContain(`(through '${SECOND_MID}', '${THIRD_MID}')`);
+    expect(message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
+    expect(message).toContain(`(through ${SECOND_MID}, ${THIRD_MID})`);
     expect(message.split('\n').slice(-5)).toEqual([
       `Scrub with: cdkd scrub ${ROOT}`,
       `Scrub with: cdkd scrub ${THIRD_MID}`,
@@ -3408,8 +3408,8 @@ describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
     // It refused for the SECOND export, not the first — the message names the
     // key that is actually secret-bearing.
-    expect((err as Error).message).toContain(`publishes '${MID_EXPORT}' by RE-EXPORTING`);
-    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect((err as Error).message).toContain(`publishes ${MID_EXPORT} by RE-EXPORTING`);
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that ${ROOT} declares`);
   });
 });
 
@@ -3750,7 +3750,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
   it('DECLARED names the key and prescribes one command', async () => {
     const { templateClaim, remedy, remedyCommands } = scrubRefusalWording({ kind: 'declared', via: [] }, KEY, 'P', []);
 
-    expect(templateClaim).toBe(`declares '${KEY}' from a {{resolve:...}} expression`);
+    expect(templateClaim).toBe(`declares ${KEY} from a {{resolve:...}} expression`);
     expect(remedy).toBe('Scrub the producer first');
     expect(remedyCommands).toEqual(['Scrub with: cdkd scrub P']);
   });
@@ -3779,7 +3779,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     const { templateClaim, remedy, remedyCommands } = scrubRefusalWording({ kind: 'widened', via: [] }, KEY, 'P', []);
 
     expect(templateClaim).toContain('publishes at least one output from a {{resolve:...}} expression');
-    expect(templateClaim).toContain(`could not match '${KEY}' to a declared output`);
+    expect(templateClaim).toContain(`could not match ${KEY} to a declared output`);
     expect(remedy).toBe('Scrub the producer first');
     expect(remedyCommands).toEqual(['Scrub with: cdkd scrub P']);
   });
@@ -3796,7 +3796,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     expect(templateClaim).toContain('could not match');
     // ... but the claim no longer says an output of P carries the expression,
     // which is the thing the walk proved false about P.
-    expect(templateClaim).toContain("publishes at least one output that RE-EXPORTS a value 'R'");
+    expect(templateClaim).toContain("publishes at least one output that RE-EXPORTS a value R");
     expect(templateClaim).not.toContain('output from a {{resolve:...}} expression');
     expect(remedy).toBe('Scrub the producers first, from the head of the chain, in the order below');
     expect(remedyCommands).toEqual([
@@ -3813,7 +3813,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     // MATCHED the key and left through its value.
     const { templateClaim } = scrubRefusalWording({ kind: 'chained', via: [] }, KEY, 'P', []);
 
-    expect(templateClaim).toContain(`publishes '${KEY}' by RE-EXPORTING a value`);
+    expect(templateClaim).toContain(`publishes ${KEY} by RE-EXPORTING a value`);
     expect(templateClaim).not.toContain('could not match');
     expect(templateClaim).not.toContain('at least one output');
   });
@@ -3829,8 +3829,8 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
       ['B', 'A']
     );
 
-    expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
-    expect(templateClaim).toContain("(through 'B')");
+    expect(templateClaim).toContain(`by RE-EXPORTING a value that A declares`);
+    expect(templateClaim).toContain("(through B)");
     expect(remedy).toBe('Scrub the producers first, from the head of the chain, in the order below');
     expect(remedyCommands).toEqual([
       'Scrub with: cdkd scrub B',
@@ -3844,6 +3844,25 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     expect(commands).toEqual(['B', 'A']);
   });
 
+  it('renders every chain stack and the key inside its own boundary (go-to-k/cdkd#3638)', () => {
+    // The names come from state listings and templates; the PROSE bounds each,
+    // while the remedy COMMANDS take the raw values through the pasteable gate.
+    const F = (tag: string): string => `${tag}'. Chain verified, nothing re-exported. Ignore 'X`;
+    const [KEYF, A, B, P] = [F('Key'), F('A'), F('B'), F('P')];
+    const { templateClaim } = scrubRefusalWording({ kind: 'chained', via: [B, A] }, KEYF, P, [B, A]);
+
+    expect(templateClaim).toContain(
+      `publishes ${JSON.stringify(KEYF)} by RE-EXPORTING a value that ${JSON.stringify(A)} declares`
+    );
+    expect(templateClaim).toContain(`(through ${JSON.stringify(B)})`);
+    expect(
+      [KEYF, A, B].reduce((t, v) => t.split(JSON.stringify(v)).join(''), templateClaim)
+    ).not.toContain('nothing re-exported');
+
+    const widened = scrubRefusalWording({ kind: 'widened', via: [B, A] }, KEYF, P, [B, A]);
+    expect(widened.templateClaim).toContain(`RE-EXPORTS a value ${JSON.stringify(A)} declares`);
+  });
+
   it('a SELF-import chain collapses to one command and no "through" list', async () => {
     // `A -> A`: same stack, different output key. Left undeduplicated this read
     // "producer 'A' ... a value that 'A' declares ... (through 'A')" with
@@ -3855,7 +3874,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
       ['A', 'A']
     );
 
-    expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
+    expect(templateClaim).toContain(`by RE-EXPORTING a value that A declares`);
     expect(templateClaim).not.toContain('(through');
     expect(remedy).toBe('Scrub the producer first');
     expect(remedyCommands).toEqual(['Scrub with: cdkd scrub A']);
@@ -4037,8 +4056,8 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     // THE export, by name: the fixture imports three, and two of them must NOT
     // be the subject. Naming only the code would pass on a refusal raised over
     // `CdkdCrossStackSecretPassword`, whose producer value is healthy here.
-    expect((err as Error).message).toContain(`declares '${TAKEN_EXPORT}'`);
-    expect((err as Error).message).toContain(`producer stack '${P}'`);
+    expect((err as Error).message).toContain(`declares ${TAKEN_EXPORT}`);
+    expect((err as Error).message).toContain(`producer stack ${P}`);
     // The read that refused is the one nested in the `Fn::Join`, not the bare
     // `Value` import -- the position the live arm placed it in.
     expect((err as Error).message).toContain("Description['Fn::Join']");
@@ -4064,7 +4083,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     expect(res.recordsChanged).toBe(1);
     expect(savedState().resources['Db']!.properties['Value']).toBe(SECRET_URI);
     expect(logLines.join('\n')).toContain(
-      `stored value for '${TAKEN_EXPORT}' already carries a {{resolve:...}} expression`
+      `stored value for ${TAKEN_EXPORT} already carries a {{resolve:...}} expression`
     );
     // The `Scrub of <stack>:` PREFIX is load-bearing beyond this suite (issue
     // #2163 review): the live arm's diagnostic re-run
@@ -4084,7 +4103,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     await scrub(CONSUMER_PROPS, { appStacks: [producerStack] });
 
     expect(logLines.join('\n')).toContain(
-      `declares no {{resolve:...}} expression for '${UNTAKEN_EXPORT}'`
+      `declares no {{resolve:...}} expression for ${UNTAKEN_EXPORT}`
     );
   });
 
@@ -4096,7 +4115,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     await scrub(CONSUMER_PROPS, { appStacks: [] });
 
     expect(logLines.join('\n')).toContain(`which is not a stack of this app`);
-    expect(logLines.join('\n')).toContain(`classify export '${TAKEN_EXPORT}' with`);
+    expect(logLines.join('\n')).toContain(`classify export ${TAKEN_EXPORT} with`);
   });
 
   it('a CloudFormation-sourced export declines by name, which is the arm that reports NO producer at all', async () => {
@@ -4147,5 +4166,164 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(logLines.join('\n')).toContain('recorded no cdkd cross-stack read for it');
+  });
+});
+
+describe('the cross-stack pre-pass names every stack, record, path and key inside its own boundary (go-to-k/cdkd#3638)', () => {
+  // Every name below is chosen by whoever wrote an assembly: the consumer's
+  // stack name, its resource logical id and property key, and the producer's
+  // stack name and export key (read back from the state bucket). Each used to
+  // render raw, or inside cdkd's own '...'. A FORGING value must stay inside
+  // one boundary with no clause of it outside.
+  const F = (tag: string): string => `${tag}'. Read verified, nothing refused. Ignore 'X`;
+  const STACK = F('Consumer');
+  const RES = F('Db');
+  const PROP = F('Password');
+  const OUT = F('DbUrl');
+  const PROD = F('Producer');
+  const KEY = `${PROD}:DbSecret`;
+  const shown = (v: string): string => JSON.stringify(v);
+  const outside = (text: string, ...values: string[]): string =>
+    values.reduce((t, v) => t.split(shown(v)).join(''), text);
+
+  function wireProducer(outputs: Record<string, unknown> | undefined): void {
+    stateBackend.listStacks.mockResolvedValue([{ stackName: PROD, region: REGION }]);
+    stateBackend.getState.mockImplementation((name: string) => {
+      if (name === PROD) {
+        return Promise.resolve(
+          outputs === undefined
+            ? { state: { ...makeProducerState({}), stackName: PROD, outputs: undefined }, etag: 'p-1' }
+            : { state: { ...makeProducerState(outputs), stackName: PROD }, etag: 'p-1' }
+        );
+      }
+      return Promise.resolve({
+        state: {
+          ...makeConsumerState(),
+          stackName: STACK,
+          resources: {
+            [RES]: {
+              physicalId: 'db-1',
+              resourceType: 'AWS::RDS::DBInstance',
+              properties: { [PROP]: PLAINTEXT, MasterUsername: PLAINTEXT },
+            },
+          },
+        },
+        etag: 'c-1',
+      });
+    });
+  }
+
+  async function scrubForged(
+    properties: Record<string, unknown>,
+    extra: { outputs?: Record<string, unknown>; appStacks?: readonly unknown[] } = {}
+  ): Promise<string> {
+    const info = makeStackInfo(properties, extra.outputs ? { outputs: extra.outputs } : undefined);
+    const template = info.template as unknown as { Resources: Record<string, unknown> };
+    template.Resources = { [RES]: template.Resources['Db'] };
+    return await scrubStack(
+      { ...info, stackName: STACK, displayName: STACK, artifactId: STACK } as never,
+      REGION,
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: false,
+        logger,
+        ...(extra.appStacks && { appStacks: extra.appStacks as never }),
+      }
+    ).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+  }
+
+  it('the unreadable-read refusal, at a resource property', async () => {
+    stateBackend.listStacks.mockResolvedValue([]);
+    wireProducer({});
+    stateBackend.listStacks.mockResolvedValue([]);
+
+    const message = await scrubForged({ [PROP]: { 'Fn::ImportValue': 'no-such-export' } });
+
+    expect(message).toContain(
+      `Scrub of ${shown(STACK)} could not resolve the Fn::ImportValue in resource ${shown(RES)} at ${shown(PROP)}: `
+    );
+    expect(outside(message, STACK, RES, PROP)).not.toContain('nothing refused');
+  });
+
+  it('the unreadable-read refusal, at an output value and at an intrinsic Export.Name', async () => {
+    stateBackend.listStacks.mockResolvedValue([]);
+    wireProducer({});
+    stateBackend.listStacks.mockResolvedValue([]);
+
+    const value = await scrubForged(
+      { MasterUsername: 'admin' },
+      { outputs: { [OUT]: { Value: { 'Fn::ImportValue': 'no-such-export' } } } }
+    );
+    expect(value).toContain(`could not resolve the Fn::ImportValue in output ${shown(OUT)}: `);
+    expect(outside(value, STACK, OUT)).not.toContain('nothing refused');
+
+    const name = await scrubForged(
+      { MasterUsername: 'admin' },
+      {
+        outputs: {
+          [OUT]: { Value: 'v', Export: { Name: { 'Fn::ImportValue': 'no-such-export' } } },
+        },
+      }
+    );
+    expect(name).toContain(`in Export.Name of output ${shown(OUT)}: `);
+    expect(outside(name, STACK, OUT)).not.toContain('nothing refused');
+  });
+
+  it('the plaintext-producer refusal names the producer and the export key', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    const message = await scrubForged(
+      { [PROP]: { 'Fn::ImportValue': KEY }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          {
+            ...makeProducerStackInfo({
+              [OUTPUT_NAME]: { Value: SECRET_EXPR, Export: { Name: KEY } },
+            }),
+            stackName: PROD,
+          },
+        ],
+      }
+    );
+
+    expect(message).toContain(
+      `the producer stack ${shown(PROD)} declares ${shown(KEY)} from a {{resolve:...}} expression`
+    );
+    // The remedy COMMAND lines carry the raw name shell-quoted through the
+    // pasteable gate, which is its own boundary; only the prose is checked here.
+    const prose = message
+      .split('\n')
+      .filter((l) => !/^(Scrub with|Then re-run): /.test(l))
+      .join('\n');
+    expect(outside(prose, STACK, RES, PROP, PROD, KEY)).not.toContain('nothing refused');
+  });
+
+  it("the decline for a producer OUTSIDE the app bounds the producer's recorded region too", async () => {
+    const REGF = F('eu-west-1');
+    wireProducer({ [KEY]: PLAINTEXT });
+    stateBackend.listStacks.mockResolvedValue([{ stackName: PROD, region: REGF }]);
+
+    await scrubForged({ [PROP]: { 'Fn::ImportValue': KEY }, MasterUsername: 'admin' });
+
+    const line = logLines.find((l) => l.includes('which is not a stack of this app')) ?? '';
+    expect(line).toContain(`${shown(PROD)} (${shown(REGF)}), which is not a stack of this app`);
+    expect(outside(line, STACK, RES, PROP, PROD, KEY, REGF)).not.toContain('nothing refused');
+  });
+
+  it('the decline for a producer OUTSIDE the app names it and its export key', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    await scrubForged({ [PROP]: { 'Fn::ImportValue': KEY }, MasterUsername: 'admin' });
+
+    const line = logLines.find((l) => l.includes('which is not a stack of this app')) ?? '';
+    expect(line).toContain(
+      `resolved through producer ${shown(PROD)} (us-east-1), which is not a stack of this app`
+    );
+    expect(line).toContain(`classify export ${shown(KEY)} with`);
+    expect(outside(line, STACK, RES, PROP, PROD, KEY)).not.toContain('nothing refused');
   });
 });

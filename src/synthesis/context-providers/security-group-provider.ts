@@ -1,7 +1,7 @@
 import { EC2Client, DescribeSecurityGroupsCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
  * Security Group context provider
@@ -27,7 +27,7 @@ export class SecurityGroupContextProvider implements ContextProvider {
       `Looking up security group (id: ${securityGroupId}, name: ${securityGroupName}, region: ${region})`
     );
 
-    const client = new EC2Client({ ...awsClientDefaults(), ...(region && { region }) });
+    const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
     try {
       const filters = [];

@@ -5,7 +5,7 @@ description: "Run a single Lambda function from your CDK app in a local Docker c
 
 # cdkd local invoke
 
-`cdkd local invoke <target>` runs one Lambda function from a CDK app on your
+`cdkd local invoke '<target>'` runs one Lambda function from a CDK app on your
 machine, inside a Docker container that bundles the AWS Lambda Runtime
 Interface Emulator (RIE). It plays the role `sam local invoke` does, but reads
 your CDK app directly — no `template.yaml`, no `cdk synth | sam ...`

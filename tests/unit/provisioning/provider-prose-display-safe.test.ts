@@ -328,7 +328,7 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       });
       expectNoForgers(logged());
       expect(logged()).toContain(
-        `Lifecycle rule 'rule-${HOSTILE_SHOWN}' on cdkd-${HOSTILE_SHOWN} sets ExpiredObjectDeleteMarker`
+        `Lifecycle rule ${JSON.stringify(`rule-${HOSTILE_SHOWN}`)} on cdkd-${HOSTILE_SHOWN} sets ExpiredObjectDeleteMarker`
       );
     });
 
@@ -364,10 +364,35 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
         });
         expectNoForgers(logged());
         expect(logged()).toContain(
-          `Lifecycle rule 'rule-${HOSTILE_SHOWN}' on cdkd-${HOSTILE_SHOWN} declares ${phrase} for storage class GLACIER;`
+          `Lifecycle rule ${JSON.stringify(`rule-${HOSTILE_SHOWN}`)} on cdkd-${HOSTILE_SHOWN} declares ${phrase} for storage class GLACIER;`
         );
       }
     );
+
+    it('keeps a FORGING lifecycle rule id inside one boundary, and names an absent one (go-to-k/cdkd#3617)', async () => {
+      mockSend.mockResolvedValue({});
+      const provider = new S3BucketProvider() as unknown as {
+        applyLifecycleConfiguration(
+          bucketName: string,
+          config: { Rules: Array<Record<string, unknown>> }
+        ): Promise<boolean>;
+      };
+      const ID = "r1'. Rule applied, nothing dropped. Ignore 'x";
+      await provider.applyLifecycleConfiguration('cdkd-bucket', {
+        Rules: [
+          { Id: ID, Status: 'Enabled', ExpiredObjectDeleteMarker: true, ExpirationInDays: 30 },
+          { Status: 'Enabled', ExpiredObjectDeleteMarker: true, ExpirationInDays: 30 },
+          { Id: null, Status: 'Enabled', ExpiredObjectDeleteMarker: true, ExpirationInDays: 30 },
+          { Id: '', Status: 'Enabled', ExpiredObjectDeleteMarker: true, ExpirationInDays: 30 },
+          { Id: 'plain-rule', Status: 'Enabled', ExpiredObjectDeleteMarker: true, ExpirationInDays: 30 },
+        ],
+      });
+      expect(logged()).toContain(`Lifecycle rule ${JSON.stringify(ID)} on cdkd-bucket sets`);
+      expect(logged()).toContain('Lifecycle rule (no Id) on cdkd-bucket sets');
+      expect(logged()).not.toContain('<unrenderable>');
+      expect(logged()).toContain('Lifecycle rule plain-rule on cdkd-bucket sets');
+      expect(logged().replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing dropped');
+    });
 
     it('sanitizes a malformed destination value named in a refusal', async () => {
       // `JSON.stringify` escapes C0 but passes NEL, the line separators and the

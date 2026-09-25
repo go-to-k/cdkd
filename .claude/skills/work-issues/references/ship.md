@@ -35,7 +35,9 @@ cat > "$MSGFILE" <<'EOF'
 <the squashed message>
 EOF
 git commit -F "$MSGFILE"
-git rebase origin/main                                   # at most one conflict
+git rebase origin/main   # its OWN call, then `git status`: at most one conflict,
+                         # and a regen / `commit --amend` chained after a STOPPED
+                         # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
@@ -52,9 +54,12 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 ```
 
 - **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
-  never fires. Poll `gh pr checks <N> --json state` (`--watch` returns at once
-  when no check has APPEARED) and require that checks EXIST. **PUSH FIRST, then
-  run the post-rebase suite while CI drains.**
+  never fires. Poll `gh pr checks <N> --json name,state` (`--watch` returns at
+  once when no check has APPEARED) and require that checks EXIST. It has no sha
+  field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
+  poll, so a loop reading non-zero as pending outlives a green CI (the
+  go-to-k/cdkd#3512 lane). **PUSH FIRST, then run the post-rebase suite while
+  CI drains.**
 - **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
   infers it from the CWD, which persists across Bash calls, and the resulting
   `Could not resolve to a PullRequest` reads as a permissions problem.
@@ -66,6 +71,11 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
+
+- **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
+  merge the release PR, confirm the npm version, then comment on the issue in
+  English — thanks, the version it shipped in, "feel free to open an issue"
+  (maintainer direction, go-to-k/cdkd#3624).
 
 ### Pull, then rebuild the linked binary
 
@@ -98,8 +108,8 @@ the offending path, which is another session's uncommitted work.
 **Remove every worktree YOU created — and only those.** For one you do not
 recognise, each of `session-owner`, uncommitted work, its branch's PR state and
 the claim thread is evidence of LIFE only; an absent `session-owner` is NO
-signal, and a claim younger than the 12h TTL means the owner is presumed LIVE —
-leave it.
+signal, and a claim younger than `CDKD_WORKTREE_OWNER_TTL_HOURS` (default 12)
+means the owner is presumed LIVE — leave it.
 
 MAIN-CHECKOUT — run THIS block, and not the next one:
 

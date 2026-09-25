@@ -144,7 +144,9 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Failed to read template for stack MyStage-Api/);
+    ).toThrow(
+      /Stage MyStage: Failed to read template \S+absent\.template\.json for stack MyStage-Api: ENOENT: no such file or directory, open '<path>'/
+    );
   });
 
   it('propagates an escaping asset-manifest file under a Stage', () => {

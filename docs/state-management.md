@@ -56,15 +56,19 @@ body with no `region` at all is read as belonging to its key's region, the
 same way a legacy (`version: 1`) record with no region is readable from any
 region.
 
-**A destroy is the one operation that refuses on such a record**, and only
-when it still lists resources. Reading a record is safe under either answer,
+**A destroy and a `cdkd rollback` are the operations that refuse on such a
+record**, and only when it still lists resources. Reading a record is safe under either answer,
 but DELETING is not: if the key is the dishonest half, every delete would be
 issued where the resources are not, come back not-found — which a destroy
 reads as "already deleted" — and the run would report success, remove the
 record, and leave your resources standing with nothing naming them. cdkd
 cannot tell which half is honest, so `cdkd destroy` / `cdkd state destroy`
 stop and say so — as does a `cdkd deploy` that removes a nested stack, which
-destroys the child's resources through the same path. A record with no
+destroys the child's resources through the same path. `cdkd rollback` refuses
+for the same reason before replaying anything: its replay deletes and reverts
+in the key's region and reads a not-found delete as already rolled back. It
+stops saving, keeps the journal and exits partially when the record is
+rewritten with a disagreeing `region` while the rollback runs. A record with no
 resources is not refused: there is nothing to strand, so cleaning one up still
 works. To act on the refusal, destroy
 against the region the resources are really in, or correct the record's
@@ -185,7 +189,7 @@ The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 asset storage — its body names the region's asset bucket
 (default `cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
 (default `cdkd-container-assets-{accountId}-{region}`; custom names via
-`cdkd bootstrap --asset-bucket <name>` / `--container-repo <name>` —
+`cdkd bootstrap --asset-bucket '<name>'` / `--container-repo '<name>'` —
 every consumer reads
 the names from the marker, never from the naming convention). Deploys read
 the marker per
@@ -207,7 +211,7 @@ per-region keys mean concurrent bootstraps of two regions cannot race on a
 shared object. `cdkd state info` lists the opted-in regions. Full design in
 the [asset-storage design note](design/1002-cdkd-asset-storage.md).
 
-To opt a region back out, `cdkd bootstrap --destroy --region <r>` tears
+To opt a region back out, `cdkd bootstrap --destroy --region '<r>'` tears
 down the region's asset bucket + ECR repo and deletes the marker last
 (the reverse of the create-side marker-written-last ordering); add
 `--include-state-bucket` to also delete the state bucket once every stack
@@ -296,7 +300,7 @@ Behavior:
   AES-256, account-only access policy).
 - Refuses to start if any `**/lock.json` exists in the source bucket
   (an in-flight `cdkd deploy` / `destroy` would race the copy).
-  `cdkd force-unlock <stack>` first if a lock is stale.
+  `cdkd force-unlock '<stack>'` first if a lock is stale.
 - After copy, verifies the destination object count is at least the
   source count before any source-bucket cleanup.
 - **Source bucket is kept by default**. Pass `--remove-legacy` to delete
@@ -436,7 +440,7 @@ in practice) once at the end of the deploy. NO_CHANGE-only deploys (no
 diff to apply) still drain and persist the refreshed baseline so the
 next `cdkd drift` run sees a real AWS-current snapshot. Pass
 `--no-capture-observed-state` to disable both regular capture and this
-upgrade refresh; `cdkd state refresh-observed <stack>` remains the
+upgrade refresh; `cdkd state refresh-observed '<stack>'` remains the
 manual / non-deploy path for refreshing the baseline.
 
 ### `version: 5` adds `deletionPolicy` / `updateReplacePolicy` (pre-v6 writers)
@@ -920,7 +924,7 @@ comma-separated string. (An object prints as `[object Object]`, and an
 unresolved output is dropped from the block entirely rather than printed as
 `undefined`.) To see what was actually stored, read the state file —
 `aws s3 cp s3://<bucket>/cdkd/{stackName}/{region}/state.json -` — or run
-`cdkd state show <stack>`, which renders any non-scalar through
+`cdkd state show '<stack>'`, which renders any non-scalar through
 `JSON.stringify` and so preserves the distinction.
 
 #### When `resources` is not an object
@@ -939,7 +943,7 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`) — the map is the list of what to delete, so an unreadable one counted as zero resources and the run removed `state.json` down the empty-stack fast path |
 | `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
-| `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
 | `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
 
@@ -956,7 +960,7 @@ before.
 Refusing a cleanup command does not leave you stuck, because proceeding would
 not have torn anything down either — the list of what to delete is precisely
 what is unreadable. If what you want is the record gone with the live resources
-left standing, that is `cdkd state orphan <stack> --stack-region <region>`,
+left standing, that is `cdkd state orphan '<stack>' --stack-region '<region>'`,
 which the refusal names. To act on the resources instead, repair the record and
 re-run.
 
@@ -1068,11 +1072,11 @@ the save cannot persist a record it is deleting, the refusal names only the
 records that would **survive**. Three ways out, and the order matters:
 
 1. **Repair the record by hand.**
-   `cdkd state show <stack> --stack-region <region> --json` shows the stored
+   `cdkd state show '<stack>' --stack-region '<region>' --json` shows the stored
    value; fix the map and put the record back. This is the only option that
    keeps the resource under cdkd's management.
 2. **Drop the whole record** with
-   `cdkd state orphan <stack> --stack-region <region>`. It needs no CDK app and
+   `cdkd state orphan '<stack>' --stack-region '<region>'`. It needs no CDK app and
    leaves every live AWS resource standing.
 3. **Orphan just the damaged resource** — but only while your CDK app still
    declares it:
@@ -1091,7 +1095,7 @@ records that would **survive**. Three ways out, and the order matters:
 
 A **legacy** record (`<prefix>/<stack>/state.json`) that `cdkd state list`
 shows with no region (its body names none, or could not be read) is the
-exception to both commands above: `cdkd state orphan <stack>` without
+exception to both commands above: `cdkd state orphan '<stack>'` without
 `--stack-region` is the form that selects it, and `cdkd state show` cannot read
 it at all, so read the object from the state bucket directly. The refusal
 prints those forms for that record, and names the object's path only when the
@@ -1137,7 +1141,8 @@ with no physical id, is reported as unresolvable rather than substituted.
 any resource (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too,
 naming the records it could not read. Otherwise the entry reads as absent and
 deploy plans a `CREATE` for a resource it already manages. `cdkd diff` drops
-those records, warns, and previews the rest.
+those records, warns, and previews the rest; on the stack you named it also
+reports the deploy's refusal under `Blocking` and exits `3`.
 
 The same scoped refusal covers a kept record's `attributes` map — the cache
 `Fn::GetAtt` of it is read from — when it is `null` or not an object; an absent
@@ -1162,7 +1167,7 @@ admits all four.
 | `cdkd import` | **Refuses** — it carries the container into the record it writes, so importing over a damaged one would leave a record every other command then refuses |
 | `cdkd orphan` | **Refuses**, under `--dry-run` too — it carries the container into its save without reading it, so it would report success over a record the next deploy refuses |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
-| `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see |
+| `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3` |
 
 A string is the shape that makes this worse than a lost preview: walking it
 character by character yields one garbage orphan record per character, and
@@ -1173,16 +1178,39 @@ removed the record with its evidence unread.
 
 An **absent** `orphans` container is the ordinary record, not a defect: a stack
 that never had a failed deploy has no orphan list, and no command writes an
-empty one over it. An empty `[]` is healthy too.
+empty one over it. An empty `[]` is healthy too. Damage INSIDE a readable list is
+a separate question, answered by the section below.
 
-Damage INSIDE a readable list — a row that is not an object, or carries no
-`resourceType` — is a separate question. `cdkd diff` drops such rows before
-previewing an adoption and names them. `cdkd orphan` refuses them, along with a
-row whose `logicalId` is not a string or whose `state` holds an unreadable
-`properties` or `attributes` map. Such a row is not in `resources`, so
-`cdkd orphan` cannot remove it: repair the row by hand rather than deleting it,
-since it is the only record that its resource is still live in AWS. Other
-commands do not yet guard these rows.
+#### When one `orphans` RECORD cannot be read
+
+The field being a list says nothing about the records in it. A record is usable
+only if it is an object with a string `logicalId` whose `state` is a readable
+resource entry carrying a NON-EMPTY string `physicalId` — including that entry's
+`properties` and `attributes` maps — and no OTHER record in the list carries
+that same `logicalId`. Each command answers a damaged one the same way it
+answers a damaged container:
+
+| Command | Answer |
+| --- | --- |
+| `cdkd deploy` | **Refuses** at the load. The adoption pass dereferences every record, so one whose `state` is absent or `null` aborts the run; one already in `resources` is dropped silently before `state` is read; and a primitive or type-less `state` is kept with a notice, since the provider lookup fails inside the pass's own `try` |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses**, at both reads. The listing that tells you which resources stop being tracked prints each record's own fields |
+| `cdkd rollback` | **Refuses** before any replay. This is where the loss is worst: records MISSING a `logicalId` all key ONE entry of the merge map, so those collapse into one and the record saved keeps only that one (two distinct NUMERIC ids stay distinct keys) — and records SHARING one collapse the same way, the other rows' resources left live in AWS with nothing tracking them |
+| `cdkd import` | **Refuses** — it carries the records into the record it writes, verbatim |
+| `cdkd orphan` | **Refuses**, under `--dry-run` too |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`); under `--dry-run` it DROPS the record, warns, and reports it in the audited-record refusal |
+| `cdkd diff` | **Drops** the record, names it in the preview, in `--json`'s `unreadable` and in the `--fail` count, and previews the rest; on the stack you named the deploy's refusal is also reported under `Blocking` and exits `3`. It drops only what the preview cannot read — an object, a string `logicalId`, and a readable `state` with a non-empty string `physicalId` (the preview resolves that id against AWS and against other stacks' records) — plus EVERY record whose `logicalId` another record also carries, since the preview keys its adoptions by that id and would show one adoption for two resources; a record whose `properties` or `attributes` map is torn is KEPT, and the preview then WARNS naming the row — at every node the run reaches with an adoption preview; a plain run visits only the top-level stack, and a state-only child being DELETED runs no preview at all — saying that `cdkd deploy` refuses the record over it; the TOP-LEVEL stack also exits `3`, so a clean run never precedes a deploy that will not start. A kept row that is ADOPTED additionally has its `properties` map repaired and named by the [`properties` repair](#when-a-resource-properties-map-is-not-an-object) |
+
+Inspect the record with `cdkd state show '<stack>' --stack-region '<region>' --json`
+and repair the row rather than deleting the record: no command removes a single
+`orphans` row — the per-resource commands act on `resources` — and the record is
+the only evidence that an earlier failed deploy left its resource live in AWS.
+
+Two records sharing a `logicalId` are never written by cdkd — the rollback save
+merges by that id and every other save carries the list unchanged — so they come
+from a hand edit or a damaged file. Each of them is named, since nothing in the
+record says which is the resource the stack should re-adopt; the repair is to
+keep ONE record for that id, and the other resource is then no longer tracked by
+cdkd.
 
 #### Example
 
@@ -1307,6 +1335,19 @@ masking at resolution time would make a template feeding such a value into
 `AWS::SecretsManager::Secret.SecretString` store the literal `***` as the
 secret.)
 
+**A new value reaches every consumer.** When the handler runs and returns a
+value, each resource reading it is updated with it, although the stored value
+and the new one both read `***` in state: two masks say nothing about the
+values behind them. When the handler returns the same value again, cdkd cannot
+tell, so:
+
+- each consumer takes one redundant update;
+- a consumer that is itself a custom resource has its OWN handler invoked
+  again, with whatever side effects that handler has;
+- a consumer holding the value in a property that cannot change in place is
+  replaced, because cdkd keeps only the mask and cannot compare the new value
+  with the old one.
+
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no
 `{{resolve:...}}` reference behind it — so once the mask is in state, cdkd will
@@ -1383,7 +1424,7 @@ to address the resource again on update / delete / drift. For most types
 that is the same scalar CloudFormation's `Ref` returns (a bucket name, a
 function ARN), but it is not guaranteed to be: see the composite forms
 below. Always read the id you must reuse from cdkd itself
-(`cdkd state show <stack>` / `cdkd state resources <stack>`) rather than
+(`cdkd state show '<stack>'` / `cdkd state resources '<stack>'`) rather than
 from the AWS console or CloudFormation's `DescribeStackResources`.
 
 #### Composite (pipe-delimited) physicalIds
@@ -1400,7 +1441,7 @@ path had produced).
 
 The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
-`cdkd import --resource <logicalId>=<physicalId>` expects. A few types also
+`cdkd import --resource '<logicalId>=<physicalId>'` expects. A few types also
 accept a looser form on import — see
 [Importing Existing Resources](./import.md#auto-resolved-no-resource-flag-needed) for the
 per-type notes.
@@ -1980,7 +2021,7 @@ Two consequences worth knowing:
 
 If the holding process dies without releasing, the lock stops being renewed and
 is reclaimed by the next `cdkd` invocation once `expiresAt` passes -- or
-immediately with `cdkd force-unlock <stack>`.
+immediately with `cdkd force-unlock '<stack>'`.
 
 ### Deploy interruption (Ctrl-C)
 
@@ -2033,7 +2074,7 @@ commands handle both `SIGINT` and `SIGTERM` gracefully, but CI runners
 escalate to `SIGKILL` — which no process can handle — after a short grace
 period (~10 s total on GitHub Actions), so a long in-flight AWS operation
 can still die before the lock release runs. The lock is then reclaimed after
-the TTL above, or cleared immediately with `cdkd force-unlock <stack>`. See
+the TTL above, or cleared immediately with `cdkd force-unlock '<stack>'`. See
 ["Stale lock after a cancelled CI job" in the troubleshooting
 guide](troubleshooting.md#stale-lock-after-a-cancelled-ci-job) for the
 full CI story and recommended workflow patterns.
@@ -2350,10 +2391,10 @@ underlying AWS resources:
 
 | Command | Needs CDK app? | Deletes AWS resources? | Removes state record? |
 | --- | --- | --- | --- |
-| `cdkd destroy <stack>` | Yes (synth) | Yes | Yes |
-| `cdkd state destroy <stack>` | No | Yes | Yes |
-| `cdkd orphan <constructPath>...` | Yes (synth) | **No** | Only the named resources' entries |
-| `cdkd state orphan <stack>` | No | **No** | Yes, the whole record |
+| `cdkd destroy '<stack>'` | Yes (synth) | Yes | Yes |
+| `cdkd state destroy '<stack>'` | No | Yes | Yes |
+| `cdkd orphan '<constructPath>'...` | Yes (synth) | **No** | Only the named resources' entries |
+| `cdkd state orphan '<stack>'` | No | **No** | Yes, the whole record |
 
 `cdkd destroy` is the canonical path when you have the CDK source — it synths
 the app, intersects against state, and deletes resources in reverse dependency
@@ -2370,11 +2411,11 @@ something without touching it. The naming mirrors aws-cdk-cli's new `cdk
 orphan` command. They differ in granularity, which is what decides between
 them:
 
-- `cdkd orphan <constructPath>...` takes CDK **construct paths**
+- `cdkd orphan '<constructPath>'...` takes CDK **construct paths**
   (`MyStack/MyTable`) and drops those resources from the record, leaving the
   rest of the stack tracked. It synthesizes, so it also rewrites the sibling
   references to each orphan and needs the CDK source.
-- `cdkd state orphan <stack>` removes the entire record for a stack and
+- `cdkd state orphan '<stack>'` removes the entire record for a stack and
   operates on the bucket alone, with no CDK app.
 
 [Orphan vs Destroy](orphan-vs-destroy.md) compares all four side by side.

@@ -1218,16 +1218,19 @@ function parseContainerImage(
   if (ecrHost) {
     return { kind: 'ecr', uri: substituted, account: ecrHost.accountId, region: ecrHost.region };
   }
-  // An ECR-SHAPED host whose suffix is not the one its region uses falls through
-  // to `public` below, which means an anonymous pull and, for a real registry,
-  // an opaque docker auth error. Saying so makes the partition-table gap
-  // (issue #1764) diagnosable from cdkd's side rather than only docker's.
+  // An ECR-SHAPED host AWS does not serve for its region falls through to
+  // `public` below, which means an anonymous pull and, for a real registry, an
+  // opaque docker auth error. Saying so makes the partition-table gap (issue
+  // #1764) diagnosable from cdkd's side rather than only docker's. Since issue
+  // #3670 that also covers a form served only in other partitions (FIPS or
+  // dual-stack outside aws / aws-us-gov) and a region cdkd does not know, so the
+  // wording names the host, not only its suffix.
   if (looksLikeEcrHostWithForeignSuffix(substituted)) {
     getLogger()
       .child('ecs-task-resolver')
       .debug(
-        `Image '${substituted}' has an ECR host shape but a URL suffix that does not ` +
-          `belong to its region's partition; treating it as a public image (no docker login).`
+        `Image '${substituted}' has an ECR host shape, but that host form and suffix are ` +
+          `not an ECR registry endpoint for its region; treating it as a public image (no docker login).`
       );
   }
 

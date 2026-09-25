@@ -17,6 +17,8 @@ import {
 } from '@aws-sdk/client-sfn';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -28,8 +30,18 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+
+/**
+ * CloudFormation's `StateMachineRevisionId` for a described state machine.
+ * `DescribeStateMachine` omits `revisionId` until the machine is first
+ * updated, and CloudFormation then reports `INITIAL` (measured live,
+ * 2026-09-25, issue #3627), so the absent value maps to that.
+ */
+function stateMachineRevisionId(described: { revisionId?: string | undefined }): string {
+  return described.revisionId ?? 'INITIAL';
+}
 
 /**
  * AWS Step Functions State Machine Provider
@@ -67,7 +79,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   private getClient(): SFNClient {
     if (!this.sfnClient) {
       this.sfnClient = new SFNClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -77,7 +89,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   private getS3Client(): S3Client {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -156,13 +168,30 @@ export class StepFunctionsProvider implements ResourceProvider {
       // Extract name from ARN (last segment after :)
       const name = stateMachineArn.split(':').pop() || stateMachineName;
 
+      // `StateMachineRevisionId` is the state machine's `revisionId`, which
+      // `CreateStateMachine` does not return (`stateMachineVersionArn`, recorded
+      // here before, is a VERSION ARN and null without `publish`) — read it
+      // back, as `update()` does (issue #3627). The resource exists by now, so
+      // a failed read omits the attribute rather than failing the create; the
+      // #1852 heal fills it on the next deploy.
+      let revisionId: string | undefined;
+      try {
+        revisionId = stateMachineRevisionId(
+          await this.getClient().send(new DescribeStateMachineCommand({ stateMachineArn }))
+        );
+      } catch (describeError) {
+        this.logger.debug(
+          `Could not read the revision id of ${logicalId} after create: ${describeAwsFailure(describeError).detail}`
+        );
+      }
+
       return {
         physicalId: stateMachineArn,
-        attributes: {
+        attributes: definedAttributes({
           Arn: stateMachineArn,
           Name: name,
-          StateMachineRevisionId: response.stateMachineVersionArn,
-        },
+          StateMachineRevisionId: revisionId,
+        }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -268,7 +297,7 @@ export class StepFunctionsProvider implements ResourceProvider {
         attributes: {
           Arn: physicalId,
           Name: describeResponse.name,
-          StateMachineRevisionId: describeResponse.revisionId,
+          StateMachineRevisionId: stateMachineRevisionId(describeResponse),
         },
       };
     } catch (error) {
@@ -447,10 +476,19 @@ export class StepFunctionsProvider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeStateMachineCommand({ stateMachineArn: input.knownPhysicalId })
         );
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        // Issue #3627: the map `create()` / `update()` record; the resolver
+        // served the ARN for `Name` and `StateMachineRevisionId`.
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: definedAttributes({
+            Arn: input.knownPhysicalId,
+            Name: resp.name,
+            StateMachineRevisionId: stateMachineRevisionId(resp),
+          }),
+        };
       } catch (err) {
         if (err instanceof StateMachineDoesNotExist) return null;
         throw err;

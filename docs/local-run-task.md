@@ -5,7 +5,7 @@ description: "Run one ECS task definition locally on a Docker network with the E
 
 # cdkd local run-task
 
-`cdkd local run-task <target>` takes an `AWS::ECS::TaskDefinition` out of a CDK
+`cdkd local run-task '<target>'` takes an `AWS::ECS::TaskDefinition` out of a CDK
 app and starts every one of its containers on your Docker host — no AWS deploy
 required. It is the ECS counterpart of [`cdkd local invoke`](local-invoke.md):
 one synchronous task run, each container's stdout/stderr streamed with a
@@ -154,10 +154,10 @@ error that tells you to pass the ARN explicitly.
 ### Which registry hosts count as ECR
 
 Every recognized ECR host form pulls end to end. cdkd runs `docker login`
-against the same host the `docker pull` targets, so a FIPS or dual-stack image
-authenticates on its own endpoint. Docker's credential store is keyed on the
-hostname verbatim, so logging in to any other spelling would send no
-credentials.
+against the same host the `docker pull` targets, on every form: a FIPS or
+dual-stack image authenticates on its own endpoint, and a cross-account image
+on the target account's host. Docker's credential store is keyed on the
+hostname verbatim, so logging in to any other host would send no credentials.
 
 A URI is treated as ECR only when its host suffix is the one its own region
 actually uses; a look-alike host carrying another region's suffix is
@@ -165,11 +165,22 @@ deliberately not treated as ECR. Three endpoint shapes are recognized — the
 plain `<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
 `<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
 `<account>.dkr-ecr[-fips].<region>.on.aws`, whose fixed `on.aws` suffix replaces
-the region's partition suffix. A host spelled with the other family's suffix is
-refused. Host matching ignores ASCII letter case, since DNS does; a non-ASCII
-character in the host is refused rather than folded. Docker accepts an
-upper-cased registry host but requires a lower-case repository path, so cdkd
-folds only the host.
+the region's partition suffix. The FIPS and dual-stack shapes are recognized
+only for a commercial or GovCloud region, the partitions AWS serves them in. A
+host spelled with the other family's suffix is refused.
+
+The region segment must be a region id cdkd knows, one of the region patterns
+of the AWS partitions. A service name such as `s3` in that position is not
+treated as ECR. Neither is a region whose prefix cdkd does not know yet, such
+as a future `nz-north-1` (the way the `il-` and `mx-` regions arrived): until
+cdkd learns the prefix, such an image takes the public-image path (an
+anonymous `docker pull`, no `docker login`), and cdkd logs at debug level that
+the host looked like ECR.
+
+Host matching ignores ASCII letter case, since DNS does; a non-ASCII character
+in the host is refused rather than folded. Docker accepts an upper-cased
+registry host but requires a lower-case repository path, so cdkd folds only
+the host.
 
 The same region-to-partition mapping drives `${AWS::Partition}` and
 `${AWS::URLSuffix}` wherever cdkd substitutes them.
@@ -201,7 +212,7 @@ that `cdkd deploy` publishes into once a bootstrap marker exists. A migrated
 stack's rewritten template and its `--from-state` state carry the latter, so both
 classify identically.
 
-Custom-named cdkd asset repositories (`cdkd bootstrap --container-repo <name>`)
+Custom-named cdkd asset repositories (`cdkd bootstrap --container-repo '<name>'`)
 are recognized under `--from-state`: cdkd lazily reads the region's bootstrap
 marker from the state bucket and treats the image as a CDK asset when its
 repository component matches the marker's `containerRepo`. Two caveats:

@@ -71,7 +71,7 @@ describe('WAFv2WebACLProvider malformed Scope on a state replay (issue #1544)', 
 
   const createSucceeds = () =>
     mockSend.mockResolvedValue({
-      Summary: { ARN: TEST_ARN, Id: 'abc-123-def', LabelNamespace: 'awswaf:...:' },
+      Summary: { ARN: TEST_ARN, Id: 'abc-123-def' },
     });
 
   const commandNames = () => mockSend.mock.calls.map((c) => c[0].constructor.name);

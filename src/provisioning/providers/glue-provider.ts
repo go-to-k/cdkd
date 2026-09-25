@@ -104,8 +104,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -450,7 +451,7 @@ export class GlueProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -641,9 +642,11 @@ export class GlueProvider implements ResourceProvider {
 
     try {
       const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId, {
-        // UNCONDITIONAL downgrade (the `updateRoute` precedent): `update()` has
-        // no context, so it cannot tell a template push from the state-borne
-        // bag `drift --revert` and the rollback revert arm hand it.
+        // UNCONDITIONAL downgrade (the `updateRoute` precedent), decided when
+        // `update()` could not tell a template push from the state-borne bag
+        // `drift --revert` and the rollback revert arm hand it. Since issue
+        // #3141 it can (`UpdateContext.replayingState` plus
+        // `desiredFromAwsReadback`); this arm was not re-decided (issue #3728).
         onUnusable: (message) => this.logger.warn(message),
         previousDatabaseInput,
       });
@@ -1432,9 +1435,12 @@ export class GlueProvider implements ResourceProvider {
    *     downgrades through the shared `replayWarn`, since a reverse-replacement
    *     re-create reads a STATE record the user cannot edit from the template.
    *   - UPDATE passes a warn callback UNCONDITIONALLY (the `updateRoute`
-   *     precedent — `update()` has no context, so it cannot tell a template
-   *     push from the state-borne bag `drift --revert` and the rollback revert
-   *     arm hand it), and then RETAINS the PREVIOUS side's block, which is why
+   *     precedent, decided when `update()` could not tell a template push
+   *     from the state-borne bag `drift --revert` and the rollback revert arm
+   *     hand it — since issue #3141 `UpdateContext.replayingState` plus
+   *     `desiredFromAwsReadback` can, and this arm was not re-decided — issue
+   *     #3728), and
+   *     then RETAINS the PREVIOUS side's block, which is why
    *     `previousDatabaseInput` is threaded in. Omitting instead would ERASE a
    *     live resource link, because `UpdateDatabase` replaces `DatabaseInput`
    *     wholesale — the #1612 "UPDATE retains the previous value" row, reached
@@ -2272,7 +2278,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2495,10 +2501,19 @@ export class GlueWorkflowProvider implements ResourceProvider {
     return null;
   }
 
+  /**
+   * The workflow ARN `GetTags` needs. The partition is derived from the
+   * client's region (issue #1815): the literal `arn:aws:` is structurally valid
+   * everywhere, so in `aws-cn` / `aws-us-gov` nothing rejected it — `GetTags`
+   * was simply aimed at an ARN naming no workflow, and the best-effort catch
+   * below reads a failure there as EMPTY tags. A commercial region still derives to `aws`,
+   * so commercial output is unchanged byte for byte.
+   */
   private async buildWorkflowArn(workflowName: string): Promise<string> {
     const region = await this.getRegion();
     const account = await this.getAccountId();
-    return `arn:aws:glue:${region}:${account}:workflow/${workflowName}`;
+    const { partition } = derivePartitionAndUrlSuffix(region);
+    return `arn:${partition}:glue:${region}:${account}:workflow/${workflowName}`;
   }
 
   private async getRegion(): Promise<string> {
@@ -2510,7 +2525,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     if (this.cachedAccountId) return this.cachedAccountId;
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2565,7 +2580,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2859,8 +2874,18 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * must never call `this.create()` from inside its own `update()` the way ACM /
  * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
  * forward `update()`'s `properties` — a STATE record during a rollback replay —
- * and `update()` has no context parameter to carry the flag, so this refusal
- * would fire on a replay with no way to detect it.
+ * and pass no `CreateContext`, so this refusal would fire on a replay with no
+ * way to detect it. (`update()` DOES take a context — an `UpdateContext` since
+ * issue #1732 — and since issue #3141 that context carries its own
+ * `replayingState`, set by the rollback executor's two revert arms. So the
+ * information now reaches `update()`; what is missing is a re-create that
+ * builds a `CreateContext` from it, and none of those providers does. An
+ * earlier revision said `update()` had "no context parameter to carry the
+ * flag" — issue #1999.) Were GlueProvider ever to re-create inside `update()`,
+ * it would have to forward a replay signal into that `create()` —
+ * `context.replayingState` on the rollback path — and decide separately what
+ * this refusal means for the `desiredFromAwsReadback` bag `cdkd drift --revert`
+ * hands it, since that path sets no `replayingState`.
  *
  * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
  * pre-flight, so it only runs on the SDK route. When a table's state record
@@ -3060,8 +3085,16 @@ function cleanCfnObject(obj: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * Build the ARN for a Glue resource. Used by tag-fetch via
- * `GetTagsCommand` which only accepts an ARN. Account id falls back
- * to STS when not provided.
+ * `GetTagsCommand` which only accepts an ARN, and by the Job / Crawler /
+ * Trigger `applyTagDiff` as the `TagResource` / `UntagResource` target.
+ * Account id falls back to STS when not provided.
+ *
+ * The partition is derived from the region (issue #1815). A hardcoded
+ * `arn:aws:` is structurally valid everywhere, so in `aws-cn` / `aws-us-gov`
+ * nothing rejected it: the tag MUTATION was aimed at an ARN naming no
+ * resource, and the drift read's best-effort `GetTags` read the failure as
+ * empty tags. A commercial region still derives to `aws`, so commercial output
+ * is unchanged byte for byte.
  */
 async function buildGlueResourceArn(
   client: GlueClient,
@@ -3072,7 +3105,8 @@ async function buildGlueResourceArn(
 ): Promise<string> {
   const region = (await client.config.region()) || ambientRegion() || 'us-east-1';
   const account = accountId ?? (await resolveAccountId(stsClient));
-  return `arn:aws:glue:${region}:${account}:${resource}/${name}`;
+  const { partition } = derivePartitionAndUrlSuffix(region);
+  return `arn:${partition}:glue:${region}:${account}:${resource}/${name}`;
 }
 
 async function resolveAccountId(stsClient: STSClient): Promise<string> {
@@ -3163,7 +3197,7 @@ export class GlueJobProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3173,7 +3207,7 @@ export class GlueJobProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3718,7 +3752,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -3728,7 +3762,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4214,7 +4248,7 @@ export class GlueConnectionProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4510,7 +4544,7 @@ export class GlueTriggerProvider implements ResourceProvider {
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -4520,7 +4554,7 @@ export class GlueTriggerProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

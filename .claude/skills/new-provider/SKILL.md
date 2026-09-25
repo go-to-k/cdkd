@@ -34,7 +34,7 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
 5. **Create the provider file** at `src/provisioning/providers/{service}-{resource}-provider.ts`:
    - Import the AWS SDK client and commands
    - Implement `ResourceProvider` interface (create, update, delete, getAttribute, **import**)
-   - Use `getAwsClient` from `../../utils/aws-client-factory.js` for client creation
+   - Take clients from `getAwsClients()`, or build your own SDK client with `...ambientClientDefaults()` (`../../utils/ambient-client-defaults.js`) spread FIRST — a bare `awsClientDefaults()` drops a library caller's explicit credentials and fails `ambient-client-defaults-fence.test.ts` (#3588)
    - Follow ESM import conventions (`.js` extension)
    - Return proper `physicalId` and `attributes` from create
 

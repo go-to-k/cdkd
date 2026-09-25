@@ -26,7 +26,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
 
 2. **Resolve region and account**: scan `us-east-1`, `ap-northeast-1` AND `us-west-2` — the benchmark suite runs its variant stacks in the third, and its leftovers (billed PROVISIONED Kinesis streams, Lambda log groups) are invisible to a two-region scan. Derive any further regions from the state-bucket key layout (`aws s3 ls` recursively, collect the distinct `{region}` segments) so a fixture pinned elsewhere is not missed. Account id via `aws sts get-caller-identity`; IAM is global, so one query.
 
-3. **Check S3 state**: `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
+3. **Check S3 state**: `aws s3 ls s3://cdkd-state-{accountId}/cdkd/ --recursive --region us-east-1 | grep state.json` (also the legacy `cdkd-state-{accountId}-{region}` bucket if it exists)
 
 3.5. **Bulk-sweep orphaned deployment-event stores**: `cdkd destroy` / `cdkd state destroy` removes
    `state.json` but, unless `--purge-events` was passed, INTENTIONALLY leaves the
@@ -60,7 +60,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    `aws s3 rm "s3://${BUCKET}/cdkd/${p}" --recursive --region us-east-1`. Re-run the
    `has_state` check immediately before each delete to guard against a concurrent deploy
    that re-created the stack. The per-stack product-level equivalent (for a user who
-   knows the stack name) is `cdkd events prune <stack> --all`; this skill step is the
+   knows the stack name) is `cdkd events prune '<stack>' --all`; this skill step is the
    bucket-wide bulk sweep for integ-test hygiene.
 
 4. **Scan AWS resources** for each stack name prefix, in both exact case and

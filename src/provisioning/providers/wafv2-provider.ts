@@ -19,6 +19,7 @@ import {
   type AssociationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -33,7 +34,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -508,7 +509,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
       this.wafv2Client = new WAFV2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -578,13 +579,30 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created WAFv2 WebACL ${logicalId}: ${summary.ARN}`);
 
+      // `LabelNamespace` is not a `WebACLSummary` member, so the value read
+      // off the summary here before was always absent (issue #3627): read it
+      // from `GetWebACL`. The web ACL exists by now, so a failed read omits
+      // the attribute rather than failing the create; the #1852 heal fills it.
+      let labelNamespace: string | undefined;
+      try {
+        labelNamespace = (
+          await this.getClient().send(
+            new GetWebACLCommand({ Id: summary.Id, Name: name, Scope: scope })
+          )
+        ).WebACL?.LabelNamespace;
+      } catch (readError) {
+        this.logger.debug(
+          `Could not read the label namespace of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
+        );
+      }
+
       return {
         physicalId: summary.ARN,
-        attributes: {
+        attributes: definedAttributes({
           Arn: summary.ARN,
           Id: summary.Id,
-          LabelNamespace: (summary as Record<string, unknown>)['LabelNamespace'],
-        },
+          LabelNamespace: labelNamespace,
+        }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -900,14 +918,36 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    *
    * Lookup order:
    *  1. `--resource <id>=<arn>` override → verify with `GetWebACL` (parses
-   *     Name/Id/Scope back out of the ARN).
+   *     Name/Id/Scope back out of the ARN). CloudFormation's compound
+   *     `name|id|scope` physical id — what `--migrate-from-cloudformation`
+   *     passes — is accepted too and recorded under the ARN (issue #3627).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
-        const { id, name, scope } = parseWebACLArn(input.knownPhysicalId);
-        await this.getClient().send(new GetWebACLCommand({ Id: id, Name: name, Scope: scope }));
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        // CloudFormation's physical id is the compound `name|id|scope`
+        // (`--migrate-from-cloudformation` hands it over verbatim), which
+        // `parseWebACLArn` cannot read; cdkd's is the ARN (issue #3627).
+        const compound = /^([^|]+)\|([^|]+)\|(REGIONAL|CLOUDFRONT)$/.exec(input.knownPhysicalId);
+        const { id, name, scope } = compound
+          ? { name: compound[1]!, id: compound[2]!, scope: compound[3] as Scope }
+          : parseWebACLArn(input.knownPhysicalId);
+        if (!id || !name) return null;
+        const resp = await this.getClient().send(
+          new GetWebACLCommand({ Id: id, Name: name, Scope: scope })
+        );
+        const arn = resp.WebACL?.ARN;
+        if (!arn) return null;
+        // Recorded under cdkd's ARN form, which every CRUD path parses, with the
+        // map `create()` / `update()` record.
+        return {
+          physicalId: arn,
+          attributes: definedAttributes({
+            Arn: arn,
+            Id: resp.WebACL?.Id,
+            LabelNamespace: resp.WebACL?.LabelNamespace,
+          }),
+        };
       } catch (err) {
         if (err instanceof WAFNonexistentItemException) return null;
         throw err;

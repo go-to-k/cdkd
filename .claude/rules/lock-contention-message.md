@@ -36,30 +36,23 @@ hint included.
   [#3377](https://github.com/go-to-k/cdkd/issues/3377)).
 - The command is emitted LAST and UNWRAPPED, and that is a SECURITY rule: pasted
   inside a `'...'` wrapper, a `shellQuote`d value turns inside out and
-  `--state-bucket 'b; printf X; #'` RUNS `printf X` (measured on `cdkd orphan`'s
-  properties refusal, go-to-k/cdkd#3363). A `Parent~Child` name also becomes
+  `--state-bucket 'b; printf X; #'` RUNS `printf X`. A `Parent~Child` name also becomes
   unpastable that way; `~` is deliberately NOT in the unquoted class. A message
   that must show several commands prints them on trailing labelled lines.
 - **The rule reaches a shell-quoted VALUE in PROSE, and a PLACEHOLDER in prose,
   not only a command in a wrapper.** No wrapper is needed: an English apostrophe
-  supplies the parity flip, so `... under this stack's name in state bucket
-  'evil; touch OWNED; #'.` pasted into bash created the file — the `'` in
-  `stack's` opened a quote that closed at the bucket's own. Deleting the
-  apostrophe is NOT the fix: one anywhere before the value is enough, so that
-  repairs a sentence and leaves the class open for the next one written. A value
-  goes on a labelled trailing line instead, and a placeholder in prose is QUOTED
-  like `commandHole`'s — a bare `<prefix>` in a SENTENCE reads stdin from a file
-  named `prefix` and truncated one named `where` (go-to-k/cdkd#3440).
+  anywhere before the value flips quote parity, so deleting one apostrophe fixes
+  a sentence but not the class. A value goes on a labelled trailing line
+  instead, and a placeholder in prose is QUOTED like `commandHole`'s — a bare
+  `<prefix>` in a sentence is a shell redirection
+  ([#3440](https://github.com/go-to-k/cdkd/issues/3440)).
 - **A fence for this pastes SENTENCES and CLAUSES, never lines alone, and plants
-  DECOYS.** The line carrying the measured bug also carries `record(s)`, whose
-  `(` is a syntax error that stops bash before the payload, so a line-level
-  harness reported zero against an exploitable build (line 0, sentence 2, clause
-  2). An execution sentinel alone is blind to REDIRECTION — compare the whole
-  directory against decoys named for every placeholder. Exempt only what the
-  SPLITTER makes out of one value in isolation: both "contained in a value" and
-  "contained but not equal" measured green on a real regression, the second
-  because `displaySafe` TRIMS, so the spelling printed is a proper substring of
-  the one injected.
+  DECOYS.** A line-level paste misses a payload that sits after a syntax error
+  on the same line (`record(s)`'s `(`), and an execution sentinel alone is
+  blind to REDIRECTION — compare the whole directory against decoys named for
+  every placeholder. Exempt only what the SPLITTER makes out of one value in
+  isolation: "contained in a value" and "contained but not equal" both miss
+  regressions, the second because `displaySafe` TRIMS.
 - A value sanitizing to EMPTY suppresses the WHOLE command; `--stack-region ''`
   reads as "not supplied" and widens to every region holding the name. An empty
   `--state-prefix` is the exception and IS emitted as `--state-prefix ''`, since

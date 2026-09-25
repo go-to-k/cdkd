@@ -25,9 +25,12 @@ ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
 ([#3239](https://github.com/go-to-k/cdkd/issues/3239)).
 
 `loadStateOrEmpty` holds the read-only container repairs
-([state-malformed-properties.md](state-malformed-properties.md)). Two of them —
-a resource's `properties` map and the `outputs` bag — are refusals on the
-deploy, so it returns them as `deployRefusals`; `computeStackDiff`'s SECOND
+([state-malformed-properties.md](state-malformed-properties.md)). Every
+container it repairs or drops is a refusal on the deploy, so each returns a
+`deployRefusals` reason; a DROPPED one (the `resources` bag or an entry, the
+`orphans` container, and in `computeStackDiff` an `orphans` row) ALSO keeps its
+`unreadable` row, so `--fail` and exit 3 overlap and exit 3 wins
+([#3512](https://github.com/go-to-k/cdkd/issues/3512)). `computeStackDiff`'s SECOND
 `properties` repair, over the records the rollback-orphan splice brought in,
 returns its own under the same name. The TOP-LEVEL node puts one reason per
 (REPAIR PASS × damaged container) on `blocking`, and `countBlocking` sums them:

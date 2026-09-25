@@ -29,6 +29,9 @@ import {
   displayIdent,
   displaySafe,
   ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  UNRENDERABLE,
+  displayStackName,
 } from '../utils/display-safe.js';
 import {
   s3BucketArn,
@@ -73,7 +76,8 @@ import {
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
   recordMaskOnlyValue,
-  recordMaskOnlyValuesIn,
+  recordFreshNoEchoValuesIn,
+  embedsFreshNoEchoValue,
   recoverMaskedOutput,
   carriesSecretMask,
   errorCauseChain,
@@ -97,6 +101,12 @@ import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import {
+  ambientCredentialConfig,
+  clientDefaultsFor,
+  credentialFingerprint,
+  type CredentialConfig,
+} from '../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../state/record-keys.js';
 
 /**
@@ -1634,12 +1644,27 @@ interface CachedAccountIdentity {
   fabricated?: boolean;
 }
 
-let cachedAccountIdentity: CachedAccountIdentity | null = null;
+/**
+ * The real (non-fabricated) account identity, per CREDENTIAL IDENTITY: keyed by
+ * {@link credentialFingerprint} of the active `AwsClients`' credential
+ * configuration (issue [#3660](https://github.com/go-to-k/cdkd/issues/3660)).
+ *
+ * Process-wide, and a CLI run has one identity, so for the CLI this holds one
+ * entry. A LIBRARY caller can install `AwsClients` for account A, deploy, then
+ * install account B's in the same process (or run both in per-stack scopes);
+ * keyed by nothing, B's `AWS::AccountId` and every ARN built from it resolved
+ * as A's. The fabricated window and the in-flight slot below share the key.
+ */
+const cachedAccountIdentities = new Map<string, CachedAccountIdentity>();
 
 /**
- * Cache for availability zones per region
+ * Availability-zone names per (credential identity, region): keyed by
+ * `injectiveKey(credentialFingerprint, region)` (issue
+ * [#3660](https://github.com/go-to-k/cdkd/issues/3660)). The zone list is an
+ * ACCOUNT's answer — an opt-in or restricted zone is visible to one account and
+ * not another — so a region-only key served one identity's list to the next.
  */
-const cachedAvailabilityZones: Record<string, string[]> = {};
+const cachedAvailabilityZones = new Map<string, string[]>();
 
 /**
  * One resolved dynamic reference, as remembered by
@@ -2213,6 +2238,19 @@ async function allSettledKeepingFirstRejection<T>(
 }
 
 /**
+ * The key for the resolver's per-region SDK client caches ({@link
+ * IntrinsicFunctionResolver}'s `cfnClients`, `regionScopedClients` and
+ * `serviceDiscoveryClients`): the region PLUS the credential fingerprint of the
+ * configuration the cached client was built from (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). Encoded through
+ * {@link injectiveKey}, so no region or profile spelling can forge another
+ * pair's key.
+ */
+function clientCacheKey(region: string, credentialConfig: CredentialConfig): string {
+  return injectiveKey(region, credentialFingerprint(credentialConfig));
+}
+
+/**
  * Is `region` safe to build an AWS SDK client from?
  *
  * This is a SECURITY gate, not an AWS region registry, and the distinction
@@ -2258,10 +2296,16 @@ export function isClientSafeRegion(region: string): boolean {
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
 
-let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: number } | null = null;
+/** The bounded fabricated-answer window, per credential identity (see {@link cachedAccountIdentities}). */
+const fabricatedAccountIdentities = new Map<
+  string,
+  { identity: CachedAccountIdentity; expiresAt: number }
+>();
 
 /**
- * The single in-flight lookup, so N concurrent callers share ONE round trip.
+ * The single in-flight lookup PER CREDENTIAL IDENTITY, so N concurrent callers
+ * of one identity share ONE round trip, and a second identity never joins the
+ * first's (issue #3660).
  *
  * The TTL above collapses SEQUENTIAL callers; this collapses PARALLEL ones
  * (PR review). `cdkd deploy --concurrency 10` resolves ten resources' intrinsics
@@ -2269,14 +2313,14 @@ let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: num
  * each with the SDK's own 3-attempt retry — and ten identical warnings per
  * window. Cleared in a `finally` so a failure cannot wedge it.
  */
-let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
+const accountInfoInFlight = new Map<string, Promise<CachedAccountIdentity>>();
 
 /**
  * Bumped by {@link resetAccountInfoCache}, so a lookup that was already in
  * flight cannot write the cache it was asked to forget.
  *
  * Without it the reset only cleared the SETTLED caches: an in-flight resolve
- * would land afterwards and re-populate `cachedAccountIdentity`, so the next
+ * would land afterwards and re-populate `cachedAccountIdentities`, so the next
  * caller read the pre-reset account. That is the `*Once`-leak shape one layer
  * down — a later test silently inheriting an earlier one's answer — and the
  * reset's own comment already claimed to forget it.
@@ -2284,41 +2328,51 @@ let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
 let accountInfoGeneration = 0;
 
 /**
- * Get AWS account information from STS
+ * Get AWS account information from STS, for the ACTIVE credential identity.
+ *
+ * `identityKey` is read FIRST and synchronously, and `resolveAccountIdentity`
+ * reads `getAwsClients().sts` before its first `await`, so the key and the
+ * client that answers come from ONE reading of the active clients (issue
+ * #3660). Never log the key.
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
-  if (cachedAccountIdentity) return accountInfoFor(cachedAccountIdentity, overrideRegion);
+  const identityKey = credentialFingerprint(ambientCredentialConfig());
+  const cached = cachedAccountIdentities.get(identityKey);
+  if (cached) return accountInfoFor(cached, overrideRegion);
 
   // A fabricated answer inside its TTL is reused (see the constant above) —
-  // WITHOUT promoting it to `cachedAccountIdentity`, so it still expires.
-  if (fabricatedAccountIdentity && accountInfoClock.now() < fabricatedAccountIdentity.expiresAt) {
-    return accountInfoFor(fabricatedAccountIdentity.identity, overrideRegion);
+  // WITHOUT promoting it to `cachedAccountIdentities`, so it still expires.
+  const fabricated = fabricatedAccountIdentities.get(identityKey);
+  if (fabricated && accountInfoClock.now() < fabricated.expiresAt) {
+    return accountInfoFor(fabricated.identity, overrideRegion);
   }
 
-  if (accountInfoInFlight) return accountInfoFor(await accountInfoInFlight, overrideRegion);
+  const pending = accountInfoInFlight.get(identityKey);
+  if (pending) return accountInfoFor(await pending, overrideRegion);
 
   // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
   // caller's region is applied by `accountInfoFor` afterwards — so sharing one
   // in-flight promise across callers with different `overrideRegion`s is safe.
   // Since issue #1746 that is structural rather than a property to preserve:
   // `resolveAccountIdentity` takes no region at all.
-  const inFlight = resolveAccountIdentity();
-  accountInfoInFlight = inFlight;
+  const inFlight = resolveAccountIdentity(identityKey);
+  accountInfoInFlight.set(identityKey, inFlight);
   try {
     return accountInfoFor(await inFlight, overrideRegion);
   } finally {
-    // Only clear the slot we still OWN. `resetAccountInfoCache` nulls it too, so
+    // Only clear the slot we still OWN. `resetAccountInfoCache` clears it too, so
     // a reset mid-flight lets a later caller install its own promise — an
     // unconditional clear here would drop THAT one and cost a redundant
     // `GetCallerIdentity`.
-    if (accountInfoInFlight === inFlight) accountInfoInFlight = null;
+    if (accountInfoInFlight.get(identityKey) === inFlight) accountInfoInFlight.delete(identityKey);
   }
 }
 
-async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
+async function resolveAccountIdentity(identityKey: string): Promise<CachedAccountIdentity> {
   const generation = accountInfoGeneration;
   const stillCurrent = (): boolean => generation === accountInfoGeneration;
   const logger = getLogger().child('IntrinsicFunctionResolver');
+  // Read before the first `await`: the same reading `identityKey` was taken from.
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
 
@@ -2346,13 +2400,13 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
       // A reset landed while this lookup was in flight — return the answer to
       // our own caller but do NOT re-populate the cache it cleared.
     } else if (resolved.fabricated) {
-      fabricatedAccountIdentity = {
+      fabricatedAccountIdentities.set(identityKey, {
         identity: resolved,
         expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-      };
+      });
     } else {
-      cachedAccountIdentity = resolved;
-      fabricatedAccountIdentity = null;
+      cachedAccountIdentities.set(identityKey, resolved);
+      fabricatedAccountIdentities.delete(identityKey);
     }
     // not-in-class(accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
     logger.debug(`Retrieved AWS account info: ${accountId}`);
@@ -2379,19 +2433,19 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
       return fallback;
     }
     if (fallback.fabricated) {
-      // Guarded on `!cachedAccountIdentity` so a late failure arm cannot install
-      // a fabricated window over a real answer a concurrent call already cached
-      // (PR review). Benign either way — the cached branch is read first — but
-      // the invariant should be enforced rather than accidental.
-      if (!cachedAccountIdentity) {
-        fabricatedAccountIdentity = {
+      // Guarded on the SAME identity's real answer so a late failure arm cannot
+      // install a fabricated window over a real answer a concurrent call already
+      // cached (PR review). Benign either way — the cached branch is read first —
+      // but the invariant should be enforced rather than accidental.
+      if (!cachedAccountIdentities.has(identityKey)) {
+        fabricatedAccountIdentities.set(identityKey, {
           identity: fallback,
           expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-        };
+        });
       }
     } else {
-      cachedAccountIdentity = fallback;
-      fabricatedAccountIdentity = null;
+      cachedAccountIdentities.set(identityKey, fallback);
+      fabricatedAccountIdentities.delete(identityKey);
     }
     return fallback;
   }
@@ -2431,22 +2485,20 @@ export function isImpossibleEmptyStoredAttribute(
  * Reset cached account info (useful for testing)
  */
 export function resetAccountInfoCache(): void {
-  cachedAccountIdentity = null;
+  cachedAccountIdentities.clear();
   // The bounded fabricated-answer window is part of the same cache and must
   // clear with it, or a test (or a later phase) would keep reading a fabricated
   // answer it just asked to forget.
-  fabricatedAccountIdentity = null;
+  fabricatedAccountIdentities.clear();
   // Invalidate any lookup already in flight so its resolve cannot write the
   // caches this call just cleared.
   accountInfoGeneration += 1;
   // ...and so is the in-flight promise: a reset while a lookup is pending would
   // otherwise hand the next caller the identity this call asked to forget, and
   // the resolve arm would re-populate the cache AFTER the reset.
-  accountInfoInFlight = null;
+  accountInfoInFlight.clear();
   // Also reset AZ cache
-  for (const key of Object.keys(cachedAvailabilityZones)) {
-    delete cachedAvailabilityZones[key];
-  }
+  cachedAvailabilityZones.clear();
   // Resolved dynamic-reference VALUES are no longer cleared here: they live on
   // the resolver instance (issue #1933), so their lifetime already ends with
   // the stack / region context that chose the AWS clients behind the lookup.
@@ -2838,6 +2890,21 @@ function stringifyParameterForLog(
 }
 
 /**
+ * `displayIdent` over text THIS file already sanitized, keeping its rule that
+ * an ALTERED value takes a boundary (go-to-k/cdkd#3617). `displayIdent` tests
+ * alteration against its own input, which here is already trimmed and blanked
+ * -- so `ProdStack ` or `ProdStack<NBSP>` would print bare, byte-identical to
+ * a genuine `ProdStack` (the #3164 spoof). Compared against the ORIGINAL, an
+ * altered value is quoted even when what is left is plain.
+ */
+function boundAltered(original: string, shown: string, maxCodePoints?: number): string {
+  const bounded = displayIdent(shown, maxCodePoints === undefined ? undefined : { maxCodePoints });
+  return shown !== original && !bounded.startsWith('"') && bounded !== UNRENDERABLE
+    ? `${JSON.stringify(bounded.split(' [cut: ')[0])}${bounded.includes(' [cut: ') ? bounded.slice(bounded.indexOf(' [cut: ')) : ''}`
+    : bounded;
+}
+
+/**
  * Behavior knobs for {@link IntrinsicFunctionResolver}.
  */
 export interface IntrinsicFunctionResolverOptions {
@@ -2915,15 +2982,22 @@ export class IntrinsicFunctionResolver {
    * foreign region per resolver, versus the ambient clients which are already
    * created and destroyed per stack by `deploy.ts`.
    *
-   * KEYED BY REGION ALONE, which means an entry also pins the CREDENTIAL
-   * configuration of whichever ambient instance was current at the first
-   * mismatch for that region. That is sound today because the credential half
-   * is process-wide rather than per-stack: `--profile` comes from one CLI
-   * option and `--role-arn` lands in `process.env`, so every ambient instance
-   * a run installs carries the same one. Widen the key to include
-   * {@link AwsClients.credentialConfig} the moment that stops being true —
-   * per-stack credentials would otherwise let one stack's lookups run under
-   * another's identity, which is a worse bug than the one this cache serves.
+   * KEYED BY REGION AND CREDENTIAL FINGERPRINT ({@link clientCacheKey}, issue
+   * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). An entry pins the
+   * credential configuration of the ambient instance it was derived from, and
+   * that half is process-wide only for the CLI (one `--profile`, one
+   * `--role-arn`): a LIBRARY caller can drive one resolver across two
+   * `setAwsClients` installs (or cdkd's per-stack scopes) with different
+   * explicit credentials, and keyed by region alone the second's lookups ran under the first's
+   * identity. {@link cfnClients} and {@link serviceDiscoveryClients} share the
+   * key for the same reason, and the two CloudFormation fallback memos
+   * ({@link cfnExportsPromises}, {@link cfnStackOutputsCache}) carry the
+   * fingerprint too.
+   *
+   * The VALUE caches carry the fingerprint as well (issue
+   * [#3660](https://github.com/go-to-k/cdkd/issues/3660)):
+   * {@link cachedDynamicReferences}, and the process-global account identity
+   * behind `getAccountInfo` and `cachedAvailabilityZones`.
    */
   private readonly regionScopedClients = new Map<string, AwsClients>();
   /**
@@ -2941,9 +3015,9 @@ export class IntrinsicFunctionResolver {
    *
    * A whole resolver rather than a client bag, because what has to be
    * region-scoped is not only the lookup but the VALUE CACHE behind it:
-   * {@link cachedDynamicReferences} is keyed by the expression alone and is
-   * sound only because one resolver stands for one stack in one region (issue
-   * #1933). Resolving a producer's expression inside THIS resolver would put a
+   * {@link cachedDynamicReferences} is keyed by the expression (plus the
+   * credential identity, issue #3660) and is sound only because one resolver
+   * stands for one stack in one region (issue #1933). Resolving a producer's expression inside THIS resolver would put a
    * foreign region's answer under a key the consumer's own lookups read — the
    * exact cross-region leak that field's instance scope closed. A separate
    * resolver per producer region keeps that invariant by construction.
@@ -2991,9 +3065,10 @@ export class IntrinsicFunctionResolver {
   /**
    * Per-region CloudFormation clients for the cross-stack fallback
    * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
-   * may target a region different from the consumer's deploy region.
+   * may target a region different from the consumer's deploy region, and by
+   * the credential fingerprint for {@link regionScopedClients}' reason.
    */
-  private readonly cfnClients: Record<string, CloudFormationClient> = {};
+  private readonly cfnClients = new Map<string, CloudFormationClient>();
   /**
    * Memoized full `ListExports` listing for the `Fn::ImportValue`
    * fallback (issue #1697 review). Without it, EVERY cdkd-miss import
@@ -3005,14 +3080,18 @@ export class IntrinsicFunctionResolver {
    * deploys. FAILED fetches are not cached (the rejection handler
    * clears the slot) so a transient throttle does not poison the rest
    * of the deploy's lookups.
+   *
+   * Keyed by the credential fingerprint (issue #3588): a listing is an answer
+   * one identity was allowed to read, so it is never handed to another.
    */
-  private cfnExportsPromise: Promise<CfnExport[]> | undefined;
+  private readonly cfnExportsPromises = new Map<string, Promise<CfnExport[]>>();
   /**
    * Memoized per-(region, stack) `DescribeStacks` outputs for the
    * `Fn::GetStackOutput` fallback (issue #1697 review) — a stack
    * referencing the same CFn producer N times pays one call. Successful
    * lookups (including the definitive "stack does not exist" miss) are
-   * cached; lookup FAILURES are evicted so they are retried.
+   * cached; lookup FAILURES are evicted so they are retried. Keyed by the
+   * credential fingerprint as well, for {@link cfnExportsPromises}' reason.
    */
   private readonly cfnStackOutputsCache = new Map<
     string,
@@ -3040,7 +3119,11 @@ export class IntrinsicFunctionResolver {
 
   /**
    * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
-   * keyed by the full expression — INSTANCE-scoped, which closes the CACHE half
+   * keyed by the full expression and the credential identity that read it
+   * (`injectiveKey(credentialFingerprint, expression)`, issue
+   * [#3660](https://github.com/go-to-k/cdkd/issues/3660): a library caller can
+   * drive one resolver under two `AwsClients` identities, and the same NAME
+   * read by two accounts is two values) — INSTANCE-scoped, which closes the CACHE half
    * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
    * only PARTIALLY addressed by this field: see "what this does NOT settle"
    * below.
@@ -3281,7 +3364,7 @@ export class IntrinsicFunctionResolver {
       // reads as line terminators, and this refusal prints a region text a
       // template can supply — the same residual the ten binding sites had, one
       // sanitizer short rather than none.
-      // not-in-class(displaySafe(stripControlChars(loggedTarget)).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
+      // not-in-class(boundAltered(targetRegion ?? loggedTarget, displaySafe(stripControlChars(loggedTarget)), 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
       // The refusal CLASS, not a plain Error, and `markNonRetryable` beside it
       // (issue go-to-k/cdkd#3181 security review). This decides from a region
       // name a retry cannot change, and the per-unit recovery partitions on
@@ -3295,7 +3378,7 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Refusing to build AWS clients for the region ` +
-            `'${displaySafe(stripControlChars(loggedTarget)).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+            `${boundAltered(targetRegion ?? loggedTarget, displaySafe(stripControlChars(loggedTarget)), 64)}: it is not a valid AWS region name, and a ` +
             `region is substituted into the AWS service hostname.`
         )
       );
@@ -3305,7 +3388,8 @@ export class IntrinsicFunctionResolver {
     // questions below, and asking would be the TypeError this arm prevents.
     if (typeof ambient.withRegion !== 'function') return ambient;
 
-    const cached = this.regionScopedClients.get(target);
+    const cacheKey = clientCacheKey(target, ambient.credentialConfig ?? {});
+    const cached = this.regionScopedClients.get(cacheKey);
     if (cached) return cached;
 
     // ONLY a CONFIGURED ambient can be reused — see the note above on why a
@@ -3313,7 +3397,7 @@ export class IntrinsicFunctionResolver {
     if (canonicalizeRegion(ambient.configuredRegion) === target) return ambient;
 
     const scoped = ambient.withRegion(target);
-    this.regionScopedClients.set(target, scoped);
+    this.regionScopedClients.set(cacheKey, scoped);
     // SANITIZED (go-to-k/cdkd#3426), and this site was the one the issue's own
     // list did not carry: `isClientSafeRegion` gated `target`, never
     // `loggedTarget`, which is the LOG TEXT of a possibly different string — a
@@ -3352,14 +3436,17 @@ export class IntrinsicFunctionResolver {
    * `getAccountInfo`'s in-flight promise and reach here one at a time, which
    * the case says out loud. A REJECTED import is evicted
    * so a transient failure does not poison the rest of the deploy, mirroring
-   * `cfnExportsPromise`. Lifetime is the resolver's own, like
+   * `cfnExportsPromises`. Lifetime is the resolver's own, like
    * {@link regionScopedClients} and {@link cfnClients}: at most one per region
    * per resolver, versus the one-per-CALL this replaces.
    */
   private async serviceDiscoveryClient(): Promise<ServiceDiscoveryClient> {
     const scoped = this.clientsForRegion(this.explicitRegion);
     const region = scoped.configuredRegion;
-    const key = region ?? '';
+    // The scoped bag's OWN credential configuration, read once for both the
+    // key and the construction (issue #3588).
+    const credentialConfig: CredentialConfig = scoped.credentialConfig ?? {};
+    const key = clientCacheKey(region ?? '', credentialConfig);
     const cached = this.serviceDiscoveryClients.get(key);
     if (cached) return cached;
 
@@ -3369,8 +3456,7 @@ export class IntrinsicFunctionResolver {
         // The profile is passed rather than left to the `AWS_PROFILE` mirror
         // `program.ts` sets: `credentialConfig` can carry one, and relying on
         // the mirror made this the only site whose correctness depended on it.
-        ...awsClientDefaults({ profile: scoped.credentialConfig?.profile }),
-        ...(scoped.credentialConfig ?? {}),
+        ...clientDefaultsFor(credentialConfig),
         ...(region ? { region } : {}),
       });
     })();
@@ -5288,7 +5374,8 @@ export class IntrinsicFunctionResolver {
     const attributeIsDeclared =
       declared === true || (declared !== undefined && declared.has(attributeName));
     if (attributeIsDeclared && context.recordedSecretValues) {
-      recordMaskOnlyValuesIn(value, context.recordedSecretValues);
+      // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
+      recordFreshNoEchoValuesIn(value, context.recordedSecretValues);
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
@@ -8559,7 +8646,8 @@ export class IntrinsicFunctionResolver {
             );
       if (recovered !== undefined) {
         if (context.recordedSecretValues) {
-          recordMaskOnlyValuesIn(recovered, context.recordedSecretValues);
+          // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
+          recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues);
         }
         return recovered;
       }
@@ -9146,14 +9234,20 @@ export class IntrinsicFunctionResolver {
     exportName: string,
     context?: ResolverContext
   ): Promise<{ value: string; exportingStackId?: string } | undefined> {
-    let listing = this.cfnExportsPromise;
+    // The SAME reading `fetchAllCfnExports` builds its client from: it reads
+    // the ambient configuration synchronously, before its first `await`.
+    const listingKey = credentialFingerprint(ambientCredentialConfig());
+    let listing = this.cfnExportsPromises.get(listingKey);
     if (!listing) {
-      listing = this.fetchAllCfnExports();
-      this.cfnExportsPromise = listing;
+      const fetched = this.fetchAllCfnExports();
+      listing = fetched;
+      this.cfnExportsPromises.set(listingKey, fetched);
       // Do not cache failures: a transient throttle / permission fix should
       // be retried by the next lookup, not poison the whole deploy.
-      listing.catch(() => {
-        if (this.cfnExportsPromise === listing) this.cfnExportsPromise = undefined;
+      fetched.catch(() => {
+        if (this.cfnExportsPromises.get(listingKey) === fetched) {
+          this.cfnExportsPromises.delete(listingKey);
+        }
       });
     }
     try {
@@ -9272,7 +9366,13 @@ export class IntrinsicFunctionResolver {
     // would cost if that gate moved is the reason to encode anyway: this cache
     // serves a RESOLVED OUTPUT BAG, so a hit answers one stack's
     // `Fn::GetStackOutput` with another stack's outputs.
-    const cacheKey = injectiveKey(region, stackName);
+    // The credential half is the reading `fetchCfnStackOutputs` builds its
+    // client from, before its first `await` (issue #3588).
+    const cacheKey = injectiveKey(
+      region,
+      stackName,
+      credentialFingerprint(ambientCredentialConfig())
+    );
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
     if (!fetch) {
       fetch = this.fetchCfnStackOutputs(stackName, region);
@@ -9297,8 +9397,11 @@ export class IntrinsicFunctionResolver {
       // masks) and left these pairs on the bare masker, so the same name could
       // render two ways in one message — bare in the AWS echo this rewrites,
       // stripped where we print it ourselves. go-to-k/cdkd#3426 removed that
-      // second spelling from the file entirely; the pairs stay written as the
-      // rendering below spells it, so whoever edits one must edit the other.
+      // second spelling from the file entirely. The pairs' replacement is the
+      // PRE-BOUNDARY masked spelling (the line below bounds it further through
+      // `displayMaskedIdent`), as at `maskStateReadError`'s call site: it
+      // rewrites text another module rendered, where a second boundary would
+      // only nest quotes.
       const cfnNameMask = this.positionalNameMask([
         [stackName, this.displayMasked(stackName, context)],
         [region, this.displayMasked(loggedRegionText, context)],
@@ -9330,8 +9433,8 @@ export class IntrinsicFunctionResolver {
           // prints at DEFAULT verbosity where a throw at least accompanies a
           // failure. Measured emitting a live `ESC[2K` + CR from a hostile
           // `StackName`.
-          `'${this.displayMasked(stackName, context)}' ` +
-          `(${this.displayMasked(loggedRegionText, context)}): ` +
+          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} ` +
+          `(${this.displayMaskedIdent(loggedRegionText, context)}): ` +
           // The AWS text is BOUNDED as well: `DescribeStacks` quotes the
           // submitted stack name back, so its length is the template author's
           // choice — the same reason `role-arn.ts` bounds STS's reply.
@@ -9404,19 +9507,16 @@ export class IntrinsicFunctionResolver {
    * Not routed through {@link clientsForRegion}: the region here is always
    * the one the caller named, never the ambient's, and a test double without
    * `credentialConfig` degrades to the default chain rather than throwing.
-   * Keyed by region alone for the reason {@link regionScopedClients} gives:
-   * the credential half is process-wide.
+   * Keyed by region AND credential fingerprint for the reason
+   * {@link regionScopedClients} gives (issue #3588).
    */
   private getCfnClient(region: string): CloudFormationClient {
-    let client = this.cfnClients[region];
+    const credentialConfig = ambientCredentialConfig();
+    const key = clientCacheKey(region, credentialConfig);
+    let client = this.cfnClients.get(key);
     if (!client) {
-      const credentialConfig = getAwsClients().credentialConfig ?? {};
-      client = new CloudFormationClient({
-        ...awsClientDefaults({ profile: credentialConfig.profile }),
-        ...credentialConfig,
-        region,
-      });
-      this.cfnClients[region] = client;
+      client = new CloudFormationClient({ ...clientDefaultsFor(credentialConfig), region });
+      this.cfnClients.set(key, client);
     }
     return client;
   }
@@ -9572,7 +9672,7 @@ export class IntrinsicFunctionResolver {
         // gate — see the comment there for why the order is load-bearing
         // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
         throw new Error(
-          `Fn::GetStackOutput: '${this.displayMasked(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context).slice(0, 64)}' is not a ` +
+          `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         );
@@ -9650,8 +9750,8 @@ export class IntrinsicFunctionResolver {
       // masking suffices is what the round-1 measurement disproved.
       throw new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
-          `'${this.displayMasked(stackName, context)}' in the same region ` +
-          `'${this.displayMasked(loggedRegionText, context)}'`
+          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
+          `${this.displayMaskedIdent(loggedRegionText, context)}`
       );
     }
 
@@ -9689,8 +9789,8 @@ export class IntrinsicFunctionResolver {
     // plaintext split by an invisible would be reconstituted contiguous by a
     // strip applied after a single mask. Masking on both sides of it closes
     // that, and it is a no-op on any ordinary name.
-    const loggedStackName = this.displayMasked(stackName, context);
-    const loggedOutputName = this.displayMasked(outputName, context);
+    const loggedStackName = this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS);
+    const loggedOutputName = this.displayMaskedIdent(outputName, context);
     // The THIRD resolved value of this trio (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): a `Region`
     // argument also comes back from `resolveValue`, and the shape gate above
@@ -9759,7 +9859,10 @@ export class IntrinsicFunctionResolver {
       this.maskStateReadError(
         error,
         [
-          [stackName, loggedStackName],
+          // The pair's replacement is the MASKED spelling, not the bounded
+          // one: it rewrites the name inside text another module already
+          // rendered, where a second boundary would only nest quotes.
+          [stackName, this.displayMasked(stackName, context)],
           [region, loggedRegion],
         ],
         context
@@ -9787,8 +9890,8 @@ export class IntrinsicFunctionResolver {
             const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
             // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
             throw new Error(
-              `Fn::GetStackOutput: output '${loggedOutputName}' not found in CloudFormation stack ` +
-                `'${loggedStackName}' (${loggedRegion}). Available outputs: ${available}`
+              `Fn::GetStackOutput: output ${loggedOutputName} not found in CloudFormation stack ` +
+                `${loggedStackName} (${displayIdent(loggedRegion)}). Available outputs: ${available}`
             );
           }
           const value = cfnOutputs[outputName];
@@ -9820,7 +9923,7 @@ export class IntrinsicFunctionResolver {
       // in a substitution and cannot tell a test from a render.
       // not-in-class(roleArn ? ` (cross-account via ${shownRoleArn})` : ''): the RoleArn argument, refused unless it is a literal template string.
       throw new Error(
-        `Fn::GetStackOutput: stack '${loggedStackName}' not found in region '${loggedRegion}'${
+        `Fn::GetStackOutput: stack ${loggedStackName} not found in region ${displayIdent(loggedRegion)}${
           roleArn ? ` (cross-account via ${shownRoleArn})` : ''
         }. ${
           !roleArn && this.cfnFallback
@@ -9860,8 +9963,8 @@ export class IntrinsicFunctionResolver {
     if (!hasReadableOutputs(stateData.state)) {
       throw markNonRetryable(
         new MalformedProducerRecordRefusalError(
-          `Fn::GetStackOutput: the state record of producer stack '${loggedStackName}' ` +
-            `(${loggedRegion}) has no readable 'outputs' map — the record is malformed or ` +
+          `Fn::GetStackOutput: the state record of producer stack ${loggedStackName} ` +
+            `(${displayIdent(loggedRegion)}) has no readable 'outputs' map — the record is malformed or ` +
             `truncated. cdkd refuses to resolve from it rather than reading it as a map: ` +
             `'Object.hasOwn' answers TRUE for '0' on a string and for an index on a list, so ` +
             `continuing would resolve ONE CHARACTER or element of the record as this ` +
@@ -9878,7 +9981,7 @@ export class IntrinsicFunctionResolver {
       const available = this.describeAvailableOutputs(Object.keys(outputs), context);
       // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
       throw new Error(
-        `Fn::GetStackOutput: output '${loggedOutputName}' not found in stack '${loggedStackName}' (${loggedRegion}). ` +
+        `Fn::GetStackOutput: output ${loggedOutputName} not found in stack ${loggedStackName} (${displayIdent(loggedRegion)}). ` +
           `Available outputs: ${available}`
       );
     }
@@ -9953,7 +10056,7 @@ export class IntrinsicFunctionResolver {
       // not-in-class(shownRoleArn): the RoleArn argument, refused unless it is a literal template string.
       throw markNonRetryable(
         new CrossAccountSecretRefusalError(
-          `Fn::GetStackOutput: output '${loggedOutputName}' of stack '${loggedStackName}' (${loggedRegion}) is a ` +
+          `Fn::GetStackOutput: output ${loggedOutputName} of stack ${loggedStackName} (${displayIdent(loggedRegion)}) is a ` +
             `redacted dynamic reference, and this is a CROSS-ACCOUNT reference (RoleArn ` +
             `${shownRoleArn}). cdkd will not resolve a producer account's secret with the consumer's ` +
             `credentials — a same-named secret in the consumer account would answer instead. ` +
@@ -10040,6 +10143,7 @@ export class IntrinsicFunctionResolver {
    *
    * A pair that DOES carry a mask contributes its raw spelling AND the spelling
    * the reader will actually see. `S3StateBackend` prints names through
+   * `displayStackName`, whose first step is
    * `displaySafe(..., { asciiOnly: true })`, which REPLACES every non-printable
    * character with a space and then trims, so a secret carrying one is a
    * DIFFERENT string by the time it is quoted back and matching the raw form
@@ -10126,7 +10230,27 @@ export class IntrinsicFunctionResolver {
         // characters the printer had just removed back into the message, in
         // the top-level text neither `formatError` nor the logger sanitizes.
         const shown = displaySafe(raw, { asciiOnly: true });
-        if (shown === raw) return [[raw, masked] as const];
+        // A THIRD spelling (go-to-k/cdkd#3617): `S3StateBackend` now renders a
+        // name through `displayStackName`, which puts a non-plain name inside a
+        // JSON string -- so a `"` or `\` in it reaches the message ESCAPED, and
+        // neither spelling above matches it there. Its replacement is escaped
+        // the same way, so it is as sanitized and as masked as its key.
+        const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
+        // ...and a FOURTH, the whole rendered token: `displayStackName` CUTS a
+        // name past `STACK_REF_MAX_CODE_POINTS`, and a cut prefix matches none
+        // of the whole-name keys -- a sub-floor secret inside it, or the shown
+        // half of a secret straddling the cut, would print. The rendered token
+        // is replaced with the rendering of the masked text, so it fails closed.
+        const rendered = displayStackName(raw);
+        const escapedPair = [
+          ...(shown !== '' && escaped(shown) !== shown
+            ? [[escaped(shown), escaped(displaySafe(masked, { asciiOnly: true }))] as const]
+            : []),
+          ...(rendered !== raw && rendered !== shown && rendered !== escaped(shown)
+            ? [[rendered, displayStackName(displaySafe(masked, { asciiOnly: true }))] as const]
+            : []),
+        ];
+        if (shown === raw) return [[raw, masked] as const, ...escapedPair];
         // Empty after sanitizing: substituting `''` splices the replacement
         // between every character, so that key contributes nothing. The
         // `shownMask` half of that test is UNREACHABLE and kept as the other
@@ -10136,10 +10260,7 @@ export class IntrinsicFunctionResolver {
         const shownMask = displaySafe(masked, { asciiOnly: true });
         return shown === '' || shownMask === ''
           ? [[raw, masked] as const]
-          : ([
-              [raw, masked],
-              [shown, shownMask],
-            ] as const);
+          : ([[raw, masked] as const, [shown, shownMask] as const, ...escapedPair] as const);
       })
       .sort(([a], [b]) => b.length - a.length);
     if (substitutions.length === 0) return undefined;
@@ -10589,6 +10710,14 @@ export class IntrinsicFunctionResolver {
         this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
       recordMaskOnlyValue(context.recordedSecretValues, result);
+      // The encoding of a FRESH `NoEcho` value is fresh too (go-to-k/cdkd#3662),
+      // or a Base64 consumer of a re-minted token would be skipped as
+      // `***` == `***`. The encoding of an ordinary secret is NOT: its record
+      // already positions the reference, and marking it would update that
+      // resource on every deploy.
+      if (embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)) {
+        recordFreshNoEchoValuesIn(result, context.recordedSecretValues);
+      }
     }
 
     this.logger.debug(
@@ -10678,8 +10807,11 @@ export class IntrinsicFunctionResolver {
       clientRegion = this.explicitRegion;
     }
 
-    // Check cache
-    const cached = cachedAvailabilityZones[region];
+    // Check cache. The key is read HERE, synchronously beside the
+    // `clientsForRegion` selection below, and reused at the `set`, so the list is
+    // filed under the identity whose client read it (issue #3660). Never log it.
+    const azCacheKey = injectiveKey(credentialFingerprint(ambientCredentialConfig()), region);
+    const cached = cachedAvailabilityZones.get(azCacheKey);
     if (cached) {
       // `region` masked for the reason the two throws below state: it has
       // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
@@ -10749,7 +10881,8 @@ export class IntrinsicFunctionResolver {
     // account. Neither is a value to hand back — and it must certainly not be
     // CACHED, because `cachedAvailabilityZones` is module-global, so one
     // degenerate answer would be replayed as the resolved value of every later
-    // `Fn::GetAZs` for that region in the process (issue #1957 review).
+    // `Fn::GetAZs` for that region and identity in the process (issue #1957
+    // review).
     if (azNames.length === 0) {
       throw new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
@@ -10759,7 +10892,7 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    cachedAvailabilityZones[region] = azNames;
+    cachedAvailabilityZones.set(azCacheKey, azNames);
     this.logger.debug(
       `Resolved Fn::GetAZs: ${this.displayMasked(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(azNames, context))}`
     );
@@ -11574,6 +11707,29 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * {@link displayMasked}, then bounded as an IDENTIFIER (go-to-k/cdkd#3617):
+   * bare when plain, otherwise one JSON string, so a template- or state-chosen
+   * name cannot close a quote of cdkd's own and write a clause into the
+   * message. Masked FIRST: `displayIdent` blanks non-ASCII and cuts, either of
+   * which would stop a recorded plaintext inside the name from matching.
+   */
+  private displayMaskedIdent(
+    value: string,
+    context?: ResolverContext,
+    maxCodePoints?: number
+  ): string {
+    // The ASCII allowlist runs BETWEEN two masks: `displayIdent` would blank a
+    // non-ASCII character to a space after the mask, and a recorded secret
+    // spelled with that space (`correct horse` beside `correct<NBSP>horse`)
+    // would then print byte for byte.
+    const asciiMasked = this.displayMasked(
+      displaySafe(this.displayMasked(value, context), { asciiOnly: true }),
+      context
+    );
+    return boundAltered(value, asciiMasked, maxCodePoints);
+  }
+
+  /**
    * The display form of a LOG-TWIN leaf — the second render route, named for
    * the same reason as {@link displayMasked} and closed by the same scanner.
    *
@@ -11883,8 +12039,16 @@ export class IntrinsicFunctionResolver {
 
         // Check cache first. INSTANCE-scoped, so a hit can only ever be a value
         // THIS resolver resolved — i.e. one from its own stack and its own region
-        // (issue #1933; see the field's own doc).
-        const cached = this.cachedDynamicReferences.get(fullMatch);
+        // (issue #1933; see the field's own doc) — and keyed by the credential
+        // identity too (issue #3660). The key is read ONCE here and reused at the
+        // `set` below: every service arm's first `await` is its lookup helper,
+        // which selects `clientsForRegion(...)` before ITS first `await`, so the
+        // key and the client that answers come from one reading. Never log it.
+        const dynamicReferenceCacheKey = injectiveKey(
+          credentialFingerprint(ambientCredentialConfig()),
+          fullMatch
+        );
+        const cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
         if (cached) {
           // The `cached.value` test excludes the empty string: an empty secret is
           // not a usable redaction needle (it would match every empty leaf).
@@ -12118,7 +12282,10 @@ export class IntrinsicFunctionResolver {
         // process-global verdict store another stack's resolver can retract from
         // under it (issue #1933).
         if (cacheable) {
-          this.cachedDynamicReferences.set(fullMatch, { value: resolved, secret: isSecret });
+          this.cachedDynamicReferences.set(dynamicReferenceCacheKey, {
+            value: resolved,
+            secret: isSecret,
+          });
         }
         if (isSecret && resolved) {
           context?.recordedSecretValues?.set(resolved, fullMatch);

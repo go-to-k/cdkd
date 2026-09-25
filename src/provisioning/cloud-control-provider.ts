@@ -28,6 +28,7 @@ import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { s3BucketArn } from '../utils/s3-endpoints.js';
 import {
   disableInstanceApiTermination,
   isTerminationProtectionPropagationError,
@@ -56,6 +57,7 @@ import { displaySafe } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
+import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import { SECRET_MASK } from '../deployment/secret-redaction.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
 import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
@@ -72,7 +74,7 @@ import type {
   UpdateContext,
   IndeterminateGuard,
 } from '../types/resource.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
 /**
  * AWS Cloud Control API Provider
@@ -2608,9 +2610,24 @@ export class CloudControlProvider implements ResourceProvider {
     // Fallback: compute attributes that CC API may not return
     switch (resourceType) {
       case 'AWS::S3::Bucket':
-        // S3 bucket ARN: arn:aws:s3:::bucket-name
+        // S3 bucket ARN: arn:<partition>:s3:::bucket-name. The partition comes
+        // from the CC client's own region through the same builder the SDK
+        // `S3BucketProvider` records with (issue #1794), so the two routes
+        // cannot record different ARNs for one template. A bucket ARN has no
+        // account field, so no STS round trip is needed. Best-effort like the
+        // KMS / ECR arms: the bucket already exists, so a region that cannot be
+        // read leaves `Arn` ABSENT rather than failing the create.
         if (!enriched['Arn']) {
-          enriched['Arn'] = `arn:aws:s3:::${physicalId}`;
+          try {
+            enriched['Arn'] = s3BucketArn(
+              physicalId,
+              await this.cloudControlClient.config.region()
+            );
+          } catch (error) {
+            this.logger.debug(
+              `Failed to construct S3 Bucket Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
+            );
+          }
         }
         break;
 
@@ -2640,7 +2657,7 @@ export class CloudControlProvider implements ResourceProvider {
           // CC API client uses the cdkd-resolved region; the RDSClient
           // inherits via env / profile, same as DynamoDB / API Gateway
           // enrichment branches above.
-          const rdsClient = new RDSClient({ ...awsClientDefaults() });
+          const rdsClient = new RDSClient({ ...ambientClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBClustersCommand({ DBClusterIdentifier: physicalId })
           );
@@ -2687,7 +2704,7 @@ export class CloudControlProvider implements ResourceProvider {
         try {
           // The RDSClient inherits the cdkd-resolved region via env / profile,
           // same as the DBCluster / DynamoDB / API Gateway branches.
-          const rdsClient = new RDSClient({ ...awsClientDefaults() });
+          const rdsClient = new RDSClient({ ...ambientClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBInstancesCommand({ DBInstanceIdentifier: physicalId })
           );
@@ -3085,7 +3102,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and must not fail the deploy.
         try {
-          const elastiCacheClient = new ElastiCacheClient({ ...awsClientDefaults() });
+          const elastiCacheClient = new ElastiCacheClient({ ...ambientClientDefaults() });
           const describeResponse = await elastiCacheClient.send(
             new DescribeReplicationGroupsCommand({ ReplicationGroupId: physicalId })
           );
@@ -3159,7 +3176,7 @@ export class CloudControlProvider implements ResourceProvider {
         // unlike ElastiCache). Best-effort: a failed Describe leaves the CC-API
         // attribute shape unchanged and never fails the deploy.
         try {
-          const redshiftClient = new RedshiftClient({ ...awsClientDefaults() });
+          const redshiftClient = new RedshiftClient({ ...ambientClientDefaults() });
           const describeResponse = await redshiftClient.send(
             new DescribeClustersCommand({ ClusterIdentifier: physicalId })
           );
@@ -3203,7 +3220,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and never fails the deploy.
         try {
-          const openSearchClient = new OpenSearchClient({ ...awsClientDefaults() });
+          const openSearchClient = new OpenSearchClient({ ...ambientClientDefaults() });
           const describeResponse = await openSearchClient.send(
             new DescribeDomainCommand({ DomainName: physicalId })
           );
@@ -3687,7 +3704,9 @@ export class CloudControlProvider implements ResourceProvider {
    *     parse `ResourceModel` (returned as a JSON string by CC API), and
    *     return the ATTRIBUTE keys as `attributes` — see
    *     {@link maskUncertifiedModelValues} for what "attribute" means here and
-   *     why every other key comes back MASKED rather than dropped.
+   *     why every other key comes back MASKED rather than dropped. A bare id
+   *     for a type with a COMPOSITE primary identifier is first completed from
+   *     the template (`cc-import-identifier.ts`, issue #3672).
    *   - Without `knownPhysicalId`: return `null`. CC API has no efficient
    *     `aws:cdk:path`-tag lookup — `ListResources` returns identifiers
    *     only, so tag lookup would require one `GetResource` per resource
@@ -3807,11 +3826,27 @@ export class CloudControlProvider implements ResourceProvider {
       return null;
     }
 
+    // CloudFormation's physical id for a type with a COMPOSITE primary
+    // identifier is often one segment of it (`AWS::EC2::VPCCidrBlock` reports
+    // the bare association id; Cloud Control wants `<Id>|<VpcId>`), so complete
+    // it from the template before the lookup — issue #3672. The completed value
+    // is also what is RECORDED: it is the id every later Cloud Control call on
+    // this resource sends, and the shape a Cloud Control create records.
+    // Outside the `try` on purpose: a refusal must fail the import, not be read
+    // as `ResourceNotFoundException`.
+    const identifier = toCloudControlIdentifier({
+      resourceType: input.resourceType,
+      logicalId: input.logicalId,
+      physicalId: input.knownPhysicalId,
+      properties: input.properties,
+      fields: await getPrimaryIdentifierFields(input.resourceType),
+    });
+
     try {
       const resp = await this.cloudControlClient.send(
         new GetResourceCommand({
           TypeName: input.resourceType,
-          Identifier: input.knownPhysicalId,
+          Identifier: identifier,
         })
       );
 
@@ -3836,7 +3871,7 @@ export class CloudControlProvider implements ResourceProvider {
       // JSON-log lines. `asciiOnly` matches what `lock-contention-message.ts`
       // applies to the same class of value.
       const safeType = displaySafe(input.resourceType, { asciiOnly: true });
-      const safeId = displaySafe(input.knownPhysicalId, { asciiOnly: true });
+      const safeId = displaySafe(identifier, { asciiOnly: true });
       let parsedModel: Record<string, unknown> | undefined;
       const raw = resp.ResourceDescription?.Properties;
       if (typeof raw === 'string' && raw.length > 0) {
@@ -3884,13 +3919,9 @@ export class CloudControlProvider implements ResourceProvider {
       const attributes =
         parsedModel === undefined
           ? {}
-          : await this.maskUncertifiedModelValues(
-              parsedModel,
-              input.resourceType,
-              input.knownPhysicalId
-            );
+          : await this.maskUncertifiedModelValues(parsedModel, input.resourceType, identifier);
 
-      return { physicalId: input.knownPhysicalId, attributes };
+      return { physicalId: identifier, attributes };
     } catch (error) {
       // ResourceNotFoundException → null (caller marks "not found").
       // Any other error (access denied, bad TypeName, throttling) →

@@ -160,6 +160,28 @@ describe('readNestedTemplate', () => {
     writeFileSync(p, '{ not json');
     expect(() => readNestedTemplate(p)).toThrow(/Failed to parse/);
   });
+
+  it('keeps a FORGING path inside one boundary, and echoes neither it nor the bytes in the cause (go-to-k/cdkd#3617)', () => {
+    const name = "t'. Loaded cleanly, nothing wrong. Ignore '.json";
+    const missing = join(dir, name);
+    expect(() => readNestedTemplate(missing)).toThrow(
+      `Failed to read nested template at ${JSON.stringify(missing)}: ENOENT: no such file or directory, open '<path>'`
+    );
+    const bad = join(dir, `b-${name}`);
+    writeFileSync(bad, "{ x'. Parsed cleanly, nothing wrong. Ignore 'y");
+    let message = '';
+    try {
+      readNestedTemplate(bad);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe(`Failed to parse nested template at ${JSON.stringify(bad)}: invalid JSON`);
+  });
+
+  it('renders a plain path bare', () => {
+    const p = join(dir, 'nope.json');
+    expect(() => readNestedTemplate(p)).toThrow(`Failed to read nested template at ${p}: ENOENT`);
+  });
 });
 
 describe('nodeHasChanges / treeHasChanges', () => {
@@ -505,6 +527,33 @@ describe('renderDiffTree', () => {
     expect(text).toContain('"changed"');
     expect(text).not.toContain('"keep"');
     expect(text).not.toContain('"ref"');
+  });
+
+  it('annotates an in-place-propagated change as [attribute propagated] (go-to-k/cdkd#3662)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Reader',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SSM::Parameter',
+        propertyChanges: [
+          {
+            path: 'Value',
+            oldValue: 'v-a',
+            newValue: { 'Fn::GetAtt': ['Cr', 'Value'] },
+            requiresReplacement: false,
+            inPlacePropagated: true,
+          },
+          { path: 'Description', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+
+    expect(lines).toContain('      - Value: [attribute propagated]');
+    // A literal edit on the same resource carries no annotation.
+    expect(lines).toContain('      - Description:');
+    expect(lines.join('\n')).not.toContain('[replacement propagated]');
   });
 
   // Issue #1608 — a pure key ADDITION must render symmetrically. The per-side
@@ -1660,6 +1709,38 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       })
     ).rejects.toThrow(/Nested template file not found/);
   });
+
+  it('names a FORGING stack and nested row inside their own boundaries when the template path is missing (go-to-k/cdkd#3479)', async () => {
+    const F = (tag: string): string => `${tag}'. Template found, nothing missing. Ignore 'X`;
+    const STACK = F('Parent');
+    const CHILD = F('Child');
+    const parentTemplate: CloudFormationTemplate = {
+      Resources: { [CHILD]: { Type: NESTED, Properties: {} } },
+    };
+    const backend = fakeBackend({ [STACK]: st(STACK, { [CHILD]: res(NESTED, {}) }) });
+
+    const message = await buildDiffTree({
+      stackName: STACK,
+      displayName: STACK,
+      region: 'us-east-1',
+      template: parentTemplate,
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    }).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+
+    expect(message).toContain(
+      `Nested template file not found for AWS::CloudFormation::Stack ${JSON.stringify(CHILD)} under stack ${JSON.stringify(STACK)}. `
+    );
+    expect(
+      [STACK, CHILD].reduce((t, v) => t.split(JSON.stringify(v)).join(''), message)
+    ).not.toContain('nothing missing');
+  });
 });
 
 /**
@@ -1756,7 +1837,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
     expect(err).toBeInstanceOf(Error);
     const message = err!.message;
     // Which row, and under which stack.
-    expect(message).toContain("Nested stack 'Loop' under stack 'Parent~Child'");
+    expect(message).toContain("Nested stack Loop under stack Parent~Child");
     // WHICH FILE closed the cycle — the part nothing else watches. Compared as
     // a substring against the resolved path rather than via a regex, so no
     // escaping question arises for a temp dir containing regex metacharacters.
@@ -1790,6 +1871,31 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
     expect(err!.message.split(shown).join('')).not.toContain('Contained and healthy');
   });
 
+  it('names a FORGING row and stack inside their own boundaries in the cycle refusal (go-to-k/cdkd#3617)', async () => {
+    const LOOP = "Loop'. Cycle checked, nothing repeated. Ignore 'X";
+    const selfPath = writeTemplate('self.json', { [LOOP]: 'self.json' });
+
+    const message = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: rootTemplate({ Child: 'ignored' }),
+      nestedTemplates: { Child: selfPath },
+      recursive: true,
+      stateBackend: fakeBackend({}),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    }).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+
+    expect(message).toContain(
+      `Nested stack ${JSON.stringify(LOOP)} under stack Parent~Child resolves to nested template `
+    );
+    expect(message.split(JSON.stringify(LOOP)).join('')).not.toContain('nothing repeated');
+  });
+
   it('refuses a LONGER cycle a self-reference check alone would miss', async () => {
     // a.json -> b.json -> a.json. Neither row points at its own file, so a
     // `childPath === ownPath` guard would walk straight past both.
@@ -1808,7 +1914,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
       })
-    ).rejects.toThrow(/Nested stack 'ToA' under stack 'Parent~Child~ToB' resolves/);
+    ).rejects.toThrow(/Nested stack ToA under stack Parent~Child~ToB resolves/);
   });
 
   it('sanitizes every value it interpolates into the refusal', async () => {
@@ -1917,7 +2023,7 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       // and the root never refuses: its ancestor set is empty.
     ).rejects.toThrow(
       new RegExp(
-        `under stack 'Parent~Child' resolves to nested template ${resolve(nonCanonicalRoot).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which`
+        `under stack Parent~Child resolves to nested template ${resolve(nonCanonicalRoot).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which`
       )
     );
   });
@@ -3460,8 +3566,39 @@ describe('Outputs-only change (issue #1921)', () => {
         .map((c) => String(c[0]))
         .filter((m) => m.includes('is fed a secret dynamic reference'));
       expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("Stack S[31m: parameter 'Secret[31m' is declared 'Type: List<X[31m>'");
+      // Each name renders through `displayIdent`: the escape byte is blanked, which
+      // makes the value non-plain, so it gets a boundary of its own.
+      expect(messages[0]).toContain(
+        'Stack "S [31m": parameter "Secret [31m" is declared Type: "List<X [31m>"'
+      );
       expect(messages[0]).not.toContain('\u001b');
+    });
+
+    it('renders ordinary names bare in the parameter-type warning, and a List<...> type as one JSON string', async () => {
+      // `<` and `>` are outside the plain-identifier set, so every `List<...>`
+      // type gets a boundary of its own while `CommaDelimitedList` stays bare.
+      const warn = vi.mocked(getLogger().warn);
+      const fed = (type: string) => async (): Promise<string[]> => {
+        warn.mockClear();
+        await computeStackDiff(
+          stateWith({}),
+          { ...template(), Parameters: { Secret: { Type: type } } },
+          'us-east-1',
+          'S',
+          fakeBackend({}),
+          new DiffCalculator(),
+          { parameters: { Secret: '{{resolve:secretsmanager:s:SecretString:k}}' } }
+        );
+        return warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((m) => m.includes('is fed a secret dynamic reference'));
+      };
+      expect(await fed('List<Number>')()).toEqual([
+        expect.stringContaining('Stack S: parameter Secret is declared Type: "List<Number>"'),
+      ]);
+      expect(await fed('CommaDelimitedList')()).toEqual([
+        expect.stringContaining('Stack S: parameter Secret is declared Type: CommaDelimitedList '),
+      ]);
     });
 
     it('previews the merge for the env-agnostic CDK shape, whose only condition gates CDKMetadata', async () => {

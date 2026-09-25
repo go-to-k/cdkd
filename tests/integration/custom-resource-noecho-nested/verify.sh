@@ -16,10 +16,13 @@
 #
 # THREE STACKS, ONE `cdkd deploy --all`:
 #   CdkdCrNoEchoNestedExample    parent; nested child `~Child` holds a NoEcho CR
-#                                and an ordinary CR, each feeding a child output;
-#                                two parent SSM parameters read them through
+#                                and an ordinary CR, each feeding a child output,
+#                                plus a literal output; three parent SSM
+#                                parameters read them through
 #                                `Fn::GetAtt [Child, 'Outputs.<Key>']`.
-#   CdkdCrNoEchoProducerExample  exports a NoEcho CR value and an ordinary one.
+#   CdkdCrNoEchoProducerExample  exports a NoEcho CR value and an ordinary one,
+#                                and reads the NoEcho one into its own SSM
+#                                parameter (a SAME-STACK reader).
 #   CdkdCrNoEchoConsumerExample  imports both into two SSM parameters.
 #
 # PHASES:
@@ -34,27 +37,41 @@
 #      per-attribute (`noEchoAttributeNames`) shape exists for.
 #   2. `cdkd diff --all --recursive --fail` exits 0 (no perpetual change from a
 #      masked leaf), and prints no token.
-#   3. deploy --all with CDKD_TEST_UPDATE=seed: the child NoEcho CR's `Seed`
-#      changes, so the recovery runs on `NestedStackProvider.update`, and the
-#      parent NoEchoParam's `Description` changes with it — an OWN-property
-#      change, because a parent resource reading a nested output is not
-#      promoted when only the output moves (go-to-k/cdkd#3631) and would
-#      otherwise never be provisioned. The parent parameter holds the NEW token
-#      on AWS, every persisted copy is still `***`, and neither token is
-#      disclosed. The producer / consumer pair is NO_CHANGE over a mask an
-#      EARLIER run wrote: the deploy must still exit 0 (a masked output read
-#      is not fatal by default — never add the strict-GetAtt flag here) and the
-#      consumer's live value must not become `***`.
+#   3. deploy --all with CDKD_TEST_UPDATE=seed: both child CRs' `Seed`
+#      changes, so the recovery runs on `NestedStackProvider.update`. No parent
+#      parameter has an own-property change: each new value reaches AWS only
+#      because the diff promotes a reader of an updated nested stack's
+#      `Outputs.<Key>` (go-to-k/cdkd#3631). The parent NoEchoParam holds the
+#      NEW token on AWS although its record and its redacted value are both
+#      `***` (go-to-k/cdkd#3662: the engine's post-resolution skip used to read
+#      that as no change), every persisted copy is still `***`, and neither
+#      token is disclosed. StaticParam, reading the output no phase moves, is
+#      promoted and then SKIPPED by the engine's re-resolve (both log lines
+#      asserted). The
+#      producer / consumer pair is NO_CHANGE over a mask an EARLIER run wrote:
+#      the deploy must still exit 0 (a masked output read is not fatal by
+#      default — never add the strict-GetAtt flag here) and the consumer's live
+#      value must not become `***`.
 #   4. deploy --all with CDKD_TEST_UPDATE=seed,producer-seed: the nested tree
 #      is NO_CHANGE over phase 3's masks, and the producer's NoEcho CR `Seed`
 #      flips, so the consumer's diff and its UPDATE both resolve the export
 #      through the recovery. The consumer holds the NEW producer token on AWS,
-#      every copy is still `***`, and no token is disclosed. Its `Description`
-#      flips too: without it the engine skips the update as `***` == `***`
-#      (go-to-k/cdkd#3662), measured on this fixture's first phase-4 run. That
-#      flip would make the UPDATE happen without the diff-side recovery, so the
-#      diff's own change COUNT is asserted separately (Value + Description).
-#   5. destroy --all; everything gone; state versions swept and asserted zero.
+#      every copy is still `***`, and no token is disclosed. The consumer has no
+#      own-property change, so both the diff's UPDATE (Value alone) and the new
+#      token on AWS need the recovery, and the latter also needs the engine not
+#      to skip `***` == `***` (go-to-k/cdkd#3662, measured on this fixture's
+#      first phase-4 run before the fix). The producer's same-stack reader
+#      holds the new token too: the diff promotes a reader of an updated custom
+#      resource's attributes, and the engine sends it.
+#   5. deploy --all with CDKD_TEST_UPDATE=seed,producer-seed,plain-seed: only
+#      the child's ORDINARY CR `Seed` changes, so the child updates while its
+#      NoEcho CR does not re-run and nothing re-mints the token. The parent
+#      NoEchoParam is still promoted (go-to-k/cdkd#3662 lifted the exclusion
+#      of masked readers), resolves the mask itself, and must be SKIPPED as
+#      equal to its record rather than REFUSED as a redacted read: the deploy
+#      exits 0, the skip line is asserted, and AWS keeps the phase-3 token.
+#      PlainParam carries the new plain value.
+#   6. destroy --all; everything gone; state versions swept and asserted zero.
 #
 # A RED whole-blob grep is not automatically a fixture defect. The mask-only
 # channel keeps no durable NoEcho flag on the record (go-to-k/cdkd#2449), so a
@@ -131,7 +148,9 @@ INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 NOECHO_EXPORT_NAME="CdkdCrNoEchoNestedToken"
 PARENT_NOECHO_PARAM="/cdkd-integ/cr-noecho-nested/parent/noecho"
 PARENT_PLAIN_PARAM="/cdkd-integ/cr-noecho-nested/parent/plain"
+PARENT_STATIC_PARAM="/cdkd-integ/cr-noecho-nested/parent/static"
 CONSUMER_NOECHO_PARAM="/cdkd-integ/cr-noecho-nested/consumer/noecho"
+PRODUCER_NOECHO_PARAM="/cdkd-integ/cr-noecho-nested/producer/noecho"
 CONSUMER_PLAIN_PARAM="/cdkd-integ/cr-noecho-nested/consumer/plain"
 CHILD_FUNCTION="cdkd-integ-crnoecho-nested-child"
 PRODUCER_FUNCTION="cdkd-integ-crnoecho-nested-producer"
@@ -145,6 +164,10 @@ CHILD_TOKEN_V2="noecho-child-token-updated"
 PRODUCER_TOKEN="noecho-producer-token-integ"
 PRODUCER_TOKEN_V2="noecho-producer-token-updated"
 CHILD_PLAIN="plain-child-value-integ"
+CHILD_PLAIN_V2="plain-child-value-updated"
+CHILD_PLAIN_V3="plain-child-value-rotated"
+# A literal child output (lib/nested-parent-stack.ts), moved by no phase.
+CHILD_STATIC="static-child-value"
 PRODUCER_PLAIN="plain-producer-value-integ"
 SECRET_MASK="***"
 
@@ -172,8 +195,8 @@ cleanup() {
           --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
       done
     fi
-    for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" \
-             "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}"; do
+    for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" "${PARENT_STATIC_PARAM}" \
+             "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}"; do
       aws ssm delete-parameter --region "${REGION}" --name "${p}" >/dev/null 2>&1
     done
     # Explicit, fixture-owned names (lib/*.ts), so these are exact deletes
@@ -389,15 +412,17 @@ run_deploy() { # run_deploy <phase label> <Deploying|Updating|Unchanged> [env as
   cat "${DEPLOY_LOG}"
 }
 
-# Every persisted copy of the nested arm. <token> is the value AWS must hold.
-assert_nested_arm() { # assert_nested_arm <label> <token>
-  local label="$1" token="$2" parent child
+# Every persisted copy of the nested arm. <token> is the value AWS must hold,
+# <plain> the ordinary child output's.
+assert_nested_arm() { # assert_nested_arm <label> <token> <plain>
+  local label="$1" token="$2" plain="$3" parent child
   parent="$(read_state "${PARENT_KEY}")" || fail "${label}: could not read ${PARENT_KEY}"
   child="$(read_state "${CHILD_KEY}")" || fail "${label}: could not read ${CHILD_KEY}"
 
   echo "  -- ${label}: nested arm, on AWS (the recovery)"
   assert_eq "parent NoEchoParam on AWS" "$(ssm_value "${PARENT_NOECHO_PARAM}")" "${token}"
-  assert_eq "parent PlainParam on AWS" "$(ssm_value "${PARENT_PLAIN_PARAM}")" "${CHILD_PLAIN}"
+  assert_eq "parent PlainParam on AWS" "$(ssm_value "${PARENT_PLAIN_PARAM}")" "${plain}"
+  assert_eq "parent StaticParam on AWS" "$(ssm_value "${PARENT_STATIC_PARAM}")" "${CHILD_STATIC}"
 
   echo "  -- ${label}: nested arm, in cdkd state (non-disclosure)"
   assert_eq "child state.outputs.NoEchoToken" \
@@ -417,13 +442,15 @@ assert_nested_arm() { # assert_nested_arm <label> <token>
 
   echo "  -- ${label}: nested arm, NEGATIVE control (per-attribute, not whole-bag)"
   assert_eq "child state.outputs.PlainValue" \
-    "$(printf '%s' "${child}" | jq -r '.outputs.PlainValue // "<absent>"')" "${CHILD_PLAIN}"
+    "$(printf '%s' "${child}" | jq -r '.outputs.PlainValue // "<absent>"')" "${plain}"
   assert_eq "child ChildPlainCr attributes.Value" \
-    "$(printf '%s' "${child}" | jq -r '.resources.ChildPlainCr.attributes.Value // "<absent>"')" "${CHILD_PLAIN}"
+    "$(printf '%s' "${child}" | jq -r '.resources.ChildPlainCr.attributes.Value // "<absent>"')" "${plain}"
   assert_eq "parent Child row attributes[Outputs.PlainValue]" \
-    "$(printf '%s' "${parent}" | jq -r '.resources.Child.attributes["Outputs.PlainValue"] // "<absent>"')" "${CHILD_PLAIN}"
+    "$(printf '%s' "${parent}" | jq -r '.resources.Child.attributes["Outputs.PlainValue"] // "<absent>"')" "${plain}"
   assert_eq "parent PlainParam properties.Value" \
-    "$(param_state_value "${parent}" "${PARENT_PLAIN_PARAM}")" "${CHILD_PLAIN}"
+    "$(param_state_value "${parent}" "${PARENT_PLAIN_PARAM}")" "${plain}"
+  assert_eq "parent StaticParam properties.Value" \
+    "$(param_state_value "${parent}" "${PARENT_STATIC_PARAM}")" "${CHILD_STATIC}"
 
   assert_no_tokens "${label}: the parent state blob" "${parent}"
   assert_no_tokens "${label}: the child state blob" "${child}"
@@ -438,6 +465,8 @@ assert_import_arm() { # assert_import_arm <label> <token>
 
   echo "  -- ${label}: Fn::ImportValue arm, on AWS (the recovery)"
   assert_eq "consumer NoEchoParam on AWS" "$(ssm_value "${CONSUMER_NOECHO_PARAM}")" "${token}"
+  # The producer's SAME-STACK reader of its own NoEcho CR (go-to-k/cdkd#3662).
+  assert_eq "producer ProducerNoEchoParam on AWS" "$(ssm_value "${PRODUCER_NOECHO_PARAM}")" "${token}"
   assert_eq "consumer PlainParam on AWS" "$(ssm_value "${CONSUMER_PLAIN_PARAM}")" "${PRODUCER_PLAIN}"
 
   echo "  -- ${label}: Fn::ImportValue arm, in cdkd state (non-disclosure)"
@@ -452,6 +481,8 @@ assert_import_arm() { # assert_import_arm <label> <token>
     "$(printf '%s' "${producer}" | jq -r '.resources.ProducerNoEchoCr.attributes.Value // "<absent>"')" "${SECRET_MASK}"
   assert_eq "consumer NoEchoParam properties.Value" \
     "$(param_state_value "${consumer}" "${CONSUMER_NOECHO_PARAM}")" "${SECRET_MASK}"
+  assert_eq "producer ProducerNoEchoParam properties.Value" \
+    "$(param_state_value "${producer}" "${PRODUCER_NOECHO_PARAM}")" "${SECRET_MASK}"
 
   echo "  -- ${label}: Fn::ImportValue arm, NEGATIVE control"
   assert_eq "producer state.outputs.PlainValueExport" \
@@ -521,7 +552,7 @@ assert_no_tokens_in_all_versions() { # <label>
 # --- Phase 1: deploy --all --------------------------------------------------
 echo "==> Phase 1: deploy --all"
 run_deploy "Phase 1" Deploying -u CDKD_TEST_UPDATE
-assert_nested_arm "Phase 1" "${CHILD_TOKEN_V1}"
+assert_nested_arm "Phase 1" "${CHILD_TOKEN_V1}" "${CHILD_PLAIN}"
 assert_import_arm "Phase 1" "${PRODUCER_TOKEN}"
 assert_no_tokens_in_all_versions "Phase 1"
 
@@ -551,11 +582,49 @@ done
 pass "cdkd diff --all --recursive --fail exited 0 over all three stacks"
 
 # --- Phase 3: UPDATE through NestedStackProvider.update ----------------------
-echo "==> Phase 3: deploy --all with CDKD_TEST_UPDATE=seed (child NoEcho CR Seed changes)"
+echo "==> Phase 3: deploy --all with CDKD_TEST_UPDATE=seed (child CR Seeds change)"
 run_deploy "Phase 3" Updating CDKD_TEST_UPDATE=seed
+# go-to-k/cdkd#3631, from the log: the diff promotes every reader of the
+# updated nested stack's outputs (it cannot know which ones the child deploy
+# moves), NoEchoParam, PlainParam and StaticParam among them — NoEchoParam
+# since go-to-k/cdkd#3662, which lifted the exclusion of a reader of a masked
+# output — and the engine skips the one whose output did not move. The AWS
+# values below are the outcome; these lines are the mechanism, and the skip
+# line is the only evidence StaticParam was promoted at all, since a
+# never-promoted reader issues no call either. The consumer stack's
+# NoEchoParam shares the logical-id prefix, but it reads an `Fn::ImportValue`,
+# which no in-place promotion follows, and is NO_CHANGE in phases 3 and 5.
+# Every grep FAILS on a zero match, so a drifted wording cannot pass silently;
+# each message names that possibility.
+PROMOTED_RE='DiffCalculator\] UPDATE \(in-place attr propagated\): '
+assert_promoted() { # assert_promoted <phase label> <logical-id prefix>...
+  local label="$1" p
+  shift
+  for p in "$@"; do
+    if ! grep -qE "${PROMOTED_RE}${p}[0-9A-F]* " "${DEPLOY_LOG}"; then
+      fail "${label}: no 'UPDATE (in-place attr propagated): ${p}...' line — a reader of an updated nested stack's Outputs.<Key> diffed NO_CHANGE (go-to-k/cdkd#3631 / #3662), or the wording drifted"
+    fi
+    pass "${label}: ${p} promoted as a reader of the updated nested stack's outputs"
+  done
+}
+skip_re() { # skip_re <logical-id prefix>
+  printf 'Skipping %s[0-9A-F]*: no actual changes after intrinsic function resolution' "$1"
+}
+assert_promoted "Phase 3" NoEchoParam PlainParam StaticParam
+if ! grep -qE "$(skip_re StaticParam)" "${DEPLOY_LOG}"; then
+  fail "Phase 3: no 'Skipping StaticParam...: no actual changes after intrinsic function resolution' line — the reader of an output that did not move was re-sent, or the wording drifted"
+fi
+pass "Phase 3: StaticParam skipped after re-resolution (its output did not move)"
+# The go-to-k/cdkd#3662 skip, from the log. The token on AWS below is the
+# outcome, and this names the mechanism when it fails: the re-minted token and
+# the record both redact to `***`.
+if grep -qE "$(skip_re NoEchoParam)" "${DEPLOY_LOG}"; then
+  fail "Phase 3: NoEchoParam was skipped as unchanged although the child re-minted its NoEcho token (go-to-k/cdkd#3662: *** compared equal to ***)"
+fi
+pass "Phase 3: NoEchoParam was not skipped as *** == ***"
 # The new token on AWS is also the proof the phase changed something: the old
 # one can only be replaced by a handler run on the UPDATE.
-assert_nested_arm "Phase 3" "${CHILD_TOKEN_V2}"
+assert_nested_arm "Phase 3" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V2}"
 # NO_CHANGE for this pair, over a mask the PREVIOUS run wrote: the consumer's
 # live value must still be the real token, never `***`.
 assert_import_arm "Phase 3" "${PRODUCER_TOKEN}"
@@ -569,26 +638,52 @@ assert_no_tokens_in_all_versions "Phase 3"
 # consumer takes an UPDATE.
 echo "==> Phase 4: deploy --all with CDKD_TEST_UPDATE=seed,producer-seed (producer NoEcho CR Seed changes)"
 run_deploy "Phase 4" Unchanged CDKD_TEST_UPDATE=seed,producer-seed
-# The DIFF-side recovery, asserted on its own. The consumer's `Description`
-# flip (the go-to-k/cdkd#3662 workaround) makes it an UPDATE whatever its diff
-# resolved, so the AWS value below proves only the PROVISIONING-side recovery.
-# The diff counts `Value` as a second property change only if it recovered the
-# new token; reading `***` it would count the Description alone. The parent's
-# NoEchoParam (same logical id) is NO_CHANGE in this phase, so an UPDATE line
-# for that id can only be the consumer's.
+# The DIFF-side recovery, asserted on its own. The consumer has no
+# own-property change, so its diff is an UPDATE of `Value` only if it recovered
+# the new token; reading `***` it would be NO_CHANGE and print no line. The
+# AWS value below then proves the PROVISIONING side: the recovery, and the
+# engine not skipping the update as `***` == `***` (go-to-k/cdkd#3662). The
+# parent's NoEchoParam (same logical-id prefix) is NO_CHANGE in this phase, so
+# an UPDATE line for that id can only be the consumer's.
 DIFF_LINE_RE='DiffCalculator\] UPDATE: NoEchoParam[0-9A-F]* \(([0-9]+) property changes'
 if ! grep -qE "${DIFF_LINE_RE}" "${DEPLOY_LOG}"; then
   fail "Phase 4: the deploy log has no 'UPDATE: NoEchoParam... (N property changes' line — the consumer did not diff as an UPDATE, or the wording drifted and this check is blind"
 fi
 CONSUMER_CHANGES="$(grep -oE "${DIFF_LINE_RE}" "${DEPLOY_LOG}" | head -1 | sed -E 's/.*\(([0-9]+) property changes/\1/')"
-assert_eq "Phase 4: consumer NoEchoParam diff property-change count (Value + Description)" \
-  "${CONSUMER_CHANGES}" "2"
-assert_nested_arm "Phase 4" "${CHILD_TOKEN_V2}"
+assert_eq "Phase 4: consumer NoEchoParam diff property-change count (Value)" \
+  "${CONSUMER_CHANGES}" "1"
+# The same-stack reader: the CR's attributes are no template property, so only
+# the custom-resource promotion (go-to-k/cdkd#3662) makes it an UPDATE.
+if ! grep -qE "${PROMOTED_RE}ProducerNoEchoParam[0-9A-F]* " "${DEPLOY_LOG}"; then
+  fail "Phase 4: no 'UPDATE (in-place attr propagated): ProducerNoEchoParam...' line — a reader of an updated custom resource's attribute diffed NO_CHANGE (go-to-k/cdkd#3662), or the wording drifted"
+fi
+pass "Phase 4: ProducerNoEchoParam promoted as a reader of the updated custom resource"
+assert_nested_arm "Phase 4" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V2}"
 assert_import_arm "Phase 4" "${PRODUCER_TOKEN_V2}"
 assert_no_tokens_in_all_versions "Phase 4"
 
-# --- Phase 5: destroy --------------------------------------------------------
-echo "==> Phase 5: destroy --all"
+# --- Phase 5: a promoted reader of a mask NOTHING re-minted ------------------
+# Only the child's ordinary CR `Seed` flips (`plain-seed`), so the child
+# updates and its NoEcho CR does not re-run. The parent NoEchoParam is promoted
+# (go-to-k/cdkd#3662), resolves the persisted mask, and its bag equals its
+# record: the engine must skip it BEFORE its refusal of a redacted read. A
+# refusal fails run_deploy's exit-code check; the skip line is the positive
+# evidence, and AWS keeping the phase-3 token is the outcome.
+echo "==> Phase 5: deploy --all with CDKD_TEST_UPDATE=seed,producer-seed,plain-seed (child plain CR Seed changes alone)"
+run_deploy "Phase 5" Updating CDKD_TEST_UPDATE=seed,producer-seed,plain-seed
+assert_promoted "Phase 5" NoEchoParam PlainParam StaticParam
+for p in NoEchoParam StaticParam; do
+  if ! grep -qE "$(skip_re "${p}")" "${DEPLOY_LOG}"; then
+    fail "Phase 5: no 'Skipping ${p}...: no actual changes after intrinsic function resolution' line — the promoted reader was re-sent or refused, or the wording drifted"
+  fi
+  pass "Phase 5: ${p} skipped after re-resolution (its output did not move)"
+done
+assert_nested_arm "Phase 5" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V3}"
+assert_import_arm "Phase 5" "${PRODUCER_TOKEN_V2}"
+assert_no_tokens_in_all_versions "Phase 5"
+
+# --- Phase 6: destroy --------------------------------------------------------
+echo "==> Phase 6: destroy --all"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy --all \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -597,12 +692,12 @@ for k in "${PARENT_KEY}" "${CHILD_KEY}" "${PRODUCER_KEY}" "${CONSUMER_KEY}"; do
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${k}"
 done
 pass "all four state files are gone"
-for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" \
-         "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}"; do
+for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" "${PARENT_STATIC_PARAM}" \
+         "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}"; do
   assert_gone "SSM parameter ${p} still exists after destroy (orphan)" \
     aws ssm get-parameter --region "${REGION}" --name "${p}"
 done
-pass "all four SSM parameters are gone"
+pass "all six SSM parameters are gone"
 for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}"; do
   assert_gone "Lambda ${f} still exists after destroy (orphan)" \
     aws lambda get-function --region "${REGION}" --function-name "${f}"

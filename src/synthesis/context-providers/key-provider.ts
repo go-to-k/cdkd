@@ -1,7 +1,7 @@
 import { KMSClient, ListAliasesCommand } from '@aws-sdk/client-kms';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
  * KMS Key context provider
@@ -27,7 +27,7 @@ export class KeyContextProvider implements ContextProvider {
 
     this.logger.debug(`Looking up KMS key by alias: ${aliasName} (region: ${region})`);
 
-    const client = new KMSClient({ ...awsClientDefaults(), ...(region && { region }) });
+    const client = new KMSClient({ ...ambientClientDefaults(), ...(region && { region }) });
 
     try {
       // Normalize alias name

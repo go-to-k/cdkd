@@ -609,7 +609,15 @@ describe('AgentCoreEvaluatorProvider', () => {
   });
 
   describe('import', () => {
-    it('should accept an evaluator ARN verbatim', async () => {
+    // Issue #3627: the ARN form is read back too, so the record carries
+    // `Status` / `CreatedAt` as `create()` records them.
+    it('should accept an evaluator ARN verbatim and read its Status / CreatedAt back', async () => {
+      mockSend.mockResolvedValueOnce({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        createdAt: new Date('2026-09-25T00:00:00Z'),
+      });
       const result = await provider.import({
         logicalId: 'MyEvaluator',
         resourceType: 'AWS::BedrockAgentCore::Evaluator',
@@ -619,11 +627,31 @@ describe('AgentCoreEvaluatorProvider', () => {
         knownPhysicalId: EVALUATOR_ARN,
       });
 
-      expect(result).toEqual({
+      expect(result).toStrictEqual({
         physicalId: EVALUATOR_ARN,
-        attributes: { EvaluatorArn: EVALUATOR_ARN, EvaluatorId: EVALUATOR_ID },
+        attributes: {
+          EvaluatorArn: EVALUATOR_ARN,
+          EvaluatorId: EVALUATOR_ID,
+          Status: 'ACTIVE',
+          CreatedAt: '2026-09-25T00:00:00.000Z',
+        },
       });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSend.mock.calls[0]![0].input).toEqual({ evaluatorId: EVALUATOR_ID });
+    });
+
+    it('should return null when the evaluator behind the ARN is gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.import({
+        logicalId: 'MyEvaluator',
+        resourceType: 'AWS::BedrockAgentCore::Evaluator',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: EVALUATOR_ARN,
+      });
+      expect(result).toBeNull();
     });
 
     it('should resolve a bare evaluator id to the canonical ARN via GetEvaluator', async () => {
@@ -642,9 +670,9 @@ describe('AgentCoreEvaluatorProvider', () => {
         knownPhysicalId: EVALUATOR_ID,
       });
 
-      expect(result).toEqual({
+      expect(result).toStrictEqual({
         physicalId: EVALUATOR_ARN,
-        attributes: { EvaluatorArn: EVALUATOR_ARN, EvaluatorId: EVALUATOR_ID },
+        attributes: { EvaluatorArn: EVALUATOR_ARN, EvaluatorId: EVALUATOR_ID, Status: 'ACTIVE' },
       });
     });
 

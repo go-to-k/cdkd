@@ -2631,7 +2631,10 @@ export class EC2Provider implements ResourceProvider {
         // call update() with a cdkd STATE record as the desired bag, and this
         // method receives only a MASKER from the update context (issue #2176),
         // not `replayingState`, so it still cannot tell that apart from a
-        // template update — so the refusal downgrades to a warning on every update, per
+        // template update. (`update()` itself can since issue #3141 —
+        // `replayingState` / `desiredFromAwsReadback` — but neither is threaded
+        // into this method; this arm was not re-decided, issue #3728.) So the
+        // refusal downgrades to a warning on every update, per
         // the "an UPDATE-path refusal is a replay refusal too" rule. The route
         // was already deleted above; throwing here would strand it.
         (message) => this.logger.warn(message),
@@ -2886,21 +2889,25 @@ export class EC2Provider implements ResourceProvider {
         //   2. Authorize{Ingress,Egress} accept an `IpPermissions` ARRAY, so
         //      N rules become ONE call instead of N.
         //
-        // Failure semantics are unchanged, but ONLY because this is
-        // allSettled and not all. `Promise.all` rejects the moment the first
-        // branch does, while the other two are still in flight -- so the
-        // outer catch would issue DeleteSecurityGroup concurrently with a
-        // pending Authorize / Revoke / CreateTags on the same group. That
-        // delete comes back DependencyViolation or InvalidGroup.NotFound,
-        // the cleanup only warns, and the half-wired SG leaks: exactly the
-        // orphan the cleanup exists to prevent. Serially this could not
-        // happen, because nothing was in flight at cleanup time.
+        // Failure semantics are unchanged, but ONLY because every branch is
+        // drained first. A bare `Promise.all` over the three branches rejects
+        // the moment the first one does, while the other two are still in
+        // flight -- so the outer catch would issue DeleteSecurityGroup
+        // concurrently with a pending Authorize / Revoke / CreateTags on the
+        // same group. That delete comes back DependencyViolation or
+        // InvalidGroup.NotFound, the cleanup only warns, and the half-wired SG
+        // leaks: exactly the orphan the cleanup exists to prevent. Serially
+        // this could not happen, because nothing was in flight at cleanup time.
         //
-        // allSettled waits for all three to settle before anything is thrown,
-        // so the group is quiescent when the delete goes out. The first
-        // rejection is rethrown so the caller sees the original cause; the
-        // remaining rejections are already handled by allSettled and cannot
-        // surface as unhandled.
+        // The drain waits for all three to settle before anything is thrown,
+        // so the group is quiescent when the delete goes out. Of several
+        // rejections, the one rethrown is the one that FAILED FIRST IN TIME
+        // (issue #2804) -- not the first by array position, which is what a
+        // scan of `Promise.allSettled`'s results would pick: each branch gets
+        // its own `catch`, so the callbacks run in rejection order and the
+        // first to fire wins. That choice is visible: the retry classifiers
+        // read the message. Every branch is `catch`-ed, so the rejections not
+        // rethrown cannot surface as unhandled.
         const ingressRules = properties['SecurityGroupIngress'] as
           | Array<Record<string, unknown>>
           | undefined;
@@ -2908,14 +2915,20 @@ export class EC2Provider implements ResourceProvider {
           | Array<Record<string, unknown>>
           | undefined;
 
-        const wiring = await Promise.allSettled([
-          this.applyTags(groupId, properties, logicalId),
-          this.authorizeInlineIngress(groupId, ingressRules),
-          this.applyInlineEgress(groupId, egressRules),
+        // Wrapped, so a branch rejecting with `undefined` still counts as a
+        // rejection.
+        let firstRejection: { readonly error: unknown } | undefined;
+        const recordRejection = (branch: Promise<unknown>): Promise<unknown> =>
+          branch.catch((error: unknown) => {
+            firstRejection ??= { error };
+          });
+        await Promise.all([
+          recordRejection(this.applyTags(groupId, properties, logicalId)),
+          recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
+          recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
-        const firstRejection = wiring.find((r) => r.status === 'rejected');
-        if (firstRejection) {
-          throw (firstRejection as PromiseRejectedResult).reason;
+        if (firstRejection !== undefined) {
+          throw firstRejection.error;
         }
       } catch (innerError) {
         try {
@@ -5631,9 +5644,10 @@ export class EC2Provider implements ResourceProvider {
    * narrowing here the template's extra keys read as an ADDED property on the
    * next deploy — and every destination key is create-only in the registry
    * schema, so the diff would classify a REPLACEMENT and the engine's
-   * replacement create (which passes no context, and so gets no
-   * `onMultipleDestinations` downgrade) would hit the #1566 refusal. A
-   * previously-green no-op deploy would start failing.
+   * replacement create (whose context carries a `maskSecrets` capability but
+   * never `replayingState`, and so gets no `onMultipleDestinations`
+   * downgrade) would hit the #1566 refusal. A previously-green no-op deploy
+   * would start failing.
    *
    * Shares `narrowRouteDestinations` with the provisioning path so the two
    * cannot disagree about which key survives.
@@ -5642,8 +5656,8 @@ export class EC2Provider implements ResourceProvider {
    * half for the same reason: `IpProtocol` is create-only on that type in the
    * registry schema, so normalizing state alone would make the template's
    * original value read as a changed immutable property — a REPLACEMENT, whose
-   * create passes no context and so gets no `onUnusable` downgrade, turning a
-   * previously-green no-op deploy into a hard failure. Normalizing BOTH sides
+   * create never sets `replayingState` and so gets no `onUnusable` downgrade,
+   * turning a previously-green no-op deploy into a hard failure. Normalizing BOTH sides
    * is also what keeps the fix correct for records written BEFORE it existed,
    * which still carry the un-narrowed value.
    */

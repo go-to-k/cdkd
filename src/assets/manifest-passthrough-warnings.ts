@@ -1,8 +1,12 @@
 import { resolve } from 'path';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { cacheOptionToFlag } from './docker-cache-option.js';
-import { assemblyPathEscape, renderAssemblyPathEscape } from '../utils/assembly-path.js';
-import { displaySafe } from '../utils/display-safe.js';
+import {
+  assemblyPathEscape,
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+} from '../utils/assembly-path.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { redactDockerArgvValues } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -337,10 +341,11 @@ export function warnEscapingBuildKitPaths(
     //
     // cdkd-raw-beside-safe: `renderAssemblyPathEscape` is a safe RENDERER — it
     // renders every path through `displayAssemblyPath` and the rest is its own
-    // literal text. `ref.field` and `verb` are this module's own literals.
+    // literal text. `ref.field` and `verb` are this module's own literals; the
+    // manifest-chosen key renders through `displayIdent` (go-to-k/cdkd#3617).
     logger.warn(
       `Docker asset ${ref.field}` +
-        (ref.where === ref.field ? '' : `['${displaySafe(ref.where)}']`) +
+        (ref.where === ref.field ? '' : `[${displayIdent(ref.where)}]`) +
         ` names a host path ` +
         `outside the assembly, which ` +
         `${renderAssemblyPathEscape(
@@ -381,7 +386,7 @@ export function warnManifestExecutable(executable: readonly string[]): void {
   logger.debug(`source.executable argv: ${redactDockerArgvValues([...executable]).join(' ')}`);
   logger.warn(
     `Docker asset source.executable runs a command this asset manifest chose, on ` +
-      `this machine: '${displaySafe(cmd ?? '')}'` +
+      `this machine: ${displayAssemblyPath(cmd ?? '')}` +
       (rest.length > 0 ? ` (with ${rest.length} argument(s); --verbose shows them)` : '') +
       `. cdkd runs it, matching the CDK CLI — a pre-synthesized assembly is trusted ` +
       `input. Note that this means deploying from a pre-synthesized assembly DOES ` +
@@ -447,7 +452,7 @@ export function warnUnrecognizedAssetDestination(opts: {
   getLogger()
     .child('assets')
     .warn(
-      `Asset destination ${opts.kind} '${displaySafe(opts.name)}' is not a ` +
+      `Asset destination ${opts.kind} ${displayIdent(opts.name)} is not a ` +
         `CDK-bootstrap or cdkd-managed name, so cdkd uploads there exactly as this ` +
         `asset manifest wrote it, with your credentials. That is what a custom ` +
         `bootstrap looks like and is expected for one; if you did not configure ` +

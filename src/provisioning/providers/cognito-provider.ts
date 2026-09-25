@@ -38,6 +38,7 @@ import {
   type GetUserPoolMfaConfigCommandOutput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
+import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
@@ -56,7 +57,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -1434,7 +1435,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private getClient(): CognitoIdentityProviderClient {
     if (!this.cognitoClient) {
       this.cognitoClient = new CognitoIdentityProviderClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -2321,16 +2322,20 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
     // The update-path twin of `create()`'s guard (issue #1925 item 2). The
-    // downgrade is UNCONDITIONAL here rather than gated on a replay context —
-    // and it stays that way now that `update()` DOES take a context (issue
-    // #1932 item 3 added one for `maskSecrets`). Nothing on `UpdateContext`
-    // distinguishes a template push from the state-borne bag `cdkd drift
-    // --revert` and the rollback executor's revert arm hand it:
-    // `desiredFromAwsReadback` is set by `drift --revert` ALONE and is
-    // deliberately NOT set by the rollback arms (see its own doc), so gating on
-    // it would re-introduce the refusal on exactly the rollback path — and a
-    // refusal against a historical state record leaves the resource not merely
-    // un-updatable but UN-ROLLBACKABLE, with no template-side remedy. Same
+    // downgrade is UNCONDITIONAL here rather than gated on a replay context.
+    // When it was written nothing on `UpdateContext` distinguished a template
+    // push from the state-borne bag `cdkd drift --revert` and the rollback
+    // executor's revert arm hand it: `desiredFromAwsReadback` is set by
+    // `drift --revert` ALONE and is deliberately NOT set by the rollback arms
+    // (see its own doc), so gating on it would re-introduce the refusal on
+    // exactly the rollback path — and a refusal against a historical state
+    // record leaves the resource not merely un-updatable but UN-ROLLBACKABLE,
+    // with no template-side remedy. Since issue #3141 the revert arms DO set
+    // `UpdateContext.replayingState`, so gating on BOTH flags is now possible
+    // (the per-index `OnDemandThroughput` refusal in
+    // `dynamodb-table-provider.ts` does exactly that); this site was not
+    // re-decided, and doing so would turn a template-path warning into a
+    // refusal — a behaviour change, not a comment edit (issue #3728). Same
     // shape as `IAMAccessKeyProvider`'s `Status` and
     // `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
     const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
@@ -3008,6 +3013,25 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * The attribute map a user pool records, derived as `create()` / `update()`
+   * derive it (issue #3627): the resolver served the pool id for
+   * `ProviderName` / `ProviderURL` after an import.
+   */
+  private async userPoolAttributes(
+    userPoolId: string,
+    arn: string | undefined
+  ): Promise<Record<string, unknown>> {
+    const region = await this.getClient().config.region();
+    const { urlSuffix } = derivePartitionAndUrlSuffix(region);
+    return definedAttributes({
+      Arn: arn,
+      ProviderName: `cognito-idp.${region}.${urlSuffix}/${userPoolId}`,
+      ProviderURL: `https://cognito-idp.${region}.${urlSuffix}/${userPoolId}`,
+      UserPoolId: userPoolId,
+    });
+  }
+
+  /**
    * Adopt an existing Cognito User Pool into cdkd state.
    *
    * User Pool physical id is the AWS-generated `<region>_<random>` id.
@@ -3026,10 +3050,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeUserPoolCommand({ UserPoolId: input.knownPhysicalId })
         );
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: await this.userPoolAttributes(input.knownPhysicalId, resp.UserPool?.Arn),
+        };
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return null;
         throw err;
@@ -3050,7 +3077,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
       for (const pool of list.UserPools ?? []) {
         if (pool.Id && pool.Name === desiredName) {
-          return { physicalId: pool.Id, attributes: {} };
+          let resp;
+          try {
+            resp = await this.getClient().send(
+              new DescribeUserPoolCommand({ UserPoolId: pool.Id })
+            );
+          } catch (err) {
+            // Deleted between the list and the describe: not found, like the
+            // override branch above.
+            if (err instanceof ResourceNotFoundException) return null;
+            throw err;
+          }
+          return {
+            physicalId: pool.Id,
+            attributes: await this.userPoolAttributes(pool.Id, resp.UserPool?.Arn),
+          };
         }
       }
       marker = list.NextToken;

@@ -60,6 +60,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
+import { clearPrimaryIdentifierCache } from '../../../src/provisioning/cc-import-identifier.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
 
@@ -109,6 +110,7 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
   beforeEach(() => {
     vi.clearAllMocks();
     clearReadOnlyPropertiesCache();
+    clearPrimaryIdentifierCache();
     describeTypeRetryDelays.sleep = async () => {};
   });
 
@@ -275,9 +277,13 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
   // `typeof` renders the null row as "parsed to object, not an object" — the
   // one branch whose whole job is diagnosis, contradicting itself.
   //
-  // No `mockCloudFormationSend` priming here on purpose: the schema lookup is
-  // unreachable when the model does not parse to an object, so priming it
-  // would be dead setup implying a dependency that does not exist.
+  // No `mockCloudFormationSend` priming here on purpose: the READ-ONLY schema
+  // lookup is unreachable when the model does not parse to an object, so
+  // priming it would be dead setup implying a dependency that does not exist.
+  // The one DescribeType that does run is the primary-identifier lookup
+  // `import()` makes before `GetResource` (issue #3672); the unprimed mock
+  // answers `undefined`, which that lookup reads as "unknown" and passes the id
+  // through.
   it.each([
     ['["zz-lane2847-scalar","b"]', 'an array'],
     ['null', 'null'],
@@ -319,10 +325,12 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // never reaches the log line or the record.
     expect(warned).not.toContain('zz-lane2847-scalar');
     expect(JSON.stringify(result)).not.toContain('zz-lane2847-scalar');
-    // The schema lookup really is unreachable on this path — the comment above
-    // primes no CFn mock BECAUSE of that, and an unpinned "it is unreachable"
-    // is exactly the kind of claim this repo makes the test carry.
-    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+    // The read-only schema lookup really is unreachable on this path — the
+    // comment above primes no CFn mock BECAUSE of that, and an unpinned "it is
+    // unreachable" is exactly the kind of claim this repo makes the test carry.
+    // Exactly ONE DescribeType ran: the primary-identifier lookup. A read-only
+    // lookup would be a second.
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
   });
 
   it('logs the SyntaxError NAME only, so an unparseable model cannot echo its own head into the log', async () => {

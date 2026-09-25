@@ -72,7 +72,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -319,7 +319,7 @@ export class ELBv2Provider implements ResourceProvider {
   private getClient(): ElasticLoadBalancingV2Client {
     if (!this.elbv2Client) {
       this.elbv2Client = new ElasticLoadBalancingV2Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

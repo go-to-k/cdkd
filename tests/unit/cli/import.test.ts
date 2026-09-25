@@ -2549,6 +2549,123 @@ describe('cdkd import', () => {
       });
     }
 
+    /**
+     * The ROWS of a readable list (issue go-to-k/cdkd#3500), through the command.
+     * `orphansCarriedFrom` copies them verbatim, so unguarded `cdkd import`
+     * writes a record holding a row the next deploy cannot read.
+     */
+    for (const [label, row] of [
+      ['null', null],
+      ['a number', 5],
+      ['no `state`', { logicalId: 'Gone', orphanedAt: 1 }],
+      ['a non-string `logicalId`', { logicalId: 5, orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} } }],
+      // Added by go-to-k/cdkd#3641 item o7: the shapes every other command's table
+      // carried and this one did not, so no predicate clause is fenced at one
+      // command and unfenced at another.
+      ['an empty object', {}],
+      [
+        'a torn `properties` map',
+        { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: 'abcdef' } },
+      ],
+      [
+        'a torn `attributes` map',
+        { logicalId: 'Gone', orphanedAt: 1, state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {}, attributes: 5 } },
+      ],
+      [
+        'no `physicalId`',
+        { logicalId: 'Gone', orphanedAt: 1, state: { resourceType: 'AWS::SQS::Queue', properties: {} } },
+      ],
+    ] as const) {
+      it(`refuses an existing record whose orphans list holds a row that is ${label}`, async () => {
+        const usable = {
+          logicalId: 'Keep',
+          orphanedAt: 1,
+          state: { physicalId: 'live-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+        };
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          // A usable row beside it, so the guard has to refuse a list it could
+          // partly read rather than a uniformly broken one.
+          state: { ...existingState(), orphans: [usable, row] as unknown as [] },
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // The ROW text: the field here is a list, so the container refusal would
+        // send the operator to rewrite a field that is already the right shape.
+        expect(message).toContain('rollback-orphan record(s)');
+        expect(message).not.toContain("has no readable 'orphans' list");
+        expect(
+          mockSaveState,
+          'cdkd import saved a record holding a row it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
+    /**
+     * go-to-k/cdkd#3643: two HEALTHY rows sharing a string `logicalId`. Each
+     * passes the per-row predicate, and `orphansCarriedFrom` would carry both
+     * into the record this command saves — a record no cdkd writer produces,
+     * which the next deploy's merge collapses to one.
+     */
+    it('refuses an existing record whose orphans list holds two rows sharing a `logicalId`', async () => {
+      const twin = (physicalId: string) => ({
+        logicalId: 'Twin',
+        orphanedAt: 1,
+        state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: { ...existingState(), orphans: [twin('live-1'), twin('live-2')] as unknown as [] },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+      ).rejects.toThrow();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('2 rollback-orphan record(s)');
+      expect(message).toContain('shares it with another row');
+      expect(
+        mockSaveState,
+        'cdkd import saved a record holding two rows sharing a logicalId'
+      ).not.toHaveBeenCalled();
+    });
+
+    it('FLOOR: two rows under DISTINCT ids are still imported', async () => {
+      const row = (logicalId: string, physicalId: string) => ({
+        logicalId,
+        orphanedAt: 1,
+        state: { physicalId, resourceType: 'AWS::SQS::Queue', properties: {} },
+      });
+      mockSaveState.mockClear();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: {
+          ...existingState(),
+          orphans: [row('Twin', 'live-1'), row('Other', 'live-2')] as unknown as [],
+        },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes']);
+      expect(mockSaveState, 'the control never saved, so it proves nothing').toHaveBeenCalled();
+    });
+
     it('FLOOR: a populated, an empty and an ABSENT orphans container are all still imported', async () => {
       // The one-sidedness guard for the four cases above, and the ABSENT row
       // is the load-bearing one: a stack that never had a failed deploy has no
@@ -3387,7 +3504,7 @@ describe('cdkd import', () => {
           expect(b.observedProperties).toBeUndefined();
           const warned = warnSpy.mock.calls.flat().join(' ');
           expect(warned).toContain('cloudformation:DescribeStacks');
-          expect(warned).toContain("'P~Child'");
+          expect(warned).toContain('resource(s) in P~Child depend');
           expect(warned).not.toContain(childArn);
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
@@ -3519,8 +3636,73 @@ describe('cdkd import', () => {
           expect(b.observedProperties).toBeUndefined();
           expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
           const warned = warnSpy.mock.calls.flat().join(' ');
-          expect(warned).toContain("'P~Child'");
+          expect(warned).toContain('resource(s) in P~Child depend');
           expect(warned).not.toContain(childArn);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+      it('NESTED child: a FORGING child logical id stays inside one boundary in the refusal (go-to-k/cdkd#3617)', async () => {
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-3617-'));
+        const CHILD = "Child'. Parameters proven, nothing refused. Ignore 'X";
+        const PARAM = "DbPassword'), all proven, nothing refused. Ignore ('Y";
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: { [PARAM]: { Type: 'String', Default: 'CHANGEME', NoEcho: true } },
+              Resources: {
+                B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: { Ref: PARAM } } },
+              },
+            })
+          );
+          const tmpl = template({
+            [CHILD]: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { [CHILD]: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          // The readback belongs to the BUCKET alone: the parent's nested-stack
+          // row routes through the same mock, and a bucket-shaped answer there
+          // would put LIVE in the parent record by the fixture's own hand.
+          mockGetProvider.mockImplementation((t: string) => ({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+            readCurrentState: vi.fn(async () =>
+              t === 'AWS::S3::Bucket' ? { BucketName: LIVE } : undefined
+            ),
+          }));
+          const childArn = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/u';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([[CHILD, childArn]]),
+            nested: new Map([
+              [
+                CHILD,
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          cfnSend.mockResolvedValue({
+            Stacks: [{ Parameters: [{ ParameterKey: PARAM, ParameterValue: '****' }] }],
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const warned = warnSpy.mock.calls.flat().join(' ');
+          const shown = JSON.stringify(`P~${CHILD}`);
+          expect(warned).toContain(`resource(s) in ${shown} depend`);
+          expect(warned).toContain(`(${JSON.stringify(PARAM)})`);
+          expect(
+            warned.split(shown).join('').split(JSON.stringify(PARAM)).join('')
+          ).not.toContain('nothing refused');
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
         }

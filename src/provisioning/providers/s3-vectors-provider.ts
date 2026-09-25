@@ -22,7 +22,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -50,7 +50,7 @@ export class S3VectorsProvider implements ResourceProvider {
   private getClient(): S3VectorsClient {
     if (!this.client) {
       this.client = new S3VectorsClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -479,6 +479,9 @@ export class S3VectorsProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource <id>=<name>` override or `Properties.VectorBucketName`
    *     → verify via `GetVectorBucket`. The physical id is the bucket name.
+   *     An `s3vectors` bucket ARN — CloudFormation's physical id, which
+   *     `--migrate-from-cloudformation` passes verbatim — is looked up BY ARN,
+   *     and the name AWS reports is recorded (issue #3627).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit =
@@ -489,9 +492,26 @@ export class S3VectorsProvider implements ResourceProvider {
         : undefined);
 
     if (explicit) {
+      // CloudFormation's physical id is the bucket ARN; cdkd's is the name. An
+      // ARN is looked up BY ARN, so its region / account are honoured, and only
+      // an `s3vectors` bucket ARN qualifies (an `s3tables` `…:bucket/<name>`
+      // ARN must not adopt a same-named vector bucket).
+      const isArn = explicit.startsWith('arn:');
+      if (isArn && !/^arn:[^:]+:s3vectors:[^:]*:[^:]*:bucket\/[^/]+$/.test(explicit)) return null;
       try {
-        await this.getClient().send(new GetVectorBucketCommand({ vectorBucketName: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.getClient().send(
+          new GetVectorBucketCommand(
+            isArn ? { vectorBucketArn: explicit } : { vectorBucketName: explicit }
+          )
+        );
+        const name = isArn ? resp.vectorBucket?.vectorBucketName : explicit;
+        if (!name) return null;
+        // The map `create()` records; the physical id is the NAME, so without
+        // it the resolver's shape guard refused `VectorBucketArn`.
+        return {
+          physicalId: name,
+          attributes: definedAttributes({ VectorBucketArn: resp.vectorBucket?.vectorBucketArn }),
+        };
       } catch (err) {
         if (this.isNotFoundError(err)) return null;
         throw err;

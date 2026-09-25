@@ -22,6 +22,7 @@ import {
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
+import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -106,6 +107,25 @@ export type CanonicalizePropertiesFn = (
 const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
 });
+
+/**
+ * The PREFIX twin of {@link IN_PLACE_UPDATE_DERIVED_ATTRS}, for a type whose
+ * derived attributes are an open family rather than a fixed list (issue
+ * [#3631](https://github.com/go-to-k/cdkd/issues/3631)).
+ *
+ * A nested stack's `Outputs.<Key>` attributes are the child's outputs, and a
+ * child-only change moves them while the parent's `AWS::CloudFormation::Stack`
+ * row changes only `TemplateURL` / `Parameters`. The parent's diff runs BEFORE
+ * the child deploys, so a reader of `Fn::GetAtt [Child, 'Outputs.<Key>']`
+ * resolves against the PREVIOUS value and diffs NO_CHANGE. Which outputs move
+ * is decided by the child's own deploy, so it is not knowable here: every
+ * reader is promoted, and the deploy engine's re-resolve-and-skip drops the
+ * ones whose output did not move.
+ */
+const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, readonly string[]>> =
+  Object.freeze({
+    'AWS::CloudFormation::Stack': Object.freeze(['Outputs.']),
+  });
 
 /**
  * Diff calculator for comparing desired state (template) with current state
@@ -489,8 +509,7 @@ export class DiffCalculator {
     // only "change" is a Ref / Fn::GetAtt to a resource that will be
     // REPLACED resolves against CURRENT state above and lands on NO_CHANGE,
     // even though the reference's value (new physical ID / ARN) WILL change.
-    this.promoteReplacementDependents(changes, desiredTemplate);
-
+    //
     // Propagate IN-PLACE attribute changes to dependents (bug-hunt 2026-06-29):
     // a dependent that embeds `Fn::GetAtt[Up, Attr]` (e.g. an SSM Parameter whose
     // Value is `Fn::Sub[..., {V: Fn::GetAtt[Base, Value]}]`) resolves against the
@@ -502,7 +521,20 @@ export class DiffCalculator {
     // affected -- a `Ref` (physical id, unchanged in-place) or a GetAtt of an
     // unchanged / computed attribute (e.g. a Lambda `Arn`, which does not move on
     // an in-place Description update) is correctly left NO_CHANGE.
-    this.promoteInPlaceAttributeDependents(changes, desiredTemplate, rawGetAttRefs);
+    //
+    // Run to a FIXPOINT (issue #3631). An in-place promotion can create an
+    // upstream either pass seeds from: a nested stack whose `Parameters` read
+    // a sibling stack's output becomes an in-place UPDATE, which makes a
+    // reader of ITS outputs stale in turn, and a promotion whose referencing
+    // property is create-only is a REPLACEMENT, whose `Ref` readers only the
+    // replacement pass promotes. The replacement pass is transitive on its own
+    // and runs before each in-place pass, so the in-place pass's verdict alone
+    // decides whether another round is needed. It skips a path already
+    // present, so the loop ends at the latest once every referencing property
+    // carries a change.
+    do {
+      this.promoteReplacementDependents(changes, desiredTemplate);
+    } while (this.promoteInPlaceAttributeDependents(changes, desiredTemplate, rawGetAttRefs));
 
     const summary = this.getSummary(changes);
     this.logger.debug(
@@ -674,27 +706,50 @@ export class DiffCalculator {
    *      update side-effects even though it is not a template property — the
    *      per-type {@link IN_PLACE_UPDATE_DERIVED_ATTRS} allow list (issue #985;
    *      e.g. `AWS::EC2::LaunchTemplate.LatestVersionNumber`, which an
-   *      `autoscaling.AutoScalingGroup` reads for its `LaunchTemplate.Version`).
-   * (`Ref` resolves to the physical id, which an in-place update never moves, so
-   * Ref-only dependents are left NO_CHANGE; likewise a GetAtt of a computed
-   * attribute NOT in the allow list, e.g. a Lambda `Arn` on a Description edit.)
+   *      `autoscaling.AutoScalingGroup` reads for its `LaunchTemplate.Version`);
+   *      or
+   *   3. `Attr` starts with a derived-attribute PREFIX of `Up`'s type — the
+   *      {@link IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES} table (issue #3631; a
+   *      nested stack's `Outputs.<Key>`); or
+   *   4. `Up` is a custom resource, whose attributes are all its handler's
+   *      response `Data` (go-to-k/cdkd#3662).
+   * (`Ref` resolves to the physical id, and Ref-only dependents are left
+   * NO_CHANGE here. An in-place update normally keeps the physical id, but not
+   * always: a custom resource handler may return a NEW `PhysicalResourceId`,
+   * which the engine records as a replacement only after this pass has run
+   * — issue #3722. Likewise a GetAtt of a computed attribute NOT in the allow
+   * list, e.g. a Lambda `Arn` on a Description edit, is left alone.)
    *
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
-   * when nothing actually changed.
+   * when nothing actually changed. Each synthetic change is marked
+   * `inPlacePropagated`, and its `requiresReplacement` is a ceiling the engine
+   * lowers when the resolved value equals the record, so an unmoved value never
+   * replaces a reader that another edit sent to the provider.
    *
-   * Single-hop by design (unlike {@link promoteReplacementDependents}, which is
-   * fully transitive via a worklist): `changedPropsByUpstream` is frozen at entry,
-   * so a chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
-   * attr)` promotes B but not C. Deep GetAtt-of-a-changed-attr chains are rare in
-   * practice; if one ever needs full transitivity, promote to a worklist that
-   * re-derives changed props as dependents are promoted.
+   * One pass is single-hop: `changedPropsByUpstream` is frozen at entry, so a
+   * chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
+   * attr)` promotes B but not C. `calculateDiff` re-runs it to a fixpoint, and
+   * the pass after B's promotion sees B as an in-place UPDATE.
+   *
+   * A dependent reading a MASKED attribute (a `NoEcho` custom resource's
+   * value, persisted `***`, issue #2274) is promoted like any other
+   * (go-to-k/cdkd#3662). The engine takes its no-change skip BEFORE refusing a
+   * redacted read, so a guess whose resolved bag equals the record, mask
+   * included, sends nothing; a fresh `NoEcho` value never takes that skip, so
+   * one the upstream re-minted in this run reaches AWS. What is left is the
+   * refusal's own case: a promoted dependent whose OTHER reads moved while the
+   * masked value was not re-minted fails loudly, as an update of it with a
+   * changed property already did, rather than keeping the stale values.
+   *
+   * @returns whether any synthetic PropertyChange was added (the caller's
+   *          fixpoint signal).
    */
   private promoteInPlaceAttributeDependents(
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>
-  ): void {
+  ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
     const changedPropsByUpstream = new Map<string, Set<string>>();
     // Per upstream in-place UPDATE: its resource type, used to look up the
@@ -712,7 +767,8 @@ export class DiffCalculator {
         .filter((p): p is string => typeof p === 'string');
       if (props.length > 0) changedPropsByUpstream.set(logicalId, new Set(props));
     }
-    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return;
+    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return false;
+    let added = false;
 
     for (const [dependentId, perProp] of rawGetAttRefs) {
       const resource = desiredTemplate.Resources[dependentId];
@@ -741,11 +797,50 @@ export class DiffCalculator {
           // attribute of the upstream's type that an in-place UPDATE side-effects
           // (e.g. LaunchTemplate LatestVersionNumber) — regardless of WHICH
           // property changed, since any in-place edit can bump it.
+          //
+          // `Object.hasOwn` on both tables: the type is template text, and a
+          // bare lookup of `constructor` answers with `Object`'s own function.
           const upstreamType = inPlaceUpdateTypeByUpstream.get(upstreamId);
-          const derivedAttrs = upstreamType
-            ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
-            : undefined;
+          const derivedAttrs =
+            upstreamType !== undefined && Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, upstreamType)
+              ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
+              : undefined;
           if (derivedAttrs && [...attrs].some((attr) => derivedAttrs.has(attr))) {
+            matched = true;
+            break;
+          }
+          // Arm 3 (issue #3631): a derived attribute FAMILY, matched by prefix —
+          // a nested stack's `Outputs.<Key>`, which a child-only change moves.
+          // Always speculative: which outputs move is the child deploy's to
+          // decide. A reader of a `NoEcho` output (persisted `***`, issue #2274)
+          // is promoted too; the method doc says what the engine then does with
+          // it (go-to-k/cdkd#3662). A promoted reader also re-runs everything
+          // the engine does before its no-change skip, e.g. fetching its
+          // `{{resolve:...}}` references again.
+          const derivedPrefixes =
+            upstreamType !== undefined &&
+            Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES, upstreamType)
+              ? IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES[upstreamType]
+              : undefined;
+          if (
+            derivedPrefixes &&
+            [...attrs].some((attr) => derivedPrefixes.some((prefix) => attr.startsWith(prefix)))
+          ) {
+            matched = true;
+            break;
+          }
+          // Arm 4 (go-to-k/cdkd#3662): EVERY attribute of a custom resource. Its
+          // attributes are the handler's response `Data`, which an in-place
+          // update re-runs, and none of them is a template property, so arms 1-3
+          // never see one. Speculative like arm 3: the engine re-resolves the
+          // reader against what the handler returned and skips it when nothing
+          // moved, except for a `NoEcho` value, whose `***` compares equal to
+          // any other.
+          if (
+            upstreamType !== undefined &&
+            (upstreamType.startsWith('Custom::') ||
+              upstreamType === 'AWS::CloudFormation::CustomResource')
+          ) {
             matched = true;
             break;
           }
@@ -758,16 +853,23 @@ export class DiffCalculator {
           newValue: change.desiredProperties?.[propKey],
           // Re-evaluate the dependent's own replacement rules: if the referencing
           // property is immutable for its type, the dependent is replaced too.
+          // A CEILING (go-to-k/cdkd#3662): the engine drops it when the
+          // resolved value turns out equal to the record, which for arms 3 and
+          // 4 is the common case (the output or the handler's `Data` did not
+          // move) and which a same-deploy edit elsewhere on the reader must not
+          // turn into a destroy + recreate.
           requiresReplacement: this.replacementRules.requiresReplacement(
             change.resourceType,
             propKey,
             undefined,
             undefined
           ),
+          inPlacePropagated: true,
         });
       }
 
       if (syntheticChanges.length === 0) continue;
+      added = true;
 
       if (change.changeType === 'NO_CHANGE') {
         change.changeType = 'UPDATE';
@@ -779,13 +881,15 @@ export class DiffCalculator {
         change.propertyChanges = [...(change.propertyChanges ?? []), ...syntheticChanges];
       }
     }
+    return added;
   }
 
   /**
    * Extract `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references from a property value
    * as a map of `referencedLogicalId -> set of referenced attribute names`.
    * Plain `Ref` is intentionally NOT captured: it resolves to the physical id,
-   * which an in-place update never changes. Recurses into arrays / objects so
+   * which an in-place update normally keeps (a custom resource handler returning
+   * a new `PhysicalResourceId` is the exception, issue #3722). Recurses into arrays / objects so
    * intrinsics nested inside `Fn::Sub`'s variable map / `Fn::Join` etc. are seen.
    */
   private static extractGetAttRefs(value: unknown): Map<string, Set<string>> {
@@ -810,6 +914,11 @@ export class DiffCalculator {
         const ga = obj['Fn::GetAtt'];
         if (Array.isArray(ga) && typeof ga[0] === 'string' && typeof ga[1] === 'string') {
           add(ga[0], ga[1]);
+        } else if (typeof ga === 'string') {
+          // The STRING spelling (`!GetAtt A.B`), split by the resolver's own
+          // rule, so `Child.Outputs.Foo` reads as `Child` / `Outputs.Foo`.
+          const split = splitGetAttStringForm(ga);
+          if (split) add(split.logicalId, split.attributeName);
         }
         return;
       }

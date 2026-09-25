@@ -62,11 +62,11 @@ When the app defines a single stack, no name is needed.
 is selected — by `--all` or by naming several — they are ordered so that a
 consumer stack is destroyed before the producers it reads from.
 
-A nested-stack **child** cannot be destroyed directly: `cdkd destroy <child>`
+A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
 point at resources that no longer exist and the parent's next deploy would try
 to recreate them. Destroy the parent to cascade-delete the child, or use
-`cdkd state destroy <child>` if you deliberately want to leave the parent's
+`cdkd state destroy '<child>'` if you deliberately want to leave the parent's
 reference dangling.
 
 ## Confirmation prompts
@@ -76,8 +76,8 @@ reference dangling.
 
 | Prompt | Raised by | Skipped by |
 | --- | --- | --- |
-| Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy <stack>`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
-| Per-stack, same prompt | `cdkd state destroy <stack>` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
+| Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy '<stack>'`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
+| Per-stack, same prompt | `cdkd state destroy '<stack>'` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
 | Batch — one prompt for the whole batch, asked before anything is touched | `cdkd state destroy --all` | `-y` / `--yes` |
 
 Under `--remove-protection` the per-stack prompt names the protected resources
@@ -334,10 +334,12 @@ effectively a no-op there.
 | `AWS::Neptune::DBCluster` | `DeletionProtection` | `ModifyDBCluster(DeletionProtection=false, ApplyImmediately=true)` (Neptune SDK) |
 | `AWS::Neptune::DBInstance` | `DeletionProtection` | `ModifyDBInstance(DeletionProtection=false, ApplyImmediately=true)` (Neptune SDK) |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then `DescribeTable` poll until `ACTIVE` |
+| `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then a wait until the table is `ACTIVE`. If the delete then fails, protection is turned back on, but only when it was on before the flip. |
 | `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
+| `AWS::EMR::Cluster` | `Instances.TerminationProtected` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
 | `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
 | `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
@@ -407,7 +409,7 @@ aws dynamodb update-table --table-name <table> --deletion-protection-enabled
 By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
 stack's deployment-event history (the `deployments/` store) as post-mortem
 context — so an object listing of the state bucket is not empty after a
-teardown. `cdkd destroy <stack> --purge-events` opts into deleting that history
+teardown. `cdkd destroy '<stack>' --purge-events` opts into deleting that history
 too, so the listing comes back empty:
 
 ```bash
@@ -429,7 +431,7 @@ cdkd destroy MyStack --purge-events -y
   purged independently.
 - `cdkd state destroy` does NOT take this flag. For an already-destroyed stack,
   or on the CDK-app-free path, use the equivalent
-  [`cdkd events prune <stack> --all`](cli-events.md).
+  [`cdkd events prune '<stack>' --all`](cli-events.md).
 - **The purge empties the LISTING, not the bucket.** The state bucket is
   versioned and the delete carries no version id, so earlier versions of the
   event keys survive and stay readable with a `VersionId` — see
@@ -463,7 +465,7 @@ still be billing. Three causes today:
   **parent** is part of the same destroy — the Lambda function, the IAM role /
   group / user — that parent's own delete removes the skipped resource anyway,
   so AWS ends clean and only the cdkd record is stale. The warning says so, and
-  `cdkd state orphan <stack>` clears it.
+  `cdkd state orphan '<stack>'` clears it.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted
@@ -499,9 +501,9 @@ The state record is kept on purpose: without it you would have neither the AWS
 resource deleted nor an id to go and delete it with. To finish the destroy,
 repair whatever the per-resource warning names — the `physicalId` for the decode
 failures, the missing property (`FunctionName`, `ServiceToken`, `GroupName` /
-`Users`) for the missing-field causes — in state (`cdkd state show <stack>` to
+`Users`) for the missing-field causes — in state (`cdkd state show '<stack>'` to
 inspect) and re-run, or delete the resource by hand and drop the record with
-`cdkd state orphan <stack>`. The summary line names the exact state file(s) to
+`cdkd state orphan '<stack>'`. The summary line names the exact state file(s) to
 open, which for a nested-stack skip is the child's.
 
 ### A skip on `cdkd deploy`, not just on destroy
@@ -552,7 +554,7 @@ Verify that a nested stack destroys cleanly before removing it from the
 template.
 
 The remedy the summary prints names the **child's** state file
-(`cdkd state orphan <parent>~<child>`), not the parent's — the resource that
+(`cdkd state orphan '<parent>~<child>'`), not the parent's — the resource that
 failed lives in the child, and orphaning the parent would drop the very row that
 keeps the child reachable. A run with both failures and skips prints each remedy
 separately, since they differ in kind: a failure is retryable (`cdkd destroy`
@@ -582,7 +584,7 @@ can leave the stack lock behind. cdkd prints the recovery command; which one it
 prints depends on whether a per-stack teardown had armed its own handler yet,
 which is not the same as whether a stack is "running":
 
-- the exact **region-qualified** `cdkd force-unlock <stack> --stack-region ...`
+- the exact **region-qualified** `cdkd force-unlock '<stack>' --stack-region ...`
   once that stack's teardown owns the signal, i.e. it can name the lock;
 - a **hedged** `cdkd force-unlock <stack-name>` otherwise — both between two
   stacks (where the finished stack has already released its lock, unless that
@@ -657,7 +659,7 @@ want is the record gone with the live resources
 left standing, that is what the refusal points at:
 
 ```bash
-cdkd state orphan <stack> --stack-region <region>
+cdkd state orphan '<stack>' --stack-region '<region>'
 ```
 
 Drop `--stack-region` for a legacy record that carries no region of its own —
@@ -671,7 +673,7 @@ needed sanitizing can render identically to a healthy one. Identify the record
 with `cdkd state list --long`, which prints the keys as stored.
 
 To act on the resources instead, inspect the record with `cdkd state show
-<stack> --stack-region <region> --json`, repair it, and re-run the destroy. An
+'<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An
 **absent** `resources` field is a defect and is refused too — a stack always has
 a resource map, even an empty one. Full per-command table in
 [State Management](state-management.md#when-resources-is-not-an-object).
@@ -700,14 +702,14 @@ nested **child** record reached through its parent's destroy.
 Reading the bag as empty — the repair `cdkd diff` and `cdkd state show` apply —
 is the second row above, so there is no safe repair here.
 
-Inspect the record with `cdkd state show <stack> --stack-region <region>
+Inspect the record with `cdkd state show '<stack>' --stack-region '<region>'
 --json`, repair or remove it, then re-run. Note what "remove" means here: with
 `deploy`, `destroy`, `state destroy`, `orphan`, `import` and `scrub` all
 refusing such a record, the command that will still remove it is
 `cdkd state orphan`, which drops the record without touching AWS —
 
 ```bash
-cdkd state orphan <stack> --stack-region <region>
+cdkd state orphan '<stack>' --stack-region '<region>'
 ```
 
 — which orphans whatever the record described, so prefer repairing the bag when
@@ -742,9 +744,23 @@ there to catch, and the re-read record is the one the deletion acts on.
 To drop such a record deliberately and leave every live resource standing, the
 route is the one the `outputs` refusal above names — `cdkd state orphan`, which
 removes the record without reading either field, and whose caveats are the same
-here. An **absent** `orphans` field is not a defect and is never refused. The
-full per-command table is in
-[State Management](state-management.md#when-orphans-is-not-a-list).
+here. An **absent** `orphans` field is not a defect and is never refused.
+
+A readable list holding a record no reader can use is refused the same way, at
+both reads. The listing prints each record's own `logicalId`, resource type and
+physical id, and validates none of them, so without the refusal the damage
+decides what you see: a row can abort the listing before the confirmation, or be
+printed with a field missing from it and approved. Two records sharing one
+`logicalId` are refused too, though the listing would print both: no cdkd
+command writes that (the rollback save merges by id, and every other save
+carries the list unchanged), so the record is damaged, and deleting it would discard it
+before anyone decides which of the two resources the stack still owns. Every field the listing
+prints is sanitized, so a stored value cannot forge a row or redraw the lines
+above it — and so is the list of resources to be deleted above it.
+
+The per-command tables are in State Management — one for
+[the container](state-management.md#when-orphans-is-not-a-list), one for
+[a single record](state-management.md#when-one-orphans-record-cannot-be-read).
 
 ## Every other mutating confirmation prompt is interactive-only too
 

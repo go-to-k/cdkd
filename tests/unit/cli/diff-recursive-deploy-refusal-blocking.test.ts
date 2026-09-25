@@ -14,7 +14,8 @@
  * that would refuse this node is a BLOCKING reason on it, so `countBlocking`
  * raises the exit-3 `DeployRefusalPreviewError` ahead of `--fail`. The ids are
  * deliberately NOT pushed into `unreadable`, which means "dropped from the
- * diff" — these rows are previewed, and exit 3 would still be unset.
+ * diff" — these rows are previewed, and exit 3 would still be unset. A
+ * container the diff DROPS carries both (go-to-k/cdkd#3512).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
@@ -225,23 +226,22 @@ describe('cdkd diff reports a deploy refusal it repaired (issue go-to-k/cdkd#333
     expect(countBlocking(node)).toBe(1);
   });
 
-  it("adds NO reason for an unreadable 'resources' BAG, the documented gap", async () => {
-    // The third container. This PR states in prose that the bag arm keeps
-    // go-to-k/cdkd#3018's answer — a dropped row in `unreadable`, which `--fail`
-    // already counts — and does NOT push a reason; nothing pinned that, so a
-    // `deployRefusals` push added beside it survived every case.
-    //
-    // Pinning the GAP is deliberate. go-to-k/cdkd#3512 will close it, and when
-    // it does this case must be rewritten rather than deleted — which is the
-    // point: that lane has to state the new rule here, for all three
-    // containers, instead of a fourth push appearing unremarked.
+  it("blocks over an unreadable 'resources' BAG too, and KEEPS its unreadable row", async () => {
+    // The third container, and the rule go-to-k/cdkd#3512 settled for all three
+    // at once: a container `cdkd deploy` refuses is a blocking reason, and
+    // whatever `unreadable` row it already had stays. The two containers above
+    // are previewed in place, so they have no row; the bag is DROPPED, so it has
+    // both — `--fail` still counts the row and exit 3, which outranks it, says
+    // the deploy refuses. The dropped-container cases live in
+    // `diff-recursive-dropped-container-blocking.test.ts`.
     const node = await diff({
       ...record(),
       resources: 'abcdef' as unknown as StackState['resources'],
     });
-    expect(node.unreadable, 'the bag row is what `--fail` counts here').not.toEqual([]);
-    expect(node.blocking).toEqual([]);
-    expect(countBlocking(node)).toBe(0);
+    expect(node.unreadable).toEqual(['(resources map)']);
+    expect(node.blocking).toHaveLength(1);
+    expect(node.blocking[0]).toContain("The 'resources' map cannot be read");
+    expect(countBlocking(node)).toBe(1);
   });
 
   it('says nothing when the stack has NO state record at all', async () => {

@@ -27,7 +27,7 @@ signal establishes LIFE, never absence, so "someone is here" means STOP.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
-# tree, so a silently reset cwd (appendix) shows up IN THE OUTPUT.
+# tree, so a silently reset cwd (gotchas.md) shows up IN THE OUTPUT.
 git rev-parse --show-toplevel   # STOP unless you meant to adopt this tree
 git status --porcelain          # non-empty: someone's uncommitted work
 git branch --show-current
@@ -101,7 +101,7 @@ instead of the RANGE, a global needle where each subject spells its own, and
   `git diff` after; `perl -0pi` without `/g` hits only the first match); a case
   REACHES that line by EVERY arm that can, which licenses a case per arm but
   never a fence change nor DELETING a guard as "implied"; and the command ran
-  where you think it did (appendix). Read the TALLY, never the rc.
+  where you think it did (gotchas.md). Read the TALLY, never the rc.
 
 ### 5-f'. Scanner/fence calibration (when the fix ships a repo-wide check)
 
@@ -137,8 +137,10 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   concurrent suites the 600s watchdog kills lanes with timeouts in untouched
   files. Each agent runs `vp test run <its own suite>`.
 - A lane is killed at 600s of silence inside a tool call: background long runs
-  with a log redirect, poll with short `tail`s, and never end a turn on a
-  monitor — nothing resumes a parked subagent.
+  via `run_in_background` with a log redirect and wake on ITS exit (one
+  notification) — never a per-line watcher (`tail -F`, a line-emitting
+  `Monitor`), whose every line re-wakes the lane and pings the parent with a
+  no-op. A turn ended with nothing in the background is final.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP if the branch carries work you did not write.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
@@ -147,6 +149,5 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   worktree, so `git status --porcelain` must be EMPTY before a probe and
   otherwise they WAIT; and leave those files alone until the round ends
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
-- Give each dispatched agent a unique scratch directory IN ITS PROMPT
-  (`$SCRATCHPAD/lane<issue>-private/`), since same-named scratch harnesses
-  silently replace each other.
+- Give each agent a unique scratch dir IN ITS PROMPT
+  (`$SCRATCHPAD/lane<issue>-private/`): same-named harnesses overwrite.

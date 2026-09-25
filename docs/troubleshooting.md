@@ -84,7 +84,7 @@ This document summarizes common issues when using cdkd and their solutions.
 **Symptoms:**
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
+LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
 ```
 
 **Causes:**
@@ -139,9 +139,9 @@ LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attemp
 > though the parent's lock was acquired with retry.
 >
 > `cdkd orphan` and `cdkd state orphan` are different commands, not two
-> spellings of one: `cdkd orphan <paths...>` drops individual resources by
+> spellings of one: `cdkd orphan '<path>'...` drops individual resources by
 > construct path and fails fast on the lock, while
-> `cdkd state orphan <stacks...>` drops whole stack records and takes no lock
+> `cdkd state orphan '<stack>'...` drops whole stack records and takes no lock
 > of its own — it refuses while one is held, and `--force` makes it delete
 > that lock, including a live one.
 
@@ -348,7 +348,7 @@ for a lock to expire does not affect it.
 **Symptoms:**
 
 ```
-StateError: State file for stack 'MyStack' is not valid JSON: Unexpected token } in JSON at position 123
+StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
 Caused by: Unexpected token } in JSON at position 123
 ```
 
@@ -357,7 +357,7 @@ different problem with a different fix — upgrade cdkd rather than restoring a
 backup:
 
 ```
-StateError: Unsupported state schema version 12 for stack 'MyStack'. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
+StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
 ```
 
 **Causes:**
@@ -487,7 +487,7 @@ the HTTP status, so the state-bucket path names the region rather than the
 placeholder. The lock path does not rewrite, and surfaces the raw 301 instead:
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (ap-northeast-1):
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
 The bucket you are attempting to access must be addressed using the
 specified endpoint. Please send all future requests to this endpoint.
 ```
@@ -1082,6 +1082,8 @@ Docker image assets are the ones that raise `AssetError`:
 ```
 AssetError: ECR login failed: <docker output>
 AssetError: Docker push failed: <docker output>
+AssetError: Refusing to publish a Docker image asset: the destination region <region> is not a valid AWS region id
+AssetError: Refusing to publish a Docker image asset: <account> is not a 12-digit AWS account id
 ```
 
 **Causes:**
@@ -1091,6 +1093,12 @@ AssetError: Docker push failed: <docker output>
   them after bootstrap), in legacy mode the CDK bootstrap bucket
   (`cdk-hnb659fds-assets-*`)
 - Insufficient IAM permissions
+- The ECR registry host cannot be built safely (the `Refusing to publish`
+  errors): a Docker destination's `region` in the asset manifest uses
+  characters an AWS region id does not have, such as `.`, `/`, `:` or `@`, or
+  the account id is not 12 digits. cdkd refuses before any AWS or docker call
+  for that destination, because the ECR password would be sent to that host.
+  See solution 4.
 
 **Solutions:**
 
@@ -1232,6 +1240,16 @@ warning, and the push then targets a CDK bootstrap bucket that may not exist —
 a confusing failure two steps removed from the missing permission. (Asset
 buckets are deliberately NOT versioned, so `s3:PutBucketVersioning` is not in
 this set; it belongs to the state bucket, which `cdkd bootstrap` creates.)
+
+**4. Fix the Docker asset's destination region or account**
+
+The region in a `Refusing to publish` error comes from the stack's
+`<StackName>.assets.json` in `cdk.out`, under
+`dockerImages.<hash>.destinations.<id>.region`. It must be a plain region id
+such as `us-east-1`. Fix the stack's `env.region` (or whatever produced the
+value) and re-synthesize. The account id comes from your credentials
+(`aws sts get-caller-identity`), or from `accountId` when you call cdkd as a
+library, and must be the 12-digit id.
 
 ### Lambda Deployment Fails
 
@@ -2359,7 +2377,7 @@ account. Before this, each failed attempt left one that nothing tracked.
 Add the printed CNAME records to your DNS zone, then re-run the deploy:
 
 ```bash
-cdkd deploy <stack>
+cdkd deploy '<stack>'
 ```
 
 **Adding those records is not wasted work**, even though the certificate they
@@ -2375,12 +2393,12 @@ Two ways to change what the deploy does about the wait:
 # Wait LONGER. This is the provider's OWN cap -- 60 polls x 10s = 10 minutes --
 # and it is what fires, so raising it is what makes cdkd wait longer.
 # CDKD_ACM_POLL_INTERVAL_MS (default 10000) changes the gap between polls.
-CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy <stack>          # 20 minutes
+CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy '<stack>'        # 20 minutes
 
 # Do not wait at all. The certificate is created, RECORDED IN STATE, and the
 # deploy returns immediately -- downstream consumers will fail until it issues,
 # but the certificate survives for you to validate out of band.
-cdkd deploy <stack> --no-wait
+cdkd deploy '<stack>' --no-wait
 ```
 
 **`--resource-timeout` alone does not make this wait longer**: the poll cap is
@@ -2393,7 +2411,7 @@ raising `CDKD_ACM_POLL_ATTEMPTS` past 180 without also raising
 `--resource-timeout` silently caps the wait at 30 minutes. Raise both:
 
 ```bash
-CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy <stack> \
+CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy '<stack>' \
   --resource-timeout AWS::CertificateManager::Certificate=50m   # 45 min of polling
 ```
 
@@ -2767,7 +2785,7 @@ See [Importing Existing Resources](import.md) for the full flag set.
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback <stack>` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
+A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback '<stack>'` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
 
 ### Q: Are custom resources supported?
 

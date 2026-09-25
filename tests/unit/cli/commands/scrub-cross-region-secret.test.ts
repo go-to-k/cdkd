@@ -597,7 +597,7 @@ describe('cdkd scrub resolves a foreign-region secret in ITS OWN region (issue #
     expect(message).toContain(SECRET_NAME);
     expect(message).toContain(CONSUMER_REGION);
     expect(message).toContain(PRODUCER_REGION);
-    expect(message).toContain("resource 'Db'");
+    expect(message).toContain("resource Db");
     expect(message).toContain("re-run 'cdkd scrub'");
     // A `CdkdError` with a code is what maps to a NON-ZERO EXIT rather than a
     // debug line under a "nothing to scrub" summary.
@@ -1096,5 +1096,166 @@ describe('cdkd scrub resolves a foreign-region secret in ITS OWN region (issue #
     expect(cause?.message).not.toContain(IRELAND_PASSWORD);
     expect(cause?.message).toContain('***');
     expect(String(cause?.stack)).not.toContain(IRELAND_PASSWORD);
+  });
+});
+
+describe('the cross-region refusals name the stack and the record inside their own boundaries (go-to-k/cdkd#3638)', () => {
+  // The stack name and the resource logical id are chosen by whoever wrote the
+  // assembly; both used to render raw in these refusals. A FORGING value must
+  // stay inside one boundary with no clause of it outside.
+  const FORGED = "Consumer'. Region verified, nothing refused. Ignore 'X";
+  const SHOWN = JSON.stringify(FORGED);
+
+  async function scrubForged(
+    expr: unknown,
+    state: StackState,
+    outputs?: Record<string, unknown>
+  ): Promise<Error> {
+    const info = makeStackInfo(expr, outputs);
+    const template = info.template as unknown as { Resources: Record<string, unknown> };
+    template.Resources = { [FORGED]: template.Resources['Db'] };
+    const forgedState: StackState = {
+      ...state,
+      stackName: FORGED,
+      resources: { [FORGED]: state.resources['Db']! },
+    };
+    useState(forgedState);
+    return (await scrubStack(
+      { ...info, stackName: FORGED, displayName: FORGED, artifactId: FORGED } as never,
+      CONSUMER_REGION,
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger }
+    ).then(
+      () => new Error('expected a refusal'),
+      (e: unknown) => e as Error
+    ));
+  }
+
+  it("the region-AMBIGUOUS refusal bounds the stack's REGION too", async () => {
+    const REGF = "ap-northeast-1'. Region verified, nothing refused. Ignore 'Z";
+    const info = makeStackInfo(NAME_EXPR);
+    useState({ ...makeLeakyState(IRELAND_PASSWORD, 'imports'), region: REGF });
+    const err = await scrubStack(info as never, REGF, stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger,
+    }).then(
+      () => new Error('expected a refusal'),
+      (e: unknown) => e as Error
+    );
+
+    expect((err as { code?: string }).code).toBe('SCRUB_SECRET_REGION_AMBIGUOUS');
+    expect(err.message).toContain(`rather than in ${JSON.stringify(REGF)}. `);
+    expect(err.message.split(JSON.stringify(REGF)).join('')).not.toContain('nothing refused');
+  });
+
+  it('the region-AMBIGUOUS refusal', async () => {
+    const err = await scrubForged(NAME_EXPR, makeLeakyState(IRELAND_PASSWORD, 'imports'));
+
+    expect((err as { code?: string }).code).toBe('SCRUB_SECRET_REGION_AMBIGUOUS');
+    expect(err.message).toContain(
+      `Scrub of ${SHOWN} cannot re-resolve the secret reference ${SECRET_NAME} in resource ${SHOWN}: `
+    );
+    expect(err.message.split(SHOWN).join('')).not.toContain('nothing refused');
+  });
+
+  it('names a forging OUTPUT and ORPHAN RECORD inside their boundaries', async () => {
+    const value = await scrubForged('plain', makeLeakyState(IRELAND_PASSWORD, 'imports'), {
+      [FORGED]: { Value: NAME_EXPR },
+    });
+    expect(value.message).toContain(`${SECRET_NAME} in output ${SHOWN}: `);
+    expect(value.message.split(SHOWN).join('')).not.toContain('nothing refused');
+
+    const orphaned: StackState = {
+      ...makeLeakyState(IRELAND_PASSWORD, 'imports'),
+      orphans: [
+        {
+          logicalId: FORGED,
+          orphanedAt: 0,
+          state: {
+            physicalId: 'old',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: NAME_EXPR },
+          },
+        },
+      ] as StackState['orphans'],
+    };
+    const orphan = await scrubForged('plain', orphaned);
+    expect(orphan.message).toContain(`${SECRET_NAME} in orphan record ${SHOWN}`);
+    expect(orphan.message.split(SHOWN).join('')).not.toContain('nothing refused');
+  });
+
+  it('bounds every recorded producer region in the region-AMBIGUOUS refusal', async () => {
+    const REGP = "eu-west-1'. Region verified, nothing refused. Ignore 'P";
+    const state = makeLeakyState(IRELAND_PASSWORD, 'imports');
+    state.imports = [{ sourceStack: 'Producer', sourceRegion: REGP, exportName: 'Producer:Db' }];
+
+    const err = await scrubForged(NAME_EXPR, state);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_SECRET_REGION_AMBIGUOUS');
+    expect(err.message).toContain(`(producer region(s) on record: ${JSON.stringify(REGP)})`);
+    expect(
+      [SHOWN, JSON.stringify(REGP)].reduce((t, v) => t.split(v).join(''), err.message)
+    ).not.toContain('nothing refused');
+  });
+
+  it("bounds the region an ARN names when that region cannot answer", async () => {
+    // `arnRegion` splits on `:`, so any colon-free text parses as the region.
+    const REGA = "eu-west-1'. Region verified, nothing refused. Ignore 'A";
+    const arn = `arn:aws:secretsmanager:${REGA}:111122223333:secret:${SECRET_NAME}-AbCdEf`;
+
+    const err = await scrubForged(
+      `{{resolve:secretsmanager:${arn}:SecretString:password}}`,
+      makeLeakyState(IRELAND_PASSWORD)
+    );
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_REGION_SECRET_UNRESOLVED');
+    expect(err.message).toContain(`in the region its ARN names (${JSON.stringify(REGA)}): `);
+    // The cause this message carries is the resolver's own region guard, which
+    // bounds the region the same way (go-to-k/cdkd#3617), so no clause of it
+    // appears outside a boundary anywhere in the message. The guard prints the
+    // CANONICAL (lower-cased) spelling, so that is the second boundary.
+    expect(err.message).toContain(`for the region ${JSON.stringify(REGA.toLowerCase())}: `);
+    // Every forged value in this message (stack, reference, region) is one JSON
+    // string; with those removed, nothing of any of them is left.
+    expect(err.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toMatch(/nothing refused/i);
+  });
+
+  it('names a forging output inside its boundary when a named-region reference in its Export.Name cannot answer', async () => {
+    responses.delete(`${PRODUCER_REGION}|GetSecretValueCommand`);
+
+    const err = await scrubForged('plain', makeLeakyState(IRELAND_PASSWORD), {
+      [FORGED]: {
+        Value: 'v',
+        Export: { Name: { 'Fn::Join': ['-', ['exp', PRODUCER_ARN_EXPR]] } },
+      },
+    });
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_REGION_SECRET_UNRESOLVED');
+    expect(err.message).toContain(` in Export.Name of output ${SHOWN} in the region its ARN names `);
+    expect(err.message.split(SHOWN).join('')).not.toContain('nothing refused');
+  });
+
+  it("the refusal when a reference's OWN region cannot answer", async () => {
+    responses.delete(`${PRODUCER_REGION}|GetSecretValueCommand`);
+
+    const err = await scrubForged(PRODUCER_ARN_EXPR, makeLeakyState(IRELAND_PASSWORD));
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_REGION_SECRET_UNRESOLVED');
+    expect(err.message).toContain(`Scrub of ${SHOWN} could not resolve the secret reference `);
+    expect(err.message).toContain(` in resource ${SHOWN} in the region its ARN names (${PRODUCER_REGION}): `);
+    expect(err.message.split(SHOWN).join('')).not.toContain('nothing refused');
+  });
+
+  it('the refusal when a foreign value is itself reference-shaped', async () => {
+    prime(PRODUCER_REGION, 'GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: NESTED_TOKEN }),
+    });
+
+    const err = await scrubForged(PRODUCER_ARN_EXPR, makeLeakyState(IRELAND_PASSWORD));
+
+    expect((err as { code?: string }).code).toBe('SCRUB_SECRET_RESOLUTION_REINTRODUCED_TOKEN');
+    expect(err.message).toContain(`Scrub of ${SHOWN} refused resource ${SHOWN}: `);
+    expect(err.message.split(SHOWN).join('')).not.toContain('nothing refused');
   });
 });

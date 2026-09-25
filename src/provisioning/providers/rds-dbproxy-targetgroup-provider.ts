@@ -21,7 +21,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -84,7 +84,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   private getClient(): RDSClient {
     if (!this.rdsClient) {
       this.rdsClient = new RDSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

@@ -57,11 +57,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { DescribeImagesCommand } from '@aws-sdk/client-ecr';
-import {
-  DockerAssetPublisher,
-  isDockerAuthFailure,
-  resetEcrLoginCache,
-} from '../../../src/assets/docker-asset-publisher.js';
+import { DockerAssetPublisher, isDockerAuthFailure } from '../../../src/assets/docker-asset-publisher.js';
 import { AssetError } from '../../../src/utils/error-handler.js';
 import type { DockerImageAsset } from '../../../src/types/assets.js';
 
@@ -125,6 +121,13 @@ describe('DockerAssetPublisher', () => {
   const countLoginExecs = () =>
     mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'login').length;
 
+  // The `docker login` endpoint of every login, in order (the last argv item).
+  const loginEndpoints = () =>
+    mockRunDocker.mock.calls
+      .map(([args]) => args as string[])
+      .filter((args) => Array.isArray(args) && args[0] === 'login')
+      .map((args) => args[args.length - 1]);
+
   const countPushExecs = () =>
     mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'push').length;
 
@@ -133,9 +136,6 @@ describe('DockerAssetPublisher', () => {
     mockEcrDestroy.mockReset();
     mockRunDocker.mockReset();
     mockRunDocker.mockResolvedValue({ stdout: '', stderr: '' });
-    // The ECR login cache is module-level (process-lifetime), so reset it
-    // between tests to keep them isolated.
-    resetEcrLoginCache();
     publisher = new DockerAssetPublisher();
   });
 
@@ -536,11 +536,11 @@ describe('DockerAssetPublisher', () => {
       expect(countPushExecs()).toBe(2);
     });
 
-    it('short-circuits via the per-process cache after a prior forced login', async () => {
+    it('a repeat push to the same registry after a lazy login does not log in again', async () => {
       wireEcrMocks();
       // First publish: build + tag succeed, the optimistic push fails auth ->
-      // forced login -> retry push succeeds, and the registry is now in the
-      // per-process cache. Remaining calls succeed via the default mock.
+      // login -> retry push succeeds, and docker's credential store now holds
+      // the registry. Remaining calls succeed via the default mock.
       mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // build
       mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // tag
       mockRunDocker.mockImplementationOnce(authFailurePush()); // push (auth fail)
@@ -548,9 +548,8 @@ describe('DockerAssetPublisher', () => {
       await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
       expect(countLoginExecs()).toBe(1);
 
-      // Second publish to the SAME registry: the per-process cache holds the
-      // registry, so ecrLogin's cache short-circuit means the push proceeds
-      // directly and (since it succeeds) does NOT log in again.
+      // Second publish to the SAME registry: the push succeeds on docker's
+      // stored credential, so cdkd does NOT log in again.
       const second = new DockerAssetPublisher();
       await second.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
 
@@ -559,8 +558,10 @@ describe('DockerAssetPublisher', () => {
       expect(countPushExecs()).toBe(3); // fail + retry (publish 1) + direct (publish 2)
     });
 
-    it('keys the login per (account, region) — a DIFFERENT region re-logs in', async () => {
-      wireEcrMocks();
+    it('a DIFFERENT region logs in again, to that region\'s registry host', async () => {
+      // `proxyEndpoint` is the CALLER's us-east-1 registry for both logins, as
+      // AWS reports it; the eu-west-1 login must still target eu-west-1.
+      wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
       // Fail the FIRST push to each of the two registries so each forces its
       // own login (attempts 1 & 3); the post-login retries (2 & 4) succeed.
       let pushCount = 0;
@@ -586,13 +587,18 @@ describe('DockerAssetPublisher', () => {
       await publisher.publish('h1', asset('us-east-1'), '/tmp/cdk.out', '123456789012', 'us-east-1');
       await publisher.publish('h2', asset('eu-west-1'), '/tmp/cdk.out', '123456789012', 'us-east-1');
 
-      // Two distinct registries -> two logins.
+      // Two distinct registries -> two logins, each to its own push host.
       expect(countAuthTokenCalls()).toBe(2);
-      expect(countLoginExecs()).toBe(2);
+      expect(loginEndpoints()).toEqual([
+        'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
+        'https://123456789012.dkr.ecr.eu-west-1.amazonaws.com',
+      ]);
     });
 
-    it('keys the login per (account, region) — a DIFFERENT account re-logs in', async () => {
-      wireEcrMocks();
+    it('a DIFFERENT account logs in again, to that account\'s registry host', async () => {
+      // The caller is 111111111111, so AWS names ITS registry in `proxyEndpoint`
+      // for both logins; the 222222222222 login must target 222222222222.
+      wireEcrMocks('https://111111111111.dkr.ecr.us-east-1.amazonaws.com');
       let pushCount = 0;
       mockRunDocker.mockImplementation((args: string[]) => {
         if (args[0] === 'push') {
@@ -615,9 +621,12 @@ describe('DockerAssetPublisher', () => {
       await publisher.publish('h1', asset, '/tmp/cdk.out', '111111111111', 'us-east-1');
       await publisher.publish('h2', asset, '/tmp/cdk.out', '222222222222', 'us-east-1');
 
-      // Two distinct accounts -> two logins.
+      // Two distinct accounts -> two logins, each to its own push host.
       expect(countAuthTokenCalls()).toBe(2);
-      expect(countLoginExecs()).toBe(2);
+      expect(loginEndpoints()).toEqual([
+        'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        'https://222222222222.dkr.ecr.us-east-1.amazonaws.com',
+      ]);
     });
 
     it('does NOT retry a NON-auth push failure (surfaces the AssetError)', async () => {
@@ -664,6 +673,107 @@ describe('DockerAssetPublisher', () => {
       // The failed login is NOT cached, so a follow-up publish tries again.
       expect(countAuthTokenCalls()).toBe(1);
       expect(countLoginExecs()).toBe(1);
+    });
+
+    // Issue #3681: `GetAuthorizationToken({})`'s `proxyEndpoint` names the
+    // CALLER's default registry, never the push target's, so the login must
+    // ignore it and target the push host.
+    it.each([
+      ['another account', 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com'],
+      ['another region', 'https://123456789012.dkr.ecr.eu-west-1.amazonaws.com'],
+      [
+        'a VPC-endpoint host',
+        'https://vpce-0a1b2c3d4e5f60718-abcdefgh.dkr.ecr.us-east-1.vpce.amazonaws.com',
+      ],
+    ])('ignores a proxyEndpoint naming %s and logs in to the push host', async (_label, proxy) => {
+      wireEcrMocks(proxy);
+      mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // tag
+      mockRunDocker.mockImplementationOnce(authFailurePush()); // push (auth fail)
+
+      await publisher.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
+
+      const pushHost = '123456789012.dkr.ecr.us-east-1.amazonaws.com';
+      expect(loginEndpoints()).toEqual([`https://${pushHost}`]);
+      const pushTargets = mockRunDocker.mock.calls
+        .map(([args]) => args as string[])
+        .filter((args) => args[0] === 'push')
+        .map((args) => args[1]);
+      // The retried push goes to the SAME host the login targeted.
+      expect(pushTargets).toEqual([
+        `${pushHost}/cdk-assets-123456789012-us-east-1:abc123`,
+        `${pushHost}/cdk-assets-123456789012-us-east-1:abc123`,
+      ]);
+    });
+
+    it('names the push host, not proxyEndpoint, in a login failure', async () => {
+      wireEcrMocks('https://999999999999.dkr.ecr.us-east-1.amazonaws.com');
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') return authFailurePush()(args);
+        if (args[0] === 'login') {
+          const err = new Error('login failed') as Error & { stderr: string };
+          // The credential-helper branch of `formatDockerLoginError` quotes the
+          // endpoint in its `docker logout <endpoint>` advice.
+          err.stderr = 'Error saving credentials: already exists in the keychain';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      const message = await publisher
+        .push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag')
+        .then(
+          () => '',
+          (e: Error) => e.message
+        );
+
+      expect(message).toContain('docker logout https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
+      expect(message).not.toContain('999999999999');
+    });
+
+    // The ECR password goes to the host built from the account id and the
+    // manifest's destination region, so a value that would name a host AWS
+    // does not own is refused before ANY AWS or docker call.
+    it.each([
+      ['a dotted host', 'x.example.com'],
+      ['a path', 'us-east-1/x'],
+      ['a port', 'x:443'],
+      ['userinfo', 'a@example.com'],
+      ['a query', 'x?y'],
+      ['a leading hyphen', '-us-east-1'],
+    ])('refuses a destination region that is %s', async (_label, region) => {
+      wireEcrMocks();
+      const asset = makeDockerAsset({
+        destinations: { d: { repositoryName: 'repo', imageTag: 'tag', region } },
+      });
+
+      await expect(
+        publisher.push(asset, '123456789012', 'us-east-1', 'local-tag')
+      ).rejects.toThrow(/destination region .* is not a valid AWS region id/);
+      expect(mockEcrSend).not.toHaveBeenCalled();
+      expect(mockRunDocker).not.toHaveBeenCalled();
+    });
+
+    it('refuses an account id that is not 12 digits', async () => {
+      wireEcrMocks();
+
+      await expect(
+        publisher.push(makeDockerAsset(), 'evil.example.com', 'us-east-1', 'local-tag')
+      ).rejects.toThrow(/is not a 12-digit AWS account id/);
+      expect(mockEcrSend).not.toHaveBeenCalled();
+      expect(mockRunDocker).not.toHaveBeenCalled();
+    });
+
+    it('still publishes to a region cdkd has no partition entry for yet', async () => {
+      wireEcrMocks('https://123456789012.dkr.ecr.nz-north-9.amazonaws.com');
+      mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // tag
+      mockRunDocker.mockImplementationOnce(authFailurePush()); // push (auth fail)
+      const asset = makeDockerAsset({
+        destinations: { d: { repositoryName: 'repo', imageTag: 'tag', region: 'nz-north-9' } },
+      });
+
+      await publisher.push(asset, '123456789012', 'us-east-1', 'local-tag');
+
+      expect(loginEndpoints()).toEqual(['https://123456789012.dkr.ecr.nz-north-9.amazonaws.com']);
     });
 
     it('push() (WorkGraph asset-publish path) uses the lazy-login path too', async () => {

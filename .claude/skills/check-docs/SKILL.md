@@ -81,7 +81,7 @@ this repository.
 5. **Report findings** as a checklist: each discrepancy with its file and
    section, and the suggested fix. If none, confirm the docs are consistent.
 
-6. **Fix the issues**, or ask for confirmation first.
+6. **Fix the issues**, then re-run this check.
 
 ## When to run this
 

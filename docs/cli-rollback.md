@@ -64,7 +64,10 @@ roll back in the first place.
    from, and none is reported as "nothing to roll back".
 2. Acquire the stack lock for the whole replay. A concurrent deploy holding it
    fails the command with the standard lock error; `cdkd force-unlock` applies.
-3. Load the state record and the journal.
+3. Load the state record and the journal. A record whose own `region` field
+   disagrees with the region of the key it is stored under, while it still
+   lists resources, is refused here, before anything is replayed — see
+   [State management](state-management.md#directory-layout).
 4. Print the plan, one block per journal segment, newest first.
 5. Confirm (skipped by `--force` / `-y`).
 6. Replay the segments newest-first, saving state after each operation and

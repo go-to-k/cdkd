@@ -1,6 +1,6 @@
 {
   "name": "@go-to-k/cdkd",
-  "version": "0.291.17",
+  "version": "0.291.25",
   "description": "Drop-in CDK CLI for existing CDK apps - up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
     "url": "https://github.com/go-to-k/cdkd/issues"
   },
   "type": "module",
-  "packageManager": "pnpm@11.14.0",
+  "packageManager": "pnpm@12.6.0",
   "keywords": [
     "aws",
     "cdk",
@@ -101,7 +101,7 @@
     "adm-zip": "^0.6.0",
     "agent-base": "^9.0.0",
     "archiver": "^8.0.0",
-    "cdk-local": "^0.149.4",
+    "cdk-local": "^0.149.6",
     "chokidar": "^5.0.0",
     "commander": "^14.0.3",
     "graphlib": "^2.1.8",

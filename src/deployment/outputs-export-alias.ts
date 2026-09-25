@@ -126,6 +126,7 @@
  */
 
 import type { TemplateOutput } from '../types/resource.js';
+import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -624,7 +625,7 @@ export function secretBearingExportNameWarning(
   // name happens to hold.
   const corpus = secrets ?? exposure;
   const name = secretSafeKeyDisplay(exportName, corpus, exposure);
-  const shown = name.kind === 'masked' ? `(masked: "${name.text}") ` : '';
+  const shown = name.kind === 'masked' ? `${maskedLabel(name.text)} ` : '';
   // THE OUTPUT KEY'S FORCE-MASK SET IS BOUNDED; the export name's is not, and
   // the asymmetry is the point. Resolution KNOWS it put `exposure` into the
   // export name, so masking it there at any length is right. It knows nothing
@@ -818,6 +819,25 @@ export function displayTextOrWithheld(display: SecretSafeKeyDisplay): string {
 }
 
 /**
+ * The `(masked: ...)` label for a secret-bearing key the verdict already
+ * masked, BOUNDED (go-to-k/cdkd#3617): both names are template- or
+ * state-chosen, and inside hand-written quotes a `"` in the key closed them and
+ * wrote a clause of its own.
+ *
+ * WITHHELD rather than bounded when the masked text carries anything
+ * non-ASCII. `displayIdent` blanks such a character to a space AFTER the
+ * verdict's own re-test, so the printed text would no longer be the tested
+ * text -- `correct<NBSP>horse` beside a recorded `correct horse` would print
+ * the secret byte for byte. Withholding keeps one string tested and printed,
+ * the rule #2874 set for this module.
+ */
+function maskedLabel(maskedText: string): string {
+  return /[^ -~]/.test(maskedText)
+    ? '(masked, name withheld: it carries characters this line cannot show as tested)'
+    : `(masked: ${displayIdent(maskedText)})`;
+}
+
+/**
  * Warning for a state KEY that already holds secret plaintext — the residue an
  * EARLIER binary left when it published an export name that resolved to one.
  *
@@ -840,9 +860,11 @@ export function secretBearingStateKeyWarning(
   // and the previous revision's three-arm version rendered
   // `holds an output KEY that renders a secret (key: "...")` for a key with no
   // recorded secret at all.
+  //
+  // BOUNDED AFTER MASKING (go-to-k/cdkd#3617): see {@link maskedLabel}.
   const clause =
     display.kind === 'masked'
-      ? `(masked: "${display.text}") `
+      ? `${maskedLabel(display.text)} `
       : `(the name is withheld: masking it would leave the secret readable) `;
   // "RENDERS a secret", not "containing a secret": for a key split by an
   // invisible character the key does not literally CONTAIN the plaintext --
@@ -850,7 +872,7 @@ export function secretBearingStateKeyWarning(
   // invisible to the previous check. A message that overstates what it found
   // is how the previous wording survived being wrong.
   return (
-    `State for ${canonicalForSecretScan(stackName)} holds an output KEY that renders a secret ` +
+    `State for ${displayStackName(canonicalForSecretScan(stackName))} holds an output KEY that renders a secret ` +
     `${clause}— cdkd scrub cannot rewrite a key, ` +
     `only a value, because the key IS the export name consumers resolve by. ` +
     `Give that output a non-secret Export.Name and redeploy: the next deploy replaces ` +

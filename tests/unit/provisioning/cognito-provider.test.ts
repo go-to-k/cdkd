@@ -3633,13 +3633,28 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('resolves an explicit --resource override via DescribeUserPool', async () => {
-      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222' } });
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Id: 'us-east-1_bbb222',
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222',
+        },
+      });
 
       const result = await provider.import(
         importInput({ knownPhysicalId: 'us-east-1_bbb222' })
       );
 
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      // Issue #3627: the map `create()` records (the resolver served the pool id
+      // for ProviderName / ProviderURL).
+      expect(result).toStrictEqual({
+        physicalId: 'us-east-1_bbb222',
+        attributes: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222',
+          ProviderName: 'cognito-idp.us-east-1.amazonaws.com/us-east-1_bbb222',
+          ProviderURL: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_bbb222',
+          UserPoolId: 'us-east-1_bbb222',
+        },
+      });
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeUserPoolCommand');
     });
@@ -3651,15 +3666,38 @@ describe('CognitoUserPoolProvider', () => {
           { Id: 'us-east-1_bbb222', Name: 'my-pool' },
         ],
       });
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Id: 'us-east-1_bbb222',
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222',
+        },
+      });
 
       const result = await provider.import(
         importInput({ properties: { UserPoolName: 'my-pool' } })
       );
 
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      // List-only: no per-candidate DescribeUserPool / ListTagsForResource.
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(result).toStrictEqual({
+        physicalId: 'us-east-1_bbb222',
+        attributes: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222',
+          ProviderName: 'cognito-idp.us-east-1.amazonaws.com/us-east-1_bbb222',
+          ProviderURL: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_bbb222',
+          UserPoolId: 'us-east-1_bbb222',
+        },
+      });
+      // No per-candidate describe: one DescribeUserPool for the MATCH only.
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
+      expect(mockSend.mock.calls[1][0].constructor.name).toBe('DescribeUserPoolCommand');
+    });
+
+    it('returns null when the matched pool is deleted between the list and the describe', async () => {
+      mockSend
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }] })
+        .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+      const result = await provider.import(importInput({ properties: { UserPoolName: 'my-pool' } }));
+      expect(result).toBeNull();
     });
 
     it('folds the NextToken across pages until the name matches', async () => {
@@ -3668,14 +3706,20 @@ describe('CognitoUserPoolProvider', () => {
           UserPools: [{ Id: 'us-east-1_aaa111', Name: 'other' }],
           NextToken: 'page-2',
         })
-        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }] });
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }] })
+        .mockResolvedValueOnce({
+          UserPool: {
+            Id: 'us-east-1_bbb222',
+            Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222',
+          },
+        });
 
       const result = await provider.import(
         importInput({ properties: { UserPoolName: 'my-pool' } })
       );
 
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(result?.physicalId).toBe('us-east-1_bbb222');
+      expect(mockSend).toHaveBeenCalledTimes(3);
       expect(mockSend.mock.calls[0][0].input.NextToken).toBeUndefined();
       expect(mockSend.mock.calls[1][0].input.NextToken).toBe('page-2');
     });

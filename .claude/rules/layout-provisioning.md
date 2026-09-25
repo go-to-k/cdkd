@@ -44,6 +44,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **dynamodb-index-busy-delete.ts** - The index-busy `DeleteTable` rule BOTH DynamoDB providers read; it is TRANSIENT. The classifier is keyed on the MESSAGE, since AWS reports a plain `ResourceInUseException` for terminal conflicts too. The settle poll warns and RETURNS on timeout, because a throw would STRAND the resource, and **it runs PER RETRY**, so the budget is PER CALLING TYPE.
 
+- **remove-protection-types.ts** - The ONE list both `--remove-protection` help strings render from (SDK types, then the CC registry). `remove-protection-types.test.ts` binds it to the provider files that read `removeProtection`, in both directions ([#2660](https://github.com/go-to-k/cdkd/issues/2660)).
+
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`. The modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. A CC-routed ASG cannot `ForceDelete`, so `CloudControlProvider.delete` delegates that case to `ASGProvider.delete`.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
@@ -64,6 +66,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **write-only-properties.ts** - Resolves the registry schema's `writeOnlyProperties`, caching **only SUCCESSFUL lookups**. `CloudControlProvider.update` strips them from the PREVIOUS side before patch generation: read handlers cannot return them, so one absent from the patch is dropped on every UPDATE.
 
 - **read-only-properties.ts** - For `CloudControlProvider.import`'s attribute narrowing (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)). **The RETURN TYPE is the point of the module**: `undefined` means "could not find out" and an empty set means "declares no attributes", so returning `new Set()` on failure re-opens the disclosure.
+
+- **cc-import-identifier.ts** - Completes the bare CloudFormation id `CloudControlProvider.import()` receives into the `|`-joined Cloud Control identifier for a COMPOSITE `primaryIdentifier`, read from the live schema (issue [#3672](https://github.com/go-to-k/cdkd/issues/3672)). The completed value is also what gets RECORDED. It REFUSES rather than guesses when the template cannot supply exactly the other fields.
 
 - **slow-cc-operation-timeouts.ts** - Per-(resourceType, operation) wall-clock timeout FLOORS, and the SINGLE source for the CC poll cap and both outer deadlines, so they cannot drift.
 

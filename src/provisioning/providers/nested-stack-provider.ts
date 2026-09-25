@@ -42,6 +42,7 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
 import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -986,7 +987,7 @@ export class NestedStackProvider implements ResourceProvider {
       raw = fs.readFileSync(templatePath, 'utf-8');
     } catch (err) {
       throw new Error(
-        `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
+        `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
       );
     }
     let template: CloudFormationTemplate;
@@ -994,7 +995,7 @@ export class NestedStackProvider implements ResourceProvider {
       template = JSON.parse(raw) as CloudFormationTemplate;
     } catch (err) {
       throw new Error(
-        `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
+        `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
       );
     }
     const grandchildTemplates = this.indexGrandchildTemplates(template, templatePath);

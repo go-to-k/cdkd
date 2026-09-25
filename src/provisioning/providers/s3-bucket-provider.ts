@@ -72,7 +72,7 @@ import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
@@ -1835,6 +1835,16 @@ function noRecordedRegionCause(): UnverifiedIdentityCause {
   };
 }
 
+/**
+ * A lifecycle rule's `Id` as the warnings print it (go-to-k/cdkd#3617). The id
+ * is template-chosen and free-form, so it renders through `displayIdent` --
+ * bare when plain, otherwise one JSON string -- rather than inside cdkd's own
+ * quotes, which a `'` in it would close. An absent or empty id is named in
+ * words.
+ */
+function shownLifecycleRuleId(id: unknown): string {
+  return id === undefined || id === null || id === '' ? '(no Id)' : displayIdent(id);
+}
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketProvider');
@@ -2362,7 +2372,7 @@ export class S3BucketProvider implements ResourceProvider {
           // S3 rejects ExpiredObjectDeleteMarker combined with Days / Date, so
           // one of the two has to go. Warn instead of dropping in silence.
           this.logger.warn(
-            `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} sets ` +
+            `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} sets ` +
               `ExpiredObjectDeleteMarker alongside an expiration Days/Date; S3 forbids ` +
               `combining them, so the delete-marker cleanup was not applied.`
           );
@@ -2413,7 +2423,7 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined;
       const allNvts = mergeLegacySingular(nvts, singularNvt, (sc) =>
         this.logger.warn(
-          `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} declares ` +
+          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
             `both NoncurrentVersionTransitions and the legacy NoncurrentVersionTransition for ` +
             `storage class ${displaySafe(sc)}; S3 rejects duplicates, so the legacy singular was ignored.`
         )
@@ -2436,7 +2446,7 @@ export class S3BucketProvider implements ResourceProvider {
       const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
       const allTransitions = mergeLegacySingular(transitions, singularTransition, (sc) =>
         this.logger.warn(
-          `Lifecycle rule '${displaySafe(rule['Id'] ?? '<unnamed>')}' on ${displaySafe(bucketName)} declares ` +
+          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
             `both Transitions and the legacy Transition for storage class ${displaySafe(sc)}; S3 rejects ` +
             `duplicates, so the legacy singular was ignored.`
         )
@@ -4887,9 +4897,12 @@ export class S3BucketProvider implements ResourceProvider {
     // bag — so a throw here is un-actionable, the user cannot edit a state
     // record from their template. The downgrade is UNCONDITIONAL, like
     // `EC2Provider.updateRoute`'s. `update()` DOES take a context as of issue
-    // #1732, but it does not help here: `desiredFromAwsReadback` distinguishes
-    // a readback from everything else, not a REPLAY from a template, and this
-    // guard's question is the latter. And it must be a SKIP of
+    // #1732, and when this was decided it did not help here:
+    // `desiredFromAwsReadback` distinguishes a readback from everything else,
+    // not a REPLAY from a template, and this guard's question is the latter.
+    // Since issue #3141 `UpdateContext.replayingState` answers exactly that
+    // question for the rollback revert arms; this arm was not re-decided
+    // (issue #3728). And it must be a SKIP of
     // BOTH arms, not a default: taking the Suspended fallback here would route
     // a malformed record straight into the suspend branch below and turn
     // versioning off on a live bucket — the very thing computing this value
@@ -5155,8 +5168,9 @@ export class S3BucketProvider implements ResourceProvider {
       previousProperties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       properties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       // Same unconditional update-path warn as the per-item appliers below:
-      // this arm is replay-reachable and `update()` cannot tell a replay from
-      // a template edit.
+      // this arm is replay-reachable, and it was decided when `update()` could
+      // not tell a replay from a template edit (since issue #3141 it can, via
+      // `UpdateContext.replayingState`; not re-decided — issue #3728).
       async (cfg) => {
         const applied = await this.applyLoggingConfiguration(bucketName, cfg, (m) =>
           this.logger.warn(m)

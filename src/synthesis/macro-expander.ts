@@ -24,8 +24,8 @@ import {
   ssmResolvedValueType,
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
+import { displayAwsMessage, displayIdent, displaySafe } from '../utils/display-safe.js';
 
 /**
  * A transform name comes from the TEMPLATE's own `Transform` / `Fn::Transform`
@@ -383,7 +383,7 @@ async function expandMacrosAttempt(
     // finally's `cfn.destroy()` switch ON; passing a mock client via
     // `opts.cfnClient` (tests) leaves it OFF.
     ownsClient = opts.cfnClient === undefined;
-    cfn = opts.cfnClient ?? new CloudFormationClient({ ...awsClientDefaults(), region });
+    cfn = opts.cfnClient ?? new CloudFormationClient({ ...ambientClientDefaults(), region });
 
     // Pick inline vs TemplateURL based on the wire size.
     let templateInput: { TemplateBody: string } | { TemplateURL: string };
@@ -735,10 +735,12 @@ function stringifyParamDefault(
     // A `Parameters` KEY and its `Type` are both template-derived, and this is a
     // DEFAULT-verbosity warn reached before `CreateChangeSet` — so it prints
     // locally on `cdkd deploy -a ./cdk.out` over a crafted assembly. `type` is
-    // free-form: it is whatever string the file carries in that slot.
+    // free-form: it is whatever string the file carries in that slot. Each
+    // renders through `displayIdent`, not inside cdkd's own quotes, since a
+    // `'` in either would close them (go-to-k/cdkd#3617).
     logger.warn(
-      `Parameter '${displaySafe(paramKey)}' has unrecognized CFn Type ` +
-        `'${displaySafe(type)}'; using a generic ` +
+      `Parameter ${displayIdent(paramKey)} has unrecognized CFn Type ` +
+        `${displayIdent(type)}; using a generic ` +
         `string placeholder for the transient macro-expansion changeset. If CFn rejects ` +
         `the changeset with a type error, file an issue with the offending Type.`
     );

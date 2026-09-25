@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
+  carriesFreshNoEchoValue,
   carriesSecretMask,
+  embedsFreshNoEchoValue,
+  recordFreshNoEchoValuesIn,
   clearRecoverableMaskedOutputs,
   maskSecretsInText,
   recordMaskOnlyValue,
@@ -158,6 +161,90 @@ describe('mask-only redaction channel (issue #2274)', () => {
       // Containment is deliberately NOT a match: an inline `***` is either a
       // user's own literal or text this module never wrote.
       expect(carriesSecretMask({ a: `prefix-${SECRET_MASK}` })).toBe(false);
+    });
+  });
+
+  describe('carriesFreshNoEchoValue (go-to-k/cdkd#3662)', () => {
+    // The engine's no-change skip compares REDACTED bags, and a `NoEcho` value
+    // redacts to `***`, which identifies nothing. This is the question the skip
+    // asks first: does this bag hold a `NoEcho` value supplied in THIS deploy?
+    it('answers true exactly for the leaves the whole-value arm masks as a fresh NoEcho value', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn({ Value: NOECHO }, secrets);
+      const bag = { Name: '/app/token', Nested: { List: ['x', NOECHO] } };
+
+      expect(carriesFreshNoEchoValue(bag, secrets)).toBe(true);
+      // The same bag redacts that leaf to the mask: the two agree.
+      expect(redactSecretsForState(bag, secrets)).toEqual({
+        Name: '/app/token',
+        Nested: { List: ['x', SECRET_MASK] },
+      });
+    });
+
+    it('answers false for a DERIVED mask-only needle (Fn::Base64 of a secret), which is not fresh', () => {
+      // The review-round blocker: counting this population updated a
+      // Base64-`UserData` resource on every deploy.
+      const secrets: RecordedSecretValues = new Map();
+      recordMaskOnlyValue(secrets, NOECHO);
+
+      expect(carriesFreshNoEchoValue({ Value: NOECHO }, secrets)).toBe(false);
+    });
+
+    it('answers false for an EXPRESSION-class secret, whose redaction still identifies the value', () => {
+      const secrets: RecordedSecretValues = new Map([[DYNREF_PLAINTEXT, DYNREF_EXPR]]);
+      // An expression wins over the mask, so the fresh mark cannot take it.
+      recordFreshNoEchoValuesIn(DYNREF_PLAINTEXT, secrets);
+
+      expect(carriesFreshNoEchoValue({ Value: DYNREF_PLAINTEXT }, secrets)).toBe(false);
+    });
+
+    it('answers false for a leaf that already IS the mask (a read of a previous run)', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+
+      expect(carriesFreshNoEchoValue({ Value: SECRET_MASK }, secrets)).toBe(false);
+    });
+
+    it('answers false for an EMBEDDED fresh value, which the persist path never masks', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const bag = { Value: `prefix-${NOECHO}` };
+
+      expect(carriesFreshNoEchoValue(bag, secrets)).toBe(false);
+      expect(redactSecretsForState(bag, secrets)).toEqual(bag);
+    });
+
+    it('does not mark an EXCLUDED leaf, which it did not register either', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn({ Token: NOECHO }, secrets, new Set([NOECHO]));
+
+      expect(carriesFreshNoEchoValue({ Value: NOECHO }, secrets)).toBe(false);
+    });
+
+    it('is scoped to the pass: a copy of the map carries no fresh marks', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+
+      expect(carriesFreshNoEchoValue({ Value: NOECHO }, new Map(secrets))).toBe(false);
+    });
+
+    it('answers false with no marks, and terminates on a cycle', () => {
+      const cyclic: Record<string, unknown> = { Value: 'unrelated-value' };
+      cyclic['self'] = cyclic;
+      const secrets: RecordedSecretValues = new Map();
+
+      expect(carriesFreshNoEchoValue(cyclic, secrets)).toBe(false);
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      expect(carriesFreshNoEchoValue(cyclic, secrets)).toBe(false);
+    });
+
+    it('embedsFreshNoEchoValue finds a fresh value inside a longer string, and nothing else', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordMaskOnlyValue(secrets, 'derived-needle-value');
+      expect(embedsFreshNoEchoValue('x derived-needle-value y', secrets)).toBe(false);
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      expect(embedsFreshNoEchoValue(`#!/bin/sh\nTOKEN=${NOECHO}\n`, secrets)).toBe(true);
+      expect(embedsFreshNoEchoValue('no token here', secrets)).toBe(false);
     });
   });
 

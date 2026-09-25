@@ -31,7 +31,7 @@ import type {
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -175,7 +175,7 @@ export class RDSProvider implements ResourceProvider {
   private getClient(): RDSClient {
     if (!this.rdsClient) {
       this.rdsClient = new RDSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -1772,10 +1772,22 @@ export class RDSProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'DBClusterIdentifier');
     if (explicit) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeDBClustersCommand({ DBClusterIdentifier: explicit })
         );
-        return { physicalId: explicit, attributes: {} };
+        const described = resp.DBClusters?.[0];
+        // Issue #3627: the map `create()` records; the resolver's arm builds
+        // only the ARN, so the endpoints resolved to the cluster identifier.
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            'Endpoint.Address': described?.Endpoint,
+            'Endpoint.Port': stringifyIfAssigned(described?.Port),
+            'ReadEndpoint.Address': described?.ReaderEndpoint,
+            Arn: described?.DBClusterArn,
+            DBClusterResourceId: described?.DbClusterResourceId,
+          }),
+        };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBClusterNotFoundFault') return null;
         throw err;

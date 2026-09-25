@@ -20,8 +20,8 @@ heredocs, substitutions and redirections can all steer a command past a matcher.
 They steer a COOPERATIVE agent away from foot-guns and are not a security
 boundary; `main` is protected server-side by the ruleset below.
 
-**AND A HOOK THAT ONLY RESTATES IT DOES NOT EARN ITS PLACE.** Two were deleted
-for doing so. Read it before gating `main`
+**A hook that only restates the `main` ruleset does not earn its place.** Read
+it before gating `main`
 (`gh api repos/go-to-k/cdkd/rulesets/14380501`); what it carries:
 
 | Rule | What it means |
@@ -32,8 +32,7 @@ for doing so. Read it before gating `main`
 | `pull_request` | every change arrives via PR; squash-only; 0 approvals |
 
 `bypass_actors` is EMPTY, so all four bind everyone: **`git push origin main` is
-refused for any commit**, and a merge waits on the six contexts — what the two
-deleted hooks did by hand.
+refused for any commit**, and a merge waits on the six contexts.
 
 **Three residuals remain.**
 
@@ -113,8 +112,8 @@ ONLY in a repo carrying `.markgate.yml` at its root.
 **Every Bash-targeting `PreToolUse` entry uses the coarse `Bash` matcher and no
 per-hook `if:` condition.** The absent `if:` is the load-bearing half: each gate
 parses the command itself, which is what catches the `cd <path> && …` and
-`gh -C <path>` spellings this repo prescribes. `if:` in project settings never
-fired at all. Do NOT reintroduce it. Fenced by
+`gh -C <path>` spellings this repo prescribes. `if:` does not fire in project
+settings, so do not add one. Fenced by
 `tests/unit/scripts/settings-bash-matcher-coverage.test.ts`.
 
 **A refusal message printed with `cat >&2 <<EOF` is an UNQUOTED heredoc**, so

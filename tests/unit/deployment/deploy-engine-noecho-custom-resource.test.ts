@@ -430,6 +430,143 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
     });
   });
 
+  describe('a dependent of a value the handler re-minted in THIS deploy (go-to-k/cdkd#3662)', () => {
+    // The consumer's record holds `***` from the previous run, and today's
+    // resolved value redacts to `***` too. The engine's no-change skip compares
+    // REDACTED bags, so without the mask-only exception it read `***` equal to
+    // `***`, skipped the update, and the live resource kept the old value.
+    function stateWithBothMasked(): { state: StackState; etag: string } {
+      return {
+        state: {
+          version: 9,
+          stackName: STACK,
+          region: 'us-east-1',
+          resources: {
+            Cr: {
+              physicalId: 'cr-phys',
+              resourceType: 'Custom::Thing',
+              properties: { ServiceToken: 'arn:aws:lambda:...' },
+              attributes: { Secret: SECRET_MASK },
+            } as ResourceState,
+            Param: {
+              physicalId: 'param-phys',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK },
+            } as ResourceState,
+          },
+          outputs: {},
+          lastModified: Date.now(),
+        },
+        etag: 'etag-old',
+      };
+    }
+
+    function bothUpdate(): Map<string, ResourceChange> {
+      return new Map<string, ResourceChange>([
+        [
+          'Cr',
+          {
+            logicalId: 'Cr',
+            changeType: 'UPDATE',
+            resourceType: 'Custom::Thing',
+            desiredProperties: { ServiceToken: 'arn:aws:lambda:...', Bump: '2' },
+            currentProperties: { ServiceToken: 'arn:aws:lambda:...' },
+          },
+        ],
+        [
+          'Param',
+          {
+            logicalId: 'Param',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SSM::Parameter',
+            desiredProperties: PARAM_PROPS,
+            currentProperties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK },
+          },
+        ],
+      ]);
+    }
+
+    it('sends the fresh value to the dependent instead of skipping it as *** == ***', async () => {
+      mockStateBackend.getState.mockResolvedValue(stateWithBothMasked());
+      mockDiffCalculator.calculateDiff.mockResolvedValue(bothUpdate());
+      mockProvider.update.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId: 'cr-phys', attributes: { Secret: GENERATED }, noEchoAttributes: true }
+            : { physicalId: 'param-phys', wasReplaced: false }
+        )
+      );
+
+      await makeEngine().deploy(STACK, template);
+
+      const paramCall = mockProvider.update.mock.calls.find((c) => c[0] === 'Param');
+      expect(paramCall).toBeDefined();
+      // (logicalId, physicalId, resourceType, properties, previousProperties)
+      expect((paramCall![3] as Record<string, unknown>)['Value']).toBe(GENERATED);
+      // The record still holds only the mask.
+      const state = savedState();
+      expect(state.resources['Param']!.properties['Value']).toBe(SECRET_MASK);
+      expect(JSON.stringify(state)).not.toContain(GENERATED);
+    });
+
+    it('sends a Base64 encoding of the fresh value too (the encoding carries the freshness)', async () => {
+      const base64Props = {
+        Name: '/app/token',
+        Type: 'String',
+        Value: { 'Fn::Base64': { 'Fn::GetAtt': ['Cr', 'Secret'] } },
+      };
+      mockStateBackend.getState.mockResolvedValue(stateWithBothMasked());
+      const changes = bothUpdate();
+      changes.get('Param')!.desiredProperties = base64Props;
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+      mockProvider.update.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId: 'cr-phys', attributes: { Secret: GENERATED }, noEchoAttributes: true }
+            : { physicalId: 'param-phys', wasReplaced: false }
+        )
+      );
+      const base64Template: CloudFormationTemplate = {
+        Resources: {
+          Cr: template.Resources['Cr']!,
+          Param: { Type: 'AWS::SSM::Parameter', Properties: base64Props },
+        },
+      };
+
+      await makeEngine().deploy(STACK, base64Template);
+
+      const encoded = Buffer.from(GENERATED).toString('base64');
+      const paramCall = mockProvider.update.mock.calls.find((c) => c[0] === 'Param');
+      expect(paramCall).toBeDefined();
+      expect((paramCall![3] as Record<string, unknown>)['Value']).toBe(encoded);
+      expect(JSON.stringify(savedState())).not.toContain(encoded);
+    });
+
+    it('still skips the dependent when the upstream value is NOT NoEcho and did not move', async () => {
+      // The control: the exception is about the MASK, not about "the upstream
+      // re-ran". A plain value equal to the record is still a no-op.
+      const initial = stateWithBothMasked();
+      initial.state.resources['Cr']!.attributes = { Secret: GENERATED };
+      initial.state.resources['Param']!.properties['Value'] = GENERATED;
+      mockStateBackend.getState.mockResolvedValue(initial);
+      const changes = bothUpdate();
+      changes.get('Param')!.currentProperties = {
+        Name: '/app/token',
+        Type: 'String',
+        Value: GENERATED,
+      };
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+      mockProvider.update.mockResolvedValue({
+        physicalId: 'cr-phys',
+        attributes: { Secret: GENERATED },
+      });
+
+      await makeEngine().deploy(STACK, template);
+
+      expect(mockProvider.update.mock.calls.map((c) => c[0])).toEqual(['Cr']);
+    });
+  });
+
   describe('a LATER deploy that does not re-invoke the handler', () => {
     /**
      * State as the deploy above left it: the custom resource is unchanged, so

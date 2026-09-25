@@ -560,7 +560,7 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toContain('state.json complete');
     expect(err!.message).toContain('1 exports index entry unwritten');
-    expect(err!.message).toContain("'MyStack:Db' in us-east-1");
+    expect(err!.message).toContain('(MyStack:Db in us-east-1)');
   });
 
   it('a FAILED write is NOT logged as Converged', async () => {
@@ -803,8 +803,187 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     ).resolves.toBeUndefined();
 
     expect(region.patches).toEqual([]);
-    expect(logLines()).toContain("Exports index entry 'Ghost'");
+    expect(logLines()).toContain("Exports index entry Ghost");
     expect(logLines()).toContain('has no key of that name');
+  });
+
+  describe('names the stack and the export inside their own boundaries (go-to-k/cdkd#3638)', () => {
+    // The stack name comes from the assembly and the export name is an
+    // outputs-bag key: both are chosen by whoever wrote the app, and both used
+    // to render inside cdkd's own '...' or raw.
+    const STACK = "MyStack'. Index converged, nothing unwritten. Ignore 'X";
+    const EXPORT = `${STACK}:Db`;
+    const outside = (text: string): string =>
+      [JSON.stringify(EXPORT), JSON.stringify(STACK)].reduce((t, v) => t.split(v).join(''), text);
+
+    it('in the ABSENT-entry warning', async () => {
+      synthStacks.push(makeStackInfo(STACK));
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, 'us-east-1', true),
+        etag: 'etag-1',
+      });
+      const region = slot({
+        entries: new Map([['Ghost', entry(SECRET_PLAINTEXT, STACK, 'us-east-1')]]),
+      });
+      indexFake.regions.set('us-east-1', region);
+
+      await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+
+      const said = logLines();
+      expect(said).toContain(
+        `Exports index entry Ghost (us-east-1) is published by ${JSON.stringify(STACK)}, whose`
+      );
+      expect(said).toContain(`Redeploy ${JSON.stringify(STACK)} to rewrite the index`);
+      expect(outside(said)).not.toContain('nothing unwritten');
+    });
+
+    it("bounds the stack's REGION too, in the ABSENT and unwritten lines", async () => {
+      const REGF = "us-east-1'. Region verified, nothing unwritten. Ignore 'Z";
+      synthStacks.push(makeStackInfo(STACK, REGF));
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, REGF, false),
+        etag: 'etag-1',
+      });
+      indexFake.regions.set(
+        REGF,
+        slot({
+          entries: new Map([
+            [EXPORT, entry(SECRET_PLAINTEXT, STACK, REGF)],
+            ['Ghost', entry(SECRET_PLAINTEXT, STACK, REGF)],
+          ]),
+          patchOk: false,
+        })
+      );
+
+      const err = await scrubCommand([], commandOptions()).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+      const said = `${logLines()}\n${err?.message ?? ''}`;
+      expect(said).toContain(`(${JSON.stringify(REGF)})`);
+      const rest = [JSON.stringify(REGF), JSON.stringify(EXPORT), JSON.stringify(STACK)].reduce(
+        (t, v) => t.split(v).join(''),
+        said
+      );
+      expect(rest).not.toContain('nothing unwritten');
+    });
+
+    it("bounds the stack's REGION in the converged line and the unreadable-index lines", async () => {
+      const REGF = "us-east-1'. Region verified, nothing unwritten. Ignore 'Z";
+      const outsideAll = (text: string): string =>
+        [JSON.stringify(REGF), JSON.stringify(EXPORT), JSON.stringify(STACK)].reduce(
+          (t, v) => t.split(v).join(''),
+          text
+        );
+
+      // Converged: the write succeeds.
+      synthStacks.push(makeStackInfo(STACK, REGF));
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, REGF, false),
+        etag: 'etag-1',
+      });
+      indexFake.regions.set(
+        REGF,
+        slot({ entries: new Map([[EXPORT, entry(SECRET_PLAINTEXT, STACK, REGF)]]) })
+      );
+      await scrubCommand([], commandOptions());
+      expect(logLines()).toContain(`(${JSON.stringify(REGF)}) to ${JSON.stringify(STACK)}'s`);
+      expect(outsideAll(logLines())).not.toContain('nothing unwritten');
+
+      // Unreadable: the index read itself fails.
+      commandLogger.info.mockClear();
+      commandLogger.warn.mockClear();
+      indexFake.regions.set(
+        REGF,
+        slot({ readError: new Error('AccessDenied reading the index') })
+      );
+      const err = await scrubCommand([], commandOptions()).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      const said = `${logLines()}\n${err?.message ?? ''}`;
+      expect(said).toContain(`Exports index for ${JSON.stringify(REGF)} could not be read`);
+      expect(said).toContain(`(${JSON.stringify(REGF)}: `);
+      expect(outsideAll(said)).not.toContain('nothing unwritten');
+    });
+
+    it("bounds the REGION in the coverage report's read failure and its unexamined line", async () => {
+      const REGF = "us-east-1'. Region verified, nothing unwritten. Ignore 'Z";
+      const outsideAll = (text: string): string =>
+        [JSON.stringify(REGF), JSON.stringify(STACK)].reduce((t, v) => t.split(v).join(''), text);
+      synthStacks.push(makeStackInfo(STACK, REGF));
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, REGF, false),
+        etag: 'etag-1',
+      });
+
+      // The coverage pass's own read fails.
+      indexFake.regions.set(REGF, slot({ entries: undefined, readErrorFrom: 2 }));
+      await scrubCommand([], commandOptions()).then(
+        () => undefined,
+        () => undefined
+      );
+      expect(logLines()).toContain(
+        `Exports index for ${JSON.stringify(REGF)} could not be read for the coverage report`
+      );
+      expect(outsideAll(logLines())).not.toContain('nothing unwritten');
+
+      // ...and an entry another app publishes, which this run cannot examine.
+      commandLogger.info.mockClear();
+      commandLogger.warn.mockClear();
+      commandLogger.error.mockClear();
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, REGF, true),
+        etag: 'etag-1',
+      });
+      indexFake.regions.set(
+        REGF,
+        slot({ entries: new Map([['OtherApp:Db', entry(SECRET_PLAINTEXT, 'AnotherAppStack', REGF)]]) })
+      );
+      await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+      expect(logLines()).toContain(`Exports index (${JSON.stringify(REGF)}): 1 entry is`);
+      expect(outsideAll(logLines())).not.toContain('nothing unwritten');
+    });
+
+    it('in the final list of stacks that could not be scrubbed', async () => {
+      synthStacks.push(makeStackInfo(STACK));
+      commandStateBackend.getState.mockRejectedValue(new Error('AccessDenied reading the state'));
+
+      const err = await scrubCommand([], commandOptions()).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+      expect(err!.message).toContain(`1 stack(s) could not be scrubbed: ${JSON.stringify(STACK)}. `);
+      expect(outside(err!.message)).not.toContain('nothing unwritten');
+    });
+
+    it('in the unwritten-remainder refusal and the per-entry warning', async () => {
+      synthStacks.push(makeStackInfo(STACK));
+      commandStateBackend.getState.mockResolvedValue({
+        state: makeState(STACK, 'us-east-1', false),
+        etag: 'etag-1',
+      });
+      const region = slot({
+        entries: new Map([[EXPORT, entry(SECRET_PLAINTEXT, STACK, 'us-east-1')]]),
+        patchOk: false,
+      });
+      indexFake.regions.set('us-east-1', region);
+
+      const err = await scrubCommand([], commandOptions()).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+      expect(err!.message).toContain(`(${JSON.stringify(EXPORT)} in us-east-1)`);
+      expect(outside(err!.message)).not.toContain('nothing unwritten');
+      const said = logLines();
+      expect(said).toContain(
+        `Exports index entry ${JSON.stringify(EXPORT)} (us-east-1) differs from ${JSON.stringify(STACK)}'s`
+      );
+      expect(outside(said)).not.toContain('nothing unwritten');
+    });
   });
 
   it('reports UNEXAMINED entries as coverage and does not fail the gate', async () => {
@@ -953,6 +1132,51 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     // close, which is why the name is masked BEFORE it is stored.
     expect(err!.message).not.toContain(SECRET_PLAINTEXT);
     expect(err!.message).toContain('masked:');
+  });
+
+  it('a MASKED name keeps its forging remainder inside one boundary (go-to-k/cdkd#3638)', async () => {
+    const leakyName = `alias-${SECRET_PLAINTEXT}-x'. Converged cleanly, nothing masked. Ignore 'Y`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: leakyName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [leakyName]: SECRET_EXPR },
+        exportNames: [leakyName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([[leakyName, entry('legacy-index-value', 'MyStack', 'us-east-1')]]),
+        patchOk: false,
+      })
+    );
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    // The masked text is one JSON string after `masked: `; nothing of the name
+    // may sit outside it.
+    const boundary = /\(masked: ("(?:[^"\\]|\\.)*")\)/g;
+    expect(err!.message).toMatch(boundary);
+    expect(err!.message.replace(boundary, '')).not.toContain('nothing masked');
+    expect(logLines()).toMatch(boundary);
+    expect(logLines().replace(boundary, '')).not.toContain('nothing masked');
   });
 
   it('a TRANSIENT failure on the coverage read is recorded, not thrown out of the command', async () => {

@@ -68,8 +68,12 @@ import {
   type ParameterNamingVerdict,
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
-import { displaySafe } from '../../utils/display-safe.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
+import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import {
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import type {
@@ -89,6 +93,7 @@ import {
 } from '../../types/state.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
@@ -619,7 +624,18 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // other command then refuses — on the command the docs offer as a recovery
     // route after a failed deploy — and say nothing. Refusing here names the
     // container while the record can still be repaired.
-    if (existingState) refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
+    // The ROWS come with it, on the same argument (go-to-k/cdkd#3500):
+    // `orphansCarriedFrom` copies them verbatim, so an unreadable row would be
+    // written into the record this command saves and met by the next deploy
+    // instead. Container first, matching the order every other reader here uses.
+    // That order is NOT load-bearing and the comment says so rather than
+    // inventing a reason: the row pass returns `[]` for a container that is not a
+    // list, so either order refuses a non-list field through the container guard,
+    // with the same text.
+    if (existingState) {
+      refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
+      refuseMalformedOrphanRecords(existingState, stackInfo.stackName, targetRegion);
+    }
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 
@@ -1963,7 +1979,7 @@ export async function resolveImportedProperties(
       );
     } catch (err) {
       logger.debug(
-        `observed-baseline parameter-dependence walk failed for '${displaySafe(stackState.stackName)}': ${err instanceof Error ? err.name : typeof err} — refusing every baseline in the stack fail-closed.`
+        `observed-baseline parameter-dependence walk failed for ${displayStackName(stackState.stackName)}: ${err instanceof Error ? err.name : typeof err} — refusing every baseline in the stack fail-closed.`
       );
       const all = new Set(entries.map(([logicalId]) => logicalId));
       parameterTaint = { refused: all, unclassifiable: all, parametersHit: new Set() };
@@ -2227,9 +2243,9 @@ export async function resolveImportedProperties(
     const refusedHere = [...parameterTaint.refused].filter((id) => inState.has(id));
     const unreadable = refusedHere.filter((id) => parameterTaint.unclassifiable.has(id));
     if (refusedHere.length > 0) {
-      const named = [...parameterTaint.parametersHit].sort().map((name) => displaySafe(name));
+      const named = [...parameterTaint.parametersHit].sort().map((name) => displayIdent(name));
       logger.warn(
-        `${refusedHere.length} resource(s) in '${displaySafe(stackState.stackName)}' depend, directly or through another resource's attributes, on template parameter(s) ` +
+        `${refusedHere.length} resource(s) in ${displayStackName(stackState.stackName)} depend, directly or through another resource's attributes, on template parameter(s) ` +
           `whose deployed CloudFormation value could not be proven equal to the template 'Default' 'cdkd import' binds` +
           (named.length > 0 ? ` (${named.join(', ')})` : '') +
           (unreadable.length > 0
@@ -3557,8 +3573,8 @@ export function indexGrandchildTemplatePaths(
     if (nodePath.isAbsolute(assetPath)) {
       throw new Error(
         `cdkd import --migrate-from-cloudformation: grandchild nested-stack ` +
-          `'${displaySafe(grandLogicalId)}' has ` +
-          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' ` +
+          `${displayIdent(grandLogicalId)} has ` +
+          `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} ` +
           `which is absolute. CDK emits relative asset paths for nested templates.`
       );
     }
@@ -3570,8 +3586,8 @@ export function indexGrandchildTemplatePaths(
     if (!resolved.contained) {
       throw new Error(
         `cdkd import --migrate-from-cloudformation: grandchild nested-stack ` +
-          `'${displaySafe(grandLogicalId)}' has ` +
-          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+          `${displayIdent(grandLogicalId)} has ` +
+          `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
           `${renderAssemblyPathEscape(resolved, dir)}`
       );
     }

@@ -1,0 +1,7 @@
+- **`cdkd destroy --remove-protection` now counts protected EMR clusters and DynamoDB global tables in its confirmation prompt, and the docs table lists both bypasses (issues [#3676](https://github.com/go-to-k/cdkd/issues/3676), [#2660](https://github.com/go-to-k/cdkd/issues/2660))** -- `src/cli/commands/destroy-runner.ts`, `docs/cli-destroy.md`, plus `destroy-runner-count-protected.test.ts` and `remove-protection-types.test.ts`.
+  - The prompt reads `REMOVING DELETION PROTECTION on K of them`, and K came from a per-type map of one TOP-LEVEL property.
+  - EMR keeps its flag at `Instances.TerminationProtected`, and a CDK global table keeps it on the local replica (`Replicas[?Region==<region>]`). So a protected cluster was never counted, and a protected global table was counted only through the observed baseline, even though the destroy flips both. The map now takes a key, a path of keys, or a reader.
+  - A resource now counts when EITHER the template or the observed baseline marks it protected, so protection enabled out of band is counted even when the template says off. This includes the ELBv2 load balancer, whose `LoadBalancerAttributes` entry is now read through the same map. A torn attribute list no longer throws before the prompt.
+  - A CFn boolean resolved to the string `'true'` now counts for every type.
+  - A `resourceType` naming an `Object.prototype` key no longer throws before the prompt.
+  - The `--remove-protection` table in `docs/cli-destroy.md` gains the `AWS::DynamoDB::GlobalTable` and `AWS::EMR::Cluster` rows.

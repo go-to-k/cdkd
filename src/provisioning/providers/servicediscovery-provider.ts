@@ -55,7 +55,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -129,7 +129,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private getClient(): ServiceDiscoveryClient {
     if (!this.client) {
       this.client = new ServiceDiscoveryClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -139,7 +139,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private getStsClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

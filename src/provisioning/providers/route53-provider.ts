@@ -45,7 +45,7 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -282,7 +282,7 @@ export class Route53Provider implements ResourceProvider {
   private getClient(): Route53Client {
     if (!this.route53Client) {
       this.route53Client = new Route53Client({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -1123,11 +1123,13 @@ export class Route53Provider implements ResourceProvider {
     const recordType = properties['Type'] as string;
 
     // The same guard as the create path, but the downgrade is UNCONDITIONAL
-    // (issue #1711) — the `updateRoute` precedent, for the reason
-    // `.claude/rules/providers.md` records: `update()` takes no
-    // `CreateContext`, so it cannot tell a template-borne update from the
-    // STATE-borne desired bag that `rollback-executor.ts`'s revert arm and
-    // `cdkd drift --revert` both hand it. Refusing would make a record an
+    // (issue #1711) — the `updateRoute` precedent. When it was decided
+    // `update()` could not tell a template-borne update from the STATE-borne
+    // desired bag that `rollback-executor.ts`'s revert arm and `cdkd drift
+    // --revert` both hand it. Since issue #3141 it can
+    // (`UpdateContext.replayingState` plus `desiredFromAwsReadback`); this arm
+    // was not re-decided, since gating it would turn a template-path warning
+    // into a refusal (issue #3728). Refusing would make a record an
     // older binary already wrote under the ambiguous id un-revertable, with
     // no template edit that repairs it. So the pre-guard behavior stands here
     // and the ambiguous id becomes ANNOUNCED rather than silent, while the

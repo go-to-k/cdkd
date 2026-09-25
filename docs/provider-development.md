@@ -272,8 +272,8 @@ without the second is worse than neither. (A warn-and-SKIP is a different shape
 and takes the opposite answer — see the section below.) `effectiveProperties` makes state describe what AWS holds; the
 template still declares what it always did, so the next diff reads the dropped
 keys as a change the user made. For a create-only property that means a
-REPLACEMENT, and the engine's replacement create passes no context — so a
-provider that refuses the shape on the create path turns a previously-green
+REPLACEMENT, and the engine's replacement create never sets `replayingState` —
+so a provider that refuses the shape on the create path turns a previously-green
 no-op deploy into a hard failure. Without create-only knowledge (no
 `DescribeType`) it classifies in-place instead and the resource is
 delete-and-recreated on *every* deploy.
@@ -510,7 +510,11 @@ drop answer, ask what your readback emits for the UNCONFIGURED resource.
 ## Provider Implementation Examples
 
 **Clients and region.** Take AWS clients from `getAwsClients()`, or build your
-own SDK client with `awsClientDefaults()` spread first, and read the region
+own SDK client with `ambientClientDefaults()`
+(`src/utils/ambient-client-defaults.ts`) spread first — it adds the active
+`AwsClients`' profile and explicit credentials to `awsClientDefaults()`, which
+alone would drop them (issue
+[#3588](https://github.com/go-to-k/cdkd/issues/3588)) — and read the region
 through `ambientRegion()` (`src/utils/stack-aws-scope.ts`) — never
 `process.env.AWS_REGION` directly. `cdkd deploy` runs stacks in several regions
 concurrently, each inside its own stack AWS scope, and those three are the reads
@@ -1075,7 +1079,7 @@ export class XxxResourceProvider implements ResourceProvider {
 
 ### Step 3.5: Implement `import` (Optional but Recommended)
 
-The `import` method lets `cdkd import <stack> --app "..."` adopt
+The `import` method lets `cdkd import '<stack>' --app "..."` adopt
 already-deployed AWS resources of this type into cdkd state — covering
 disaster recovery (state file lost), adoption (moving from another IaC
 tool), and re-syncing after rollback. Skipping `import` is allowed (CC

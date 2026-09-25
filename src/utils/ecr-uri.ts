@@ -13,6 +13,13 @@ export interface EcrRegistryHostForm {
    * form carries the suffix of the region's own partition.
    */
   fixedUrlSuffix?: string;
+  /**
+   * The partitions this form is served in, or `undefined` when it is served in
+   * every partition. A region outside the list is refused (issue #3670): the
+   * pairing names a host AWS does not serve, which would otherwise still get a
+   * `docker login`.
+   */
+  partitions?: readonly string[];
 }
 
 /**
@@ -65,18 +72,35 @@ export interface EcrRegistryHostForm {
  * The two dual-stack forms carry a FIXED suffix, so their check is that literal
  * rather than the region's partition suffix — the TIGHTEST available check for
  * them, not a relaxation: `on.aws` is an AWS-owned domain, so unlike a captured
- * suffix it cannot be substituted by a host someone else owns. They are
- * accepted for ANY region rather than only the partitions AWS documents them
- * in, deliberately: under-accepting is precisely the issue #1764 failure (a
- * cdkd table lagging AWS made a GENUINE registry classify as public), and the
- * suffix being AWS-owned means the widening cannot point a `docker login`
- * anywhere but AWS.
+ * suffix it cannot be substituted by a host someone else owns.
+ *
+ * The three non-plain forms are accepted only for a region in the `aws` /
+ * `aws-us-gov` partitions (issue #3670):
+ *
+ * - `on.aws` is the dual-stack DNS of those two partitions; the others serve
+ *   dual-stack under their own suffixes, which this table does not list.
+ * - AWS's own endpoint data (botocore `endpoints.json`, service `ecr`) carries
+ *   the `fips-dkr-<region>` registry endpoints in those two partitions only;
+ *   `aws-cn`, the ISO partitions and `aws-eusc` list none. So
+ *   `<acct>.dkr.ecr-fips.cn-north-1.amazonaws.com.cn` is not a host AWS serves
+ *   either, although its suffix is the region's own.
+ *
+ * Such a host is refused rather than handed a `docker login`. An earlier
+ * revision accepted `on.aws` for any region, reasoning that under-accepting
+ * repeats the issue #1764 failure; that trade stops paying once the pull path
+ * logs in to whatever host the reference names. The partition, not the six
+ * FIPS regions, is the unit, so a new FIPS region in those partitions is not
+ * refused before AWS documents it.
+ *
+ * `cdkd gc` builds its pattern from the LABELS and suffixes only and ignores
+ * `partitions`, deliberately: over-matching there only ever KEEPS an asset.
  */
+const COMMERCIAL_AND_GOVCLOUD = ['aws', 'aws-us-gov'] as const;
 export const ECR_REGISTRY_HOST_FORMS: readonly EcrRegistryHostForm[] = [
   { labels: 'dkr.ecr' },
-  { labels: 'dkr.ecr-fips' },
-  { labels: 'dkr-ecr', fixedUrlSuffix: 'on.aws' },
-  { labels: 'dkr-ecr-fips', fixedUrlSuffix: 'on.aws' },
+  { labels: 'dkr.ecr-fips', partitions: COMMERCIAL_AND_GOVCLOUD },
+  { labels: 'dkr-ecr', fixedUrlSuffix: 'on.aws', partitions: COMMERCIAL_AND_GOVCLOUD },
+  { labels: 'dkr-ecr-fips', fixedUrlSuffix: 'on.aws', partitions: COMMERCIAL_AND_GOVCLOUD },
 ];
 
 /**
@@ -218,6 +242,17 @@ export function ecrRegistryHostPattern(segments: {
  * MESSAGE was written for the #1764 partition-gap case and now over-claims for a
  * form/suffix mispairing (`amazonaws.com` IS `us-east-1`'s partition suffix).
  * `src/local/ecs-task-resolver.ts` owns that wording; recorded on issue #1846.
+ *
+ * `<r>` above is a commercial region. Issue #3670 then scoped the three
+ * non-plain forms to the `aws` / `aws-us-gov` partitions, flipping more
+ * verdicts: `<a>.dkr-ecr[-fips].<r>.on.aws` and `<a>.dkr.ecr-fips.<r>.S` for an
+ * `aws-cn`, ISO or `aws-eusc` `<r>` went from `p=ok d=f` to `p=und d=TRUE`, a
+ * form / partition mispairing reported like the form / suffix ones. The same
+ * issue added the region-SHAPE guard ({@link AWS_REGION_ID}), which refuses a
+ * service-name "region" such as `s3` at both entry points. That guard also
+ * flips the diagnostic the other way for such a label: `<a>.dkr.ecr.s3.F` went
+ * from `p=und d=TRUE` to `p=und d=f`. A region-shaped label no partition knows
+ * (`nz-north-1`) went from `p=ok d=f` to `p=und d=TRUE`.
  */
 const ECR_URI_HOST_REGEX = new RegExp(
   `^(\\d{12})\\.(${ECR_HOST_FORMS_LONGEST_FIRST.map((form) => escapeRegExp(form.labels)).join(
@@ -286,6 +321,60 @@ const CANONICAL_REGION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const CANONICAL_URL_SUFFIX = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
 
 /**
+ * `<letters>(-<letters or digits>)+-<number>`: the generic shape every AWS
+ * region id has had. A label matching it but not {@link AWS_REGION_ID} is a
+ * region cdkd does not know yet, reported by the diagnostic rather than
+ * silenced; `s3`, `lambda-url` and `s3-external-1` do not match it (the first
+ * segment must be letters only).
+ */
+const GENERIC_REGION_SHAPE = /^[a-z]+(?:-[a-z0-9]+)+-\d+$/;
+
+/**
+ * The SHAPE of an AWS region id, tested on the folded region AFTER the charset
+ * guard above (issue #3670).
+ *
+ * The charset guard admits any `[A-Za-z0-9-]` label, so a SERVICE-name label
+ * parsed as a region: `<acct>.dkr.ecr.s3.amazonaws.com` yielded the region
+ * `s3`, whose partition falls back to commercial, so the suffix matched and the
+ * host became a `docker login` target. Only TLS stopped the token there. A
+ * region id is one of the partitions' region patterns, so anything else is not
+ * a registry host this module recognizes.
+ *
+ * One alternative per partition, transcribed from each partition's
+ * `regionRegex` in AWS's own endpoint data (botocore `partitions.json`, which
+ * `@aws-sdk/util-endpoints` vendors), with `\w+` spelled `[a-z0-9]+`. That is
+ * the same set once the charset guard has refused `_` and the fold has
+ * lower-cased the segment:
+ *
+ * - `aws`: `^(us|eu|ap|sa|ca|me|af|il|mx)-\w+-\d+$`
+ * - `aws-cn`: `^cn-\w+-\d+$`
+ * - `aws-us-gov`: `^us-gov-\w+-\d+$`
+ * - `aws-iso` / `-iso-b` / `-iso-e` / `-iso-f`: `^us-iso-`, `^us-isob-`,
+ *   `^eu-isoe-`, `^us-isof-`, each followed by `\w+-\d+`
+ * - `aws-eusc`: `^eusc-(de)-\w+-\d+$`, widened here to any `eusc-<cc>-` country
+ *   code for the reason `PARTITION_TABLE` (`src/utils/aws-partition.ts`) gives
+ *   for its own broader `eusc-` prefix: a future sovereign-cloud country falling
+ *   through is the failure, and no other partition's regions begin `eusc-`.
+ *
+ * A future partition with a new prefix is refused until it is added here, the
+ * same way `derivePartitionAndUrlSuffix` has to learn its suffix.
+ */
+const AWS_REGION_ID = new RegExp(
+  '^(?:' +
+    [
+      '(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z0-9]+-\\d+',
+      'cn-[a-z0-9]+-\\d+',
+      'us-gov-[a-z0-9]+-\\d+',
+      'us-iso-[a-z0-9]+-\\d+',
+      'us-isob-[a-z0-9]+-\\d+',
+      'eu-isoe-[a-z0-9]+-\\d+',
+      'us-isof-[a-z0-9]+-\\d+',
+      'eusc-[a-z]+-[a-z0-9]+-\\d+',
+    ].join('|') +
+    ')$'
+);
+
+/**
  * The ONE case-normalization boundary of this module (issue #1786).
  *
  * DNS is case-INSENSITIVE, so `US-ISO-EAST-1.amazonaws.com` and
@@ -324,7 +413,9 @@ const CANONICAL_URL_SUFFIX = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
  */
 function matchEcrRegistryHost(
   imageUri: string
-): { accountId: string; region: string; suffix: string; expectedSuffix: string } | undefined {
+):
+  | { accountId: string; region: string; suffix: string; expectedSuffix: string | undefined }
+  | undefined {
   const m = ECR_URI_HOST_REGEX.exec(imageUri);
   if (!m) return undefined;
   // BOTH guarded on the RAW capture, BEFORE folding — see each regex's own
@@ -361,15 +452,33 @@ function matchEcrRegistryHost(
   if (!form) return undefined;
   // The account id is `\d{12}`, so it has no case to normalize.
   const region = m[3]!.toLowerCase();
+  // After the raw-capture charset guard and the fold, so the shape is checked
+  // on the spelling cdkd acts on. A label that is not region-SHAPED at all (a
+  // service name such as `s3` or `lambda-url`) is refused at BOTH entry points,
+  // like a malformed region (see `CANONICAL_REGION_SEGMENT`). A region-shaped
+  // label no partition knows (a future prefix such as `nz-north-1`) is refused
+  // by the parse too, but REPORTED by the diagnostic: it may be a genuine
+  // registry in a region this table has not learned yet, which is the issue
+  // #1764 gap, and going quiet there would hide it.
+  if (!AWS_REGION_ID.test(region)) {
+    if (!GENERIC_REGION_SHAPE.test(region)) return undefined;
+    return { accountId: m[1]!, region, suffix: m[4]!.toLowerCase(), expectedSuffix: undefined };
+  }
+  const partition = derivePartitionAndUrlSuffix(region);
   return {
     accountId: m[1]!,
     region,
     suffix: m[4]!.toLowerCase(),
     // A fixed-suffix form (the dual-stack `on.aws` pair) is checked against its
-    // own literal; every other form against the region's partition suffix.
-    expectedSuffix: (
-      form.fixedUrlSuffix ?? derivePartitionAndUrlSuffix(region).urlSuffix
-    ).toLowerCase(),
+    // own literal; every other form against the region's partition suffix. A
+    // form not served in the region's partition (issue #3670) has NO suffix it
+    // is served under there, so `undefined` matches nothing and the host is
+    // refused by the parse and reported by the diagnostic, like any other
+    // form / suffix mispairing.
+    expectedSuffix:
+      form.partitions && !form.partitions.includes(partition.partition)
+        ? undefined
+        : (form.fixedUrlSuffix ?? partition.urlSuffix).toLowerCase(),
   };
 }
 
@@ -406,7 +515,7 @@ export function parseEcrRegistryHost(
   // partition suffix, or the form's own fixed literal. Accepting ANY suffix
   // would classify `<acct>.dkr.ecr.<region>.example.com` as ECR and point a
   // `docker login` at a registry cdkd does not own.
-  if (m.suffix !== m.expectedSuffix) return undefined;
+  if (m.expectedSuffix === undefined || m.suffix !== m.expectedSuffix) return undefined;
   return { accountId: m.accountId, region: m.region };
 }
 

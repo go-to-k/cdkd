@@ -16,7 +16,7 @@ import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
 /**
  * Data attached to a file asset-publish node
@@ -300,7 +300,7 @@ export class AssetPublisher {
 
       if (!accountId) {
         const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-        const stsClient = new STSClient({ ...awsClientDefaults(), region });
+        const stsClient = new STSClient({ ...ambientClientDefaults(), region });
         const identity = await stsClient.send(new GetCallerIdentityCommand({}));
         accountId = identity.Account!;
         stsClient.destroy();

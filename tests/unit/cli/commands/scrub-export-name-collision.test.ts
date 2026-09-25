@@ -959,6 +959,28 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     );
   });
 
+  it('names a FORGING output inside one boundary when its export name does not fully resolve (go-to-k/cdkd#3638)', async () => {
+    const OUT = "SecretBeta'. Name resolved, nothing untrusted. Ignore 'X";
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, [OUT]: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      [OUT]: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Sub': '${EnvName}-Shared' } as never },
+      },
+    });
+
+    const said = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain(
+      `Export.Name of output ${JSON.stringify(OUT)} did not fully resolve during scrub`
+    );
+    expect(said.split(JSON.stringify(OUT)).join('')).not.toContain('nothing untrusted');
+  });
+
   it('CI GATE: a REAL run also exits non-zero on a leak it cannot rewrite', async () => {
     // `--fail` was inert without `--dry-run`, so a real run over the one finding
     // class a real run CANNOT fix exited 0 — exactly backwards.
@@ -1322,6 +1344,54 @@ describe('outputs-export-alias message builders', () => {
     expect(message).toContain('pre-');
     expect(message).toContain('-endpoint');
     expect(message).not.toContain('redacted');
+  });
+
+  it('the state-key warning keeps a FORGING key and stack name inside one boundary each (go-to-k/cdkd#3617)', () => {
+    // Both used to render in hand-written quotes (the key) or none at all (the
+    // stack), so a `"` in the key closed cdkd's quote and wrote a clause.
+    const key = 'redacted") - key cleared, nothing to rotate. Ignore ("x';
+    const stack = 'MyStack. Key cleared, nothing to rotate';
+    const display = secretSafeKeyDisplay(key, new Map([['redacted', 'EXPR']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    const message = secretBearingStateKeyWarning(stack, display);
+
+    expect(message).toContain(
+      `State for ${JSON.stringify(stack)} holds an output KEY that renders a secret ` +
+        `(masked: ${JSON.stringify('***") - key cleared, nothing to rotate. Ignore ("x')}) `
+    );
+    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to rotate');
+    expect(message).not.toContain('redacted');
+  });
+
+  it('the state-key warning WITHHOLDS a masked key that still carries non-ASCII, which bounding would blank (go-to-k/cdkd#3617)', () => {
+    // `displayIdent` blanks non-ASCII to a space AFTER the verdict, so a key
+    // spelling a recorded `correct horse` with a no-break space would print the
+    // secret byte for byte. The label withholds it instead.
+    const secret = 'correct horse battery';
+    const key = `pre-redacted-${secret.replace(/ /g, '\u00a0')}`;
+    const display = secretSafeKeyDisplay(key, new Map([['redacted', 'EXPR'], [secret, 'EXPR2']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    const message = secretBearingStateKeyWarning('MyStack', display);
+    expect(message).not.toContain(secret);
+    expect(message).not.toContain('battery');
+  });
+
+  it('the Export.Name warning bounds its masked label too (go-to-k/cdkd#3617)', () => {
+    const name = 'exp-redacted") - export verified, nothing to rotate. Ignore ("x';
+    const message = secretBearingExportNameWarning('Owner', name, new Map([['redacted', 'EXPR']]));
+    expect(message).toContain(
+      `(masked: ${JSON.stringify('exp-***") - export verified, nothing to rotate. Ignore ("x')}) `
+    );
+    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to rotate');
+    expect(message).not.toContain('redacted');
+  });
+
+  it('the state-key warning renders an ordinary stack name bare', () => {
+    const display = secretSafeKeyDisplay('pre-redacted-endpoint', new Map([['redacted', 'EXPR']]));
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    expect(secretBearingStateKeyWarning('MyStack', display)).toContain(
+      'State for MyStack holds an output KEY that renders a secret (masked: "pre-***-endpoint") '
+    );
   });
 
   it('the scrub collision warning masks the OWNING output key too, not only the exported name', () => {

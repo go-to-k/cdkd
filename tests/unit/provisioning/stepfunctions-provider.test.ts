@@ -61,6 +61,8 @@ describe('StepFunctionsProvider', () => {
         stateMachineVersionArn:
           'arn:aws:states:us-east-1:123456789012:stateMachine:my-state-machine:1',
       });
+      // Issue #3627: the revision id is read back (it is not the version ARN).
+      mockSend.mockResolvedValueOnce({ revisionId: 'rev-1' });
 
       const result = await provider.create(
         'MyStateMachine',
@@ -78,10 +80,9 @@ describe('StepFunctionsProvider', () => {
       expect(result.attributes).toEqual({
         Arn: 'arn:aws:states:us-east-1:123456789012:stateMachine:my-state-machine',
         Name: 'my-state-machine',
-        StateMachineRevisionId:
-          'arn:aws:states:us-east-1:123456789012:stateMachine:my-state-machine:1',
+        StateMachineRevisionId: 'rev-1',
       });
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateStateMachineCommand');
@@ -510,13 +511,49 @@ describe('StepFunctionsProvider', () => {
       };
     }
 
-    it('explicit override: DescribeStateMachine succeeds returns ARN', async () => {
-      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:adopted';
-      mockSend.mockResolvedValueOnce({ stateMachineArn: arn, name: 'adopted' });
+    it('create records INITIAL for a new machine, and survives a failed read-back', async () => {
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:m';
+      const props = {
+        StateMachineName: 'm',
+        RoleArn: 'arn:aws:iam::123456789012:role/r',
+        DefinitionString: '{"StartAt":"A","States":{"A":{"Type":"Pass","End":true}}}',
+      };
+      mockSend.mockResolvedValueOnce({ stateMachineArn: arn }).mockResolvedValueOnce({ name: 'm' });
+      const fresh = await provider.create('M', 'AWS::StepFunctions::StateMachine', props);
+      expect(fresh.attributes).toMatchObject({ StateMachineRevisionId: 'INITIAL' });
+
+      // The machine exists by now: a failed read omits the attribute, never
+      // fails the create.
+      mockSend
+        .mockResolvedValueOnce({ stateMachineArn: arn })
+        .mockRejectedValueOnce(new Error('ThrottlingException'));
+      const degraded = await provider.create('M', 'AWS::StepFunctions::StateMachine', props);
+      expect(degraded.physicalId).toBe(arn);
+      expect(degraded.attributes).not.toHaveProperty('StateMachineRevisionId');
+    });
+
+    // A state machine never updated has no `revisionId`, and CloudFormation
+    // reports `INITIAL` for it (measured live, issue #3627).
+    it('records StateMachineRevisionId INITIAL when DescribeStateMachine reports no revisionId', async () => {
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:fresh';
+      mockSend.mockResolvedValueOnce({ stateMachineArn: arn, name: 'fresh' });
 
       const result = await provider.import(makeInput({ knownPhysicalId: arn }));
 
-      expect(result).toEqual({ physicalId: arn, attributes: {} });
+      expect(result?.attributes).toMatchObject({ StateMachineRevisionId: 'INITIAL' });
+    });
+
+    it('explicit override: DescribeStateMachine succeeds returns ARN', async () => {
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:adopted';
+      mockSend.mockResolvedValueOnce({ stateMachineArn: arn, name: 'adopted', revisionId: 'rev-7' });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: arn }));
+
+      // Issue #3627: the map `create()` / `update()` record.
+      expect(result).toStrictEqual({
+        physicalId: arn,
+        attributes: { Arn: arn, Name: 'adopted', StateMachineRevisionId: 'rev-7' },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('DescribeStateMachineCommand');
       expect(call.input.stateMachineArn).toBe(arn);

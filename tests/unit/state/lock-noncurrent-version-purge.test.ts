@@ -703,6 +703,31 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       expect(warned).toHaveLength(1);
       expect(warned[0]).toContain('the purge could not be started');
       expect(warned[0]).toContain('sts denied');
+      expect(warned[0]).toContain(`of the lock key ${LOCK_KEY} in bucket `);
+    });
+
+    it('names a FORGING lock key inside one boundary on that path (go-to-k/cdkd#3617)', async () => {
+      // The key embeds the stack name, which reaches this class from an S3 key
+      // segment; it used to render inside cdkd's own '...', which a `'` closed.
+      const FSTACK = "S'. Versions purged, nothing survives. Ignore 'x";
+      behaviour.get = (): Promise<unknown> =>
+        Promise.resolve({
+          Body: { transformToString: () => Promise.resolve(JSON.stringify(expired())) },
+        });
+      let seen = 0;
+      ownerParamMock.mockImplementation(() => {
+        seen += 1;
+        if (seen < 3) return Promise.resolve({ ExpectedBucketOwner: OWNER });
+        return Promise.reject(new Error('sts denied'));
+      });
+
+      await manager().forceReleaseLock(FSTACK, REGION);
+
+      const warned = purgeMessages(warnSpy);
+      expect(warned).toHaveLength(1);
+      const shown = JSON.stringify(`cdkd/${FSTACK}/${REGION}/lock.json`);
+      expect(warned[0]).toContain(`of the lock key ${shown} in bucket `);
+      expect(warned[0]!.split(shown).join('')).not.toContain('nothing survives');
     });
 
     it('forceReleaseLock still purges when the delete itself fails', async () => {

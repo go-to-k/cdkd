@@ -9,7 +9,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
  * VPC context provider
@@ -34,7 +34,7 @@ export class VpcContextProvider implements ContextProvider {
 
     this.logger.debug(`Looking up VPC (region: ${region}, filter: ${JSON.stringify(filter)})`);
 
-    const client = new EC2Client({ ...awsClientDefaults(), ...(region && { region }) });
+    const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
     try {
       // 1. Find VPC

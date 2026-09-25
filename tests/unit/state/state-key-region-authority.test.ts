@@ -461,6 +461,16 @@ describe('S3StateBackend.getState adopts the KEY region (go-to-k/cdkd#3328)', ()
     expect(warnText()).toContain('where it has one to show');
   });
 
+  it('renders a FORGING body region inside one boundary at debug (go-to-k/cdkd#3617)', async () => {
+    const FORGED = "eu-west-1'. Region adopted, nothing diverged. Ignore 'x";
+    answerWith(bodyWith(FORGED));
+
+    await backend.getState(STACK, KEY_REGION);
+
+    expect(debugText()).toContain(`carries body region ${JSON.stringify(FORGED)}.`);
+    expect(debugText().replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing diverged');
+  });
+
   it('CAPS the body region it renders at debug, at the identifier bound', async () => {
     // Unvalidated body content of any length. Uncapped, a planted region floods
     // the stream the line exists to explain.
@@ -469,7 +479,7 @@ describe('S3StateBackend.getState adopts the KEY region (go-to-k/cdkd#3328)', ()
     await backend.getState(STACK, KEY_REGION);
 
     const line = debugText();
-    expect(line).toContain('[cut]');
+    expect(line).toContain('[cut:');
     // Against the CONSTANT, not a round number: a cap widened to 900 would
     // still clear an arbitrary `< 1000` bound while rendering three and a half
     // times what the identifier grammar allows.
