@@ -368,6 +368,23 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
     });
   });
 
+  it('an UNCHANGED malformed container on the template path records no narrowing', async () => {
+    const result = await edit('oops', 'oops');
+
+    expect(warnText()).toMatch(/EnvironmentVariables must be an object/);
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('routes the malformed-container replay warning through the caller masker', async () => {
+    await edit('oops', PREVIOUS, {
+      replayingState: true,
+      maskSecrets: (t: string) => t.replaceAll('EnvironmentVariables', '***'),
+    });
+
+    expect(warnText()).toMatch(/\*\*\* must be an object/);
+    expect(warnText()).not.toContain('EnvironmentVariables');
+  });
+
   it('routes the replay warning through the caller masker', async () => {
     await edit({ STAGE: 'prod', TOKEN: { nested: SECRET } }, PREVIOUS, {
       replayingState: true,
@@ -422,6 +439,17 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
       expect(result.physicalId).toBe('api-1');
       expect(sent(PutGraphqlApiEnvironmentVariablesCommand)).toHaveLength(0);
       expect(result.effectiveProperties).toEqual({ ...BASE });
+      expect(result.effectiveProperties).not.toHaveProperty('EnvironmentVariables');
+    });
+
+    it('routes the replay-create warning through the caller masker', async () => {
+      await create(
+        { STAGE: 'prod', TOKEN: { nested: SECRET } },
+        { replayingState: true, maskSecrets: (t: string) => t.replaceAll('TOKEN', '***') }
+      );
+
+      expect(warnText()).toMatch(/EnvironmentVariables\.\*\*\* must be a string/);
+      expect(warnText()).not.toContain('TOKEN');
     });
 
     it('a usable replayed map records no narrowing', async () => {
