@@ -95,6 +95,7 @@ import {
 } from '../yaml-cfn.js';
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 
 interface ExportOptions {
   app?: string;
@@ -1191,36 +1192,6 @@ const ROUTE_PREFIX_LIST_ID_PATTERN = /^pl-[0-9a-f]+$/;
  */
 function routeDestinationNormalizationIsModelled(value: string): boolean {
   return canonicalizeIpv4Cidr(value) !== undefined || ROUTE_PREFIX_LIST_ID_PATTERN.test(value);
-}
-
-/**
- * Return the host-bit-cleared form of an IPv4 CIDR (`100.68.0.18/18` ->
- * `100.68.0.0/18`), or `undefined` when the input is not an IPv4 CIDR at all
- * (an IPv6 CIDR, a `pl-…` prefix-list id, or anything malformed).
- *
- * This exists to recognize the ONE benign reason an `AWS::EC2::Route`'s stored
- * destination can differ from its physicalId segment: AWS rewrites a
- * non-canonical CIDR on `CreateRoute`, and the Cloud Control path records what
- * AWS returned while the template kept what the user wrote. Returning
- * `undefined` for the shapes it does not model is load-bearing — the caller
- * uses it to decide whether a divergence is conclusive or merely unexplained.
- */
-function canonicalizeIpv4Cidr(value: string): string | undefined {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value);
-  if (!match) return undefined;
-  const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
-  const prefixLength = Number(match[5]!);
-  if (prefixLength > 32 || octets.some((octet) => octet > 255)) return undefined;
-  const address = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
-  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
-  const network = (address & mask) >>> 0;
-  const networkOctets = [
-    network >>> 24,
-    (network >>> 16) & 0xff,
-    (network >>> 8) & 0xff,
-    network & 0xff,
-  ];
-  return `${networkOctets.join('.')}/${prefixLength}`;
 }
 
 /**

@@ -5,9 +5,11 @@
  *
  * AWS rewrites a non-canonical CIDR on `CreateRoute`, so a route id that
  * spells the template's CIDR can differ from the destination AWS reports
- * (issue #1771). `EC2Provider`'s import compares through this (issue #3661).
- * `src/cli/commands/export.ts` still carries a private copy of the same
- * function; fold it onto this one once the open PR holding that file lands.
+ * (issue #1771): the Cloud Control path records what AWS returned while the
+ * template kept what the user wrote. Returning `undefined` for the shapes this
+ * does not model is load-bearing — `cdkd export`'s route-id splitter reads it
+ * to decide whether a divergence is conclusive or merely unexplained.
+ * `EC2Provider`'s import compares through this too (issue #3661).
  */
 export function canonicalizeIpv4Cidr(value: string): string | undefined {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value);
