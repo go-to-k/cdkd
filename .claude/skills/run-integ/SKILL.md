@@ -56,7 +56,9 @@ verify, clean up.
    ```
 
    **Anything found → abort** with the orphan list and cleanup commands; do NOT
-   deploy on top of orphans.
+   deploy on top of orphans. **Except a `lock.json` whose `expiresAt` is in the
+   future: a LIVE peer on the same fixture** — wait, then re-scan. Expired: a
+   killed run's orphan.
 
 5. **Run the test(s)**
 
@@ -66,7 +68,7 @@ verify, clean up.
    BOTH paths.
 
    **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow branch
-   is effectively unreachable from an agent session**: the harness's
+   is unreachable from an agent session**: the harness's
    auto-approval classifier refuses a direct `cdkd deploy`, so a fixture WITHOUT
    a `verify.sh` dead-ends after dispatch. (rc=127 from `bash verify.sh` means
    the file does not exist, and bash says so on STDERR — if that line is missing
@@ -321,12 +323,11 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
   still attempt destroy to clean up partial state.
 - **A run blocked BEFORE its assertions is not a test failure — say which it
-  was.** (`cdkd gc` refuses while ANY stack holds a lock, account-wide by design,
-  so a parallel session's lock can stop a gc fixture before its first assertion.)
-  Record it as `FAIL` (the bar is exit-code-based) with a ledger note naming the
-  blocker and any hand-removed resources, clean up what the aborted run leaked,
-  and WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
-  take — it belongs to another session's in-flight deploy.
+  was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
+  `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
+  and any hand-removed resources, clean up what the aborted run leaked, and
+  WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
+  take.
 - **Never report success on a successful deploy alone** — destroy must complete
   and the orphan check must pass.
 - **Do NOT restart Docker to fix a hung docker-dependent run (`local-*`, or an

@@ -35,14 +35,14 @@ cat > "$MSGFILE" <<'EOF'
 <the squashed message>
 EOF
 git commit -F "$MSGFILE"
+git show --stat --format= HEAD   # lane paths ONLY, else it reverts peers: redo via reflog
 git rebase origin/main   # its OWN call, then `git status`: at most one conflict,
                          # and a regen / `commit --amend` chained after a STOPPED
                          # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
-  commit ITS output. Take upstream whole when it derives the file from the tree
-  — a fixture-tree edit alone stales `docs/cli-flag-coverage.md`.
+  commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Keep both, then run
   `vp run integ-ledger-normalize` before `git rebase --continue` and commit it.
@@ -57,9 +57,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   never fires. Poll `gh pr checks <N> --json name,state` (`--watch` returns at
   once when no check has APPEARED) and require that checks EXIST. It has no sha
   field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
-  poll, so a loop reading non-zero as pending outlives a green CI (the
-  go-to-k/cdkd#3512 lane). **PUSH FIRST, then run the post-rebase suite while
-  CI drains.**
+  poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
+  then run the post-rebase suite while CI drains.**
 - **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
   infers it from the CWD, which persists across Bash calls, and the resulting
   `Could not resolve to a PullRequest` reads as a permissions problem.
