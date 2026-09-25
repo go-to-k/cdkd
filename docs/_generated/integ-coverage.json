@@ -613,6 +613,7 @@
         "custom-resource-noecho-nested",
         "export-nested-stack",
         "import-nested-stack",
+        "list-parameters",
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
@@ -627,6 +628,9 @@
           "literal"
         ],
         "import-nested-stack": [
+          "literal"
+        ],
+        "list-parameters": [
           "literal"
         ],
         "nested-stack": [
@@ -2182,6 +2186,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2305,6 +2310,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -2598,6 +2607,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2734,6 +2744,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -5110,6 +5124,7 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "import-attribute-readback-final",
+        "list-parameters",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack"
@@ -5117,6 +5132,10 @@
       "signals": {
         "import-attribute-readback-final": [
           "l1"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "rds-aurora": [
           "l2"
@@ -5991,6 +6010,7 @@
         "intrinsics-torture-2",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
+        "list-parameters",
         "local-invoke-from-cfn-stack-multi-stack",
         "microservices",
         "multi-region-same-stack",
@@ -6169,6 +6189,10 @@
         ],
         "legacy-state-migration": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"

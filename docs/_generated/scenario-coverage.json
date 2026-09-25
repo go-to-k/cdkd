@@ -1401,6 +1401,11 @@
       ]
     },
     {
+      "name": "list-parameters",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-ecs-service-connect",
       "annotated": true,
       "scenarios": [
@@ -3033,6 +3038,7 @@
     "lambda-microvm-image",
     "lambda-reserved-concurrency",
     "launchtemplate-asg-inplace",
+    "list-parameters",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
