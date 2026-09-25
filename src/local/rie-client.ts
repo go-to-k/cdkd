@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * HTTP client for the AWS Lambda Runtime Interface Emulator (RIE) baked
@@ -82,7 +83,9 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
 
   const tail = lastError instanceof Error ? `: ${lastError.message}` : '';
   throw new Error(
-    `RIE did not become ready on ${host}:${port} within ${timeoutMs}ms${tail}. ` +
+    // Raw host, not formatAuthority: the URL form drops a zone id, and the
+    // diagnostic must name the value the user passed.
+    `RIE did not become ready on ${host} port ${port} within ${timeoutMs}ms${tail}. ` +
       `The container may have exited early — check 'docker logs' output.`
   );
 }
@@ -101,7 +104,7 @@ async function httpProbe(host: string, port: number, timeoutMs: number): Promise
     // invoke; some HTTP stacks have separate readiness for read-only vs
     // write methods. Body is a tiny empty JSON object so we don't pay
     // a content-length parse on the way through.
-    const response = await fetch(`http://${host}:${port}/`, {
+    const response = await fetch(`http://${formatAuthority(host, port)}/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
@@ -154,7 +157,7 @@ export async function invokeRie(
   event: unknown,
   timeoutMs: number
 ): Promise<InvokeResult> {
-  const url = `http://${host}:${port}${INVOKE_PATH}`;
+  const url = `http://${formatAuthority(host, port)}${INVOKE_PATH}`;
   const body = JSON.stringify(event ?? {});
 
   const controller = new AbortController();
@@ -355,7 +358,7 @@ export async function invokeRieStreaming(
   event: unknown,
   timeoutMs: number
 ): Promise<StreamingInvokeResult> {
-  const url = `http://${host}:${port}${INVOKE_PATH}`;
+  const url = `http://${formatAuthority(host, port)}${INVOKE_PATH}`;
   const body = JSON.stringify(event ?? {});
 
   const controller = new AbortController();

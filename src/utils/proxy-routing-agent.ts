@@ -45,6 +45,7 @@ import { Agent, type AgentConnectOpts } from 'agent-base';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getProxyForUrl } from 'proxy-from-env';
+import { formatHostForAuthority } from './url-authority.ts';
 
 /**
  * Applied to every inner agent.
@@ -68,8 +69,7 @@ const INNER_AGENT_OPTIONS = { keepAlive: true, maxSockets: 50 } as const;
  */
 function requestUrl(options: AgentConnectOpts): string {
   const secure = options.secureEndpoint;
-  const rawHost = options.host ?? 'localhost';
-  const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost;
+  const host = formatHostForAuthority(options.host ?? 'localhost');
   const port = options.port ?? (secure ? 443 : 80);
   return `${secure ? 'https' : 'http'}://${host}:${port}`;
 }
