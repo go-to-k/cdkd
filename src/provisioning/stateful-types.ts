@@ -195,8 +195,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // The delete-first paths (`--replace`'s fallback, `--recreate-via-*`, the
   // Cloud Control update-failure fallback) fail at that delete instead. The
   // measurement covers one region (us-east-1) and both delete routes; a
-  // partition whose `DeleteNamespace` cascaded would be the residual. The type
-  // was guarded until then on the fail-safe side of that open question.
+  // region or partition whose `DeleteNamespace` cascaded would be the
+  // residual. The type was guarded until then on the fail-safe side of that
+  // open question.
   // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` calls
   // `emptyVectorBucket` unconditionally, deleting every vector index in it.
   'AWS::S3Vectors::VectorBucket',
