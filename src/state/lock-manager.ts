@@ -162,6 +162,32 @@ function safeSegment(value: string | undefined): string {
 }
 
 /**
+ * The `stack (region)` descriptor every lock message renders, with both halves
+ * through {@link safeSegment}. A stack name reaches this module from a CLI
+ * argument, a nested-stack child's minted name, or an S3 key segment
+ * `listStacks` returned (`cdkd state destroy`, `cdkd state orphan`), and the
+ * lock paths cannot tell which -- so every render takes the guard rather than
+ * a per-caller judgement that the next caller would not inherit (issue #3027).
+ */
+function stackRef(stackName: string, region: string | undefined): string {
+  return region === undefined
+    ? safeSegment(stackName)
+    : `${safeSegment(stackName)} (${safeSegment(region)})`;
+}
+
+/**
+ * An error's text for a lock message. S3's error text ECHOES the key, which
+ * embeds the stack name, so a message whose stack name went through
+ * {@link stackRef} would otherwise let the same bytes back in through its last
+ * interpolation. The ASCII allowlist, for the same reason the name takes it.
+ */
+function errorDetail(error: unknown): string {
+  return (
+    displaySafe(error instanceof Error ? error.message : error, { asciiOnly: true }) || UNRENDERABLE
+  );
+}
+
+/**
  * S3-based lock manager using conditional writes (If-None-Match)
  *
  * Implements distributed locking using S3's If-None-Match: "*" condition
@@ -359,17 +385,19 @@ export class LockManager {
     };
 
     try {
-      this.logger.debug(`Attempting to acquire lock for stack: ${stackName} (${region})`);
+      this.logger.debug(`Attempting to acquire lock for stack: ${stackRef(stackName, region)}`);
 
       const etag = await this.putLockObject(key, lockInfo);
 
-      this.logger.debug(`Lock acquired for stack: ${stackName} (${region}), owner: ${lockOwner}`);
+      this.logger.debug(
+        `Lock acquired for stack: ${stackRef(stackName, region)}, owner: ${displaySafe(lockOwner)}`
+      );
       this.trackHeldLock({ stackName, region, key, info: lockInfo, etag });
       return true;
     } catch (error) {
       // Check for PreconditionFailed error (S3 condition not met - lock already exists)
       if (this.isForeignLockError(error)) {
-        this.logger.debug(`Lock already exists for stack: ${stackName} (${region})`);
+        this.logger.debug(`Lock already exists for stack: ${stackRef(stackName, region)}`);
 
         // Check if the existing lock is expired.
         //
@@ -388,7 +416,7 @@ export class LockManager {
             // silently, with none of that reasoning applied. `trackHeldLock`
             // guards the analogous case for renewal; this site did not.
             this.logger.warn(
-              `Cannot take over the expired lock for stack '${stackName}' (${region}): its current ` +
+              `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: its current ` +
                 `version could not be identified, so removing it could delete a lock another process ` +
                 `has since taken. Clear it with cdkd force-unlock.`
             );
@@ -418,7 +446,7 @@ export class LockManager {
               // unreclaimable expired lock under one specific policy, which
               // `force-unlock` clears; the alternative costs mutual exclusion.
               this.logger.warn(
-                `Cannot take over the expired lock for stack '${stackName}' (${region}): this endpoint ` +
+                `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: this endpoint ` +
                   `or policy will not evaluate a conditional delete, and removing it unconditionally ` +
                   `could delete a lock another process has since taken. Clear it with cdkd force-unlock.`
               );
@@ -428,7 +456,7 @@ export class LockManager {
               // owner renewed it or a third process took it over first. Either
               // way it is NOT ours to remove, and it is NOT free.
               this.logger.debug(
-                `Expired lock for stack ${stackName} (${region}) changed before takeover; treating as contended`
+                `Expired lock for stack ${stackRef(stackName, region)} changed before takeover; treating as contended`
               );
               return false;
             } else {
@@ -445,7 +473,7 @@ export class LockManager {
               `previous owner crashed or was suspended`
             : `Its expiresAt is not a finite number, which cdkd treats as already expired`;
           this.logger.warn(
-            `Took over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
+            `Took over an EXPIRED lock for stack: ${safeSegment(stackName)} (${safeSegment(region)}, owner: ${existing.info.owner}, ` +
               `${formatLockExpiry(existing.info.expiresAt)}). ${why} -- ` +
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
@@ -455,7 +483,7 @@ export class LockManager {
             const retryEtag = await this.putLockObject(key, lockInfo);
 
             this.logger.debug(
-              `Lock acquired for stack: ${stackName} (${region}) after expired lock cleanup, owner: ${lockOwner}`
+              `Lock acquired for stack: ${stackRef(stackName, region)} after expired lock cleanup, owner: ${displaySafe(lockOwner)}`
             );
             this.trackHeldLock({ stackName, region, key, info: lockInfo, etag: retryEtag });
             return true;
@@ -463,7 +491,7 @@ export class LockManager {
             if (this.isForeignLockError(retryError)) {
               // Another process acquired the lock between our delete and retry
               this.logger.debug(
-                `Lock was acquired by another process during expired lock cleanup for stack: ${stackName} (${region})`
+                `Lock was acquired by another process during expired lock cleanup for stack: ${stackRef(stackName, region)}`
               );
               return false;
             }
@@ -504,13 +532,9 @@ export class LockManager {
         `Failed to acquire lock for stack ` +
           `${safeSegment(stackName)} ` +
           `(${safeSegment(region)}): ` +
-          // Sanitized rather than left raw
-          // because S3 error text echoes the KEY, which embeds the stack name --
-          // so the value this line just sanitized twice would otherwise walk
-          // back in through the third interpolation, into the terminal and into
-          // `deployments/*.jsonl`. Two-of-three is the exact shape
-          // `custom-resource-provider.ts`'s cleanup line argues against.
-          `${displaySafe(error instanceof Error ? error.message : String(error), { asciiOnly: true }) || UNRENDERABLE}`,
+          // Two-of-three is the exact shape `custom-resource-provider.ts`'s
+          // cleanup line argues against; `errorDetail` says why.
+          errorDetail(error),
         error instanceof Error ? error : undefined
       );
     }
@@ -652,12 +676,8 @@ export class LockManager {
 
       // `cdkd state show` surfaces this message as its fatal error (issue
       // #3003).
-      const detail =
-        displaySafe(error instanceof Error ? error.message : String(error), {
-          asciiOnly: true,
-        }) || UNRENDERABLE;
       throw new LockError(
-        `Failed to get lock info for stack ${shownStack}: ${detail}`,
+        `Failed to get lock info for stack ${shownStack}: ${errorDetail(error)}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -718,7 +738,9 @@ export class LockManager {
     const key = this.getLockKey(stackName, region);
     const held = this.heldLocks.get(key);
     if (held?.releasing) {
-      this.logger.debug(`Release already in flight (or done) for stack ${stackName} (${region})`);
+      this.logger.debug(
+        `Release already in flight (or done) for stack ${stackRef(stackName, region)}`
+      );
       return held.releasing;
     }
     if (!held) return this.doReleaseLock(stackName, region, undefined);
@@ -750,7 +772,7 @@ export class LockManager {
     // purge attaches to the DELETE, not to the method.
     if (held?.lost) {
       this.logger.warn(
-        `Not releasing the lock for stack '${stackName}' (${region}): this process lost it while the ` +
+        `Not releasing the lock for stack ${stackRef(stackName, region)}: this process lost it while the ` +
           `operation was still running, so the lock present now belongs to someone else.`
       );
       return;
@@ -761,7 +783,7 @@ export class LockManager {
       // owner-blind delete this whole change removes, arriving by omission
       // rather than by decision. Confirm ownership by body first, or leave it.
       this.logger.warn(
-        `Not releasing the lock for stack '${stackName}' (${region}): this process never learned which ` +
+        `Not releasing the lock for stack ${stackRef(stackName, region)}: this process never learned which ` +
           `version of the lock it wrote, and could not confirm the one present is its own. It expires ` +
           `on its own, or clear it with cdkd force-unlock.`
       );
@@ -769,27 +791,27 @@ export class LockManager {
     }
 
     try {
-      this.logger.debug(`Releasing lock for stack: ${stackName} (${region})`);
+      this.logger.debug(`Releasing lock for stack: ${stackRef(stackName, region)}`);
 
       await this.deleteLock(stackName, region, held?.etag);
 
-      this.logger.debug(`Lock released for stack: ${stackName} (${region})`);
+      this.logger.debug(`Lock released for stack: ${stackRef(stackName, region)}`);
     } catch (error) {
       if (this.isForeignLockError(error)) {
         this.logger.warn(
           held?.etagUncertain
-            ? `Not releasing the lock for stack '${stackName}' (${region}): this process could not ` +
+            ? `Not releasing the lock for stack ${stackRef(stackName, region)}: this process could not ` +
                 `confirm which version of the lock it last wrote, so it will not delete one it may not ` +
                 `own. The lock clears on its own at ${new Date(held.info.expiresAt).toISOString()}, or ` +
                 `immediately with cdkd force-unlock.`
-            : `Not releasing the lock for stack '${stackName}' (${region}): it has been replaced since ` +
+            : `Not releasing the lock for stack ${stackRef(stackName, region)}: it has been replaced since ` +
                 `this process acquired it, so another cdkd process now holds it. Leaving it in place.`
         );
         return;
       }
 
       if (this.isGoneError(error)) {
-        this.logger.debug(`Lock for stack ${stackName} (${region}) was already gone`);
+        this.logger.debug(`Lock for stack ${stackRef(stackName, region)} was already gone`);
         return;
       }
 
@@ -804,7 +826,7 @@ export class LockManager {
         // since an unreadable lock is the very case this branch is for.
         if (!(await this.stillOursByBody(held))) {
           this.logger.warn(
-            `Not releasing the lock for stack '${stackName}' (${region}): the conditional delete could ` +
+            `Not releasing the lock for stack ${stackRef(stackName, region)}: the conditional delete could ` +
               `not be evaluated here, and this process could not confirm the lock is still its own. ` +
               `Leaving it in place rather than risk deleting another process's lock. It expires on its ` +
               `own, or clear it with cdkd force-unlock. If this repeats, grant s3:GetObject on the lock ` +
@@ -813,23 +835,23 @@ export class LockManager {
           return;
         }
         this.logger.debug(
-          `Conditional lock release for stack ${stackName} (${region}) is not supported here ` +
-            `(${error instanceof Error ? error.message : String(error)}); retrying unconditionally`
+          `Conditional lock release for stack ${stackRef(stackName, region)} is not supported here ` +
+            `(${errorDetail(error)}); retrying unconditionally`
         );
         try {
           await this.deleteLock(stackName, region);
-          this.logger.debug(`Lock released for stack: ${stackName} (${region})`);
+          this.logger.debug(`Lock released for stack: ${stackRef(stackName, region)}`);
           return;
         } catch (fallbackError) {
           throw new LockError(
-            `Failed to release lock for stack '${stackName}' (${region}): ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+            `Failed to release lock for stack ${stackRef(stackName, region)}: ${errorDetail(fallbackError)}`,
             fallbackError instanceof Error ? fallbackError : undefined
           );
         }
       }
 
       throw new LockError(
-        `Failed to release lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to release lock for stack ${stackRef(stackName, region)}: ${errorDetail(error)}`,
         error instanceof Error ? error : undefined
       );
     } finally {
@@ -938,7 +960,9 @@ export class LockManager {
     // For the same reason it is unconditional with respect to issue #2168's
     // ETag too: `force-unlock` exists precisely to remove a lock this process
     // does NOT own.
-    const where = `${stackName}${region ? ` (${region})` : ''}`;
+    // Keyed on `=== undefined` like `getLockKey`, so an empty region shows as
+    // the stand-in rather than as absent while the key names `//lock.json`.
+    const where = stackRef(stackName, region);
     const lockInfo = await this.getLockInfo(stackName, region).catch(() => null);
 
     this.logger.warn(
@@ -1123,15 +1147,15 @@ export class LockManager {
       });
     } catch (error) {
       report(
-        // `displaySafe` because the key embeds the stack name and -- on the reap
-        // paths -- a region this process read out of a lock/state object BODY,
-        // i.e. attacker-influenced text on its way to a terminal.
+        // The key through `displayIdent` AND the error through `errorDetail`,
+        // because the key embeds the stack name and -- on the reap paths -- a
+        // region this process read out of a lock/state object BODY, and S3's
+        // error text echoes that key back (issue #3027).
         `Could not purge noncurrent versions of the lock key ${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} in bucket ` +
           `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
           `survive and remain readable via GetObject with a VersionId (${LOCK_OBJECT_DESCRIPTION}). ` +
           `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge ` +
-          `the key by hand. Underlying error: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `the key by hand. Underlying error: ${errorDetail(error)}`
       );
     }
   }
@@ -1166,7 +1190,7 @@ export class LockManager {
 
     if (this.renewalDisabled) {
       this.logger.debug(
-        `Lock renewal is disabled; the lock for ${args.stackName} (${args.region}) will lapse at its TTL`
+        `Lock renewal is disabled; the lock for ${stackRef(args.stackName, args.region)} will lapse at its TTL`
       );
       return;
     }
@@ -1179,7 +1203,7 @@ export class LockManager {
       // owner's lock. Degrading to the pre-#2168 behaviour (lapse at the TTL)
       // is the safe direction.
       this.logger.debug(
-        `No ETag returned when acquiring the lock for ${args.stackName} (${args.region}); ` +
+        `No ETag returned when acquiring the lock for ${stackRef(args.stackName, args.region)}; ` +
           `renewal disabled for this lock`
       );
       return;
@@ -1256,7 +1280,7 @@ export class LockManager {
         held.etagUncertain = true;
         this.stopRenewal(held);
         this.logger.debug(
-          `Lock renewal for ${held.stackName} (${held.region}) returned no ETag and the object could ` +
+          `Lock renewal for ${stackRef(held.stackName, held.region)} returned no ETag and the object could ` +
             `not be re-read; stopping renewal and keeping the previous ETag`
         );
         return;
@@ -1267,7 +1291,7 @@ export class LockManager {
       // because an earlier one already reported itself.
       held.warnedPastExpiry = false;
       this.logger.debug(
-        `Renewed lock for stack: ${held.stackName} (${held.region}) until ` +
+        `Renewed lock for stack: ${stackRef(held.stackName, held.region)} until ` +
           `${new Date(renewed.expiresAt).toISOString()}`
       );
     } catch (error) {
@@ -1278,7 +1302,7 @@ export class LockManager {
         held.lost = true;
         this.stopRenewal(held);
         this.logger.warn(
-          `Lost the lock for stack '${held.stackName}' (${held.region}) while the operation was still ` +
+          `Lost the lock for stack ${stackRef(held.stackName, held.region)} while the operation was still ` +
             `running: the lock object has been replaced or removed. Another cdkd process may now be ` +
             `writing to this stack concurrently. This process will not delete the current lock when it ` +
             `finishes.`
@@ -1289,8 +1313,8 @@ export class LockManager {
       // interval running -- the TTL tolerates many consecutive misses, and
       // giving up on the first one would re-open the very window this closes.
       this.logger.debug(
-        `Lock renewal for stack ${held.stackName} (${held.region}) failed, will retry: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+        `Lock renewal for stack ${stackRef(held.stackName, held.region)} failed, will retry: ` +
+          `${errorDetail(error)}`
       );
       // Once enough of them have failed that the deadline has actually passed,
       // say so ONCE at warn. Without this, fourteen consecutive failures --
@@ -1300,7 +1324,7 @@ export class LockManager {
       if (!held.warnedPastExpiry && Date.now() >= held.info.expiresAt) {
         held.warnedPastExpiry = true;
         this.logger.warn(
-          `Lock renewal for stack '${held.stackName}' (${held.region}) has been failing long enough ` +
+          `Lock renewal for stack ${stackRef(held.stackName, held.region)} has been failing long enough ` +
             `that the lock expired at ${new Date(held.info.expiresAt).toISOString()}. Another cdkd ` +
             `process can now take it while this operation is still running. Renewal keeps retrying.`
         );
@@ -1349,7 +1373,7 @@ export class LockManager {
     // episode after an adopt would be silent.
     held.warnedPastExpiry = false;
     this.logger.debug(
-      `Lock renewal for stack ${held.stackName} (${held.region}) reported a conflict, but the object ` +
+      `Lock renewal for stack ${stackRef(held.stackName, held.region)} reported a conflict, but the object ` +
         `holds this process's own renewal -- adopting it and continuing`
     );
     return true;
@@ -1451,15 +1475,10 @@ export class LockManager {
       if (lockInfo) {
         if (attempt < maxRetries) {
           // The retry line is the SIBLING of the throw below and renders the
-          // same two values, so it takes the same sanitization. Scope, stated
-          // precisely rather than as a claim about the whole file: issue
-          // [#2610] sanitized the THREE sites on the acquire path -- this line,
-          // `acquireLockWithRetry`'s own throw, and `acquireLock`'s throw that
-          // it calls uncaught. Other `stackName` renders in this module (debug
-          // and warn lines on the release / renewal / force-release paths) are
-          // NOT covered and are tracked separately; `owner` / `operation` need
-          // nothing anywhere, being sanitized at their single source,
-          // `getLockRecord`.
+          // same two values, so it takes the same sanitization -- as does every
+          // other stack-name render in this module since issue #3027.
+          // `owner` / `operation` need nothing anywhere, being sanitized at
+          // their single source, `getLockRecord`.
           this.logger.info(
             `Stack ${safeSegment(stackName)} ` +
               `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +

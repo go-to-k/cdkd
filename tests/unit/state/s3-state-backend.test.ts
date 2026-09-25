@@ -1916,11 +1916,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       const debugText = childLoggerMock.debug.mock.calls.map((c) => String(c[0])).join('\n');
       expect(debugText).toContain(
-        "dropping an entry under 'custom-resource-responses/' " +
+        'dropping an entry under custom-resource-responses/ ' +
           '(key: custom-resource-responses/no-date.json) — ListObjectsV2 returned no LastModified'
       );
       expect(debugText).toContain(
-        "dropping an entry under 'custom-resource-responses/' " +
+        'dropping an entry under custom-resource-responses/ ' +
           '(key: custom-resource-responses/no-size.json) — ListObjectsV2 returned no Size'
       );
       // ...and the KEPT entry is not reported as a drop, so the assertion above
