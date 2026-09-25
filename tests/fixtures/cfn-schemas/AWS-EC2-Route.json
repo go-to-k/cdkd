@@ -29,6 +29,20 @@
     "DestinationPrefixListId",
     "RouteTableId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DestinationCidrBlock"
+    ],
+    [
+      "DestinationIpv6CidrBlock"
+    ],
+    [
+      "DestinationPrefixListId"
+    ],
+    [
+      "RouteTableId"
+    ]
+  ],
   "primaryIdentifier": [
     "CidrBlock",
     "RouteTableId"

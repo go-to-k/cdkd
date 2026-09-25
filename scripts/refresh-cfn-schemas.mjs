@@ -43,6 +43,15 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
+// A `.ts` LEAF under src/: the live resolver parses a DescribeType schema with
+// the same function, so the shipped offline fallback cannot disagree with the
+// live answer for one schema (issue #3718). Loaded through Node's type
+// stripping, like the `.ts` modules `diagnose-schema-refresh.mjs` imports:
+// the default from Node 22.18 (the repo pins 24 in `.node-version` and CI),
+// and `node --experimental-strip-types` below that, which the
+// `gen:cfn-schemas-from-zip` task passes. Duplicating the parser in plain JS
+// instead would re-open the two-spellings drift this import exists to close.
+import { parseCreateOnlyPropertyPointers } from '../src/provisioning/create-only-paths.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -158,6 +167,39 @@ export function extractCreateOnlyProperties(schemaJson) {
     .map((p) => p.replace(/^\/properties\//, ''))
     .filter((p) => !p.includes('/'))
     .sort();
+}
+
+/**
+ * Extract the per-type create-only property PATHS, nested entries included,
+ * as segment arrays after `/properties/` (issue #3718). The twin of
+ * {@link extractCreateOnlyProperties}, which keeps only the top-level names
+ * other readers depend on; this one is what `cdkd` ships as the offline
+ * fallback when the live `DescribeType` lookup fails, so it must be the SAME
+ * parse the live resolver applies.
+ *
+ * Sorted (element-wise, by code unit) so a reordering in AWS's schema is not
+ * reported as drift.
+ *
+ * @param {string} schemaJson
+ * @returns {string[][]}
+ */
+export function extractCreateOnlyPropertyPaths(schemaJson) {
+  /** @type {{createOnlyProperties?: unknown}} */
+  const schema = JSON.parse(schemaJson);
+  return parseCreateOnlyPropertyPointers(schema.createOnlyProperties).sort(comparePaths);
+}
+
+/**
+ * @param {string[]} a
+ * @param {string[]} b
+ * @returns {number}
+ */
+function comparePaths(a, b) {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length - b.length;
 }
 
 /**
@@ -712,7 +754,7 @@ function today() {
  * @param {string} schemaJson
  * @param {string} resourceType
  * @param {string} generatedAt `YYYY-MM-DD`
- * @returns {{resourceType: string, generatedAt: string, properties: string[], readOnlyProperties: string[], createOnlyProperties: string[], primaryIdentifier: string[]} & Record<string, unknown>}
+ * @returns {{resourceType: string, generatedAt: string, properties: string[], readOnlyProperties: string[], createOnlyProperties: string[], createOnlyPropertyPaths: string[][], primaryIdentifier: string[]} & Record<string, unknown>}
  */
 export function buildFixture(schemaJson, resourceType, generatedAt) {
   const nestedProperties = extractNestedPropertyNames(schemaJson);
@@ -726,6 +768,10 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
     properties: extractTopLevelProperties(schemaJson),
     readOnlyProperties: extractReadOnlyProperties(schemaJson),
     createOnlyProperties: extractCreateOnlyProperties(schemaJson),
+    // Always emitted, `[]` included: the runtime fallback reads "no entry" as
+    // "no snapshot for this type", which must stay distinct from "the snapshot
+    // says none" (issue #3718).
+    createOnlyPropertyPaths: extractCreateOnlyPropertyPaths(schemaJson),
     primaryIdentifier: extractPrimaryIdentifier(schemaJson),
     // Omitted entirely when the type has no nested property (keeps
     // scalar-only fixtures byte-stable vs the pre-#1373 shape).

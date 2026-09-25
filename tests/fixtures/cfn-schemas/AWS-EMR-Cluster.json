@@ -59,6 +59,71 @@
     "ServiceRole",
     "Steps"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AdditionalInfo"
+    ],
+    [
+      "Applications"
+    ],
+    [
+      "AutoScalingRole"
+    ],
+    [
+      "BootstrapActions"
+    ],
+    [
+      "Configurations"
+    ],
+    [
+      "CustomAmiId"
+    ],
+    [
+      "EbsRootVolumeIops"
+    ],
+    [
+      "EbsRootVolumeSize"
+    ],
+    [
+      "EbsRootVolumeThroughput"
+    ],
+    [
+      "JobFlowRole"
+    ],
+    [
+      "KerberosAttributes"
+    ],
+    [
+      "LogEncryptionKmsKeyId"
+    ],
+    [
+      "LogUri"
+    ],
+    [
+      "Name"
+    ],
+    [
+      "OSReleaseLabel"
+    ],
+    [
+      "PlacementGroupConfigs"
+    ],
+    [
+      "ReleaseLabel"
+    ],
+    [
+      "ScaleDownBehavior"
+    ],
+    [
+      "SecurityConfiguration"
+    ],
+    [
+      "ServiceRole"
+    ],
+    [
+      "Steps"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

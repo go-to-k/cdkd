@@ -11,6 +11,11 @@
   "createOnlyProperties": [
     "DBSubnetGroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DBSubnetGroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "DBSubnetGroupName"
   ],

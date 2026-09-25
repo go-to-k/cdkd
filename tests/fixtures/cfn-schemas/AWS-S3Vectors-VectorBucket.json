@@ -16,6 +16,14 @@
     "EncryptionConfiguration",
     "VectorBucketName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "EncryptionConfiguration"
+    ],
+    [
+      "VectorBucketName"
+    ]
+  ],
   "primaryIdentifier": [
     "VectorBucketArn"
   ],

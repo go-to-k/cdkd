@@ -24,6 +24,29 @@
     "SingleMetricAnomalyDetector",
     "Stat"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Dimensions"
+    ],
+    [
+      "MetricCharacteristics"
+    ],
+    [
+      "MetricMathAnomalyDetector"
+    ],
+    [
+      "MetricName"
+    ],
+    [
+      "Namespace"
+    ],
+    [
+      "SingleMetricAnomalyDetector"
+    ],
+    [
+      "Stat"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

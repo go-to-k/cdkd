@@ -24,6 +24,26 @@
     "KeyAlgorithm",
     "SubjectAlternativeNames"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CertificateAuthorityArn"
+    ],
+    [
+      "CertificateExport"
+    ],
+    [
+      "DomainName"
+    ],
+    [
+      "DomainValidationOptions"
+    ],
+    [
+      "KeyAlgorithm"
+    ],
+    [
+      "SubjectAlternativeNames"
+    ]
+  ],
   "primaryIdentifier": [
     "CertificateArn"
   ],

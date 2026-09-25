@@ -20,6 +20,23 @@
     "Ipv6Address",
     "SubnetId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "FileSystemId"
+    ],
+    [
+      "IpAddress"
+    ],
+    [
+      "IpAddressType"
+    ],
+    [
+      "Ipv6Address"
+    ],
+    [
+      "SubnetId"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

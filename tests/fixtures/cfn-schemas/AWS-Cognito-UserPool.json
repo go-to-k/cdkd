@@ -46,6 +46,7 @@
     "UserPoolId"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "UserPoolId"
   ],

@@ -22,6 +22,7 @@
     "PolicyId"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "PolicyId"
   ],

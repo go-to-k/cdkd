@@ -21,6 +21,11 @@
   "createOnlyProperties": [
     "Name"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "Name"
   ],

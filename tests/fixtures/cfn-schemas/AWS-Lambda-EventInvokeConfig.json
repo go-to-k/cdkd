@@ -13,6 +13,14 @@
     "FunctionName",
     "Qualifier"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "FunctionName"
+    ],
+    [
+      "Qualifier"
+    ]
+  ],
   "primaryIdentifier": [
     "FunctionName",
     "Qualifier"

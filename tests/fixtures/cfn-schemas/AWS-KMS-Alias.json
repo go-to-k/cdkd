@@ -9,6 +9,11 @@
   "createOnlyProperties": [
     "AliasName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AliasName"
+    ]
+  ],
   "primaryIdentifier": [
     "AliasName"
   ],

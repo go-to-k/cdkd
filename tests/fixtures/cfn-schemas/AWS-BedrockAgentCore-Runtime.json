@@ -38,6 +38,11 @@
   "createOnlyProperties": [
     "AgentRuntimeName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AgentRuntimeName"
+    ]
+  ],
   "primaryIdentifier": [
     "AgentRuntimeId"
   ],

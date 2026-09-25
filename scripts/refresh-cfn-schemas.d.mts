@@ -9,6 +9,7 @@ export declare function extractRegisteredTypes(source: string): string[];
 export declare function extractTopLevelProperties(schemaJson: string): string[];
 export declare function extractReadOnlyProperties(schemaJson: string): string[];
 export declare function extractCreateOnlyProperties(schemaJson: string): string[];
+export declare function extractCreateOnlyPropertyPaths(schemaJson: string): string[][];
 export declare function extractPrimaryIdentifier(schemaJson: string): string[];
 export declare function extractNestedPropertyNames(schemaJson: string): Record<string, string[]>;
 export declare function extractNestedPropertyPaths(
@@ -32,6 +33,7 @@ export declare function buildFixture(
   properties: string[];
   readOnlyProperties: string[];
   createOnlyProperties: string[];
+  createOnlyPropertyPaths: string[][];
   primaryIdentifier: string[];
 } & Record<string, unknown>;
 export declare function serializeFixture(fixture: Record<string, unknown>): string;

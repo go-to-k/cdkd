@@ -23,6 +23,20 @@
     "NetworkBorderGroup",
     "TransferAddress"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Address"
+    ],
+    [
+      "IpamPoolId"
+    ],
+    [
+      "NetworkBorderGroup"
+    ],
+    [
+      "TransferAddress"
+    ]
+  ],
   "primaryIdentifier": [
     "AllocationId",
     "PublicIp"

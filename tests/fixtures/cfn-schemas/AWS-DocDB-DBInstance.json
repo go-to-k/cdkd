@@ -26,6 +26,17 @@
     "DBClusterIdentifier",
     "DBInstanceIdentifier"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZone"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBInstanceIdentifier"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

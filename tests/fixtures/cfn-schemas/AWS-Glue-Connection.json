@@ -13,6 +13,15 @@
   "createOnlyProperties": [
     "CatalogId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CatalogId"
+    ],
+    [
+      "ConnectionInput",
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "CatalogId",
     "Name"

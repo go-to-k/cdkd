@@ -140,6 +140,50 @@
     "StorageEncrypted",
     "Timezone"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "BackupTarget"
+    ],
+    [
+      "CharacterSetName"
+    ],
+    [
+      "CustomIAMInstanceProfile"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBInstanceIdentifier"
+    ],
+    [
+      "DBName"
+    ],
+    [
+      "DBSubnetGroupName"
+    ],
+    [
+      "DBSystemId"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "MasterUsername"
+    ],
+    [
+      "NcharCharacterSetName"
+    ],
+    [
+      "SourceRegion"
+    ],
+    [
+      "StorageEncrypted"
+    ],
+    [
+      "Timezone"
+    ]
+  ],
   "primaryIdentifier": [
     "DBInstanceIdentifier"
   ],

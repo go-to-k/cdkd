@@ -9,6 +9,11 @@
   "createOnlyProperties": [
     "Bucket"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Bucket"
+    ]
+  ],
   "primaryIdentifier": [
     "Bucket"
   ],

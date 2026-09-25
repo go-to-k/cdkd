@@ -1,26 +1,37 @@
 /**
  * Part of #1180 (deploy-overhead reduction). doDeploy fires a fire-and-forget
  * prefetch of each distinct template resource type's create-only property paths
- * (`getCreateOnlyPropertyPaths`, backed by cloudformation:DescribeType, ~0.8s
- * cold per type, module-cached for the deploy lifetime) at the very start of the
- * deploy — in parallel with the lock acquisition + state read — so that the
- * later diff's per-resource create-only lookups hit a warm cache instead of
+ * (`prefetchCreateOnlyPropertyPaths`, backed by cloudformation:DescribeType,
+ * ~0.8s cold per type, module-cached for the deploy lifetime) at the very start
+ * of the deploy — in parallel with the lock acquisition + state read — so that
+ * the later diff's per-resource create-only lookups hit a warm cache instead of
  * paying the round-trip inline on the critical path.
  *
- * These tests pin two properties of that prefetch:
- *  1. it warms the cache for EACH distinct resource type exactly once (dedup);
- *  2. a rejecting lookup never surfaces as an unhandled promise rejection
- *     (the fire-and-forget call carries its own `.catch`).
+ * These tests pin the WIRING of that prefetch: the types it is handed (each
+ * distinct type once, no schema-less type), and that the deploy does not wait
+ * on it. The prefetch's own cap, priority and no-unhandled-rejection
+ * guarantees (issue #3718) are pinned in
+ * `tests/unit/provisioning/create-only-properties.test.ts`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const getCreateOnlyPropertyPaths = vi.fn<(type: string) => Promise<ReadonlyArray<readonly string[]>>>();
+const prefetchCreateOnlyPropertyPaths = vi.fn<(types: Iterable<string>) => void>();
+const prefetchCancel = vi.fn();
 
-vi.mock('../../../src/provisioning/create-only-properties.js', () => ({
-  getCreateOnlyPropertyPaths: (type: string) => getCreateOnlyPropertyPaths(type),
-  createOnlyChangeRequiresReplacement: vi.fn().mockReturnValue(false),
-}));
+vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/create-only-properties.js')
+  >('../../../src/provisioning/create-only-properties.js');
+  return {
+    ...actual,
+    prefetchCreateOnlyPropertyPaths: (types: Iterable<string>) => {
+      prefetchCreateOnlyPropertyPaths([...types]);
+      return { cancel: prefetchCancel };
+    },
+    createOnlyChangeRequiresReplacement: vi.fn().mockReturnValue(false),
+  };
+});
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -87,7 +98,6 @@ describe('DeployEngine - create-only DescribeType prefetch (#1180)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    getCreateOnlyPropertyPaths.mockResolvedValue([]);
 
     mockProvider = {
       create: vi
@@ -166,16 +176,18 @@ describe('DeployEngine - create-only DescribeType prefetch (#1180)', () => {
     );
   }
 
-  it('warms the create-only cache once per DISTINCT resource type', async () => {
+  const prefetchedTypes = (): string[] =>
+    prefetchCreateOnlyPropertyPaths.mock.calls.flatMap(([types]) => [...types]);
+
+  it('prefetches once per DISTINCT resource type', async () => {
     mockDiffCalculator.calculateDiff.mockResolvedValue(makeCreateDiff());
 
     const engine = makeEngine();
     await engine.deploy(stackName, template);
 
-    // Two distinct types (AWS::SSM::Parameter appears twice) → two prefetch calls.
-    const prefetched = getCreateOnlyPropertyPaths.mock.calls.map((c) => c[0]);
-    expect(new Set(prefetched)).toEqual(new Set(['AWS::SSM::Parameter', 'AWS::SQS::Queue']));
-    expect(prefetched.filter((t) => t === 'AWS::SSM::Parameter')).toHaveLength(1);
+    // Two distinct types (AWS::SSM::Parameter appears twice), one prefetch call.
+    expect(prefetchCreateOnlyPropertyPaths).toHaveBeenCalledTimes(1);
+    expect(prefetchedTypes().sort()).toEqual(['AWS::SQS::Queue', 'AWS::SSM::Parameter']);
   });
 
   it('never prefetches schema-less types (AWS::CDK::Metadata / custom resources)', async () => {
@@ -214,28 +226,53 @@ describe('DeployEngine - create-only DescribeType prefetch (#1180)', () => {
     const engine = makeEngine();
     await engine.deploy(stackName, withMetadata);
 
-    const prefetched = getCreateOnlyPropertyPaths.mock.calls.map((c) => c[0]);
-    expect(prefetched).toEqual(['AWS::SSM::Parameter']);
+    expect(prefetchedTypes()).toEqual(['AWS::SSM::Parameter']);
   });
 
-  it('does not surface an unhandled rejection when a prefetch lookup rejects', async () => {
-    // getCreateOnlyPropertyPaths is documented never-throw, but if it ever
-    // rejects the fire-and-forget prefetch must swallow it — otherwise the
-    // process logs an unhandledRejection (and the test worker dies).
-    getCreateOnlyPropertyPaths.mockRejectedValue(new Error('DescribeType boom'));
+  it('starts the prefetch BEFORE the lock, and does not wait on it', async () => {
+    // Latency-hiding only works if the lookups overlap the lock + state read.
+    const order: string[] = [];
+    prefetchCreateOnlyPropertyPaths.mockImplementation(() => {
+      order.push('prefetch');
+    });
+    mockLockManager.acquireLockWithRetry.mockImplementation(() => {
+      order.push('lock');
+      return Promise.resolve(true);
+    });
     mockDiffCalculator.calculateDiff.mockResolvedValue(makeCreateDiff());
 
-    const unhandled = vi.fn();
-    process.on('unhandledRejection', unhandled);
-    try {
-      const engine = makeEngine();
-      // The deploy itself must still succeed — the prefetch is pure latency-hiding.
-      await expect(engine.deploy(stackName, template)).resolves.toBeDefined();
-      // Let any leaked rejection reach the handler.
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(unhandled).not.toHaveBeenCalled();
-    } finally {
-      process.off('unhandledRejection', unhandled);
-    }
+    const engine = makeEngine();
+    await expect(engine.deploy(stackName, template)).resolves.toBeDefined();
+    expect(order.slice(0, 2)).toEqual(['prefetch', 'lock']);
+  });
+
+  it('cancels its prefetch once the diff is computed, before any resource is provisioned (issue #3718)', async () => {
+    // The diff is the prefetch's only consumer; an unneeded background lookup
+    // must neither spend the quota the deploy's own lookups need nor hold the
+    // process open after the deploy.
+    const order: string[] = [];
+    prefetchCancel.mockImplementation(() => order.push('cancel'));
+    mockDiffCalculator.calculateDiff.mockImplementation(() => {
+      order.push('diff');
+      return Promise.resolve(makeCreateDiff());
+    });
+    mockProvider.create.mockImplementation((logicalId: string) => {
+      order.push('create');
+      return Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} });
+    });
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(order.indexOf('cancel')).toBe(order.indexOf('diff') + 1);
+    expect(order.indexOf('cancel')).toBeLessThan(order.indexOf('create'));
+  });
+
+  it('cancels its prefetch when the deploy FAILS before the diff (issue #3718)', async () => {
+    mockLockManager.acquireLockWithRetry.mockRejectedValue(new Error('lock boom'));
+
+    await expect(makeEngine().deploy(stackName, template)).rejects.toThrow();
+
+    expect(prefetchCreateOnlyPropertyPaths).toHaveBeenCalledTimes(1);
+    expect(prefetchCancel).toHaveBeenCalled();
   });
 });

@@ -33,6 +33,17 @@
     "ManagedPolicyName",
     "Path"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Description"
+    ],
+    [
+      "ManagedPolicyName"
+    ],
+    [
+      "Path"
+    ]
+  ],
   "primaryIdentifier": [
     "PolicyArn"
   ],

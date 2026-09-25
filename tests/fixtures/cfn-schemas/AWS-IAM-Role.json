@@ -22,6 +22,14 @@
     "Path",
     "RoleName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Path"
+    ],
+    [
+      "RoleName"
+    ]
+  ],
   "primaryIdentifier": [
     "RoleName"
   ],

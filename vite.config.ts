@@ -484,7 +484,10 @@ export default defineConfig({
       // untouched and still need `node scripts/refresh-cfn-schemas.mjs
       // '<AWS::Service::Type>'`, which uses the authenticated DescribeType path.
       'gen:cfn-schemas-from-zip': {
-        command: 'node scripts/refresh-cfn-schemas.mjs --from-zip',
+        // `--experimental-strip-types`: the script imports a `.ts` leaf from
+        // src/ (issue #3718), which Node below 22.18 loads only with the flag;
+        // on newer Node it is the default and the flag a no-op.
+        command: 'node --experimental-strip-types scripts/refresh-cfn-schemas.mjs --from-zip',
         cache: false,
       },
       'gen:nested-key-coverage': {

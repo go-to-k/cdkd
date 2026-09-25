@@ -29,6 +29,11 @@
   "createOnlyProperties": [
     "TrailName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "TrailName"
+    ]
+  ],
   "primaryIdentifier": [
     "TrailName"
   ],

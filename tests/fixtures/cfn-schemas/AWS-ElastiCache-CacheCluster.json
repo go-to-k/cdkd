@@ -43,6 +43,29 @@
     "SnapshotArns",
     "SnapshotName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CacheSubnetGroupName"
+    ],
+    [
+      "ClusterName"
+    ],
+    [
+      "Engine"
+    ],
+    [
+      "NetworkType"
+    ],
+    [
+      "Port"
+    ],
+    [
+      "SnapshotArns"
+    ],
+    [
+      "SnapshotName"
+    ]
+  ],
   "primaryIdentifier": [
     "ClusterName"
   ],

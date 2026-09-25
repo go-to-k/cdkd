@@ -24,6 +24,11 @@
   "createOnlyProperties": [
     "EvaluatorName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "EvaluatorName"
+    ]
+  ],
   "primaryIdentifier": [
     "EvaluatorArn"
   ],

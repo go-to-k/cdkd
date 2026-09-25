@@ -36,6 +36,23 @@
     "SecurityGroupIds",
     "SubnetIds"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "BackupId"
+    ],
+    [
+      "FileSystemType"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "SecurityGroupIds"
+    ],
+    [
+      "SubnetIds"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

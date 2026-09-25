@@ -28,6 +28,23 @@
     "TableBucketARN",
     "WithoutMetadata"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "IcebergMetadata"
+    ],
+    [
+      "OpenTableFormat"
+    ],
+    [
+      "StorageClassConfiguration"
+    ],
+    [
+      "TableBucketARN"
+    ],
+    [
+      "WithoutMetadata"
+    ]
+  ],
   "primaryIdentifier": [
     "TableARN"
   ],

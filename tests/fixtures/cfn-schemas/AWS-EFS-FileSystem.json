@@ -28,6 +28,20 @@
     "KmsKeyId",
     "PerformanceMode"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZoneName"
+    ],
+    [
+      "Encrypted"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "PerformanceMode"
+    ]
+  ],
   "primaryIdentifier": [
     "FileSystemId"
   ],

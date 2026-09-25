@@ -20,6 +20,17 @@
     "GroupName",
     "VpcId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "GroupDescription"
+    ],
+    [
+      "GroupName"
+    ],
+    [
+      "VpcId"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

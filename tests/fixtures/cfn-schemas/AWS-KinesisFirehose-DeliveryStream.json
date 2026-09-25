@@ -33,6 +33,46 @@
     "KinesisStreamSourceConfiguration",
     "MSKSourceConfiguration"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AmazonOpenSearchServerlessDestinationConfiguration",
+      "VpcConfiguration"
+    ],
+    [
+      "AmazonopensearchserviceDestinationConfiguration",
+      "VpcConfiguration"
+    ],
+    [
+      "DatabaseSourceConfiguration"
+    ],
+    [
+      "DeliveryStreamName"
+    ],
+    [
+      "DeliveryStreamType"
+    ],
+    [
+      "DirectPutSourceConfiguration"
+    ],
+    [
+      "ElasticsearchDestinationConfiguration",
+      "VpcConfiguration"
+    ],
+    [
+      "IcebergDestinationConfiguration",
+      "CatalogConfiguration"
+    ],
+    [
+      "KinesisStreamSourceConfiguration"
+    ],
+    [
+      "MSKSourceConfiguration"
+    ],
+    [
+      "SnowflakeDestinationConfiguration",
+      "SnowflakeVpcConfiguration"
+    ]
+  ],
   "primaryIdentifier": [
     "DeliveryStreamName"
   ],

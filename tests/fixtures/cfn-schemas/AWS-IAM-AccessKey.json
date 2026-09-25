@@ -16,6 +16,14 @@
     "Serial",
     "UserName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Serial"
+    ],
+    [
+      "UserName"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

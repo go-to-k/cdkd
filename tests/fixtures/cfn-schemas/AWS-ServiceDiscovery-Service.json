@@ -24,6 +24,20 @@
     "NamespaceId",
     "Type"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "HealthCheckCustomConfig"
+    ],
+    [
+      "Name"
+    ],
+    [
+      "NamespaceId"
+    ],
+    [
+      "Type"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

@@ -32,6 +32,41 @@
     "SourceSecurityGroupOwnerId",
     "ToPort"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CidrIp"
+    ],
+    [
+      "CidrIpv6"
+    ],
+    [
+      "FromPort"
+    ],
+    [
+      "GroupId"
+    ],
+    [
+      "GroupName"
+    ],
+    [
+      "IpProtocol"
+    ],
+    [
+      "SourcePrefixListId"
+    ],
+    [
+      "SourceSecurityGroupId"
+    ],
+    [
+      "SourceSecurityGroupName"
+    ],
+    [
+      "SourceSecurityGroupOwnerId"
+    ],
+    [
+      "ToPort"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

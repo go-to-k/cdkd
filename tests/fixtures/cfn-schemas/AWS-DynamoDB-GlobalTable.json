@@ -33,6 +33,11 @@
   "createOnlyProperties": [
     "TableName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "TableName"
+    ]
+  ],
   "primaryIdentifier": [
     "TableName"
   ],

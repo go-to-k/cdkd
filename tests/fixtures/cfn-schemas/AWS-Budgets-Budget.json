@@ -13,6 +13,11 @@
   "createOnlyProperties": [
     "NotificationsWithSubscribers"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "NotificationsWithSubscribers"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

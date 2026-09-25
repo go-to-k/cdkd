@@ -36,6 +36,11 @@
   "createOnlyProperties": [
     "AlarmName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AlarmName"
+    ]
+  ],
   "primaryIdentifier": [
     "AlarmName"
   ],

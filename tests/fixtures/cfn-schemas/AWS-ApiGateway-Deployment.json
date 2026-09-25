@@ -16,6 +16,14 @@
     "DeploymentCanarySettings",
     "RestApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DeploymentCanarySettings"
+    ],
+    [
+      "RestApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "DeploymentId",
     "RestApiId"
