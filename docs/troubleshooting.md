@@ -1082,6 +1082,8 @@ Docker image assets are the ones that raise `AssetError`:
 ```
 AssetError: ECR login failed: <docker output>
 AssetError: Docker push failed: <docker output>
+AssetError: Refusing to publish a Docker image asset: the destination region <region> is not a valid AWS region id
+AssetError: Refusing to publish a Docker image asset: <account> is not a 12-digit AWS account id
 ```
 
 **Causes:**
@@ -1091,6 +1093,12 @@ AssetError: Docker push failed: <docker output>
   them after bootstrap), in legacy mode the CDK bootstrap bucket
   (`cdk-hnb659fds-assets-*`)
 - Insufficient IAM permissions
+- The ECR registry host cannot be built safely (the `Refusing to publish`
+  errors): a Docker destination's `region` in the asset manifest uses
+  characters an AWS region id does not have, such as `.`, `/`, `:` or `@`, or
+  the account id is not 12 digits. cdkd refuses before any AWS or docker call
+  for that destination, because the ECR password would be sent to that host.
+  See solution 4.
 
 **Solutions:**
 
@@ -1232,6 +1240,16 @@ warning, and the push then targets a CDK bootstrap bucket that may not exist —
 a confusing failure two steps removed from the missing permission. (Asset
 buckets are deliberately NOT versioned, so `s3:PutBucketVersioning` is not in
 this set; it belongs to the state bucket, which `cdkd bootstrap` creates.)
+
+**4. Fix the Docker asset's destination region or account**
+
+The region in a `Refusing to publish` error comes from the stack's
+`<StackName>.assets.json` in `cdk.out`, under
+`dockerImages.<hash>.destinations.<id>.region`. It must be a plain region id
+such as `us-east-1`. Fix the stack's `env.region` (or whatever produced the
+value) and re-synthesize. The account id comes from your credentials
+(`aws sts get-caller-identity`), or from `accountId` when you call cdkd as a
+library, and must be the 12-digit id.
 
 ### Lambda Deployment Fails
 

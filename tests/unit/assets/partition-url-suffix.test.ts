@@ -45,10 +45,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
-import {
-  DockerAssetPublisher,
-  resetEcrLoginCache,
-} from '../../../src/assets/docker-asset-publisher.js';
+import { DockerAssetPublisher } from '../../../src/assets/docker-asset-publisher.js';
 import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
@@ -79,7 +76,6 @@ describe('DockerAssetPublisher derives the ECR registry suffix (issue #1745)', (
 
   beforeEach(() => {
     vi.clearAllMocks();
-    resetEcrLoginCache();
     publisher = new DockerAssetPublisher();
     mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
       if (cmd._type === 'DescribeImages') {
@@ -114,17 +110,18 @@ describe('DockerAssetPublisher derives the ECR registry suffix (issue #1745)', (
     const target = dockerArgs('push')[0]?.[1];
     expect(target).toBe(`${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo:abc123`);
 
-    // The lazy-login endpoint falls back to the constructed registry host when
-    // AWS reports no `proxyEndpoint`.
+    // The lazy-login endpoint is the constructed push host (issue #3681), so it
+    // carries the derived suffix too.
     const login = dockerArgs('login')[0];
     expect(login?.[login.length - 1]).toBe(
       `https://${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn`
     );
   });
 
-  it('the REALISTIC cn login path — AWS supplies proxyEndpoint, which must be honoured', async () => {
-    // Review: real ECR `GetAuthorizationToken` ALWAYS returns `proxyEndpoint`,
-    // so the fallback the case above exercises is the branch AWS never takes.
+  it('the REALISTIC cn login path — AWS supplies proxyEndpoint, and the login still targets the cn push host', async () => {
+    // Real ECR `GetAuthorizationToken` ALWAYS returns `proxyEndpoint`. The
+    // login no longer reads it (issue #3681), so this pins that the push host
+    // it uses instead keeps the cn suffix on the path AWS actually serves.
     mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
       if (cmd._type === 'DescribeImages') {
         const err = new Error('Image not found') as Error & { name: string };
@@ -183,12 +180,13 @@ describe('DockerAssetPublisher derives the ECR registry suffix (issue #1745)', (
     );
   });
 
-  it('the login cache is keyed by the SUFFIXED registry — two pushes, one login', async () => {
+  it('a repeat push to the SUFFIXED registry does not log in again — two pushes, one login', async () => {
     await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
     await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
 
     // The first push fails auth once (see beforeEach) and triggers the lazy
-    // login; the second must reuse the cached entry rather than re-login.
+    // login; the second succeeds on the credential docker stored, so the only
+    // login cache is docker's own and cdkd never logs in again.
     expect(dockerArgs('login')).toHaveLength(1);
   });
 });

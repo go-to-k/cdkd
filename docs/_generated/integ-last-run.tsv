@@ -79,7 +79,7 @@ destroy-interrupt	2026-09-21T12:33:50Z	PASS	373	verify.sh	rc ok, 15 deleted 0 er
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-24T22:46:12Z	PASS	1863	verify.sh	rc ok, 0 orphans (#3663)
-docker-image-asset	2026-09-24T22:46:12Z	PASS	67	verify.sh	rc ok, 0 orphans (#3663)
+docker-image-asset	2026-09-25T01:26:49Z	PASS	100	verify.sh	rc ok, 0 orphans; lazy login ran under scratch DOCKER_CONFIG, auths=push host (#3681)
 drift-revert	2026-09-24T22:46:12Z	PASS	164	verify.sh	rc ok, 0 orphans (#3663)
 drift-revert-arrays	2026-09-24T09:09:49Z	PASS	190	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline; swept the CDK auto-delete Lambda's runtime log group
 drift-revert-vpc	2026-09-24T22:46:12Z	PASS	275	verify.sh	rc ok, 0 orphans (#3663)

@@ -6394,16 +6394,6 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     // --- arm B: a template literal bound to a `*Key` name -------------------
     [
-      'src/assets/docker-asset-publisher.ts',
-      1,
-      'an ECR registry host, and it IS a lookup identity -- `loggedInRegistries` ' +
-        'gates whether GetAuthorizationToken + docker login re-run. What makes it ' +
-        'safe is neither half: the separator is the multi-character literal ' +
-        '`.dkr.ecr.`, so a collision needs one half to contain that whole string. ' +
-        '(The region half comes from asset-manifest JSON and is NOT charset-gated ' +
-        'here, which an earlier revision of this row claimed.)',
-    ],
-    [
       'src/cli/upload-cfn-template.ts',
       1,
       'an S3 OBJECT key being written, not a key anything is looked up by',
