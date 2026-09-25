@@ -58,9 +58,10 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
   poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
   then run the post-rebase suite while CI drains.**
-- **A body edit RE-RUNS required checks**, green CI or not: merge only once
-  `gh pr view <N> --json mergeStateStatus` reads `CLEAN` (else "base branch
-  policy prohibits the merge"); `gh run rerun` what it CANCELLED (#3748, #3767).
+- **A body edit RE-RUNS four required checks** (`on: edited`), green CI or
+  not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
+  "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
+  which blocks even after re-runs pass (#3664, #3748).
 - **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
   and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **From the PR's own worktree, `--delete-branch` prints a bare `fatal: 'main'

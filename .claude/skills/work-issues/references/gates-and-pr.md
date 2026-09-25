@@ -44,7 +44,7 @@ replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
-says. Edit the body BEFORE the push: an edit re-runs the required checks and
+says. Edit the body BEFORE the push: an edit re-runs required checks and
 CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a

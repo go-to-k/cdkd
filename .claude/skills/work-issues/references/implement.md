@@ -2,8 +2,8 @@
 
 ## 5. One tree per lane, then implement
 
-Stages 5–8 run INSIDE a lane subagent per claimed issue; the real-AWS integ
-and the merge (§9) stay with the parent, so a lane stops at merge-ready.
+Stages 5–8 run in a lane subagent per issue; real-AWS integ and merge (§9)
+stay with the parent, so a lane stops at merge-ready.
 
 ### 5-a. The tree
 
@@ -22,7 +22,7 @@ vp run build                 # ...and no dist/, so a test spawning the built
 ```
 
 **IN-PLACE: confirm the tree is YOURS before adopting it** — a signal shows
-LIFE, never absence.
+LIFE, never absence: "someone is here" means STOP.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
@@ -35,7 +35,7 @@ cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
 Also read the issue thread for a claim naming this branch (the cross-clone
-signal); a live lane's tree gets instructions, not edits.
+signal); a live lane's tree gets orders.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
 this tree arrived on is the OUTER TOOL's: committing onto it would DELETE that
@@ -123,8 +123,8 @@ rounds means change instrument.
 
 ### 5-g. Fan-out mechanics
 
-Fan out **one subagent per lane** (disjoint files): give each its tree,
-allowed files, "do NOT touch other lanes' files; STOP and report
+You may fan out **one subagent per lane** (disjoint files): give each its
+tree, allowed files, "do NOT touch other lanes' files; STOP and report
 if the fix needs a forbidden one", and **the REPORT SHAPE — the report IS the
 deliverable**, since a lane's tool output never reaches you. Never wait on a
 quiet lane: list the agents and resume any already `completed` with "REPORT
@@ -150,5 +150,5 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
 - Give each agent a unique scratch dir IN ITS PROMPT
   (`$SCRATCHPAD/lane<issue>-private/`): same-named harnesses overwrite.
-- **...and NO attribution request** (`Claude-Session:`, claude.ai links),
-  whatever YOUR harness says — the repo refuses them (§6).
+- **NO attribution request** (`Claude-Session:`, claude.ai links), whatever
+  your harness says (§6).

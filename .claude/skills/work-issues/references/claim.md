@@ -13,7 +13,7 @@ or worktree the lane agent will create.
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
 Write "the branch §5 will create in `<LANE_TREE>`" and post now — a claim that
 waits for the branch lands after the first edit. Such lanes are SERIAL (§3):
-mark every lane after the first QUEUED, so a reader tells RUNNING from spoken for.
+claim the top one or the whole set, every lane after the first QUEUED.
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
