@@ -60,10 +60,14 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
+  IDENT_MAX_CODE_POINTS,
   ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
   isPasteableIdent,
+  safeMsg,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
 import {
@@ -7091,7 +7095,83 @@ function writeJsonReport(reports: StackDriftReport[]): void {
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function writeHumanReport(reports: StackDriftReport[]): void {
+/**
+ * An identifier on a row of the human report — the stack name and region of
+ * a heading, a logical id, a resource type, a property path — CAPPED the way
+ * `malformed-resources-bag.ts`'s `safeIdentifier` caps (issue
+ * go-to-k/cdkd#3232): it bounds how much of the reader's screen a planted
+ * multi-kilobyte state key can take — a bound on length, not a guarantee that
+ * the rows after it stay in view, since a name can still wrap within the cap
+ * (`writeHumanReport`'s doc names that class). The cap is a required parameter for the
+ * reason that helper's doc gives — a defaulted one silently cut every site
+ * that forgot to pass the wider one. `truncateCodePoints` rather than `slice`,
+ * so the cut never lands inside a surrogate pair.
+ *
+ * Sanitizing is deliberately NOT done here: every row of the report is a
+ * `safeMsg` template, which flattens each interpolated value to one line and
+ * strips terminal control from it, identifier and property value alike. One
+ * rule for every value the report prints, applied where the row is built, so a
+ * row cannot take an identifier through one filter and a value through another
+ * — and a property value keeps its own padding, which `displaySafe` would trim
+ * and which is the whole difference between `" value "` and `"value"` on a
+ * real drift.
+ */
+function reportIdent(value: string, maxCodePoints: number): string {
+  const { text, truncated } = truncateCodePoints(value, maxCodePoints);
+  return truncated ? `${text}...` : text;
+}
+
+/** `<stack> (<region>)`, the identity every heading of the report opens with. */
+function reportHeading(report: StackDriftReport): string {
+  return safeMsg`${reportIdent(report.stackName, STACK_REF_MAX_CODE_POINTS)} (${reportIdent(report.region, IDENT_MAX_CODE_POINTS)})`;
+}
+
+/** `<logicalId> (<resourceType>)`, the identity every per-resource row carries. */
+function reportResource(outcome: { logicalId: string; resourceType: string }): string {
+  return safeMsg`${reportIdent(outcome.logicalId, IDENT_MAX_CODE_POINTS)} (${reportIdent(outcome.resourceType, IDENT_MAX_CODE_POINTS)})`;
+}
+
+/**
+ * One `-` / `+` line of a drifted resource. The VALUE is flattened and
+ * control-stripped by `safeMsg` and nothing else — not trimmed, not capped —
+ * so an ordinary value renders byte-for-byte as it always did and a drift that
+ * differs only by surrounding whitespace still shows two different sides. A
+ * structured value is JSON-encoded by `formatScalar` FIRST, so a C0 control or
+ * a newline nested in it reaches `safeMsg` as JSON's escape text and stays
+ * that way (inert), while U+2028 / U+2029 and the bidi overrides, which JSON
+ * leaves literal, are replaced like anywhere else.
+ */
+function reportChangeLine(sign: '-' | '+', path: string, value: unknown): string {
+  return safeMsg`    ${sign} ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${formatScalar(value)}\n`;
+}
+
+/**
+ * The human rendering of a drift run, to stdout.
+ *
+ * Every value it prints that came out of a state record or an AWS readback —
+ * the stack name and region of a heading, each row's logical id and resource
+ * type, each changed property's path and both of its values — goes through
+ * {@link safeMsg} at the row that prints it (issue go-to-k/cdkd#3232). The
+ * output is line-oriented, and this report is exactly the text a reader trusts
+ * to say whether a stack matches AWS: a newline in a logical id invented a
+ * `✓ ... no drift detected` row, and an escape sequence or a bidi override
+ * could overwrite or reorder what the reader saw. `ConsoleLogger`'s sink does
+ * not reach these writes, which go to `process.stdout` directly, so the guard
+ * is at the call site — where `safeMsg` also closes the line-forging half the
+ * sink cannot tell from cdkd's own newlines. What `safeMsg` keeps, it keeps
+ * here too: a value spelling one of cdkd's own colour codes (`terminalSafe`'s
+ * SGR allowlist: cdkd's colours, bold, dim and reset) keeps it, and an unreset
+ * one styles the rows after it as well — colour and text styling are all such
+ * a sequence can do; it cannot move the cursor, clear the screen or plant a
+ * link.
+ *
+ * `--json` is untouched: a consumer of that mode wants the stored value. And
+ * this is the control-character class only — a value that WRAPS into a line
+ * that reads as a row (a padded name spelling `✓ Prod (us-east-1): ...`) is
+ * go-to-k/cdkd#3328's class, which the cap bounds for an identifier, nothing
+ * bounds for an uncapped property value, and neither closes.
+ */
+export function writeHumanReport(reports: StackDriftReport[]): void {
   for (const report of reports) {
     const drifted: DriftedOutcome[] = [];
     const unsupported: Array<Extract<DriftOutcome, { kind: 'unsupported' }>> = [];
@@ -7220,7 +7300,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
         // there was nothing to compare, so "everything was compared" is
         // vacuously true and a ⚠ would be noise no action can clear.
         process.stdout.write(
-          `⚠ ${report.stackName} (${report.region}): no drift detected, but NOTHING was ` +
+          `⚠ ${reportHeading(report)}: no drift detected, but NOTHING was ` +
             `compared — 0 of ${report.outcomes.length} ` +
             `resource${report.outcomes.length === 1 ? '' : 's'} checked ` +
             `(${unsupported.length} unsupported, ${skippedCount} skipped)\n`
@@ -7235,7 +7315,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           // partially compared, 1 unsupported)`, whose parts sum to 4 against
           // a stated total of 3. Outside the parens the paren still explains
           // exactly the `inspected - checked` gap and the numbers add up.
-          `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
+          `⚠ ${reportHeading(report)}: no drift detected, but ` +
             `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
             // Issues #2151 / #1945: the parenthetical is conditional for the
             // same reason the block heading below is. `only partially compared`
@@ -7254,20 +7334,20 @@ function writeHumanReport(reports: StackDriftReport[]): void {
         );
       } else {
         process.stdout.write(
-          `✓ ${report.stackName} (${report.region}): no drift detected ` +
+          `✓ ${reportHeading(report)}: no drift detected ` +
             `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
         );
       }
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';
       process.stdout.write(
-        `\n⚠ ${report.stackName} (${report.region}): drift detected on ${drifted.length} ${word}\n\n`
+        `\n⚠ ${reportHeading(report)}: drift detected on ${drifted.length} ${word}\n\n`
       );
       for (const o of drifted) {
-        process.stdout.write(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+        process.stdout.write(`  ~ ${reportResource(o)}\n`);
         for (const change of o.changes) {
-          process.stdout.write(`    - ${change.path}: ${formatScalar(change.stateValue)}\n`);
-          process.stdout.write(`    + ${change.path}: ${formatScalar(change.awsValue)}\n`);
+          process.stdout.write(reportChangeLine('-', change.path, change.stateValue));
+          process.stdout.write(reportChangeLine('+', change.path, change.awsValue));
         }
         process.stdout.write('\n');
       }
@@ -7365,9 +7445,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
               `:\n`
       );
       for (const { outcome, cause } of notCompared) {
-        process.stdout.write(
-          `    ! ${outcome.logicalId} (${outcome.resourceType}) — ${notComparedReason(cause)}\n`
-        );
+        process.stdout.write(`    ! ${reportResource(outcome)} — ${notComparedReason(cause)}\n`);
       }
     }
 
@@ -7377,7 +7455,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           `provider does not yet support drift detection:\n`
       );
       for (const o of unsupported) {
-        process.stdout.write(`    ? ${o.logicalId} (${o.resourceType})\n`);
+        process.stdout.write(`    ? ${reportResource(o)}\n`);
       }
     }
   }

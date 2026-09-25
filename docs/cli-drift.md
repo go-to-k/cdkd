@@ -187,6 +187,48 @@ checked (2 only partially compared), 1 unsupported` — so the bracketed figure
 accounts for exactly the gap between the two numbers rather than reading as a
 third share of `M`.
 
+### What the human report does to a malformed value
+
+The report prints values it reads out of the state record, out of the S3 key
+the record was listed under and out of the AWS readback: the stack name and
+region in every heading (from the key — from the record body only for a legacy
+region-less record's region), each row's logical id and resource type and the
+state side of each change (from the record, which a hand edit can fill with
+anything `JSON.parse` accepts), each changed property's path, and the AWS side
+of each change (whatever the service returns). The report treats all of them
+as untrusted text, the way the [`cdkd state` human
+views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
+
+- **Terminal control is stripped from every one of those fields.** That
+  covers a newline, a C0 control, an escape sequence, LINE SEPARATOR and the
+  bidi overrides. The output is line-oriented, and this report is exactly the text a
+  reader trusts to say whether a stack matches AWS, so a newline in a logical id
+  would invent a `✓ ... no drift detected` row and an override could reorder a
+  changed-property line. A control character is replaced by a space, and so is
+  the ESC of a sequence cdkd does not parse (`ESC 7`, an OSC with no
+  terminator), leaving the rest as text; a CSI sequence (a cursor move, a
+  screen clear) and a terminated OSC (a terminal link) are removed whole, with
+  the characters around them kept. One allowance: a value spelling
+  one of the styling codes cdkd's own output uses (`ESC[31m` and its sibling
+  colours, bold, dim and reset) keeps it, the same allowance every logger line
+  has, and any other colour code becomes a reset. Such a value can set a
+  colour or a style — for the rows after it too, if it never resets it — but
+  cannot move the cursor, clear the screen or plant a link. A structured
+  value (an object or a list) is JSON-encoded first, so a newline or an escape
+  byte nested inside it arrives as JSON's own `\n` / `\u001b` escape text and
+  stays that way — inert — while LINE SEPARATOR and the bidi overrides, which
+  JSON leaves literal, are replaced like anywhere else.
+- **An identifier is cut with a `...` mark past 255 characters** (the stack
+  name past the longer bound a nested `Parent~Child` name legitimately needs),
+  which bounds how much of the screen a planted multi-kilobyte name can take —
+  a bound, not a guarantee that the rows after it stay in view, since a name
+  can still wrap within it. A property value is never cut, and neither an
+  identifier nor a value is trimmed: an ordinary value prints byte-for-byte as
+  it always did, and a drift that differs only by surrounding whitespace still
+  shows two different sides.
+
+`--json` is untouched — a consumer of that mode wants the stored value.
+
 ## Exit codes
 
 | Code | Meaning |
