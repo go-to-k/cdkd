@@ -456,7 +456,14 @@ export function withheldTargetClause(
    * review: a hardcoded verb would name the wrong command at any caller
    * building a different one, silently, with the message still well-formed.
    */
-  verb: string
+  verb: string,
+  /**
+   * Whose name the sentence is about. A message offering TWO commands passes
+   * one per hole ("The parent stack's name" / "The child stack's name"), so two
+   * withheld values do not print the same sentence twice with nothing to tell
+   * which hole each explains (go-to-k/cdkd#3759).
+   */
+  subject = "This record's name"
 ): string {
   // Keyed on the hole NAME the caller passes, which couples the two (m22 of
   // the go-to-k/cdkd#3499 review). Renaming the hole at the call site would
@@ -526,7 +533,7 @@ export function withheldTargetClause(
     }
   }
   return (
-    ` This record's name ${why} — so it is not named in the command below; ` +
+    ` ${subject} ${why} — so it is not named in the command below; ` +
     `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
     `matches.`
   );

@@ -621,7 +621,7 @@ async function destroyCommand(
           `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
             `Remove cdkd's record for ONE region with the command below (fill in the ` +
             `region), or run destroy from a CDK app whose env.region matches one of them.` +
-            withheldTargetClause(orphanOne, 'stack', 'cdkd state orphan') +
+            withheldTargetClause(orphanOne, 'stack', 'cdkd state orphan', "This stack's name") +
             `\nRemove one record with: ${orphanOne.command}`
         );
       }

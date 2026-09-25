@@ -591,7 +591,7 @@ export class StackTerminationProtectionError extends CdkdError {
       `Stack ${quotedOrDescribed(stackName, 'stack name')} has terminationProtection: true ` +
         `and cannot be destroyed. Set terminationProtection: false in the CDK code, redeploy, ` +
         `then retry the destroy.` +
-        withheldTargetClause(retry, 'stack', 'cdkd destroy') +
+        withheldTargetClause(retry, 'stack', 'cdkd destroy', "This stack's name") +
         `\nRetry with: ${retry.command}`,
       'STACK_TERMINATION_PROTECTION',
       cause
@@ -674,8 +674,8 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // short enough for the docs-parity checker to derive (it caps the raw
     // template text).
     const withheld =
-      withheldTargetClause(cascade, 'parent', 'cdkd destroy') +
-      withheldTargetClause(childDestroy, 'stack', 'cdkd state destroy');
+      withheldTargetClause(cascade, 'parent', 'cdkd destroy', "The parent stack's name") +
+      withheldTargetClause(childDestroy, 'stack', 'cdkd state destroy', "The child stack's name");
     const child = quotedOrDescribed(stackName, 'stack name');
     const parent = quotedOrDescribed(parentStack, 'stack name');
     super(

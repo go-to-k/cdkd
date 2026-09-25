@@ -1,5 +1,9 @@
 import * as fs from 'node:fs';
-import { pasteableCommand, plainOrDescribed } from '../../utils/pasteable-command.js';
+import {
+  pasteableCommand,
+  plainOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import * as path from 'node:path';
 import type {
   CloudFormationTemplate,
@@ -517,6 +521,9 @@ export class NestedStackProvider implements ResourceProvider {
     // does not wrap deletes at all. The marker is the DECLARATION that
     // survives any of those opting back in.
     if (childResult.errorCount > 0) {
+      const inspect = pasteableCommand('cdkd state show', [
+        { value: childStackName, hole: 'stack', opts: { plainIdent: true } },
+      ]);
       const failure = new Error(
         nestedStackChildFailureMessage(
           // Both built HERE because the message module is a leaf by design.
@@ -528,9 +535,8 @@ export class NestedStackProvider implements ResourceProvider {
           childResult.errorCount,
           childResult.skippedCount,
           childResult.interrupted,
-          pasteableCommand('cdkd state show', [
-            { value: childStackName, hole: 'stack', opts: { plainIdent: true } },
-          ]).command
+          inspect.command,
+          withheldTargetClause(inspect, 'stack', 'cdkd state show', "The child stack's name")
         )
       );
       throw childResult.interrupted ? markNonRetryable(failure) : failure;

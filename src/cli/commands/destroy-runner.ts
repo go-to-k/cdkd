@@ -5,7 +5,7 @@ import {
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
-import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
@@ -1392,6 +1392,14 @@ export async function runDestroyForStack(
    * as the other. The ` / ` join that first replaced it was its own defect:
    * pasted, it handed the second command to the first as arguments.
    */
+  // The ONE builder both `hintFor` and `hintHolesClause` read, so the sentence
+  // explaining a hole comes from the gate's own verdict rather than a second
+  // predicate that can disagree with it (go-to-k/cdkd#3759).
+  const hintCommand = (command: string, t: string) =>
+    pasteableCommand(command, [
+      { value: t, hole: 'stack', opts: { plainIdent: true } },
+      { flag: '--stack-region', value: regionForState, hole: 'region', opts: { plainIdent: true } },
+    ]);
   const hintFor = (command: string, targets: string[], label: string): string =>
     // DEDUPED on the produced line, not on the target: one resource failing
     // while another is skipped puts the same state target in both sets, and a
@@ -1408,19 +1416,9 @@ export async function runDestroyForStack(
             // no record of their ids (M2 of the go-to-k/cdkd#3499 review). The
             // `state show` hint carries it for the same reason — a readback of
             // the wrong region's record is the same mistake, one step earlier.
-            `\n${label}: ${
-              // `plainIdent` on both values: a target beside a labelled line is
-              // named only when it cannot spell one (go-to-k/cdkd#3759).
-              pasteableCommand(command, [
-                { value: t, hole: 'stack', opts: { plainIdent: true } },
-                {
-                  flag: '--stack-region',
-                  value: regionForState,
-                  hole: 'region',
-                  opts: { plainIdent: true },
-                },
-              ]).command
-            }`
+            // `plainIdent` on both values: a target beside a labelled line is
+            // named only when it cannot spell one (go-to-k/cdkd#3759).
+            `\n${label}: ${hintCommand(command, t).command}`
         )
       ),
     ].join('');
@@ -1429,11 +1427,10 @@ export async function runDestroyForStack(
    * The ONE sentence explaining `hintFor`'s holes, for the prose BEFORE its
    * lines (go-to-k/cdkd#3759). `hintFor` prints one command per target, so a
    * per-hole `withheldTargetClause` would repeat once per line; this states the
-   * rule once, and only when some line actually carries a hole — the same
-   * `isPasteableIdent` predicate `plainIdent` applies to both values.
+   * rule once, and only when the gate actually withheld a value on some line.
    */
   const hintHolesClause = (targets: readonly string[]): string =>
-    targets.every((t) => isPasteableIdent(t)) && isPasteableIdent(regionForState)
+    targets.every((t) => hintCommand('cdkd state show', t).withheld.length === 0)
       ? ''
       : ` A target that is not a plain identifier is printed as a quoted '<stack>' or ` +
         `'<region>' placeholder; list the records as stored with 'cdkd state list --long'.`;
@@ -2181,7 +2178,7 @@ export async function runDestroyForStack(
             `nested-stack child, neither of which threads an event recorder.`
           : `The RESOURCE_GUARD_INDETERMINATE entries name the check and the reason ` +
             `and survive the run.` +
-            withheldTargetClause(eventsCommand, 'stack', 'cdkd events') +
+            withheldTargetClause(eventsCommand, 'stack', 'cdkd events', "This stack's name") +
             `\nRead them with: ${eventsCommand.command}`;
       logger.warn(
         `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +

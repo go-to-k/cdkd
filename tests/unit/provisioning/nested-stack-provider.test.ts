@@ -1140,9 +1140,14 @@ describe('NestedStackProvider', () => {
         expect(err.message.split('\n').filter((l) => l.startsWith('Inspect it with:'))).toEqual([
           "Inspect it with: cdkd state show '<stack>'",
         ]);
+        // The hole is explained, BEFORE the labelled line.
+        const clause = err.message.indexOf("The child stack's name is not a plain identifier");
+        expect(clause).toBeGreaterThan(-1);
+        expect(clause).toBeLessThan(err.message.indexOf('\nInspect it with:'));
 
-        // Positive control: a plain child is named in both places.
+        // Positive control: a plain child is named in both places, with no clause.
         const plain = (await deleteAndCatch('PlainSub')) as Error;
+        expect(plain.message).not.toContain("The child stack's name");
         expect(plain.message).toContain('Nested stack Parent~PlainSub failed to destroy');
         expect(plain.message).toMatch(/^Inspect it with: cdkd state show 'Parent~PlainSub'$/m);
       });
