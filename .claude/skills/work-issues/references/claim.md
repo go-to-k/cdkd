@@ -6,19 +6,14 @@ When lanes run as SUBAGENTS (the default for stages 5-8), the PARENT posts every
 claim — the lock names the session accountable — and its `<ref>` names the branch
 or worktree the lane agent will create.
 
-**IN-PLACE runs name the tree they are STANDING IN**
-(`references/launch-mode.md`): the `<ref>` is the branch §5 will create plus the
-`LANE_TREE` the probe recorded — taken from the opening report, not from
-`git rev-parse --show-toplevel`, whose answer follows a cwd that may have reset
-to the main checkout.
+**IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
+§5 will create plus the opening report's `LANE_TREE`, never
+`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout.
 
-**Do NOT claim `LAUNCH_BRANCH` — the branch checked out right now is the OUTER
-TOOL's, not this run's** (a branch to PUT BACK, never to commit to). Compose the
-name here; §5 creates it after this stage. Write "the branch §5 will create in
-`<LANE_TREE>`" and post on time — a claim delayed until the branch exists is one
-posted after the first edit. Such lanes are SERIAL (§3): claim the top candidate
-or the whole set, but mark every lane after the first QUEUED, so a reader tells a
-RUNNING lane from one spoken for.
+**Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
+Write "the branch §5 will create in `<LANE_TREE>`" and post now — a claim that
+waits for the branch lands after the first edit. Such lanes are SERIAL (§3):
+mark every lane after the first QUEUED, so a reader tells RUNNING from spoken for.
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
@@ -47,7 +42,11 @@ EOF
 gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 ```
 
-For EACH issue you start:
+For EACH issue you start — PROMOTING a QUEUED one included — first re-check
+`gh issue view <n> --json state` and re-run §3's premise check on CURRENT
+`origin/main`: triage's findings date from TRIAGE time, and a peer can fix and
+close a queued issue before its turn (#3700/#3704/#3627: claimed after closing,
+one lane spent). Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \
@@ -62,9 +61,8 @@ shape (§3), fill a missing `Severity`, fix what the evidence contradicts (`Note
 never enters a body).
 
 **Carry `--add-label` on that same `gh issue edit`** (`severity:<v>`,
-`effort:<v>`, plus `--remove-label` for the one a correction supersedes — adding
-without removing leaves TWO, which §3's query picks between arbitrarily). Label
-BEFORE the lane's PR exists, which is what makes it inherit them.
+`effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
+picks between TWO), BEFORE the lane's PR exists, so the PR inherits them.
 
 **Claim at SHORTLIST time, not after the analysis** — retracting costs one
 comment, a collision costs a lane.
@@ -95,6 +93,5 @@ deferral is invisible to every ownership probe. For one THIS run means to pick u
 current branch, which §9 deletes. One handed off (`next`) gets NO claim until a
 later run takes it.
 
-**Do not trust a handoff table — verify occupancy live** (`gh pr list`,
-`git worktree list`, the issues' comments): each is evidence of LIFE only, and
-only a stand-down or a closed issue RELEASES one (§9).
+**Verify occupancy live, never from a handoff table** (`gh pr list`, `git
+worktree list`, the comments): LIFE only; a stand-down or a close RELEASES (§9).

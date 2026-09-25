@@ -11,9 +11,8 @@ LANE'S WORKTREE. Never two lanes' integs or merges at once.
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
   integ AFTER the flatten/rebase below (`references/verify.md` §8-b).
-- **A `SendMessage` answering "queued" has NOT been delivered** — a lane stopped
-  at merge-ready drains no queue. Re-send, and confirm delivery in the TREE
-  rather than in the reply; `Resuming agent` is no acknowledgement either.
+- **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
+  a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
 ### Flatten, then rebase
 
@@ -59,14 +58,14 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
   poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
   then run the post-rebase suite while CI drains.**
-- **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
-  infers it from the CWD, which persists across Bash calls, and the resulting
-  `Could not resolve to a PullRequest` reads as a permissions problem.
+- **A body edit RE-RUNS required checks**, green CI or not: merge only once
+  `gh pr view <N> --json mergeStateStatus` reads `CLEAN` (else "base branch
+  policy prohibits the merge"); `gh run rerun` what it CANCELLED (#3748, #3767).
+- **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
+  and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **From the PR's own worktree, `--delete-branch` prints a bare `fatal: 'main'
   is already used by worktree ...` and the merge SUCCEEDED anyway** — confirm
   with `gh pr view <N> --json state` before reacting.
-- `git worktree remove` deletes the worktree, never the branch: finish with an
-  explicit `git branch -D <branch>` (`-d` refuses a squashed tip), MERGED first.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
@@ -115,7 +114,7 @@ MAIN-CHECKOUT — run THIS block, and not the next one:
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
 git worktree prune
-git branch -D <branch>                           # -D, not -d (squash)
+git branch -D <branch>                           # -D, not -d (squash); PR MERGED first
 git worktree list                                # every worktree THIS run added is gone
 git branch --list '<your prefix>*'               # ...and so is every branch it added
 ```

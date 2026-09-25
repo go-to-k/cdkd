@@ -9,13 +9,15 @@ issue** — hooks, gates, `.claude/rules/**`, `.claude/skills/**`, CI fences and
 the integ harness are unreachable from the CLI; build a fence only on a SECOND
 occurrence.
 
-**N sites of one root cause is ONE issue and ONE PR, never N issues** — split,
-each pays the full fixed cost (triage, claim, worktree, review, integ, merge)
-for the same edit. Sweep the same ROOT CAUSE, not the same AREA: does one
-sentence describe the fix at every site? A residue is `next` only on external
-input (`.claude/rules/session-report.md`'s reason (a); never (b), its files
-being loaded) — then file an umbrella naming every site, and say which this
-lane DID close.
+**N sites of one root cause is ONE issue and ONE PR, never N issues** — each
+split pays the full fixed cost (claim through merge) for the same edit. Sweep
+the same ROOT CAUSE, not the same AREA: does one sentence describe the fix at
+every site? A residue is `next` only on external input
+(`.claude/rules/session-report.md`'s reason (a); never (b), its files being
+loaded) — then file an umbrella naming every site, and say which this lane DID
+close. **NOT external input**: an umbrella already owning the population, "a
+different shape", a scope-creep trip, or a file shared with another path — each
+makes a SEPARATE PR, still `now` (three #3515 rows, reclassified, done in-run).
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
 (go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
@@ -24,18 +26,16 @@ needing a clause the issue does not name. On a trip, STATE the call in one line
 when it would more than double the diff. What the fix would leave WRONG if
 omitted is a FORCED parallel change.
 
-**Do not fan one campaign out into generated per-item issues** (go-to-k/cdkd#2949).
-A bot pays no triage cost, but every slice counts in the public open-issue total
-and every backlog listing must then filter it out. The backfill campaign is ONE
-umbrella issue: `.github/workflows/backfill-umbrella-sync.yml` rewrites only the
-region between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`,
-one `- [ ]` row per type. Every backlog listing in `triage.md` — §1's, §3-0's
-cutoff query and §3-a's two signal queries — EXCLUDES the label (`backfill-type`),
-and so does §10's folded-finding count in `retro.md`, where it matters most: it
-selects issues whose body gained a `- [ ] ` row, so it also excludes
-`backfill-umbrella`, whose body a sync rewrites. A listing added to either file
-carries both. A PR wiring one type writes `Refs`, not `Closes`; the row
-disappears when the coverage map says the type is done.
+**Do not fan one campaign out into generated per-item issues**
+(go-to-k/cdkd#2949): each slice counts in the open-issue total and every listing
+must filter it. The backfill campaign is ONE umbrella issue:
+`.github/workflows/backfill-umbrella-sync.yml` rewrites only the region between
+`<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, one `- [ ]`
+row per type. Every backlog listing in `triage.md` (§1, §3-0, §3-a) EXCLUDES
+the label (`backfill-type`), and §10's folded-finding count in `retro.md` also
+excludes `backfill-umbrella`, whose body a sync rewrites. A listing added to
+either file carries both. A PR wiring one type writes `Refs`, not `Closes`;
+the row disappears when the coverage map says the type is done.
 
 **Resolve whatever you file against the issues ALREADY OPEN** — a sibling
 ISSUE, not a sibling site.
@@ -96,5 +96,5 @@ in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
 with NO body. CI applies the matching `severity:*` / `effort:*` label from the
 body.
 
-**This is not a filing threshold** (§10-0: an unfiled finding is worse than a
-filed one) — only WHERE it is written down changes.
+**Not a filing threshold** (§10-0: unfiled is worse than filed) — only WHERE
+it is written changes.
