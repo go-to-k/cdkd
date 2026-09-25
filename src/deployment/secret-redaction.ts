@@ -856,6 +856,26 @@ export function recordFreshNoEchoValuesIn(
 }
 
 /**
+ * Carry the FRESH mark of `plaintext` from `from` into `to`, when `from` marks
+ * it and `to` holds it as mask-only (go-to-k/cdkd#3717). The one caller is the
+ * resolver's inherited-parameter recording in a nested CHILD: the parent's
+ * bag for the `AWS::CloudFormation::Stack` row is where a `NoEcho` value this
+ * deploy supplied was marked, and the child resource reading the parameter
+ * records the pair into its OWN bag, a different pass — which is exactly the
+ * copy {@link freshNoEchoValuesOf} otherwise starts empty, so without this the
+ * child's no-change skip read the new value's `***` as equal to its record.
+ */
+export function carryFreshNoEchoMark(
+  from: RecordedSecretValues,
+  to: RecordedSecretValues,
+  plaintext: string
+): void {
+  if (freshNoEchoValuesOf.get(from)?.has(plaintext) !== true) return;
+  if (!isMaskOnlyPlaintext(to, plaintext)) return;
+  freshNoEchoSet(to).add(plaintext);
+}
+
+/**
  * Does `text` EMBED a fresh `NoEcho` value of this pass? Asked by
  * `Fn::Base64`, whose encoded result is a new plaintext that carries the
  * value's freshness along with its secrecy.

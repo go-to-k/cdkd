@@ -619,8 +619,9 @@ preview cannot tell which of them will move. `cdkd deploy` sends an update
 only to the readers whose output did move.
 
 A changed custom resource is previewed the same way: every resource reading one
-of its attributes (`Fn::GetAtt` / `Fn::Sub`) is listed as an update, because
-its handler runs again and only the deploy learns what it returns. Where the
+of its attributes (`Fn::GetAtt` / `Fn::Sub`) or its physical id (`Ref`) is
+listed as an update, because its handler runs again and only the deploy learns
+what it returns — including a new physical id. Where the
 read sits in a property that cannot change in place, the row reads as a
 replacement. The deploy skips each reader whose value did not move.
 
@@ -629,6 +630,11 @@ listed like any other. The deploy sends it an update when the handler returned
 the value again in the same run, and skips it when nothing else it reads
 moved. A reader whose other reads moved while the masked value was not returned
 again is refused, since cdkd would otherwise send the literal mask.
+
+One case the preview cannot list: a resource in a nested stack that reads such
+a value through a stack parameter. The preview sees the parameter as `***` on
+both sides and does not know whether the parent's custom resource will return a
+new value; the deploy updates that resource when it does.
 
 `--recursive` walks into every `AWS::CloudFormation::Stack` row in DFS order and
 diffs each nested child against its **own** deployed state at

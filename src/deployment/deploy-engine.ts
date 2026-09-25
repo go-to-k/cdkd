@@ -1604,6 +1604,29 @@ export class DeployEngine {
   }
 
   /**
+   * The names of this child's parameters whose value carries a `NoEcho` value
+   * the parent supplied in THIS deploy (go-to-k/cdkd#3717), read off the
+   * inherited bag's fresh marks. `undefined` outside a nested child, or when
+   * none does.
+   *
+   * WHOLE values only. A mask-only needle replaces a leaf only whole, so a
+   * parameter that EMBEDS such a value (`prefix-<token>`) is not redacted for
+   * the diff at all: its readers already diff as UPDATE on the plaintext, and
+   * need no promotion from here.
+   */
+  private freshNoEchoParameters(
+    parameterValues: Record<string, unknown>
+  ): ReadonlySet<string> | undefined {
+    const inherited = this.options.inheritedSecrets;
+    if (!inherited || inherited.size === 0) return undefined;
+    const fresh = new Set<string>();
+    for (const [name, value] of Object.entries(parameterValues)) {
+      if (carriesFreshNoEchoValue(value, inherited)) fresh.add(name);
+    }
+    return fresh.size > 0 ? fresh : undefined;
+  }
+
+  /**
    * The parameter bag the DIFF resolver context binds, with any inherited
    * secret plaintext rewritten back to its `{{resolve:...}}` expression (issue
    * #1903).
@@ -3715,7 +3738,12 @@ export class DeployEngine {
         // the method's existence is pinned directly on `ProviderRegistry` by
         // `provider-registry-report-silent-drops.test.ts`, since a mocked
         // registry cannot witness the real one losing it.
-        this.providerRegistry.getAllowedUnsupportedProperties?.()
+        this.providerRegistry.getAllowedUnsupportedProperties?.(),
+        // go-to-k/cdkd#3717: a nested child's parameters carrying a `NoEcho`
+        // value the parent supplied in THIS deploy. The diff side binds the
+        // redacted bag above, where such a value is `***` like its record, so
+        // the calculator promotes each reader instead.
+        this.freshNoEchoParameters(parameterValues)
       );
 
       // Issue #2668: refuse a Type change into or out of

@@ -1336,7 +1336,8 @@ masking at resolution time would make a template feeding such a value into
 secret.)
 
 **A new value reaches every consumer.** When the handler runs and returns a
-value, each resource reading it is updated with it, although the stored value
+value, each resource reading it is updated with it — including a resource in a
+nested stack that receives the value as a stack parameter — although the stored value
 and the new one both read `***` in state: two masks say nothing about the
 values behind them. When the handler returns the same value again, cdkd cannot
 tell, so:

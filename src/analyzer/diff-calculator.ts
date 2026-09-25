@@ -128,6 +128,16 @@ const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, readonly st
   });
 
 /**
+ * The attribute name {@link DiffCalculator.extractGetAttRefs} records for a
+ * `Ref` read (go-to-k/cdkd#3717 / #3722). Not a name any attribute can have, so
+ * the property-name, derived-attribute and prefix arms of the in-place pass
+ * never match it; only the custom-resource arm (whose physical id the handler
+ * may change) and the fresh-parameter arm (a parameter carrying a `NoEcho`
+ * value supplied in this deploy) read it.
+ */
+const REF_READ = '<Ref>';
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -167,7 +177,15 @@ export class DiffCalculator {
     desiredTemplate: CloudFormationTemplate,
     resolveFn?: IntrinsicResolveFn,
     canonicalizeProperties?: CanonicalizePropertiesFn,
-    allowedUnsupportedProperties?: ReadonlySet<string>
+    allowedUnsupportedProperties?: ReadonlySet<string>,
+    /**
+     * Template parameters whose value carries a `NoEcho` value supplied in
+     * THIS deploy (go-to-k/cdkd#3717) — only a nested child engine passes any.
+     * Such a value compares `***` against the recorded `***`, so a resource
+     * reading the parameter diffs NO_CHANGE however the value moved; each one
+     * is promoted instead, and the engine decides from the resolved value.
+     */
+    freshParameters?: ReadonlySet<string>
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -535,7 +553,14 @@ export class DiffCalculator {
     // carries a change.
     do {
       this.promoteReplacementDependents(changes, desiredTemplate);
-    } while (this.promoteInPlaceAttributeDependents(changes, desiredTemplate, rawGetAttRefs));
+    } while (
+      this.promoteInPlaceAttributeDependents(
+        changes,
+        desiredTemplate,
+        rawGetAttRefs,
+        freshParameters
+      )
+    );
 
     const summary = this.getSummary(changes);
     this.logger.debug(
@@ -713,13 +738,15 @@ export class DiffCalculator {
    *      {@link IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES} table (issue #3631; a
    *      nested stack's `Outputs.<Key>`); or
    *   4. `Up` is a custom resource, whose attributes are all its handler's
-   *      response `Data` (go-to-k/cdkd#3662).
-   * (`Ref` resolves to the physical id, and Ref-only dependents are left
-   * NO_CHANGE here. An in-place update normally keeps the physical id, but not
-   * always: a custom resource handler may return a NEW `PhysicalResourceId`,
-   * which the engine records as a replacement only after this pass has run
-   * — issue #3722. Likewise a GetAtt of a computed attribute NOT in the allow
-   * list, e.g. a Lambda `Arn` on a Description edit, is left alone.)
+   *      response `Data` (go-to-k/cdkd#3662), and whose `Ref` — the physical
+   *      id — its handler may also change on an Update by returning a new
+   *      `PhysicalResourceId` (go-to-k/cdkd#3722); or
+   *   5. `Up` is a template PARAMETER in `freshParameters`, read by `Ref` or
+   *      `${Param}` (go-to-k/cdkd#3717).
+   * (Any other `Ref` resolves to a physical id an in-place update keeps, so
+   * Ref-only dependents of other types are left NO_CHANGE; likewise a GetAtt
+   * of a computed attribute NOT in the allow list, e.g. a Lambda `Arn` on a
+   * Description edit.)
    *
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
@@ -749,7 +776,8 @@ export class DiffCalculator {
   private promoteInPlaceAttributeDependents(
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
-    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>
+    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
+    freshParameters?: ReadonlySet<string>
   ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
     const changedPropsByUpstream = new Map<string, Set<string>>();
@@ -768,7 +796,14 @@ export class DiffCalculator {
         .filter((p): p is string => typeof p === 'string');
       if (props.length > 0) changedPropsByUpstream.set(logicalId, new Set(props));
     }
-    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return false;
+    const anyFreshParameter = freshParameters !== undefined && freshParameters.size > 0;
+    if (
+      changedPropsByUpstream.size === 0 &&
+      inPlaceUpdateTypeByUpstream.size === 0 &&
+      !anyFreshParameter
+    ) {
+      return false;
+    }
     let added = false;
 
     for (const [dependentId, perProp] of rawGetAttRefs) {
@@ -837,10 +872,26 @@ export class DiffCalculator {
           // reader against what the handler returned and skips it when nothing
           // moved, except for a `NoEcho` value, whose `***` compares equal to
           // any other.
+          //
+          // The same holds for its `Ref` (go-to-k/cdkd#3722): the handler may
+          // answer an Update with a new `PhysicalResourceId`.
           if (
             upstreamType !== undefined &&
             (upstreamType.startsWith('Custom::') ||
               upstreamType === 'AWS::CloudFormation::CustomResource')
+          ) {
+            matched = true;
+            break;
+          }
+          // Arm 5 (go-to-k/cdkd#3717): a `Ref` to a PARAMETER carrying a
+          // `NoEcho` value supplied in this deploy. Its diff side is `***`
+          // against a recorded `***`, so only this promotion reaches the
+          // engine, which re-resolves the reader and compares for itself.
+          if (
+            anyFreshParameter &&
+            freshParameters.has(upstreamId) &&
+            attrs.has(REF_READ) &&
+            !Object.hasOwn(desiredTemplate.Resources, upstreamId)
           ) {
             matched = true;
             break;
@@ -888,9 +939,9 @@ export class DiffCalculator {
   /**
    * Extract `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references from a property value
    * as a map of `referencedLogicalId -> set of referenced attribute names`.
-   * Plain `Ref` is intentionally NOT captured: it resolves to the physical id,
-   * which an in-place update normally keeps (a custom resource handler returning
-   * a new `PhysicalResourceId` is the exception, issue #3722). Recurses into arrays / objects so
+   * A plain `Ref` (and a dot-less `${X}`) is recorded under the
+   * {@link REF_READ} name, which only the custom-resource and fresh-parameter
+   * arms of the in-place pass read (go-to-k/cdkd#3717 / #3722). Recurses into arrays / objects so
    * intrinsics nested inside `Fn::Sub`'s variable map / `Fn::Join` etc. are seen.
    */
   private static extractGetAttRefs(value: unknown): Map<string, Set<string>> {
@@ -943,7 +994,11 @@ export class DiffCalculator {
             const placeholder = m[2];
             if (!placeholder) continue;
             const dot = placeholder.indexOf('.');
-            if (dot < 0) continue; // `${X}` is a Ref, not a GetAtt
+            if (dot < 0) {
+              // `${X}` is a Ref.
+              if (!mapKeys?.has(placeholder)) add(placeholder, REF_READ);
+              continue;
+            }
             const id = placeholder.slice(0, dot);
             const attr = placeholder.slice(dot + 1);
             if (!id || mapKeys?.has(id)) continue;
@@ -952,8 +1007,10 @@ export class DiffCalculator {
         }
         return;
       }
-      // Ref is intentionally skipped (physical id, unchanged in-place).
-      if ('Ref' in obj && Object.keys(obj).length === 1) return;
+      if ('Ref' in obj && Object.keys(obj).length === 1) {
+        if (typeof obj['Ref'] === 'string') add(obj['Ref'], REF_READ);
+        return;
+      }
       Object.values(obj).forEach(walk);
     };
     walk(value);

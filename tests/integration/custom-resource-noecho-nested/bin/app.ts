@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { ImportConsumerStack, ImportProducerStack } from '../lib/import-stacks.ts';
 import { NestedParentStack } from '../lib/nested-parent-stack.ts';
+import { ParamParentStack } from '../lib/param-stack.ts';
 
 const app = new cdk.App();
 
@@ -13,6 +14,12 @@ const env = {
 new NestedParentStack(app, 'CdkdCrNoEchoNestedExample', {
   description:
     'cdkd integ (issue 2460) - a NoEcho custom resource value crossing a nested-stack boundary',
+  env,
+});
+
+new ParamParentStack(app, 'CdkdCrNoEchoParamExample', {
+  description:
+    'cdkd integ (issues 3717, 3722) - a NoEcho value through a nested stack parameter, and a custom resource whose physical id moves',
   env,
 });
 

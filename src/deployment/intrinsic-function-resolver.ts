@@ -78,6 +78,7 @@ import {
   recordMaskOnlyValue,
   recordFreshNoEchoValuesIn,
   embedsFreshNoEchoValue,
+  carryFreshNoEchoMark,
   recoverMaskedOutput,
   carriesSecretMask,
   errorCauseChain,
@@ -4418,6 +4419,10 @@ export class IntrinsicFunctionResolver {
       // is what says so rather than leaving it to the argument passed above.
       const own = inheritedParameterExpression(inherited, parameterName, plaintext);
       recorded.set(plaintext, typeof own === 'string' ? own : expression);
+      // go-to-k/cdkd#3717: a `NoEcho` value the parent supplied in THIS deploy
+      // stays fresh in the child resource's bag, or its no-change skip reads
+      // the new value's `***` as equal to the recorded `***`.
+      carryFreshNoEchoMark(inherited, recorded, plaintext);
     }
   }
 
