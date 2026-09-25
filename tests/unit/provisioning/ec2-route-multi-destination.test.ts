@@ -278,10 +278,9 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
       expect(warnings().some((m) => /Continuing with DestinationIpv6CidrBlock/.test(m))).toBe(true);
     });
 
-    it('warns rather than stranding the route on the update delete-and-recreate', async () => {
-      mockSend.mockResolvedValue({});
-
-      const result = await provider.update(
+    // Issue #3728: the update path splits on the ORIGIN of the desired bag.
+    const multiDestinationUpdate = (context?: Record<string, unknown>) =>
+      provider.update(
         'MyRoute',
         'rtb-123|0.0.0.0/0',
         'AWS::EC2::Route',
@@ -296,8 +295,36 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
           DestinationCidrBlock: '0.0.0.0/0',
           DestinationIpv6CidrBlock: '::/0',
           GatewayId: 'igw-1',
-        }
+        },
+        context
       );
+
+    it.each([
+      ['no context', undefined],
+      ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+    ])(
+      'REFUSES on a template-path update (%s) BEFORE the delete, so nothing is stranded',
+      async (_label, context) => {
+        mockSend.mockResolvedValue({});
+
+        const error = await multiDestinationUpdate(context).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toMatch(/^Route MyRoute declares more than one destination/);
+        expect((error as Error).message).toContain('The route was not changed.');
+        // Nothing at all went out: the whole point of refusing HERE rather than
+        // in the re-create is that the delete never ran.
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each([
+      ['a rollback revert arm (replayingState)', { replayingState: true }],
+      ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+    ])('warns rather than stranding the route on %s', async (_label, context) => {
+      mockSend.mockResolvedValue({});
+
+      const result = await multiDestinationUpdate(context);
 
       expect(result.wasReplaced).toBe(true);
       // update() deletes BEFORE re-creating, which is precisely why the guard

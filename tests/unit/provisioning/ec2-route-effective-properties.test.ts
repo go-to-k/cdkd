@@ -162,7 +162,10 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         `${ROUTE_TABLE}|10.0.0.0/16`,
         RESOURCE_TYPE,
         multiDestination(),
-        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
+        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
+        // The `drift --revert` shape this arm was written for. A TEMPLATE-path
+        // update refuses a multi-destination bag before the delete (#3728).
+        { desiredFromAwsReadback: true }
       );
 
       expect(result.effectiveProperties).toEqual({
@@ -183,7 +186,10 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         `${ROUTE_TABLE}|10.0.0.0/16`,
         RESOURCE_TYPE,
         multiDestination(),
-        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
+        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
+        // The `drift --revert` shape this arm was written for. A TEMPLATE-path
+        // update refuses a multi-destination bag before the delete (#3728).
+        { desiredFromAwsReadback: true }
       );
 
       const destinationKeys = Object.keys(result.effectiveProperties ?? {}).filter((k) =>
@@ -202,7 +208,10 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         `${ROUTE_TABLE}|10.0.0.0/16`,
         RESOURCE_TYPE,
         multiDestination(),
-        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
+        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
+        // The `drift --revert` shape this arm was written for. A TEMPLATE-path
+        // update refuses a multi-destination bag before the delete (#3728).
+        { desiredFromAwsReadback: true }
       );
 
       const created = mockSend.mock.calls

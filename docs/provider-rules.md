@@ -155,9 +155,11 @@ const ipProtocol = requireConfigString(
   { coerceNumber: true }
 );
 
-// UPDATE-path sites WARN instead of throwing — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards): `update()` is a state
-// replay path unconditionally, so a refusal there can leave the resource
-// un-rollbackable with no template-side remedy.
+// UPDATE-path sites WARN instead of throwing when the desired bag is a state
+// record (a rollback revert or `cdkd drift --revert`) — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards):
+// a refusal there can leave the resource un-rollbackable with no template-side
+// remedy. A template-path update may refuse the same value before any call.
+// (This IAM example still warns on every caller; issue #3740 tracks it.)
 const status = requireConfigString(properties['Status'], 'Active', 'AWS::IAM::AccessKey Status', {
   onUnusable: (message) => this.logger.warn(message),
 });
@@ -211,10 +213,22 @@ implementation. Three details are worth copying:
   un-updatable but **UN-RESTORABLE**, and unlike the template case the user has
   no remedy at all — only hand-editing `state.json`. Concretely:
 
-  - **`update()` — always warn.** `rollback-executor.ts` calls
-    `provider.update(..., op.previousState.properties, ...)`, so `update()` is
-    a replay path unconditionally and there is no signal to test. **Then pick
-    the FALLBACK per site** (issue
+  - **`update()` — refuse on the template path, warn on a replay.**
+    `rollback-executor.ts`'s two revert arms call
+    `provider.update(..., op.previousState.properties, ...)` with
+    `UpdateContext.replayingState`, and `cdkd drift --revert` sets
+    `desiredFromAwsReadback`; the deploy engine sets neither. Refuse only when
+    both are unset AND the refused value is template-borne on that path — a
+    value the recorded resource already carries, such as an identity segment
+    that only a replacement could change, keeps the warning, with the reason
+    stated at the site (issue
+    [#3728](https://github.com/go-to-k/cdkd/issues/3728)). Refuse BEFORE the
+    first write: a throw from a mid-update arm strands whatever the earlier
+    arms applied (a read such as a hosted-zone lookup may precede it). Not
+    every arm follows this yet: the ones decided before #3141 gave the revert
+    arms a flag still warn on every caller — Glue's `DatabaseInput` and the
+    sites listed in [#3740](https://github.com/go-to-k/cdkd/issues/3740) —
+    and each says so at its site. On the warn path, **pick the FALLBACK per site** (issue
     [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
     applying the CREATE DEFAULT is frequently worse than the refusal was,
     because the default lands on a LIVE resource — it flipped an IAM-guarded

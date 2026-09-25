@@ -549,8 +549,12 @@ describe('AWS::EC2::SecurityGroupIngress composite id guard', () => {
 
   it('WARNS on updateRoute, where the route is already deleted', async () => {
     // `updateRoute` deletes then re-creates and passes the callback
-    // UNCONDITIONALLY — it has no context to tell a template update from a
-    // replay, and a throw here would strand a deleted route.
+    // UNCONDITIONALLY, so the separator refusal stays a warning even on the
+    // template path — by decision (issue #3728), not for want of a signal:
+    // both segments are createOnly, so the id an update packs is the one the
+    // recorded route already carries, and a throw here would strand a deleted
+    // route. (This row changes the destination only to put a `|` in play; in
+    // production that change is a replacement and never reaches `update()`.)
     mockEc2Send.mockResolvedValue({});
     const provider = new EC2Provider();
     const result = await provider.update(
@@ -813,12 +817,12 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     );
   });
 
-  it('warns and packs on update instead of refusing', async () => {
-    // The `updateRoute` precedent: `update()` takes no `CreateContext`, so it
-    // cannot tell a template-borne update from the STATE-borne desired bag
-    // that the rollback executor's revert arm and `cdkd drift --revert` hand
-    // it — and refusing there would make a record an older binary wrote under
-    // the ambiguous id un-revertable. The UPSERT still goes out, so the id is
+  it('warns and packs on a template-path update whose record ALREADY carries the id', async () => {
+    // Issue #3728 keeps this warning on the template path when the recorded
+    // record already has the separator in its name: an older binary wrote it
+    // under the ambiguous id, and the only template edit is renaming the DNS
+    // record — a different record, not a repair — so refusing would make it
+    // un-updatable and un-revertable. The UPSERT still goes out, so the id is
     // ANNOUNCED rather than silent. Mutating this callback away to a bare
     // `undefined` makes this case throw.
     mockRoute53Send.mockResolvedValueOnce({});
@@ -839,6 +843,109 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.stringContaining("recordName 'a|b.example.com.'")
+    );
+    expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #3728: a template-path update that INTRODUCES the separator (a
+  // rename; `Name` is mutable in place) is refused before the UPSERT, exactly
+  // as the create path refuses the same name. The two state-borne callers
+  // keep the warning.
+  const renameIntoSeparator = (provider: Route53Provider, context?: Record<string, unknown>) =>
+    provider.update(
+      'MyRecord',
+      'Z1D633PJN98FT9|www.example.com.|A',
+      RECORD_TYPE,
+      {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+        TTL: '300',
+        ResourceRecords: ['1.2.3.4'],
+      },
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A' },
+      context
+    );
+
+  it.each([
+    ['no context', undefined],
+    ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+  ])(
+    'REFUSES a template-path update (%s) that renames the record INTO the separator',
+    async (_label, context) => {
+      const provider = new Route53Provider();
+      const error = await renameIntoSeparator(provider, context).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toContain("recordName 'a|b.example.com.'");
+      // Nothing reached Route 53: the refusal sits before the UPSERT.
+      expect(mockRoute53Send).not.toHaveBeenCalled();
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['a rollback revert arm (replayingState)', { replayingState: true }],
+    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+  ])('warns and packs the same rename on %s', async (_label, context) => {
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await renameIntoSeparator(provider, context);
+
+    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("recordName 'a|b.example.com.'")
+    );
+    expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('REFUSES a template-path update that changes the TYPE into the separator', async () => {
+    const provider = new Route53Provider();
+    await expect(
+      provider.update(
+        'MyRecord',
+        'Z1D633PJN98FT9|www.example.com.|A',
+        RECORD_TYPE,
+        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A|X' },
+        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A' }
+      )
+    ).rejects.toThrow(/recordType 'A\|X'/);
+    expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
+  // Each of these keeps the warning on the TEMPLATE path: the recorded record
+  // already has (or may have) this id, so refusing would strand it.
+  it.each([
+    [
+      'the hosted-zone segment (createOnly: an update never changes it)',
+      { HostedZoneId: 'Z1|2', Name: 'www.example.com.', Type: 'A' },
+      { HostedZoneId: 'Z1|2', Name: 'www.example.com.', Type: 'A' },
+    ],
+    [
+      'a trailing-dot / case-only respelling of the recorded name',
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'A|B.example.com', Type: 'A' },
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
+    ],
+    [
+      'a recorded name REDACTED to its dynamic reference',
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
+      {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: '{{resolve:secretsmanager:dns:SecretString:name}}',
+        Type: 'A',
+      },
+    ],
+    [
+      'a record with no recorded Name to compare',
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
+      { HostedZoneId: 'Z1D633PJN98FT9', Type: 'A' },
+    ],
+  ])('warns rather than refusing for %s', async (_label, desired, recorded) => {
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    await provider.update('MyRecord', 'Z|recorded|A', RECORD_TYPE, desired, recorded);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("contains '|'")
     );
     expect(mockRoute53Send).toHaveBeenCalledTimes(1);
   });

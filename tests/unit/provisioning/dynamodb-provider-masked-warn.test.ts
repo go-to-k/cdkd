@@ -718,13 +718,47 @@ describe('DynamoDB providers - resolved secrets in provider warnings (issue #199
           BillingMode: 'PROVISIONED',
           GlobalSecondaryIndexes: [gsi({ ReadCapacityUnits: 9, WriteCapacityUnits: 9 })],
         },
-        { maskSecrets: createSecretMasker(bag) }
+        // The skip is a state-borne caller's arm since issue #3728.
+        { maskSecrets: createSecretMasker(bag), replayingState: true }
       );
 
       // Non-vacuity: the skip DID fire.
       expect(log()).toContain('on-demand placeholder');
       expect(log()).not.toContain(`GSI ${SHORT_INDEX}`);
       expect(log()).toContain(`GSI ${SECRET_MASK}`);
+    });
+
+    // The template-path twin (issue #3728): the same value is REFUSED at
+    // pre-flight, and the thrown message names the index. A thrown message is
+    // masked again by the deploy engine, but only by the SUBSTRING arm, which
+    // a 3-character name is below — so the whole-value mask must happen here.
+    it('masks a SHORT index name in the template-path zero-capacity refusal', async () => {
+      const bag: RecordedSecretValues = new Map([
+        [SHORT_INDEX, '{{resolve:secretsmanager:tbl/idx:SecretString:v::}}'],
+      ]);
+
+      const error = await provider
+        .update(
+          'MyTable',
+          'issue1997-table',
+          'AWS::DynamoDB::Table',
+          {
+            BillingMode: 'PROVISIONED',
+            GlobalSecondaryIndexes: [gsi({ ReadCapacityUnits: 0, WriteCapacityUnits: 0 })],
+          },
+          {
+            BillingMode: 'PROVISIONED',
+            GlobalSecondaryIndexes: [gsi({ ReadCapacityUnits: 9, WriteCapacityUnits: 9 })],
+          },
+          { maskSecrets: createSecretMasker(bag) }
+        )
+        .catch((e: unknown) => e);
+
+      const message = (error as Error).message;
+      // Non-vacuity: the refusal DID fire.
+      expect(message).toContain('on-demand placeholder');
+      expect(message).not.toContain(`GlobalSecondaryIndexes ${SHORT_INDEX} `);
+      expect(message).toContain(`GlobalSecondaryIndexes ${SECRET_MASK} `);
     });
   });
 
