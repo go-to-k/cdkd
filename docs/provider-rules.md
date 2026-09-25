@@ -2056,7 +2056,7 @@ This dumps every unaccounted property per type into `tests/fixtures/cfn-schemas/
 
 ### Workflow when AWS publishes new properties
 
-AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. Until a property is in the fixture, cdkd does not merely leave it unwired: it **silently drops it**, because the SDK-vs-Cloud-Control routing table is derived offline from these fixtures and a property absent from them produces no `silentDrop` entry to auto-route on. That is the issue [#614](https://github.com/go-to-k/cdkd/issues/614) failure class arriving through the one input the #614 machinery cannot see (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. A property not yet in the fixture is **unrecognized**, and cdkd routes a resource carrying one through Cloud Control, exactly as it routes a known silent drop. So a new property reaches AWS the day AWS publishes it; the fixture refresh is what lets an SDK provider take the property over later. Why, and what is excluded: [the design record](design/3713-route-unrecognized-properties.md).
 
 Two mechanisms cover it. The operator's side of the first — what arrives, what
 to do with each class, and what to do when NOTHING arrives because the job
@@ -2084,7 +2084,16 @@ Newly unaccounted writable properties land in `_todo-backfill.json`; do not file
 
 There is deliberately **no CI staleness check** on `main`. It would go red whenever AWS publishes a property — noise on a schedule nobody controls, the same reasoning `gen:aws-cli-removals` carries in `vite.config.ts`. A scheduled job whose red is confined to its own PR is the shape that argument leaves open.
 
-**Between cycles**, a user is not unprotected: a top-level template property absent from the snapshot produces a deploy-time **warning** naming the property and saying it will not reach AWS. Because cdkd cannot tell the possible causes apart — and at deploy time has only the template and the baked-in table — the line names all four with a remedy each: a misspelling (fix the spelling), a read-only attribute, which is not settable on any engine (remove it), a property AWS published after the snapshot (report it, so cdkd routes it via Cloud Control), or a deliberate `addPropertyOverride` (suppress it). It stays a warning rather than an error or an auto-route — the drop may be intended, and routing on an unrecognized property would let a typo trigger the currently one-way `cc-api` state flip. Suppress a known-accepted one with `--prefer-sdk-route <Type>:<Prop>`.
+**What stays on the SDK route.** An unrecognized property does not route in four cases, and each produces a deploy-time **warning** that names the property, says it will not reach AWS, and gives the reason:
+
+| Case | Why it stays |
+| --- | --- |
+| The property is read-only | CloudFormation ignores a read-only property in a template too. |
+| The type has no Cloud Control route | Its provider declares `disableCcApiFallback`, or the type is `NON_PROVISIONABLE`. |
+| The resource was deployed on the SDK route with the property, and its value is unchanged | cdkd keeps an existing resource on its route. Changing the value routes it. |
+| `--prefer-sdk-route <Type>:<Prop>` names it | You chose the drop; the warning is suppressed. |
+
+A misspelled property on a new resource, or one newly added, is routed like any other and Cloud Control rejects it with `Unsupported property`, as CloudFormation does.
 
 ### "Bogus" entries and the tolerance list
 

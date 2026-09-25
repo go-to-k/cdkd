@@ -273,4 +273,31 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
       expect(hits[0]).not.toContain(DROPPED);
     });
   });
+
+  // Issue #3713: a key the snapshot does not know routes the resource through
+  // Cloud Control only when it differs from the record. Held unchanged, the
+  // resource stays on the SDK route, so the allow-listed drop beside it must
+  // still be narrowed off the desired side — or it reads as an ADD every deploy.
+  describe('an unrecognized key held unchanged (#3713)', () => {
+    const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
+
+    it('keeps the allow-listed narrowing: NO_CHANGE', async () => {
+      const change = await diff(
+        stateWith({ ...WRITTEN, [UNKNOWN]: 'same' }, 'sdk'),
+        templateWith({ ...WRITTEN, [UNKNOWN]: 'same', [DROPPED]: WINDOW }),
+        new Set([ALLOW_KEY])
+      );
+      expect(change.changeType).toBe('NO_CHANGE');
+    });
+
+    it('a CHANGED unknown key routes, so the drop is not narrowed: UPDATE', async () => {
+      const change = await diff(
+        stateWith({ ...WRITTEN, [UNKNOWN]: 'same' }, 'sdk'),
+        templateWith({ ...WRITTEN, [UNKNOWN]: 'changed', [DROPPED]: WINDOW }),
+        new Set([ALLOW_KEY])
+      );
+      expect(change.changeType).toBe('UPDATE');
+      expect(change.propertyChanges?.map((p) => p.path).sort()).toEqual([DROPPED, UNKNOWN].sort());
+    });
+  });
 });

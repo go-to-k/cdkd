@@ -912,6 +912,73 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
     expect(renderRecreateTargetsErrors(v)).toBeNull();
   });
 
+  // Issue #3713: an unrecognized key routes the REPLACEMENT only when it
+  // differs from the record (`replaceDecision` passes the record as its
+  // baseline), so both ambiguous-intent checks must compare against it too.
+  describe('unrecognized keys are judged against the record (#3713)', () => {
+    const TYPE = 'AWS::SQS::Queue';
+    const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
+    const templateWith = (value: string): CloudFormationTemplate => ({
+      Resources: { Q: { Type: TYPE, Properties: { QueueName: 'q', [UNKNOWN]: value } } },
+    });
+    const stateOn = (provisionedBy: 'sdk' | 'cc-api') =>
+      st('S', {
+        Q: res(TYPE, { provisionedBy, properties: { QueueName: 'q', [UNKNOWN]: 'same' } }),
+      });
+
+    it('to-cc-api: an allow-listed key held unchanged is NOT an ambiguous intent', () => {
+      const v = validateRecreateTargets({
+        template: templateWith('same'),
+        state: stateOn('sdk'),
+        recreateViaCcApi: ['Q'],
+        allowUnsupportedProperties: new Set([`${TYPE}:${UNKNOWN}`]),
+        forceStatefulRecreation: false,
+      });
+      expect(v.ambiguousIntent).toEqual([]);
+    });
+
+    it('to-cc-api: the same key CHANGED is one', () => {
+      const v = validateRecreateTargets({
+        template: templateWith('changed'),
+        state: stateOn('sdk'),
+        recreateViaCcApi: ['Q'],
+        allowUnsupportedProperties: new Set([`${TYPE}:${UNKNOWN}`]),
+        forceStatefulRecreation: false,
+      });
+      expect(v.ambiguousIntent).toEqual([
+        { logicalId: 'Q', resourceType: TYPE, property: UNKNOWN },
+      ]);
+    });
+
+    it('to-sdk: a key held unchanged does not bounce the recreate back to Cloud Control', () => {
+      const v = validateRecreateTargets({
+        template: templateWith('same'),
+        state: stateOn('cc-api'),
+        recreateViaCcApi: [],
+        recreateViaSdkProvider: ['Q'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+        hasSdkProvider: () => true,
+      });
+      expect(v.ambiguousIntentSdk).toEqual([]);
+    });
+
+    it('to-sdk: the same key CHANGED does', () => {
+      const v = validateRecreateTargets({
+        template: templateWith('changed'),
+        state: stateOn('cc-api'),
+        recreateViaCcApi: [],
+        recreateViaSdkProvider: ['Q'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+        hasSdkProvider: () => true,
+      });
+      expect(v.ambiguousIntentSdk).toEqual([
+        { logicalId: 'Q', resourceType: TYPE, property: UNKNOWN },
+      ]);
+    });
+  });
+
   it('rejects a logical id named in BOTH --recreate-via-cc-api AND --recreate-via-sdk-provider', () => {
     const template: CloudFormationTemplate = {
       Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },

@@ -107,6 +107,14 @@ function loadFixture(resourceType: string): SchemaFixture | null {
 export interface ParsedProvider {
   handled: Map<string, Set<string>>;
   byDesign: Map<string, Map<string, string>>;
+  /**
+   * The `handledProperties` types of every class declaring
+   * `disableCcApiFallback = true` (issue #3713): the types Cloud Control cannot
+   * take over from the SDK provider, so an unrecognized property on them must
+   * not route there. Class-scoped, so a second class in the same file does not
+   * inherit the flag.
+   */
+  ccFallbackDisabled: Set<string>;
 }
 
 function parseProvider(filePath: string): ParsedProvider {
@@ -128,8 +136,23 @@ export function parseProviderSource(sourceText: string, filePath = 'provider.ts'
 
   const handled = new Map<string, Set<string>>();
   const byDesign = new Map<string, Map<string, string>>();
+  const ccFallbackDisabled = new Set<string>();
 
   function visit(node: ts.Node): void {
+    if (ts.isClassDeclaration(node) && declaresCcFallbackDisabled(node)) {
+      for (const member of node.members) {
+        if (
+          ts.isPropertyDeclaration(member) &&
+          ts.isIdentifier(member.name) &&
+          member.name.text === 'handledProperties' &&
+          member.initializer
+        ) {
+          const classHandled = new Map<string, Set<string>>();
+          extractTypeToSetMap(member.initializer, classHandled);
+          for (const type of classHandled.keys()) ccFallbackDisabled.add(type);
+        }
+      }
+    }
     if (
       ts.isPropertyDeclaration(node) &&
       ts.isIdentifier(node.name)
@@ -144,7 +167,18 @@ export function parseProviderSource(sourceText: string, filePath = 'provider.ts'
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  return { handled, byDesign };
+  return { handled, byDesign, ccFallbackDisabled };
+}
+
+/** True for a class declaring `disableCcApiFallback = true` as a field. */
+function declaresCcFallbackDisabled(node: ts.ClassDeclaration): boolean {
+  return node.members.some(
+    (member) =>
+      ts.isPropertyDeclaration(member) &&
+      ts.isIdentifier(member.name) &&
+      member.name.text === 'disableCcApiFallback' &&
+      member.initializer?.kind === ts.SyntaxKind.TrueKeyword
+  );
 }
 
 /**
@@ -313,6 +347,15 @@ interface PerTypeCoverage {
    * still a silent drop and still auto-routes.
    */
   createOnlyDrops: string[];
+  /**
+   * The schema's top-level `readOnlyProperties` (issue
+   * [#3713](https://github.com/go-to-k/cdkd/issues/3713)). CloudFormation
+   * IGNORES a read-only key set in a template rather than rejecting it, so an
+   * unrecognized key that is read-only must not route through Cloud Control.
+   */
+  readOnly: string[];
+  /** The type's SDK provider declares `disableCcApiFallback` (issue #3713). */
+  ccRouteUnavailable: boolean;
 }
 
 function main(): void {
@@ -323,9 +366,11 @@ function main(): void {
 
   const combinedHandled = new Map<string, Set<string>>();
   const combinedByDesign = new Map<string, Map<string, string>>();
+  const combinedCcFallbackDisabled = new Set<string>();
 
   for (const path of providerFiles) {
     const parsed = parseProvider(path);
+    for (const type of parsed.ccFallbackDisabled) combinedCcFallbackDisabled.add(type);
     for (const [type, props] of parsed.handled) {
       if (!combinedHandled.has(type)) combinedHandled.set(type, new Set());
       const target = combinedHandled.get(type)!;
@@ -370,6 +415,8 @@ function main(): void {
       handled: [...handled].sort((a, b) => a.localeCompare(b)),
       silentDrop,
       createOnlyDrops,
+      readOnly: [...readOnly].sort((a, b) => a.localeCompare(b)),
+      ccRouteUnavailable: combinedCcFallbackDisabled.has(type),
     });
     totalHandled += handled.size;
     totalDrops += silentDrop.length;
@@ -408,6 +455,8 @@ function main(): void {
       handled: ${renderHandled(cov.handled)},
       silentDrop: ${renderSilentDrop(cov.silentDrop)},
       createOnlyDrops: ${renderHandled(cov.createOnlyDrops)},
+      readOnly: ${renderHandled(cov.readOnly)},
+      ccRouteUnavailable: ${cov.ccRouteUnavailable},
     },
   ],`
   )
@@ -463,6 +512,19 @@ export interface PropertyCoverage {
    * auto-routes through Cloud Control.
    */
   readonly createOnlyDrops: ReadonlySet<string>;
+  /**
+   * The schema's top-level read-only properties. An unrecognized key in this
+   * set never routes through Cloud Control: CloudFormation IGNORES a read-only
+   * key in a template rather than rejecting it (issue
+   * [#3713](https://github.com/go-to-k/cdkd/issues/3713)).
+   */
+  readonly readOnly: ReadonlySet<string>;
+  /**
+   * The type's SDK provider declares \`disableCcApiFallback\`, so Cloud Control
+   * cannot take the resource over. An unrecognized key on such a type stays on
+   * the SDK route with a warn instead of routing (issue #3713).
+   */
+  readonly ccRouteUnavailable: boolean;
 }
 
 export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = new Map<

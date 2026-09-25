@@ -7,9 +7,9 @@
  * Control from `property-coverage.generated.ts`, built offline from
  * `tests/fixtures/cfn-schemas/*.json`, with no runtime `DescribeType` on that
  * path. So a property AWS publishes AFTER the snapshot produces no
- * `silentDrop` entry, does not auto-route to CC, and never reaches AWS while
- * the deploy reports success. The scheduled refresh job is the fix; this warn
- * is what protects a user deploying BETWEEN cycles.
+ * `silentDrop` entry. Issue #3713 routes such a key through Cloud Control;
+ * the warn covers what stays on the SDK route (read-only keys, unroutable
+ * types, keys unchanged since an SDK-route deploy).
  *
  * The suite is built around the fact that makes the warn safe — an SDK
  * provider writes only what it declares in `handledProperties`, so an
@@ -30,8 +30,11 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../src/provisioning/provider-registry.js';
 import {
+  findActionableSilentDrops,
+  findRoutableUnrecognizedProperties,
   findUnrecognizedProperties,
   PROPERTY_COVERAGE_BY_TYPE,
+  UNRECOGNIZED_PROPERTY_RATIONALE,
 } from '../../../src/provisioning/property-coverage.js';
 
 /** A property name no CFn schema will ever carry. */
@@ -47,6 +50,8 @@ function pickRoutableFixture(): {
   silentDropProperty: string;
 } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    // Routable only: an unrecognized key must be able to move the resource.
+    if (cov.ccRouteUnavailable) continue;
     const drop = cov.silentDrop.entries().next();
     const handled = cov.handled.values().next();
     if (!drop.done && !handled.done) {
@@ -79,7 +84,7 @@ function makeRegistry() {
       };
     }
   ).logger = { info, warn, debug, error };
-  return { registry, info, warn };
+  return { registry, info, warn, debug };
 }
 
 /** Every warn line mentioning the unknown property. */
@@ -159,25 +164,272 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
   });
 });
 
-describe('ProviderRegistry warns about unrecognized properties on the SDK route (issue #2718)', () => {
+/** A routable Tier 1 type with a read-only property in its schema snapshot. */
+function pickReadOnlyFixture(): { resourceType: string; readOnlyProperty: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    if (cov.ccRouteUnavailable) continue;
+    const ro = [...cov.readOnly].find((p) => !cov.handled.has(p) && !cov.silentDrop.has(p));
+    if (ro !== undefined) return { resourceType, readOnlyProperty: ro };
+  }
+  throw new Error('No routable Tier 1 type declares a read-only property — update this picker.');
+}
+
+/** A Tier 1 type whose SDK provider declares `disableCcApiFallback`. */
+function pickUnroutableType(): string {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    if (cov.ccRouteUnavailable) return resourceType;
+  }
+  throw new Error('No Tier 1 type is ccRouteUnavailable — update this picker.');
+}
+
+describe('findRoutableUnrecognizedProperties (issue #3713)', () => {
+  const fx = pickRoutableFixture();
+  const none = new Set<string>();
+
+  it('routes an unknown key on a new resource (no record)', () => {
+    expect(findRoutableUnrecognizedProperties(fx.resourceType, { [UNKNOWN_PROP]: 1 }, none)).toEqual(
+      [UNKNOWN_PROP]
+    );
+  });
+
+  it('routes an unknown key ADDED to, or CHANGED against, the record', () => {
+    const props = { [UNKNOWN_PROP]: { a: 1 } };
+    expect(findRoutableUnrecognizedProperties(fx.resourceType, props, none, {})).toEqual([
+      UNKNOWN_PROP,
+    ]);
+    expect(
+      findRoutableUnrecognizedProperties(fx.resourceType, props, none, { [UNKNOWN_PROP]: { a: 2 } })
+    ).toEqual([UNKNOWN_PROP]);
+  });
+
+  it('does NOT route an unknown key the record holds with a deep-equal value', () => {
+    // Key order differs on purpose: the baseline is a structural comparison.
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: { a: 1, b: [1, 2] } },
+        none,
+        { [UNKNOWN_PROP]: { b: [1, 2], a: 1 } }
+      )
+    ).toEqual([]);
+  });
+
+  it('does NOT route a read-only key — CloudFormation ignores one', () => {
+    const ro = pickReadOnlyFixture();
+    expect(
+      findRoutableUnrecognizedProperties(ro.resourceType, { [ro.readOnlyProperty]: 'x' }, none)
+    ).toEqual([]);
+    // Control: the same type still routes a genuinely unknown key.
+    expect(
+      findRoutableUnrecognizedProperties(ro.resourceType, { [UNKNOWN_PROP]: 'x' }, none)
+    ).toEqual([UNKNOWN_PROP]);
+  });
+
+  it('does NOT route on a type Cloud Control cannot take over', () => {
+    expect(
+      findRoutableUnrecognizedProperties(pickUnroutableType(), { [UNKNOWN_PROP]: 1 }, none)
+    ).toEqual([]);
+  });
+
+  it('does NOT route an allow-listed key, an intrinsic key, or on a non-Tier-1 type', () => {
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: 1 },
+        new Set([`${fx.resourceType}:${UNKNOWN_PROP}`])
+      )
+    ).toEqual([]);
+    expect(
+      findRoutableUnrecognizedProperties(fx.resourceType, { 'Fn::If': ['C', {}, {}] }, none)
+    ).toEqual([]);
+    expect(
+      findRoutableUnrecognizedProperties('AWS::Definitely::NotATier1Type', { [UNKNOWN_PROP]: 1 }, none)
+    ).toEqual([]);
+  });
+
+  it('joins findActionableSilentDrops with its own rationale, sorted with the drops', () => {
+    expect(
+      findActionableSilentDrops(
+        fx.resourceType,
+        { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        none
+      ).map((d) => d.property)
+    ).toEqual([fx.silentDropProperty, UNKNOWN_PROP].sort((a, b) => a.localeCompare(b)));
+    expect(
+      findActionableSilentDrops(fx.resourceType, { [UNKNOWN_PROP]: 1 }, none)[0]?.rationale
+    ).toBe(UNRECOGNIZED_PROPERTY_RATIONALE);
+  });
+});
+
+describe('ProviderRegistry routes an unrecognized property via Cloud Control (issue #3713)', () => {
   const fx = pickRoutableFixture();
 
-  it('warns, naming the property, the consequence and a remedy', () => {
-    const { registry, warn } = makeRegistry();
+  /** A registry with a stub SDK provider registered for `resourceType`. */
+  function registryWithSdk(resourceType: string) {
+    const made = makeRegistry();
+    made.registry.register(resourceType, {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    } as never);
+    return made;
+  }
+
+  it('auto-routes a new resource carrying one, naming it in the plan reason', () => {
+    const { registry } = registryWithSdk(fx.resourceType);
+    const decision = registry.getProviderFor({
+      resourceType: fx.resourceType,
+      properties: { [UNKNOWN_PROP]: 1 },
+    });
+    expect(decision.provisionedBy).toBe('cc-api');
+    expect(decision.ccRouteReason).toEqual({ properties: [UNKNOWN_PROP] });
+  });
+
+  it('keeps an existing SDK resource on the SDK route while the key is unchanged', () => {
+    const { registry } = registryWithSdk(fx.resourceType);
+    const decision = registry.getProviderFor({
+      resourceType: fx.resourceType,
+      properties: { [UNKNOWN_PROP]: 1 },
+      provisionedBy: 'sdk',
+      previousProperties: { [UNKNOWN_PROP]: 1 },
+    });
+    expect(decision.provisionedBy).toBe('sdk');
+  });
+
+  it('routes an existing SDK resource once the key changes', () => {
+    const { registry } = registryWithSdk(fx.resourceType);
+    const decision = registry.getProviderFor({
+      resourceType: fx.resourceType,
+      properties: { [UNKNOWN_PROP]: 2 },
+      provisionedBy: 'sdk',
+      previousProperties: { [UNKNOWN_PROP]: 1 },
+    });
+    expect(decision.provisionedBy).toBe('cc-api');
+  });
+
+  it('keeps a read-only key and an unroutable type on the SDK route, without throwing', () => {
+    const ro = pickReadOnlyFixture();
+    const a = registryWithSdk(ro.resourceType);
+    expect(
+      a.registry.getProviderFor({
+        resourceType: ro.resourceType,
+        properties: { [ro.readOnlyProperty]: 'x' },
+      }).provisionedBy
+    ).toBe('sdk');
+    const unroutable = pickUnroutableType();
+    const b = registryWithSdk(unroutable);
+    expect(
+      b.registry.getProviderFor({ resourceType: unroutable, properties: { [UNKNOWN_PROP]: 1 } })
+        .provisionedBy
+    ).toBe('sdk');
+  });
+
+  it('logs the route at info and names the key as unrecognized, with no drop warn', () => {
+    const { registry, info, warn } = makeRegistry();
     registry.validateResourceProperties([
       { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('routing via Cloud Control API');
+    expect(lines[0]).toContain(`${UNKNOWN_PROP} is not in cdkd's CFn schema snapshot`);
+    expect(lines[0]).toContain(`--prefer-sdk-route ${fx.resourceType}:${UNKNOWN_PROP}`);
+    expect(unknownWarns(warn)).toEqual([]);
+  });
+
+  it('still routes when an override names a different property', () => {
+    const { registry, info, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:SomeOtherProperty`]);
+    registry.validateResourceProperties([
+      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(UNKNOWN_PROP);
+    expect(unknownWarns(warn)).toEqual([]);
+  });
+
+  /**
+   * `AWS::Scheduler::Schedule`-style `'cc-broken'` exemptions return a
+   * `cc-api` record to the SDK provider, so the resource's route is re-derived
+   * from the bag — and an unrecognized key then routes it, as a silent drop
+   * does, rather than being dropped on the SDK route.
+   */
+  it('routes a cc-broken sticky-exempt type carrying one, rather than warning', () => {
+    const ccBrokenTypes = [...STICKY_CC_MIGRATION_EXEMPT]
+      .filter(([, entry]) => entry.mode === 'cc-broken')
+      .map(([type]) => type);
+    expect(ccBrokenTypes.length).toBeGreaterThanOrEqual(1);
+    for (const exemptType of ccBrokenTypes) {
+      expect(PROPERTY_COVERAGE_BY_TYPE.get(exemptType)?.ccRouteUnavailable).toBe(false);
+      const { registry, debug, warn } = makeRegistry();
+      registry.validateResourceProperties([
+        {
+          logicalId: 'MyResource',
+          resourceType: exemptType,
+          properties: { [UNKNOWN_PROP]: 1 },
+          provisionedBy: 'cc-api',
+        },
+      ]);
+      expect(unknownWarns(warn), exemptType).toEqual([]);
+      // A `cc-api` record demotes the route line to debug (sticky continuation).
+      expect(debug.mock.calls.map((c) => String(c[0])).join('\n'), exemptType).toContain(
+        UNKNOWN_PROP
+      );
+    }
+  });
+});
+
+describe('ProviderRegistry warns about unrecognized properties left on the SDK route (issues #2718, #3713)', () => {
+  const fx = pickRoutableFixture();
+
+  it('warns for an UNCHANGED key on an existing resource, naming why it stays', () => {
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: fx.resourceType,
+        properties: { [UNKNOWN_PROP]: 1 },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 1 },
+      },
     ]);
     const lines = unknownWarns(warn);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('MyResource');
     expect(lines[0]).toContain(fx.resourceType);
-    // The consequence, which is the whole point of the line.
     expect(lines[0]).toContain('will NOT reach AWS');
-    // One reading spot-checked here; the full set has its own case below.
-    expect(lines[0]).toContain('misspelled');
-    // The 1-click report link and the suppression flag.
-    expect(lines[0]).toContain('https://github.com/go-to-k/cdkd/issues/new');
+    expect(lines[0]).toContain(`${UNKNOWN_PROP} is not in cdkd's CFn schema snapshot and unchanged`);
+    expect(lines[0]).toContain('the value has never reached AWS');
+    expect(lines[0]).toContain('rejects a misspelled one');
     expect(lines[0]).toContain(`--prefer-sdk-route ${fx.resourceType}:${UNKNOWN_PROP}`);
+  });
+
+  it('warns for a READ-ONLY key, naming it as an attribute', () => {
+    const ro = pickReadOnlyFixture();
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: ro.resourceType,
+        properties: { [ro.readOnlyProperty]: 'x' },
+      },
+    ]);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`${ro.readOnlyProperty} is read-only`);
+    expect(lines[0]).toContain('CloudFormation ignores it too');
+    expect(lines[0]).not.toContain('never reached AWS');
+  });
+
+  it('warns on a type Cloud Control cannot take, with the report link for that property', () => {
+    const unroutable = pickUnroutableType();
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      { logicalId: 'MyResource', resourceType: unroutable, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    const lines = unknownWarns(warn);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('cannot be routed via Cloud Control API');
+    expect(lines[0]).toContain(encodeURIComponent(`Support property ${unroutable}.${UNKNOWN_PROP}`));
   });
 
   it('stays silent for a handled property', () => {
@@ -192,11 +444,6 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
     expect(unknownWarns(warn)).toEqual([]);
   });
 
-  /**
-   * The route control that matters most: when an actionable silent drop routes
-   * the resource to Cloud Control, CC forwards the FULL property map, so the
-   * unrecognized property DOES reach AWS and a warn would be false.
-   */
   it('stays silent when a silent drop auto-routes the resource to Cloud Control', () => {
     const { registry, warn } = makeRegistry();
     registry.validateResourceProperties([
@@ -204,6 +451,8 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
         logicalId: 'MyResource',
         resourceType: fx.resourceType,
         properties: { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 1 },
       },
     ]);
     expect(unknownWarns(warn)).toEqual([]);
@@ -217,107 +466,43 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
         resourceType: fx.resourceType,
         properties: { [UNKNOWN_PROP]: 1 },
         provisionedBy: 'cc-api',
+        previousProperties: { [UNKNOWN_PROP]: 1 },
       },
     ]);
     expect(unknownWarns(warn)).toEqual([]);
   });
 
-  /**
-   * `AWS::Scheduler::Schedule` is in `STICKY_CC_MIGRATION_EXEMPT`, so a
-   * cc-api state record re-routes it BACK to its SDK provider — where the drop
-   * really happens. Pinning it keeps the warn's route test tied to
-   * `getProviderFor`'s actual rule rather than to `provisionedBy` alone.
-   */
-  it('DOES warn for a sticky-exempt type even when state says cc-api', () => {
-    // DERIVED from the exported table, not hardcoded: a hardcoded name goes
-    // silently inert the day the table changes, and the guard would then be
-    // asserting about a type that is no longer exempt.
-    //
-    // Scoped to `'cc-broken'` since issue #2719 split the table by MODE, and
-    // the scope is the assertion's premise rather than a convenience. A
-    // `'cc-broken'` type re-routes to its SDK provider UNCONDITIONALLY, which
-    // is what puts the drop back on the path this warn watches. An
-    // `'sdk-coverage'` type re-routes only when BOTH its property bags are
-    // clean, and this call site passes no recorded bag at all -- so it
-    // correctly stays on Cloud Control, where there is no cdkd-side drop to
-    // warn about. Iterating the whole table would assert the `'cc-broken'`
-    // behaviour of a mode that deliberately does not have it.
-    const ccBrokenTypes = [...STICKY_CC_MIGRATION_EXEMPT]
-      .filter(([, entry]) => entry.mode === 'cc-broken')
-      .map(([type]) => type);
-    expect(
-      ccBrokenTypes.length,
-      "STICKY_CC_MIGRATION_EXEMPT has no 'cc-broken' member — this case can no longer discriminate"
-    ).toBeGreaterThanOrEqual(1);
-    // EVERY member is exercised, not just the first: a `find` would leave a
-    // newly added exempt type silently uncovered. And each must be in the
-    // Tier 1 table — an exempt type that left it makes this path unreachable,
-    // which is the loud failure the earlier hardcoded name gave us for free.
-    for (const type of ccBrokenTypes) {
-      expect(
-        PROPERTY_COVERAGE_BY_TYPE.has(type),
-        `${type} is STICKY_CC_MIGRATION_EXEMPT but not in the Tier 1 coverage ` +
-          'table, so the sticky-exempt warn path is unreachable for it'
-      ).toBe(true);
-    }
-    for (const exemptType of ccBrokenTypes) {
-      const { registry, warn } = makeRegistry();
-      registry.validateResourceProperties([
-        {
-          logicalId: 'MyResource',
-          resourceType: exemptType,
-          properties: { [UNKNOWN_PROP]: 1 },
-          provisionedBy: 'cc-api',
-        },
-      ]);
-      expect(unknownWarns(warn), `no warn for sticky-exempt ${exemptType}`).toHaveLength(1);
-    }
-  });
-
-  it('is suppressed by --allow-unsupported-properties for that exact key', () => {
-    const { registry, warn } = makeRegistry();
+  it('is suppressed by --prefer-sdk-route for that exact key', () => {
+    const { registry, warn, info } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${UNKNOWN_PROP}`]);
     registry.validateResourceProperties([
       { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
     ]);
     expect(unknownWarns(warn)).toEqual([]);
+    // And the allow-listed key does not route either.
+    expect(info).not.toHaveBeenCalled();
   });
 
-  it('is NOT suppressed by an override naming a different property', () => {
+  it('emits ONE aggregated line per resource, with plural agreement', () => {
     const { registry, warn } = makeRegistry();
-    registry.allowUnsupportedProperties([`${fx.resourceType}:SomeOtherProperty`]);
-    registry.validateResourceProperties([
-      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
-    ]);
-    expect(unknownWarns(warn)).toHaveLength(1);
-  });
-
-  it('emits ONE aggregated line per resource, not one per property', () => {
-    const { registry, warn } = makeRegistry();
+    const bag = { [UNKNOWN_PROP]: 1, [`${UNKNOWN_PROP}Two`]: 2 };
     registry.validateResourceProperties([
       {
         logicalId: 'MyResource',
         resourceType: fx.resourceType,
-        properties: { [UNKNOWN_PROP]: 1, [`${UNKNOWN_PROP}Two`]: 2 },
+        properties: bag,
+        provisionedBy: 'sdk',
+        previousProperties: bag,
       },
     ]);
     const lines = unknownWarns(warn);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`${UNKNOWN_PROP}Two`);
-    // Plural agreement, so the line reads correctly in both arities.
     expect(lines[0]).toContain('are not in');
+    expect(lines[0]).toContain('the values have never reached AWS');
   });
 
-
-  /**
-   * The gap that made `autoRouted: autoRouted.length > 0` mutable to
-   * `drops.length > 0` with every test still green. When the ONLY silent drop
-   * is allow-listed, the resource stays on the SDK route (that is what the
-   * flag means), so an unrecognized property alongside it IS dropped and must
-   * warn. Keyed on `drops` instead, the code would read "there were drops, so
-   * we auto-routed" and go silent on a real drop.
-   */
-  it('still warns when the only silent drop is allow-listed (resource stays on SDK)', () => {
+  it('still warns when the only silent drop is allow-listed and the key is unchanged', () => {
     const { registry, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.silentDropProperty}`]);
     registry.validateResourceProperties([
@@ -325,61 +510,58 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
         logicalId: 'MyResource',
         resourceType: fx.resourceType,
         properties: { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 1 },
       },
     ]);
     expect(unknownWarns(warn)).toHaveLength(1);
   });
 
-  it('uses singular agreement for one property', () => {
-    // Without this, flipping `is`/`are` and `it`/`they` survives every other
-    // assertion in the file.
-    const { registry, warn } = makeRegistry();
-    registry.validateResourceProperties([
-      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
-    ]);
-    const line = unknownWarns(warn)[0]!;
-    expect(line).toContain(`${UNKNOWN_PROP} is not in`);
-    expect(line).toContain('it will NOT reach AWS');
-  });
-
-  it('names all four readings, each with its own remedy', () => {
-    // The code cannot tell these apart, so the line must not imply one. The
-    // read-only arm matters most: the coverage generator excludes
-    // `readOnlyProperties` from `silentDrop`, so a template setting an
-    // ATTRIBUTE lands here and "AWS published it after our snapshot" is false.
-    const { registry, warn } = makeRegistry();
-    registry.validateResourceProperties([
-      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
-    ]);
-    const line = unknownWarns(warn)[0]!;
-    expect(line).toContain('misspelled');
-    expect(line).toContain('read-only attribute');
-    expect(line).toContain("published after cdkd's");
-    expect(line).toContain('addPropertyOverride');
-  });
-
-  it('links the report URL to the actual property, not a constant', () => {
-    // `unsupportedPropertyIssueUrl(type, unrecognized[0]!)` was only fenced by
-    // its HOST, so passing any constant survived.
-    const { registry, warn } = makeRegistry();
-    registry.validateResourceProperties([
-      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
-    ]);
-    expect(unknownWarns(warn)[0]!).toContain(
-      encodeURIComponent(`Support property ${fx.resourceType}.${UNKNOWN_PROP}`)
-    );
-  });
-
-  it('never throws for an unrecognized property — it is a warn, not a rejection', () => {
+  it('never throws for an unrecognized property on any route', () => {
     const { registry } = makeRegistry();
     expect(() =>
       registry.validateResourceProperties([
-        {
-          logicalId: 'MyResource',
-          resourceType: fx.resourceType,
-          properties: { [UNKNOWN_PROP]: 1 },
-        },
+        { logicalId: 'A', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+        { logicalId: 'B', resourceType: pickUnroutableType(), properties: { [UNKNOWN_PROP]: 1 } },
       ])
     ).not.toThrow();
+  });
+});
+
+describe('the baseline comparison (issue #3713)', () => {
+  const fx = pickRoutableFixture();
+  const none = new Set<string>();
+
+  it('ignores a prototype difference — a null-prototype desired bag is still unchanged', () => {
+    const desiredValue = Object.assign(Object.create(null) as Record<string, unknown>, { a: 1 });
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: desiredValue },
+        none,
+        { [UNKNOWN_PROP]: { a: 1 } }
+      )
+    ).toEqual([]);
+  });
+
+  it('treats a recorded dynamic-reference secret as unchanged, since it cannot be compared', () => {
+    const recorded = { [UNKNOWN_PROP]: 'prefix-{{resolve:secretsmanager:s:SecretString:k}}' };
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: 'prefix-the-resolved-secret' },
+        none,
+        recorded
+      )
+    ).toEqual([]);
+    // Control: without the expression, the same difference routes.
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: 'prefix-the-resolved-secret' },
+        none,
+        { [UNKNOWN_PROP]: 'prefix-other' }
+      )
+    ).toEqual([UNKNOWN_PROP]);
   });
 });

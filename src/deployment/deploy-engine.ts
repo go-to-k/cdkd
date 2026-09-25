@@ -3627,6 +3627,9 @@ export class DeployEngine {
           // resources demote the info-log to debug (avoids "routing via
           // Cloud Control API" repeated on every redeploy).
           provisionedBy: currentState.resources[logicalId]?.provisionedBy,
+          // The baseline an unrecognized property is compared against, so the
+          // routing lines describe the route `getProviderFor` takes (#3713).
+          previousProperties: currentState.resources[logicalId]?.properties,
         }));
       this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
       this.logger.debug(`All resource properties validated`);
@@ -6439,7 +6442,8 @@ export class DeployEngine {
             ? withoutAcceptedSilentDropProperties(
                 resourceType,
                 desiredForSkipCheck,
-                allowedSilentDrops
+                allowedSilentDrops,
+                currentResource.properties
               )
             : desiredForSkipCheck;
         if (
@@ -6707,6 +6711,14 @@ export class DeployEngine {
             resourceType,
             properties: resolvedProps,
             ...(recreateDirectionHint && { provisionedBy: recreateDirectionHint }),
+            // Issue #3713: the baseline an unrecognized property is compared
+            // against. A replacement mints a NEW physical resource, but one
+            // replacing a resource that deployed with the key unchanged keeps
+            // its route — on presence, a typo CloudFormation would reject but
+            // the SDK route tolerated would fail the replacement instead.
+            // Inert for the sticky-escape: without a `'cc-api'` record hint
+            // rule 2 is not consulted, and with one `forceCcApi` pins it.
+            previousProperties: currentResource.properties,
             // Issue #2719: `--recreate-via-cc-api` passes `provisionedBy:
             // 'cc-api'` as a HINT, and for a type with an `'sdk-coverage'`
             // exemption the sticky-escape would read that hint and divert the
@@ -7690,10 +7702,13 @@ export class DeployEngine {
                   );
                 }
               }
-              // The replacement create gets a fresh routing decision.
+              // The replacement create gets a fresh routing decision, against
+              // the record as its unrecognized-property baseline (issue #3713,
+              // same reason as `replaceDecision`).
               const replDecision = this.providerRegistry.getProviderFor({
                 resourceType,
                 properties: resolvedProps,
+                previousProperties: currentResource.properties,
               });
               const replProvider = replDecision.provider;
               const replProps =

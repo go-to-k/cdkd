@@ -1750,10 +1750,11 @@ export function renderDiagnosis(input) {
     lines.push(
       `### Writable properties AWS added (${count}) — no decision needed`,
       '',
-      'These route through Cloud Control automatically once this merges. They',
-      'reach the standing backfill issue WHEN THIS MERGES, not now — that list is',
-      'regenerated from `main`, so closing this PR leaves it untouched. Wiring',
-      'them into an SDK provider is separate work.',
+      'These already reach AWS: a property the committed snapshot does not know',
+      'routes its resource through Cloud Control, so merging is not what delivers',
+      'them. They reach the standing backfill issue WHEN THIS MERGES, not now —',
+      'that list is regenerated from `main`, so closing this PR leaves it',
+      'untouched. Wiring them into an SDK provider is separate work.',
       ''
     );
     for (const entry of writableAdded) {

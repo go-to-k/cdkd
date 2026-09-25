@@ -93,3 +93,37 @@ describe('findMissingCoverageTypes — registry-vs-output cross-check', () => {
     expect(findMissingCoverageTypes(registered, hasFixture, output)).toEqual([]);
   });
 });
+
+describe('parseProviderSource — disableCcApiFallback (issue #3713)', () => {
+  it('flags every handledProperties type of a class declaring it true', () => {
+    const { ccFallbackDisabled } = parseProviderSource(`
+export class ExampleProvider {
+  readonly disableCcApiFallback = true;
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['${TYPE}', new Set(['Alpha'])],
+    ['AWS::Example::Other', new Set(['Beta'])],
+  ]);
+}
+`);
+    expect([...ccFallbackDisabled].sort()).toEqual(['AWS::Example::Other', TYPE].sort());
+  });
+
+  it('does not flag a class declaring it false, or a sibling class in the same file', () => {
+    const { ccFallbackDisabled, handled } = parseProviderSource(`
+export class Off {
+  readonly disableCcApiFallback = false;
+  handledProperties = new Map<string, ReadonlySet<string>>([['AWS::Example::Off', new Set()]]);
+}
+export class On {
+  readonly disableCcApiFallback = true;
+  handledProperties = new Map<string, ReadonlySet<string>>([['${TYPE}', new Set()]]);
+}
+export class Plain {
+  handledProperties = new Map<string, ReadonlySet<string>>([['AWS::Example::Plain', new Set()]]);
+}
+`);
+    // Parsed input floor: all three classes were seen.
+    expect(handled.size).toBe(3);
+    expect([...ccFallbackDisabled]).toEqual([TYPE]);
+  });
+});

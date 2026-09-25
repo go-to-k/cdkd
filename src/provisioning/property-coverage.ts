@@ -19,7 +19,9 @@
  * resource on the SDK Provider path and accepts the silent drop (a
  * warn line is logged for auditability).
  */
+import { isDeepStrictEqual } from 'node:util';
 import { type PropertyCoverage, PROPERTY_COVERAGE_BY_TYPE } from './property-coverage.generated.js';
+import { isNonProvisionable } from './unsupported-types.js';
 
 export { PROPERTY_COVERAGE_BY_TYPE };
 export type { PropertyCoverage };
@@ -39,9 +41,11 @@ export function getPropertyCoverage(resourceType: string): PropertyCoverage | un
  * for a single resource. Returns an array of `{ property, rationale }` for
  * each unhandled top-level key in `templateProperties`, sorted alphabetically.
  *
- * Properties NOT in the CFn schema (likely a user typo or
- * `addPropertyOverride` escape hatch) are silently allowed: matching CFn's
- * own tolerance, and we cannot judge intent.
+ * Only properties the committed CFn schema snapshot KNOWS. A key absent from
+ * it is {@link findUnrecognizedProperties}' concern, and it drives routing
+ * through {@link findRoutableUnrecognizedProperties} instead — kept apart
+ * because the state and diff NARROWINGS below read this list and must stay
+ * fixture-only (issue [#3713](https://github.com/go-to-k/cdkd/issues/3713)).
  */
 export function findSilentDropProperties(
   resourceType: string,
@@ -60,27 +64,117 @@ export function findSilentDropProperties(
   return drops.sort((a, b) => a.property.localeCompare(b.property));
 }
 
+/** Rationale carried by a route-driving key absent from the schema snapshot. */
+export const UNRECOGNIZED_PROPERTY_RATIONALE = "not in cdkd's CFn schema snapshot";
+
 /**
- * Same as {@link findSilentDropProperties} but filters out entries whose
- * `<Type>:<Prop>` key is in the supplied allow set (the
- * `--allow-unsupported-properties` user override). Returned drops are the
- * ones that should drive CC API auto-routing (issue
- * [#614](https://github.com/go-to-k/cdkd/issues/614)) — silent drops
- * the user has explicitly opted-into via the override are removed so the
- * resource stays on the SDK Provider path.
+ * The properties that drive the Cloud Control auto-route (issue
+ * [#614](https://github.com/go-to-k/cdkd/issues/614)): every silent drop whose
+ * `<Type>:<Prop>` key is NOT in the `--prefer-sdk-route` allow set, plus every
+ * {@link findRoutableUnrecognizedProperties} key. THE routing predicate —
+ * `getProviderFor`, the sticky-escape, the plan and diff annotations and the
+ * recreate validators all read it, so none can disagree with the route.
  *
- * Mirrors `findSilentDropProperties`'s sort + early-return behavior:
- * returns `[]` for Tier 2 / Custom / unknown types, undefined / empty
- * `templateProperties`, or when every drop is in `allowedKeys`.
+ * `recordedProperties` is the resource's existing state-record bag, and it
+ * matters only for the unrecognized half; see
+ * {@link findRoutableUnrecognizedProperties}. Omitting it is PRESENCE
+ * semantics, correct for a new physical resource.
+ *
+ * Sorted by property; `[]` for Tier 2 / Custom / unknown types, an absent bag,
+ * or a bag whose every drop is allowed.
  */
 export function findActionableSilentDrops(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
-  allowedKeys: ReadonlySet<string>
+  allowedKeys: ReadonlySet<string>,
+  recordedProperties?: Record<string, unknown>
 ): Array<{ property: string; rationale: string }> {
-  const drops = findSilentDropProperties(resourceType, templateProperties);
-  if (drops.length === 0) return drops;
-  return drops.filter(({ property }) => !allowedKeys.has(`${resourceType}:${property}`));
+  const drops = findSilentDropProperties(resourceType, templateProperties).filter(
+    ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
+  );
+  const unrecognized = findRoutableUnrecognizedProperties(
+    resourceType,
+    templateProperties,
+    allowedKeys,
+    recordedProperties
+  );
+  if (unrecognized.length === 0) return drops;
+  return [
+    ...drops,
+    ...unrecognized.map((property) => ({ property, rationale: UNRECOGNIZED_PROPERTY_RATIONALE })),
+  ].sort((a, b) => a.property.localeCompare(b.property));
+}
+
+/**
+ * The {@link findUnrecognizedProperties} keys that route the resource through
+ * Cloud Control (issue [#3713](https://github.com/go-to-k/cdkd/issues/3713)).
+ *
+ * A key the snapshot does not know is either a property AWS published after
+ * it, a typo, or an `addPropertyOverride` escape hatch, and the SDK route
+ * drops all three. Cloud Control applies the first and REJECTS the other two
+ * with `Unsupported property`, which is what CloudFormation does too — so
+ * routing is right for all three, and a rejected CREATE / UPDATE leaves the
+ * state record (and its `provisionedBy`) untouched.
+ *
+ * Excluded, each derivable offline so the check stays a table lookup:
+ *
+ * - a READ-ONLY key — CloudFormation IGNORES one set in a template rather than
+ *   rejecting it, so routing it would turn a working deploy into a failing one;
+ * - a key in the `--prefer-sdk-route` allow set;
+ * - every key on a type Cloud Control cannot take over (`ccRouteUnavailable`,
+ *   or `NON_PROVISIONABLE`) — `getProviderFor` would otherwise REFUSE a
+ *   template it deploys today;
+ * - with `recordedProperties`, a key the record already holds with a
+ *   deep-equal value. That is what keeps an EXISTING deployment where it is: a
+ *   resource that deployed on the SDK route with such a key keeps deploying
+ *   there, and only adding or changing the key moves it. Without it, an
+ *   unrelated update would flip that resource to Cloud Control, which fails on
+ *   a typo and on a type whose SDK physical id is not Cloud Control's
+ *   identifier. Deliberately not applied by the sticky-escape
+ *   (`wouldReturnToSdkProvider`), which must stay conservative.
+ */
+export function findRoutableUnrecognizedProperties(
+  resourceType: string,
+  templateProperties: Record<string, unknown> | undefined,
+  allowedKeys: ReadonlySet<string>,
+  recordedProperties?: Record<string, unknown>
+): string[] {
+  const coverage = getPropertyCoverage(resourceType);
+  if (!templateProperties || !coverage) return [];
+  if (coverage.ccRouteUnavailable || isNonProvisionable(resourceType)) return [];
+  return findUnrecognizedProperties(resourceType, templateProperties).filter(
+    (property) =>
+      !coverage.readOnly.has(property) &&
+      !allowedKeys.has(`${resourceType}:${property}`) &&
+      !(
+        recordedProperties !== undefined &&
+        Object.hasOwn(recordedProperties, property) &&
+        sameJsonValue(recordedProperties[property], templateProperties[property])
+      )
+  );
+}
+
+/**
+ * Structural equality over the JSON form, for the baseline arm of
+ * {@link findRoutableUnrecognizedProperties}. Not `isDeepStrictEqual` on the raw
+ * values: the two bags are built by different code (the state record is parsed
+ * JSON, the desired bag can be rebuilt with a null prototype by the secret
+ * redaction), and a prototype difference must not read as a changed value —
+ * that would route an unchanged key. Key order does not matter here either.
+ */
+function sameJsonValue(recorded: unknown, desired: unknown): boolean {
+  const recordedJson = toJsonValue(recorded);
+  // The record persists a dynamic-reference secret as its unresolved
+  // `{{resolve:...}}` expression while the routing bag holds the resolved
+  // value, so the two never compare equal. Such a key cannot be compared at
+  // all; treating it as unchanged keeps the resource on the route it already
+  // has, which is the safe direction for an existing deployment.
+  if (JSON.stringify(recordedJson)?.includes('{{resolve:') === true) return true;
+  return isDeepStrictEqual(recordedJson, toJsonValue(desired));
+}
+
+function toJsonValue(value: unknown): unknown {
+  return value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as unknown);
 }
 
 /**
@@ -98,13 +192,27 @@ export function findActionableSilentDrops(
  * per-property answer would be wrong for exactly the mixed bag.
  *
  * The complement of {@link findActionableSilentDrops}: one is empty whenever
- * the other is not, unless the bag has no drops at all (both empty).
+ * the other is not, unless the bag has no drops at all (both empty). A
+ * route-driving UNRECOGNIZED key empties this too, which is why it takes the
+ * same `recordedProperties` — but the accepted list itself stays fixture-only,
+ * since it feeds the narrowing.
  */
 export function findAcceptedSilentDrops(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
-  allowedKeys: ReadonlySet<string>
+  allowedKeys: ReadonlySet<string>,
+  recordedProperties?: Record<string, unknown>
 ): string[] {
+  if (
+    findRoutableUnrecognizedProperties(
+      resourceType,
+      templateProperties,
+      allowedKeys,
+      recordedProperties
+    ).length > 0
+  ) {
+    return [];
+  }
   const drops = findSilentDropProperties(resourceType, templateProperties);
   const accepted: string[] = [];
   for (const { property } of drops) {
@@ -168,16 +276,24 @@ export function withoutSilentDropProperties(
  * — {@link removableSilentDrops} carries the rationale, and both go through
  * {@link excludeCreateOnly} so they cannot decline on different rules.
  *
+ * `recordedProperties` is the resource's state-record bag — the one
+ * `getProviderFor` receives as `previousProperties` — so this narrows on the
+ * route the deploy actually takes (issue
+ * [#3713](https://github.com/go-to-k/cdkd/issues/3713)). Omitting it for an
+ * existing resource treats an unchanged unrecognized key as route-driving and
+ * declines to narrow.
+ *
  * Returns the input UNCHANGED when nothing applies.
  */
 export function withoutAcceptedSilentDropProperties(
   resourceType: string,
   properties: Record<string, unknown>,
-  allowedKeys: ReadonlySet<string>
+  allowedKeys: ReadonlySet<string>,
+  recordedProperties?: Record<string, unknown>
 ): Record<string, unknown> {
   const removable = excludeCreateOnly(
     resourceType,
-    findAcceptedSilentDrops(resourceType, properties, allowedKeys)
+    findAcceptedSilentDrops(resourceType, properties, allowedKeys, recordedProperties)
   );
   if (removable.length === 0) return properties;
   const written = { ...properties };
@@ -257,16 +373,14 @@ export function unsupportedPropertyIssueUrl(resourceType: string, property: stri
  * `coverage.handled` nor `coverage.silentDrop` (issue
  * [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
  *
- * The complement of {@link findSilentDropProperties}, which deliberately
- * PASSES these through: a property absent from the schema is indistinguishable
- * at deploy time from a user typo or an `addPropertyOverride` escape hatch, so
- * it cannot drive a routing decision. That tolerance is correct for routing
- * and wrong for silence — the routing table is built offline from
- * `tests/fixtures/cfn-schemas/*.json`, so every property AWS publishes AFTER
- * that snapshot lands here, and on the SDK route it reaches neither AWS nor an
- * error while the deploy reports success. That is the issue
- * [#614](https://github.com/go-to-k/cdkd/issues/614) failure class arriving
- * through the one input the #614 machinery cannot observe.
+ * The complement of {@link findSilentDropProperties}. The routing table is
+ * built offline from `tests/fixtures/cfn-schemas/*.json`, so every property
+ * AWS publishes AFTER that snapshot lands here — as does a typo or an
+ * `addPropertyOverride` key. The route-driving subset is
+ * {@link findRoutableUnrecognizedProperties} (issue
+ * [#3713](https://github.com/go-to-k/cdkd/issues/3713)); what stays on the SDK
+ * route (read-only keys, allow-listed or unchanged ones, types Cloud Control
+ * cannot take) is what the caller's warn reports.
  *
  * **Why a warn built on this has no false-positive mode.** An SDK provider
  * writes only what it declares in `handledProperties`, so a top-level property
