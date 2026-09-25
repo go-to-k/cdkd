@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockGlueSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
@@ -49,6 +49,7 @@ import {
   UpdateConnectionCommand,
   GetTableCommand,
   GetDatabaseCommand,
+  GetConnectionCommand,
   CreateJobCommand,
   UpdateJobCommand,
   CreateWorkflowCommand,
@@ -771,6 +772,265 @@ describe('Glue nested-Name rename refusal (issue #3724)', () => {
       Name: 'oldconn',
       ConnectionInput: { Name: 'oldconn' },
     });
+  });
+});
+
+// Issue #3756: every Glue update sends the DESIRED CatalogId while the state
+// record names only the entity, so a changed catalog addressed the same-named
+// entity in ANOTHER catalog. The refusal must fire before any Glue call, and
+// must treat absent / the account-id pseudo parameter / the caller's own
+// account id as ONE catalog (asking STS only in that mixed case).
+describe('Glue CatalogId move refusal (issue #3756)', () => {
+  let provider: GlueProvider;
+  let connectionProvider: GlueConnectionProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+    mockStsSend.mockReset();
+    mockStsSend.mockResolvedValue({ Account: '111111111111' });
+    mockGlueSend.mockImplementation((command: unknown) => {
+      if (command instanceof GetTableCommand) {
+        return Promise.resolve({ Table: { Name: 't', VersionId: '1' } });
+      }
+      if (command instanceof GetDatabaseCommand) {
+        return Promise.resolve({ Database: { Name: 'mydb' } });
+      }
+      return Promise.resolve({});
+    });
+    provider = new GlueProvider();
+    connectionProvider = new GlueConnectionProvider();
+  });
+
+  // This block primes STS itself (beforeEach); OLDER blocks further down rely
+  // on the answer the import block primed, so put that back afterwards.
+  afterEach(() => {
+    mockStsSend.mockReset();
+    mockStsSend.mockResolvedValue({ Account: '123456789012' });
+  });
+
+  const db = (catalogId?: unknown) => ({
+    ...(catalogId !== undefined && { CatalogId: catalogId }),
+    DatabaseInput: { Name: 'mydb' },
+  });
+  const table = (catalogId?: unknown) => ({
+    ...(catalogId !== undefined && { CatalogId: catalogId }),
+    DatabaseName: 'mydb',
+    TableInput: { Name: 't' },
+  });
+  const conn = (catalogId?: unknown) => ({
+    ...(catalogId !== undefined && { CatalogId: catalogId }),
+    ConnectionInput: { Name: 'c', ConnectionType: 'JDBC', ConnectionProperties: {} },
+  });
+
+  it('refuses a Database CatalogId change between two literals, with no Glue or STS call', async () => {
+    const error = await provider
+      .update('MyDb', 'mydb', 'AWS::Glue::Database', db('222222222222'), db('111111111111'))
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (error as Error).message;
+    expect(message).toContain(
+      "CatalogId moves the database 'mydb' from Data Catalog 111111111111 to Data Catalog 222222222222"
+    );
+    expect(message).toContain('--replace --force-stateful-recreation');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a Table CatalogId move from the default catalog to a foreign one', async () => {
+    const error = await provider
+      .update('MyTable', 'mydb|t', 'AWS::Glue::Table', table('222222222222'), table())
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain(
+      "the table 'mydb.t' from this account's default Data Catalog to Data Catalog 222222222222"
+    );
+    expect(mockGlueSend).not.toHaveBeenCalled();
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a Connection CatalogId move, naming --replace alone', async () => {
+    const error = await connectionProvider
+      .update('MyConn', 'c', 'AWS::Glue::Connection', conn(), conn('222222222222'))
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (error as Error).message;
+    expect(message).toContain('from Data Catalog 222222222222 to this account');
+    expect(message).toContain('re-deploy with --replace, which');
+    expect(message).not.toContain('--force-stateful-recreation');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('treats the account-id pseudo parameter an import recorded as the caller account', async () => {
+    await provider.update(
+      'MyDb',
+      'mydb',
+      'AWS::Glue::Database',
+      db('111111111111'),
+      db({ Ref: 'AWS::AccountId' })
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(call![0].input).toMatchObject({ CatalogId: '111111111111', Name: 'mydb' });
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a move from the recorded pseudo parameter to another account', async () => {
+    await expect(
+      provider.update(
+        'MyDb',
+        'mydb',
+        'AWS::Glue::Database',
+        db('222222222222'),
+        db({ Ref: 'AWS::AccountId' })
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('leaves an unplaceable DESIRED CatalogId to the wire, with no STS call', async () => {
+    await provider.update('MyDb', 'mydb', 'AWS::Glue::Database', db({ Ref: 'CatalogParam' }), db());
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(call![0].input).toMatchObject({ CatalogId: { Ref: 'CatalogParam' } });
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('treats an absent CatalogId and the caller account id as the same catalog, both directions', async () => {
+    await provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table('111111111111'), table());
+    await provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table(), table('111111111111'));
+
+    expect(mockGlueSend.mock.calls.filter((c) => c[0] instanceof UpdateTableCommand)).toHaveLength(2);
+    // Memoized per provider instance.
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('needs no STS call when both sides are default or both are the same literal', async () => {
+    await provider.update('MyDb', 'mydb', 'AWS::Glue::Database', db(), db());
+    await provider.update(
+      'MyDb',
+      'mydb',
+      'AWS::Glue::Database',
+      db('222222222222'),
+      db('222222222222')
+    );
+    await connectionProvider.update('MyConn', 'c', 'AWS::Glue::Connection', conn(), conn());
+
+    expect(mockGlueSend.mock.calls.filter((c) => c[0] instanceof UpdateDatabaseCommand)).toHaveLength(2);
+    expect(mockGlueSend.mock.calls.some((c) => c[0] instanceof UpdateConnectionCommand)).toBe(true);
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('warns and proceeds when the RECORDED CatalogId is an unplaceable intrinsic', async () => {
+    await provider.update(
+      'MyDb',
+      'mydb',
+      'AWS::Glue::Database',
+      db('222222222222'),
+      db({ Ref: 'CatalogParam' })
+    );
+
+    expect(mockGlueSend.mock.calls.some((c) => c[0] instanceof UpdateDatabaseCommand)).toBe(true);
+    expect(mockLoggerWarn.mock.calls.some((c) => String(c[0]).includes('recorded CatalogId is not a usable value'))).toBe(true);
+    expect(mockLoggerWarn.mock.calls.some((c) => String(c[0]).includes('it proceeds against Data Catalog 222222222222'))).toBe(true);
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('fails without a Glue call when STS cannot answer the mixed case', async () => {
+    mockStsSend.mockReset();
+    mockStsSend.mockRejectedValueOnce(new Error('sts down'));
+
+    await expect(
+      provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table('111111111111'), table())
+    ).rejects.toThrow("Could not resolve the caller's account id (sts:GetCallerIdentity)");
+    expect(mockGlueSend).not.toHaveBeenCalled();
+
+    // The failure is not memoized: the next mixed-case update asks STS again.
+    mockStsSend.mockResolvedValueOnce({ Account: '111111111111' });
+    await provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table('111111111111'), table());
+    expect(mockStsSend).toHaveBeenCalledTimes(2);
+    expect(mockGlueSend.mock.calls.some((c) => c[0] instanceof UpdateTableCommand)).toBe(true);
+  });
+
+  it('readCurrentState carries a usable recorded CatalogId back, and omits an unusable one', async () => {
+    mockGlueSend.mockImplementation((command: unknown) => {
+      if (command instanceof GetDatabaseCommand) {
+        return Promise.resolve({ Database: { Name: 'mydb' } });
+      }
+      if (command instanceof GetConnectionCommand) {
+        return Promise.resolve({ Connection: { Name: 'c', ConnectionType: 'JDBC' } });
+      }
+      return Promise.resolve({});
+    });
+
+    const literal = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
+      CatalogId: '222222222222',
+    });
+    expect(literal?.['CatalogId']).toBe('222222222222');
+    const connRead = await connectionProvider.readCurrentState('c', 'MyConn', 'AWS::Glue::Connection', {
+      CatalogId: '222222222222',
+    });
+    expect(connRead?.['CatalogId']).toBe('222222222222');
+    mockGlueSend.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof GetTableCommand
+          ? { Table: { Name: 't', DatabaseName: 'mydb' } }
+          : command instanceof GetDatabaseCommand
+            ? { Database: { Name: 'mydb' } }
+            : {}
+      )
+    );
+    const tableRead = await provider.readCurrentState('mydb|t', 'MyTable', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      CatalogId: '222222222222',
+    });
+    expect(tableRead?.['CatalogId']).toBe('222222222222');
+    const pseudo = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+    expect(pseudo).not.toHaveProperty('CatalogId');
+  });
+
+  it('stringifies a numeric CatalogId on the update wire', async () => {
+    await provider.update('MyDb', 'mydb', 'AWS::Glue::Database', db(222222222222), db(222222222222));
+
+    await provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table(222222222222), table(222222222222));
+    await connectionProvider.update('MyConn', 'c', 'AWS::Glue::Connection', conn(222222222222), conn(222222222222));
+
+    for (const Command of [UpdateDatabaseCommand, UpdateTableCommand, UpdateConnectionCommand]) {
+      const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof Command);
+      expect((call![0].input as { CatalogId: unknown }).CatalogId).toBe('222222222222');
+    }
+  });
+
+  it('passes a non-finite numeric CatalogId through rather than defaulting the catalog', async () => {
+    await provider.update('MyDb', 'mydb', 'AWS::Glue::Database', db(Number.NaN), db());
+    await provider.update('MyTable', 'mydb|t', 'AWS::Glue::Table', table(Number.NaN), table());
+    await connectionProvider.update('MyConn', 'c', 'AWS::Glue::Connection', conn(Number.NaN), conn());
+
+    for (const Command of [UpdateDatabaseCommand, UpdateTableCommand, UpdateConnectionCommand]) {
+      const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof Command);
+      expect((call![0].input as { CatalogId: unknown }).CatalogId).toBeNaN();
+    }
+  });
+
+  it('a drift --revert shaped update (both bags from readCurrentState) targets the recorded catalog', async () => {
+    const readback = { DatabaseName: 'mydb', CatalogId: '222222222222', TableInput: { Name: 't' } };
+    await provider.update(
+      'MyTable',
+      'mydb|t',
+      'AWS::Glue::Table',
+      { ...readback, TableInput: { Name: 't', Description: 'reverted' } },
+      readback
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call![0].input).toMatchObject({ CatalogId: '222222222222', DatabaseName: 'mydb' });
+    expect(mockStsSend).not.toHaveBeenCalled();
   });
 });
 

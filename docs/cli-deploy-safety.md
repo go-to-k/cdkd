@@ -668,6 +668,13 @@ table. A table or database is stateful, so its rename also needs
 it creates the renamed one (unless `UpdateReplacePolicy: Retain` keeps it), so
 if a resource with the new name exists, the create fails after the delete.
 
+A `CatalogId` change on a Glue database is refused the same way: `CatalogId`
+is not create-only there, and the update would address the same-named
+database in the other Data Catalog. An absent `CatalogId` and your own account
+id count as the same catalog, so switching a database between those two
+spellings still updates in place. On a table or connection `CatalogId` is
+create-only, so any change to it is planned as a replacement instead.
+
 Unlike `--recreate-via-cc-api` / `--recreate-via-sdk-provider`, which name a
 specific logical id and force a routing migration, `--replace` is a stack-wide
 opt-in that fires only for resources whose update genuinely hard-rejects. A

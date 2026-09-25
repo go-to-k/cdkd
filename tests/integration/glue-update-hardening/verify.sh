@@ -38,6 +38,9 @@
 #      so it rewrote an unmanaged table holding that name. Asserted by planting
 #      such a decoy: a plain deploy must be REFUSED with the decoy untouched,
 #      and `--replace --force-stateful-recreation` must perform the rename.
+#   9. Database `CatalogId` move (issue #3756). `CatalogId` is not createOnly
+#      on a Database, so the move diffs as an in-place UPDATE aimed at another
+#      account's catalog; a plain deploy must be REFUSED, the database intact.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -545,6 +548,42 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resour
 fi
 echo "    OK: --replace --force-stateful-recreation renamed '${RENAME_FROM}' to '${RENAME_TO}'"
 
+# --- Phase 2d: a Database CatalogId move is refused (#3756) -------------
+# CatalogId is not createOnly on AWS::Glue::Database, so the change diffs as an
+# in-place UPDATE that would address the same-named database in ANOTHER Data
+# Catalog. The placeholder 000000000000 is owned by no caller: before the fix
+# the deploy failed on AWS's own rejection of that catalog; now cdkd refuses
+# first, naming both catalogs. CDKD_TEST_RENAME stays set so phase 2c's rename
+# is not undone.
+echo "==> Phase 2d: Database CatalogId move to another Data Catalog"
+# Whatever shape the record holds (a literal, or the pseudo parameter an
+# environment-agnostic synth leaves), the refusal must leave it as it was.
+PERM_CATALOG_BEFORE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -c '.resources.DefaultPermissionsDatabase.properties.CatalogId')
+set +e
+CATALOG_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_CATALOG=foreign node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+CATALOG_RC=$?
+set -e
+if [ "${CATALOG_RC}" -eq 0 ]; then
+  echo "FAIL: the CatalogId move deployed IN PLACE (issue #3756)" >&2
+  printf '%s\n' "${CATALOG_OUT}" >&2
+  exit 1
+fi
+# Two markers: the refusal's own wording, and the remedy it must name.
+if ! printf '%s' "${CATALOG_OUT}" | grep -F "CatalogId moves the database '${PERM_DB_NAME}' from " >/dev/null \
+  || ! printf '%s' "${CATALOG_OUT}" | grep -F " to Data Catalog 000000000000, and an in-place update" >/dev/null \
+  || ! printf '%s' "${CATALOG_OUT}" | grep -F -- "--replace --force-stateful-recreation" >/dev/null; then
+  echo "FAIL: the CatalogId deploy failed, but not with the #3756 refusal" >&2
+  printf '%s\n' "${CATALOG_OUT}" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -c '.resources.DefaultPermissionsDatabase.properties.CatalogId')" != "${PERM_CATALOG_BEFORE}" ]; then
+  echo "FAIL: state's DefaultPermissionsDatabase CatalogId changed from ${PERM_CATALOG_BEFORE} after the refusal" >&2
+  exit 1
+fi
+assert_default_permissions 'ALL,DROP' 'catalog-refused'
+echo "    OK: CatalogId move refused; '${PERM_DB_NAME}' untouched (recorded CatalogId ${PERM_CATALOG_BEFORE})"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -597,4 +636,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + clean destroy)"
