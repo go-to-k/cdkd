@@ -127,10 +127,6 @@ eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 76
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
 export	2026-09-25T13:29:32Z	PASS	236	verify.sh	rc 0, state clean, PR 3763
 export-nested-stack	2026-09-25T13:29:32Z	PASS	166	verify.sh	rc 0, state clean, PR 3763
-export	2026-09-25T11:38:41Z	PASS	241	verify.sh	rc 0, state clean, PR 3613 head
-export-nested-stack	2026-09-25T11:38:41Z	PASS	166	verify.sh	rc 0, state clean, PR 3613 head
-export	2026-09-25T13:23:17Z	PASS	236	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
-export-nested-stack	2026-09-25T11:38:41Z	PASS	166	verify.sh	rc 0, state clean, PR 3613 head
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
 fsx-ontap	2026-08-02T06:33:37Z	PASS	1704	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup
