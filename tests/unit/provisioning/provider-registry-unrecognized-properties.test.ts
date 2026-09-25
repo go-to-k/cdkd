@@ -739,6 +739,23 @@ describe('an intrinsic-valued unrecognized key in the pre-flight report (issue #
     expect(line).toContain(`${UNKNOWN_PROP} is not in cdkd's CFn schema snapshot and its value holds`);
   });
 
+  it('on a type Cloud Control cannot take, names it as unroutable rather than undecided', () => {
+    const unroutable = pickUnroutableType();
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: unroutable,
+        properties: { [UNKNOWN_PROP]: { Ref: 'X' } },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 'v' },
+      },
+    ]);
+    const line = unknownWarns(warn)[0]!;
+    expect(line).toContain('cannot be routed via Cloud Control API');
+    expect(line).not.toContain('the route is decided once it resolves');
+  });
+
   it('routes the same raw key when the caller asks for the refusing side', () => {
     const props = { [UNKNOWN_PROP]: { Ref: 'AWS::Region' } };
     const recorded = { [UNKNOWN_PROP]: 'us-east-1' };
