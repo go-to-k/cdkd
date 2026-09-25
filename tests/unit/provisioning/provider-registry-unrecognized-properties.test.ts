@@ -695,3 +695,59 @@ describe('the baseline comparison (issue #3713)', () => {
     ).toEqual(['length']);
   });
 });
+
+describe('an intrinsic-valued unrecognized key in the pre-flight report (issue #3713)', () => {
+  const fx = pickRoutableFixture();
+
+  it('is neither announced as routing nor warned as unchanged, but as undecided', () => {
+    const { registry, info, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: fx.resourceType,
+        properties: { [UNKNOWN_PROP]: { Ref: 'AWS::Region' } },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 'us-east-1' },
+      },
+    ]);
+    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'routing via Cloud Control API'
+    );
+    const lines = unknownWarns(warn);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('its value holds an intrinsic');
+    expect(lines[0]).toContain('the route is decided once it resolves');
+    expect(lines[0]).not.toContain('and unchanged since');
+    // Only the undecided bucket is present, so the header must not be definite.
+    expect(lines[0]).toContain('a property may not reach AWS');
+  });
+
+  it('keeps the definite header when a definite bucket is present too', () => {
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: fx.resourceType,
+        properties: { [UNKNOWN_PROP]: { Ref: 'AWS::Region' }, [`${UNKNOWN_PROP}Two`]: 1 },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 'us-east-1', [`${UNKNOWN_PROP}Two`]: 1 },
+      },
+    ]);
+    const line = unknownWarns(warn)[0]!;
+    expect(line).toContain('properties will NOT reach AWS');
+    expect(line).toContain(`${UNKNOWN_PROP}Two is not in cdkd's CFn schema snapshot and unchanged`);
+    expect(line).toContain(`${UNKNOWN_PROP} is not in cdkd's CFn schema snapshot and its value holds`);
+  });
+
+  it('routes the same raw key when the caller asks for the refusing side', () => {
+    const props = { [UNKNOWN_PROP]: { Ref: 'AWS::Region' } };
+    const recorded = { [UNKNOWN_PROP]: 'us-east-1' };
+    const none = new Set<string>();
+    expect(findRoutableUnrecognizedProperties(fx.resourceType, props, none, recorded)).toEqual([]);
+    expect(
+      findRoutableUnrecognizedProperties(fx.resourceType, props, none, recorded, {
+        unresolvedAs: 'changed',
+      })
+    ).toEqual([UNKNOWN_PROP]);
+  });
+});

@@ -577,8 +577,9 @@ jobs:
           echo "pr_number=${pr_number:-}" >> "$GITHUB_OUTPUT"
 
       # A refresh that adds a writable property CHANGES WHAT THE SHIPPED BINARY
-      # DOES — the property stops being dropped with a warn and starts routing
-      # the resource through Cloud Control — so `changelog.d/_header.md`'s "WHEN
+      # DOES — the property moves from unrecognized to classified, which puts it
+      # on the backfill list and brings its create-only and nested-required data
+      # into the checks — so `changelog.d/_header.md`'s "WHEN
       # an entry is required" section asks for a fragment. The job wrote none
       # until go-to-k/cdkd#3167, where the delta was recorded only because a
       # maintainer noticed and wrote one by hand.

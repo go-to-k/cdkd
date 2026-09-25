@@ -4,6 +4,7 @@ import { CustomResourceProvider } from './providers/custom-resource-provider.js'
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
 import {
+  containsIntrinsic,
   findAcceptedSilentDrops,
   findActionableSilentDrops,
   findRoutableUnrecognizedProperties,
@@ -1102,6 +1103,7 @@ export class ProviderRegistry {
       this.reportUnrecognizedProperties(logicalId, resourceType, properties, {
         provisionedBy,
         autoRouted: autoRouted.length > 0,
+        previousProperties,
       });
     }
   }
@@ -1135,12 +1137,13 @@ export class ProviderRegistry {
    * the `STICKY_CC_MIGRATION_EXEMPT` types that return to their SDK provider)
    * and a resource auto-routing this deploy both forward the full map.
    *
-   * **Known divergence, in the SAFE direction.** This runs on the template's
-   * RAW properties (`deploy-engine.ts` calls `validateResourceProperties`
-   * pre-flight) while `getProviderFor` runs on RESOLVED ones, so a key behind
-   * an intrinsic compares unequal to its recorded value here. The result is a
-   * missing warn beside a false "routing via Cloud Control" info line — never a
-   * wrong route; `getProviderFor` remains the authority.
+   * **An intrinsic value is reported as undecided.** This runs on the
+   * template's RAW properties (`deploy-engine.ts` calls
+   * `validateResourceProperties` pre-flight) while `getProviderFor` runs on
+   * RESOLVED ones, so a recorded key whose raw value still holds an intrinsic
+   * cannot be compared here. It is not announced as routing, and its warn
+   * sentence says the route is decided once the value resolves — true on
+   * either outcome. `getProviderFor` remains the authority.
    *
    * Suppressed per `<Type>:<Prop>` by `--prefer-sdk-route`, whose meaning
    * ("accept the silent drop, stay on the SDK path") is exactly this case.
@@ -1149,7 +1152,11 @@ export class ProviderRegistry {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown> | undefined,
-    route: { provisionedBy?: 'sdk' | 'cc-api' | undefined; autoRouted: boolean }
+    route: {
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
+      autoRouted: boolean;
+      previousProperties?: Record<string, unknown> | undefined;
+    }
   ): void {
     const stickyCc =
       route.provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
@@ -1174,7 +1181,21 @@ export class ProviderRegistry {
     // either the type has no Cloud Control route, or the recorded bag holds it
     // unchanged (`findRoutableUnrecognizedProperties`' baseline arm).
     const readOnly = unrecognized.filter((p) => coverage?.readOnly.has(p) === true);
-    const rest = unrecognized.filter((p) => coverage?.readOnly.has(p) !== true);
+    const notReadOnly = unrecognized.filter((p) => coverage?.readOnly.has(p) !== true);
+    // A recorded key whose RAW value still holds an intrinsic cannot be
+    // compared before resolution (see the docstring), so it gets its own
+    // sentence rather than the "unchanged" one, which could be false for it.
+    const undecided =
+      unroutable === undefined
+        ? notReadOnly.filter(
+            (p) =>
+              containsIntrinsic(properties?.[p]) &&
+              route.previousProperties != null &&
+              typeof route.previousProperties === 'object' &&
+              Object.hasOwn(route.previousProperties, p)
+          )
+        : [];
+    const rest = notReadOnly.filter((p) => !undecided.includes(p));
     const sentences: string[] = [];
     const isAre = (names: string[]) => (names.length === 1 ? 'is' : 'are');
     if (readOnly.length > 0) {
@@ -1201,10 +1222,22 @@ export class ProviderRegistry {
           `misspelled one, as CloudFormation does.`
       );
     }
+    if (undecided.length > 0) {
+      sentences.push(
+        `${undecided.join(', ')} ${isAre(undecided)} not in cdkd's CFn schema snapshot and ` +
+          `${undecided.length === 1 ? 'its value holds' : 'their values hold'} an intrinsic, ` +
+          `so the route is decided once it resolves: a value unchanged since the SDK-route ` +
+          `deploy stays there and is not sent, and a changed one routes via Cloud Control API.`
+      );
+    }
+    if (sentences.length === 0) return;
     const overrideHint = unrecognized.map((p) => `${resourceType}:${p}`).join(',');
     this.logger.warn(
       `${logicalId} (${resourceType}): ${unrecognized.length === 1 ? 'a property' : 'properties'} ` +
-        `will NOT reach AWS — the deploy will still report success. ${sentences.join(' ')} ` +
+        // Only the undecided bucket can still reach AWS; any other bucket present
+        // makes the definite claim true for at least one named property.
+        `${readOnly.length + rest.length > 0 ? 'will NOT' : 'may not'} reach AWS — the deploy ` +
+        `will still report success. ${sentences.join(' ')} ` +
         `If the drop is intended — an addPropertyOverride escape hatch — silence this via ` +
         `--prefer-sdk-route ${overrideHint}.`
     );

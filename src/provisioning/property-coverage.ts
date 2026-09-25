@@ -58,7 +58,7 @@ export function findSilentDropProperties(
   for (const prop of Object.keys(templateProperties)) {
     if (coverage.handled.has(prop)) continue;
     const rationale = coverage.silentDrop.get(prop);
-    if (rationale === undefined) continue; // Not in schema (escape hatch / typo) — silently allow.
+    if (rationale === undefined) continue; // Not in the snapshot: findRoutableUnrecognizedProperties' concern.
     drops.push({ property: prop, rationale });
   }
   return drops.sort((a, b) => a.property.localeCompare(b.property));
@@ -87,7 +87,8 @@ export function findActionableSilentDrops(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
   allowedKeys: ReadonlySet<string>,
-  recordedProperties?: Record<string, unknown>
+  recordedProperties?: Record<string, unknown>,
+  options?: UnresolvedValueOption
 ): Array<{ property: string; rationale: string }> {
   const drops = findSilentDropProperties(resourceType, templateProperties).filter(
     ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
@@ -96,7 +97,8 @@ export function findActionableSilentDrops(
     resourceType,
     templateProperties,
     allowedKeys,
-    recordedProperties
+    recordedProperties,
+    options
   );
   if (unrecognized.length === 0) return drops;
   return [
@@ -133,11 +135,28 @@ export function findActionableSilentDrops(
  *   identifier. Deliberately not applied by the sticky-escape
  *   (`wouldReturnToSdkProvider`), which must stay conservative.
  */
+/**
+ * How a RAW template value still holding an intrinsic compares against the
+ * record's resolved value, which it cannot be before resolution (issue #3713).
+ *
+ * - `'unchanged'` (default) — for the surfaces that only DESCRIBE a route (the
+ *   pre-flight report, `cdkd diff`, the progress label): they must not announce
+ *   a Cloud Control route the resolved decision may not take.
+ * - `'changed'` — for a VALIDATOR that REFUSES on a route-driving key
+ *   (`--recreate-via-sdk-provider`): the refusal is the safe side.
+ *
+ * Routing itself passes RESOLVED bags, so neither value affects a route.
+ */
+export interface UnresolvedValueOption {
+  unresolvedAs?: 'unchanged' | 'changed';
+}
+
 export function findRoutableUnrecognizedProperties(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
   allowedKeys: ReadonlySet<string>,
-  recordedProperties?: Record<string, unknown>
+  recordedProperties?: Record<string, unknown>,
+  options?: UnresolvedValueOption
 ): string[] {
   const coverage = getPropertyCoverage(resourceType);
   if (!templateProperties || !coverage) return [];
@@ -150,7 +169,11 @@ export function findRoutableUnrecognizedProperties(
         recordedProperties != null &&
         typeof recordedProperties === 'object' &&
         Object.hasOwn(recordedProperties, property) &&
-        sameJsonValue(recordedProperties[property], templateProperties[property])
+        sameJsonValue(
+          recordedProperties[property],
+          templateProperties[property],
+          options?.unresolvedAs ?? 'unchanged'
+        )
       )
   );
 }
@@ -163,7 +186,11 @@ export function findRoutableUnrecognizedProperties(
  * redaction), and a prototype difference must not read as a changed value —
  * that would route an unchanged key. Key order does not matter here either.
  */
-function sameJsonValue(recorded: unknown, desired: unknown): boolean {
+function sameJsonValue(
+  recorded: unknown,
+  desired: unknown,
+  unresolvedAs: 'unchanged' | 'changed'
+): boolean {
   const recordedJson = toJsonValue(recorded);
   // The record persists a dynamic-reference secret as its unresolved
   // `{{resolve:...}}` expression while the routing bag holds the resolved
@@ -172,18 +199,15 @@ function sameJsonValue(recorded: unknown, desired: unknown): boolean {
   // has, which is the safe direction for an existing deployment.
   if (JSON.stringify(recordedJson)?.includes('{{resolve:') === true) return true;
   const desiredJson = toJsonValue(desired);
-  // The pre-flight report and `cdkd diff` read the template's RAW bag, where a
-  // value can still be an intrinsic; the record holds its resolved form. Such
-  // a value cannot be compared before resolution either, and treating it as
-  // unchanged keeps those surfaces from announcing a Cloud Control route the
-  // resolved routing decision does not take. The routing call sites pass
-  // RESOLVED bags, so none of them reaches this arm.
-  if (containsIntrinsic(desiredJson)) return true;
+  // A RAW template value can still be an intrinsic while the record holds its
+  // resolved form, so it cannot be compared before resolution; the caller
+  // chooses which side that falls on (`UnresolvedValueOption`).
+  if (containsIntrinsic(desiredJson)) return unresolvedAs === 'unchanged';
   return isDeepStrictEqual(recordedJson, desiredJson);
 }
 
 /** True when `value` holds a `Ref` / `Fn::*` object anywhere. */
-function containsIntrinsic(value: unknown): boolean {
+export function containsIntrinsic(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsIntrinsic);
   if (value === null || typeof value !== 'object') return false;
   return Object.entries(value).some(

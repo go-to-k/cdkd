@@ -977,6 +977,47 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
         { logicalId: 'Q', resourceType: TYPE, property: UNKNOWN },
       ]);
     });
+
+    /**
+     * The template bag here is RAW, so an intrinsic-valued key cannot be
+     * compared with the record's resolved value. The validator REFUSES on a
+     * route-driving key, so it counts the key as changed: the resolved dispatch
+     * may route it, and letting the recreate through would silently land it on
+     * Cloud Control against the flag.
+     */
+    it('to-cc-api: an allow-listed intrinsic-valued key counts as changed, so it is an ambiguous intent', () => {
+      const v = validateRecreateTargets({
+        template: {
+          Resources: {
+            Q: { Type: TYPE, Properties: { QueueName: 'q', [UNKNOWN]: { Ref: 'SomeParam' } } },
+          },
+        },
+        state: stateOn('sdk'),
+        recreateViaCcApi: ['Q'],
+        allowUnsupportedProperties: new Set([`${TYPE}:${UNKNOWN}`]),
+        forceStatefulRecreation: false,
+      });
+      expect(v.ambiguousIntent).toEqual([{ logicalId: 'Q', resourceType: TYPE, property: UNKNOWN }]);
+    });
+
+    it('to-sdk: an intrinsic-valued key counts as changed, so the recreate is refused', () => {
+      const v = validateRecreateTargets({
+        template: {
+          Resources: {
+            Q: { Type: TYPE, Properties: { QueueName: 'q', [UNKNOWN]: { Ref: 'SomeParam' } } },
+          },
+        },
+        state: stateOn('cc-api'),
+        recreateViaCcApi: [],
+        recreateViaSdkProvider: ['Q'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+        hasSdkProvider: () => true,
+      });
+      expect(v.ambiguousIntentSdk).toEqual([
+        { logicalId: 'Q', resourceType: TYPE, property: UNKNOWN },
+      ]);
+    });
   });
 
   it('rejects a logical id named in BOTH --recreate-via-cc-api AND --recreate-via-sdk-provider', () => {

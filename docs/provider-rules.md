@@ -2026,10 +2026,10 @@ Declare `readonly disableCcApiFallback = true;` on the provider class: the
 `ProviderRegistry` then rejects such templates pre-flight with a clear
 error (property rationale + `--prefer-sdk-route` escape hatch)
 instead of failing at provisioning time with an opaque
-`UnsupportedActionException`. This only matters when the type has (or may
-gain) `unhandledByDesign` / not-yet-handled properties — a fully-handled
-type never triggers the auto-route — but declaring it is cheap insurance
-against a future schema addition.
+`UnsupportedActionException`. It matters for every such type, fully handled
+or not: a property missing from the schema snapshot also triggers the
+auto-route, and the flag is what keeps it on the SDK provider with a warning
+instead.
 
 ### Workflow when adding a new provider
 

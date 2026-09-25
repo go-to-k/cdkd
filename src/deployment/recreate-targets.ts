@@ -377,7 +377,10 @@ export function validateRecreateTargets(input: {
         // we pass an empty allow-set to the helper and post-filter.
         EMPTY_ALLOW_SET,
         // The replacement's own routing baseline (issue #3713).
-        recordedResource.properties
+        recordedResource.properties,
+        // This bag is RAW: a value still holding an intrinsic cannot be
+        // compared, and for a refusal the safe side is to count it as changed.
+        { unresolvedAs: 'changed' }
       );
       for (const { property } of actionableDrops) {
         const allowKey = `${resourceType}:${property}`;
@@ -404,7 +407,10 @@ export function validateRecreateTargets(input: {
         input.allowUnsupportedProperties,
         // The replacement's own routing baseline (issue #3713): the recreate
         // lands where `replaceDecision` sends it, which compares against it.
-        recordedResource.properties
+        recordedResource.properties,
+        // RAW bag, and this arm REFUSES: an uncomparable value counts as
+        // changed, so it refuses where the resolved dispatch might route.
+        { unresolvedAs: 'changed' }
       );
       for (const { property } of actionableDrops) {
         ambiguousIntentSdk.push({ logicalId, resourceType, property });

@@ -97,8 +97,8 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    an existing resource carrying it unchanged stays on the SDK path with a
    warn. The entry says which of the two things
    follows for each type — it keeps auto-routing on another property, or a new
-   resource of that type returns to the SDK path while one already recorded
-   `provisionedBy: 'cc-api'` stays where it is. A property the provider
+   resource of that type without the withdrawn key returns to the SDK path
+   while one already recorded `provisionedBy: 'cc-api'` stays where it is. A property the provider
    DECLARES is not in that population: its removal makes the declaration
    bogus, which the pull request escalates as a decision instead.
 7. Marks the pull request with how many decisions are left, or clears the

@@ -326,7 +326,9 @@ export function parseCcBrokenTypes(registrySource: string): Set<string> {
   for (const entry of entries) {
     const key = /^\s*'(AWS::[\w:]+)'\s*,/.exec(entry);
     if (!key) throw new Error(`unparseable STICKY_CC_MIGRATION_EXEMPT entry: ${entry.slice(0, 80)}`);
-    if (/\bmode:\s*'cc-broken'/.test(entry)) broken.add(key[1]!);
+    // Comments stripped first: prose inside an entry may quote a mode.
+    const code = entry.replace(/\/\/.*$/gm, '');
+    if (/\bmode:\s*'cc-broken'/.test(code)) broken.add(key[1]!);
   }
   return broken;
 }

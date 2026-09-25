@@ -71,11 +71,15 @@ deploy).
   heal read, the pre-flight report, the no-change skip, the diff narrowing,
   the recreate validators and the diff annotation. A caller that omits it gets
   presence semantics, which is correct only for a new physical resource.
-- **A value that cannot be compared counts as unchanged**: a recorded
-  `{{resolve:...}}` secret, and a RAW template value holding an intrinsic (the
-  pre-flight report and `cdkd diff` read the raw bag, the record holds the
-  resolved one). Routing itself compares resolved bags, so this only keeps
-  those surfaces from announcing a route the deploy does not take.
+- **A value that cannot be compared** is a recorded `{{resolve:...}}` secret
+  (counted as unchanged) or a RAW template value holding an intrinsic. The raw
+  case reaches only callers that read the raw bag, and each picks its side
+  (`unresolvedAs`): the pre-flight report, `cdkd diff` and the progress label
+  count it as unchanged, so they never announce a route the resolved decision
+  may not take, and the pre-flight warn says the route is decided once the
+  value resolves; the `--recreate-via-sdk-provider` validator counts it as
+  changed, so it refuses rather than let the resolved dispatch route. Routing
+  itself compares resolved bags.
 - **The sticky-escape (`wouldReturnToSdkProvider`) uses presence**, never the
   baseline, so an unrecognized key always keeps a `cc-api` resource on Cloud
   Control.

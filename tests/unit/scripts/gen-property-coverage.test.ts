@@ -170,6 +170,13 @@ describe('parseCcBrokenTypes (issue #3713)', () => {
       'AWS::Example::Broken',
     ]);
     expect([...parseCcBrokenTypes(exemptTable(SDK_COVERAGE_ENTRY))]).toEqual([]);
+    // A comment quoting the mode must not flag an sdk-coverage entry.
+    const commented = SDK_COVERAGE_ENTRY.replace(
+      "mode: 'sdk-coverage' as const,",
+      "// unlike mode: 'cc-broken', this one is slow only\n      mode: 'sdk-coverage' as const,"
+    );
+    expect(commented).toContain("// unlike mode: 'cc-broken'");
+    expect([...parseCcBrokenTypes(exemptTable(commented))]).toEqual([]);
   });
 
   it('refuses a source with no exemption table', () => {
