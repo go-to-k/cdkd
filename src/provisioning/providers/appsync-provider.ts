@@ -1905,14 +1905,21 @@ export class AppSyncProvider implements ResourceProvider {
       } catch (error) {
         this.logger.debug(
           `AppSync GraphqlApi ${logicalId}: could not read the live environment variables ` +
-            `(${describeAwsFailure(error).summary}); recording the previous map`
+            `(${describeAwsFailure(error).detail}); recording the previous map`
         );
         return { value: previousMap ? { ...previousMap } : undefined };
       }
       // AWS renders a cleared map as an absent member.
       if (Object.keys(live).length === 0) return { value: undefined };
+      // The previous side's key order first, then keys only AWS holds: the
+      // comparator is `JSON.stringify`, so AWS's order would read as a change.
       const recorded: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(live)) {
+      const keys = [
+        ...Object.keys(previousMap ?? {}).filter((key) => key in live),
+        ...Object.keys(live).filter((key) => !(key in (previousMap ?? {}))),
+      ];
+      for (const key of keys) {
+        const value = live[key]!;
         const declared = previousMap?.[key];
         recorded[key] = declared !== undefined && String(declared) === value ? declared : value;
       }

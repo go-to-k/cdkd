@@ -378,16 +378,23 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
       const result = await replay({ STAGE: 'attempted', NEW: 'never-put' });
 
       expect(sent(GetGraphqlApiEnvironmentVariablesCommand)).toHaveLength(1);
-      expect(result.effectiveProperties).toMatchObject({ EnvironmentVariables: PREVIOUS });
+      expect(result.effectiveProperties?.['EnvironmentVariables']).toEqual(PREVIOUS);
     });
 
     it('keeps the declared value of a key whose live string it produces', async () => {
       liveEnv = { RETRIES: '3', FLAG: 'true', STAGE: 'live' };
       const result = await replay({ RETRIES: 3, FLAG: true, STAGE: 'prod' });
 
-      expect(result.effectiveProperties).toMatchObject({
-        EnvironmentVariables: { RETRIES: 3, FLAG: true, STAGE: 'live' },
-      });
+      expect(result.effectiveProperties?.['EnvironmentVariables']).toEqual({ RETRIES: 3, FLAG: true, STAGE: 'live' });
+    });
+
+    it('keeps the previous key order, then appends keys only AWS holds', async () => {
+      liveEnv = { EXTRA: 'x', TOKEN: 't', STAGE: 's' };
+      const result = await replay({ STAGE: 's', TOKEN: 't', GONE: 'g' });
+
+      expect(
+        JSON.stringify(result.effectiveProperties?.['EnvironmentVariables'])
+      ).toBe(JSON.stringify({ STAGE: 's', TOKEN: 't', EXTRA: 'x' }));
     });
 
     it.each([
@@ -403,7 +410,7 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
     it('records the live map when the recorded previous is ABSENT', async () => {
       const result = await replay(undefined);
 
-      expect(result.effectiveProperties).toMatchObject({ EnvironmentVariables: PREVIOUS });
+      expect(result.effectiveProperties?.['EnvironmentVariables']).toEqual(PREVIOUS);
     });
 
     it('drops the key when the previous is ABSENT and the live read fails', async () => {
@@ -417,9 +424,7 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
       liveEnv = new Error('AccessDeniedException');
       const result = await replay({ STAGE: 'recorded' });
 
-      expect(result.effectiveProperties).toMatchObject({
-        EnvironmentVariables: { STAGE: 'recorded' },
-      });
+      expect(result.effectiveProperties?.['EnvironmentVariables']).toEqual({ STAGE: 'recorded' });
       expect(sent(PutGraphqlApiEnvironmentVariablesCommand)).toHaveLength(0);
     });
 
