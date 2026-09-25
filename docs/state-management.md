@@ -67,8 +67,8 @@ stop and say so — as does a `cdkd deploy` that removes a nested stack, which
 destroys the child's resources through the same path. `cdkd rollback` refuses
 for the same reason before replaying anything: its replay deletes and reverts
 in the key's region and reads a not-found delete as already rolled back. It
-also declines to save over a record that was rewritten with a disagreeing
-`region` while the rollback ran. A record with no
+stops, without saving over it, when the record is rewritten with a
+disagreeing `region` while the rollback runs; the journal is kept. A record with no
 resources is not refused: there is nothing to strand, so cleaning one up still
 works. To act on the refusal, destroy
 against the region the resources are really in, or correct the record's
