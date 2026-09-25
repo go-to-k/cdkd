@@ -87,16 +87,20 @@ describe('deploy.ts refuses a malformed record on the pre-lock recreate check (g
     }
     expect(close, 'the guard block never closes inside the read→validate span').toBeGreaterThan(open);
     const body = between.slice(between.indexOf('{', open) + 1, close);
-    // Comment-stripped, whitespace-collapsed executable text of the block.
+    // Comment-stripped, whitespace-collapsed executable text of the block —
+    // with the whitespace inside the parentheses dropped too, so a prettier
+    // reflow of the argument list cannot red this on its own (review nit).
     const executable = body
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l !== '' && !l.startsWith('//'))
       .join(' ')
-      .replace(/\s+/g, ' ');
+      .replace(/\s+/g, ' ')
+      .replace(/\(\s+/g, '(')
+      .replace(/\s+\)/g, ')');
     expect(executable).toBe(
-      'refuseMalformedResourcesForDeploy( stateForRecreateCheck.state, stackInfo.stackName, stackRegion ); ' +
-        'refuseMalformedResourceEntriesForDeploy( stateForRecreateCheck.state, stackInfo.stackName, stackRegion );'
+      'refuseMalformedResourcesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion); ' +
+        'refuseMalformedResourceEntriesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion);'
     );
     // And no THIRD occurrence of either call sits outside the block in this
     // span — the unconditional-duplicate shape.

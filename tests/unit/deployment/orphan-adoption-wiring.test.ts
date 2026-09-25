@@ -344,6 +344,60 @@ describe('readSiblingPhysicalIds (#2934)', () => {
     expect(claimed.has(42 as unknown as string)).toBe(false);
   });
 
+  it('still walks a LIST-shaped sibling bag, so its ids stay claimed (fail-closed)', async () => {
+    // Maintainer review M2 on go-to-k/cdkd#3758: `Object.values` claimed the
+    // element's id before this lane, and a claim dropped is a record this stack
+    // may adopt while the sibling still owns it — the operator repairs the
+    // sibling's list into a map, and `cdkd destroy` of the sibling then deletes
+    // this stack's live resource. `isReadableBag` rejects an array, which is
+    // why it is NOT the test here.
+    backend.listStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({
+      state: { resources: [{ physicalId: 'from-list' }, null, { physicalId: '' }] },
+    });
+    const debug = vi.fn();
+    const claimed = await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    expect([...claimed]).toEqual(['from-list']);
+    // The two unusable elements are reported by index, as rows.
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toMatch(/2 resource record\(s\) with no readable physical id/);
+    expect(said).not.toContain("no readable 'resources' map");
+  });
+
+  it('skips a NULL sibling bag with the bag diagnosis, and keeps collecting from the next sibling', async () => {
+    // `typeof null === 'object'`, so the `|| bag === null` half of the guard
+    // is what routes a null bag to the bag diagnosis; without it
+    // `Object.entries(null)` throws into the per-sibling catch, the claim set
+    // stays the same (inert) and the diagnosis names an unreadable STATE
+    // rather than the bag — which is what this pins.
+    backend.listStacks.mockResolvedValue([
+      { stackName: 'NullBag', region: 'us-east-1' },
+      { stackName: 'Fine', region: 'us-east-1' },
+    ]);
+    backend.getState
+      .mockResolvedValueOnce({ state: { resources: null } })
+      .mockResolvedValueOnce({ state: { resources: { A: { physicalId: 'fine-a' } } } });
+    const debug = vi.fn();
+    const claimed = await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    expect([...claimed]).toEqual(['fine-a']);
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain('NullBag');
+    expect(said).toContain("no readable 'resources' map");
+    expect(said, 'the null bag fell into the catch instead of the bag diagnosis').not.toContain(
+      'skipping unreadable state'
+    );
+  });
+
   it('skips a sibling whose resources BAG is unreadable, and claims no fabricated id from it', async () => {
     backend.listStacks.mockResolvedValue([
       { stackName: 'Broken', region: 'us-east-1' },

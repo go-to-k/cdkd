@@ -29,6 +29,7 @@ import {
   malformedResourceEntriesRefusalMessage,
   malformedDeployResourceEntriesRefusalMessage,
   malformedDestroyResourceEntriesRefusalMessage,
+  malformedImportUnrepairedEntriesRefusalMessage,
   malformedScrubResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
   malformedOrphanRecordsWarning,
@@ -1371,6 +1372,10 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     ],
     ['the local resources WARNING', malformedLocalResourcesWarning('MyStack', 'us-east-1')],
     [
+      'the import unrepaired-rows refusal',
+      malformedImportUnrepairedEntriesRefusalMessage('MyStack', 'us-east-1', ['A']),
+    ],
+    [
       'the local entries WARNING',
       malformedLocalResourceEntriesWarning('MyStack', 'us-east-1', ['A']),
     ],
@@ -2327,6 +2332,10 @@ describe('the entry-level text', () => {
       [
         'malformedScrubResourceEntriesRefusalMessage',
         malformedScrubResourceEntriesRefusalMessage(STACK, REGION, ['X']),
+      ],
+      [
+        'malformedImportUnrepairedEntriesRefusalMessage',
+        malformedImportUnrepairedEntriesRefusalMessage(STACK, REGION, ['X']),
       ],
       // The destroy refusal is absent on purpose: a 5000-character name fails
       // its exactness gate, and the withhold arm prints no identity at all.
@@ -3429,7 +3438,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(18);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(20);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3441,14 +3450,20 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
     // A THIRD since go-to-k/cdkd#3314: `cdkd deploy`'s diff, whose text states
     // the planned CREATE rather than a save. A FOURTH since go-to-k/cdkd#3202:
-    // the destroy, whose text states a delete routed on no type. `cdkd scrub`
-    // refuses the same rows through its OWN class around
+    // the destroy, whose text states a delete routed on no type. A FIFTH for
+    // the selective `cdkd import`, scoped like the orphan one: it subtracts the
+    // rows the merge re-imports, since naming a broken row in `--resource` IS
+    // its repair — and a SIXTH on the map that import ASSEMBLES, because the
+    // exemption holds only for a listed row whose import succeeded. `cdkd
+    // scrub` refuses the same rows through its OWN class around
     // `malformedScrubResourceEntriesRefusalMessage`, so it adds a text here and
     // no entry point — the shape its bag refusal already takes.
     expect([...entries].sort()).toEqual([
       'refuseMalformedResourceEntries(',
       'refuseMalformedResourceEntriesForDeploy(',
       'refuseMalformedResourceEntriesForDestroy(',
+      'refuseMalformedResourceEntriesForImport(',
+      'refuseMalformedResourceEntriesForImportSave(',
       'refuseMalformedResourceEntriesForOrphan(',
     ]);
     // An entry's `attributes` map (go-to-k/cdkd#3345), its own container with
@@ -4308,6 +4323,14 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
       'refresh) and `cdkd drift --accept` / `--revert`, none of which wraps the call in withRetry ' +
       '— drift retries only the provider update, well after this refusal. Revisit if a retrying ' +
       'caller is added.',
+    'refuseMalformedResourceEntriesForImport(':
+      'go-to-k/cdkd#3202. Its ONE caller is the selective `cdkd import`, raising from the command ' +
+      'body before the lock and before any provider import, with no withRetry around it. Revisit ' +
+      'if a retrying caller is added.',
+    'refuseMalformedResourceEntriesForImportSave(':
+      'go-to-k/cdkd#3202. Its ONE caller is `cdkd import`, raising from the command body on the ' +
+      'assembled map, after the per-row provider imports and before the save, with no withRetry ' +
+      'around it. Revisit if a retrying caller is added.',
   };
 
   it('every refusal the module exports is either marked or a NAMED exception', () => {
@@ -4315,7 +4338,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(18);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(20);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6966,6 +6989,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       (s, r) => malformedScrubResourceEntriesRefusalMessage(s as string, r as string, ['A']),
     ],
     [
+      'malformedImportUnrepairedEntriesRefusalMessage',
+      (s, r) => malformedImportUnrepairedEntriesRefusalMessage(s as string, r as string, ['A']),
+    ],
+    [
       'malformedLocalResourcesWarning',
       (s, r) => malformedLocalResourcesWarning(s as string, r as string),
     ],
@@ -7121,6 +7148,8 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedResourceEntries',
       'refuseMalformedResourceEntriesForDeploy',
       'refuseMalformedResourceEntriesForDestroy',
+      'refuseMalformedResourceEntriesForImport',
+      'refuseMalformedResourceEntriesForImportSave',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForOrphan',

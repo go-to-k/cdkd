@@ -2524,9 +2524,8 @@ describe('cdkd import', () => {
           etag: '"existing-etag"',
         });
         mockHasProvider.mockReturnValue(true);
-        mockGetProvider.mockImplementation(() => ({
-          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
-        }));
+        const importFn = vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} }));
+        mockGetProvider.mockImplementation(() => ({ import: importFn }));
 
         await expect(
           runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
@@ -2537,6 +2536,12 @@ describe('cdkd import', () => {
         expect(message).toContain('Broken');
         expect(message).toContain('cannot be read as resources');
         expect(message).not.toContain("no readable 'resources' map");
+        // The PRE-FLIGHT refusal, not the assembled-map one: it fires before the
+        // lock and before any provider import, and its text says so. Without
+        // these three the pre-save twin alone satisfies every assertion above.
+        expect(message).toContain('Nothing was locked');
+        expect(mockAcquireLock, 'the lock was taken before the refusal').not.toHaveBeenCalled();
+        expect(importFn, 'a provider import ran before the refusal').not.toHaveBeenCalled();
         expect(
           mockSaveState,
           'cdkd import saved a record carrying a row it could not read'
@@ -2550,6 +2555,86 @@ describe('cdkd import', () => {
      * so it is the way OUT of such a record — refusing it would close a recovery
      * route, the rule go-to-k/cdkd#3159 set.
      */
+    it('does NOT refuse the selective re-import OF the broken row — `--resource Broken=… --force` is its repair', async () => {
+      // Maintainer review M1 on go-to-k/cdkd#3758: the rows named by
+      // `--resource` are REPLACED by `buildStackState` from the provider's
+      // answer, so refusing them would close the one per-row recovery route.
+      // Only the rows the merge does NOT re-import are refused.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=cdkd-test-my-bucket',
+        '--force',
+        '--yes',
+      ]);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, { physicalId?: string } | null> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      // REPAIRED, not carried: the null row is now the imported record.
+      expect(saved!.resources['MyBucket']?.physicalId).toBe('cdkd-test-my-bucket');
+      // And the unlisted healthy rows are still preserved by the merge.
+      expect(saved!.resources['MyQueue']?.physicalId).toBe('queue-arn');
+    });
+
+    it('refuses BEFORE saving when the listed broken row`s import did not succeed — the exemption is a promise, not a pass', async () => {
+      // The pre-flight exempts a listed row because `buildStackState` will
+      // replace it — and it replaces only a row whose import SUCCEEDED. A
+      // provider failure on `MyBucket` leaves the stored `null` in the
+      // assembled map, so the save would carry it (or the property resolution
+      // would crash on it). The assembled map is re-checked instead.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+          '--yes',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('MyBucket');
+      expect(errored).toContain('their import did not succeed');
+      // The pre-flight text is NOT the one raised here: the lock is held and
+      // AWS was read by then, which that text denies.
+      expect(errored).not.toContain('Nothing was locked');
+      expect(
+        mockSaveState,
+        'cdkd import saved a record still carrying the row it could not re-import'
+      ).not.toHaveBeenCalled();
+    });
+
     it('does NOT refuse a whole-stack --force import over the same row, which replaces the map', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
       mockGetState.mockResolvedValueOnce({

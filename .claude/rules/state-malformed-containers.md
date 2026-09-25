@@ -51,10 +51,15 @@ unreadable bag has no rows to walk. These entries sit in the table's FIRST row,
 the `resources` map — not in a list. Since go-to-k/cdkd#3202 every consumer
 takes a half: the destroy through `refuseMalformedResourceEntriesForDestroy`,
 `cdkd scrub` through its own class around
-`malformedScrubResourceEntriesRefusalMessage`, `cdkd import` in SELECTIVE mode
-only (whole-stack replaces the map — a recovery route), and the `cdkd local`
-loader with two local texts; the sibling claim scan in `orphan-adoption.ts`
-asks for a non-empty `physicalId` instead, because a typeless row still claims.
+`malformedScrubResourceEntriesRefusalMessage`, `cdkd import` twice — pre-flight
+in SELECTIVE mode for the rows it does not re-import
+(`refuseMalformedResourceEntriesForImport`; a listed row is exempt because its
+successful import replaces it, whole-stack replaces the map — both recovery
+routes) and again on the ASSEMBLED map before the save
+(`refuseMalformedResourceEntriesForImportSave`, own text: a listed row whose
+import failed is still there) — and the `cdkd local` loader with two local texts; the sibling claim scan in
+`orphan-adoption.ts` asks for a non-empty `physicalId` instead, because a typeless
+row still claims, and walks a LIST bag rather than skipping it (fail-closed).
 
 **The `orphans` ROW class is its own, one level under the table's THIRD
 container (go-to-k/cdkd#3500).** That container is guarded above the rows, so a row pass runs only once the field is known to be a

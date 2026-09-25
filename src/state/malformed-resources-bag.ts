@@ -3304,6 +3304,106 @@ export function malformedDestroyResourceEntriesRefusalMessage(
 }
 
 /**
+ * For a SELECTIVE `cdkd import`: refuse a record whose `resources` map holds a
+ * row that is not a readable resource record AND that this merge does not
+ * re-import (go-to-k/cdkd#3202, maintainer review M1).
+ *
+ * SCOPED like {@link refuseMalformedResourceEntriesForOrphan}: the rows named
+ * by `--resource` / `--resource-mapping` are REPLACED by `buildStackState`
+ * from the provider's answer, so `cdkd import S --resource Bad=<id> --force`
+ * over a `null` `Bad` row is the repair of that row and must not be refused —
+ * a record-wide refusal would close a recovery route (go-to-k/cdkd#3159). What
+ * a selective merge copies AS IT STANDS is every row it does NOT re-import,
+ * and those are the rows this refuses.
+ *
+ * The shared text holds here: `cdkd import` takes its lock and reads AWS
+ * below this call, and the harm it names — saving a record that reports a
+ * clean run over rows nothing could read — is exactly the merge's. Whole-stack
+ * and `--migrate-from-cloudformation` imports replace the whole map and take
+ * no PRE-FLIGHT entry guard; the assembled-map check below still runs for them
+ * and passes by construction, since their map starts from `{}` and holds only
+ * rows a successful import built.
+ *
+ * The exemption is a PROMISE the run has yet to keep: a listed row is replaced
+ * only when its provider import SUCCEEDS (`buildStackState` skips every other
+ * outcome and the merge keeps the stored row), so the ASSEMBLED map is checked
+ * again by {@link refuseMalformedResourceEntriesForImportSave} before anything
+ * reads a row of it or saves it.
+ *
+ * NOT `markNonRetryable`: its ONE caller raises from the command body with no
+ * `withRetry` around it (the module fence names it under `UNMARKED`).
+ */
+export function refuseMalformedResourceEntriesForImport(
+  state: StackState,
+  reimportedLogicalIds: readonly string[],
+  stackName: string,
+  region: string
+): void {
+  const reimported = new Set(reimportedLogicalIds);
+  const unreadable = unreadableResourceEntries(state).filter((id) => !reimported.has(id));
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedResourceEntriesRefusalMessage(stackName, region, unreadable),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * For a SELECTIVE `cdkd import`, on the map `buildStackState` ASSEMBLED: refuse
+ * if any row is still unreadable (go-to-k/cdkd#3202, Codex review of round 1
+ * on go-to-k/cdkd#3758).
+ *
+ * The pre-flight above exempts the rows the run was asked to re-import, and
+ * that exemption holds only for a row whose provider import SUCCEEDED — the
+ * merge keeps the stored row for a listed id whose import failed or was
+ * skipped, so `--resource Bad=<id>` over a `null` `Bad` that the provider
+ * could not import would otherwise save the `null` back (a typeless row) or
+ * crash in the property resolution one step later (a `null` one). Every
+ * unreadable row left at this point IS such a row — an unlisted one was
+ * refused pre-flight — which is what the text says.
+ *
+ * Own text rather than the shared one: at this point the lock is held and the
+ * listed rows' AWS imports have run, so "Nothing was locked, read from AWS"
+ * is false, while "nothing was WRITTEN for this stack" still holds — the save
+ * is below. NOT `markNonRetryable`, for the reason its pre-flight twin is not.
+ */
+export function refuseMalformedResourceEntriesForImportSave(
+  state: StackState,
+  stackName: string,
+  region: string
+): void {
+  const unreadable = unreadableResourceEntries(state);
+  if (unreadable.length === 0) return;
+  throw new CdkdError(
+    malformedImportUnrepairedEntriesRefusalMessage(stackName, region, unreadable),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceEntriesForImportSave} raises. Read-only
+ * remedy, so it ends ON the inspect command (go-to-k/cdkd#3516).
+ */
+export function malformedImportUnrepairedEntriesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[]
+): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} 'cdkd import' was asked to re-import ` +
+    `these rows and their import did not succeed (each is reported above), so the record it ` +
+    `would save still holds them unreadable; it refuses rather than saving a row it could not ` +
+    `replace. Nothing was written FOR THIS STACK, and the resources this run did import stay ` +
+    `as they are in AWS. Fix what the import reported, or repair the rows by hand, and re-run. ` +
+    `Inspect the record with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
  * The text `cdkd scrub` raises on a REAL run over a readable `resources` map
  * holding a row it cannot read (go-to-k/cdkd#3202). Scrub raises its own
  * exit-2 class around it, the way it does around

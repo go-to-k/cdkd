@@ -586,14 +586,20 @@ export function makeSiblingClaimReader(params: {
         // narrowing above by another route. An empty string is not a claim on
         // anything, and `planOrphanAdoption` never looks one up.
         //
-        // One shape the bag guard SHRINKS the set for, deliberately: a LIST
-        // bag whose elements carry a `physicalId` was walked by
-        // `Object.values` and claimed before, and is skipped whole now. Such a
-        // record is unreadable to every other command (the destroy and the
-        // deploy refuse it), so its ids are not evidence of a stack that will
-        // act on them — and the lower-bound contract above already covers a
-        // record this scan cannot read.
-        if (!isReadableBag(sibling.state.resources)) {
+        // FAIL-CLOSED on the bag too, so the set never SHRINKS relative to the
+        // old `Object.values` walk: a LIST bag whose elements carry a
+        // `physicalId` is walked like a map (`Object.entries` indexes it), and
+        // only a bag that is not a non-null object — a string, a number, a
+        // boolean, `null`, absent — is skipped, since the walk over one of
+        // those yields no row at all (a string's characters are not objects).
+        // Claiming more costs nothing here, while a claim dropped is a record
+        // this stack may adopt while another stack still owns it: an operator
+        // repairing the sibling's list into a map, as the refusal texts
+        // advise, would then hold two records for one live resource
+        // (go-to-k/cdkd#3202 maintainer review M2). `isReadableBag` is
+        // deliberately NOT the test here — it rejects an array.
+        const bag: unknown = sibling.state.resources;
+        if (typeof bag !== 'object' || bag === null) {
           logger.debug(
             `orphan adoption: skipping ${displayStackName(ref.stackName)} — its state record ` +
               `has no readable 'resources' map, so nothing it claims can be read`
@@ -601,7 +607,7 @@ export function makeSiblingClaimReader(params: {
           continue;
         }
         const unreadable: string[] = [];
-        for (const [logicalId, record] of Object.entries(sibling.state.resources)) {
+        for (const [logicalId, record] of Object.entries(bag as Record<string, unknown>)) {
           const physicalId = isReadableBag(record)
             ? (record as { physicalId?: unknown }).physicalId
             : undefined;

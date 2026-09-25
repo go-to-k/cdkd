@@ -169,13 +169,12 @@ describe('runDestroyForStack refuses an unreadable resource ROW (go-to-k/cdkd#32
     expect(err.message).toContain('cannot be read as resources');
     expect(err.message).not.toContain("no readable 'resources' map");
     expect(err.message).toContain('cdkd destroy');
-    // BOTH measured arms, the null one first: it is the shape that never
-    // reaches a provider at all.
-    expect(err.message).toContain(
-      'a null row stops the run on a bare TypeError in the listing above the prompt'
-    );
-    expect(err.message).toContain("SKIPPED as 'not found in state'");
-    expect(err.message).toContain('routed to a provider on whatever its type field holds');
+    // All three measured arms, by SHORT anchors that survive a rewording of
+    // the sentence around them (review nit): the null row's listing crash, the
+    // falsy row's skip, and the routed row.
+    expect(err.message).toContain('bare TypeError');
+    expect(err.message).toContain('not found in state');
+    expect(err.message).toContain('routed to a provider');
     // `refuseMalformedResourceEntries`'s text describes saving a REBUILT map
     // back over the record; a destroy's saves are the snapshots of what is left.
     expect(err.message).not.toContain('saving over the record');

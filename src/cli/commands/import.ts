@@ -95,8 +95,9 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
-  refuseMalformedResourceEntries,
+  refuseMalformedResourceEntriesForImport,
   refuseMalformedState,
+  refuseMalformedResourceEntriesForImportSave,
 } from '../../state/malformed-resources-bag.js';
 
 interface ImportOptions {
@@ -610,18 +611,27 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
     if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
-    // The ROWS of that map, in SELECTIVE mode only (go-to-k/cdkd#3202). A
-    // selective merge starts from `{ ...existingState.resources }` and saves
-    // every row it did not re-import AS IT STANDS, so a `null` or typeless row
-    // is carried into the record this command writes and met by the next
-    // deploy or destroy instead. Whole-stack and `--migrate-from-cloudformation`
+    // The ROWS of that map, in SELECTIVE mode only, and only the rows this
+    // merge does NOT re-import (go-to-k/cdkd#3202). A selective merge starts
+    // from `{ ...existingState.resources }` and saves every row it did not
+    // re-import AS IT STANDS, so a `null` or typeless row is carried into the
+    // record this command writes and met by the next deploy or destroy
+    // instead. A row NAMED by `--resource` / `--resource-mapping` is replaced
+    // by `buildStackState` from the provider's answer — `cdkd import S
+    // --resource Bad=<id> --force` IS the repair of a broken `Bad` row — so
+    // those ids are subtracted. Whole-stack and `--migrate-from-cloudformation`
     // imports REPLACE the map from the template, which makes them a way OUT of
     // such a record, so they are deliberately not refused — the rule
     // go-to-k/cdkd#3159 set: a refusal must not close a recovery route. The
     // shared text holds here: the lock is taken below, after this check, and no
     // AWS resource has been read.
     if (existingState && selectiveMode) {
-      refuseMalformedResourceEntries(existingState, stackInfo.stackName, targetRegion);
+      refuseMalformedResourceEntriesForImport(
+        existingState,
+        [...overrides.keys()],
+        stackInfo.stackName,
+        targetRegion
+      );
     }
     // The `outputs` bag takes the same answer and needs its own call — the one
     // above reads `resources` only, and a record can be malformed in either
@@ -858,6 +868,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         existingState,
         selectiveMode
       );
+
+      // The pre-flight above exempted the LISTED rows from the unreadable-row
+      // refusal on the promise that `buildStackState` replaces them — and it
+      // replaces only a row whose import SUCCEEDED, keeping the stored row for
+      // one that failed or was skipped. So the ASSEMBLED map is checked once
+      // more here, above the property resolution (which reads every row) and
+      // the save (go-to-k/cdkd#3202, Codex review of round 1). Every unreadable
+      // row still present is a listed one the run could not repair; an unlisted
+      // one was refused pre-flight, and a whole-stack rebuild starts from `{}`.
+      refuseMalformedResourceEntriesForImportSave(stackState, stackInfo.stackName, targetRegion);
 
       // Resolve CFn intrinsics (Ref / Fn::GetAtt / Fn::Sub / ...) in every
       // freshly-imported resource's `properties` against the assembled
