@@ -118,6 +118,11 @@ import ts from 'typescript-v6';
 
 /** One shape a site can be in. */
 export type PasteableShape = 'quoted-command' | 'quoted-interpolation' | 'open-hole';
+const PASTEABLE_SHAPES: readonly PasteableShape[] = [
+  'quoted-command',
+  'quoted-interpolation',
+  'open-hole',
+];
 
 /** One site the critic reports. */
 export interface PasteableFinding {
@@ -158,32 +163,17 @@ const HOLE = '\u0000';
  * reason, and a stale entry is a REFUSAL — an exemption outliving its target is
  * how a fence goes quiet without anyone editing it.
  *
- * NOT empty. Its one entry is a go-to-k/cdkd#3436 own-copy gate the maintainer
- * asked to land in a follow-up PR rather than widen go-to-k/cdkd#3613, so the
- * exemption is how that decision stays on the record instead of becoming a
- * blind spot.
+ * Empty: its one entry, `export.ts`'s `buildImportPlan` refusal, went stale
+ * when go-to-k/cdkd#3736 routed that site through `importRepairCommand`. The
+ * binary's stale and overmatch exits are exercised through the
+ * `CDKD_PASTEABLE_EXEMPTIONS` seam in `main`.
  */
 export const EXEMPTIONS: ReadonlyArray<{
   file: string;
   shape: PasteableShape;
   contains: string;
   why: string;
-}> = [
-  {
-    file: 'cli/commands/export.ts',
-    shape: 'quoted-command',
-    contains: 'cdkd import <stack> --resource',
-    why:
-      "buildImportPlan's redaction-mask refusal, the twin of the site " +
-      'maskedIdentifierAttributeReason fixes in the same PR. Gating it is a ' +
-      'one-line change and it is NOT done here: the maintainer asked this PR ' +
-      'to stop widening, and the remaining go-to-k/cdkd#3436 own-copy gates ' +
-      '(export.ts among them) are follow-up PRs. Tracked by go-to-k/cdkd#3436, ' +
-      'which stays open until they land. This entry is what keeps the decision ' +
-      'on the record instead of leaving a blind spot: when the gate lands the ' +
-      'entry goes STALE and the run refuses until it is deleted.',
-  },
-];
+}> = [];
 
 /** A `cdkd` verb, as it appears at the head of a pasteable command. */
 const CDKD_VERB = /\bcdkd\s+[a-z][a-z-]*/;
@@ -1457,8 +1447,8 @@ export function runSelfProbes(): string[] {
  * Exported and taking its list as a PARAMETER so the mechanism can be exercised
  * in BOTH directions against a list a test controls. It was written when
  * `EXEMPTIONS` was empty and a `staleExemptions` assertion over the real tree
- * compared `[]` against `[]`, pinning nothing; the live list is no longer
- * empty, and the seam is still the only way to drive a near-miss per term.
+ * compared `[]` against `[]`, pinning nothing; the list is empty again, and
+ * the parameter is still the only way to drive a near-miss per term.
  */
 export function applyExemptions(
   findings: readonly PasteableFinding[],
@@ -1491,7 +1481,10 @@ export function applyExemptions(
 }
 
 /** Run the critic over a source root. */
-export function checkPasteableCommandShapes(root: string): PasteableReport {
+export function checkPasteableCommandShapes(
+  root: string,
+  exemptions: typeof EXEMPTIONS = EXEMPTIONS
+): PasteableReport {
   const files = sourceFiles(root);
   const findings: PasteableFinding[] = [];
   let spansExamined = 0;
@@ -1509,7 +1502,7 @@ export function checkPasteableCommandShapes(root: string): PasteableReport {
     kept,
     stale: staleExemptions,
     overmatched: overmatchedExemptions,
-  } = applyExemptions(findings, EXEMPTIONS);
+  } = applyExemptions(findings, exemptions);
 
   return {
     findings: kept,
@@ -1551,7 +1544,39 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     for (const failure of probeFailures) process.stderr.write(`self-probe: ${failure}\n`);
     return 2;
   }
-  const report = checkPasteableCommandShapes(root);
+  // Test seam for the binary's stale / overmatch exits, which need a live
+  // entry the shipped list no longer has. Honoured ONLY with `--root=`, so it
+  // can never widen what the flag-less run exempts (CI's gate is the
+  // in-process test, which never reads it); a malformed value -- bad JSON, a
+  // missing field, or an unknown `shape` -- is the "critic is broken"
+  // verdict, like a malformed floor seam.
+  let exemptions: typeof EXEMPTIONS = EXEMPTIONS;
+  const injected = process.env['CDKD_PASTEABLE_EXEMPTIONS'];
+  if (injected !== undefined && rootFlag !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(injected);
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every(
+          (e) =>
+            typeof e === 'object' &&
+            e !== null &&
+            typeof (e as Record<string, unknown>)['file'] === 'string' &&
+            PASTEABLE_SHAPES.includes((e as Record<string, unknown>)['shape'] as PasteableShape) &&
+            typeof (e as Record<string, unknown>)['contains'] === 'string'
+        )
+      ) {
+        throw new Error('expected an array of {file, shape, contains} with a known shape');
+      }
+      exemptions = parsed as typeof EXEMPTIONS;
+    } catch (err) {
+      process.stderr.write(
+        `check-pasteable-command-shapes: CDKD_PASTEABLE_EXEMPTIONS is malformed: ${String(err)}\n`
+      );
+      return 2;
+    }
+  }
+  const report = checkPasteableCommandShapes(root, exemptions);
   // Test seams, and the only way to observe floor ENFORCEMENT: the real tree
   // always clears the floors, so nothing else distinguishes "enforced" from
   // "not enforced" (measured -- disabling enforcement left every case green).

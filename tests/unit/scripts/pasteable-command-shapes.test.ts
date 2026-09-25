@@ -455,13 +455,23 @@ describe('pasteable-command shape fence — it does not report everything', () =
     expect(injected.stderr).toMatch(/expected \[\], got \[quoted-command\]/);
   }, 120_000);
 
-  it('exits 1 when the LIVE exemption goes stale against a --root= tree', () => {
+  // The shipped `EXEMPTIONS` list is empty, so the binary's stale / overmatch
+  // exits are driven through the `CDKD_PASTEABLE_EXEMPTIONS` seam, which
+  // `main` honours only with `--root=`.
+  const INJECTED_ENTRY = {
+    file: 'cli/commands/export.ts',
+    shape: 'quoted-command',
+    contains: 'cdkd import <stack> --resource',
+    why: 'test entry',
+  } as const;
+  const injectedEnv = { ...process.env, CDKD_PASTEABLE_EXEMPTIONS: JSON.stringify([INJECTED_ENTRY]) };
+
+  it('exits 1 when an injected exemption goes stale against a --root= tree', () => {
     // M14 of the review: dropping `|| report.staleExemptions.length > 0` from
-    // `main` survived every case, because the real tree never makes the live
-    // entry stale. A scratch root that lacks the entry's file does, and the
+    // `main` survived every case, because the real tree never makes an entry
+    // stale. A scratch root that lacks the injected entry's file does, and the
     // binary must refuse it with exit 1 -- the "tree is dirty" verdict, since
     // an exemption outliving its target is a dirt of the tree's own making.
-    expect(EXEMPTIONS.length, 'this case needs a live entry to make stale').toBeGreaterThan(0);
     const script = fileURLToPath(
       new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
     );
@@ -472,20 +482,20 @@ describe('pasteable-command shape fence — it does not report everything', () =
         encoding: 'utf8',
         timeout: SPAWN_TIMEOUT_MS,
         cwd: REPO_ROOT,
+        env: injectedEnv,
       });
       expect(stale.status, stale.stderr).toBe(1);
       expect(stale.stderr).toContain('stale exemption');
-      expect(stale.stderr).toContain(EXEMPTIONS[0]!.file);
+      expect(stale.stderr).toContain(INJECTED_ENTRY.file);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);
 
-  it('exits 1 when the LIVE exemption covers TWO findings in a --root= tree', () => {
+  it('exits 1 when an injected exemption covers TWO findings in a --root= tree', () => {
     // M11 through the binary: the entry is reproduced at its own path with
     // its target literal written TWICE, so one entry matches two findings.
-    expect(EXEMPTIONS.length, 'this case needs a live entry to overmatch').toBeGreaterThan(0);
-    const entry = EXEMPTIONS[0]!;
+    const entry = INJECTED_ENTRY;
     const script = fileURLToPath(
       new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
     );
@@ -505,6 +515,7 @@ describe('pasteable-command shape fence — it does not report everything', () =
         encoding: 'utf8',
         timeout: SPAWN_TIMEOUT_MS,
         cwd: REPO_ROOT,
+        env: injectedEnv,
       });
       expect(over.status, over.stderr).toBe(1);
       expect(over.stderr).toContain('overmatched exemption');
@@ -523,10 +534,54 @@ describe('pasteable-command shape fence — it does not report everything', () =
       expect(over.stderr).not.toMatch(
         /^\S+:\d+ \[(quoted-command|quoted-interpolation|open-hole)\]/m
       );
-      expect(checkPasteableCommandShapes(root).findings).toEqual([]);
+      expect(checkPasteableCommandShapes(root, [INJECTED_ENTRY]).findings).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }, 120_000);
+
+  it('refuses a malformed CDKD_PASTEABLE_EXEMPTIONS seam with exit 2', () => {
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-pasteable-badseam-'));
+    try {
+      writeFileSync(join(root, 'clean.ts'), 'export const m = `nothing to see`;\n', 'utf8');
+      for (const bad of [
+        'not json',
+        '{"file":"x"}',
+        '[{"file":"x"}]',
+        '[{"file":"x","shape":"quoted-comand","contains":"y"}]',
+        '[{"shape":"open-hole","contains":"y"}]',
+        '[{"file":"x","shape":"open-hole"}]',
+      ]) {
+        const run = spawnSync(process.execPath, [script, `--root=${root}`], {
+          encoding: 'utf8',
+          timeout: SPAWN_TIMEOUT_MS,
+          cwd: REPO_ROOT,
+          env: { ...process.env, CDKD_PASTEABLE_EXEMPTIONS: bad },
+        });
+        expect(run.status, `${bad}: ${run.stderr}`).toBe(2);
+        expect(run.stderr).toContain('CDKD_PASTEABLE_EXEMPTIONS is malformed');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('ignores the CDKD_PASTEABLE_EXEMPTIONS seam on the real-tree run', () => {
+    // Honoured only with `--root=`: an env var must never be able to widen what
+    // the REAL tree run exempts. Malformed JSON would be exit 2 if it were read.
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const run = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
+      env: { ...process.env, CDKD_PASTEABLE_EXEMPTIONS: 'not json' },
+    });
+    expect(run.status, run.stderr).toBe(0);
   }, 120_000);
 
   it('exits 1 -- not 2 -- for a DIRTY tree, naming the site', () => {
@@ -800,11 +855,10 @@ describe('pasteable-command shape fence — real code, not only fixtures', () =>
 describe('pasteable-command shape fence — the tree is CLEAN, and stays clean', () => {
   it('reports ZERO findings across src/', () => {
     // This is the assertion that makes the fence a fence rather than a report.
-    // Every site it found is fixed in this PR except ONE, which is EXEMPT
-    // rather than fixed -- an `export.ts` own-copy gate the maintainer asked
-    // to land in a follow-up PR. `findings` is what survives the exemptions,
-    // so this asserts zero NON-EXEMPT findings; the case below is what keeps
-    // the exempt one honest. Any new site reds here by
+    // `findings` is what survives the exemptions, so this asserts zero
+    // NON-EXEMPT findings; the case below keeps any exemption honest. The
+    // list is empty since go-to-k/cdkd#3736 fixed its one entry. Any new
+    // site reds here by
     // name — which is the whole point of keying on a SHAPE: nobody has to know
     // what the next author calls their gate.
     const report = realTree();
@@ -821,11 +875,9 @@ describe('pasteable-command shape fence — exemptions cannot go stale', () => {
     // whose entries all MATCH also reports no stale ones, so the `[]`
     // comparison alone was satisfied by two different worlds.
     //
-    // The list is no longer empty. Each entry is a go-to-k/cdkd#3436 own-copy
-    // gate the maintainer asked to land in a follow-up PR rather than widen
-    // this one, and an exemption is how that decision stays on the record
-    // instead of becoming a blind spot — when the gate lands the entry goes
-    // STALE and the run refuses until it is deleted.
+    // An entry is how a deliberately deferred site stays on the record
+    // instead of becoming a blind spot -- when its gate lands the entry goes
+    // STALE and the run refuses until it is deleted. The list is empty today.
     // TWO assertions this case used to carry are gone, both for the same
     // reason: they pinned something other than what they claimed.
     //

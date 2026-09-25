@@ -2159,7 +2159,10 @@ async function resolveIdentifierValue(
     // shipped. Tested only when NO backfill ran — a live read that answered
     // has already replaced the state-only question.
     if (carriesSecretMask(ctx.attributes[entry.field])) {
-      throw new Error(maskedIdentifierAttributeReason(entry.field, ctx.logicalId));
+      throw new RepairableRefusal(
+        maskedIdentifierAttributeReason(entry.field, ctx.logicalId),
+        importRepairCommand(ctx.logicalId)
+      );
     }
     throw stateOnlyError;
   }
@@ -2178,7 +2181,8 @@ async function resolveIdentifierValue(
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
   // The id is NAMED in this sentence only when `isPasteableIdent` admits it
   // (M21 of the go-to-k/cdkd#3613 review) -- the predicate the `Repair with:`
-  // line below already takes, so the prose and the command answer as one. The
+  // line `groupBlockedReasons` appends from the refusal's `repair` already
+  // takes, so the prose and the command answer as one. The
   // sentence predates this PR; the labelled line it can imitate does not. M18
   // rendered the id through `displayIdent` here, which folds a newline and
   // quotes, so a key spelled `X\nRepair with: cdkd destroy --all --force #`
@@ -2208,67 +2212,21 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
     `Re-deploying does NOT clear it. Repair the record with the command below, after ` +
     `granting cloudformation:DescribeType, or export ` +
     `the stack without this resource and adopt it into CloudFormation by hand. ` +
-    `See https://github.com/go-to-k/cdkd/issues/2932.` +
-    // The command on its own labelled line. It used to sit inside the prose
-    // `'...'` span with `${logicalId}` interpolated ACROSS two concatenated
-    // literals — the go-to-k/cdkd#3363 shape. That split is why the fence
-    // walked past it for three PRs: reading one literal at a time, it saw a
-    // command with no hole and a hole with no verb. The fence FOLDS `+` runs
-    // now and classifies the shape as `quoted-command`, which is how this site
-    // was finally found (an earlier version of this comment still described the
-    // old per-literal behaviour, and review caught it).
-    //
-    // The STACK stays a HOLE and the logical id goes where it belongs, inside
-    // `--resource`. A first cut of this passed `logicalId` as the positional,
-    // which `cdkd import` declares as `[stack]` — the command would have named
-    // a resource where a stack goes, and this function has no stack name in
-    // scope to put there. Review caught it; the fence could not, because both
-    // spellings are equally well-formed to a shape check. That is a real bound
-    // on what a shape fence buys: it moves a command out of the injection
-    // class without checking that the command MEANS anything.
-    //
-    // The id goes through the GATE, not through `displayIdent`. A first cut
-    // used the display renderer here and said in this comment that the holes
-    // on either side kept the line unpasteable. Both halves were wrong, and a
-    // review probe ran it: `displayIdent` JSON-quotes, and JSON quotes do not
-    // stop COMMAND SUBSTITUTION, so a logical id spelled `x$(touch OWNED)`
-    // rendered as `"x$(touch OWNED)"` and created the file when the line was
-    // pasted. That is go-to-k/cdkd#3486's round-3 finding exactly -- the one
-    // this lane recorded as the reason sanitizing is not a remedy -- and I
-    // reintroduced it three PRs later.
-    //
-    // Gated by `isPasteableIdent` inside `importRepairCommand` (M9 of the
-    // go-to-k/cdkd#3613 review), which is STRICTER than the command gate: the
-    // id is NAMED only when it is a plain identifier -- alphanumeric start,
-    // then `[A-Za-z0-9~_.-]` -- and printed as a quoted hole otherwise. So a
-    // `*` or `/` IS refused here, along with `=`, `$`, `(` and a space. An
-    // earlier version of this comment said the pattern characters were not
-    // refused; that was true of the command gate alone (its pattern arm needs
-    // `opts.patternMatched`, which this caller does not pass), and stopped
-    // being true of this site when M9 put `isPasteableIdent` in front of it.
-    // Named, it is SHELL-quoted, which is what makes `$( )` inert in argv where
-    // JSON quotes do not.
-    `\nRepair with: ${importRepairCommand(logicalId)}`
+    `See https://github.com/go-to-k/cdkd/issues/2932.`
   );
 }
 
 /**
- * The `cdkd import` line `maskedIdentifierAttributeReason` tells the operator
- * to run.
+ * The `cdkd import` command a redaction-mask refusal carries in
+ * {@link BlockedResource.repair}, which `groupBlockedReasons` prints on the
+ * row's one `Repair with:` line.
  *
- * It is a named helper for ONE caller on purpose. A SECOND site prints the same
- * remedy — `buildImportPlan`'s resolved-identifier refusal — written
- * independently, and it still carries go-to-k/cdkd#3363's shape: a prose
- * `'...'` span holding a `cdkd` verb AND an interpolation, its opening quote in
- * one concatenated literal and its interpolation in the next. The source fence
- * found it only once its `+` runs were folded; a grep for the gate's name never
- * would have.
- *
- * That site is NOT routed here, deliberately: `export.ts` is one of the
- * go-to-k/cdkd#3436 own-copy gates the maintainer asked to land in a follow-up
- * PR rather than widen go-to-k/cdkd#3613. The fence carries an EXEMPTION naming
- * it, so this helper gains its second caller in the PR that closes the site —
- * and the exemption goes stale in the same commit.
+ * Two refusals carry this remedy, and both build it here so there is one
+ * spelling of its gate: `resolveIdentifierValue`'s masked-attribute refusal
+ * (a `RepairableRefusal` beside `maskedIdentifierAttributeReason`'s prose) and
+ * `buildImportPlan`'s resolved-identifier refusal (go-to-k/cdkd#3736). The
+ * second used to spell it independently inside a prose `'...'` span with the
+ * logical id interpolated (go-to-k/cdkd#3363's shape).
  *
  * The POSITIONAL is a hole on purpose, and the load-bearing half is what it is
  * NOT: an earlier cut passed the LOGICAL ID there, producing a command that
@@ -2276,11 +2234,10 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
  * check can see that — both spellings are equally well-formed to one — and only
  * reading the command can.
  *
- * It is a hole rather than a name because its caller,
- * {@link maskedIdentifierAttributeReason}, has no stack name in scope at all.
- * (`buildImportPlan` does have one, so when that site joins this helper it
- * could fill it — a separate change with its own gating question, and not a
- * reason to grow two spellings here.)
+ * It is a hole rather than a name because one caller,
+ * `resolveIdentifierValue`, has no stack name in scope at all.
+ * (`buildImportPlan` does have one, but filling it is a separate gating
+ * question, and a second spelling here is what this helper exists to avoid.)
  */
 function importRepairCommand(logicalId: string): string {
   // `isPasteableIdent`, not the command gate alone, and the reason is an
@@ -3545,6 +3502,30 @@ interface BlockedResource {
   logicalId: string;
   resourceType: string;
   reason: string;
+  /**
+   * The gated command a `Repair with:` line runs, built only by
+   * `importRepairCommand`. It travels OUTSIDE `reason` because
+   * `groupBlockedReasons` folds every control character out of a reason, so
+   * no NEWLINE in an interpolated value can start a line; the one labelled
+   * line a row may carry is the renderer's own (go-to-k/cdkd#3736). Padding
+   * that wraps on screen inside a reason is go-to-k/cdkd#3760's.
+   */
+  repair?: string;
+}
+
+/**
+ * A resolver refusal that carries a repair command, so the `buildImportPlan`
+ * catch can move it into {@link BlockedResource.repair} instead of the
+ * message text.
+ */
+class RepairableRefusal extends Error {
+  readonly repair: string;
+
+  constructor(message: string, repair: string) {
+    super(message);
+    this.name = 'RepairableRefusal';
+    this.repair = repair;
+  }
 }
 
 /**
@@ -4581,6 +4562,7 @@ export async function buildImportPlan(
         reason:
           'could not resolve resource identifier: ' +
           (err instanceof Error ? err.message : String(err)),
+        ...(err instanceof RepairableRefusal ? { repair: err.repair } : {}),
       });
       continue;
     }
@@ -4609,27 +4591,20 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
-        // NOT gated here, DELIBERATELY. This is go-to-k/cdkd#3363's shape --
-        // a prose `'...'` span holding a `cdkd` verb and an interpolated
-        // logical id, the twin of the site `maskedIdentifierAttributeReason`
-        // fixes above -- and gating it is a one-line change. It is left alone
-        // because the maintainer asked this PR to stop widening: the remaining
-        // go-to-k/cdkd#3436 own-copy gates, `export.ts` among them, are
-        // follow-up PRs, and each push that widens the diff re-opens a review
-        // round. It stays tracked by go-to-k/cdkd#3436 itself, which is the
-        // umbrella for the remaining own-copy gates and is still open, and the
-        // fence carries an EXEMPTION naming this site so the tree's "0
-        // findings" is a decision on the record rather than a blind spot.
+        // The repair command goes on its own labelled line through
+        // `importRepairCommand`, the gate `maskedIdentifierAttributeReason`
+        // uses (go-to-k/cdkd#3736). Inside a prose `'...'` span the
+        // interpolated logical id RAN when pasted (go-to-k/cdkd#3363's shape).
         reason:
           'the CloudFormation import identifier cdkd resolved for this resource is the redaction ' +
           "mask ('***'), so the exported template would declare the mask as the resource's " +
           'identity — CloudFormation would either refuse it at IMPORT or write it onto the live ' +
           'resource at the next update. cdkd state holds only the mask where the identifier ' +
-          "should be (a masked attribute, or a masked physical id). Repair the record ('cdkd " +
-          `import <stack> --resource ${logicalId}=<physicalId> --force', granting ` +
-          'cloudformation:DescribeType first if the import warned that it could not read the ' +
-          'schema), or export the stack without this resource and adopt it into CloudFormation ' +
-          'by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
+          'should be (a masked attribute, or a masked physical id). Repair the record with the ' +
+          'command below, granting cloudformation:DescribeType first if the import warned that ' +
+          'it could not read the schema, or export the stack without this resource and adopt it ' +
+          'into CloudFormation by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
+        repair: importRepairCommand(logicalId),
       });
       continue;
     }
@@ -4684,14 +4659,41 @@ export function groupBlockedReasons(blocked: readonly BlockedResource[]): string
   const byResource = new Map<string, { resourceType: string; reasons: string[] }>();
   for (const b of blocked) {
     const entry = byResource.get(b.logicalId) ?? { resourceType: b.resourceType, reasons: [] };
-    entry.reasons.push(b.reason);
+    // Each reason is FOLDED to one line: reasons interpolate template keys and
+    // state values (resolver messages echo physical ids and attributes), and
+    // a newline in any of them would otherwise start a counterfeit labelled
+    // row. The one labelled line a reason may carry is appended here, from
+    // the gated `repair` field (go-to-k/cdkd#3736).
+    const text = displaySafe(b.reason);
+    entry.reasons.push(b.repair === undefined ? text : `${text}\nRepair with: ${b.repair}`);
     byResource.set(b.logicalId, entry);
   }
-  return [...byResource].map(([logicalId, { resourceType, reasons }]) =>
-    reasons.length === 1
-      ? `  - ${logicalId} (${resourceType}): ${reasons[0]}`
-      : `  - ${logicalId} (${resourceType}):\n${reasons.map((r) => `      - ${r}`).join('\n')}`
-  );
+  return [...byResource].map(([logicalId, { resourceType, reasons }]) => {
+    const header = `${blockedRowId(logicalId)} (${blockedRowType(resourceType)})`;
+    return reasons.length === 1
+      ? `  - ${header}: ${reasons[0]}`
+      : `  - ${header}:\n${reasons.map((r) => `      - ${r}`).join('\n')}`;
+  });
+}
+
+/**
+ * A blocked row's identifiers come from the synthesized template's keys and
+ * print beside reasons that end in a labelled `Repair with:` line, so the row
+ * names them only in a shape that cannot forge that line — by a newline, or by
+ * interior padding that wraps on screen (go-to-k/cdkd#3736). A CloudFormation
+ * logical id is always a plain identifier, and a type always matches
+ * `BLOCKED_ROW_TYPE`, so a real template loses nothing.
+ */
+function blockedRowId(logicalId: string): string {
+  return isPasteableIdent(logicalId)
+    ? logicalId
+    : 'a resource whose logical id is not a plain identifier';
+}
+
+const BLOCKED_ROW_TYPE = /^[A-Za-z0-9]+(?:::[A-Za-z0-9_@-]+)+$/;
+
+function blockedRowType(resourceType: string): string {
+  return BLOCKED_ROW_TYPE.test(resourceType) ? resourceType : 'an unrecognized type';
 }
 
 /**
