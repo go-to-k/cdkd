@@ -1637,8 +1637,9 @@ commercial partition (`aws-cn`, `aws-us-gov`, ...) both are wrong, and the value
 is still structurally valid, so nothing downstream catches it. Derive the
 partition and URL suffix from the region with `derivePartitionAndUrlSuffix`
 (`src/utils/aws-partition.ts`), or call a shared builder such as the
-`src/utils/s3-endpoints.ts` ones above, which the SDK and Cloud Control routes
-both use so they record the same value.
+`src/utils/s3-endpoints.ts` ones above, which the SDK provider and the resolver
+both use (and the Cloud Control route for `Arn`), so every route records the
+same value.
 
 ## `getAttribute()` for live `Fn::GetAtt` resolution
 
