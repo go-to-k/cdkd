@@ -363,6 +363,32 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     expect((thrown as Error).message).not.toContain(BODY_REGION);
   });
 
+  it('stops the --revert-failed replay too, and the completed ops after it', async () => {
+    // Two failed CREATEs replayed before one completed CREATE: the decline on
+    // the first failed op's save must stop the second AND the completed op.
+    const h = install({
+      resources: {
+        A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
+        B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
+        C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
+      },
+      segment: {
+        failedOperations: [
+          { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
+          { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
+        ],
+        operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
+      },
+      bodyRegion: KEY_REGION,
+      rereadBodyRegion: BODY_REGION,
+    });
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    expect(h.getState).toHaveBeenCalledTimes(2);
+    expect(replayProvider.delete, 'the replay kept going after the decline').toHaveBeenCalledTimes(1);
+    expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect((thrown as Error).message).toContain('Rollback stopped');
+  });
+
   it('declines on the LAST op of a segment too: no pop, no deleteState', async () => {
     // The replay never sees an interrupt here (there is no next op to stop
     // before), so the pop and the terminal delete are guarded on their own.
