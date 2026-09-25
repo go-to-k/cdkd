@@ -9,6 +9,12 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import {
+  UNRENDERABLE,
+  displayIdent,
+  displaySafe,
+  displayStackName,
+} from '../../utils/display-safe.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -103,7 +109,13 @@ async function forceUnlockCommand(
       }
 
       for (const r of regionsToTry) {
-        const where = r ? `${stackName} (${r})` : `${stackName} (legacy lock key)`;
+        // Rendered, never used: `r` is an S3 key segment `listStacks()` read,
+        // and the name is whatever was typed, so both take the identifier guard
+        // before they reach a line -- including the multi-line refusal below,
+        // whose rows a newline in either would forge (issue #3027).
+        const where = r
+          ? `${displayStackName(stackName)} (${displayIdent(r)})`
+          : `${displayStackName(stackName)} (legacy lock key)`;
         logger.info(`Force-unlocking stack: ${where}`);
         try {
           await lockManager.forceReleaseLock(stackName, r);
@@ -113,8 +125,12 @@ async function forceUnlockCommand(
           if (message.includes('No lock found') || message.includes('NoSuchKey')) {
             logger.info(`No lock found for stack: ${where}`);
           } else {
-            logger.error(`Failed to unlock stack ${where}: ${message}`);
-            failures.push(`${where}: ${message}`);
+            // S3's error text echoes the lock key, which embeds the stack name,
+            // so it takes the same ASCII allowlist the lock manager's own
+            // refusals do. The RAW text is what the match above reads.
+            const detail = displaySafe(message, { asciiOnly: true }) || UNRENDERABLE;
+            logger.error(`Failed to unlock stack ${where}: ${detail}`);
+            failures.push(`${where}: ${detail}`);
           }
         }
       }
