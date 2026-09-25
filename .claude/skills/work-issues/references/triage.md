@@ -25,11 +25,10 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 **The `backfill-type` exclusion is not noise-trimming — those issues are not
 backlog.** They were the ~44 generated per-type slices of the silent-drop
 backfill campaign (go-to-k/cdkd#2949), FOLDED BACK into one generated checklist
-in the umbrella issue: 44 of 240 open issues were bot-filed slices of one
-campaign, which a public issue count cannot tell from unfixed defects. They are
-retired and the label is legacy. The filter stays because such a slice is still
-no decision a triage pass can make, and its `created_at` is whenever the map last
-moved, so §3-0's quarantine and rule 7's ranking read it wrong.
+in the umbrella issue. They are retired and the label is legacy. The filter
+stays because such a slice is still no decision a triage pass can make, and its
+`created_at` is whenever the map last moved, so §3-0's quarantine and rule 7's
+ranking read it wrong.
 
 To WORK the campaign, take the umbrella deliberately (`gh issue list --label
 backfill-umbrella`) and wire the type you intend to. Write `Refs`, never
@@ -65,13 +64,16 @@ be merged, since this repo SQUASH-merges, so ask by CONTENT
 diff disagrees with `status --porcelain`, the dirty tree wins.
 
 **A file another agent is editing is OFF-LIMITS** — read the "working on this"
-comments. The contested cross-cutting files:
+comments. A peer SESSION's open PR holds its whole files; a contributor's fork
+PR with no claim holds only its DIFF's hunks, cross-cutting files included:
+edit outside them, put new tests in new files, and stand down (claim.md) when
+the fix needs its lines (#3613). The contested cross-cutting files:
 `src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts`,
 `src/analyzer/{dag-builder,template-parser}.ts`,
 `src/provisioning/{register-providers,provider-registry}.ts`,
 `src/cli/commands/{deploy,destroy,destroy-runner,export}.ts`.
-**At most one lane per cross-cutting file** — map each candidate to its target
-file first.
+**At most one lane of THIS run per cross-cutting file** — map each candidate to
+its target file first.
 
 ## 3. Pick FILE-DISJOINT issues
 
