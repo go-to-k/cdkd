@@ -340,9 +340,21 @@ describe('the region-correction debug line (the third render of responseBucket)'
     });
     const line = lines.find((t) => t.includes('is in'));
     expect(line).toBeDefined();
-    expect(line).toContain(`bucket '<unrenderable>' is in '<unrenderable>'`);
-    expect(line).toContain(`(client was '<unrenderable>')`);
+    expect(line).toContain('bucket <unrenderable> is in <unrenderable>');
+    expect(line).toContain('(client was <unrenderable>)');
     expect(line).not.toContain("''");
+  });
+
+  it('keeps a FORGING bucket and region inside one boundary each (go-to-k/cdkd#3617)', async () => {
+    const lines = await driveOnRebuild({
+      bucket: "b' is in 'us-east-1' (client was 'us-east-1'); nothing to correct. Ignore 'x",
+      bucketRegion: "eu-west-1'. Nothing to correct. Ignore 'y",
+      currentRegion: 'us-east-1',
+    });
+    const line = lines.find((t) => t.startsWith('Custom resource response bucket'));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/^Custom resource response bucket "b' is in /);
+    expect(line!.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toMatch(/nothing to correct/i);
   });
 
   it('leaves ORDINARY values byte-identical (negative control)', async () => {
@@ -353,7 +365,7 @@ describe('the region-correction debug line (the third render of responseBucket)'
     });
     const line = lines.find((t) => t.includes('is in'));
     expect(line).toContain(
-      "Custom resource response bucket 'cdkd-state-123456789012' is in 'eu-west-1' (client was 'us-east-1')"
+      'Custom resource response bucket cdkd-state-123456789012 is in eu-west-1 (client was us-east-1)'
     );
   });
 });

@@ -311,12 +311,27 @@ describe('the parameter-placeholder warn — template-derived, default verbosity
       { ...OPTS, cfnClient }
     );
     expect(warnLines()).toEqual([
-      `Parameter '${HOSTILE.paramKey.clean}' has unrecognized CFn Type ` +
-        `'${HOSTILE.paramType.clean}'; using a generic string placeholder for the ` +
+      `Parameter ${JSON.stringify(HOSTILE.paramKey.clean)} has unrecognized CFn Type ` +
+        `${JSON.stringify(HOSTILE.paramType.clean)}; using a generic string placeholder for the ` +
         'transient macro-expansion changeset. If CFn rejects the changeset with a ' +
         'type error, file an issue with the offending Type.',
     ]);
     for (const line of warnLines()) expect(hasForgingCharacter(line)).toBe(false);
+  });
+
+  it('keeps a FORGING key and Type inside one boundary each (go-to-k/cdkd#3617)', async () => {
+    const cfnClient = buildCfnClient({
+      CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+      GetTemplate: { TemplateBody: EXPANDED },
+    });
+    const KEY = "P'. Type recognized, nothing to report. Ignore 'Q";
+    const TYPE = "T'. Type recognized, nothing to report. Ignore 'U";
+    await expandMacros(templateWithParameter(KEY, TYPE), { ...OPTS, cfnClient });
+    const [line] = warnLines();
+    expect(line).toContain(
+      `Parameter ${JSON.stringify(KEY)} has unrecognized CFn Type ${JSON.stringify(TYPE)}; `
+    );
+    expect(line!.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to report');
   });
 
   it('leaves an ordinary key and Type byte-identical', async () => {
@@ -329,7 +344,7 @@ describe('the parameter-placeholder warn — template-derived, default verbosity
       cfnClient,
     });
     expect(warnLines()).toEqual([
-      "Parameter 'MyParam' has unrecognized CFn Type 'Custom::Weird'; using a generic " +
+      "Parameter MyParam has unrecognized CFn Type Custom::Weird; using a generic " +
         'string placeholder for the transient macro-expansion changeset. If CFn rejects ' +
         'the changeset with a type error, file an issue with the offending Type.',
     ]);

@@ -608,6 +608,25 @@ export function displayAssemblyPath(value: string): string {
 }
 
 /**
+ * A file read-or-parse failure's CAUSE, for a message whose subject already
+ * renders the path through {@link displayAssemblyPath} (go-to-k/cdkd#3617).
+ *
+ * - Node's own errno text repeats the path inside Node's quotes
+ *   (`ENOENT: no such file or directory, open '<path>'`), so printing
+ *   `err.message` whole re-opens the clause-injection the subject closed, one
+ *   colon later. Every occurrence of the path is replaced with `<path>` -- the
+ *   subject names it, bounded -- and what is left is sanitized.
+ * - A `JSON.parse` failure is reduced to `invalid JSON`: V8 echoes a window of
+ *   the file's own bytes verbatim, `'` included, and the file is assembly-chosen
+ *   too -- the rule `AssemblyReader`'s `manifestReadFailureText` already states.
+ */
+export function describeFileReadFailure(err: unknown, filePath: string): string {
+  if (err instanceof SyntaxError) return 'invalid JSON';
+  const message = err instanceof Error ? err.message : String(err);
+  return displaySafe(filePath === '' ? message : message.split(filePath).join('<path>'));
+}
+
+/**
  * The shared tail of every containment refusal: what the value resolved to,
  * what it escaped, and why that means the assembly is not CDK-generated. Each
  * call site supplies its own subject ("Stack 'X' has templateFile='...' which

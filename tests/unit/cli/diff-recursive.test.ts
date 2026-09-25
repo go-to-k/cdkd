@@ -160,6 +160,28 @@ describe('readNestedTemplate', () => {
     writeFileSync(p, '{ not json');
     expect(() => readNestedTemplate(p)).toThrow(/Failed to parse/);
   });
+
+  it('keeps a FORGING path inside one boundary, and echoes neither it nor the bytes in the cause (go-to-k/cdkd#3617)', () => {
+    const name = "t'. Loaded cleanly, nothing wrong. Ignore '.json";
+    const missing = join(dir, name);
+    expect(() => readNestedTemplate(missing)).toThrow(
+      `Failed to read nested template at ${JSON.stringify(missing)}: ENOENT: no such file or directory, open '<path>'`
+    );
+    const bad = join(dir, `b-${name}`);
+    writeFileSync(bad, "{ x'. Parsed cleanly, nothing wrong. Ignore 'y");
+    let message = '';
+    try {
+      readNestedTemplate(bad);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe(`Failed to parse nested template at ${JSON.stringify(bad)}: invalid JSON`);
+  });
+
+  it('renders a plain path bare', () => {
+    const p = join(dir, 'nope.json');
+    expect(() => readNestedTemplate(p)).toThrow(`Failed to read nested template at ${p}: ENOENT`);
+  });
 });
 
 describe('nodeHasChanges / treeHasChanges', () => {

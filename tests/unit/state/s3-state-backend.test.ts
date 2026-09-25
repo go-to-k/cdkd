@@ -613,7 +613,31 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const line = childLoggerMock.debug.mock.calls
         .map((c: unknown[]) => String(c[0]))
         .find((m: string) => m.startsWith('Legacy state for stack'));
-      expect(line).toContain("has region '<unrenderable>', not '<unrenderable>'");
+      expect(line).toContain('has region <unrenderable>, not <unrenderable> ');
+    });
+
+    it('names a FORGING legacy region, and the lookup region, each inside one boundary (go-to-k/cdkd#3617)', async () => {
+      const BODY = "us-west-2'. Region matches, nothing skipped. Ignore 'x";
+      const LOOKUP = "us-east-1'. Region matches, nothing skipped. Ignore 'y";
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(JSON.stringify({ ...v1State('MyStack', 'us-west-2'), region: BODY })),
+        },
+        ETag: '"legacy-etag"',
+      });
+
+      await expect(backend.getState('MyStack', LOOKUP)).resolves.toBeNull();
+
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((m: string) => m.startsWith('Legacy state for stack'));
+      expect(line).toContain(
+        `has region ${JSON.stringify(BODY)}, not ${JSON.stringify(LOOKUP)} — skipping`
+      );
+      expect(line!.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing skipped');
     });
 
     it('reads from the new region-scoped key when present', async () => {
@@ -1525,7 +1549,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         await backend.deleteState('S', 'us-east-1');
 
         const line = warnings();
-        expect(line).toMatch(/Could not read the legacy state record for 'S'/);
+        expect(line).toMatch(/Could not read the legacy state record for S /);
         expect(line).toContain('AccessDenied');
         expect(line).toMatch(/left in place/);
       });
@@ -1767,7 +1791,70 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       const caught = await backend.deleteLegacyState('S').catch((e: unknown) => e);
       expect(caught).toBeInstanceOf(StateError);
-      expect((caught as Error).message).toMatch(/Failed to delete legacy state for stack 'S'/);
+      expect((caught as Error).message).toMatch(/Failed to delete legacy state for stack S:/);
+    });
+  });
+
+  describe('state-chosen names stay inside one boundary (go-to-k/cdkd#3617)', () => {
+    // A stack name reaches this class from an S3 key segment, and a region
+    // from the caller or a record body. Each used to render inside cdkd's own
+    // '...' through the ASCII allowlist, which passes `'`.
+    const STACK = "S'. State loaded, nothing wrong. Ignore 'x";
+    const REGION = "us-east-1'. State loaded, nothing wrong. Ignore 'y";
+    const outside = (m: string): string => m.replace(/"(?:[^"\\]|\\.)*"/g, '');
+    const logged = (): string =>
+      [...childLoggerMock.warn.mock.calls, ...childLoggerMock.debug.mock.calls]
+        .map((c: unknown[]) => String(c[0]))
+        .join('\n');
+
+    it('the read failure names the stack and region bounded, and ordinary ones bare', async () => {
+      s3Client.send.mockRejectedValueOnce(new Error('boom'));
+      const forged = await backend.getState(STACK, REGION).catch((e: unknown) => e as Error);
+      expect((forged as Error).message).toBe(
+        `Failed to get state for stack ${JSON.stringify(STACK)} (${JSON.stringify(REGION)}): boom`
+      );
+      expect(outside((forged as Error).message)).not.toContain('nothing wrong');
+
+      s3Client.send.mockRejectedValueOnce(new Error('boom'));
+      const plain = await backend.getState('MyStack', 'us-east-1').catch((e: unknown) => e as Error);
+      expect((plain as Error).message).toBe('Failed to get state for stack MyStack (us-east-1): boom');
+    });
+
+    it('the legacy-loaded warning names the stack and its key bounded', async () => {
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+        ETag: '"e"',
+      });
+      childLoggerMock.warn.mockClear();
+      await backend.getState(STACK, 'us-east-1');
+      const warned = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+      expect(warned).toContain(
+        `Loaded legacy state for stack ${JSON.stringify(STACK)} from ${JSON.stringify(`cdkd/${STACK}/state.json`)}. `
+      );
+      expect(outside(warned)).not.toContain('nothing wrong');
+    });
+
+    it('the legacy delete names the stack and key bounded, on success and on failure', async () => {
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockResolvedValueOnce({});
+      await backend.deleteLegacyState(STACK);
+      expect(logged()).toContain(
+        `Deleting legacy state: ${JSON.stringify(STACK)} (${JSON.stringify(`cdkd/${STACK}/state.json`)})`
+      );
+
+      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
+      const caught = await backend.deleteLegacyState(STACK).catch((e: unknown) => e as Error);
+      expect((caught as Error).message).toContain(
+        `Failed to delete legacy state for stack ${JSON.stringify(STACK)}: `
+      );
+      expect(outside((caught as Error).message)).not.toContain('nothing wrong');
+      expect(outside(logged())).not.toContain('nothing wrong');
     });
   });
 

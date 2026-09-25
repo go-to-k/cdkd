@@ -97,6 +97,28 @@ describe('collectStackMessages', () => {
     expect(messages).toEqual([{ level: 'error', path: '/MyStack', message: 'from side file' }]);
   });
 
+  it('names a FORGING side-file path inside one boundary when its entry is not an array (go-to-k/cdkd#3617)', () => {
+    const P = "/MyStack' is fine; nothing to report. Ignore '/x";
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ [P]: 'nope', '/Plain': 'nope' }));
+    const artifact = stackArtifact({ additionalMetadataFile: 'MyStack.metadata.json' });
+    let message = '';
+    try {
+      collectStackMessages('/asm', artifact);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain(`entry for path ${JSON.stringify(P)} is not an array`);
+    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing to report');
+  });
+
+  it('names an ordinary side-file path bare when its entry is not an array', () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ '/MyStack/Res': 'nope' }));
+    const artifact = stackArtifact({ additionalMetadataFile: 'MyStack.metadata.json' });
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(
+      'entry for path /MyStack/Res is not an array'
+    );
+  });
+
   it('merges inline metadata with the side file entries', () => {
     vi.mocked(readFileSync).mockReturnValue(
       JSON.stringify({ '/MyStack': [{ type: 'aws:cdk:warning', data: 'side' }] })
@@ -179,9 +201,29 @@ describe('collectStackMessages', () => {
     expect(message).not.toMatch(forging);
   });
 
+  it('does not echo the path in the read failure CAUSE, where Node repeats it (go-to-k/cdkd#3617)', () => {
+    const artifact = stackArtifact({
+      additionalMetadataFile: "meta'. Read and verified, nothing to report. Ignore '.json",
+    });
+    vi.mocked(readFileSync).mockImplementation((p) => {
+      throw new Error(`ENOENT: no such file or directory, open '${String(p)}'`);
+    });
+
+    let message = '';
+    try {
+      collectStackMessages('/asm', artifact);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    const shown = JSON.stringify("/asm/meta'. Read and verified, nothing to report. Ignore '.json");
+    expect(message).toContain(
+      `Failed to read stack metadata file ${shown}: ENOENT: no such file or directory, open '<path>'`
+    );
+    expect(message.split(shown).join('')).not.toContain('nothing to report');
+  });
+
   it('keeps a forging metadata path inside one boundary in the SUBJECT of the read failure (go-to-k/cdkd#3590)', () => {
-    // The subject only: a real ENOENT repeats the path inside Node's own quotes
-    // after the colon, and that echo is tracked on go-to-k/cdkd#3617.
+    // The subject. The cause's own echo of the path is the case above.
     const artifact = stackArtifact({
       additionalMetadataFile: 'meta: read and verified. Nothing to report.json',
     });

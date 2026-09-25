@@ -449,7 +449,7 @@ describe('#2827 — cross-stack throws mask the resolved names they interpolate'
     });
 
     expect(message).not.toContain(PASSWORD);
-    expect(message).toContain("stack '***' not found in region");
+    expect(message).toContain('stack "***" not found in region');
     expect(message, 'the remedy sentence is not a needle and must survive').toContain(
       'Make sure the producer stack'
     );
@@ -483,7 +483,7 @@ describe('#2827 — cross-stack throws mask the resolved names they interpolate'
     });
 
     expect(message).not.toContain(PASSWORD);
-    expect(message).toContain("output '***' not found in stack '***'");
+    expect(message).toContain("output \"***\" not found in stack \"***\"");
     // The available-output list is a CONTROL: those names are not needles.
     expect(message).toContain('PublicOne');
   });
@@ -506,9 +506,9 @@ describe('#2827 — cross-stack throws mask the resolved names they interpolate'
       'not found in region'
     );
     expect(message).not.toContain(REGION_PASSWORD);
-    expect(message).toContain("not found in region '***'");
+    expect(message).toContain("not found in region \"***\"");
     // The CONTROL inside the same message: the stack name is not a needle.
-    expect(message).toContain("stack 'Producer'");
+    expect(message).toContain('stack Producer ');
   });
 
   it('...and in the Resolving / DescribeStacks lines that name it too', async () => {
@@ -540,7 +540,7 @@ describe('#2827 — cross-stack throws mask the resolved names they interpolate'
     });
 
     expect(message).not.toContain(PASSWORD);
-    expect(message).toContain("cannot reference own stack '***'");
+    expect(message).toContain("cannot reference own stack \"***\"");
   });
 });
 
@@ -731,7 +731,7 @@ describe('#2827 — the two TRUNCATING region gates mask BEFORE they truncate', 
 
     expect(message).not.toContain(LONG_PASSWORD);
     expect(message).not.toContain(LONG_PASSWORD.slice(0, 64));
-    expect(message).toContain("Fn::GetStackOutput: '***' is not a valid AWS region name");
+    expect(message).toContain("Fn::GetStackOutput: \"***\" is not a valid AWS region name");
   });
 
   it('a needle carrying an invisible is masked BEFORE the strip destroys it', async () => {

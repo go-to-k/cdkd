@@ -10,7 +10,7 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
@@ -154,7 +154,11 @@ interface HeldLock {
  * `grep safeSegment` answers it exactly.
  */
 function safeSegment(value: string | undefined): string {
-  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+  // `displayIdent` IS the allowlist-plus-floor this used to spell, and adds a
+  // boundary: bare when plain, otherwise one JSON string, so a call site writes
+  // NO quotes of its own around it (go-to-k/cdkd#3617). The stack cap, since a
+  // nested `Parent~Child` name legitimately runs past the 255 default.
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**
@@ -498,7 +502,7 @@ export class LockManager {
       // which of the two threw.
       throw new LockError(
         `Failed to acquire lock for stack ` +
-          `'${safeSegment(stackName)}' ` +
+          `${safeSegment(stackName)} ` +
           `(${safeSegment(region)}): ` +
           // Sanitized rather than left raw
           // because S3 error text echoes the KEY, which embeds the stack name --
@@ -584,7 +588,7 @@ export class LockManager {
       if (!response.Body) {
         // A `LockError` is rethrown UNCHANGED by the catch below, so this one
         // does not reach the guard there — it needs its own (issue #3003).
-        throw new LockError(`Lock file for stack '${shownStack}' has no body`);
+        throw new LockError(`Lock file for stack ${shownStack} has no body`);
       }
 
       const bodyString = await response.Body.transformToString();
@@ -653,7 +657,7 @@ export class LockManager {
           asciiOnly: true,
         }) || UNRENDERABLE;
       throw new LockError(
-        `Failed to get lock info for stack '${shownStack}': ${detail}`,
+        `Failed to get lock info for stack ${shownStack}: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1122,7 +1126,7 @@ export class LockManager {
         // `displaySafe` because the key embeds the stack name and -- on the reap
         // paths -- a region this process read out of a lock/state object BODY,
         // i.e. attacker-influenced text on its way to a terminal.
-        `Could not purge noncurrent versions of the lock key '${displaySafe(key)}' in bucket ` +
+        `Could not purge noncurrent versions of the lock key ${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} in bucket ` +
           `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
           `survive and remain readable via GetObject with a VersionId (${LOCK_OBJECT_DESCRIPTION}). ` +
           `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge ` +
@@ -1457,7 +1461,7 @@ export class LockManager {
           // nothing anywhere, being sanitized at their single source,
           // `getLockRecord`.
           this.logger.info(
-            `Stack '${safeSegment(stackName)}' ` +
+            `Stack ${safeSegment(stackName)} ` +
               `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
               `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.` +
@@ -1517,7 +1521,7 @@ export class LockManager {
     const safeStack = safeSegment(stackName);
     const safeRegion = safeSegment(region);
     throw new LockError(
-      `Failed to acquire lock for stack '${safeStack}' (${safeRegion}) after ${maxRetries + 1} attempts. ` +
+      `Failed to acquire lock for stack ${safeStack} (${safeRegion}) after ${maxRetries + 1} attempts. ` +
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +

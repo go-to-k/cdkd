@@ -175,7 +175,7 @@ describe('Fn::GetStackOutput strips control characters from the NAMES (issue #33
     const message = String(err?.message ?? '');
     // Anchored to the OUTPUT position, so an emptied `loggedOutputName` fails
     // here rather than being satisfied by the stack name beside it.
-    expect(message).toContain("output 'Prod");
+    expect(message).toContain('output "Prod');
     expect(message).toContain('Evil');
     expect(message, 'a raw ESC reached the message').not.toContain(ESC);
     expect(message, 'a raw CR reached the message').not.toContain('\r');
@@ -256,7 +256,7 @@ describe('Fn::GetStackOutput strips control characters from the NAMES (issue #33
       );
 
     expect(err).toBeDefined();
-    expect(String(err?.message ?? '')).toContain("stack 'My-Prod.Stack_1' not found");
+    expect(String(err?.message ?? '')).toContain("stack My-Prod.Stack_1 not found");
   });
 });
 
@@ -309,5 +309,140 @@ describe('the CFn-fallback WARN strips control characters too (round 2 blocker)'
     } finally {
       got.warn = previous;
     }
+  });
+});
+
+describe('Fn::GetStackOutput keeps a FORGING name inside one boundary (go-to-k/cdkd#3617)', () => {
+  // Stack and output names come from the template through `resolveValue`, and
+  // each used to render inside cdkd's own '...' through `displaySafe`, which
+  // passes `'`. A forging name must render as ONE JSON string, and no clause of
+  // it may appear outside that string.
+  const FSTACK = "Prod'. Producer verified, nothing missing. Ignore 'X";
+  const FOUT = "Url'. Output verified, nothing missing. Ignore 'Y";
+  const outside = (m: string): string => m.replace(/"(?:[^"\\]|\\.)*"/g, '');
+  const messageOf = async (
+    value: unknown,
+    stacks: Parameters<typeof makeBackend>[0] = [],
+    stackName = 'Consumer'
+  ): Promise<string> => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const err = await resolver
+      .resolve(value, { ...buildContext({ stateBackend: makeBackend(stacks) }), stackName })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(err).toBeDefined();
+    return String(err?.message ?? '');
+  };
+
+  it('in the stack-not-found throw', async () => {
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: 'A' } });
+    expect(m).toContain(`Fn::GetStackOutput: stack ${JSON.stringify(FSTACK)} not found in region us-east-1.`);
+    expect(outside(m)).not.toContain('nothing missing');
+  });
+
+  it('in the output-not-found throw, for both names', async () => {
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: FOUT } }, [
+      { stackName: FSTACK, region: 'us-east-1', outputs: { Other: 'v' } },
+    ]);
+    expect(m).toContain(
+      `Fn::GetStackOutput: output ${JSON.stringify(FOUT)} not found in stack ${JSON.stringify(FSTACK)} (us-east-1).`
+    );
+    expect(outside(m)).not.toContain('nothing missing');
+  });
+
+  it('in the malformed-record refusal', async () => {
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: 'A' } }, [
+      { stackName: FSTACK, region: 'us-east-1', outputs: 'torn' as never },
+    ]);
+    expect(m).toContain(`the state record of producer stack ${JSON.stringify(FSTACK)} (us-east-1)`);
+    expect(outside(m)).not.toContain('nothing missing');
+  });
+
+  it('in the own-stack refusal', async () => {
+    const m = await messageOf(
+      { 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: 'A' } },
+      [],
+      FSTACK
+    );
+    expect(m).toContain(`cannot reference own stack ${JSON.stringify(FSTACK)} in the same region us-east-1`);
+    expect(outside(m)).not.toContain('nothing missing');
+  });
+
+  it('in the region gate, which bounds an invalid region the same way', async () => {
+    const REG = "us-east-1'. Region verified, nothing missing. Ignore 'Z";
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'A', Region: REG } });
+    expect(m.startsWith(`Fn::GetStackOutput: ${JSON.stringify(REG)} is not a valid AWS region name.`)).toBe(true);
+    expect(outside(m)).not.toContain('nothing missing');
+  });
+
+  it('in the CFn-fallback WARN, whose stack name used to sit in cdkd\'s own quotes', async () => {
+    cfnSend.mockReset();
+    cfnSend.mockRejectedValue(new Error('AccessDenied: not authorized'));
+    const warn = vi.fn();
+    const logger = await import('../../../src/utils/logger.js');
+    const got = logger.getLogger() as unknown as { warn: typeof warn };
+    const previous = got.warn;
+    got.warn = warn;
+    try {
+      await new IntrinsicFunctionResolver('us-east-1')
+        .resolve(
+          { 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: 'A' } },
+          buildContext({ stateBackend: makeBackend([]) })
+        )
+        .catch(() => undefined);
+      const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(`fallback failed for stack ${JSON.stringify(FSTACK)} (us-east-1): `);
+      expect(outside(warned)).not.toContain('nothing missing');
+    } finally {
+      got.warn = previous;
+    }
+  });
+
+  it('masks a recorded secret the ASCII bound would otherwise RECONSTITUTE', async () => {
+    // `displayIdent` blanks a no-break space to a space. Masked only before
+    // that, `correct<NBSP>horse` does not match a recorded `correct horse` and
+    // then prints it byte for byte; the second mask runs after the blanking.
+    const secret = 'correct horse battery';
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const err = await resolver
+      .resolve(
+        { 'Fn::GetStackOutput': { StackName: `p-${secret.replace(/ /g, '\u00a0')}`, OutputName: 'A' } },
+        {
+          ...buildContext({ stateBackend: makeBackend([]) }),
+          recordedSecretValues: new Map([[secret, '{{resolve:secretsmanager:s}}']]),
+        }
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    const m = String(err?.message ?? '');
+    expect(m).toContain('Fn::GetStackOutput: stack "p-***" not found');
+    expect(m).not.toContain('battery');
+  });
+
+  it('names a long nested stack name WHOLE, at the stack cap rather than the 255 default', async () => {
+    const name = `Parent-${'C'.repeat(300)}`;
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: name, OutputName: 'A' } });
+    expect(m).toContain(`Fn::GetStackOutput: stack ${name} not found`);
+    expect(m).not.toContain('[cut:');
+  });
+
+  it('quotes a name the sanitizer ALTERED, even when what is left is plain (the #3164 spoof)', async () => {
+    // Padding, a tab or a non-ASCII edge character is trimmed or blanked
+    // before bounding; printed bare, the name would read as a genuine `Prod`.
+    for (const name of ['Prod ', 'Prod\t', 'Prod\u0416', 'Prod\u00a0']) {
+      const m = await messageOf({ 'Fn::GetStackOutput': { StackName: name, OutputName: 'A' } });
+      expect(m, JSON.stringify(name)).toContain('Fn::GetStackOutput: stack "Prod" not found');
+    }
+  });
+
+  it('renders ordinary names bare, with no quotes of its own', async () => {
+    const m = await messageOf({ 'Fn::GetStackOutput': { StackName: 'Prod', OutputName: 'Url' } }, [
+      { stackName: 'Prod', region: 'us-east-1', outputs: { Other: 'v' } },
+    ]);
+    expect(m).toContain('Fn::GetStackOutput: output Url not found in stack Prod (us-east-1).');
   });
 });

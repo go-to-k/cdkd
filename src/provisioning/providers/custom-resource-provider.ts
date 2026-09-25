@@ -17,7 +17,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
@@ -1212,18 +1212,17 @@ export class CustomResourceProvider implements ResourceProvider {
             // allowlist: a bucket name and a region name both have a known
             // ASCII charset.
             //
-            // `|| UNRENDERABLE` on every one of them, because `displaySafe`
-            // returns `''` for a value with nothing renderable left AND for
-            // `undefined`. Without it this line reads `is in ''`, which claims
-            // an empty region rather than an unusable one -- and for
-            // `currentRegion` it would be a REGRESSION, since the raw
-            // `String(currentRegion)` this replaced rendered `undefined`
-            // visibly. Pair every cap with its floor.
+            // `displayIdent` is that allowlist plus the `UNRENDERABLE` floor,
+            // and adds a boundary of its own, so no quotes are written around
+            // any of them (go-to-k/cdkd#3617). The floor matters: a value with
+            // nothing renderable left, or `undefined`, must not read as an
+            // empty region -- and for `currentRegion` that would be a
+            // REGRESSION, since the raw `String(currentRegion)` this replaced
+            // rendered `undefined` visibly.
             this.logger.debug(
               `Custom resource response bucket ` +
-                `'${displaySafe(bucket, { asciiOnly: true }) || UNRENDERABLE}' is in ` +
-                `'${displaySafe(bucketRegion, { asciiOnly: true }) || UNRENDERABLE}' (client was ` +
-                `'${displaySafe(currentRegion, { asciiOnly: true }) || UNRENDERABLE}'); building a ` +
+                `${displayIdent(bucket)} is in ${displayIdent(bucketRegion)} (client was ` +
+                `${displayIdent(currentRegion)}); building a ` +
                 `region-corrected S3 client for response operations.`
             );
           },

@@ -617,3 +617,47 @@ describe('asset destinations', () => {
     expect(cap.warned()).toEqual([]);
   });
 });
+
+describe('manifest-chosen names stay inside one boundary (go-to-k/cdkd#3617)', () => {
+  // Each used to render inside cdkd's own '...' through `displaySafe`, which
+  // passes `'`, so a crafted manifest could close the quote and write a clause
+  // of its own into a line whose whole job is to warn.
+  const outside = (m: string): string => m.replace(/"(?:[^"\\]|\\.)*"/g, '');
+
+  it('the executable command, bare when plain', () => {
+    const cap = captureWarn();
+    const CMD = "./b.sh'. Nothing runs from the assembly. Ignore 'x";
+    warnManifestExecutable([CMD]);
+    warnManifestExecutable(['./build.sh']);
+    const [forged, plain] = cap.warned();
+    expect(forged).toContain(`this machine: ${JSON.stringify(CMD)}. cdkd runs it`);
+    expect(outside(forged!)).not.toContain('Nothing runs from the assembly');
+    expect(plain).toContain('this machine: ./build.sh. cdkd runs it');
+  });
+
+  it('the destination name, bare when plain', () => {
+    const cap = captureWarn();
+    const NAME = "b'. Bootstrap-managed, nothing to check. Ignore 'y";
+    warnUnrecognizedAssetDestination({ kind: 'bucket', name: NAME, recognized: false });
+    warnUnrecognizedAssetDestination({ kind: 'bucket', name: 'plain-bucket', recognized: false });
+    const [forged, plain] = cap.warned();
+    expect(forged).toContain(`Asset destination bucket ${JSON.stringify(NAME)} is not a `);
+    expect(outside(forged!)).not.toContain('nothing to check');
+    expect(plain).toContain('Asset destination bucket plain-bucket is not a ');
+  });
+
+  it('the keyed field entry, bare when plain', () => {
+    const { outdir, context, victim } = assembly();
+    const cap = captureWarn();
+    const KEY = "k'] names nothing outside. Ignore ['z";
+    warnEscapingBuildKitPaths(
+      source({ dockerBuildContexts: { [KEY]: join(victim, 'a'), plain: join(victim, 'b') } }),
+      context,
+      outdir
+    );
+    const lines = cap.warned();
+    expect(lines.some((l) => l.startsWith(`Docker asset dockerBuildContexts[${JSON.stringify(KEY)}] names`))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Docker asset dockerBuildContexts[plain] names'))).toBe(true);
+    for (const l of lines) expect(outside(l)).not.toContain('names nothing outside');
+  });
+});
