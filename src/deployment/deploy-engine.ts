@@ -1031,10 +1031,15 @@ export function crossStackReadsForPartialSave(
   //
   // ENCODED, not separated (go-to-k/cdkd#3496). `previous` comes from
   // persisted JSON that `parseState` only casts, so no half is guaranteed free
-  // of a NUL, and a separated key lets two distinct entries collide — the
-  // union then drops the second, and `state.imports` is what `destroy-runner`
-  // refuses a destroy on. A dropped strong reference is a fail-OPEN in that
-  // guard; `injectiveKey` cannot collide.
+  // of a NUL. The old NUL-joined key could collide only when an entry's
+  // STACK or REGION half carries a NUL (splitting at the first two NULs
+  // recovers every field otherwise, whatever the name half holds). No
+  // CDK-synthesized stack name or canonical region does; cdkd validates no
+  // prebuilt-assembly stack-name charset, so only a hand-written assembly or a
+  // hand-edited / corrupted record can. So this is defence against a MALFORMED
+  // entry shadowing a genuine one, not a live fail-open: the union keeps the
+  // first of two colliding entries, and `state.imports` is what
+  // `destroy-runner` refuses a destroy on. `injectiveKey` cannot collide.
   const importKey = (e: StateImportEntry): string =>
     injectiveKey(e.sourceStack, canonicalizeRegion(e.sourceRegion), normalizeName(e.exportName));
   const outputReadKey = (e: StateOutputReadEntry): string =>
@@ -2464,7 +2469,13 @@ export class DeployEngine {
     // Encoded (go-to-k/cdkd#3496): a physical id is whatever AWS or the
     // template produced, and the record is an unchecked cast, so a separator
     // could let two records share one memo entry — one resource's read served
-    // as another's heal. Nothing else reads this key.
+    // as another's heal. For string halves the old `<logicalId>\0<physicalId>`
+    // key was already injective unless the logical id itself contains a NUL,
+    // since the split point is then the FIRST NUL. cdkd validates no
+    // logical-id charset, so a hand-written template or a hand-edited state
+    // can carry one; encoding removes that precondition (and the
+    // `[object Object]` conflation of non-string physical ids a template
+    // literal had). Nothing else reads this key.
     const key = injectiveKey(logicalId, resource.physicalId);
     const inFlight = this.attributeHeals.get(key);
     if (inFlight) return inFlight;
