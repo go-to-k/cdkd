@@ -413,6 +413,36 @@ describe('Claude session links', () => {
     ).toEqual([]);
   });
 
+  it('passes text that NAMES the pattern, so a description of the rule does not fail', () => {
+    expect(
+      scanSessionLinks(
+        'body',
+        'refuses a `claude.ai/code/session_` link\nno `claude.ai/code/session_...` link\nclaude.ai/code/session_',
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not flag its own report, so a quoted bot comment cannot loop', () => {
+    const s = subject({ title: 't', body: `${LINK}\nClaude-Session: ${LINK}` });
+    const report = formatSessionLinkReport(s, scanSubjectSessionLinks(s));
+    expect(scanSessionLinks('body', report)).toEqual([]);
+  });
+
+  it('withholds the session id from the report the bot posts', () => {
+    const s = subject({ title: 't', body: `see ${LINK}\nClaude-Session: ${LINK}` });
+    const report = formatSessionLinkReport(s, scanSubjectSessionLinks(s));
+    expect(report).not.toContain('01AbCdEf');
+    expect(report).toContain('claude.ai/code/session_<redacted>');
+    expect(report).toContain('Claude-Session <redacted trailer>');
+  });
+
+  it('flags a trailer behind a quote or list marker, a spaced colon, and one after a lone CR', () => {
+    expect(scanSessionLinks('body', '> Claude-Session: x')).toHaveLength(1);
+    expect(scanSessionLinks('body', '- Claude-Session: x')).toHaveLength(1);
+    expect(scanSessionLinks('body', 'Claude-Session : x')).toHaveLength(1);
+    expect(scanSessionLinks('body', 'x\rClaude-Session: y').map((o) => o.line)).toEqual([2]);
+  });
+
   it('skips a comment title, like the English scan', () => {
     expect(
       scanSubjectSessionLinks({ kind: 'issue_comment', number: 5, title: LINK, body: 'x', labels: [] }),

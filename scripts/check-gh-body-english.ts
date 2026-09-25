@@ -185,20 +185,39 @@ export function scanSubject(subject: Subject): Offender[] {
  * build that `docs/tooling-backlog.md` named. It rides this check because this
  * is already the required check that reads every published body.
  *
- * Only a SESSION link: `claude.ai/code/artifact/...` or a bare `claude.ai`
- * mention is not the forbidden provenance and passes. The trailer counts only
- * at the start of a line, where git and the harness put it.
+ * Only a SESSION link, and only when an id character follows `session_`: text
+ * that NAMES the pattern (`claude.ai/code/session_...`, as this check's own
+ * report and any description of the rule do) must pass, or every PR or issue
+ * explaining the rule fails the check and a quoted bot report loops. A
+ * `claude.ai/code/artifact/...` link or a bare `claude.ai` passes too. The
+ * trailer counts only at the start of a line, allowing a quote or list marker
+ * in front of it.
  */
-export const SESSION_LINK_RE = /claude\.ai\/code\/session_|^\s*Claude-Session:/i;
+export const SESSION_LINK_RE =
+  /claude\.ai\/code\/session_[A-Za-z0-9]|^[\s>*-]*Claude-Session\s*:/i;
+
+/**
+ * The offending line with the session id withheld. This report is posted as a
+ * comment by the repo's bot, so quoting the line verbatim would re-publish,
+ * under the repo's identity, exactly the text the author is asked to delete.
+ * The trailer loses its colon, so the report itself never matches and a quoted
+ * bot comment cannot fail the check.
+ */
+export function redactSessionLine(line: string): string {
+  return line
+    .replace(/claude\.ai\/code\/session_\S*/gi, 'claude.ai/code/session_<redacted>')
+    .replace(/Claude-Session\s*:.*/i, 'Claude-Session <redacted trailer>');
+}
 
 /** Every line of one field carrying a session link or trailer, capped like `scanField`. */
 export function scanSessionLinks(field: string, text: string | undefined): Offender[] {
   if (!text) return [];
   const out: Offender[] = [];
-  const lines = text.split('\n');
+  // A lone CR ends a line too: `x\rClaude-Session: y` renders as two lines.
+  const lines = text.split(/\r\n|\r|\n/);
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (!SESSION_LINK_RE.test(line)) continue;
+    const line = redactSessionLine(lines[i]!);
+    if (!SESSION_LINK_RE.test(lines[i]!)) continue;
     out.push({
       field,
       line: i + 1,
