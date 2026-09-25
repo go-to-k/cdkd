@@ -1,5 +1,4 @@
 import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
-import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   mkdtempSync,
@@ -92,13 +91,12 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // So the fence stays the cap, and the mitigation is measurement rather than
 // assertion: `vp test run <this file> --reporter=verbose` prints per-test
 // durations, and the numbers above are the baseline to compare against
-// (2026-08-13, local: slowest 15.2s, the two spawn probes 5.3s / 5.0s). Re-measure
+// (2026-08-13, local: slowest 15.2s). Re-measure
 // and update them when this file's cost changes; a bump made without new numbers
 // is the thing this note exists to prevent.
 vi.setConfig({ testTimeout: 60_000 });
 
 const repoRoot = process.cwd();
-const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 
 const exactTarget: NestedKeyTarget = {
@@ -5799,7 +5797,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // writing the SDK member — is probed for real through the `--providers-dir=`
     // seam rather than asserted here in prose: see "exits 1 naming
     // LifecycleConfiguration.Rules.Prefix although a DIFF-side fold writes it"
-    // in the shipped-`--check` block below. (It was a comment in the first cut,
+    // in gen-nested-key-coverage-cli.test.ts. (It was a comment in the first cut,
     // which is a measurement that decays silently.) The EventBridge, transition-
     // date and rule-status folds additionally write their member under a COMPUTED
     // key for the #1475 reason the provider states in-code.

@@ -6,9 +6,9 @@ import { join, resolve } from 'node:path';
 
 import { MIN_WRITTEN_MEMBERS_PER_PROVIDER, NESTED_KEY_ALLOW_LIST, NESTED_KEY_TARGETS, loadReport } from '../../../scripts/gen-nested-key-coverage.ts';
 
-// Split from gen-nested-key-coverage.test.ts so these ~2s spawns run in their own
-// worker instead of lengthening that file, the longest pole of the suite.
-// Vitest's concurrent mode is not an option: the stream fence buffers per worker.
+// Kept apart from gen-nested-key-coverage.test.ts so these ~2s spawns run in a
+// worker of their own; vitest's concurrent mode is not an option because the
+// stream fence buffers per worker.
 
 const repoRoot = process.cwd();
 const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
@@ -70,7 +70,8 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   // The #1464 acceptance, end to end against REAL provider source: two writes of
   // `type` under ONE top-level, each fenced by its own path. Through #1448 both
   // deletions exited 0 (the flattened fixture made them the same audited unit),
-  // so these are the shipped-command twins of the inverted library probes above.
+  // so these are the shipped-command twins of the inverted library probes in
+  // gen-nested-key-coverage.test.ts.
   const DUPLICATE_NAME_PROBES: ReadonlyArray<{
     readonly name: string;
     readonly anchor: string;
@@ -516,9 +517,9 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   // `.claude/rules/testing.md` requires: a REAL regression in REAL provider
   // code, driven through the SHIPPED command, not through the `fixtureDir`
   // library seam (which is deliberately not exposed on the CLI). The fixture
-  // probes elsewhere in this file inject a CFn-side key; these delete the
+  // probes in gen-nested-key-coverage.test.ts inject a CFn-side key; these delete the
   // PROVIDER-side conversion, which is the other half and the one the per-path
-  // `provider-handled` assertions above assert without proving.
+  // `provider-handled` assertions there assert without proving.
   it('exits 1 when the EventBridge ECS capacity-provider lowercasing is deleted (#1393)', () => {
     const dir = regressedTree('providers-eb-ecs', 'eventbridge-rule-provider.ts', (source) =>
       source.replace(

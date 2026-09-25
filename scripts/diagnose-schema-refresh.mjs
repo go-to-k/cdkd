@@ -2118,15 +2118,15 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
 
 /**
  * Read every fixture's committed version from git in ONE `git cat-file --batch`
- * — one process per fixture cost seconds per run. `undefined` = brand-new
+ * (a process per fixture costs seconds per run). `undefined` = brand-new
  * fixture (path not in HEAD).
  *
  * Only a path missing from a READABLE HEAD means "brand-new". Any other failure
  * — git absent, not a repository, an unborn HEAD — is this report failing to
- * read, and collapsing the two made every fixture look new and the whole
- * refresh look clean. That is why `HEAD` itself is the first request: an
- * unborn HEAD answers `HEAD:<path> missing` for every path, exactly like a
- * brand-new fixture.
+ * read and must stay UNREADABLE, or every fixture looks new and the refresh
+ * looks clean. That is why `HEAD` itself is the first request: an unborn HEAD
+ * answers `HEAD:<path> missing` for every path, exactly like a brand-new
+ * fixture.
  *
  * @param {string[]} relPaths
  * @param {string} [cwd]
@@ -3760,7 +3760,10 @@ function main() {
     // Follows the seam too. Leaving this hard-coded while `currentOf` moved is
     // harmless for the empty directory the test uses, and wrong for any other:
     // it would diff scratch content against the real committed fixtures.
-    committedOf: (file) => committed.get(`${fixturesRel}/${file}`),
+    committedOf: (file) => {
+      const key = `${fixturesRel}/${file}`;
+      return committed.has(key) ? committed.get(key) : UNREADABLE;
+    },
     currentOf: (file) => readFileSync(join(fixturesDir, file), 'utf8'),
     providerFiles,
     declared,

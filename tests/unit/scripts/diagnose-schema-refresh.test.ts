@@ -2316,8 +2316,7 @@ describe('collectFixtureDeltas', () => {
 
   it('reads committed fixtures from real git: path-not-in-HEAD is new, the rest are unreadable', () => {
     // An unborn HEAD answers `HEAD:<path> missing` for every path, exactly like
-    // a brand-new fixture — reading that as "brand-new" made every fixture look
-    // new and the refresh look clean, the fail-open this function closes.
+    // a brand-new fixture; it must still read as UNREADABLE.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-git-'));
     try {
       execFileSync('git', ['init', '-q', dir]);
@@ -2341,7 +2340,16 @@ describe('collectFixtureDeltas', () => {
   it('treats a directory that is not a repository as unreadable, never brand-new', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-nogit-'));
     try {
-      expect(committedVersions(['a.json'], dir).get('a.json')).toBe(UNREADABLE);
+      // The ceiling keeps git from finding an enclosing repository when TMPDIR
+      // itself lives inside a checkout.
+      const ceiling = process.env['GIT_CEILING_DIRECTORIES'];
+      process.env['GIT_CEILING_DIRECTORIES'] = dirname(dir);
+      try {
+        expect(committedVersions(['a.json'], dir).get('a.json')).toBe(UNREADABLE);
+      } finally {
+        if (ceiling === undefined) delete process.env['GIT_CEILING_DIRECTORIES'];
+        else process.env['GIT_CEILING_DIRECTORIES'] = ceiling;
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
