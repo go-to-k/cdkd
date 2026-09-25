@@ -460,7 +460,12 @@ describe('groupBlockedReasons (issue #1787 reporting)', () => {
       },
       { logicalId: 'Y', resourceType: 'AWS::S3::Bucket', reason: `a state value${forge}` },
       { logicalId: 'Y', resourceType: 'AWS::S3::Bucket', reason: 'a second reason' },
+      // A carriage return moves the cursor to column 0 just as a newline
+      // does, and U+2028 is a line separator to some renderers.
+      { logicalId: 'W', resourceType: 'AWS::S3::Bucket', reason: `cr\rRepair with: cdkd destroy --all #` },
+      { logicalId: 'V', resourceType: 'AWS::S3::Bucket', reason: `ls\u2028Repair with: cdkd destroy --all #` },
     ]);
+    expect(lines.join('\n')).not.toMatch(/[\r\u2028]/);
     // The multi-reason form: the repair line follows ITS reason, at column 0,
     // after that reason's own bullet.
     const multi = groupBlockedReasons([

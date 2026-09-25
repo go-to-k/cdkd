@@ -2181,7 +2181,8 @@ async function resolveIdentifierValue(
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
   // The id is NAMED in this sentence only when `isPasteableIdent` admits it
   // (M21 of the go-to-k/cdkd#3613 review) -- the predicate the `Repair with:`
-  // line below already takes, so the prose and the command answer as one. The
+  // line `groupBlockedReasons` appends from the refusal's `repair` already
+  // takes, so the prose and the command answer as one. The
   // sentence predates this PR; the labelled line it can imitate does not. M18
   // rendered the id through `displayIdent` here, which folds a newline and
   // quotes, so a key spelled `X\nRepair with: cdkd destroy --all --force #`
@@ -2220,8 +2221,9 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
  * {@link BlockedResource.repair}, which `groupBlockedReasons` prints on the
  * row's one `Repair with:` line.
  *
- * Two callers print this remedy, and both route through here so there is one
- * spelling of its gate: `maskedIdentifierAttributeReason` and
+ * Two refusals carry this remedy, and both build it here so there is one
+ * spelling of its gate: `resolveIdentifierValue`'s masked-attribute refusal
+ * (a `RepairableRefusal` beside `maskedIdentifierAttributeReason`'s prose) and
  * `buildImportPlan`'s resolved-identifier refusal (go-to-k/cdkd#3736). The
  * second used to spell it independently inside a prose `'...'` span with the
  * logical id interpolated (go-to-k/cdkd#3363's shape).
@@ -2233,7 +2235,7 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
  * reading the command can.
  *
  * It is a hole rather than a name because one caller,
- * {@link maskedIdentifierAttributeReason}, has no stack name in scope at all.
+ * `resolveIdentifierValue`, has no stack name in scope at all.
  * (`buildImportPlan` does have one, but filling it is a separate gating
  * question, and a second spelling here is what this helper exists to avoid.)
  */
@@ -3504,8 +3506,9 @@ interface BlockedResource {
    * The gated command a `Repair with:` line runs, built only by
    * `importRepairCommand`. It travels OUTSIDE `reason` because
    * `groupBlockedReasons` folds every control character out of a reason, so
-   * no value interpolated into one can start a line; the one labelled line a
-   * row may carry is the renderer's own (go-to-k/cdkd#3736).
+   * no NEWLINE in an interpolated value can start a line; the one labelled
+   * line a row may carry is the renderer's own (go-to-k/cdkd#3736). Padding
+   * that wraps on screen inside a reason is go-to-k/cdkd#3760's.
    */
   repair?: string;
 }
