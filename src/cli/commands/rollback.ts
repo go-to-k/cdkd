@@ -1,5 +1,21 @@
 import { Command, Option } from 'commander';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+
+/**
+ * The `Re-run with: cdkd rollback` line every refusal here ends in. The name
+ * can come from a journal S3 key, and it sits beside a labelled line, so it is
+ * named only when it is a plain identifier, and a hole is explained
+ * (go-to-k/cdkd#3773).
+ */
+export function rerunRollback(stackName: string): string {
+  const rerun = pasteableCommand('cdkd rollback', [
+    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+  ]);
+  return (
+    withheldTargetClause(rerun, 'stack', 'cdkd rollback', "This stack's name") +
+    `\nRe-run with: ${rerun.command}`
+  );
+}
 import {
   commonOptions,
   stateOptions,
@@ -788,9 +804,7 @@ export async function rollbackCommand(
                 // `displayIdent` (what `safeStack` applies) bounds a JSON string,
                 // not a shell word, so the name went on a trailing labelled line
                 // behind the shared gate instead (go-to-k/cdkd#3436).
-                `\nRe-run with: ${
-                  pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
-                }`
+                rerunRollback(stackName)
             );
           }
         }
@@ -990,14 +1004,14 @@ export async function rollbackCommand(
       if (interrupted) {
         throw new PartialFailureError(
           `Rollback interrupted. Journal preserved — re-run the rollback to finish.` +
-            `\nRe-run with: ${pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command}`
+            rerunRollback(stackName)
         );
       }
       if (totalFailures > 0) {
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
             `re-run the rollback to retry.` +
-            `\nRe-run with: ${pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command}`
+            rerunRollback(stackName)
         );
       }
       if (totalWarnings > 0) {

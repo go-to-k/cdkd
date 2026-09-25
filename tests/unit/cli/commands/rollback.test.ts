@@ -71,7 +71,7 @@ vi.mock('../../../../src/cli/commands/state.js', async () => {
   };
 });
 
-import { rollbackCommand } from '../../../../src/cli/commands/rollback.js';
+import { rerunRollback, rollbackCommand } from '../../../../src/cli/commands/rollback.js';
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
 
 interface FakeBackend {
@@ -2019,6 +2019,22 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(lines[1]).toMatch(/^Re-run with: cdkd rollback S$/);
     expect(lines[0]).toContain('caf\u00e9');
     expect(lines[0]).toContain('- delete   RealDatabase');
+  });
+
+  it('rerunRollback names a plain stack and withholds a padded or newline one (go-to-k/cdkd#3773)', () => {
+    expect(rerunRollback('S')).toBe('\nRe-run with: cdkd rollback S');
+    for (const name of [
+      `S${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`,
+      'S\nRe-run with: cdkd destroy --all --force #',
+    ]) {
+      const out = rerunRollback(name);
+      expect(out).not.toContain('--all --force');
+      expect(out.split('\n').filter((l) => l.startsWith('Re-run with:'))).toEqual([
+        "Re-run with: cdkd rollback '<stack>'",
+      ]);
+      expect(out).toContain("This stack's name");
+      expect(out.indexOf("This stack's name")).toBeLessThan(out.indexOf('\nRe-run with:'));
+    }
   });
 
   it('the failed-strip warning renders the S3 error through the DENYLIST too', async () => {

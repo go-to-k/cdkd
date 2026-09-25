@@ -1,5 +1,5 @@
 import { Command, Option } from 'commander';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
 import {
   commonOptions,
   deprecatedRegionOption,
@@ -512,14 +512,17 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
   // a hole here rather than in its altered spelling, which would address a
   // different record. The `<runId>` hole is quoted for the redirection shape
   // (go-to-k/cdkd#3436).
+  // `plainIdent`: the name sits beside a labelled line, so it is named only
+  // when it is a plain identifier, and a hole is explained (go-to-k/cdkd#3773).
+  const readRun = pasteableCommand('cdkd events', [
+    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+    { flag: '--run', hole: 'runId' },
+  ]);
+  const clause = withheldTargetClause(readRun, 'stack', 'cdkd events', "This stack's name");
   logger.info(
     gray(
-      `\nRead one run's events with: ${
-        pasteableCommand('cdkd events', [
-          { value: stackName, hole: 'stack' },
-          { flag: '--run', hole: 'runId' },
-        ]).command
-      }`
+      (clause === '' ? '' : `\n${clause.trimStart()}`) +
+        `\nRead one run's events with: ${readRun.command}`
     )
   );
 }
