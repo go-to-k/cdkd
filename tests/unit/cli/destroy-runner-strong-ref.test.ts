@@ -104,6 +104,29 @@ describe('scanActiveConsumers (strong-reference check)', () => {
     ]);
   });
 
+  it('matches an import whose region is recorded in another CASE (go-to-k/cdkd#3746)', async () => {
+    // The deploy side compares regions canonicalized and keeps the first-seen
+    // spelling, so a hand-edited or legacy `US-EAST-1` entry is the same
+    // strong reference. A strict comparison here let the destroy through.
+    const backend = mockBackend([
+      { stackName: 'Producer', region: 'us-east-1' },
+      {
+        stackName: 'Consumer',
+        region: 'us-east-1',
+        imports: [
+          { sourceStack: 'Producer', sourceRegion: 'US-EAST-1', exportName: 'BucketArn' },
+        ],
+      },
+    ]);
+    const consumers = await scanActiveConsumers('Producer', 'us-east-1', {
+      stateBackend: backend,
+      baseRegion: 'us-east-1',
+    });
+    expect(consumers).toEqual([
+      { consumerStack: 'Consumer', consumerRegion: 'us-east-1', exportName: 'BucketArn' },
+    ]);
+  });
+
   it('ignores imports from a different region (no cross-region collision)', async () => {
     const backend = mockBackend([
       { stackName: 'Producer', region: 'us-east-1' },

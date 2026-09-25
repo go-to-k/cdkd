@@ -148,17 +148,19 @@ describe('pasteable-command shape fence — the classifier sees its input', () =
   it('substitutes a DECODED NUL rather than refusing the file', () => {
     // The raw-source refusal was necessary and not sufficient — TypeScript
     // decodes `\\u0000` into `node.text` — but refusing on the decoded form made
-    // the fence unrunnable: `src/deployment/deploy-engine.ts` uses exactly that
-    // separator for its export-index keys, in three live literals.
+    // the fence unrunnable: `src/deployment/secret-redaction.ts` uses exactly
+    // that separator in live literals (`maskedOutputKey`,
+    // `CROSS_STACK_KEY_SEPARATOR`). The file this case first read,
+    // `deploy-engine.ts`, lost its NUL-joined keys in go-to-k/cdkd#3496.
     //
     // The premise is taken from the PARSED file, not from a substring of its
     // source. Review measured the earlier form: replacing every live separator
     // with `|` and leaving a `// historical separator: \\u0000` comment behind
     // kept it green, so it pinned a spelling anywhere in the file rather than a
     // decoded NUL in a literal.
-    const real = readFileSync(join(SRC, 'deployment/deploy-engine.ts'), 'utf8');
+    const real = readFileSync(join(SRC, 'deployment/secret-redaction.ts'), 'utf8');
     const parsed = ts.createSourceFile(
-      'deploy-engine.ts',
+      'secret-redaction.ts',
       real,
       ts.ScriptTarget.Latest,
       true,
@@ -177,9 +179,9 @@ describe('pasteable-command shape fence — the classifier sees its input', () =
     ts.forEachChild(parsed, walk);
     expect(
       literalsCarryingNul,
-      'the premise moved — no literal in deploy-engine decodes to a NUL any more'
+      'the premise moved — no literal in secret-redaction decodes to a NUL any more'
     ).toBeGreaterThan(0);
-    expect(() => scanSource('deployment/deploy-engine.ts', real)).not.toThrow();
+    expect(() => scanSource('deployment/secret-redaction.ts', real)).not.toThrow();
   }, 30_000);
 
   it('blanks a message to exactly its own length, unterminated runs included', () => {

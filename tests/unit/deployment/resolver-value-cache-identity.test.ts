@@ -75,6 +75,15 @@ import {
   runWithStackAwsClients,
 } from '../../../src/utils/aws-clients.js';
 import {
+  clearRecoverableMaskedOutputs,
+  recordRecoverableMaskedOutput,
+  recoverMaskedOutput,
+} from '../../../src/deployment/secret-redaction.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../src/utils/ambient-client-defaults.js';
+import {
   IntrinsicFunctionResolver,
   getAccountInfo,
   resetAccountInfoCache,
@@ -379,6 +388,29 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
         A.accessKeyId,
         B.accessKeyId,
       ]);
+    });
+  });
+
+  describe('the masked-output recovery store (#3691)', () => {
+    // Its writer and readers key it by `credentialFingerprint(ambientCredentialConfig())`.
+    // This pins the part the unit files with MOCKED clients cannot: that the
+    // fingerprint read from REAL `AwsClients` tells A from B, including inside a
+    // per-stack scope, so B's same-named producer misses A's plaintext.
+    afterEach(() => clearRecoverableMaskedOutputs());
+    const ambient = (): string => credentialFingerprint(ambientCredentialConfig());
+
+    it('A records, B misses, A (and a stack scoped to A) recovers', async () => {
+      setAwsClients(clientsFor(A));
+      recordRecoverableMaskedOutput(ambient(), 'Producer', REGION, 'Token', 'plaintext-of-a');
+      expect(recoverMaskedOutput(ambient(), 'Producer', REGION, 'Token')).toBe('plaintext-of-a');
+
+      setAwsClients(clientsFor(B));
+      expect(recoverMaskedOutput(ambient(), 'Producer', REGION, 'Token')).toBeUndefined();
+
+      const scoped = await runWithStackAwsClients(clientsFor(A), () =>
+        Promise.resolve(recoverMaskedOutput(ambient(), 'Producer', REGION, 'Token'))
+      );
+      expect(scoped).toBe('plaintext-of-a');
     });
   });
 });

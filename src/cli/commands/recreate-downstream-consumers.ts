@@ -42,6 +42,7 @@
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { getLogger } from '../../utils/logger.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 
 /**
  * One downstream consumer of a recreate target's outputs.
@@ -154,12 +155,17 @@ export async function findDownstreamConsumers(input: {
         const got = await input.stateBackend.getState(ref.stackName, region);
         if (!got) return null;
         const out: DownstreamConsumer[] = [];
+        // Regions are compared CANONICALIZED (go-to-k/cdkd#3746), the rule the
+        // deploy side keys and dedups these entries by: an entry kept in
+        // another case is the same reference, and dropping it would leave a
+        // consumer out of this data-loss prompt.
+        const producerRegion = canonicalizeRegion(input.producerRegion);
         const imports = got.state.imports;
         if (imports && imports.length > 0) {
           for (const entry of imports) {
             if (
               entry.sourceStack === input.producerStack &&
-              entry.sourceRegion === input.producerRegion
+              canonicalizeRegion(entry.sourceRegion) === producerRegion
             ) {
               out.push({
                 consumerStack: ref.stackName,
@@ -182,7 +188,7 @@ export async function findDownstreamConsumers(input: {
             // region narrowing matters: without it every recreate in the
             // account would carry every such consumer.
             if (
-              entry.sourceRegion === input.producerRegion &&
+              canonicalizeRegion(entry.sourceRegion) === producerRegion &&
               producerNameIsUnresolved(entry.sourceStack)
             ) {
               out.push({
@@ -196,7 +202,7 @@ export async function findDownstreamConsumers(input: {
             }
             if (
               entry.sourceStack === input.producerStack &&
-              entry.sourceRegion === input.producerRegion
+              canonicalizeRegion(entry.sourceRegion) === producerRegion
             ) {
               out.push({
                 consumerStack: ref.stackName,

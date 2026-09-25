@@ -22,6 +22,13 @@ import {
   clearRecoverableMaskedOutputs,
   recordRecoverableMaskedOutput,
 } from '../../../src/deployment/secret-redaction.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../src/utils/ambient-client-defaults.js';
+import { AwsClients, runWithStackAwsClients } from '../../../src/utils/aws-clients.js';
+/** The credential identity the code under test keys the recovery store by (go-to-k/cdkd#3691). */
+const AMBIENT_ID = (): string => credentialFingerprint(ambientCredentialConfig());
 
 // Mock DeployEngine so create / update don't require a real S3 backend.
 // The mock records every constructor call AND the AsyncLocalStorage
@@ -1543,7 +1550,7 @@ describe('NestedStackProvider - a child output THIS RUN masked (issue #2274)', (
   });
 
   it('RECOVERS the plaintext and names that attribute alone', async () => {
-    recordRecoverableMaskedOutput('Parent~Child', 'us-east-1', 'Token', REAL);
+    recordRecoverableMaskedOutput(AMBIENT_ID(), 'Parent~Child', 'us-east-1', 'Token', REAL);
     const provider = new NestedStackProvider();
 
     const result = await withNestedStackContext(maskedChildContext(), () =>
@@ -1579,10 +1586,10 @@ describe('NestedStackProvider - a child output THIS RUN masked (issue #2274)', (
   });
 
   it('does not answer with ANOTHER stack\'s recovered output', async () => {
-    // The store is keyed by (stack, region, output key). A value-keyed store
+    // The store is keyed by (identity, stack, region, output key). A value-keyed store
     // would answer here, which is the cross-stack disclosure PR #2415 had to
     // withdraw.
-    recordRecoverableMaskedOutput('SomeOtherStack', 'us-east-1', 'Token', REAL);
+    recordRecoverableMaskedOutput(AMBIENT_ID(), 'SomeOtherStack', 'us-east-1', 'Token', REAL);
     const provider = new NestedStackProvider();
 
     const result = await withNestedStackContext(maskedChildContext(), () =>
@@ -1592,8 +1599,43 @@ describe('NestedStackProvider - a child output THIS RUN masked (issue #2274)', (
     expect((result.attributes as Record<string, unknown>)['Outputs.Token']).toBe(SECRET_MASK);
   });
 
+  it('does not answer with a value ANOTHER credential identity recorded (go-to-k/cdkd#3691)', async () => {
+    recordRecoverableMaskedOutput(
+      JSON.stringify(['another-account', null]),
+      'Parent~Child',
+      'us-east-1',
+      'Token',
+      REAL
+    );
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(maskedChildContext(), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect((result.attributes as Record<string, unknown>)['Outputs.Token']).toBe(SECRET_MASK);
+  });
+
+  it('recovers under the identity the child deploy RUNS with (go-to-k/cdkd#3691)', async () => {
+    const clientsB = new AwsClients({ region: 'us-east-1', profile: 'account-b-3691' });
+    const provider = new NestedStackProvider();
+
+    const inScope = await runWithStackAwsClients(clientsB, () => {
+      recordRecoverableMaskedOutput(AMBIENT_ID(), 'Parent~Child', 'us-east-1', 'Token', REAL);
+      return withNestedStackContext(maskedChildContext(), () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      );
+    });
+    const outside = await withNestedStackContext(maskedChildContext(), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect((inScope.attributes as Record<string, unknown>)['Outputs.Token']).toBe(REAL);
+    expect((outside.attributes as Record<string, unknown>)['Outputs.Token']).toBe(SECRET_MASK);
+  });
+
   it('recovers on the UPDATE arm too', async () => {
-    recordRecoverableMaskedOutput('Parent~Child', 'us-east-1', 'Token', REAL);
+    recordRecoverableMaskedOutput(AMBIENT_ID(), 'Parent~Child', 'us-east-1', 'Token', REAL);
     const provider = new NestedStackProvider();
 
     const result = await withNestedStackContext(maskedChildContext(), () =>

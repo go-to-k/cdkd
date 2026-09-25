@@ -84,7 +84,7 @@ instead of a block.
 | `[-]` | The resource would be deleted. |
 | `[requires replacement]` | Changing that property replaces the resource rather than updating it in place. |
 | `[replacement propagated]` | The property's template value did not change — only the physical ID or ARN it references will, because an upstream resource is being replaced. The apparent `"value"` → `{Ref: ...}` delta is not a literal edit. |
-| `[attribute propagated]` | The property's template value did not change — it reads an attribute of a resource being updated (a nested stack's output, a custom resource's response `Data`), which may move. The deploy sends the update only if the value did, and replaces the resource only if a value that cannot change in place did. A `NoEcho` value returned again cannot be compared, so it is always sent, and replaces a reader holding it in such a property. |
+| `[attribute propagated]` | The property's template value did not change — it reads a value a resource being updated may move: an attribute (a nested stack's output, a custom resource's response `Data`) or a custom resource's physical id through `Ref`. The deploy sends the update only if the value did, and replaces the resource only if a value that cannot change in place did. A `NoEcho` value returned again cannot be compared, so it is always sent, and replaces a reader holding it in such a property. |
 | `[metadata only, no AWS API call]` | A `DeletionPolicy` / `UpdateReplacePolicy` change. cdkd records it in state; AWS is not called. |
 | `(known after deploy)` | The new side is an unresolved intrinsic — a `Ref` or `Fn::GetAtt` to a resource this same deploy will create. |
 

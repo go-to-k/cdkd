@@ -138,6 +138,11 @@ import {
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../utils/ambient-client-defaults.js';
+import { injectiveKey } from '../state/record-keys.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
@@ -988,7 +993,7 @@ function deepEqualValue(a: unknown, b: unknown): boolean {
  * escaping silently, so the authority on "where is this applied" is a grep the
  * test performs, not a number anybody has to maintain.
  */
-function crossStackReadsForPartialSave(
+export function crossStackReadsForPartialSave(
   previous: StackState,
   recordedImports: readonly StateImportEntry[],
   recordedOutputReads: readonly StateOutputReadEntry[],
@@ -1023,10 +1028,21 @@ function crossStackReadsForPartialSave(
   // whose plaintexts share one expression collapse onto one key, and the union
   // drops a genuinely distinct destroy-blocking import. That also contradicts
   // this change's own argument for leaving that field alone.
+  //
+  // ENCODED, not separated (go-to-k/cdkd#3496). `previous` comes from
+  // persisted JSON that `parseState` only casts, so no half is guaranteed free
+  // of a NUL, and a separated key lets two distinct entries collide — the
+  // union then drops the second, and `state.imports` is what `destroy-runner`
+  // refuses a destroy on. A dropped strong reference is a fail-OPEN in that
+  // guard; `injectiveKey` cannot collide.
   const importKey = (e: StateImportEntry): string =>
-    `${e.sourceStack}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.exportName)}`;
+    injectiveKey(e.sourceStack, canonicalizeRegion(e.sourceRegion), normalizeName(e.exportName));
   const outputReadKey = (e: StateOutputReadEntry): string =>
-    `${normalizeName(e.sourceStack)}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.outputName)}`;
+    injectiveKey(
+      normalizeName(e.sourceStack),
+      canonicalizeRegion(e.sourceRegion),
+      normalizeName(e.outputName)
+    );
   const imports = unionCrossStackReads(previous.imports, recordedImports, importKey);
   const outputReads = unionCrossStackReads(
     previous.outputReads,
@@ -1728,11 +1744,15 @@ export class DeployEngine {
     redacted: Record<string, unknown>
   ): void {
     if (resolved === redacted) return;
+    // Recorded UNDER the identity that produced it (go-to-k/cdkd#3691): the
+    // readers compute the same fingerprint from the clients they resolve with,
+    // so another identity's same-named stack in this process misses.
+    const identity = credentialFingerprint(ambientCredentialConfig());
     for (const [key, redactedValue] of Object.entries(redacted)) {
       if (!carriesSecretMask(redactedValue)) continue;
       const plaintext = resolved[key];
       if (plaintext === undefined || carriesSecretMask(plaintext)) continue;
-      recordRecoverableMaskedOutput(stackName, this.stackRegion, key, plaintext);
+      recordRecoverableMaskedOutput(identity, stackName, this.stackRegion, key, plaintext);
     }
   }
 
@@ -2441,7 +2461,11 @@ export class DeployEngine {
     if (!this.isHealEligible(logicalId, resource)) {
       return Promise.resolve({ kind: 'not-attempted' });
     }
-    const key = `${logicalId}\u0000${resource.physicalId}`;
+    // Encoded (go-to-k/cdkd#3496): a physical id is whatever AWS or the
+    // template produced, and the record is an unchecked cast, so a separator
+    // could let two records share one memo entry — one resource's read served
+    // as another's heal. Nothing else reads this key.
+    const key = injectiveKey(logicalId, resource.physicalId);
     const inFlight = this.attributeHeals.get(key);
     if (inFlight) return inFlight;
     const heal = this.readStaleAttributes(logicalId, resource, stackName).catch(
@@ -2696,7 +2720,7 @@ export class DeployEngine {
    *
    * REDACTION HAPPENS HERE, at the persist choke point, and must not move to
    * record time: `crossStackReadsForPartialSave` / `unionCrossStackReads` dedup
-   * on `${sourceStack}\0${region}\0${name}`, so changing a value mid-run makes
+   * on the (source stack, region, name) triple, so changing a value mid-run makes
    * the union write BOTH spellings, and its first-seen-wins merge would keep
    * whichever arrived first.
    *

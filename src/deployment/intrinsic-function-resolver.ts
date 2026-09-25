@@ -8633,9 +8633,10 @@ export class IntrinsicFunctionResolver {
        * Set when the read crosses an ACCOUNT boundary (a `RoleArn` on
        * `Fn::GetStackOutput`). Recovery is then REFUSED rather than served, and
        * that is a correctness fact rather than caution: the recovery store is
-       * keyed by stack + region + output key with NO account in it, and it only
-       * ever holds plaintexts THIS process masked while deploying with the
-       * AMBIENT credentials. So a same-named stack in the same region -- the
+       * keyed by the AMBIENT credential identity (go-to-k/cdkd#3691) + stack +
+       * region + output key -- the consumer's identity, never the RoleArn's --
+       * and it only ever holds plaintexts THIS process masked while deploying
+       * with those ambient credentials. So a same-named stack in the same region -- the
        * common shape for a `Shared` / `Network` stack replicated per account --
        * would serve the CONSUMER account's secret to a read that asked for the
        * PRODUCER account's, and the consumer would then send it to a resource
@@ -8685,6 +8686,8 @@ export class IntrinsicFunctionResolver {
         producerOutput === undefined || producerOutput.crossAccount === true
           ? undefined
           : recoverMaskedOutput(
+              // The identity this resolution reads with (go-to-k/cdkd#3691).
+              credentialFingerprint(ambientCredentialConfig()),
               producerOutput.stackName,
               producerOutput.region,
               producerOutput.outputKey

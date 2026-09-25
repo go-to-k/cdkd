@@ -29,6 +29,9 @@ import {
 //       still recognise it (that is what `drift --revert` and the rollback
 //       replay refuse on).
 const NOECHO = 'handler-generated-secret-9f2a';
+// Two credential identities, spelled the way `credentialFingerprint` spells one.
+const ID_A = JSON.stringify(['account-a', null]);
+const ID_B = JSON.stringify(['account-b', null]);
 const DYNREF_PLAINTEXT = 'resolved-dynamic-ref-value';
 const DYNREF_EXPR = '{{resolve:secretsmanager:app/db:SecretString:password::}}';
 
@@ -386,32 +389,43 @@ describe('mask-only redaction channel (issue #2274)', () => {
     // process-wide plaintext store PR #2415 had to withdraw.
     it('answers for the exact coordinate and for nothing else', () => {
       clearRecoverableMaskedOutputs();
-      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', NOECHO);
+      recordRecoverableMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token', NOECHO);
 
-      expect(recoverMaskedOutput('Producer', 'us-east-1', 'Token')).toBe(NOECHO);
+      expect(recoverMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token')).toBe(NOECHO);
       // A different stack, region or output key gets NOTHING — this is the
       // assertion that separates a coordinate-keyed store from a value-keyed
       // one, which would answer for all three.
-      expect(recoverMaskedOutput('OtherStack', 'us-east-1', 'Token')).toBeUndefined();
-      expect(recoverMaskedOutput('Producer', 'eu-west-1', 'Token')).toBeUndefined();
-      expect(recoverMaskedOutput('Producer', 'us-east-1', 'Other')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'OtherStack', 'us-east-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'Producer', 'eu-west-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Other')).toBeUndefined();
       clearRecoverableMaskedOutputs();
     });
 
     it('cannot be forged by a stack name carrying the separator', () => {
       clearRecoverableMaskedOutputs();
-      recordRecoverableMaskedOutput('A', 'B', 'C', NOECHO);
+      recordRecoverableMaskedOutput(ID_A, 'A', 'B', 'C', NOECHO);
       // Any printable separator could be spelled inside a real stack name;
       // NUL cannot. Both spellings below would collide under a `:` or `/`.
-      expect(recoverMaskedOutput('A:B', 'C', 'D')).toBeUndefined();
-      expect(recoverMaskedOutput('A/B/C', '', '')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'A:B', 'C', 'D')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'A/B/C', '', '')).toBeUndefined();
+      clearRecoverableMaskedOutputs();
+    });
+
+    it('answers only the credential identity that recorded it (go-to-k/cdkd#3691)', () => {
+      // A library caller can switch `AwsClients` between accounts in one
+      // process; account B's same-named stack must not get A's plaintext.
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token', NOECHO);
+
+      expect(recoverMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token')).toBe(NOECHO);
+      expect(recoverMaskedOutput(ID_B, 'Producer', 'us-east-1', 'Token')).toBeUndefined();
       clearRecoverableMaskedOutputs();
     });
 
     it('forgets everything on clear, so a plaintext does not outlive the run', () => {
-      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', NOECHO);
+      recordRecoverableMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token', NOECHO);
       clearRecoverableMaskedOutputs();
-      expect(recoverMaskedOutput('Producer', 'us-east-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(ID_A, 'Producer', 'us-east-1', 'Token')).toBeUndefined();
     });
   });
 

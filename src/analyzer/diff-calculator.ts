@@ -927,7 +927,7 @@ export class DiffCalculator {
         change.changeType = 'UPDATE';
         change.propertyChanges = syntheticChanges;
         this.logger.debug(
-          `UPDATE (in-place attr propagated): ${dependentId} reads a changed attribute of an updated resource`
+          `UPDATE (in-place attr propagated): ${dependentId} reads a value that may move in this deploy`
         );
       } else {
         change.propertyChanges = [...(change.propertyChanges ?? []), ...syntheticChanges];
