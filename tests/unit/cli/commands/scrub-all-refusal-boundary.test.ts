@@ -482,7 +482,7 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
     // The record is named at DEFAULT verbosity, not buried at `debug`.
     const warned = commandLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('ABANDONED');
-    expect(warned, 'the operator got a count with no record identity').toContain("resource 'Db'");
+    expect(warned, 'the operator got a count with no record identity').toContain("resource Db");
 
     // Neither clean claim survives: not the per-stack one, not the run-level
     // one. Both were reachable on `secretBearingKeys === 0` alone.

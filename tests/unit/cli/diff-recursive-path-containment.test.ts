@@ -47,7 +47,7 @@ describe('indexNestedChildTemplates containment', () => {
     const { parent } = assembly();
 
     expect(() => indexNestedChildTemplates(template('../outside.json'), parent)).toThrow(
-      /Nested stack 'Child' has Metadata\['aws:asset:path'\]=\.\.\/outside\.json which resolves to .*outside\.json, outside/
+      /Nested stack Child has Metadata\['aws:asset:path'\]=\.\.\/outside\.json which resolves to .*outside\.json, outside/
     );
   });
 

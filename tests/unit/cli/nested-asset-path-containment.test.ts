@@ -63,10 +63,8 @@ const SITES: ReadonlyArray<{
   {
     name: 'cdkd import --migrate-from-cloudformation',
     index: (assetPath, child) => indexGrandchildTemplatePaths(template(assetPath), child),
-    subject: /grandchild nested-stack 'Grandchild'/,
-    // Still inside quotes of cdkd's own: `import.ts` was held by another lane
-    // when go-to-k/cdkd#3590 converted the other sites, and is its remainder.
-    shownValue: "'../outside.json'",
+    subject: /grandchild nested-stack Grandchild/,
+    shownValue: '../outside.json',
   },
   {
     name: 'cdkd export',
@@ -75,6 +73,8 @@ const SITES: ReadonlyArray<{
         template(assetPath) as unknown as Record<string, unknown>,
         dir
       ),
+    // `export.ts` still renders its logical id in cdkd's own quotes: it was
+    // held by another PR when go-to-k/cdkd#3617's identifier sites converted.
     subject: /nested-stack 'Grandchild'/,
     shownValue: '../outside.json',
   },

@@ -51,6 +51,7 @@ import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import { indexNestedTemplatePaths } from '../../../src/cli/commands/export.js';
 import { indexNestedChildTemplates } from '../../../src/cli/commands/diff-recursive.js';
+import { indexGrandchildTemplatePaths } from '../../../src/cli/commands/import.js';
 import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import type { AssemblyManifest, ArtifactManifest } from '../../../src/types/assembly.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -294,6 +295,10 @@ describe('the absolute aws:asset:path tripwire in each nested-template indexer',
       'NestedStackProvider',
       (assetPath, dir) => grandchild(nestedTemplate(assetPath), join(dir, 'C.json')),
     ],
+    [
+      'cdkd import --migrate-from-cloudformation',
+      (assetPath, dir) => indexGrandchildTemplatePaths(nestedTemplate(assetPath), join(dir, 'C.json')),
+    ],
   ];
 
   for (const [name, index] of SITES) {
@@ -393,6 +398,11 @@ describe('every other refusal subject keeps a forging value inside one boundary'
       'cdkd export nested row',
       (dir) =>
         indexNestedTemplatePaths(nestedRow(escaping) as unknown as Record<string, unknown>, dir),
+      `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
+    ],
+    [
+      'cdkd import nested row',
+      (dir) => indexGrandchildTemplatePaths(nestedRow(escaping), join(dir, 'C.json')),
       `Metadata['aws:asset:path']=${JSON.stringify(escaping)} which resolves to `,
     ],
     [

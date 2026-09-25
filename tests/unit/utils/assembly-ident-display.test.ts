@@ -22,6 +22,8 @@ import { join, resolve } from 'node:path';
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
 import { renderNestedTemplateTreeDefect } from '../../../src/utils/nested-template-cycle.js';
 import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
+import { indexNestedChildTemplates } from '../../../src/cli/commands/diff-recursive.js';
+import { indexGrandchildTemplatePaths } from '../../../src/cli/commands/import.js';
 import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
 import { resolveFileAssetSourcePath } from '../../../src/assets/asset-manifest-loader.js';
@@ -210,7 +212,7 @@ describe('the nested-template tree refusal', () => {
   });
 });
 
-describe("a nested-stack logical id in NestedStackProvider's indexer (diff --recursive's twin is held by #3641)", () => {
+describe('a nested-stack logical id in each indexer', () => {
   const provider = new NestedStackProvider();
   const grandchild = (
     provider as unknown as {
@@ -220,6 +222,16 @@ describe("a nested-stack logical id in NestedStackProvider's indexer (diff --rec
   const SITES: ReadonlyArray<[string, (t: CloudFormationTemplate, dir: string) => unknown, string]> =
     [
       ['NestedStackProvider', (t, dir) => grandchild(t, join(dir, 'C.json')), 'nested-stack'],
+      [
+        'cdkd diff --recursive',
+        (t, dir) => indexNestedChildTemplates(t, join(dir, 'P.json')),
+        'Nested stack',
+      ],
+      [
+        'cdkd import --migrate-from-cloudformation',
+        (t, dir) => indexGrandchildTemplatePaths(t, join(dir, 'C.json')),
+        'grandchild nested-stack',
+      ],
     ];
 
   for (const [name, index, noun] of SITES) {
