@@ -2504,6 +2504,77 @@ describe('cdkd import', () => {
     }
 
     /**
+     * A ROW of the existing record's `resources` map that is not a resource
+     * record (issue go-to-k/cdkd#3202), through the COMMAND. A selective merge
+     * starts from `{ ...existingState.resources }` and saves every row it did
+     * not re-import AS IT STANDS — so unguarded, `cdkd import` wrote a record
+     * holding a `null` row and the next deploy or destroy met it instead. The
+     * map itself is healthy here: the bag guard cannot see this.
+     */
+    for (const [label, row] of [
+      ['null', null],
+      ['a string', 'abc'],
+      ['a list', [{ physicalId: 'p', resourceType: 'AWS::SQS::Queue' }]],
+      ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ] as const) {
+      it(`refuses a SELECTIVE import over an existing record whose row is ${label}, and writes nothing`, async () => {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          state: existingState({ Broken: row }),
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // The ROW text, naming the row — not the bag one, whose "no readable
+        // 'resources' map" is false over a map that is an object.
+        expect(message).toContain('Broken');
+        expect(message).toContain('cannot be read as resources');
+        expect(message).not.toContain("no readable 'resources' map");
+        expect(
+          mockSaveState,
+          'cdkd import saved a record carrying a row it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
+    /**
+     * THE OTHER DIRECTION, and the reason the refusal is scoped to selective
+     * mode: a whole-stack `--force` import REPLACES the map from the template,
+     * so it is the way OUT of such a record — refusing it would close a recovery
+     * route, the rule go-to-k/cdkd#3159 set.
+     */
+    it('does NOT refuse a whole-stack --force import over the same row, which replaces the map', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ Broken: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'imported', attributes: {} })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--force', '--yes']);
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, unknown> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      // The broken row is GONE from the saved record, replaced from the
+      // template — which is what makes this route a recovery rather than a
+      // laundering.
+      expect(saved!.resources['Broken']).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    /**
      * The `orphans` CONTAINER on the EXISTING record (issue
      * go-to-k/cdkd#3379), through the COMMAND. The module's source fences pin
      * the guard's placement and cannot see REACHABILITY, which is what these

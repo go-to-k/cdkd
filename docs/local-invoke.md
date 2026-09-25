@@ -196,6 +196,14 @@ the physical IDs and attributes its intrinsic-valued env vars point at.
 `--from-state` opts in to reading cdkd's S3 state and substituting those values
 before the env block reaches the container.
 
+The record is read as data, never written. A `resources` map that is not an
+object is read as empty, and a row in it that is not a resource record — `null`,
+a string, or an object with no `resourceType` — is dropped; each case warns,
+naming the stack and, for rows, the logical ids. A `Ref` or `Fn::GetAtt` naming
+a dropped row then resolves to nothing and is dropped like any other
+unresolvable placeholder, and a bare `--assume-role` read through one falls back
+to the developer's credentials with its usual warning.
+
 ```bash
 # Single-region stack: --from-state alone is enough
 cdkd deploy MyStack

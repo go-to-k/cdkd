@@ -131,6 +131,35 @@ describe('validateRecreateTargets (#615)', () => {
     expect(renderRecreateTargetsErrors(v)).toMatch(/fresh CREATEs on the next deploy/);
   });
 
+  /**
+   * The PREMISE of the precondition `validateRecreateTargets` states at its
+   * row read (go-to-k/cdkd#3202), pinned so it cannot silently stop being
+   * true: this validator alone reads a `null` row as ABSENT, and the renderer
+   * then tells the operator the resource is a fresh CREATE and to drop the flag
+   * for it — the wrong remedy over a record that holds a row for it. That is
+   * why `deploy.ts` refuses the bag and the rows of this same record BEFORE
+   * calling here (`tests/unit/cli/deploy-recreate-malformed-state-refusal.test.ts`).
+   * If this case ever fails, the validator learned to tell the two apart and
+   * the precondition note should say so.
+   */
+  it('PREMISE: reads a `null` row as missing from state, which is why the caller refuses first', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+      },
+    };
+    const state = st('S', { MyLambda: null as unknown as ReturnType<typeof res> });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.missingFromState).toEqual(['MyLambda']);
+    expect(renderRecreateTargetsErrors(v)).toMatch(/fresh CREATEs on the next deploy/);
+  });
+
   it('deduplicates duplicate logical ids in the input', () => {
     const template: CloudFormationTemplate = {
       Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },

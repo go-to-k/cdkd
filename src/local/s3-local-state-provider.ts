@@ -21,7 +21,11 @@ import {
 } from '../cli/commands/local-state-loader.js';
 import {
   malformedLocalOutputsWarning,
+  malformedLocalResourceEntriesWarning,
+  malformedLocalResourcesWarning,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourceEntriesForReadOnly,
+  repairMalformedResourcesForReadOnly,
 } from '../state/malformed-resources-bag.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
@@ -107,14 +111,28 @@ export class S3LocalStateProvider implements LocalStateProvider {
     // still worth running. The warning is what stops an empty map from reading
     // as "this stack publishes no outputs".
     //
-    // The `resources` bag carried through below is a separate container with a
-    // separate absence rule and is NOT guarded here — tracked by
-    // go-to-k/cdkd#3202.
     // Through the SHARED repair helper rather than a local `= {}`: it and
     // `hasReadableOutputs` are one spelling of the absence rule, and a second
     // copy here could drift into warning about a record cdkd writes on purpose.
     if (repairMalformedOutputsForReadOnly(loaded.state)) {
       getLogger().warn(malformedLocalOutputsWarning(stackName, loaded.region));
+    }
+    // The `resources` bag, a separate container with a separate absence rule,
+    // decided the same way (go-to-k/cdkd#3202). This is the ONE load every
+    // `cdkd local *` command's `--from-state` goes through (`createLocalStateProvider`),
+    // so the remedy sits here rather than at each consumer: `local invoke`'s
+    // `--assume-role` resolver indexes the bag and threw on a `null` or absent
+    // one BEFORE its own falsy guard could reach the documented fall-back, and
+    // cdk-local's env substitution indexes it per key. BAG first, then the
+    // ROWS: an unreadable bag has no rows to drop, and
+    // `repairMalformedResourceEntriesForReadOnly` deliberately returns `[]` for
+    // one. REPAIR-AND-WARN for the reason the outputs branch gives.
+    if (repairMalformedResourcesForReadOnly(loaded.state)) {
+      getLogger().warn(malformedLocalResourcesWarning(stackName, loaded.region));
+    }
+    const droppedRows = repairMalformedResourceEntriesForReadOnly(loaded.state);
+    if (droppedRows.length > 0) {
+      getLogger().warn(malformedLocalResourceEntriesWarning(stackName, loaded.region, droppedRows));
     }
     // Outputs are typed `Record<string, unknown>` on `StackState` but
     // every value cdkd ever writes is a string at the wire level —

@@ -157,6 +157,15 @@ counterpart) but you want cdkd to find the rest automatically.
   Unlisted state entries are preserved automatically.
 - **No existing state (first-time import)**: not required.
 
+A selective merge copies every unlisted entry into the record it saves as it
+stands, so it **refuses** an existing record whose `resources` map holds a row
+that is not a resource record — `null`, a string, or an object with no
+`resourceType` — naming the rows (`STATE_RESOURCES_MALFORMED`, exit `1`).
+Auto / whole-stack mode and `--migrate-from-cloudformation` rebuild the map
+from the template, so they are not refused: they are the way to replace such a
+record. The full per-command table is in
+[State Management](state-management.md#when-one-resources-record-cannot-be-read).
+
 ## Migrating from `cdk deploy` (CloudFormation) to cdkd
 
 If a stack was previously deployed via `cdk deploy` (and is therefore

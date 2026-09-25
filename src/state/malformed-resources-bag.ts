@@ -3212,6 +3212,202 @@ export function malformedDeployResourceEntriesRefusalMessage(
   );
 }
 
+/**
+ * For `cdkd destroy` / `cdkd state destroy`: refuse a record whose `resources`
+ * map holds a ROW that is not a readable resource record (go-to-k/cdkd#3202).
+ *
+ * The ENTRY twin of {@link refuseMalformedResourcesForDestroy}, and a fourth
+ * entry point on the class rather than a call to
+ * {@link refuseMalformedResourceEntries}: that text describes saving a REBUILT
+ * map back over the record, and a destroy's saves are the shrinking snapshots
+ * of what is left after each delete — its purpose is the delete of what the
+ * map names, and then of the record. Same predicate, so the verdict cannot
+ * diverge.
+ *
+ * CALL IT beside the bag guard, above the first read of any row, and again on
+ * the record the fast path re-reads under the lock. The runner reads
+ * `resource.resourceType` on every row — the "Resources to be deleted" listing
+ * above the confirmation prompt, then the template it builds for the
+ * dependency graph, the type index behind the implicit delete order, and the
+ * delete itself after the lock — and validates none of them. Measured through
+ * `runDestroyForStack` with the refusal removed
+ * (`tests/unit/cli/destroy-runner-malformed-entries.test.ts`, 2026-09-25): a
+ * `null` row throws a bare `TypeError` out of that listing, before the prompt
+ * and the lock; a `false`, `0` or `''` row is FALSY at the delete loop's
+ * `if (!resource)` guard, warned as `not found in state, skipping`, and the
+ * run then removes the record with that row's resource still live and success
+ * reported; a string, a list, or an object with no resource type is listed
+ * with an empty type — `displaySafe(undefined)` renders `''`, so the row reads
+ * `- Bad ()` — then, unless its own `deletionPolicy` takes the retention
+ * branch first, ROUTED on `resourceType: undefined` (an object whose type is a
+ * NUMBER is routed on the number) and handed to `delete` with a physical id
+ * nothing checked — with a stub provider that answers, the run counted the row
+ * DELETED, removed the record, and reported success having deleted nothing for
+ * it. The real registry's type lookup throws on an undefined type, which the
+ * per-resource handler logs as `Failed to delete <row>` with a `TypeError` that
+ * says nothing about the record, after every readable row not retained was
+ * deleted.
+ *
+ * `markNonRetryable` for the reason its bag twin carries it: the verdict comes
+ * from a persisted record no retry can change, and `NestedStackProvider.delete`
+ * reaches this runner inside the parent's `withRetry`.
+ */
+export function refuseMalformedResourceEntriesForDestroy(
+  state: StackState,
+  stackName: string,
+  region: string
+): void {
+  const unreadable = unreadableResourceEntries(state);
+  if (unreadable.length === 0) return;
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDestroyResourceEntriesRefusalMessage(stackName, region, unreadable),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceEntriesForDestroy} raises.
+ *
+ * Read-only remedy, so it ends ON the inspect command (go-to-k/cdkd#3516). It
+ * does NOT offer the `cdkd state orphan` template its bag twin does: that
+ * template answers "the whole list is unreadable, and proceeding tears nothing
+ * down either", while here every OTHER row is readable and, on every arm but
+ * the `null` one, a forced run would delete those resources (the ones no
+ * policy retains) around this row — so the honest next step is the repair, not
+ * the record's removal.
+ */
+export function malformedDestroyResourceEntriesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[]
+): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} 'cdkd destroy' DELETES what this map ` +
+    `names, so it refuses rather than continuing: a null row stops the run on a bare TypeError ` +
+    `in the listing above the prompt; a false, 0 or empty-string row is SKIPPED as 'not found ` +
+    `in state' and the record removed with its resource still live in AWS; and any other row ` +
+    `it cannot read, unless its own deletion policy retains it, is routed to a provider on ` +
+    `whatever its type field holds — nothing, or a non-string — with a physical id nothing ` +
+    `checked, so its delete either fails on a type-lookup error that names the row but not ` +
+    `what is wrong with its record, after every readable row not retained was deleted, or is ` +
+    `counted done, the record removed and success reported with its resource still live. ` +
+    `Nothing was deleted or written FOR THIS STACK. Repair the row first; ` +
+    `'cdkd state orphan' drops the whole record with every resource left standing, which is ` +
+    `more than this row asks for. Inspect the record with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
+ * The text `cdkd scrub` raises on a REAL run over a readable `resources` map
+ * holding a row it cannot read (go-to-k/cdkd#3202). Scrub raises its own
+ * exit-2 class around it, the way it does around
+ * {@link malformedStateRefusalMessage} for the bag, so there is no `refuse*`
+ * entry point here — and the SHARED entry text is not borrowed because two of
+ * its claims are false at scrub's load: the lock is already held there, and the
+ * consequence is not a clean run over a skipped row but a SAVED one.
+ *
+ * Measured through `scrubStack` with the refusal removed
+ * (`tests/unit/cli/commands/scrub-malformed-and-nameless.test.ts`, 2026-09-25),
+ * three outcomes by shape and bookkeeping. The rewrite runs only once the
+ * STACK recorded any secret at all, and positions every row the template
+ * still declares with `Properties`: so a `null` row the template positions
+ * throws a bare `TypeError` at `record.properties` under the lock as soon as
+ * any resource or output in the stack recorded a secret; with no secret
+ * recorded anywhere the run returns before the rewrite and reports the stack
+ * CLEAN; a `null` row the template no longer declares is copied into the
+ * rebuilt map AS IT STANDS and SAVED when another record changed; and an
+ * object with no resource type is rewritten and saved still typeless. A
+ * PRIMITIVE the template positions takes a fourth arm, read from the rewrite
+ * rather than driven: `{ ...record, properties }` spreads a string into one
+ * key per character and a number into nothing, so it is saved back as an
+ * object that never was one. Every arm is a WRITER acting on a row it could
+ * not read.
+ */
+export function malformedScrubResourceEntriesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[]
+): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} 'cdkd scrub' REBUILDS and SAVES the ` +
+    `resource map whenever anything in the stack changed, so it refuses rather than continuing: ` +
+    `a null row either stops the rewrite on a bare TypeError under the lock (the template still ` +
+    `positions it and this stack recorded a secret) or is copied into the rebuilt map as it ` +
+    `stands — reported clean when no secret was recorded at all, saved back the moment another ` +
+    `record changed; a string or number the template positions is spread into an object and ` +
+    `saved as one; and a row with no resource type is rewritten and saved still without one. ` +
+    `Nothing was written FOR THIS STACK. Repair or ` +
+    `remove the row first; '--dry-run' audits the rest of the record without it and warns ` +
+    `that it did. Inspect the record with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
+ * The `resources` twin of {@link malformedLocalOutputsWarning}, for
+ * `S3LocalStateProvider.load` (go-to-k/cdkd#3202).
+ *
+ * A separate text from {@link malformedResourcesWarning} because the
+ * consequence differs: that one says "this command's output describes zero
+ * resources", and a `cdkd local` run has no such output — what an EMPTY map
+ * costs it is every `Ref` / `Fn::GetAtt` in a Lambda's environment resolving
+ * to nothing and being dropped, and a bare `--assume-role` falling back to the
+ * developer's credentials, each of which the run also does for a record that
+ * genuinely holds no resources. Read-only for the reason its `outputs` twin
+ * records: `cdkd local` writes no `state.json`.
+ */
+export function malformedLocalResourcesWarning(rawStackName: string, rawRegion: string): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${malformedStateDiagnosis(stackName, region)} Continuing with it EMPTY: every 'Ref' and ` +
+    `'Fn::GetAtt' in this run's environment that names a resource of this record resolves to ` +
+    `nothing and is dropped, and a bare '--assume-role' falls back to the developer's ` +
+    `credentials — which is not the same as the record holding no resources. Nothing is ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. See the stored ` +
+    `value with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
+/**
+ * The ENTRY half of {@link malformedLocalResourcesWarning}: the rows
+ * `repairMalformedResourceEntriesForReadOnly` dropped from the record a
+ * `cdkd local` run loads (go-to-k/cdkd#3202).
+ *
+ * A separate text from {@link malformedResourceEntriesWarning} for the reason
+ * the bag twin is separate from its: "this command's output describes the
+ * remaining resources only" names an output a local run does not have.
+ */
+export function malformedLocalResourceEntriesWarning(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[]
+): string {
+  // {@link absentIfEmpty} at the boundary, then the shared clause and command.
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedEntriesClause(stackName, region, logicalIds)} Continuing WITHOUT them: a 'Ref' or ` +
+    `'Fn::GetAtt' in this run's environment that names one of these ids resolves to nothing and ` +
+    `is dropped, and a bare '--assume-role' read through one falls back to the developer's ` +
+    `credentials — which is not the same as the record holding no such resource. Nothing is ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. See the stored ` +
+    `values with: ` +
+    inspectCommand(stackName, region)
+  );
+}
+
 /*
  * `cdkd orphan`'s guards over what its save KEEPS beyond a survivor's
  * `properties` map (go-to-k/cdkd#3350, go-to-k/cdkd#3345, go-to-k/cdkd#3344).

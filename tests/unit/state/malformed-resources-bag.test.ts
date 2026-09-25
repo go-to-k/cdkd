@@ -16,6 +16,8 @@ import {
   malformedExportNamesWarning,
   malformedExportSourceWarning,
   malformedLocalOutputsWarning,
+  malformedLocalResourceEntriesWarning,
+  malformedLocalResourcesWarning,
   malformedNestedChildOutputsRefusalMessage,
   malformedOrphanResourceAttributesRefusalMessage,
   malformedOrphanResourceEntriesRefusalMessage,
@@ -26,6 +28,8 @@ import {
   malformedRenderedContainersWarning,
   malformedResourceEntriesRefusalMessage,
   malformedDeployResourceEntriesRefusalMessage,
+  malformedDestroyResourceEntriesRefusalMessage,
+  malformedScrubResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
   malformedOrphanRecordsWarning,
   deployRefusesOrphanRowsReason,
@@ -55,6 +59,7 @@ import {
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceEntries,
   refuseMalformedResourceEntriesForDeploy,
+  refuseMalformedResourceEntriesForDestroy,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
@@ -1352,6 +1357,23 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       'the entries refusal',
       malformedResourceEntriesRefusalMessage('MyStack', 'us-east-1', ['A']),
     ],
+    // go-to-k/cdkd#3202: the four texts its consumers added, each offering a
+    // READ only. The destroy one deliberately does NOT take its bag twin's
+    // per-line `cdkd state orphan` template — every other row is readable, so
+    // the record's removal is more than the row asks for.
+    [
+      'the destroy entries refusal',
+      malformedDestroyResourceEntriesRefusalMessage('MyStack', 'us-east-1', ['A']),
+    ],
+    [
+      'the scrub entries refusal',
+      malformedScrubResourceEntriesRefusalMessage('MyStack', 'us-east-1', ['A']),
+    ],
+    ['the local resources WARNING', malformedLocalResourcesWarning('MyStack', 'us-east-1')],
+    [
+      'the local entries WARNING',
+      malformedLocalResourceEntriesWarning('MyStack', 'us-east-1', ['A']),
+    ],
     [
       'the rendered-containers WARNING',
       malformedRenderedContainersWarning('MyStack', 'us-east-1', ['outputs']),
@@ -2293,6 +2315,19 @@ describe('the entry-level text', () => {
         malformedNestedChildOutputsRefusalMessage(STACK, REGION),
       ],
       ['malformedLocalOutputsWarning', malformedLocalOutputsWarning(STACK, REGION)],
+      ['malformedLocalResourcesWarning', malformedLocalResourcesWarning(STACK, REGION)],
+      [
+        'malformedLocalResourceEntriesWarning',
+        malformedLocalResourceEntriesWarning(STACK, REGION, ['X']),
+      ],
+      [
+        'malformedDestroyResourceEntriesRefusalMessage',
+        malformedDestroyResourceEntriesRefusalMessage(STACK, REGION, ['X']),
+      ],
+      [
+        'malformedScrubResourceEntriesRefusalMessage',
+        malformedScrubResourceEntriesRefusalMessage(STACK, REGION, ['X']),
+      ],
       // The destroy refusal is absent on purpose: a 5000-character name fails
       // its exactness gate, and the withhold arm prints no identity at all.
       [
@@ -3394,7 +3429,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(17);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(18);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3405,10 +3440,15 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // does with such an entry and subtracts the records the save deletes.
     const entries = exported.filter((n) => n.includes('ResourceEntries'));
     // A THIRD since go-to-k/cdkd#3314: `cdkd deploy`'s diff, whose text states
-    // the planned CREATE rather than a save.
+    // the planned CREATE rather than a save. A FOURTH since go-to-k/cdkd#3202:
+    // the destroy, whose text states a delete routed on no type. `cdkd scrub`
+    // refuses the same rows through its OWN class around
+    // `malformedScrubResourceEntriesRefusalMessage`, so it adds a text here and
+    // no entry point — the shape its bag refusal already takes.
     expect([...entries].sort()).toEqual([
       'refuseMalformedResourceEntries(',
       'refuseMalformedResourceEntriesForDeploy(',
+      'refuseMalformedResourceEntriesForDestroy(',
       'refuseMalformedResourceEntriesForOrphan(',
     ]);
     // An entry's `attributes` map (go-to-k/cdkd#3345), its own container with
@@ -4218,6 +4258,9 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     ['deploy resources', () => refuseMalformedResourcesForDeploy(state('abcdef'), 'S', 'us-east-1')],
     ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
     ['deploy resource entries', () => refuseMalformedResourceEntriesForDeploy(state({ A: null }), undefined, undefined)],
+    // go-to-k/cdkd#3202: reached by `NestedStackProvider.delete` inside the
+    // parent's `withRetry`, like its bag twin two rows up.
+    ['destroy resource entries', () => refuseMalformedResourceEntriesForDestroy(state({ A: null }), 'S', 'us-east-1')],
     ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     // The ROW pair (go-to-k/cdkd#3500). The fixture is a READABLE list holding
@@ -4272,7 +4315,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(17);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(18);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -6912,6 +6955,24 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedDeployResourceEntriesRefusalMessage',
       (s, r) => malformedDeployResourceEntriesRefusalMessage(s, r, ['A']),
     ],
+    // go-to-k/cdkd#3202: the four texts its consumers added, all normalising at
+    // their boundary through `absentIfEmpty` like the entries pair above.
+    [
+      'malformedDestroyResourceEntriesRefusalMessage',
+      (s, r) => malformedDestroyResourceEntriesRefusalMessage(s as string, r as string, ['A']),
+    ],
+    [
+      'malformedScrubResourceEntriesRefusalMessage',
+      (s, r) => malformedScrubResourceEntriesRefusalMessage(s as string, r as string, ['A']),
+    ],
+    [
+      'malformedLocalResourcesWarning',
+      (s, r) => malformedLocalResourcesWarning(s as string, r as string),
+    ],
+    [
+      'malformedLocalResourceEntriesWarning',
+      (s, r) => malformedLocalResourceEntriesWarning(s as string, r as string, ['A']),
+    ],
     // Converted by go-to-k/cdkd#3526 from spelling their own identity clause
     // and command to taking `stackClause` / `inspectCommand`, which render
     // byte-identically for a present identity and give the no-identity form
@@ -7059,6 +7120,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedResourceAttributesForOrphan',
       'refuseMalformedResourceEntries',
       'refuseMalformedResourceEntriesForDeploy',
+      'refuseMalformedResourceEntriesForDestroy',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForOrphan',

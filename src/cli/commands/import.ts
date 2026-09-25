@@ -95,6 +95,7 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
+  refuseMalformedResourceEntries,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
 
@@ -609,6 +610,19 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
     if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
+    // The ROWS of that map, in SELECTIVE mode only (go-to-k/cdkd#3202). A
+    // selective merge starts from `{ ...existingState.resources }` and saves
+    // every row it did not re-import AS IT STANDS, so a `null` or typeless row
+    // is carried into the record this command writes and met by the next
+    // deploy or destroy instead. Whole-stack and `--migrate-from-cloudformation`
+    // imports REPLACE the map from the template, which makes them a way OUT of
+    // such a record, so they are deliberately not refused — the rule
+    // go-to-k/cdkd#3159 set: a refusal must not close a recovery route. The
+    // shared text holds here: the lock is taken below, after this check, and no
+    // AWS resource has been read.
+    if (existingState && selectiveMode) {
+      refuseMalformedResourceEntries(existingState, stackInfo.stackName, targetRegion);
+    }
     // The `outputs` bag takes the same answer and needs its own call — the one
     // above reads `resources` only, and a record can be malformed in either
     // container alone (go-to-k/cdkd#3192). This command CARRIES the bag into a

@@ -48,6 +48,7 @@ import {
   refuseMalformedOutputsForDestroy,
   refuseMalformedOrphanRecordsForDestroy,
   refuseMalformedOrphansForDestroy,
+  refuseMalformedResourceEntriesForDestroy,
   refuseMalformedResourcesForDestroy,
 } from '../../state/malformed-resources-bag.js';
 import type { ResourceDeleteResult } from '../../types/resource.js';
@@ -608,6 +609,20 @@ export async function runDestroyForStack(
   // separates them — which is why this cannot be folded into the
   // `resourceCount === 0` test below.
   refuseMalformedResourcesForDestroy(state, stackName, regionForState);
+  // The ROWS of a readable map (go-to-k/cdkd#3202), BELOW the bag guard: an
+  // unreadable bag has no rows to name. Every walk below reads
+  // `resource.resourceType` per row and validates nothing — the listing above
+  // the prompt first — and the delete loop routes on it, so a row that is not a
+  // record takes one of three routes (measured, see the refusal's JSDoc): a
+  // `null` row is a bare `TypeError` in that listing; a `false` / `0` / `''`
+  // row is FALSY at the loop's `if (!resource)` guard, skipped as "not found in
+  // state", and the record then removed with its resource live; any other
+  // unreadable row — unless its own `deletionPolicy` takes the retention branch
+  // first — is a provider call on whatever its type field holds and an
+  // unchecked physical id. REFUSE rather than skip, for the reason the bag
+  // guard gives: the map IS the list of what to delete, and a skipped row's
+  // resource stays live in AWS with the record that named it removed.
+  refuseMalformedResourceEntriesForDestroy(state, stackName, regionForState);
   // The `orphans` CONTAINER (go-to-k/cdkd#3379). The orphan warning below reads
   // it on `?? []`, so an unreadable one counts 0 and this run would delete every
   // resource and then the record with its orphan evidence never reported.
@@ -783,6 +798,13 @@ export async function runDestroyForStack(
       // would run on the very line the re-read exists to protect.
       if (recheck) {
         refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
+        // The ROWS of the re-read map (go-to-k/cdkd#3202), for the reason the
+        // orphan-row guard below is owed here rather than the container's: any
+        // row at all makes `recheckResources >= 1`, so this path does not delete
+        // either way — what the guard buys is WHICH refusal the operator gets.
+        // Without it the run stops at the "not empty" branch, which says the
+        // record still holds resources and nothing about the row it could not read.
+        refuseMalformedResourceEntriesForDestroy(recheck.state, stackName, regionForState);
         // The re-read is the record `stillEmpty` and `deleteState` act on, so
         // the container guard is owed here as well as at the entry read.
         // `stillEmpty` reads `(recheck.state.orphans ?? []).length`, and the

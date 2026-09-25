@@ -48,7 +48,13 @@ per-container table cannot classify, and the partition that owns it is by CLASS
 Its verdict is independent of the BAG guard, which a caller still owes; a
 read-only caller taking both drops entries AFTER the bag repair, so an
 unreadable bag has no rows to walk. These entries sit in the table's FIRST row,
-the `resources` map — not in a list.
+the `resources` map — not in a list. Since go-to-k/cdkd#3202 every consumer
+takes a half: the destroy through `refuseMalformedResourceEntriesForDestroy`,
+`cdkd scrub` through its own class around
+`malformedScrubResourceEntriesRefusalMessage`, `cdkd import` in SELECTIVE mode
+only (whole-stack replaces the map — a recovery route), and the `cdkd local`
+loader with two local texts; the sibling claim scan in `orphan-adoption.ts`
+asks for a non-empty `physicalId` instead, because a typeless row still claims.
 
 **The `orphans` ROW class is its own, one level under the table's THIRD
 container (go-to-k/cdkd#3500).** That container is guarded above the rows, so a row pass runs only once the field is known to be a
