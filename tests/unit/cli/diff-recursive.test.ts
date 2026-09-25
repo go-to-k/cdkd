@@ -507,6 +507,33 @@ describe('renderDiffTree', () => {
     expect(text).not.toContain('"ref"');
   });
 
+  it('annotates an in-place-propagated change as [attribute propagated] (go-to-k/cdkd#3662)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Reader',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SSM::Parameter',
+        propertyChanges: [
+          {
+            path: 'Value',
+            oldValue: 'v-a',
+            newValue: { 'Fn::GetAtt': ['Cr', 'Value'] },
+            requiresReplacement: false,
+            inPlacePropagated: true,
+          },
+          { path: 'Description', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+
+    expect(lines).toContain('      - Value: [attribute propagated]');
+    // A literal edit on the same resource carries no annotation.
+    expect(lines).toContain('      - Description:');
+    expect(lines.join('\n')).not.toContain('[replacement propagated]');
+  });
+
   // Issue #1608 — a pure key ADDITION must render symmetrically. The per-side
   // strip pruned the new side to the added key while the old side (no changed
   // keys of its own) fell back to the FULL object, which read as "everything

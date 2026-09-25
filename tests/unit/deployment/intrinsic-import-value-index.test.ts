@@ -9,6 +9,7 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StateImportEntry } from '../../../src/types/state.js';
 import {
+  carriesFreshNoEchoValue,
   clearRecoverableMaskedOutputs,
   recordRecoverableMaskedOutput,
   redactSecretsForState,
@@ -399,6 +400,11 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       expect(redactSecretsForState({ Value: 'in-run-plaintext-2274' }, recordedSecretValues)).toEqual(
         { Value: '***' }
       );
+      // ...and it is FRESH (go-to-k/cdkd#3662): the consumer's no-change skip
+      // must not read the new value's `***` as equal to the recorded `***`.
+      expect(
+        carriesFreshNoEchoValue({ Value: 'in-run-plaintext-2274' }, recordedSecretValues)
+      ).toBe(true);
       clearRecoverableMaskedOutputs();
     });
 

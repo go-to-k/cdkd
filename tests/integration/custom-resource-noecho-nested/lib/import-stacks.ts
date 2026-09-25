@@ -12,6 +12,7 @@ export const PLAIN_EXPORT_NAME = 'CdkdCrNoEchoNestedPlain';
  *
  * covers: AWS::CloudFormation::CustomResource
  * covers: AWS::Lambda::Function
+ * covers: AWS::SSM::Parameter
  *
  * Its persisted `state.outputs` and the shared exports index hold `***` for
  * the sensitive export (issue #2274); the consumer deployed in the SAME
@@ -26,8 +27,7 @@ export class ImportProducerStack extends cdk.Stack {
     // value changes and the consumer takes an UPDATE: the recovery then runs in
     // the consumer's DIFF and its provisioning, not only on a CREATE. The
     // consumer's diff runs after the producer deploys under `deploy --all`, so
-    // it sees the new value without promotion (unlike the nested arm); its
-    // own-property change is for go-to-k/cdkd#3662, below.
+    // it sees the new value without promotion (unlike the nested arm).
     const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
     const noEchoCr = valueResource(this, 'ProducerNoEchoCr', handler, {
       prefix: 'noecho-producer-token',
@@ -38,6 +38,15 @@ export class ImportProducerStack extends cdk.Stack {
       prefix: 'plain-producer-value',
       seed: 'integ',
       noEcho: false,
+    });
+
+    // A SAME-STACK reader of the NoEcho CR (go-to-k/cdkd#3662). The CR's
+    // attributes are its handler's `Data`, never a template property, so only
+    // the diff's custom-resource promotion reaches this parameter in phase 4,
+    // and only the engine's mask-only exception sends it the new token.
+    new ssm.StringParameter(this, 'ProducerNoEchoParam', {
+      parameterName: '/cdkd-integ/cr-noecho-nested/producer/noecho',
+      stringValue: noEchoCr.getAttString('Value'),
     });
 
     new cdk.CfnOutput(this, 'NoEchoTokenExport', {
@@ -62,19 +71,12 @@ export class ImportConsumerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
+    // No own-property change in any phase (go-to-k/cdkd#3662): in phase 4 the
+    // diff sees the new token through the recovery, and the engine must send
+    // it although the record and the redacted value are both `***`.
     new ssm.StringParameter(this, 'NoEchoParam', {
       parameterName: '/cdkd-integ/cr-noecho-nested/consumer/noecho',
       stringValue: cdk.Fn.importValue(NOECHO_EXPORT_NAME),
-      // An OWN-property change on the same token as the producer's Seed. The
-      // consumer's diff DOES see the new value (the recovery serves it), but
-      // the engine's post-resolution skip compares the REDACTED bag with the
-      // record, i.e. `***` with `***`, and skips the update
-      // (go-to-k/cdkd#3662). This makes the bags differ so the update is sent;
-      // drop it once #3662 lands and phase 4 must still pass.
-      description: modes.includes('producer-seed')
-        ? 'cdkd integ custom-resource-noecho-nested - phase 4'
-        : 'cdkd integ custom-resource-noecho-nested - phase 1',
     });
     new ssm.StringParameter(this, 'PlainParam', {
       parameterName: '/cdkd-integ/cr-noecho-nested/consumer/plain',

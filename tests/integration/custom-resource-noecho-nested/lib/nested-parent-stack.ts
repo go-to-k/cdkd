@@ -16,7 +16,11 @@ class NoEchoChild extends cdk.NestedStack {
   public readonly plainValue: string;
   public readonly staticValue: string;
 
-  constructor(scope: Construct, id: string, props: { seed: string } & cdk.NestedStackProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: { seed: string; plainSeed: string } & cdk.NestedStackProps
+  ) {
     super(scope, id, props);
 
     // Pinned so the child's cdkd state key is the documented
@@ -36,10 +40,12 @@ class NoEchoChild extends cdk.NestedStack {
     });
     // The plain value moves in phase 3 as well: its parent reader has no
     // own-property change, so only the promotion of a nested-output reader
-    // (go-to-k/cdkd#3631) can carry the new value to AWS.
+    // (go-to-k/cdkd#3631) can carry the new value to AWS. Phase 5 moves it
+    // ALONE (`plainSeed`), so the child updates while its NoEcho CR does not
+    // re-run.
     const plainCr = valueResource(this, 'ChildPlainCr', handler, {
       prefix: 'plain-child-value',
-      seed: props.seed,
+      seed: props.plainSeed,
       noEcho: false,
     });
 
@@ -83,31 +89,28 @@ export class NestedParentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Whole tokens: `producer-seed` (the import arm's phase) must not read as
-    // `seed`, or that phase would update the child too.
+    // Whole tokens: `producer-seed` (the import arm's phase) and `plain-seed`
+    // must not read as `seed`, or those phases would re-run the child's NoEcho
+    // CR too.
     const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
-    const seedMode = modes.includes('seed');
+    const seed = modes.includes('seed') ? 'updated' : 'integ';
     const child = new NoEchoChild(this, 'NoEchoChild', {
-      seed: seedMode ? 'updated' : 'integ',
+      seed,
+      plainSeed: modes.includes('plain-seed') ? 'rotated' : seed,
     });
 
+    // No own-property change in any phase (go-to-k/cdkd#3662). Phase 3 reaches
+    // AWS only because the diff promotes a reader of an updated nested
+    // stack's outputs, and the engine sends it the token the child's NoEcho CR
+    // re-minted, though the record and the redacted value are both `***`.
+    // Phase 5 promotes it again with nothing re-minted: it resolves the mask
+    // itself, equal to its record, and must be SKIPPED rather than refused.
     new ssm.StringParameter(this, 'NoEchoParam', {
       parameterName: '/cdkd-integ/cr-noecho-nested/parent/noecho',
       stringValue: child.noEchoToken,
-      // An OWN-property change on the same token as the child's Seed, so this
-      // parameter is sent in phase 3 and re-resolves the child's output from
-      // the in-flight `Child` row, i.e. from what the recovery on
-      // `NestedStackProvider.update` handed back. The diff does not promote a
-      // reader of an output persisted as the mask (go-to-k/cdkd#3631 excludes
-      // it), and promoted, the engine's post-resolution skip would compare the
-      // REDACTED bag with the record, `***` with `***`, and drop the update
-      // (go-to-k/cdkd#3662); drop this once that lands.
-      description: seedMode
-        ? 'cdkd integ custom-resource-noecho-nested - phase 3'
-        : 'cdkd integ custom-resource-noecho-nested - phase 1',
     });
-    // No own-property change in any phase: phase 3 reaches AWS only through
-    // the promotion of a nested-output reader (go-to-k/cdkd#3631).
+    // No own-property change in any phase: phases 3 and 5 reach AWS only
+    // through the promotion of a nested-output reader (go-to-k/cdkd#3631).
     new ssm.StringParameter(this, 'PlainParam', {
       parameterName: '/cdkd-integ/cr-noecho-nested/parent/plain',
       stringValue: child.plainValue,

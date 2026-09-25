@@ -153,6 +153,9 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
         oldValue: 'plain-v1',
         newValue: { 'Fn::GetAtt': ['Child', 'Outputs.PlainValue'] },
         requiresReplacement: false,
+        // The engine reads this to treat `requiresReplacement` as a ceiling
+        // (go-to-k/cdkd#3662).
+        inPlacePropagated: true,
       },
     ]);
   });
@@ -192,12 +195,11 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     expect(changes.get('Reader')?.propertyChanges?.map((pc) => pc.path)).toEqual(['Value']);
   });
 
-  it('does not promote a reader of an output whose PERSISTED value is the redaction mask', async () => {
-    // A `NoEcho` custom resource's value persists as `***` (issue #2274).
-    // Promoted, the reader's UPDATE would read that mask whenever the child did
-    // not re-mint the value in this run, and the deploy would refuse it as a
-    // redacted read. The unmasked sibling in the same stack is still promoted,
-    // which is what shows the exclusion is per attribute.
+  it('promotes a reader of an output whose PERSISTED value is the redaction mask', async () => {
+    // A `NoEcho` custom resource's value persists as `***` (issue #2274). The
+    // reader is promoted like any other (go-to-k/cdkd#3662): the engine sends
+    // it only when the child re-minted the value this run, and otherwise skips
+    // it as equal to its record before any refusal of the masked read.
     const state = stateWithChild();
     state.resources['Child']!.attributes = {
       ...state.resources['Child']!.attributes,
@@ -227,15 +229,15 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     });
 
     expect(changes.get('Reader')?.changeType).toBe('UPDATE');
-    expect(changes.get('SecretReader')?.changeType).toBe('NO_CHANGE');
-    expect(changes.get('SecretListReader')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('SecretReader')?.changeType).toBe('UPDATE');
+    expect(changes.get('SecretListReader')?.changeType).toBe('UPDATE');
   });
 
-  it('does not promote a reader whose OTHER reads include a masked attribute, from any upstream', async () => {
-    // The exclusion is per DEPENDENT: the engine resolves every property, so a
-    // masked read anywhere — another output of the same child, or a `NoEcho`
-    // custom resource in this stack — is refused however the reader was
-    // promoted. `Plain` reads the same unmasked output and still is promoted.
+  it('promotes a reader whose OTHER reads include a masked attribute, from any upstream', async () => {
+    // A masked read anywhere in the reader — another output of the same child,
+    // or a `NoEcho` custom resource in this stack — no longer withholds the
+    // promotion (go-to-k/cdkd#3662); `Plain`, with no masked read, is the
+    // baseline the other two must match.
     const state = stateWithChild();
     state.resources['Child']!.attributes = {
       ...state.resources['Child']!.attributes,
@@ -291,80 +293,14 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
 
     expect(changes.get('Plain')?.changeType).toBe('UPDATE');
-    expect(changes.get('SameChild')?.changeType).toBe('NO_CHANGE');
-    expect(changes.get('OtherUpstream')?.changeType).toBe('NO_CHANGE');
-  });
-
-  it('finds a masked attribute persisted as a NESTED object, the way the resolver does', async () => {
-    // A Cloud Control record keeps `Endpoint.Password` as `{Endpoint: {Password}}`,
-    // and the resolver walks the dotted path when the flat key misses. The
-    // unmasked `Endpoint.Address` beside it keeps its reader promotable.
-    const state = stateWithChild();
-    state.resources['Db'] = {
-      physicalId: 'db-1',
-      resourceType: 'AWS::RDS::DBCluster',
-      properties: {},
-      attributes: { Endpoint: { Address: 'db.example', Password: '***' } },
-    };
-    state.resources['Masked'] = {
-      ...readerRow('plain-v1'),
-      physicalId: '/app/masked',
-      properties: { Name: '/app/reader', Type: 'String', Value: 'plain-v1', Description: '***' },
-    };
-    state.resources['Unmasked'] = {
-      ...readerRow('plain-v1'),
-      physicalId: '/app/unmasked',
-      properties: {
-        Name: '/app/reader',
-        Type: 'String',
-        Value: 'plain-v1',
-        Description: 'db.example',
-      },
-    };
-    const plainRead = { 'Fn::GetAtt': ['Child', 'Outputs.PlainValue'] };
-    const template: CloudFormationTemplate = {
-      Resources: {
-        Child: childResource(CHILD_V2_URL),
-        Db: { Type: 'AWS::RDS::DBCluster', Properties: {} },
-        Masked: {
-          Type: 'AWS::SSM::Parameter',
-          Properties: {
-            Name: '/app/reader',
-            Type: 'String',
-            Value: plainRead,
-            Description: { 'Fn::GetAtt': ['Db', 'Endpoint.Password'] },
-          },
-        },
-        Unmasked: {
-          Type: 'AWS::SSM::Parameter',
-          Properties: {
-            Name: '/app/reader',
-            Type: 'String',
-            Value: plainRead,
-            Description: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
-          },
-        },
-      },
-    };
-    // This file's resolver reads flat keys only; answer the nested reads with
-    // what the real one returns, so both readers compare equal before promotion.
-    const resolver = makeResolver(state);
-    const changes = await new DiffCalculator().calculateDiff(state, template, async (v) => {
-      const ga = (v as Record<string, unknown> | null)?.['Fn::GetAtt'];
-      if (Array.isArray(ga) && ga[0] === 'Db') {
-        return ga[1] === 'Endpoint.Password' ? '***' : 'db.example';
-      }
-      return resolver(v);
-    });
-
-    expect(changes.get('Unmasked')?.changeType).toBe('UPDATE');
-    expect(changes.get('Masked')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('SameChild')?.changeType).toBe('UPDATE');
+    expect(changes.get('OtherUpstream')?.changeType).toBe('UPDATE');
   });
 
   it('keeps the FIRST round of the changed-property arm as it was, a masked read included', async () => {
     // Arm 1 in round 1 matches a property that really changed, so its reader
-    // is stale for certain: it is promoted as before this issue, and a masked
-    // read in it is the engine's refusal to report, not a guess to withhold.
+    // is stale for certain: it is promoted, and a masked read in it is the
+    // engine's refusal to report.
     const state = baseState();
     state.resources['Base'] = {
       physicalId: 'base',
@@ -411,12 +347,12 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     expect(changes.get('Reader')?.propertyChanges?.map((pc) => pc.path)).toEqual(['Value']);
   });
 
-  it('withholds a LATER-round promotion of the changed-property arm from a dependent with a masked read', async () => {
+  it('carries a LATER-round promotion of the changed-property arm to a dependent with a masked read', async () => {
     // Round 1 promotes Middle (it reads the nested output, a guess); round 2
-    // would promote Reader through arm 1, because Middle's `Value` now carries
-    // a synthetic change — a guess built on a guess. Reader also reads a
-    // `NoEcho` custom resource's masked attribute, so it is withheld; Twin,
-    // the same read without the mask, is still promoted.
+    // promotes Reader through arm 1, because Middle's `Value` now carries a
+    // synthetic change — a guess built on a guess. Reader also reads a
+    // `NoEcho` custom resource's masked attribute, which no longer withholds
+    // it (go-to-k/cdkd#3662); Twin is the same read without the mask.
     const state = stateWithChild();
     state.resources['Cr'] = {
       physicalId: 'cr-1',
@@ -468,7 +404,7 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
 
     expect(changes.get('Middle')?.changeType).toBe('UPDATE');
     expect(changes.get('Twin')?.changeType).toBe('UPDATE');
-    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('Reader')?.changeType).toBe('UPDATE');
   });
 
   it('leaves the reader NO_CHANGE when the nested stack itself is NO_CHANGE', async () => {
@@ -505,31 +441,96 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
   });
 
   it('does not treat an `Outputs.`-prefixed attribute of ANOTHER type as a nested output', async () => {
-    // The prefix table is keyed by type: a custom resource whose Data happens
-    // to carry an `Outputs.X` key is not a nested stack, and its in-place
-    // update of `Seed` names no attribute the reader reads.
+    // The prefix table is keyed by type: a topic whose record happens to carry
+    // an `Outputs.X` attribute is not a nested stack, and its in-place update
+    // of `DisplayName` names no attribute the reader reads. (A custom resource
+    // would not do here: arm 4 promotes a reader of ANY of its attributes.)
     const state = baseState();
-    state.resources['Cr'] = {
-      physicalId: 'cr-1',
-      resourceType: 'Custom::Thing',
-      properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h', Seed: 'a' },
+    state.resources['Topic'] = {
+      physicalId: 'arn:aws:sns:us-east-1:123456789012:t',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { DisplayName: 'a' },
       attributes: { 'Outputs.PlainValue': 'plain-v1' },
     };
     state.resources['Reader'] = readerRow('plain-v1');
     const template: CloudFormationTemplate = {
       Resources: {
-        Cr: {
-          Type: 'Custom::Thing',
-          Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h', Seed: 'b' },
-        },
-        Reader: readerResource({ 'Fn::GetAtt': ['Cr', 'Outputs.PlainValue'] }),
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { DisplayName: 'b' } },
+        Reader: readerResource({ 'Fn::GetAtt': ['Topic', 'Outputs.PlainValue'] }),
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Topic')?.changeType).toBe('UPDATE');
+    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('promotes a reader of ANY attribute of an in-place-updated custom resource (arm 4)', async () => {
+    // A custom resource's attributes are its handler's response `Data`, which
+    // the update re-runs; none is a template property, so arm 1 cannot match.
+    // The diff reads the previous run's value and the reader diffs NO_CHANGE,
+    // so without this arm it kept the old value. A `Ref` reader is still left
+    // alone, and so is a reader of a custom resource that did not update.
+    const state = baseState();
+    const token = 'arn:aws:lambda:us-east-1:123456789012:function:h';
+    state.resources['Cr'] = {
+      physicalId: 'cr-1',
+      resourceType: 'Custom::Thing',
+      properties: { ServiceToken: token, Seed: 'a' },
+      attributes: { Value: 'v-a' },
+    };
+    state.resources['Idle'] = {
+      physicalId: 'cr-2',
+      resourceType: 'AWS::CloudFormation::CustomResource',
+      properties: { ServiceToken: token },
+      attributes: { Value: 'idle' },
+    };
+    state.resources['Reader'] = readerRow('v-a');
+    state.resources['RefReader'] = { ...readerRow('cr-1'), physicalId: '/app/ref' };
+    state.resources['IdleReader'] = { ...readerRow('idle'), physicalId: '/app/idle' };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: token, Seed: 'b' } },
+        Idle: { Type: 'AWS::CloudFormation::CustomResource', Properties: { ServiceToken: token } },
+        Reader: readerResource({ 'Fn::GetAtt': ['Cr', 'Value'] }),
+        RefReader: readerResource({ Ref: 'Cr' }),
+        IdleReader: readerResource({ 'Fn::GetAtt': ['Idle', 'Value'] }),
       },
     };
 
     const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
 
     expect(changes.get('Cr')?.changeType).toBe('UPDATE');
-    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('Reader')?.changeType).toBe('UPDATE');
+    expect(changes.get('Reader')?.propertyChanges?.map((pc) => pc.path)).toEqual(['Value']);
+    expect(changes.get('RefReader')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('IdleReader')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('promotes the reader of an updated custom resource of the generic CloudFormation type too', async () => {
+    const state = baseState();
+    const token = 'arn:aws:lambda:us-east-1:123456789012:function:h';
+    state.resources['Cr'] = {
+      physicalId: 'cr-1',
+      resourceType: 'AWS::CloudFormation::CustomResource',
+      properties: { ServiceToken: token, Seed: 'a' },
+      attributes: { Value: 'v-a' },
+    };
+    state.resources['Reader'] = readerRow('v-a');
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Cr: {
+          Type: 'AWS::CloudFormation::CustomResource',
+          Properties: { ServiceToken: token, Seed: 'b' },
+        },
+        Reader: readerResource({ 'Fn::Sub': ['${Cr.Value}', {}] }),
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Reader')?.changeType).toBe('UPDATE');
   });
 
   it('promotes TRANSITIVELY: a sibling nested stack fed by the output, then a reader of THAT stack', async () => {

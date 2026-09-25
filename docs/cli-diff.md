@@ -84,6 +84,7 @@ instead of a block.
 | `[-]` | The resource would be deleted. |
 | `[requires replacement]` | Changing that property replaces the resource rather than updating it in place. |
 | `[replacement propagated]` | The property's template value did not change — only the physical ID or ARN it references will, because an upstream resource is being replaced. The apparent `"value"` → `{Ref: ...}` delta is not a literal edit. |
+| `[attribute propagated]` | The property's template value did not change — it reads an attribute of a resource being updated (a nested stack's output, a custom resource's response `Data`), which may move. The deploy sends the update only if the value did, and replaces the resource only if a value that cannot change in place did. A `NoEcho` value returned again cannot be compared, so it is always sent, and replaces a reader holding it in such a property. |
 | `[metadata only, no AWS API call]` | A `DeletionPolicy` / `UpdateReplacePolicy` change. cdkd records it in state; AWS is not called. |
 | `(known after deploy)` | The new side is an unresolved intrinsic — a `Ref` or `Fn::GetAtt` to a resource this same deploy will create. |
 
@@ -582,6 +583,9 @@ The payload is a flat array of one record per target stack:
   recursively.
 - `propertyChanges` and `attributeChanges` appear on a change entry only when
   non-empty.
+- A `propertyChanges` entry carries `replacementPropagated: true` or
+  `inPlacePropagated: true` for the `[replacement propagated]` /
+  `[attribute propagated]` rows above; the field is absent otherwise.
 - `unreadable` is **always present**: the logical ids of state record rows the
   diff could not read, `(resources map)` when the whole `resources` map is
   not an object, `(orphans container)` when the whole `orphans` field is
@@ -612,8 +616,19 @@ With or without `--recursive`, a changed nested stack also lists every parent
 resource that reads one of its outputs (`Fn::GetAtt [Child, 'Outputs.<Key>']`)
 as an update. The child's new outputs are known only once it deploys, so the
 preview cannot tell which of them will move. `cdkd deploy` sends an update
-only to the readers whose output did move. A reader that reads any value stored as
-the `***` mask (a `NoEcho` custom resource's) is not listed and not updated.
+only to the readers whose output did move.
+
+A changed custom resource is previewed the same way: every resource reading one
+of its attributes (`Fn::GetAtt` / `Fn::Sub`) is listed as an update, because
+its handler runs again and only the deploy learns what it returns. Where the
+read sits in a property that cannot change in place, the row reads as a
+replacement. The deploy skips each reader whose value did not move.
+
+A reader of a value stored as the `***` mask (a `NoEcho` custom resource's) is
+listed like any other. The deploy sends it an update when the handler returned
+the value again in the same run, and skips it when nothing else it reads
+moved. A reader whose other reads moved while the masked value was not returned
+again is refused, since cdkd would otherwise send the literal mask.
 
 `--recursive` walks into every `AWS::CloudFormation::Stack` row in DFS order and
 diffs each nested child against its **own** deployed state at
