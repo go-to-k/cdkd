@@ -41,8 +41,14 @@ exports.handler = async (event) => {
   // only WHOLE, so a physical id containing the token would persist it, and
   // it stays stable across the phase-2 Seed change so that is an in-place
   // UPDATE rather than a replacement.
+  // IdFromSeed (go-to-k/cdkd#3722): a resource whose physical id DOES move
+  // with its Seed, so an Update answers with a new PhysicalResourceId and a
+  // Ref reader has to follow it. Never set on a NoEcho resource.
   const response = {
-    PhysicalResourceId: 'cr-noecho-nested-' + event.LogicalResourceId,
+    PhysicalResourceId:
+      props.IdFromSeed === 'true'
+        ? 'cr-noecho-nested-id-' + seed
+        : 'cr-noecho-nested-' + event.LogicalResourceId,
     Data: { Value: props.Prefix + '-' + seed },
   };
   if (props.Sensitive === 'true') response.NoEcho = true;
@@ -60,7 +66,7 @@ export function valueResource(
   scope: Construct,
   id: string,
   handler: lambda.IFunction,
-  props: { prefix: string; seed: string; noEcho: boolean }
+  props: { prefix: string; seed: string; noEcho: boolean; idFromSeed?: boolean }
 ): cdk.CustomResource {
   return new cdk.CustomResource(scope, id, {
     serviceToken: handler.functionArn,
@@ -68,6 +74,7 @@ export function valueResource(
       Prefix: props.prefix,
       Seed: props.seed,
       Sensitive: props.noEcho ? 'true' : 'false',
+      ...(props.idFromSeed === true && { IdFromSeed: 'true' }),
     },
   });
 }
