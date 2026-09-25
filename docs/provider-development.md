@@ -272,8 +272,8 @@ without the second is worse than neither. (A warn-and-SKIP is a different shape
 and takes the opposite answer — see the section below.) `effectiveProperties` makes state describe what AWS holds; the
 template still declares what it always did, so the next diff reads the dropped
 keys as a change the user made. For a create-only property that means a
-REPLACEMENT, and the engine's replacement create passes no context — so a
-provider that refuses the shape on the create path turns a previously-green
+REPLACEMENT, and the engine's replacement create never sets `replayingState` —
+so a provider that refuses the shape on the create path turns a previously-green
 no-op deploy into a hard failure. Without create-only knowledge (no
 `DescribeType`) it classifies in-place instead and the resource is
 delete-and-recreated on *every* deploy.
