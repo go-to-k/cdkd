@@ -310,8 +310,9 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
  * (`[<refId>, <parentId>]` — segment order REVERSED vs the after-pipe family),
  * so CFn's `Ref` value is the segment BEFORE the FIRST pipe (issue #963
  * family audit; both confirmed against the AWS-docs "Return values / Ref"
- * section):
- *   - AWS::ApiGateway::Deployment        `<deploymentId>|<restApiId>` -> deployment id
+ * section). Examples — the Set below is the complete list, each entry with its
+ * own reason:
+ *   - AWS::ApiGateway::Deployment       `<deploymentId>|<restApiId>` -> deployment id
  *   - AWS::ApiGateway::DocumentationPart `<docPartId>|<restApiId>`    -> documentation part id
  *   - AWS::ApiGatewayV2::Authorizer      `<authorizerId>|<apiId>`     -> authorizer id
  *   - AWS::ApiGatewayV2::ApiMapping      `<apiMappingId>|<domainName>` -> api mapping id
@@ -349,8 +350,9 @@ const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
   // No SDK provider registers it, so it is always Cloud-Control-routed and
   // stored as `<Id>|<VpcId>` (CC primaryIdentifier `[Id, VpcId]`, live
   // `DescribeType`, us-east-1, 2026-09-25); the docs-verified `Ref` is the
-  // association id — the FIRST segment (issue #3700). A bare
-  // `vpc-cidr-assoc-…` from a pre-#3701 migrate is pipe-free and passes through.
+  // association id — the FIRST segment (issue #3700). No cdkd writer records
+  // a bare `vpc-cidr-assoc-…` (see the `cdkd export` splitter's comment); one
+  // in a hand-edited record is pipe-free and passes through unchanged.
   'AWS::EC2::VPCCidrBlock',
 ]);
 

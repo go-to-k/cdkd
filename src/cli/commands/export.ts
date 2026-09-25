@@ -480,14 +480,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // `ResourceIdentifier` naming a different resource and fail opaquely at
   // changeset-create.
   //
-  // The BARE `<Id>` form is accepted too, and is not hypothetical: CloudFormation
-  // reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as the association
-  // id alone, and a stack adopted via `cdkd import --migrate-from-cloudformation`
-  // by a cdkd older than #3701 carries that shape in state. A current migrate
-  // completes it to `<Id>|<VpcId>` (`CloudControlProvider.import()`, issue
-  // #3672), so a bare id now arrives only from such older state or from a
-  // hand-written `--resource` value on an import whose schema could not be read.
-  // `VpcId` is then recovered from the recorded properties, exactly as the
+  // The BARE `<Id>` form is accepted DEFENSIVELY — no cdkd writer records it.
+  // CloudFormation reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as
+  // the association id alone, but Cloud Control rejects that as an identifier
+  // (`ValidationException: Identifier vpc-cidr-assoc-… is not valid for
+  // identifier [/properties/Id, /properties/VpcId]`, measured us-east-1,
+  // 2026-09-25), and `CloudControlProvider.import()` records a physicalId only
+  // after `GetResource` succeeds. So an import that passed the bare id through
+  // adopted nothing, and since #3701 (issue #3672) a migrate completes it to
+  // `<Id>|<VpcId>` first. A hand-edited state record is what remains. `VpcId`
+  // is then recovered from the recorded properties, exactly as the
   // `AWS::ApiGateway::Resource` entry above recovers `RestApiId`.
   //
   // Without this entry the type's mere PRESENCE aborted the whole
