@@ -16,7 +16,10 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   };
 });
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -270,5 +273,59 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     const changes = await new DiffCalculator().calculateDiff(state, template);
     const pc = changes.get('Pipe')?.propertyChanges?.find((c) => c.path === 'SourceParameters');
     expect(pc?.requiresReplacement).toBe(true);
+  });
+
+  // Issue #2548: a nested stack CAN diff as a replacement, and replacing one
+  // destroys its whole child stack, so the type must be on the stateful guard.
+  // The createOnly set is read from the checked-in registry schema rather than
+  // typed here, and the drop is ACCEPTED (the only way such a template deploys:
+  // `StackName` is a silent drop and the type refuses the Cloud Control route),
+  // so the case goes through the #2750 narrowing that keeps createOnly drops.
+  describe('AWS::CloudFormation::Stack StackName (issue #2548)', () => {
+    const schema = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../../fixtures/cfn-schemas/AWS-CloudFormation-Stack.json', import.meta.url)
+        ),
+        'utf8'
+      )
+    ) as { createOnlyProperties: string[] };
+    const allowed = new Set(['AWS::CloudFormation::Stack:StackName']);
+
+    it.each([
+      ['changed', { StackName: 'old-name' }],
+      ['added', {}],
+    ])('a %s StackName is a replacement, and the type is guarded', async (_label, recorded) => {
+      mockGetCreateOnly.mockResolvedValue(
+        schema.createOnlyProperties.map((p) => p.replace(/^\/properties\//, '').split('/'))
+      );
+      const state = baseState();
+      state.resources['Child'] = {
+        physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/TestStack/Child',
+        resourceType: 'AWS::CloudFormation::Stack',
+        provisionedBy: 'sdk',
+        properties: { TemplateURL: 'https://example.com/child.json', ...recorded },
+        attributes: {},
+      };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://example.com/child.json', StackName: 'new-name' },
+          },
+        },
+      };
+
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        template,
+        undefined,
+        undefined,
+        allowed
+      );
+      const pc = changes.get('Child')?.propertyChanges?.find((c) => c.path === 'StackName');
+      expect(pc?.requiresReplacement).toBe(true);
+      expect(STATEFUL_TYPES.has('AWS::CloudFormation::Stack')).toBe(true);
+    });
   });
 });

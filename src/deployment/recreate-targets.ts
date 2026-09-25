@@ -182,14 +182,14 @@ export interface RecreateTargetsValidation {
    *
    * Refused, in both directions, with no `--force-stateful-recreation` bypass —
    * the same shape as {@link blockedMultiRegionTargets} and for a stronger
-   * reason. The type is not in `STATEFUL_TYPES`, so nothing else stops it, and
-   * honoring it would route the whole child stack through the replacement
-   * path: `NestedStackProvider.delete` tears down every resource the child
-   * owns, under the CHILD's own policies and with no per-resource consent
-   * screen, and the re-create would then be asked of a layer that does not
-   * implement cdkd's nested-stack semantics at all. A user who wants a child's
-   * resource recreated has to name it in a deploy of that resource's own
-   * stack, which nested children do not get.
+   * reason. `STATEFUL_TYPES` lists the type (issue #2548), but that refusal
+   * is bypassable and this one is not: honoring it would route the whole
+   * child stack through the replacement path. `NestedStackProvider.delete`
+   * tears down every resource the child owns, under the CHILD's own policies
+   * and with no per-resource consent screen, and the re-create would then be
+   * asked of a layer that does not implement cdkd's nested-stack semantics at
+   * all. A user who wants a child's resource recreated has to name it in a
+   * deploy of that resource's own stack, which nested children do not get.
    *
    * The refusal is also what keeps {@link nestedStackLogicalIds} from being a
    * hazard: that note NAMES these ids to the user, and naming them while

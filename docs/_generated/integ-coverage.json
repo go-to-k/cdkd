@@ -616,6 +616,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "recreate-nested-logical-id-collision"
       ],
@@ -636,6 +637,9 @@
           "literal"
         ],
         "nested-stack-deep": [
+          "literal"
+        ],
+        "nested-stack-replace-guard": [
           "literal"
         ],
         "nested-stack-secret": [
@@ -5997,6 +6001,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "opensearch-domain-getatt",
         "output-never-resolved-diff",
@@ -6187,6 +6192,10 @@
         ],
         "nested-stack-deep": [
           "l2"
+        ],
+        "nested-stack-replace-guard": [
+          "l2",
+          "literal"
         ],
         "nested-stack-secret": [
           "l2",

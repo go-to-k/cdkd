@@ -109,11 +109,16 @@ describe('STATEFUL_TYPES (#615)', () => {
     expect(STATEFUL_TYPES.has('AWS::Lambda::Function')).toBe(false);
     expect(STATEFUL_TYPES.has('AWS::IAM::Role')).toBe(false);
     expect(STATEFUL_TYPES.has('AWS::IAM::Policy')).toBe(false);
+    // Maintainer decision (issue #2548): a queue's backlog is transient, and
+    // requiring --force-stateful-recreation on every queue rename costs a
+    // dev/test workflow more than it protects. CloudFormation also replaces
+    // it without consent.
     expect(STATEFUL_TYPES.has('AWS::SQS::Queue')).toBe(false);
     expect(STATEFUL_TYPES.has('AWS::SNS::Topic')).toBe(false);
-    // EC2::Instance not on the list — boot disk is ephemeral by default and
-    // the user is responsible for EBS / snapshot lifecycle if they want
-    // persistence. Could be argued either way; current design says "no."
+    // Maintainer decision (issue #2548): the root volume is ephemeral by
+    // design — persistent data belongs on an `AWS::EC2::Volume`, which IS
+    // guarded — and requiring the flag on every AMI refresh costs more than
+    // it protects. CloudFormation also replaces it without consent.
     expect(STATEFUL_TYPES.has('AWS::EC2::Instance')).toBe(false);
   });
 

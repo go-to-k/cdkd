@@ -260,6 +260,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "nlb-source-nat",
         "nodejs-function",
@@ -345,6 +346,7 @@
         "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
+        "nested-stack-replace-guard",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "replacement-immutable-name",
@@ -577,6 +579,7 @@
         "nested-required-preflight",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "nlb-source-nat",
         "nodejs-function",
@@ -670,6 +673,7 @@
       "flag": "--prefer-sdk-route",
       "integs": [
         "cc-api-fallback-transitions",
+        "nested-stack-replace-guard",
         "sdk-to-cc-autoroute",
         "unrecognized-key-autoroute"
       ]
@@ -875,6 +879,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "nlb-source-nat",
         "nodejs-function",
@@ -984,6 +989,7 @@
         "lambda-durable-replacement",
         "lambda-layer-version-update",
         "loggroup-class-guard",
+        "nested-stack-replace-guard",
         "rollback-replay-cc-generated-name"
       ]
     },
@@ -1197,6 +1203,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "nlb-source-nat",
         "nodejs-function",
@@ -1502,6 +1509,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "nodejs-function",
         "opensearch-domain-getatt",
