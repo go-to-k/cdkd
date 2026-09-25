@@ -7730,8 +7730,9 @@ export class IntrinsicFunctionResolver {
     // plain object would route that one assignment through the inherited
     // prototype setter and render `${__proto__}` as `[object Object]` — the
     // same reason `redactByPath`'s object walk builds its output that way.
-    // The `in` test below therefore sees OWN keys only, on EITHER form (the
-    // plain-string form used to test against a plain `{}` too): a placeholder
+    // The membership test below therefore sees OWN keys only, on EITHER form
+    // (the plain-string form used to test against a plain `{}` too), and it is
+    // an `Object.hasOwn` besides (issue #2776): a placeholder
     // naming an `Object.prototype` member the map does not carry
     // (`${constructor}`, `${toString}`) used to substitute that member's
     // source text and now falls through to pseudo-parameter / `Ref`
@@ -7755,8 +7756,24 @@ export class IntrinsicFunctionResolver {
       DynamicReferencePass
     >;
 
+    // The TEMPLATE must be a string on both forms (issue #2776), checked before
+    // the variable map below. CloudFormation takes only a literal string there,
+    // and without this guard a non-string died at `template.matchAll is not a
+    // function` — a TypeError naming this function's internals rather than
+    // the template's shape. Refused on the same terms as the second element:
+    // the TYPE is named and never the value, and it is marked non-retryable
+    // because no retry changes a template.
+    const subTemplateKind = (value: unknown): string =>
+      value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
     if (Array.isArray(subArgs)) {
-      const [templateString, variableMap] = subArgs;
+      const [templateString, variableMap] = subArgs as unknown[];
+      if (typeof templateString !== 'string') {
+        throw markNonRetryable(
+          new Error(
+            `Fn::Sub: the first element must be a string, got ${subTemplateKind(templateString)}`
+          )
+        );
+      }
       template = templateString;
       // A `null` / primitive second element is refused UNCONDITIONALLY —
       // newly enforced validation. Before this change `null` always threw
@@ -7811,6 +7828,11 @@ export class IntrinsicFunctionResolver {
         }
       }
     } else {
+      if (typeof subArgs !== 'string') {
+        throw markNonRetryable(
+          new Error(`Fn::Sub: the template must be a string, got ${subTemplateKind(subArgs)}`)
+        );
+      }
       template = subArgs;
     }
 
@@ -7856,14 +7878,20 @@ export class IntrinsicFunctionResolver {
       let twinReplacement: string | undefined;
       let pass: DynamicReferencePass | undefined;
 
-      // Check explicit variables first
-      if (varNameStr in variables) {
+      // Check explicit variables first. `Object.hasOwn` rather than `in`
+      // (issue #2776), on all three maps. UNFALSIFIABLE while they carry no
+      // prototype -- a probe restoring `in` here is green, and that is stated
+      // rather than left for the next reader to discover (the same note
+      // `evaluateConditions`' memo carries) -- but whether a placeholder is
+      // BOUND should not depend on how a map far above was allocated:
+      // with a plain `{}` there, `${constructor}` rendered the `Object`
+      // function's source text into a live property.
+      if (Object.hasOwn(variables, varNameStr)) {
         replacement = String(variables[varNameStr]);
-        twinReplacement =
-          varNameStr in variableTwins
-            ? variableTwins[varNameStr]
-            : this.productLogTwin(variables[varNameStr], context);
-        if (varNameStr in variablePasses) pass = variablePasses[varNameStr];
+        twinReplacement = Object.hasOwn(variableTwins, varNameStr)
+          ? variableTwins[varNameStr]
+          : this.productLogTwin(variables[varNameStr], context);
+        if (Object.hasOwn(variablePasses, varNameStr)) pass = variablePasses[varNameStr];
       } else {
         // Check if it's a pseudo parameter
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);

@@ -128,19 +128,13 @@ describe('IntrinsicFunctionResolver - resolveSub leaves the caller\'s variable m
     // pseudo-parameter / `Ref` arms like any unknown name.
     //
     // What THOSE answer for a prototype-member name is not this file's
-    // subject, and today it is a defect of its own rather than a not-found
-    // answer: `resolveRef` reads `context.resources['constructor']`, which on
-    // a plain object is `Object.prototype.constructor` -- the `Object`
-    // FUNCTION, and truthy -- so it takes the RESOURCE arm, not the
-    // not-found one. That function carries no `physicalId`, and
-    // `cfnRefValueFromPhysicalId` falls through every recovery to return the
-    // `undefined` it was handed, so the placeholder renders `x-undefined`
-    // (measured). Issue
-    // [#2767](https://github.com/go-to-k/cdkd/issues/2767) fixes that read
-    // and its `Fn::GetAtt` / parameter twins, so the rendered value is ITS to
-    // pin, against the corrected behaviour. What this test owns is the
-    // negative the change above earns: whatever the fall-through answers, no
-    // function source reaches the rendered string.
+    // subject: issue [#2767](https://github.com/go-to-k/cdkd/issues/2767)
+    // fixed the `Ref` / `Fn::GetAtt` reads (they rendered `x-undefined`
+    // before it), and `intrinsic-prototype-chain-reads.test.ts` pins the
+    // RENDERED value through `Fn::Sub` (issue
+    // [#2776](https://github.com/go-to-k/cdkd/issues/2776)). What this test
+    // owns is the negative the change above earns: whatever the fall-through
+    // answers, no function source reaches the rendered string.
     const resolver = new IntrinsicFunctionResolver();
     for (const subValue of [
       { 'Fn::Sub': ['x-${constructor}', { Lit: 'y' }] },
