@@ -983,6 +983,10 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('not accepting');
     expect(warned).toContain('CHANGES this resource');
+    // Issue #3595 item (1): a no-change deploy is no longer "nothing", so the
+    // refusal states the conditions under which it does replace the mask.
+    expect(warned).toContain('A deploy that changes nothing replaces the mask only when');
+    expect(warned).not.toContain('a deploy that changes nothing does not');
     expect(warned).not.toContain('Re-deploy to refresh it');
     assertNoPlaintext(warned);
   });

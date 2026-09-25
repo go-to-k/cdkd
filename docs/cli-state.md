@@ -730,7 +730,10 @@ readback holds a string — cdkd cannot tell a resolved secret from an ordinary
 literal, so it writes the mask `***` at that position rather than the value AWS
 reported. `cdkd drift` then reports that position as not compared (exit `2`)
 while the mask is the only difference there, and as drift if anything else
-there changed; a `cdkd deploy` that changes the resource repairs it. See
+there changed. A `cdkd deploy` repairs it: one that changes the resource
+re-captures the whole baseline, and one that changes nothing replaces each mask
+the resource's own secret references can certify. Re-running this command
+afterwards writes the masks back, since it resolves nothing. See
 [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
 Resources whose provider cannot read current state, and resources AWS reports

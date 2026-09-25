@@ -2814,6 +2814,7 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   observed walk, own-record source           the record itself    STATE_SOURCED_BASELINE_RULES *        TAKE SOURCE
  *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
  *   `cdkd import` observed capture             the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
+ *   deploy masked-baseline re-capture (x2)     the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
  *   `cdkd drift --accept` new baseline         the record itself    BASELINE / READBACK by destination *** TAKE SOURCE
  *   `cdkd drift --revert` narrowed delta       revert baseline      BASELINE / READBACK by destination *** TAKE SOURCE
  *   deploy journal `previousState`             the record itself    STATE_SOURCED_READBACK_RULES (passed) TAKE SOURCE
@@ -2899,7 +2900,16 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   false. An earlier revision here said "every `drainObservedCaptures`
  *   baseline", which is a strictly larger set than the one that arms. It stays
  *   `*` under #2906's second test because `drainObservedCaptures` MARKS every
- *   bag it installs, the auto-refresh's included.
+ *   READBACK it installs, the auto-refresh's included. The one bag it installs
+ *   unmarked is not a readback: see the masked-baseline row below.
+ * - the masked-baseline re-capture (issue
+ *   [#3595](https://github.com/go-to-k/cdkd/issues/3595),
+ *   `masked-baseline-recapture.ts`) walks a fresh readback TWICE with
+ *   `STATE_SOURCED_BASELINE_RULES` passed explicitly — once with an empty map,
+ *   once with a map resolved from the record's own `properties` — and persists
+ *   neither: it copies only whole references the record spells into the
+ *   PREVIOUS baseline's masked positions. That bag is installed unmarked and
+ *   reaches the persist choke point as `**`.
  * - `redactStateForPersist` ALSO reaches the derivation for a resource this
  *   deploy never resolved — every failure-path and intermediate save, and each
  *   `orphans` entry since (#2948) — with an empty map, no template bag,
@@ -5726,8 +5736,12 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
  * any other service is left in place by the resolver, so text inside it is
  * ordinary persisted text, and a recorded plaintext there must be redacted
  * (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)).
+ *
+ * Exported for the masked-baseline re-capture (issue #3595), which resolves
+ * only such tokens: any other one records no pair, so it cannot certify a
+ * position, and handing it to the resolver would only warn on every deploy.
  */
-function spanNamesResolvableService(token: string): boolean {
+export function spanNamesResolvableService(token: string): boolean {
   return SECRET_BEARING_REFERENCE_PREFIXES.some((prefix) => token.startsWith(prefix));
 }
 
@@ -7316,11 +7330,15 @@ export function scrubResourceRecord<
         // this bag one THIS RUN PRODUCED? {@link markSameGenerationBag} already
         // answers it, and the mark is put on precisely the bag the refusal
         // exists for — `DeployEngine.drainObservedCaptures` marks EVERY drained
-        // capture, and it is the only writer of `observedProperties` on the
+        // READBACK, and it is the only writer of `observedProperties` on the
         // deploy path, so a bag arriving here UNMARKED is a previous
         // generation's by elimination. The record spread below and
         // `redactStateForPersist`'s preserve the object identity the mark is
-        // carried on.
+        // carried on. The one unmarked bag that drain installs is the
+        // masked-baseline re-capture (issue #3595): a previous generation's
+        // baseline with some masks replaced by the record's own references, so
+        // it holds nothing this run read from AWS and the argument below
+        // covers it unchanged.
         //
         // Failing OPEN on an unmarked bag is safe for the reason the two
         // replayed cases give and for no other: the bag ALREADY SITS in

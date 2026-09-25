@@ -462,10 +462,13 @@ worth knowing before you read a report:
   `cdkd state show` marks such a resource with an `ObservedBaseline: REFUSED`
   line.
 
-Both clear on a deploy that actually creates or updates the affected resource —
-not on any `cdkd deploy`. The **automatic refresh** cdkd runs at the start of a
-deploy only fills in a *missing* baseline, so it passes over a masked one; a
-create or update rewrites the baseline unconditionally.
+The refusal clears only on a deploy that actually creates or updates the
+affected resource — not on any `cdkd deploy`: the **automatic refresh** cdkd
+runs at the start of a deploy passes over a refused record, and a create or
+update rewrites the baseline unconditionally. A masked position also clears on
+a deploy that changes nothing, where the resource's own secret references can
+certify it; see
+[Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
 **Neither mechanism makes an imported `state.json` safe to treat as
 non-sensitive**, and the same caveat the

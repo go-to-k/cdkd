@@ -174,8 +174,9 @@ export type NotComparedCause =
    * The observed baseline holds an issue #2852 fail-closed mask at a position
    * the recording pass could not certify, and the ONLY difference found there
    * is that mask (go-to-k/cdkd#3595). Everything else about the resource was
-   * compared. Exit 2 like `refused`: a deploy that changes the resource
-   * re-captures the baseline, so it is clearable.
+   * compared. Exit 2 like `refused`, because it is clearable: a deploy that
+   * changes the resource re-captures the baseline, and a no-change deploy
+   * replaces each such mask its record's own references can certify.
    */
   | 'uncertifiedBaseline'
   /**
@@ -2236,15 +2237,20 @@ function acceptRefusalReason(
     // than asserting one mechanism.
     //
     // The remedy names what ACTUALLY re-captures the baseline (issue #3595): a
-    // bare "re-deploy" read as though any deploy would, and a no-change deploy
-    // re-captures nothing here. A `NoEcho` value additionally needs its handler
-    // to run again, which only an update of the custom resource itself does.
+    // bare "re-deploy" read as though any deploy would. A no-change deploy
+    // replaces a mask only under the re-capture's two conditions
+    // (`masked-baseline-recapture.ts`), and this arm is reached when something
+    // at the position DIFFERS, which is exactly when the first one fails. A
+    // `NoEcho` value additionally needs its handler to run again, which only an
+    // update of the custom resource itself does.
     return (
       'cdkd does not know the value that belongs at this position — the baseline holds only the ' +
       'redaction mask, so accepting would write AWS-held plaintext over a deliberate redaction. ' +
-      'A `cdkd deploy` that CHANGES this resource re-captures the baseline (a deploy that changes ' +
-      'nothing does not); where the value came from a `NoEcho` custom resource, that custom ' +
-      'resource must update too, so its handler supplies the value again'
+      'A `cdkd deploy` that CHANGES this resource re-captures the baseline. A deploy that changes ' +
+      'nothing replaces the mask only when the resource still reads back as its baseline records ' +
+      "and the resource's own secret reference resolves to the value AWS holds there; where the " +
+      'value came from a `NoEcho` custom resource, that custom resource must update too, so its ' +
+      'handler supplies the value again'
     );
   }
   return (
