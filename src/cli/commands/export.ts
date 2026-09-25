@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
-  displaySafe,
-  truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
+  displaySafe,
+  isPasteableIdent,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import {
   displayAssemblyPath,
@@ -2199,18 +2200,136 @@ async function resolveIdentifierValue(
  * today and would never stop being blocked by a re-import.
  */
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
+  // The id is NAMED in this sentence only when `isPasteableIdent` admits it
+  // (M21 of the go-to-k/cdkd#3613 review) -- the predicate the `Repair with:`
+  // line below already takes, so the prose and the command answer as one. The
+  // sentence predates this PR; the labelled line it can imitate does not. M18
+  // rendered the id through `displayIdent` here, which folds a newline and
+  // quotes, so a key spelled `X\nRepair with: cdkd destroy --all --force #`
+  // could no longer start a forged row ABOVE the genuine one. That closed the
+  // newline route and not the terminal-wrap route: `displayIdent` keeps
+  // interior spaces, and `'Tbl' + 60 spaces + 'Repair with: cdkd destroy --all
+  // --force #'` rendered unchanged inside its quotes (the maintainer measured
+  // it), so a wrap still put `Repair with: cdkd destroy --all --force #", and
+  // that attribute...` on a screen row of its own, the `#` commenting out the
+  // tail -- and since the genuine line carries only holes, the forged row was
+  // the only runnable one. go-to-k/cdkd#3328's class, in prose. A plain
+  // identifier has no space, newline or quote to wrap or fold, so it prints
+  // bare; anything else is described, and the operator is sent to `cdkd state
+  // show`, which lists the record's logical ids: the text view with control
+  // characters stripped, enough to identify the record, and `--json` with
+  // the key JSON-escaped, byte-for-byte.
+  const subject = isPasteableIdent(logicalId)
+    ? logicalId
+    : `this resource (its logical id is not a plain identifier; read it with 'cdkd state show')`;
   return (
-    `cdkd state holds only the redaction mask ('***') at attributes.${field} for '${logicalId}', ` +
+    `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
     `import identifier (${field}); nothing masked may reach the exported template, since ` +
     `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +
     `next update. The mask is what 'cdkd import' writes for a Cloud Control model key it could ` +
     `not certify as read-only — every key when cloudformation:DescribeType was unavailable. ` +
-    `Re-deploying does NOT clear it. Repair the record with 'cdkd import <stack> --resource ` +
-    `${logicalId}=<physicalId> --force' after granting cloudformation:DescribeType, or export ` +
+    `Re-deploying does NOT clear it. Repair the record with the command below, after ` +
+    `granting cloudformation:DescribeType, or export ` +
     `the stack without this resource and adopt it into CloudFormation by hand. ` +
-    `See https://github.com/go-to-k/cdkd/issues/2932.`
+    `See https://github.com/go-to-k/cdkd/issues/2932.` +
+    // The command on its own labelled line. It used to sit inside the prose
+    // `'...'` span with `${logicalId}` interpolated ACROSS two concatenated
+    // literals — the go-to-k/cdkd#3363 shape. That split is why the fence
+    // walked past it for three PRs: reading one literal at a time, it saw a
+    // command with no hole and a hole with no verb. The fence FOLDS `+` runs
+    // now and classifies the shape as `quoted-command`, which is how this site
+    // was finally found (an earlier version of this comment still described the
+    // old per-literal behaviour, and review caught it).
+    //
+    // The STACK stays a HOLE and the logical id goes where it belongs, inside
+    // `--resource`. A first cut of this passed `logicalId` as the positional,
+    // which `cdkd import` declares as `[stack]` — the command would have named
+    // a resource where a stack goes, and this function has no stack name in
+    // scope to put there. Review caught it; the fence could not, because both
+    // spellings are equally well-formed to a shape check. That is a real bound
+    // on what a shape fence buys: it moves a command out of the injection
+    // class without checking that the command MEANS anything.
+    //
+    // The id goes through the GATE, not through `displayIdent`. A first cut
+    // used the display renderer here and said in this comment that the holes
+    // on either side kept the line unpasteable. Both halves were wrong, and a
+    // review probe ran it: `displayIdent` JSON-quotes, and JSON quotes do not
+    // stop COMMAND SUBSTITUTION, so a logical id spelled `x$(touch OWNED)`
+    // rendered as `"x$(touch OWNED)"` and created the file when the line was
+    // pasted. That is go-to-k/cdkd#3486's round-3 finding exactly -- the one
+    // this lane recorded as the reason sanitizing is not a remedy -- and I
+    // reintroduced it three PRs later.
+    //
+    // Gated by `isPasteableIdent` inside `importRepairCommand` (M9 of the
+    // go-to-k/cdkd#3613 review), which is STRICTER than the command gate: the
+    // id is NAMED only when it is a plain identifier -- alphanumeric start,
+    // then `[A-Za-z0-9~_.-]` -- and printed as a quoted hole otherwise. So a
+    // `*` or `/` IS refused here, along with `=`, `$`, `(` and a space. An
+    // earlier version of this comment said the pattern characters were not
+    // refused; that was true of the command gate alone (its pattern arm needs
+    // `opts.patternMatched`, which this caller does not pass), and stopped
+    // being true of this site when M9 put `isPasteableIdent` in front of it.
+    // Named, it is SHELL-quoted, which is what makes `$( )` inert in argv where
+    // JSON quotes do not.
+    `\nRepair with: ${importRepairCommand(logicalId)}`
   );
+}
+
+/**
+ * The `cdkd import` line `maskedIdentifierAttributeReason` tells the operator
+ * to run.
+ *
+ * It is a named helper for ONE caller on purpose. A SECOND site prints the same
+ * remedy — `buildImportPlan`'s resolved-identifier refusal — written
+ * independently, and it still carries go-to-k/cdkd#3363's shape: a prose
+ * `'...'` span holding a `cdkd` verb AND an interpolation, its opening quote in
+ * one concatenated literal and its interpolation in the next. The source fence
+ * found it only once its `+` runs were folded; a grep for the gate's name never
+ * would have.
+ *
+ * That site is NOT routed here, deliberately: `export.ts` is one of the
+ * go-to-k/cdkd#3436 own-copy gates the maintainer asked to land in a follow-up
+ * PR rather than widen go-to-k/cdkd#3613. The fence carries an EXEMPTION naming
+ * it, so this helper gains its second caller in the PR that closes the site —
+ * and the exemption goes stale in the same commit.
+ *
+ * The POSITIONAL is a hole on purpose, and the load-bearing half is what it is
+ * NOT: an earlier cut passed the LOGICAL ID there, producing a command that
+ * names a resource where `cdkd import`'s declared `[stack]` goes. No shape
+ * check can see that — both spellings are equally well-formed to one — and only
+ * reading the command can.
+ *
+ * It is a hole rather than a name because its caller,
+ * {@link maskedIdentifierAttributeReason}, has no stack name in scope at all.
+ * (`buildImportPlan` does have one, so when that site joins this helper it
+ * could fill it — a separate change with its own gating question, and not a
+ * reason to grow two spellings here.)
+ */
+function importRepairCommand(logicalId: string): string {
+  // `isPasteableIdent`, not the command gate alone, and the reason is an
+  // ARGUMENT GRAMMAR rather than a shell one (M9 of the go-to-k/cdkd#3613
+  // review). `cdkd import` splits `--resource` on the FIRST `=`
+  // (`parseResourceFlags` in `import.ts`), and the gate does not refuse `=`:
+  // it is an ordinary character that renders exactly and needs no quoting. So
+  // a state key `A=B` renders `--resource 'A=B'='<physicalId>'`, which parses
+  // as logical id `A` with physical id `B=<whatever the operator filled in>`
+  // -- and the `--force` then lands on a DIFFERENT, real resource `A`.
+  //
+  // Shell-safe and argument-safe are different questions, and this is the
+  // second time on this lane that a command was moved out of the injection
+  // class while still MEANING the wrong thing (the first was passing a logical
+  // id where `cdkd import` declares `[stack]`). `isPasteableIdent` admits
+  // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$`, which has no `=`, so it answers both.
+  const named = isPasteableIdent(logicalId);
+  return `${
+    pasteableCommand('cdkd import', [
+      { hole: 'stack' },
+      named
+        ? { flag: '--resource', value: logicalId, hole: 'logicalId' }
+        : { flag: '--resource', hole: 'logicalId' },
+    ]).command
+  }=${commandHole('physicalId')} --force`;
 }
 
 /**
@@ -3637,7 +3756,8 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
     // Names no target: the identity above it may not be this record's. List the
     // records AS STORED and act on the one whose key matches.
     return (
-      `cdkd state orphan <stack> --stack-region <region> — spelled out because this record's ` +
+      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
+      `spelled out because this record's ` +
       `name or region does NOT render exactly, so another record may render identically; ` +
       `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
     );
@@ -4362,8 +4482,14 @@ export async function buildImportPlan(
           'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
-          'Repair the record that HOLDS the mask ' +
-          "('cdkd import <stack> --resource <logicalId>=<physicalId> --force', granting " +
+          // NO backtick wrapper. Pasted WITH its wrapper a backtick span is
+          // command SUBSTITUTION -- a worse wrapper than `'...'`, and one the
+          // source fence could not see until go-to-k/cdkd#3613's M8 named it.
+          // Every placeholder here is a hole, so nothing untrusted ran; the
+          // shape is the point.
+          'Repair the record that HOLDS the mask with ' +
+          `cdkd import ${commandHole('stack')} --resource ` +
+          `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
           'schema), then re-run whichever command wrote this property. Either way you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
@@ -4507,6 +4633,17 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
+        // NOT gated here, DELIBERATELY. This is go-to-k/cdkd#3363's shape --
+        // a prose `'...'` span holding a `cdkd` verb and an interpolated
+        // logical id, the twin of the site `maskedIdentifierAttributeReason`
+        // fixes above -- and gating it is a one-line change. It is left alone
+        // because the maintainer asked this PR to stop widening: the remaining
+        // go-to-k/cdkd#3436 own-copy gates, `export.ts` among them, are
+        // follow-up PRs, and each push that widens the diff re-opens a review
+        // round. It stays tracked by go-to-k/cdkd#3436 itself, which is the
+        // umbrella for the remaining own-copy gates and is still open, and the
+        // fence carries an EXEMPTION naming this site so the tree's "0
+        // findings" is a decision on the record rather than a blind spot.
         reason:
           'the CloudFormation import identifier cdkd resolved for this resource is the redaction ' +
           "mask ('***'), so the exported template would declare the mask as the resource's " +
@@ -7412,7 +7549,9 @@ export async function runPerStackImportLoop(args: {
             // The FULL template: omitting `--stack-region` drops the record for
             // that name in EVERY region, which is wider than this list
             // describes and is the widening `orphanCommandFor` refuses to emit.
-            `Recover with 'cdkd state orphan <stack> --stack-region <region>' per record.`
+            `Recover with the command below, once per record.` +
+            `\nRecover with: cdkd state orphan ${commandHole('stack')} ` +
+            `--stack-region ${commandHole('region')}`
         );
       }
 

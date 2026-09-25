@@ -15,12 +15,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vite-plus/test';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
-import {
-  commandHole,
-  pasteableCommand,
-  rendersExactly,
-  shellQuote,
-} from '../../../src/utils/pasteable-command.js';
+import { commandHole, pasteableCommand, rendersExactly, shellQuote, withheldTargetClause } from '../../../src/utils/pasteable-command.js';
 import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
 
 
@@ -168,6 +163,93 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(
       pasteableCommand('cdkd state refresh-observed', [{ value: 'Stage/Prod', hole: 'stack' }])
     ).toEqual({ command: 'cdkd state refresh-observed Stage/Prod', exact: true, withheld: [] });
+  });
+
+  it('holds, under plainIdent, a value isPasteableIdent refuses -- and reports it LAST in the order', () => {
+    // M17 of the go-to-k/cdkd#3613 review. `$(printf INJECTED)` renders
+    // exactly, starts with no `-`, and holds no `*` or `/`, so the five older
+    // arms NAME it, shell-quoted -- correct for the shell, and wrong beside a
+    // labelled line, where the rule is `isPasteableIdent`. The option is what
+    // lets a caller ask for that rule from the gate itself, so the SENTENCE
+    // beside the hole comes from the gate's reason rather than from a second
+    // predicate at the site (M11 of go-to-k/cdkd#3499's review, again).
+    const injected = '$(printf INJECTED)';
+    expect(pasteableCommand('cdkd deploy', [{ value: injected, hole: 'stack' }])).toEqual({
+      command: "cdkd deploy '$(printf INJECTED)'",
+      exact: true,
+      withheld: [],
+    });
+    expect(
+      pasteableCommand('cdkd deploy', [{ value: injected, hole: 'stack', opts: { plainIdent: true } }])
+    ).toEqual({
+      command: "cdkd deploy '<stack>'",
+      exact: false,
+      withheld: [{ hole: 'stack', reason: 'not-plain' }],
+    });
+    // The maintainer's fixture, `*`-free: exact, no leading `-`, no pattern
+    // character, and a `Migrate with:` row once a terminal wraps the quoted
+    // argument. Only this arm refuses it.
+    const padded = `Prod${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+    expect(
+      pasteableCommand('cdkd deploy', [
+        { value: padded, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+      ]).withheld
+    ).toEqual([{ hole: 'stack', reason: 'not-plain' }]);
+    // SPACE-FREE refusals, so the arm is pinned to the PREDICATE and not to
+    // one character of it: the proxy pass measured that `value.includes(' ')`
+    // in place of `!isPasteableIdent(value)` passed both fixtures above. An
+    // apostrophe and a `;` are the two spellings go-to-k/cdkd#3307's plan
+    // asked to still EMIT, shell-quoted; a leading `:` is the option-adjacent
+    // shape the allow-list's first character refuses. Each renders exactly,
+    // starts with no `-` and holds no `*` or `/`, so only this arm sees it.
+    for (const spaceFree of ["it's", 'a;b', ':Label']) {
+      expect(
+        pasteableCommand('cdkd deploy', [
+          { value: spaceFree, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+        ]),
+        spaceFree
+      ).toEqual({
+        command: "cdkd deploy '<stack>'",
+        exact: false,
+        withheld: [{ hole: 'stack', reason: 'not-plain' }],
+      });
+    }
+    // A nested-stack child name is plain: a MEDIAL `~` is in the allow-list.
+    // It is still shell-QUOTED, since `shellQuote`'s bare set has no `~` (a
+    // leading one expands) -- plain and bare are different questions.
+    expect(
+      pasteableCommand('cdkd deploy', [{ value: 'Parent~Child', hole: 'stack', opts: { plainIdent: true } }])
+    ).toEqual({ command: "cdkd deploy 'Parent~Child'", exact: true, withheld: [] });
+    // ORDER: `not-plain` is last. `isPasteableIdent` refuses `--all` too, and
+    // the more specific reason wins -- moving the arm first would report
+    // "not a plain identifier" of every option-shaped name.
+    expect(
+      pasteableCommand('cdkd deploy', [{ value: '--all', hole: 'stack', opts: { plainIdent: true } }])
+        .withheld
+    ).toEqual([{ hole: 'stack', reason: 'option-shaped' }]);
+    expect(
+      pasteableCommand('cdkd deploy', [
+        { value: 'Prod*', hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+      ]).withheld
+    ).toEqual([{ hole: 'stack', reason: 'pattern-shaped' }]);
+    // And the clause arm for it, through the shared renderer.
+    const clause = withheldTargetClause(
+      pasteableCommand('cdkd deploy', [{ value: injected, hole: 'stack', opts: { plainIdent: true } }]),
+      'stack',
+      'cdkd deploy'
+    );
+    expect(clause).toContain('is not a plain identifier');
+    // The reason is the RULE, true of every value the arm answers (M22 of the
+    // go-to-k/cdkd#3613 review): a `$(...)` name can run and a padded one can
+    // wrap, but `_x` reaches this arm too and does neither, so the sentence
+    // says what the plain-identifier shape buys rather than what THIS value
+    // would do.
+    expect(clause).toContain(
+      'the only shape named in a command here, since a name outside it can run as shell or ' +
+        'read as a line of this message once the terminal wraps'
+    );
+    expect(clause).not.toContain('so once the terminal wraps it could read as a labelled line');
+    expect(clause).toContain('so it is not named in the command below');
   });
 
   it('quotes a hole the caller asks for, and appends extra flags LAST', () => {
@@ -444,4 +526,25 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     });
   });
 
+});
+
+describe('withheldTargetClause names the VERB it is given', () => {
+  // The verb is a PARAMETER since M13 of the go-to-k/cdkd#3613 review, and
+  // both live callers pass `cdkd deploy` -- so a test through either caller
+  // cannot tell the parameter from the hardcoded spelling it replaced. This
+  // exercises both shape-specific arms with a verb no caller uses, which is
+  // the only way the parameter is pinned rather than asserted.
+  it('spells the option-shaped and pattern-shaped arms with the caller\'s verb', () => {
+    const option = pasteableCommand('cdkd destroy', [{ value: '--all', hole: 'stack' }]);
+    const optionClause = withheldTargetClause(option, 'stack', 'cdkd destroy');
+    expect(optionClause).toContain("not safe to print as an argument to 'cdkd destroy'");
+    expect(optionClause).not.toContain('cdkd deploy');
+
+    const pattern = pasteableCommand('cdkd destroy', [
+      { value: 'Prod*', hole: 'stack', opts: { patternMatched: true } },
+    ]);
+    const patternClause = withheldTargetClause(pattern, 'stack', 'cdkd destroy');
+    expect(patternClause).toContain("would be read as a PATTERN by 'cdkd destroy'");
+    expect(patternClause).not.toContain('cdkd deploy');
+  });
 });

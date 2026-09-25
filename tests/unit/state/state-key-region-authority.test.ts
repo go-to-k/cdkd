@@ -667,7 +667,7 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // The remedy stays a TEMPLATE for the strongest form of the module's rule:
     // cdkd is refusing precisely because it does not know which region belongs
     // in the flag.
-    expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
   });
 
   /**
@@ -832,7 +832,7 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
 
     expect(message).toContain('prod-api');
     expect(message).toContain('ap-northeast-1');
-    expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     expect(message).toContain('2 resources');
   });
 

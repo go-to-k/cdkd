@@ -534,8 +534,15 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     expect(summary).toContain('state.json');
     expect(warned).toContain('Failed to delete cdkd state');
     // And the remedy carries the region flag, whose omission drops the record
-    // for that name in EVERY region.
-    expect(summary).toContain('--stack-region <region>');
+    // for that name in EVERY region. The hole is QUOTED since
+    // go-to-k/cdkd#3436: a bare `<region>` is two shell redirections, so the
+    // command an operator pastes has to spell the placeholder the way
+    // `commandHole` does.
+    expect(summary).toContain(`--stack-region '<region>'`);
+    expect(summary).not.toContain('--stack-region <region>');
+    // ...and it is on its own labelled line rather than inside a prose quoted
+    // span, which is the other half of the same rule.
+    expect(summary).toMatch(/^Recover with: cdkd state orphan '<stack>' --stack-region '<region>'$/m);
   });
 });
 
