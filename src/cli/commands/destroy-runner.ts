@@ -1,5 +1,9 @@
 import * as readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  pasteableCommand,
+  plainOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -1388,6 +1392,14 @@ export async function runDestroyForStack(
    * as the other. The ` / ` join that first replaced it was its own defect:
    * pasted, it handed the second command to the first as arguments.
    */
+  // The ONE builder both `hintFor` and `hintHolesClause` read, so the sentence
+  // explaining a hole comes from the gate's own verdict rather than a second
+  // predicate that can disagree with it (go-to-k/cdkd#3759).
+  const hintCommand = (command: string, t: string) =>
+    pasteableCommand(command, [
+      { value: t, hole: 'stack', opts: { plainIdent: true } },
+      { flag: '--stack-region', value: regionForState, hole: 'region', opts: { plainIdent: true } },
+    ]);
   const hintFor = (command: string, targets: string[], label: string): string =>
     // DEDUPED on the produced line, not on the target: one resource failing
     // while another is skipped puts the same state target in both sets, and a
@@ -1404,15 +1416,24 @@ export async function runDestroyForStack(
             // no record of their ids (M2 of the go-to-k/cdkd#3499 review). The
             // `state show` hint carries it for the same reason — a readback of
             // the wrong region's record is the same mistake, one step earlier.
-            `\n${label}: ${
-              pasteableCommand(command, [
-                { value: t, hole: 'stack' },
-                { flag: '--stack-region', value: regionForState, hole: 'region' },
-              ]).command
-            }`
+            // `plainIdent` on both values: a target beside a labelled line is
+            // named only when it cannot spell one (go-to-k/cdkd#3759).
+            `\n${label}: ${hintCommand(command, t).command}`
         )
       ),
     ].join('');
+
+  /**
+   * The ONE sentence explaining `hintFor`'s holes, for the prose BEFORE its
+   * lines (go-to-k/cdkd#3759). `hintFor` prints one command per target, so a
+   * per-hole `withheldTargetClause` would repeat once per line; this states the
+   * rule once, and only when the gate actually withheld a value on some line.
+   */
+  const hintHolesClause = (targets: readonly string[]): string =>
+    targets.every((t) => hintCommand('cdkd state show', t).withheld.length === 0)
+      ? ''
+      : ` A target that is not a plain identifier is printed as a quoted '<stack>' or ` +
+        `'<region>' placeholder; list the records as stored with 'cdkd state list --long'.`;
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -2147,6 +2168,9 @@ export async function runDestroyForStack(
       // running `cdkd destroy` to re-run it, which changes nothing for them.
       // The runner cannot tell the two apart from `ctx` today, so it states the
       // FACT it can observe (this run recorded none) and cites both causes.
+      const eventsCommand = pasteableCommand('cdkd events', [
+        { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+      ]);
       const durablePointer =
         ctx.eventRecorder === undefined
           ? `This summary is the only record: this run wrote no deployment events, either ` +
@@ -2154,24 +2178,23 @@ export async function runDestroyForStack(
             `nested-stack child, neither of which threads an event recorder.`
           : `The RESOURCE_GUARD_INDETERMINATE entries name the check and the reason ` +
             `and survive the run.` +
-            `\nRead them with: ${
-              pasteableCommand('cdkd events', [{ value: stackName, hole: 'stack' }]).command
-            }`;
+            withheldTargetClause(eventsCommand, 'stack', 'cdkd events', "This stack's name") +
+            `\nRead them with: ${eventsCommand.command}`;
       logger.warn(
         `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +
           `be completed during this destroy and cdkd proceeded anyway: ` +
-          `${[...guardIndeterminateTargets].join(', ')}. ` +
+          `${[...guardIndeterminateTargets].map((t) => plainOrDescribed(t, 'logical id')).join(', ')}. ` +
           `A check can be suppressed by DENYING the permission it needs, so treat this as ` +
           `unconfirmed rather than benign. ${durablePointer}`
       );
     }
     if (!preserveState) {
       logger.info(
-        `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${guardSuffix}, ${result.errorCount} errors)`
+        `\n${green('✓')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${guardSuffix}, ${result.errorCount} errors)`
       );
     } else if (result.interrupted && result.errorCount === 0) {
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to finish.`
       );
     } else if (result.errorCount === 0) {
@@ -2182,10 +2205,11 @@ export async function runDestroyForStack(
       const showHint = hintFor('cdkd state show', targets, 'Inspect it with');
       const orphanHint = hintFor('cdkd state orphan', targets, 'Drop the record with');
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
           `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
           `the records.` +
+          hintHolesClause(targets) +
           // Labelled lines, one command each, with NO trailing punctuation: a
           // command inside a sentence is copied WITH the period after it, and
           // `cdkd state orphan TestStack.` addresses a different record
@@ -2233,11 +2257,12 @@ export async function runDestroyForStack(
       const dedupedCommands = (lines: string): string =>
         [...new Set(lines.split('\n').filter((l) => l !== ''))].map((l) => `\n${l}`).join('');
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
           `If the same resource keeps failing, dropping the state record is the last resort: ` +
           `it removes the record without deleting AWS resources.` +
           skippedClause +
+          hintHolesClause([...failedTargets, ...skippedTargets]) +
           dedupedCommands(orphanHint + skippedCommands)
       );
     }

@@ -1,5 +1,11 @@
 import { Command } from 'commander';
-import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  plainOrDescribed,
+  quotedOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
@@ -598,20 +604,25 @@ async function destroyCommand(
       } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
         stackTargetRegion = synthRegion;
       } else {
-        const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+        // Regions come from S3 KEY segments and sit beside a labelled line, so
+        // each is named only when it is a plain identifier (go-to-k/cdkd#3759).
+        const regions = refs
+          .map((r) => (r.region === undefined ? '(legacy)' : plainOrDescribed(r.region, 'region')))
+          .join(', ');
+        // Both the name AND the `<region>` hole are quoted on a trailing
+        // labelled line: bare, `<region>` reads stdin from a file `region`
+        // and truncates the next word (go-to-k/cdkd#3436). A withheld name is
+        // explained in the prose before it (go-to-k/cdkd#3759).
+        const orphanOne = pasteableCommand('cdkd state orphan', [
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          { flag: '--stack-region', hole: 'region' },
+        ]);
         throw new Error(
-          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+          `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
             `Remove cdkd's record for ONE region with the command below (fill in the ` +
             `region), or run destroy from a CDK app whose env.region matches one of them.` +
-            // Both the name AND the `<region>` hole are quoted on a trailing
-            // labelled line: bare, `<region>` reads stdin from a file `region`
-            // and truncates the next word (go-to-k/cdkd#3436).
-            `\nRemove one record with: ${
-              pasteableCommand('cdkd state orphan', [
-                { value: stackName, hole: 'stack' },
-                { flag: '--stack-region', hole: 'region' },
-              ]).command
-            }`
+            withheldTargetClause(orphanOne, 'stack', 'cdkd state orphan', "This stack's name") +
+            `\nRemove one record with: ${orphanOne.command}`
         );
       }
 

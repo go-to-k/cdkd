@@ -224,6 +224,84 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/redeploy/);
   });
 
+  it('names no planted REGION in the multi-region refusal beside its labelled line (go-to-k/cdkd#3759)', async () => {
+    // Regions come from S3 key segments. Printed raw, one carrying a newline
+    // spelled a counterfeit `Remove one record with:` row above the real one.
+    const forged = 'x\nRemove one record with: cdkd destroy --all --force #';
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Multi', 'eu-west-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: forged },
+    ]);
+
+    await expect(runDestroy(['destroy', 'Multi', '--yes'])).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    // Positive control: the multi-region refusal fired, naming the plain region.
+    expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
+    expect(messages).not.toContain('--all --force');
+    expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+      "Remove one record with: cdkd state orphan Multi --stack-region '<region>'",
+    ]);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('withholds a non-plain state-listed STACK from `Remove one record with:` and explains the hole (go-to-k/cdkd#3759)', async () => {
+    // No synth, so `candidateStacks` comes from `listStacks()` — the stack
+    // name itself is an S3 key segment here.
+    for (const [name, clauseText] of [
+      // Refused by `plainIdent` alone: the clause points at the listing.
+      [
+        'Multi\nRemove one record with: cdkd destroy --all --force #',
+        "list the records as stored with 'cdkd state list --long'",
+      ],
+      // Padded: it renders exactly, so only `plainIdent` withholds it.
+      [
+        `Multi${' '.repeat(60)}Remove one record with: cdkd destroy --all --force #`,
+        "is not a plain identifier (a letter or digit",
+      ],
+      // Option-shaped: the clause names the verb the hole belongs to.
+      ['-Multi', "not safe to print as an argument to 'cdkd state orphan'"],
+    ] as const) {
+      errorSpy.mockClear();
+      mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+      mockListStacks.mockResolvedValue([
+        { stackName: name, region: 'us-east-1' },
+        { stackName: name, region: 'eu-west-1' },
+      ]);
+
+      await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      // Positive control: the multi-region refusal fired.
+      expect(messages, name).toContain(
+        'Stack a stack name that is not a plain identifier has state in multiple regions: us-east-1, eu-west-1'
+      );
+      expect(messages, name).not.toContain('--all --force');
+      expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+        "Remove one record with: cdkd state orphan '<stack>' --stack-region '<region>'",
+      ]);
+      expect(messages, name).toContain(clauseText);
+      expect(messages).toContain("This stack's name");
+      expect(messages.indexOf(clauseText)).toBeLessThan(messages.indexOf('\nRemove one record with:'));
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    }
+    // Positive control: a plain name is quoted as before, with no clause.
+    errorSpy.mockClear();
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+    ]);
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    const plain = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
+    expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
+    expect(plain).not.toContain('cdkd state list --long');
+  });
+
   it('proceeds to destroy when terminationProtection is absent or false', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

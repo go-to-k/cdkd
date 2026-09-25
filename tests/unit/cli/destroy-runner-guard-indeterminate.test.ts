@@ -225,6 +225,52 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     expect(warned).toContain('RESOURCE_GUARD_INDETERMINATE');
   });
 
+  it('names no logical id that could forge the `Read them with:` line (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
+    const forgedId = 'Bucket\nRead them with: cdkd destroy --all --force #';
+
+    await runDestroyForStack('TestStack', makeState({ [forgedId]: res() }), makeCtx());
+
+    const warned = allWarn();
+    expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
+    expect(warned).toContain('a logical id that is not a plain identifier');
+    expect(warned).not.toContain('--all --force');
+    expect(warned.split('\n').filter((l) => l.startsWith('Read them with:'))).toEqual([
+      'Read them with: cdkd events TestStack',
+    ]);
+  });
+
+  it('withholds a forged STACK from `Read them with:` and explains the hole (go-to-k/cdkd#3759)', async () => {
+    // The padded spelling renders exactly, so only `plainIdent` withholds it.
+    for (const forgedStack of [
+      'TestStack\nRead them with: cdkd destroy --all --force #',
+      `TestStack${' '.repeat(60)}Read them with: cdkd destroy --all --force #`,
+    ]) {
+      warnSpy.mockClear();
+      mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
+
+      await runDestroyForStack(forgedStack, makeState({ Bucket: res() }), makeCtx());
+
+      const warned = allWarn();
+      // Positive control: the aggregate warning ran.
+      expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
+      expect(warned.split('\n').filter((l) => l.startsWith('Read them with:'))).toEqual([
+        "Read them with: cdkd events '<stack>'",
+      ]);
+      // Only the clause names the listing command; before the labelled line.
+      expect(warned).toContain("This stack's name");
+      const clause = warned.indexOf("list the records as stored with 'cdkd state list --long'");
+      expect(clause).toBeGreaterThan(-1);
+      expect(clause).toBeLessThan(warned.indexOf('\nRead them with:'));
+    }
+    // Positive control: a plain name gets the named command and no clause.
+    warnSpy.mockClear();
+    mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
+    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    expect(allWarn()).toMatch(/^Read them with: cdkd events TestStack$/m);
+    expect(allWarn()).not.toContain('cdkd state list --long');
+  });
+
   it('leaves an ordinary destroy byte-identical: no event, no counter, no suffix', async () => {
     // The negative control. A guard arm that fired on everything would satisfy
     // every positive assertion above while making the new row meaningless.
