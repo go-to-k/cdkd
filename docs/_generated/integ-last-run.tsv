@@ -134,12 +134,8 @@ getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean;
 getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 glue-securityconfig-replace	2026-09-25T20:09:32Z	PASS	50	verify.sh	rc ok, orph clean (#3136 PR #3793)
 glue-update-hardening	2026-09-25T20:09:32Z	PASS	156	verify.sh	rc ok, orph clean (#3136 PR #3793)
-iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
-iam-managed-policy	2026-09-25T19:22:55Z	PASS	35	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-glue-securityconfig-replace	2026-09-23T23:37:05Z	PASS	59	verify.sh	rc ok, orph clean (#1981 lane)
-glue-update-hardening	2026-09-25T14:29:57Z	PASS	160	verify.sh	rc ok, orph clean; phase 2d CatalogId move refusal (#3756)
 iam-access-key	2026-09-25T20:11:20Z	PASS	85	verify.sh	rc ok, orph clean (#3740 final sha)
-iam-managed-policy	2026-08-13T16:29:17Z	PASS	49	verify.sh	#1815 partition predicates; detach-before-delete destroy 0 err, 0 orphans
+iam-managed-policy	2026-09-25T19:22:55Z	PASS	35	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-08-19T10:26:57Z	PASS	108	verify.sh	issue 2026: 27 runs; repro captured http=500; fix live-verified after review round 2
 iam-role-policies-drift-clean	2026-09-25T15:55:34Z	PASS	86	verify.sh	rc ok, orph clean (#3595 lane)
@@ -267,8 +263,6 @@ rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok,
 rollback-replay-effective-props	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-09-25T19:22:55Z	PASS	406	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
-route53	2026-09-25T13:35:54Z	PASS	377	verify.sh	rc ok, orph clean (#3728)
 s3-analytics-inventory	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
