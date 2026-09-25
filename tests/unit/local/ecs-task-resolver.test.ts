@@ -1369,6 +1369,37 @@ describe('resolveEcsTaskTarget --from-state env / secret substitution', () => {
     expect(r.containers[0]!.warnings).toEqual([]);
   });
 
+  // #3515: the sync pass's two env writes were plain assignments, so an env
+  // var named `__proto__` ran Object.prototype's setter and vanished, with no
+  // warning. Both are own-key defines now: the literal arm and the
+  // state-substituted arm.
+  it('keeps env vars named __proto__ on both the literal and the substituted arm (#3515)', () => {
+    const literal = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: JSON.parse(
+          '[{"Name":"app","Image":"nginx:alpine","Environment":[{"Name":"__proto__","Value":"lit"}]}]'
+        ) as unknown[],
+      }),
+    });
+    const lit = resolveEcsTaskTarget('TD', [literal]).containers[0]!.environment;
+    expect(Object.hasOwn(lit, '__proto__')).toBe(true);
+    expect(lit['__proto__']).toBe('lit');
+
+    const substituted = buildStack('S1', {
+      MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },
+      TD: makeTaskDef({
+        containers: JSON.parse(
+          '[{"Name":"app","Image":"nginx:alpine","Environment":[{"Name":"__proto__","Value":{"Ref":"MyTable"}}]}]'
+        ) as unknown[],
+      }),
+    });
+    const sub = resolveEcsTaskTarget('TD', [substituted], {
+      stateResources: buildStateResources(),
+    }).containers[0]!.environment;
+    expect(Object.hasOwn(sub, '__proto__')).toBe(true);
+    expect(sub['__proto__']).toBe('MyDeployedTable123');
+  });
+
   it('substitutes Fn::Sub env var against state + pseudo parameters', () => {
     const stack = buildStack('S1', {
       MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },

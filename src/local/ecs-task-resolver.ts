@@ -6,6 +6,7 @@ import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { looksLikeEcrHostWithForeignSuffix, parseEcrRegistryHost } from '../utils/ecr-uri.js';
 import { getLogger } from '../utils/logger.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import {
   substituteImagePlaceholders,
@@ -811,7 +812,10 @@ function parseContainerDefinition(
       const value = e['Value'];
       if (!key) continue;
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        environment[key] = String(value);
+        // Own-key define (issue #3515): an env var NAMED `__proto__` becomes
+        // a key of this `{}` literal, and a plain assignment would run
+        // Object.prototype's setter and drop it silently.
+        defineOwnKey(environment, key, String(value));
         continue;
       }
       // Intrinsic-valued entry. With `--from-state` we try to substitute
@@ -821,7 +825,7 @@ function parseContainerDefinition(
       if (subContext) {
         const sub = substituteAgainstState(value, subContext);
         if (sub.kind === 'literal') {
-          environment[key] = String(sub.value);
+          defineOwnKey(environment, key, String(sub.value));
           continue;
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
@@ -1678,7 +1682,10 @@ export async function applyCrossStackResolverToTask(
         if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
           continue;
         }
-        if (key in container.environment) continue;
+        // `Object.hasOwn`, not `in` (issue #3515): an env var legally named
+        // `constructor` / `toString` answered `in` through the prototype
+        // chain, so an unresolved one was skipped and never resolved here.
+        if (Object.hasOwn(container.environment, key)) continue;
         if (!isCrossStackIntrinsic(value)) {
           // The sync pass already tried this — re-trying here can't
           // produce a different outcome.
@@ -1686,7 +1693,10 @@ export async function applyCrossStackResolverToTask(
         }
         const sub = await substituteAgainstStateAsync(value, context);
         if (sub.kind === 'literal') {
-          container.environment[key] = String(sub.value);
+          // Own-key define, as in the sync pass above (issue #3515): a plain
+          // assignment of `__proto__` created no key, yet the key was still
+          // marked resolved and its "dropped" warning cleared.
+          defineOwnKey(container.environment, key, String(sub.value));
           resolvedEnvKeys.add(key);
         }
       }
