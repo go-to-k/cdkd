@@ -784,7 +784,7 @@ export async function rollbackCommand(
       let totalWarnings = 0;
       try {
         while (journal.segments.length > 0) {
-          if (interrupted || declinedDivergentRewrite) break;
+          if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
           const result = await withNestedStackContext(
             {
