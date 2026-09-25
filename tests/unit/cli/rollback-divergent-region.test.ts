@@ -396,9 +396,35 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     expect((thrown as Error).message).toContain('Rollback stopped');
   });
 
+  it('declines during --revert-failed: the same segment\'s completed ops still run, unsaved and unpopped', async () => {
+    // The decline reached through `replayFailedOperations`' `afterOp`. The
+    // completed op in the SAME segment finishes (the flag is not an
+    // interrupt), its save is skipped, and the segment stays.
+    const h = install({
+      resources: {
+        A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
+        C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
+      },
+      segment: {
+        failedOperations: [
+          { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
+        ],
+        operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
+      },
+      bodyRegion: KEY_REGION,
+      rereadBodyRegion: BODY_REGION,
+    });
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    expect(h.getState).toHaveBeenCalledTimes(2);
+    expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['A', 'C']);
+    expect(h.saveState, 'a save landed after the decline').toHaveBeenCalledTimes(1);
+    expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect((thrown as Error).message).toContain('Rollback stopped');
+  });
+
   it('declines on the LAST op of a segment too: no pop, no deleteState', async () => {
-    // The replay never sees an interrupt here (there is no next op to stop
-    // before), so the pop and the terminal delete are guarded on their own.
+    // Nothing is left to replay after the declined save, so the pop and the
+    // terminal delete are guarded by the post-segment break alone.
     const h = install({ ...ARMS[0]!, segment: { ...ARMS[0]!.segment, initialDeploy: true }, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
