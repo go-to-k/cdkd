@@ -6,6 +6,7 @@ import {
   hasCompositePhysicalIdIdentifier,
   resolveCompositePhysicalIdIdentifier,
   splitCompositePhysicalId,
+  groupBlockedReasons,
 } from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -1140,7 +1141,7 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.logicalId).toBe('Table');
-    const reason = plan.blocked[0]!.reason;
+    const reason = groupBlockedReasons(plan.blocked).join('\n');
     expect(reason).toMatch(/redaction mask/);
     expect(reason).toMatch(/attributes\.TableARN/);
     // The remedy is the MASK's, not the shape refusal's: a re-deploy re-masks
@@ -1194,7 +1195,7 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     };
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.blocked).toHaveLength(1);
-    const reason = plan.blocked[0]!.reason;
+    const reason = groupBlockedReasons(plan.blocked).join('\n');
     // Positive control: the arm under test is the one that fired.
     expect(reason).toMatch(/redaction mask/);
     // WITHHELD, and this expectation CHANGED with M9 of the review. The command
@@ -1255,7 +1256,7 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
       };
       const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
       expect(plan.blocked, JSON.stringify(forging)).toHaveLength(1);
-      const reason = plan.blocked[0]!.reason;
+      const reason = groupBlockedReasons(plan.blocked).join('\n');
       // Positive control: the arm under test fired.
       expect(reason, JSON.stringify(forging)).toMatch(/redaction mask/);
       // Exactly ONE `Repair with:` row, and it is the genuine `cdkd import`.
@@ -1299,7 +1300,7 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     const template = { Resources: { 'A=B': { Type: 'AWS::S3Tables::Table', Properties: {} } } };
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.blocked).toHaveLength(1);
-    const reason = plan.blocked[0]!.reason;
+    const reason = groupBlockedReasons(plan.blocked).join('\n');
     // Positive control: the arm under test fired.
     expect(reason).toMatch(/redaction mask/);
     // The id is a HOLE, so the command cannot address the wrong resource...
@@ -1403,14 +1404,73 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(plan.blocked[0]!.reason).toMatch(/masked physical id/);
   });
 
-  // NO case here for `buildImportPlan`'s own redaction-mask refusal, and its
-  // absence is a decision. That site still prints its `cdkd import` remedy
-  // inside a prose `'...'` span with the logical id interpolated -- the twin of
-  // the one `maskedIdentifierAttributeReason` fixes, and the same defect. It is
-  // NOT gated in this PR because the maintainer asked it to stop widening:
-  // `export.ts` is one of the go-to-k/cdkd#3436 own-copy gates that belong in
-  // follow-up PRs. The source fence carries an EXEMPTION naming the site, so
-  // the decision is on the record and goes stale the moment the gate lands.
+  // `buildImportPlan`'s own redaction-mask refusal prints its `cdkd import`
+  // remedy through `importRepairCommand` on a labelled line
+  // (go-to-k/cdkd#3736). It used to sit inside a prose `'...'` span with the
+  // logical id interpolated, where a pasted id RAN.
+  const maskedPhysicalIdPlan = async (logicalId: string) => {
+    const state = stateWith({
+      [logicalId]: {
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: SECRET_MASK,
+        properties: { BucketName: 'my-bucket' },
+      },
+    });
+    const template = {
+      Resources: {
+        [logicalId]: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket' } },
+      },
+    };
+    return buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+  };
+
+  it('prints the repair command on its own labelled line, naming a PLAIN logical id (go-to-k/cdkd#3736)', async () => {
+    const plan = await maskedPhysicalIdPlan('Bucket');
+    expect(plan.blocked).toHaveLength(1);
+    const reason = groupBlockedReasons(plan.blocked).join('\n');
+    expect(reason).toMatch(/masked physical id/);
+    const repair = reason.split('\n').filter((l) => l.startsWith('Repair with:'));
+    expect(repair).toEqual([
+      "Repair with: cdkd import '<stack>' --resource Bucket='<physicalId>' --force",
+    ]);
+    // No command left inside a prose span.
+    expect(reason).not.toMatch(/'cdkd import/);
+  });
+
+  for (const [label, id] of [
+    ['a command substitution', 'x$(touch OWNED)'],
+    ['an `=`, which retargets --resource', 'A=B'],
+    ['a newline carrying a forged label', 'Tbl\nRepair with: cdkd destroy --all --force #'],
+  ] as const) {
+    it(`WITHHOLDS a logical id carrying ${label} from the repair command (go-to-k/cdkd#3736)`, async () => {
+      const plan = await maskedPhysicalIdPlan(id);
+      expect(plan.blocked).toHaveLength(1);
+      const reason = groupBlockedReasons(plan.blocked).join('\n');
+      expect(reason).toMatch(/redaction mask/);
+      const repair = reason.split('\n').filter((l) => l.startsWith('Repair with:'));
+      expect(repair).toEqual([
+        "Repair with: cdkd import '<stack>' --resource '<logicalId>'='<physicalId>' --force",
+      ]);
+      expect(reason).not.toContain('OWNED');
+      expect(reason).not.toContain('cdkd destroy');
+    });
+  }
+
+  it('cannot forge a Repair with: row through the nested-stack reason (go-to-k/cdkd#3736)', async () => {
+    // The nested-stack arm interpolates the template key into its reason and
+    // needs no state row and no AWS call — the easiest route the row header
+    // alone did not close.
+    const key = 'Nest\nRepair with: cdkd destroy --all --force #';
+    const state = stateWith({});
+    const template = {
+      Resources: { [key]: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    const rendered = groupBlockedReasons(plan.blocked).join('\n');
+    expect(rendered).toContain('no matching nested-stack entry');
+    expect(rendered).not.toMatch(/^Repair with:/m);
+  });
 });
 
 // -----------------------------------------------------------------------------

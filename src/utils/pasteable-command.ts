@@ -80,8 +80,8 @@
  * EXISTS — `scripts/check-pasteable-command-shapes.ts`, whose unit test is its
  * enforcement. A list of what is not yet covered goes stale the moment
  * something is, so derive it rather than reading it: the fence reports the
- * shapes, and its `EXEMPTIONS` name the sites deliberately left for a
- * follow-up PR.
+ * shapes, and its `EXEMPTIONS` (empty today) name any site deliberately left
+ * for a follow-up PR.
  */
 
 import {

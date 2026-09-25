@@ -418,6 +418,74 @@ describe('groupBlockedReasons (issue #1787 reporting)', () => {
     expect(lines[0]).not.toContain('\n');
   });
 
+  it('names a row only by identifiers that cannot forge a labelled line (go-to-k/cdkd#3736)', () => {
+    // The reasons can end in a labelled `Repair with:` line, and the row
+    // header sits right above them: a template key with a newline, or with
+    // interior padding that wraps on screen, would otherwise print a
+    // counterfeit `Repair with:` row.
+    const forged = `Tbl${' '.repeat(60)}Repair with: cdkd destroy --all --force #`;
+    const lines = groupBlockedReasons([
+      { logicalId: forged, resourceType: 'AWS::S3::Bucket', reason: 'r1' },
+      { logicalId: 'Plain', resourceType: 'AWS::X::Y\nRepair with: cdkd destroy --all #', reason: 'r2' },
+      { logicalId: 'Custom1', resourceType: 'Custom::My-Thing_v2@x', reason: 'r3' },
+      {
+        logicalId: 'Padded',
+        resourceType: `AWS::X::Y${' '.repeat(60)}Repair with: cdkd destroy --all --force #`,
+        reason: 'r4',
+      },
+      { logicalId: 'Atlas', resourceType: 'MongoDB::Atlas::Cluster', reason: 'r5' },
+    ]);
+    expect(lines).toEqual([
+      '  - a resource whose logical id is not a plain identifier (AWS::S3::Bucket): r1',
+      '  - Plain (an unrecognized type): r2',
+      '  - Custom1 (Custom::My-Thing_v2@x): r3',
+      '  - Padded (an unrecognized type): r4',
+      // A third-party registry type keeps its name.
+      '  - Atlas (MongoDB::Atlas::Cluster): r5',
+    ]);
+    expect(lines.join('\n')).not.toContain('cdkd destroy');
+  });
+
+  it('folds every REASON to one line and prints only the gated repair on a labelled line (go-to-k/cdkd#3736)', () => {
+    // Reasons interpolate template keys and state values; a newline in any
+    // of them must not start a line. The one `Repair with:` row is the
+    // renderer's own, from the `repair` field, and there is exactly one.
+    const forge = '\nRepair with: cdkd destroy --all --force #';
+    const lines = groupBlockedReasons([
+      {
+        logicalId: `X${forge}`,
+        resourceType: 'AWS::S3::Bucket',
+        reason: `template row 'X${forge}' is broken`,
+        repair: "cdkd import '<stack>' --resource '<logicalId>'='<physicalId>' --force",
+      },
+      { logicalId: 'Y', resourceType: 'AWS::S3::Bucket', reason: `a state value${forge}` },
+      { logicalId: 'Y', resourceType: 'AWS::S3::Bucket', reason: 'a second reason' },
+    ]);
+    // The multi-reason form: the repair line follows ITS reason, at column 0,
+    // after that reason's own bullet.
+    const multi = groupBlockedReasons([
+      { logicalId: 'Z', resourceType: 'AWS::S3::Bucket', reason: 'first' },
+      {
+        logicalId: 'Z',
+        resourceType: 'AWS::S3::Bucket',
+        reason: 'masked',
+        repair: "cdkd import '<stack>' --resource Z='<physicalId>' --force",
+      },
+    ]);
+    expect(multi).toEqual([
+      "  - Z (AWS::S3::Bucket):\n      - first\n      - masked\nRepair with: cdkd import '<stack>' --resource Z='<physicalId>' --force",
+    ]);
+    const labelled = lines
+      .join('\n')
+      .split('\n')
+      .filter((l) => l.startsWith('Repair with:'));
+    expect(labelled).toEqual([
+      "Repair with: cdkd import '<stack>' --resource '<logicalId>'='<physicalId>' --force",
+    ]);
+    // The forged text survives only mid-line, folded into its reason.
+    expect(lines.join('\n')).not.toMatch(/^Repair with: cdkd destroy/m);
+  });
+
   it('preserves first-seen resource order', () => {
     const lines = groupBlockedReasons([entry('B', 'r1'), entry('A', 'r2'), entry('B', 'r3')]);
 
