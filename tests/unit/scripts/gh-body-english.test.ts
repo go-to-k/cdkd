@@ -436,6 +436,18 @@ describe('Claude session links', () => {
     expect(report).toContain('Claude-Session <redacted trailer>');
   });
 
+  it('withholds the id from the ENGLISH report when one line carries both violations', () => {
+    const { status, stdout } = runCli({ kind: 'issue', number: 9, title: 'x', body: `${HANGUL} ${LINK}` });
+    expect(status).toBe(1);
+    expect(stdout).toContain('Non-English text');
+    expect(stdout).not.toContain('01AbCdEf');
+  });
+
+  it('withholds a bare copy of the id elsewhere on the line', () => {
+    const s = subject({ title: 't', body: `${LINK} (id session_01AbCdEf)` });
+    expect(formatSessionLinkReport(s, scanSubjectSessionLinks(s))).not.toContain('01AbCdEf');
+  });
+
   it('flags a trailer behind a quote or list marker, a spaced colon, and one after a lone CR', () => {
     expect(scanSessionLinks('body', '> Claude-Session: x')).toHaveLength(1);
     expect(scanSessionLinks('body', '- Claude-Session: x')).toHaveLength(1);

@@ -148,10 +148,13 @@ export function scanField(field: string, text: string | undefined): Offender[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (!containsNonEnglish(line)) continue;
+    // Redacted here too: a line carrying both a non-English character and a
+    // session link would otherwise be quoted verbatim by THIS report.
+    const shown = redactSessionLine(line);
     out.push({
       field,
       line: i + 1,
-      text: line.length > 120 ? `${line.slice(0, 120)}…` : line,
+      text: shown.length > 120 ? `${shown.slice(0, 120)}…` : shown,
       characters: offendingCharacters(line),
     });
     if (out.length >= MAX_REPORT) break;
@@ -205,7 +208,7 @@ export const SESSION_LINK_RE =
  */
 export function redactSessionLine(line: string): string {
   return line
-    .replace(/claude\.ai\/code\/session_\S*/gi, 'claude.ai/code/session_<redacted>')
+    .replace(/\bsession_[A-Za-z0-9]\S*/gi, 'session_<redacted>')
     .replace(/Claude-Session\s*:.*/i, 'Claude-Session <redacted trailer>');
 }
 

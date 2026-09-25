@@ -66,7 +66,7 @@ done                                                               # RIGHT
   `grep -rn "<field / helper / message changed>" src/ tests/integration/` —
   `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
-  a behaviour also owes the assertions that it happens, which stay green when it stops (§8-d).
+  a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
 - A defect this lane is NOT fixing gets FILED (`references/filing.md`, §5-f).
 
 ### 5-c. The fix itself
