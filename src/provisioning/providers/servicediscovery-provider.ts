@@ -1118,7 +1118,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     for (const [k, v] of Object.entries(newAttrs)) {
       if (oldAttrs[k] !== v) upsertAttrs[k] = v;
     }
-    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !(k in newAttrs));
+    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !Object.hasOwn(newAttrs, k));
 
     const hasServiceChange = Object.keys(serviceChange).length > 0;
     const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;

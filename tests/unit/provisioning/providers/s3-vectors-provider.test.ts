@@ -373,6 +373,37 @@ describe('S3VectorsProvider', () => {
       expect(untagCall![0].input).toEqual({ resourceArn: ARN, tagKeys: ['stale'] });
     });
 
+    it('removes a dropped tag keyed `constructor` via UntagResource (#3515 — updateVectorBucket own-key membership)', async () => {
+      // #3515: `!(k in newTags)` saw `constructor` on Object.prototype, so the
+      // removed key was never untagged and stayed live on AWS.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: { vectorBucketArn: ARN } });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyVectorBucket',
+        'my-vector-bucket',
+        'AWS::S3Vectors::VectorBucket',
+        { Tags: [{ Key: 'keep', Value: 'k' }] },
+        {
+          Tags: [
+            { Key: 'keep', Value: 'k' },
+            { Key: 'constructor', Value: 'old' },
+          ],
+        }
+      );
+
+      const sent = mockSend.mock.calls.map((call: unknown[]) => call[0]);
+      const untags = sent.filter((c) => c instanceof UntagResourceCommand);
+      expect(untags.map((c) => c.input.tagKeys)).toEqual([['constructor']]);
+      expect(untags.map((c) => c.input.resourceArn)).toEqual([ARN]);
+      // `keep` is unchanged, so nothing is upserted.
+      expect(sent.filter((c) => c instanceof TagResourceCommand)).toEqual([]);
+    });
+
     it('THROWS (does not swallow) when the tag API fails — state must not be written', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof GetVectorBucketCommand) {

@@ -1115,6 +1115,57 @@ describe('CloudFrontDistributionProvider', () => {
 
       expect(previousProperties).toEqual(previousSnapshot);
     });
+
+    // go-to-k/cdkd#3515 (mergeUpdateConfig removal loop): `key in templateSdk`
+    // answered TRUE for a removed top-level member named after an
+    // Object.prototype member (`constructor`) through the prototype chain, so
+    // the removal was skipped SILENTLY — neither reset nor the "no known
+    // CloudFormation default" warning. It must take the warn arm (by own-key
+    // membership) and the update must still go out.
+    it('warns for a removed top-level member named after an Object.prototype member', async () => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'GetDistributionConfigCommand') {
+          return Promise.resolve({
+            ETag: 'ETAG1',
+            DistributionConfig: { CallerReference: 'ref', Enabled: true },
+          });
+        }
+        if (cmd.constructor.name === 'GetDistributionCommand') {
+          return Promise.resolve({
+            Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd111111abcdef8.cloudfront.net' },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      let sentCommandNames: string[] = [];
+      try {
+        await provider.update(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          { DistributionConfig: { Enabled: true } },
+          { DistributionConfig: { Enabled: true, constructor: 'x' } }
+        );
+      } finally {
+        sentCommandNames = mockSend.mock.calls.map(
+          (c) => (c[0] as { constructor: { name: string } }).constructor.name
+        );
+        // Keep the routed implementation from leaking into later tests
+        // (the file-level beforeEach only clears calls).
+        mockSend.mockReset();
+      }
+
+      const warnings = childLogger.warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        warnings.filter(
+          (w) =>
+            w.includes("'constructor' was removed from the template") &&
+            w.includes('no known CloudFormation default')
+        )
+      ).toHaveLength(1);
+      expect(sentCommandNames.filter((n) => n === 'UpdateDistributionCommand')).toHaveLength(1);
+    });
   });
 
   describe('delete', () => {

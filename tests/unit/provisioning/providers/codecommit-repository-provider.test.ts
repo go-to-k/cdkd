@@ -96,6 +96,9 @@ describe('CodeCommitRepositoryProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
+    // case that routes via mockImplementation does not leak into the next.
+    mockSend.mockImplementation(() => undefined);
     admZipState.entries = [];
     provider = new CodeCommitRepositoryProvider();
   });
@@ -694,6 +697,41 @@ describe('CodeCommitRepositoryProvider', () => {
       const tagCmd = mockSend.mock.calls[2][0];
       expect(tagCmd).toBeInstanceOf(TagResourceCommand);
       expect(tagCmd.input).toEqual({ resourceArn: REPO_ARN, tags: { keep: 'v2' } });
+    });
+
+    it('untags a dropped tag whose key is `constructor` (#3515)', async () => {
+      // #3515 update() removedKeys: `k in newTagMap` found `constructor` on
+      // Object.prototype, so the dropped tag was never untagged.
+      // Route by command type (no `*Once` queue): the pre-fix path sends one
+      // fewer command, so a sequential primer would leak into a later case.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetRepositoryCommand) {
+          return Promise.resolve({ repositoryMetadata: metadata() });
+        }
+        if (cmd instanceof UntagResourceCommand || cmd instanceof TagResourceCommand) {
+          return Promise.resolve({});
+        }
+        return Promise.reject(new Error(`Unexpected command: ${(cmd as object).constructor.name}`));
+      });
+
+      await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        { RepositoryName: 'my-repo', Tags: [{ Key: 'keep', Value: 'v' }] },
+        {
+          RepositoryName: 'my-repo',
+          Tags: [
+            { Key: 'keep', Value: 'v' },
+            { Key: 'constructor', Value: 'x' },
+          ],
+        }
+      );
+
+      const untagCalls = mockSend.mock.calls.filter((c) => c[0] instanceof UntagResourceCommand);
+      expect(untagCalls.map((c) => c[0].input)).toEqual([
+        { resourceArn: REPO_ARN, tagKeys: ['constructor'] },
+      ]);
     });
 
     it('removes ALL tags when the Tags property is dropped entirely (issue #981 regression class)', async () => {

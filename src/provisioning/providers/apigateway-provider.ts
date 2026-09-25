@@ -2771,7 +2771,7 @@ function appendMapPatchOps(
   for (const [key, val] of Object.entries(next)) {
     const path = `${basePath}/${escape(key)}`;
     const stringValue = String(val);
-    if (!(key in prev)) {
+    if (!Object.hasOwn(prev, key)) {
       ops.push({ op: 'add', path, value: stringValue });
     } else if (String(prev[key]) !== stringValue) {
       ops.push({ op: 'replace', path, value: stringValue });
@@ -2780,7 +2780,7 @@ function appendMapPatchOps(
 
   // remove keys present in prev but not in next
   for (const key of Object.keys(prev)) {
-    if (!(key in next)) {
+    if (!Object.hasOwn(next, key)) {
       ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
     }
   }

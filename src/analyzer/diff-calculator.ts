@@ -447,7 +447,9 @@ export class DiffCalculator {
         // `ProviderRegistry.reportSilentDropDecisions` already warns about
         // those every deploy with the accurate wording.
         const droppedKeys = canonicalizeProperties
-          ? Object.keys(desiredAfterDrops).filter((key) => !(key in desiredPropsForCompare))
+          ? Object.keys(desiredAfterDrops).filter(
+              (key) => !Object.hasOwn(desiredPropsForCompare, key)
+            )
           : [];
         if (droppedKeys.length > 0) {
           this.logger.warn(
@@ -1288,7 +1290,7 @@ export class DiffCalculator {
         return false; // key added OR removed
       }
       for (const key of bKeys) {
-        if (!(key in aObj)) {
+        if (!Object.hasOwn(aObj, key)) {
           return false; // New key added in template
         }
         if (!this.valuesEqual(aObj[key], bObj[key])) {

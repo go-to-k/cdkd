@@ -239,6 +239,38 @@ describe('AppSyncProvider.update', () => {
       });
     });
 
+    it('untags a removed tag whose Key is an Object.prototype name (constructor)', async () => {
+      // #3515 GraphqlApi applyTagDiff: `k in newMap` answered true for
+      // `constructor` through the prototype chain, so no UntagResource was sent.
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof GetGraphqlApiCommand) {
+          return { graphqlApi: { arn: 'arn:aws:appsync:us-east-1:1:apis/api-1' } };
+        }
+        return {};
+      });
+
+      const newProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [{ Key: 'keep', Value: 'k' }],
+      };
+      const oldProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [
+          { Key: 'keep', Value: 'k' },
+          { Key: 'constructor', Value: 'old' },
+        ],
+      };
+
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps);
+
+      const untags = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UntagResourceCommand);
+      expect(untags.map((c) => c.input.tagKeys)).toEqual([['constructor']]);
+    });
+
     it('caches the GraphqlApi ARN across tag-diff updates (M3)', async () => {
       // First tag diff: GetGraphqlApi populates the per-provider ARN cache.
       mockSend.mockResolvedValueOnce({

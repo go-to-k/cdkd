@@ -959,8 +959,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     const merged: Record<string, unknown> = { ...currentConfig };
 
     for (const key of Object.keys(previousSdk)) {
-      if (key in templateSdk || key === 'CallerReference') continue;
-      if (key in REMOVAL_RESET_DEFAULTS) {
+      // `Object.hasOwn`, not `in` (issue #3515), on BOTH tests and together:
+      // `in` answers true for an inherited `Object.prototype` member, so a
+      // removed key named `constructor` was skipped as still templated, and
+      // fixing only the first test would send it into `structuredClone` of the
+      // inherited `Object` function (a DataCloneError) via the second.
+      if (Object.hasOwn(templateSdk, key) || key === 'CallerReference') continue;
+      if (Object.hasOwn(REMOVAL_RESET_DEFAULTS, key)) {
         merged[key] = structuredClone(REMOVAL_RESET_DEFAULTS[key]);
       } else {
         // Report the key in its CFn/template spelling (the user removes
