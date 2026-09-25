@@ -133,7 +133,7 @@ gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, s
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 glue-securityconfig-replace	2026-09-23T23:37:05Z	PASS	59	verify.sh	rc ok, orph clean (#1981 lane)
-glue-update-hardening	2026-09-25T10:50:52Z	PASS	111	verify.sh	maintainer merge-gate rerun of PR #3720, rc ok, orph clean; Phase 2b fails on a reverted glue-provider.ts
+glue-update-hardening	2026-09-25T13:08:56Z	PASS	145	verify.sh	rc ok, orph clean; phase 2c rename refusal (#3724)
 iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
 iam-managed-policy	2026-08-13T16:29:17Z	PASS	49	verify.sh	#1815 partition predicates; detach-before-delete destroy 0 err, 0 orphans
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
