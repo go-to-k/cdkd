@@ -179,25 +179,25 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // this list).
   'AWS::S3Tables::TableBucket',
   'AWS::S3Tables::Table',
-  // `AWS::S3Tables::Namespace` is here on the FAIL-SAFE side of an OPEN
-  // question rather than on a proof, and the distinction matters because an
-  // earlier revision excluded it. What the repo can state is only about cdkd's
-  // own delete: `S3TablesProvider.deleteNamespace` enumerates no tables and
-  // issues a bare `DeleteNamespace`. Whether AWS's `DeleteNamespace` cascades
-  // server-side is UNMEASURED — an earlier draft inferred "it does not" from
-  // `emptyTableBucket` deleting each table explicitly first, and that inference
-  // is withdrawn: it is equally consistent with merely defensive ordering.
-  // The question is load-bearing, which is why the unproven answer does not get
-  // to decide it: the type's createOnly properties make a RENAME a
-  // property-driven replacement that fires on a plain `cdkd deploy` with no
-  // flag, so a cascade would take out-of-band tables silently. Those properties
-  // are `Namespace` and `TableBucketARN` — read from the registry schema at
-  // diff time by `create-only-properties.ts`, and checked into this repo as
-  // `tests/fixtures/cfn-schemas/AWS-S3Tables-Namespace.json`, which is where
-  // that claim is verifiable rather than assumed. Issue [#2539] holds the live probe that settles it (delete
-  // a namespace holding a table, record what AWS answers); AWS refusing there
-  // is the only thing that is grounds to revisit this entry.
-  'AWS::S3Tables::Namespace',
+  // `AWS::S3Tables::Namespace` is deliberately NOT here, on a MEASUREMENT
+  // (issue #2539, probed 2026-09-25 in us-east-1): AWS refuses to delete a
+  // namespace that still holds a table. `DeleteNamespace` on a namespace with
+  // one table answered `BadRequestException: The namespace that you tried to
+  // delete is not empty.`, and the namespace and its table both survived. The
+  // Cloud Control DELETE of the type fails the same way (`InvalidRequest`,
+  // same message). cdkd's own delete, `S3TablesProvider.deleteNamespace`,
+  // enumerates no tables and issues a bare `DeleteNamespace`, so neither route
+  // can destroy a table. A rename of a non-empty namespace (its createOnly
+  // `Namespace` / `TableBucketARN` make that a property-driven replacement)
+  // creates the new namespace first; the old one's cleanup delete is then
+  // refused, which the deploy engine WARNS about and moves past, leaving the
+  // old namespace and its tables in AWS, untracked by state, rather than lost.
+  // The delete-first paths (`--replace`'s fallback, `--recreate-via-*`, the
+  // Cloud Control update-failure fallback) fail at that delete instead. The
+  // measurement covers one region (us-east-1) and both delete routes; a
+  // region or partition whose `DeleteNamespace` cascaded would be the
+  // residual. The type was guarded until then on the fail-safe side of that
+  // open question.
   // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` calls
   // `emptyVectorBucket` unconditionally, deleting every vector index in it.
   'AWS::S3Vectors::VectorBucket',
@@ -253,8 +253,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // blast radius reaches ciphertext in other stacks this deploy never looked
   // at. A long window is not consent.
   'AWS::KMS::Key',
-  // Guarded on the same UNMEASURED footing as `AWS::S3Tables::Namespace` above,
-  // and flagged as such rather than argued: whether a destroyed replica's
+  // Guarded on an UNMEASURED footing, and flagged as such rather than argued
+  // (the footing `AWS::S3Tables::Namespace` stood on until issue #2539
+  // measured it and it came off): whether a destroyed replica's
   // ciphertexts stay decryptable through another key in the same multi-region
   // set is a statement about AWS and about the user's topology, and this repo
   // has measured neither. What IS repo-derivable: cdkd registers no SDK
@@ -473,9 +474,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Investigation groups retain investigations for `RetentionInDays` — the
   // same argument the LogGroup entry rests on.
   'AWS::AIOps::InvestigationGroup',
-  // Guarded on the FAIL-SAFE side of an open question, like
-  // `AWS::S3Tables::Namespace` and `AWS::Rbin::Rule` above, and the entry says
-  // so rather than arguing it. The registry schema describes the type as
+  // Guarded on the FAIL-SAFE side of an open question, like `AWS::Rbin::Rule`
+  // below and `AWS::KMS::ReplicaKey` above, and the entry says so rather than
+  // arguing it. The registry schema describes the type as
   // providing "logical isolation for tasks and pipelines", which are their own
   // template resources — that reads like the write-off rule's DECLARED CONTENT
   // arm. Against it: AWS makes `EncryptionConfiguration` REQUIRED and

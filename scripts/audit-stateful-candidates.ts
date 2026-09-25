@@ -377,8 +377,8 @@ export const NOT_GUARDED: ReadonlyMap<string, string> = new Map([
   //       delete is in-flight or derived.
   //
   // Anything else is guarded, INCLUDING the cases where the answer is not
-  // repo-derivable. That is the same fail-safe the `AWS::S3Tables::Namespace`
-  // and `AWS::KMS::ReplicaKey` entries in `stateful-types.ts` are on: an
+  // repo-derivable. That is the same fail-safe the `AWS::KMS::ReplicaKey` and
+  // `AWS::Rbin::Rule` entries in `stateful-types.ts` are on: an
   // unprovable emptiness must not read as empty. The cost of being wrong in
   // that direction is one `--force-stateful-recreation` flag; the cost of
   // being wrong in the other is the user's data.

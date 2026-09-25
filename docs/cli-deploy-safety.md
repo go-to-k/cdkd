@@ -1242,7 +1242,7 @@ Destroy loses all data for these, unconditionally.
 | Data warehouse | `AWS::Redshift::Cluster`, `AWS::RedshiftServerless::Namespace`, `AWS::RedshiftServerless::Snapshot` — the namespace owns the databases and a snapshot is a copy of them |
 | In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup`, `AWS::ElastiCache::ServerlessCache`, `AWS::MemoryDB::Cluster`, `AWS::MemoryDB::MultiRegionCluster` |
 | Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::FSx::Volume`, `AWS::ECR::Repository`, `AWS::ECR::PublicRepository`, `AWS::EC2::Volume`, `AWS::WorkspacesInstances::Volume`, `AWS::S3Express::DirectoryBucket`, `AWS::Lightsail::Bucket`, `AWS::S3Outposts::Bucket`, `AWS::HealthImaging::Datastore`, `AWS::HealthLake::FHIRDatastore` |
-| Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Tables::Namespace`, `AWS::S3Vectors::VectorBucket`, `AWS::S3Vectors::Index` — deleting a table bucket or a vector bucket empties it first, with no opt-in; the namespace is guarded on an open question, see below |
+| Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Vectors::VectorBucket`, `AWS::S3Vectors::Index` — deleting a table bucket or a vector bucket empties it first, with no opt-in; a namespace is not guarded, see below |
 | Managed compute with local storage | `AWS::EMR::Cluster` — terminating the cluster destroys the HDFS volumes on its core nodes, and the replacement comes back empty. `AWS::EKS::Cluster` for the same reason one level up: the etcd store behind it holds every Kubernetes object the user created, and nothing in the template describes it. `AWS::SageMaker::Cluster` carries local and tiered storage holding training checkpoints |
 | Streaming / messaging | `AWS::Kinesis::Stream`, `AWS::KinesisVideo::Stream`, `AWS::MSK::Cluster`, `AWS::MSK::ServerlessCluster`, `AWS::MSK::Channel`, `AWS::AmazonMQ::Broker`, `AWS::OSIS::Pipeline`, `AWS::Events::Archive` — each retains records on its own storage rather than passing them straight through |
 | Search / index / collection | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain`, `AWS::OpenSearchServerless::Collection`, `AWS::OpenSearchServerless::Index`, `AWS::OpenSearchServerless::CollectionIndex`, `AWS::Kendra::Index`, `AWS::QBusiness::Index`, `AWS::QBusiness::Application`, `AWS::Rekognition::Collection`, `AWS::Location::GeofenceCollection`, `AWS::Bedrock::KnowledgeBase`, `AWS::Bedrock::DataAutomationLibrary` — the indexed documents, face vectors and geofences are written through the service API, never from the template |
@@ -1309,14 +1309,17 @@ the same footing, but routes through Cloud Control and is unmeasured here), and
 deliberately not guarded — deleting an alias removes a pointer, not key
 material.
 
-`AWS::S3Tables::Namespace` is guarded on an **open question** rather than on a
-measurement, and the entry says so. cdkd's own delete for a namespace issues a
-bare `DeleteNamespace` and enumerates no tables. Whether AWS's API cascades
-server-side has not been measured — and a namespace rename is a property-driven
-replacement a plain `cdkd deploy` reaches with no flag, so a cascade would take
-out-of-band tables with it. The guard takes the fail-safe side until a live
-probe settles the question; if it turns out AWS refuses to delete a non-empty
-namespace, the type comes back off the list.
+`AWS::S3Tables::Namespace` is deliberately **not** guarded: AWS refuses to delete a namespace that still holds a
+table, answering `BadRequestException: The namespace that you tried to delete
+is not empty.`, and the Cloud Control delete fails the same way. cdkd's own
+delete for a namespace issues a bare `DeleteNamespace` and enumerates no
+tables, so a namespace rename (a replacement a plain `cdkd deploy` reaches with
+no flag) cannot take a table with it. The replacement creates the new
+namespace first; if the old one still holds tables, its delete is refused and
+cdkd warns `Failed to delete old resource` and carries on. The old namespace
+and its tables stay in AWS, no longer tracked in state, for you to move or
+delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`
+when the create collides) fails at that delete instead.
 
 Replacing a type in the table above asks for `--force-stateful-recreation`.
 The guard list widens over time and always in that direction; see
