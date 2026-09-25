@@ -13,7 +13,13 @@ export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import {
+  ambientCredentialConfig,
+  clientDefaultsFor,
+  credentialFingerprint,
+  type CredentialConfig,
+} from '../utils/ambient-client-defaults.js';
+import { injectiveKey } from '../state/record-keys.js';
 
 /**
  * ECR pull fallback for `cdkd local invoke` / `cdkd local start-api` /
@@ -184,30 +190,38 @@ interface TempCredentials {
 }
 
 /**
- * Module-level cache for STS-issued AssumeRole credentials, keyed by
- * `(ecrRoleArn, callerRegion)`. Closes the reviewer's MAJOR finding: ECS
+ * Module-level cache for STS-issued AssumeRole credentials, per SOURCE credential
+ * identity and then per `(ecrRoleArn, callerRegion)`. Closes the reviewer's MAJOR finding: ECS
  * run-task with N containers under one `--ecr-role-arn` would otherwise issue
  * N× `AssumeRole` and N× `GetCallerIdentity` for identical credentials valid
  * for 3600s. The cache keeps a 5-minute safety margin against the recorded
  * `Expiration` so STS-side / local-clock skew never lets a stale entry through.
  *
- * Cache key is intentionally `(roleArn, region)` rather than full caller
- * identity — STS issues per-region session creds, and a switch of `--region`
- * between two `local invoke` calls in the same process must re-issue.
+ * The inner key is `(roleArn, region)`: STS issues per-region session creds,
+ * so a switch of `--region` between two `local invoke` calls in the same
+ * process must re-issue. The OUTER key is the source identity (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588), as in `role-arn.ts`),
+ * so a library caller that installs `AwsClients` with other explicit
+ * credentials is never handed credentials the first identity obtained. It is
+ * {@link credentialFingerprint} — profile plus access key id, never a secret —
+ * and neither key is ever rendered.
  *
  * NOT cleared on process exit — Node's module scope evaporates with the
  * process, and no inter-process sharing is desired (each `cdkd local invoke`
  * is its own isolated runtime).
  */
-const ASSUMED_ROLE_CACHE = new Map<string, TempCredentials>();
+const ASSUMED_ROLE_CACHE = new Map<string, Map<string, TempCredentials>>();
 
 /**
- * Module-level cache for `STS:GetCallerIdentity`. The result is identity-only
- * (`Account`) and invariant for the lifetime of the process under one set of
- * default credentials. Keyed by `callerRegion` to avoid a cross-region leak
- * when the caller flips `AWS_REGION` mid-process (STS is global but the SDK
- * uses regional endpoints; the result is invariant in practice, but we key
- * on region for safety).
+ * Module-level cache for `STS:GetCallerIdentity`, keyed by
+ * `(credential identity, callerRegion)`. The account is a function of the
+ * identity that asked, so the identity is part of the key (issue
+ * [#3588](https://github.com/go-to-k/cdkd/issues/3588)): a library caller that
+ * installs `AwsClients` with other explicit credentials must not be told the
+ * first identity's account. The region half avoids a cross-region leak when the
+ * caller flips `AWS_REGION` mid-process (STS is global but the SDK uses
+ * regional endpoints; the result is invariant in practice, but we key on region
+ * for safety). Never rendered.
  */
 const CALLER_IDENTITY_CACHE = new Map<string, string>();
 
@@ -290,7 +304,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // as the STS-AssumeRole source region. Failures here are fatal — without
   // an identity we cannot even tell whether this is a cross-account pull,
   // let alone authenticate.
-  const callerIdentityKey = callerRegion ?? '_unset';
+  //
+  // ONE reading of the active credential configuration for this pull: every
+  // client below builds from it and both caches key on it, so a value is always
+  // filed under the identity that obtained it (issue #3588).
+  const credentialConfig = ambientCredentialConfig();
+  const identityFingerprint = credentialFingerprint(credentialConfig);
+  const callerIdentityKey = injectiveKey(identityFingerprint, callerRegion ?? '_unset');
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
     const sts = new STSClient({
@@ -298,7 +318,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
       // emulated workload's, so a `--role-arn` correctly answers it. Nothing
       // resolved here reaches the container as an identity; the ECR login token
       // it leaves in the host docker config is the role's.
-      ...awsClientDefaults(),
+      ...clientDefaultsFor(credentialConfig),
       ...(callerRegion && { region: callerRegion }),
     });
     try {
@@ -337,19 +357,26 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   let assumed: TempCredentials | undefined;
   if (options.ecrRoleArn) {
     // cdkd-arn-display: a Map KEY, never rendered. It is built from the ARN
-    // so two different roles cannot share a credential cache entry; nothing
-    // logs or displays it, and a sanitizing pass here would make two distinct
-    // ARNs collide on one entry -- the opposite of what the key is for.
+    // so two different roles cannot share a credential cache entry, and from
+    // the source identity's own map (keyed by its fingerprint) so two source
+    // identities cannot either; nothing logs or displays it, and a sanitizing
+    // pass here would make two distinct ARNs collide on one entry -- the
+    // opposite of what the key is for.
     const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
-    const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
+    let roleCache = ASSUMED_ROLE_CACHE.get(identityFingerprint);
+    if (roleCache === undefined) {
+      roleCache = new Map<string, TempCredentials>();
+      ASSUMED_ROLE_CACHE.set(identityFingerprint, roleCache);
+    }
+    const cached = roleCache.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
       assumed = cached;
       logger.debug(
         `Reusing cached AssumeRole credentials for ${displayIdent(options.ecrRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
       );
     } else {
-      assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
-      ASSUMED_ROLE_CACHE.set(cacheKey, assumed);
+      assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, credentialConfig, logger);
+      roleCache.set(cacheKey, assumed);
       logger.info(
         // cdkd-raw-beside-safe: `parsed.accountId` / `parsed.region` come out
         // of `parseEcrUri`, which delegates to `parseEcrRegistryHost` and refuses a region segment that is
@@ -376,14 +403,16 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 
   // Authenticate against the URI's region (NOT the caller region).
   // When `assumed` is set, the ECR client uses those temporary
-  // credentials; otherwise the default credential chain.
+  // credentials; otherwise the caller's active credential configuration.
   const ecr = new ECRClient({
     // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
     // emulated workload's, so a `--role-arn` correctly answers it. Nothing
     // resolved here reaches the container as an identity; the ECR login token
     // it leaves in the host docker config is the role's.
-    ...awsClientDefaults(),
+    ...clientDefaultsFor(credentialConfig),
     region: parsed.region,
+    // LAST, so an assumed `--ecr-role-arn` role outranks the caller's own
+    // explicit credentials: the login must be the role's.
     ...(assumed && { credentials: assumed }),
   });
   try {
@@ -414,7 +443,8 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 }
 
 /**
- * Assume the supplied role via the SDK default credential chain and
+ * Assume the supplied role as the caller's active credential configuration
+ * (`credentialConfig`, the same reading `pullEcrImage` keys its caches on) and
  * return the resulting temporary credentials. The STS client is built
  * with the caller's profile region (or unset) — STS is a global
  * service so the region is informational, but threading it through
@@ -423,6 +453,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 async function assumeRoleForEcr(
   roleArn: string,
   callerRegion: string | undefined,
+  credentialConfig: CredentialConfig,
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
   logger.debug(
@@ -433,7 +464,7 @@ async function assumeRoleForEcr(
     // emulated workload's, so a `--role-arn` correctly answers it. Nothing
     // resolved here reaches the container as an identity; the ECR login token
     // it leaves in the host docker config is the role's.
-    ...awsClientDefaults(),
+    ...clientDefaultsFor(credentialConfig),
     ...(callerRegion && { region: callerRegion }),
   });
   try {

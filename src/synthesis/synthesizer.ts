@@ -13,6 +13,7 @@ import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { displaySafe, displayStackName } from '../utils/display-safe.js';
 
 /**
@@ -235,7 +236,11 @@ export class Synthesizer {
     const region = explicitRegion || (await resolveSdkDefaultRegion(options.profile));
     let accountId: string | undefined;
     try {
-      const stsClient = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+      // The ACCOUNT comes from the active `AwsClients` identity, while the
+      // region fallback above reads `options.profile`: a library caller that
+      // passes one profile here and installs `AwsClients` with another gets
+      // the two halves of the default env from different identities.
+      const stsClient = new STSClient({ ...ambientClientDefaults(), ...(region && { region }) });
       const identity = await stsClient.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
       stsClient.destroy();
@@ -421,7 +426,7 @@ export class Synthesizer {
     let accountId = resolved?.accountId;
     if (resolved === undefined && !options.stateBucket) {
       try {
-        const stsClient = new STSClient({ ...awsClientDefaults(), region });
+        const stsClient = new STSClient({ ...ambientClientDefaults(), region });
         const identity = await stsClient.send(new GetCallerIdentityCommand({}));
         accountId = identity.Account;
         stsClient.destroy();
