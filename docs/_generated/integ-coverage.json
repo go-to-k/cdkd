@@ -825,6 +825,7 @@
         "cognito-lambda-triggers",
         "cognito-resource-server",
         "cognito-userpool-user-ref",
+        "import-attribute-readback-final",
         "propagation-races-2",
         "remove-protection",
         "serverless-api"
@@ -856,6 +857,9 @@
         ],
         "cognito-userpool-user-ref": [
           "l2"
+        ],
+        "import-attribute-readback-final": [
+          "l1"
         ],
         "propagation-races-2": [
           "l1"
@@ -2168,6 +2172,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
@@ -2278,6 +2283,9 @@
         ],
         "fsx-windows": [
           "l2"
+        ],
+        "import-attribute-readback-final": [
+          "l1"
         ],
         "import-attribute-readback-network": [
           "l1"
@@ -2580,6 +2588,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
@@ -2703,6 +2712,9 @@
         "fsx-windows": [
           "l2",
           "literal"
+        ],
+        "import-attribute-readback-final": [
+          "l1"
         ],
         "import-attribute-readback-network": [
           "l1"
@@ -3810,6 +3822,7 @@
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "import-attribute-readback",
+        "import-attribute-readback-final",
         "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
         "infra-security",
@@ -3962,6 +3975,9 @@
         "import-attribute-readback": [
           "l2",
           "literal"
+        ],
+        "import-attribute-readback-final": [
+          "l2"
         ],
         "import-attribute-readback-misc": [
           "l2"
@@ -5035,9 +5051,13 @@
     {
       "resourceType": "AWS::RDS::DBCluster",
       "integs": [
+        "import-attribute-readback-final",
         "rds-aurora"
       ],
       "signals": {
+        "import-attribute-readback-final": [
+          "l1"
+        ],
         "rds-aurora": [
           "l1",
           "l2"
@@ -5077,11 +5097,15 @@
     {
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
+        "import-attribute-readback-final",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack"
       ],
       "signals": {
+        "import-attribute-readback-final": [
+          "l1"
+        ],
         "rds-aurora": [
           "l2"
         ],
@@ -5423,9 +5447,13 @@
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
       "integs": [
+        "import-attribute-readback-final",
         "s3-vectors"
       ],
       "signals": {
+        "import-attribute-readback-final": [
+          "literal"
+        ],
         "s3-vectors": [
           "l1"
         ]
@@ -5928,6 +5956,7 @@
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attribute-readback",
+        "import-attribute-readback-final",
         "import-attribute-readback-misc",
         "import-attribute-readback-network",
         "import-attributes",
@@ -6061,6 +6090,9 @@
           "l2"
         ],
         "import-attribute-readback": [
+          "l2"
+        ],
+        "import-attribute-readback-final": [
           "l2"
         ],
         "import-attribute-readback-misc": [
@@ -6400,6 +6432,7 @@
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
         "iam-propagation-stress",
+        "import-attribute-readback-final",
         "replacement-immutable-name",
         "stepfunctions",
         "stepfunctions-logging",
@@ -6408,6 +6441,9 @@
       "signals": {
         "iam-propagation-stress": [
           "l2"
+        ],
+        "import-attribute-readback-final": [
+          "l1"
         ],
         "replacement-immutable-name": [
           "l2",
@@ -6427,9 +6463,13 @@
     {
       "resourceType": "AWS::WAFv2::WebACL",
       "integs": [
+        "import-attribute-readback-final",
         "wafv2"
       ],
       "signals": {
+        "import-attribute-readback-final": [
+          "l1"
+        ],
         "wafv2": [
           "l1",
           "literal"

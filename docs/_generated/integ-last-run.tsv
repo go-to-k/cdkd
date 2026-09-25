@@ -141,6 +141,7 @@ iam-propagation-stress	2026-08-19T10:26:57Z	PASS	108	verify.sh	issue 2026: 27 ru
 iam-role-policies-drift-clean	2026-09-24T09:09:49Z	PASS	85	verify.sh	rc ok, orph clean; #3595 uncertifiedBaseline
 iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-role removal phase 3 verified; destroy 1/0 errors, 0 orphans
 import-attribute-readback	2026-09-24T12:30:44Z	PASS	160	verify.sh	rc ok, orph clean; metadata-update exclusion dropped (#3645)
+import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-24T20:32:58Z	PASS	260	verify.sh	rc ok, orph clean; providers at origin/main FAIL all 7 rows
 import-attribute-readback-network	2026-09-24T14:52:27Z	PASS	327	verify.sh	rc ok, orph clean; CFn-written SSM values as oracle
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err

@@ -46,13 +46,13 @@ describe('WAFv2WebACLProvider', () => {
 
   describe('create', () => {
     it('should create WebACL and return ARN as physicalId with attributes', async () => {
-      mockSend.mockResolvedValueOnce({
-        Summary: {
-          ARN: TEST_ARN,
-          Id: TEST_ID,
-          LabelNamespace: 'awswaf:123456789012:webacl:my-acl:',
-        },
-      });
+      // `WebACLSummary` carries no `LabelNamespace` (issue #3627): it is read
+      // back with `GetWebACL` after the create.
+      mockSend
+        .mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } })
+        .mockResolvedValueOnce({
+          WebACL: { ARN: TEST_ARN, Id: TEST_ID, LabelNamespace: 'awswaf:123456789012:webacl:my-acl:' },
+        });
 
       const result = await provider.create('MyWebACL', 'AWS::WAFv2::WebACL', {
         Name: 'my-acl',
@@ -71,7 +71,8 @@ describe('WAFv2WebACLProvider', () => {
         Id: TEST_ID,
         LabelNamespace: 'awswaf:123456789012:webacl:my-acl:',
       });
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[1][0].input).toEqual({ Id: TEST_ID, Name: 'my-acl', Scope: 'REGIONAL' });
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateWebACLCommand');
@@ -335,12 +336,52 @@ describe('WAFv2WebACLProvider', () => {
       };
     }
 
+    it('create survives a failed LabelNamespace read-back and omits the attribute', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } })
+        .mockRejectedValueOnce(new Error('WAFUnavailableEntityException'));
+      const result = await new WAFv2WebACLProvider().create('MyWebACL', 'AWS::WAFv2::WebACL', {
+        Name: 'my-acl',
+        Scope: 'REGIONAL',
+        DefaultAction: { Allow: {} },
+        VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+      });
+      expect(result.attributes).toStrictEqual({ Arn: TEST_ARN, Id: TEST_ID });
+    });
+
+    // Issue #3627: CloudFormation's physical id is `name|id|scope`, which
+    // `--migrate-from-cloudformation` passes verbatim; it is recorded under
+    // cdkd's ARN form.
+    it('CloudFormation compound id `name|id|scope` is read back and recorded as the ARN', async () => {
+      mockSend.mockResolvedValueOnce({
+        WebACL: { ARN: TEST_ARN, Id: TEST_ID, LabelNamespace: 'awswaf:123456789012:webacl:my-acl:' },
+        LockToken: 'lock',
+      });
+
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: `my-acl|${TEST_ID}|REGIONAL` })
+      );
+
+      expect(result).toStrictEqual({
+        physicalId: TEST_ARN,
+        attributes: { Arn: TEST_ARN, Id: TEST_ID, LabelNamespace: 'awswaf:123456789012:webacl:my-acl:' },
+      });
+      expect(mockSend.mock.calls[0][0].input).toEqual({ Id: TEST_ID, Name: 'my-acl', Scope: 'REGIONAL' });
+    });
+
     it('explicit override: GetWebACL parses ARN and returns it as physicalId', async () => {
-      mockSend.mockResolvedValueOnce({ WebACL: { ARN: TEST_ARN }, LockToken: 'lock' });
+      mockSend.mockResolvedValueOnce({
+        WebACL: { ARN: TEST_ARN, Id: TEST_ID, LabelNamespace: 'awswaf:123456789012:webacl:my-acl:' },
+        LockToken: 'lock',
+      });
 
       const result = await provider.import(makeInput({ knownPhysicalId: TEST_ARN }));
 
-      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
+      // Issue #3627: the map `create()` / `update()` record.
+      expect(result).toStrictEqual({
+        physicalId: TEST_ARN,
+        attributes: { Arn: TEST_ARN, Id: TEST_ID, LabelNamespace: 'awswaf:123456789012:webacl:my-acl:' },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('GetWebACLCommand');
       expect(call.input).toEqual({ Id: TEST_ID, Name: 'my-acl', Scope: 'REGIONAL' });
