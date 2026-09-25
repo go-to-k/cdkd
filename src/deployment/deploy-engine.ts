@@ -76,6 +76,12 @@ import {
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
+import {
+  isMaskedBaselineRecaptureCandidate,
+  persistedTokenResolverContext,
+  recaptureMaskedBaseline,
+  resolveRecordSecrets,
+} from './masked-baseline-recapture.js';
 import type {
   CloudFormationTemplate,
   CreateContext,
@@ -1122,6 +1128,17 @@ export class DeployEngine {
    */
   private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
     new Map();
+  /**
+   * The bags a masked-baseline re-capture produced (issue #3595). Each is the
+   * PREVIOUS baseline with some masks replaced, already redacted, so
+   * `drainObservedCaptures` installs it as it is rather than marking it as a
+   * fresh readback. Keyed by the bag's identity, and mapped to the PREVIOUS
+   * baseline it was built from: the drain installs it only while the record
+   * still holds that very baseline, so a record this deploy rebuilt (an UPDATE
+   * or a replacement whose provider takes no capture of its own) never
+   * receives a bag describing the resource it replaced.
+   */
+  private recapturedBaselines = new WeakMap<object, object>();
   private stateBackend: S3StateBackend;
   private lockManager: LockManager;
   private dagBuilder: DagBuilder;
@@ -2894,6 +2911,10 @@ export class DeployEngine {
     context?: import('../types/resource.js').ReadCurrentStateContext
   ): void {
     if (this.options.captureObservedState !== true) return;
+    // A capture that cannot run still SUPERSEDES the deploy-start refresh task
+    // for this id (issue #3595 review): the record was just rebuilt, and a
+    // readback of what it replaced must not be installed over it.
+    this.observedCaptureTasks.delete(logicalId);
     if (!provider.readCurrentState) return;
 
     const promise = provider
@@ -2918,19 +2939,29 @@ export class DeployEngine {
    * failed deploy's partial state is already inconsistent, and waiting
    * on potentially many in-flight reads would slow down the rollback
    * itself.
+   *
+   * Returns how many baselines it installed, so the no-change path saves only
+   * when one landed: a masked-baseline re-capture (issue #3595) that refuses
+   * resolves to `undefined` on every deploy for a position that stays
+   * uncertifiable, and must not rewrite an unchanged `state.json` each time.
    */
   private async drainObservedCaptures(
     stateResources: Record<string, ResourceState>
-  ): Promise<void> {
-    if (this.observedCaptureTasks.size === 0) return;
+  ): Promise<number> {
+    if (this.observedCaptureTasks.size === 0) return 0;
     const entries = Array.from(this.observedCaptureTasks.entries());
     this.observedCaptureTasks.clear();
     const resolved = await Promise.all(entries.map(([, p]) => p));
+    let installed = 0;
     for (let i = 0; i < entries.length; i++) {
       const logicalId = entries[i]![0];
       const observed = resolved[i];
       const target = stateResources[logicalId];
+      const recapturedFrom =
+        observed === undefined ? undefined : this.recapturedBaselines.get(observed);
+      if (recapturedFrom !== undefined && target?.observedProperties !== recapturedFrom) continue;
       if (target && observed !== undefined) {
+        installed++;
         // Issue #2516: the readback is THIS pass's own, taken from the
         // resource it just wrote, so the object is marked same-generation
         // before it is installed — the persist choke point walks this bag
@@ -2965,13 +2996,27 @@ export class DeployEngine {
         // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
         // that constant claims the generation itself -- which is why the
         // test does not reuse the persist path's own rules.
-        target.observedProperties = markSameGenerationBag({ ...observed });
+        // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
+        // is the previous baseline with some masks replaced by the record's own
+        // expressions, not a readback this pass took, so it must not claim the
+        // generation. The persist choke point then re-scrubs it with the
+        // readback rules, which add no mask to a bag holding no plaintext.
+        // NO TEST FENCES THIS, and the reason is structural: marked, the bag
+        // would take the fail-closed rules instead, and those only mask a
+        // string at a position they cannot pair that is neither a reference
+        // nor a literal the record spells. The re-capture's own precondition
+        // already refused any such baseline, so the two answers agree on every
+        // bag that reaches here.
+        target.observedProperties =
+          recapturedFrom !== undefined ? observed : markSameGenerationBag({ ...observed });
         // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
         // rather than an omission (issue #2944). An explicit `delete` was
         // written at this line first and is UNREACHABLE: the only two ways a
         // bag reaches it are the deploy-start auto-refresh, which never
         // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
-        // skips them), and a post-CREATE / post-UPDATE / post-replacement
+        // skips them, and its masked-baseline re-capture takes only a record
+        // that HAS a baseline, which a marked one never does), and a
+        // post-CREATE / post-UPDATE / post-replacement
         // capture, whose record `provisionResource` has already REBUILT from
         // the template — dropping the field with it. So the clearing mechanism
         // is the rebuild, and the contract a test can hold is "a real CREATE /
@@ -2990,6 +3035,7 @@ export class DeployEngine {
         // readback, so nothing there earns a baseline the import declined.
       }
     }
+    return installed;
   }
 
   /**
@@ -3179,7 +3225,8 @@ export class DeployEngine {
    * manual `cdkd state refresh-observed` command.
    */
   private kickOffAutoRefreshObservedProperties(
-    stateResources: Record<string, ResourceState>
+    stateResources: Record<string, ResourceState>,
+    crossStackReads: Pick<StackState, 'imports' | 'outputReads'>
   ): void {
     if (this.options.captureObservedState !== true) return;
     // Dry run does not fire this observed-state read (no AWS side-effect runs
@@ -3192,8 +3239,14 @@ export class DeployEngine {
       logicalId: string;
       resource: ResourceState;
     }> = [];
+    // Issue #3595: records whose baseline holds a #2852 fail-closed mask. See
+    // `masked-baseline-recapture.ts` for what may change and what may not.
+    const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
     for (const [logicalId, resource] of Object.entries(stateResources)) {
-      if (resource.observedProperties !== undefined) continue;
+      if (resource.observedProperties !== undefined) {
+        if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
+        continue;
+      }
       // Schema v10+ (issue #2944). `observedProperties === undefined` is
       // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
       // with no `readCurrentState` — where refilling is exactly this method's
@@ -3227,7 +3280,7 @@ export class DeployEngine {
         `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
       );
     }
-    if (candidates.length === 0) return;
+    if (candidates.length === 0 && masked.length === 0) return;
 
     // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
     // fully loaded from the previous deploy — sibling AWS::IAM::Policy
@@ -3315,6 +3368,111 @@ export class DeployEngine {
         `cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
       );
     }
+
+    // The CONSUMER's cross-region evidence for the re-capture's resolution. Read
+    // only when a masked record needs it, and a record list that cannot be read
+    // (a hand-edited `imports` element) skips the re-capture rather than
+    // resolving without the evidence: an absent list would verdict every
+    // region-less reference `local`.
+    let producerRegions: readonly string[] = [];
+    if (masked.length > 0) {
+      try {
+        producerRegions = producerRegionsFromState(crossStackReads);
+      } catch {
+        this.logger.debug(
+          `Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
+        );
+        masked.length = 0;
+      }
+    }
+    for (const { logicalId, resource } of masked) {
+      let provider: ResourceProvider;
+      try {
+        // Routed on the record's `provisionedBy`, as the loop above is.
+        provider = this.providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
+      } catch {
+        continue;
+      }
+      if (!provider.readCurrentState) continue;
+      const siblings = { ...allSiblings };
+      delete siblings[logicalId];
+      this.kickOffMaskedBaselineRecapture(provider, logicalId, resource, producerRegions, {
+        siblings,
+      });
+    }
+  }
+
+  /**
+   * Re-capture ONE record's fail-closed-masked baseline (issue #3595).
+   *
+   * Resolves the record's own `properties` references into a map of its own —
+   * never into `perResourceSecrets`: a populated entry there would move the
+   * persist choke point's observed walk off the fail-closed rules for this
+   * record. Then reads the resource back and hands both to
+   * `recaptureMaskedBaseline`, which changes masked positions only. Every
+   * refusal (a reference that does not resolve, a readback that fails, a
+   * baseline the fresh readback does not reproduce) resolves the task to
+   * `undefined`, which leaves the old baseline in place.
+   *
+   * Fire-and-forget like every other capture: drained before the final save,
+   * latest-wins against a later CREATE / UPDATE capture of the same id.
+   */
+  private kickOffMaskedBaselineRecapture(
+    provider: ResourceProvider,
+    logicalId: string,
+    resource: ResourceState,
+    producerRegions: readonly string[],
+    context: import('../types/resource.js').ReadCurrentStateContext
+  ): void {
+    const previous = resource.observedProperties;
+    const readCurrentState = provider.readCurrentState?.bind(provider);
+    if (previous === undefined || readCurrentState === undefined) return;
+    const properties = resource.properties ?? {};
+    const task = (async (): Promise<Record<string, unknown> | undefined> => {
+      const secrets = await resolveRecordSecrets(properties, (token, own) =>
+        this.resolver.resolveDynamicReferences(
+          token,
+          // The CONSUMER's cross-region evidence rides it, so a region-less
+          // reference this stack may have read from another region refuses
+          // (`ambiguous`) instead of resolving against a same-named secret here.
+          persistedTokenResolverContext(own, producerRegions)
+        )
+      );
+      if (secrets === undefined || secrets.size === 0) {
+        // The CLASS only: never a reference, a value or an error's text.
+        this.logger.debug(
+          `Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
+        );
+        return undefined;
+      }
+      const readback = await readCurrentState(
+        resource.physicalId,
+        logicalId,
+        resource.resourceType,
+        properties,
+        context
+      );
+      if (readback === undefined) return undefined;
+      const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
+      if (recaptured === undefined) {
+        this.logger.debug(
+          `Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
+        );
+        return undefined;
+      }
+      this.recapturedBaselines.set(recaptured, previous);
+      this.logger.debug(`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`);
+      return recaptured;
+    })().catch(() => {
+      this.logger.debug(
+        `Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
+      );
+      return undefined;
+    });
+    this.observedCaptureTasks.set(logicalId, task);
   }
 
   private async doDeploy(
@@ -3569,7 +3727,7 @@ export class DeployEngine {
       // `currentState.resources`. Closes the upgrade UX gap left by
       // v3 schema: the manual `cdkd state refresh-observed` command
       // remains for non-deploy refresh.
-      this.kickOffAutoRefreshObservedProperties(currentState.resources);
+      this.kickOffAutoRefreshObservedProperties(currentState.resources, currentState);
 
       // 2. Template parsing is handled by DagBuilder (dependency analysis) and
       // IntrinsicResolver (intrinsic function resolution) in later steps
@@ -3903,10 +4061,7 @@ export class DeployEngine {
           // decided (issue #2771): it is the one await between the outputs pass
           // and the save, and a secret a released outputs-pass part records
           // during it must be visible to the save-time check below.
-          const observedRefresh = this.observedCaptureTasks.size > 0;
-          if (observedRefresh) {
-            await this.drainObservedCaptures(currentState.resources);
-          }
+          const observedRefresh = (await this.drainObservedCaptures(currentState.resources)) > 0;
 
           // resolveOutputs stores `undefined` for any output it could not
           // resolve (warned about there when the resolver threw, silently when

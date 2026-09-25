@@ -1351,6 +1351,7 @@
         "remove-protection",
         "rollback-sqs-cooldown",
         "s3-lifecycle",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "stepfunctions",
         "stepfunctions-logging",
