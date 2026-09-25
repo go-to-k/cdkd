@@ -1297,18 +1297,18 @@ fi
 # The producer is NAMED, and named as the producer rather than as the stack
 # being scrubbed: the whole point of this refusal over a bare failure is that it
 # tells the operator which OTHER stack to scrub first.
-if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${PRODUCER}'"; then
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack ${PRODUCER} "; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without naming '${PRODUCER}' as the producer holding the plaintext"
 fi
-# `declares '<key>' from a {{resolve:...}} expression` is the `declared` verdict,
+# `declares <key> from a {{resolve:...}} expression` is the `declared` verdict,
 # which is only reached when an output of the producer's template matched THIS
 # key by name or by literal `Export.Name`. The `widened` verdict spells itself
 # differently ("publishes at least one output ... could not match"), so this
 # grep also fences the key-matching half: a refusal that fired off the
 # all-outputs fallback would be a refusal reached for a weaker reason than the
 # one this fixture is built to exercise.
-if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "declares '${EXPORT_NAME}' from a {{resolve:...}} expression"; then
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "declares ${EXPORT_NAME} from a {{resolve:...}} expression"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without the 'declared' verdict for ${EXPORT_NAME} — the producer template match fell back to the widened all-outputs scan, so the refusal came from an over-approximation rather than from this export"
 fi
@@ -1496,7 +1496,7 @@ if printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "could not resolve the Fn::Impor
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused with step 9's UNRESOLVABLE-read message instead — the producer's state is readable here, so this phase would be a duplicate of step 9 rather than a test of the taken-branch refusal"
 fi
-if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${PRODUCER}'"; then
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack ${PRODUCER} "; then
   diag "${TAKEN_REFUSE_OUT}"
   diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
   fail "'cdkd scrub ${CONSUMER}' refused without naming '${PRODUCER}' as the producer holding the plaintext"
@@ -1506,14 +1506,14 @@ fi
 # expression — i.e. `selectTakenConditionalBranches` kept the false arm. The
 # `widened` verdict spells itself differently, so this grep also fences the
 # key-matching half, exactly as step 10's does for the password export.
-if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "declares '${TAKEN_CONDITIONAL_EXPORT_NAME}' from a {{resolve:...}} expression"; then
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "declares ${TAKEN_CONDITIONAL_EXPORT_NAME} from a {{resolve:...}} expression"; then
   diag "${TAKEN_REFUSE_OUT}"
   diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
   fail "'cdkd scrub ${CONSUMER}' refused without the 'declared' verdict for ${TAKEN_CONDITIONAL_EXPORT_NAME} — either the refusal fired over a different export or the producer template match fell back to the widened all-outputs scan"
 fi
 # The refusing read is the DESCRIPTION's, the position the arm places it in —
 # not the bare `Value` import (whose producer value is healthy here).
-if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "at Description['Fn::Join']"; then
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "at \"Description['Fn::Join']"; then
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused from somewhere other than the Description's Fn::Join — the refusal is not attributable to the taken-branch conditional read this phase seeds for"
 fi
@@ -1790,14 +1790,14 @@ if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "could not resolve the Fn::Impor
 fi
 # It names the DIRECT producer — the middle stack, whose state holds the
 # plaintext — rather than the stack being scrubbed or the root of the chain.
-if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${CONSUMER}'"; then
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack ${CONSUMER} "; then
   diag "${CHAIN_REFUSE_OUT}"
   fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without naming '${CONSUMER}' as the producer holding the plaintext"
 fi
 # THE #2146 ASSERTION. Only a walk that FOLLOWED the re-export can emit this: it
 # names the stack at the head of the chain, which appears nowhere in the middle
 # stack's template except as the export name it imports.
-if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "by RE-EXPORTING a value that '${PRODUCER}' declares from a {{resolve:...}} expression"; then
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "by RE-EXPORTING a value that ${PRODUCER} declares from a {{resolve:...}} expression"; then
   diag "${CHAIN_REFUSE_OUT}"
   fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without saying the evidence came through a RE-EXPORT naming '${PRODUCER}' — the verdict did not follow the chain, so this refusal fired for some other reason"
 fi
@@ -1806,7 +1806,7 @@ fi
 # exists to exclude. A drift that put an expression into the middle stack would
 # make every assertion above pass for the DIRECT-import reason step 10 already
 # covers, leaving #2146 untested.
-if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "declares '${REEXPORT_NAME}' from a {{resolve:...}} expression"; then
+if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "declares ${REEXPORT_NAME} from a {{resolve:...}} expression"; then
   diag "${CHAIN_REFUSE_OUT}"
   fail "'cdkd scrub ${CHAIN_CONSUMER}' refused with the DIRECT-import 'declared' verdict — the middle stack's template now carries a literal expression, so this phase is a duplicate of step 10 rather than a test of the chain"
 fi
@@ -1950,7 +1950,7 @@ INDEX_DRYRUN_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" --dry-run --fail \
 INDEX_DRYRUN_RC=$?
 set -e
 assert_no_plaintext "the index dry-run scrub's output" "${INDEX_DRYRUN_OUT}"
-if ! printf '%s' "${INDEX_DRYRUN_OUT}" | grep -qF "Would converge exports index entry '${EXPORT_NAME}'"; then
+if ! printf '%s' "${INDEX_DRYRUN_OUT}" | grep -qF "Would converge exports index entry ${EXPORT_NAME} ("; then
   # Sentinel: the stack NAME is printed by the summary independently of the
   # convergence wording, so its presence separates "the audit did not fire"
   # from "the output was never captured" (.claude/rules/testing.md).
@@ -1981,7 +1981,7 @@ if [ "${INDEX_SCRUB_RC}" -ne 0 ]; then
   diag "${INDEX_SCRUB_OUT}"
   fail "'cdkd scrub ${PRODUCER}' exited ${INDEX_SCRUB_RC} (expected 0) while repairing the exports index"
 fi
-if ! printf '%s' "${INDEX_SCRUB_OUT}" | grep -qF "Converged exports index entry '${EXPORT_NAME}'"; then
+if ! printf '%s' "${INDEX_SCRUB_OUT}" | grep -qF "Converged exports index entry ${EXPORT_NAME} ("; then
   diag "${INDEX_SCRUB_OUT}"
   fail "'cdkd scrub ${PRODUCER}' did not report converging ${EXPORT_NAME}"
 fi
@@ -2021,7 +2021,7 @@ if [ "${INDEX_RERUN_RC}" -ne 0 ]; then
   diag "${INDEX_RERUN_OUT}"
   fail "the second 'cdkd scrub ${PRODUCER}' exited ${INDEX_RERUN_RC} (expected 0)"
 fi
-if printf '%s' "${INDEX_RERUN_OUT}" | grep -qF "Converged exports index entry '${EXPORT_NAME}'"; then
+if printf '%s' "${INDEX_RERUN_OUT}" | grep -qF "Converged exports index entry ${EXPORT_NAME} ("; then
   diag "${INDEX_RERUN_OUT}"
   fail "the second 'cdkd scrub ${PRODUCER}' converged ${EXPORT_NAME} again - the repair is not idempotent, so a re-run after a partial apply cannot be scoped to the remainder"
 fi

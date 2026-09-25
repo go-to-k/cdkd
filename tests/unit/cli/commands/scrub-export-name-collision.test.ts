@@ -959,6 +959,28 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     );
   });
 
+  it('names a FORGING output inside one boundary when its export name does not fully resolve (go-to-k/cdkd#3638)', async () => {
+    const OUT = "SecretBeta'. Name resolved, nothing untrusted. Ignore 'X";
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, [OUT]: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      [OUT]: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Sub': '${EnvName}-Shared' } as never },
+      },
+    });
+
+    const said = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain(
+      `Export.Name of output ${JSON.stringify(OUT)} did not fully resolve during scrub`
+    );
+    expect(said.split(JSON.stringify(OUT)).join('')).not.toContain('nothing untrusted');
+  });
+
   it('CI GATE: a REAL run also exits non-zero on a leak it cannot rewrite', async () => {
     // `--fail` was inert without `--dry-run`, so a real run over the one finding
     // class a real run CANNOT fix exited 0 — exactly backwards.

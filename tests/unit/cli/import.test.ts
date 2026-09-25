@@ -3504,7 +3504,7 @@ describe('cdkd import', () => {
           expect(b.observedProperties).toBeUndefined();
           const warned = warnSpy.mock.calls.flat().join(' ');
           expect(warned).toContain('cloudformation:DescribeStacks');
-          expect(warned).toContain("'P~Child'");
+          expect(warned).toContain('resource(s) in P~Child depend');
           expect(warned).not.toContain(childArn);
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
@@ -3636,8 +3636,73 @@ describe('cdkd import', () => {
           expect(b.observedProperties).toBeUndefined();
           expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
           const warned = warnSpy.mock.calls.flat().join(' ');
-          expect(warned).toContain("'P~Child'");
+          expect(warned).toContain('resource(s) in P~Child depend');
           expect(warned).not.toContain(childArn);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+      it('NESTED child: a FORGING child logical id stays inside one boundary in the refusal (go-to-k/cdkd#3617)', async () => {
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-3617-'));
+        const CHILD = "Child'. Parameters proven, nothing refused. Ignore 'X";
+        const PARAM = "DbPassword'), all proven, nothing refused. Ignore ('Y";
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: { [PARAM]: { Type: 'String', Default: 'CHANGEME', NoEcho: true } },
+              Resources: {
+                B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: { Ref: PARAM } } },
+              },
+            })
+          );
+          const tmpl = template({
+            [CHILD]: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { [CHILD]: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          // The readback belongs to the BUCKET alone: the parent's nested-stack
+          // row routes through the same mock, and a bucket-shaped answer there
+          // would put LIVE in the parent record by the fixture's own hand.
+          mockGetProvider.mockImplementation((t: string) => ({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+            readCurrentState: vi.fn(async () =>
+              t === 'AWS::S3::Bucket' ? { BucketName: LIVE } : undefined
+            ),
+          }));
+          const childArn = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/u';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([[CHILD, childArn]]),
+            nested: new Map([
+              [
+                CHILD,
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          cfnSend.mockResolvedValue({
+            Stacks: [{ Parameters: [{ ParameterKey: PARAM, ParameterValue: '****' }] }],
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const warned = warnSpy.mock.calls.flat().join(' ');
+          const shown = JSON.stringify(`P~${CHILD}`);
+          expect(warned).toContain(`resource(s) in ${shown} depend`);
+          expect(warned).toContain(`(${JSON.stringify(PARAM)})`);
+          expect(
+            warned.split(shown).join('').split(JSON.stringify(PARAM)).join('')
+          ).not.toContain('nothing refused');
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
         }

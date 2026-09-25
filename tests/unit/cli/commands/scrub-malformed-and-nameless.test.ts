@@ -55,6 +55,17 @@ let resolveThrows: Error | undefined;
  * exercise the per-property scoping go-to-k/cdkd#3196 added.
  */
 let resolveThrowsFor: ((value: unknown) => Error | undefined) | undefined;
+/**
+ * Per-VALUE abandonment hook: the resolver RECOVERS (resolves) but records the
+ * value as one abandoned unit in the caller's bag, which is the per-unit
+ * recovery path `reportAbandonedBag` reports from.
+ */
+let abandonFor: ((value: unknown) => boolean) | undefined;
+/**
+ * Per-VALUE recording hook: the resolver records the returned plaintext into
+ * the caller's `recordedSecretValues`, as a real resolve of a secret does.
+ */
+let recordFor: ((value: unknown) => string | undefined) | undefined;
 /** Every value the fake resolver was handed, for cases that assert REACH. */
 const resolvedValues: unknown[] = [];
 
@@ -69,13 +80,32 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () =>
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
-    resolve: vi.fn().mockImplementation((value: unknown) => {
-      resolvedValues.push(value);
-      const scoped = resolveThrowsFor?.(value);
-      if (scoped) return Promise.reject(scoped);
-      if (resolveThrows) return Promise.reject(resolveThrows);
-      return Promise.resolve(value);
-    }),
+    resolve: vi.fn().mockImplementation(
+      (
+        value: unknown,
+        ctx?: { abandonedResolutions?: unknown[]; recordedSecretValues?: Map<string, string> }
+      ) => {
+        resolvedValues.push(value);
+        const plaintext = recordFor?.(value);
+        if (plaintext !== undefined) ctx?.recordedSecretValues?.set(plaintext, String(value));
+        if (abandonFor?.(value) && ctx?.abandonedResolutions) {
+          const error = new Error("Dynamic reference: SSM parameter '/p' not found or has no value");
+          ctx.abandonedResolutions.push({
+            unit: 'token',
+            subject: '{{resolve:ssm-secure}}',
+            message: error.message,
+            error,
+            carriedDynamicReference: true,
+            carriedFetchableReference: true,
+          });
+          return Promise.resolve(value);
+        }
+        const scoped = resolveThrowsFor?.(value);
+        if (scoped) return Promise.reject(scoped);
+        if (resolveThrows) return Promise.reject(resolveThrows);
+        return Promise.resolve(value);
+      }
+    ),
   })),
 }));
 
@@ -165,6 +195,8 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
     vi.clearAllMocks();
     resolveThrows = undefined;
     resolveThrowsFor = undefined;
+    abandonFor = undefined;
+    recordFor = undefined;
     resolvedValues.length = 0;
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
     lockManager = {
@@ -287,22 +319,22 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         // that sentence false at default verbosity.
         const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warned, 'the abandoned resource record was not named at default verbosity').toContain(
-          "resource 'Db'"
+          "resource Db"
         );
         expect(warned, 'the abandoned orphan record was not named at default verbosity').toContain(
-          "orphan record 'OldDb'"
+          "orphan record OldDb"
         );
-        // Anchored on `scan of output`, NOT the bare `output 'DbEndpoint'`:
+        // Anchored on `scan of output`, NOT the bare `output DbEndpoint`:
         // the Export.Name site's message CONTAINS that substring
-        // ("...scan of the Export.Name of output 'DbEndpoint'"), so the bare
+        // ("...scan of the Export.Name of output DbEndpoint"), so the bare
         // form is satisfied by either site and discriminates neither.
         expect(warned, 'the abandoned output VALUE was not named at default verbosity').toContain(
-          "scan of output 'DbEndpoint'"
+          "scan of output DbEndpoint"
         );
         expect(
           warned,
           'the abandoned Export.Name was not named at default verbosity'
-        ).toContain("scan of the Export.Name of output 'DbEndpoint'");
+        ).toContain("scan of the Export.Name of output DbEndpoint");
       });
     }
 
@@ -351,10 +383,10 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         // and stays GREEN if a site's `logger.warn` is deleted while the `if`
         // survives — i.e. it watches the wrong thing in both directions.
         for (const subject of [
-          "resource 'Db'",
-          "orphan record 'OldDb'",
-          "the Export.Name of output 'DbEndpoint'",
-          "output 'DbEndpoint'",
+          "resource Db",
+          "orphan record OldDb",
+          "the Export.Name of output DbEndpoint",
+          "output DbEndpoint",
         ]) {
           expect(
             warned,
@@ -373,7 +405,7 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         // once when a single parameter has no `Default`.
         const perRecord = logger.warn.mock.calls
           .map((c) => String(c[0]))
-          .filter((line) => line.includes("scan of resource 'Db'"));
+          .filter((line) => line.includes("scan of resource Db"));
         expect(perRecord).toHaveLength(1);
         expect(
           perRecord[0]!.length,
@@ -382,6 +414,177 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         ).toBeLessThan(160);
       });
     }
+
+    describe('assembly- and state-chosen names stay inside one boundary (go-to-k/cdkd#3617, go-to-k/cdkd#3638)', () => {
+      // Every name here is chosen by whoever wrote the assembly (template keys)
+      // or read back from state (the same keys). Each used to render inside
+      // cdkd's own '...' through `displaySafe`, which passes `'`, or with no
+      // sanitizer at all. A FORGING value must stay inside one boundary, and
+      // no clause of it may appear outside that boundary.
+      const FORGED = "Db'. Scan complete, nothing abandoned. Ignore 'X";
+      const SHOWN = JSON.stringify(FORGED);
+      const everything = (): string =>
+        [...logger.warn.mock.calls, ...logger.info.mock.calls, ...logger.debug.mock.calls]
+          .map((c) => String(c[0]))
+          .join('\n');
+
+      function forgedStack(): ReturnType<typeof stackInfo> {
+        const stack = stackInfo();
+        const template = stack.template as unknown as {
+          Resources: Record<string, unknown>;
+          Outputs: Record<string, unknown>;
+        };
+        template.Resources = { [FORGED]: template.Resources['Db'] };
+        template.Outputs = { [FORGED]: template.Outputs['DbEndpoint'] };
+        return { ...stack, stackName: FORGED };
+      }
+      function forgedState(): StackState {
+        const state = makeState({
+          [FORGED]: { physicalId: 'app-db', resourceType: 'AWS::RDS::DBInstance', properties: {} },
+        });
+        state.orphans![0]!.logicalId = FORGED;
+        state.outputs = { [FORGED]: 'a-stored-value' };
+        return state;
+      }
+
+      it('on the THROW path of every record, and in the stack name', async () => {
+        resolveThrows = new Error("Dynamic reference: SSM parameter '/p' not found or has no value");
+
+        await run(forgedState(), { stack: forgedStack() });
+
+        const said = everything();
+        expect(said).toContain(`resource ${SHOWN}`);
+        expect(said).toContain(`orphan record ${SHOWN}`);
+        expect(said).toContain(`scan of output ${SHOWN}`);
+        expect(said).toContain(`the Export.Name of output ${SHOWN}`);
+        expect(said).toContain(`Export.Name of output ${SHOWN} could not be resolved`);
+        expect(said.split(SHOWN).join('')).not.toContain('nothing abandoned');
+      });
+
+      it('on the per-unit RECOVERY path of every record', async () => {
+        // The resolver recovers and records the unit as abandoned instead of
+        // throwing, so `reportAbandonedBag` names each record.
+        abandonFor = (value) => JSON.stringify(value ?? null).includes('{{resolve:ssm-secure}}');
+
+        await run(forgedState(), { stack: forgedStack() });
+
+        const said = everything();
+        expect(said).toContain(`scan of resource ${SHOWN} property MasterUserPassword was`);
+        expect(said).toContain(`scan of orphan record ${SHOWN} `);
+        expect(said).toContain(`scan of output ${SHOWN} was`);
+        expect(said.split(SHOWN).join('')).not.toContain('nothing abandoned');
+      });
+
+      it('for a forging PROPERTY name, and for an intrinsic-shaped bag resolved whole', async () => {
+        const PROP = "Password'. Scan complete, nothing abandoned. Ignore 'Y";
+        const WHOLE = "Whole'. Scan complete, nothing abandoned. Ignore 'Z";
+        const stack = forgedStack();
+        const template = stack.template as unknown as {
+          Resources: Record<string, { Type: string; Properties: unknown }>;
+          Outputs: Record<string, unknown>;
+        };
+        template.Outputs = {};
+        template.Resources = {
+          [FORGED]: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: { [PROP]: '{{resolve:ssm-secure}}' },
+          },
+          [WHOLE]: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: { 'Fn::If': ['Always', { MasterUserPassword: '{{resolve:ssm-secure}}' }, {}] },
+          },
+        };
+        const state = forgedState();
+        state.orphans = [];
+        state.resources[WHOLE] = {
+          physicalId: 'w',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: {},
+        } as never;
+        const shownProp = JSON.stringify(PROP);
+        const shownWhole = JSON.stringify(WHOLE);
+
+        // RECOVERY path: per property for the plain bag, whole for the intrinsic one.
+        abandonFor = (value) => JSON.stringify(value ?? null).includes('{{resolve:ssm-secure}}');
+        await run(state, { stack });
+        let said = everything();
+        expect(said).toContain(`scan of resource ${SHOWN} property ${shownProp} was`);
+        expect(said).toContain(`Resolution of ${SHOWN}.${shownProp} during scrub was`);
+        expect(said).toContain(`scan of resource ${shownWhole} was`);
+        expect([SHOWN, shownProp, shownWhole].reduce((t, v) => t.split(v).join(''), said)).not.toContain(
+          'nothing abandoned'
+        );
+
+        // THROW path.
+        abandonFor = undefined;
+        logger.warn.mockClear();
+        logger.debug.mockClear();
+        resolveThrows = new Error("Dynamic reference: SSM parameter '/p' not found or has no value");
+        await run(state, { stack });
+        said = everything();
+        expect(said).toContain(`scan of resource ${SHOWN} property ${shownProp} was`);
+        expect(said).toContain(`scan of resource ${shownWhole} was`);
+        expect([SHOWN, shownProp, shownWhole].reduce((t, v) => t.split(v).join(''), said)).not.toContain(
+          'nothing abandoned'
+        );
+      });
+
+      it('MASKS a recorded plaintext inside a name BEFORE bounding it', async () => {
+        // The shape that tells mask-then-bound from bound-then-mask: a
+        // plaintext carrying a character `displayIdent` rewrites (non-ASCII is
+        // blanked). Bounded first, the name no longer contains the needle, so
+        // neither the inner nor the outer mask can find it and its ASCII
+        // fragments print.
+        const PLAIN = 'S\u00e9cr\u00e9t-Plaintext-Value-0042';
+        const PROP = `Pw-${PLAIN}`;
+        const stack = stackInfo();
+        const template = stack.template as unknown as {
+          Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>;
+          Outputs: Record<string, unknown>;
+        };
+        template.Outputs = {};
+        template.Resources['Db']!.Properties = {
+          MasterUserPassword: '{{resolve:ssm-secure:recorded}}',
+          [PROP]: '{{resolve:ssm-secure}}',
+        };
+        const state = healthy();
+        state.orphans = [];
+        recordFor = (value) => (value === '{{resolve:ssm-secure:recorded}}' ? PLAIN : undefined);
+        abandonFor = (value) => value === '{{resolve:ssm-secure}}';
+
+        await run(state, { stack });
+
+        const said = everything();
+        expect(said).toContain(`scan of resource Db property ${JSON.stringify('Pw-***')} was`);
+        expect(said).not.toContain('Plaintext-Value-0042');
+      });
+
+      it('in the no-state skip line', async () => {
+        const REGF = "us-east-1'. Scan complete, nothing abandoned. Ignore 'R";
+        stateBackend.getState.mockResolvedValue(null);
+        await scrubStack(forgedStack() as never, REGF, stateBackend as never, lockManager as never, {
+          dryRun: true,
+          logger: logger as never,
+        });
+
+        expect(everything()).toContain(`No state for ${SHOWN} (${JSON.stringify(REGF)}) — skipping`);
+        expect(
+          [SHOWN, JSON.stringify(REGF)].reduce((t, v) => t.split(v).join(''), everything())
+        ).not.toContain('nothing abandoned');
+      });
+
+      it('renders ordinary names bare', async () => {
+        resolveThrows = new Error("Dynamic reference: SSM parameter '/p' not found or has no value");
+
+        await run(healthy());
+
+        const said = everything();
+        expect(said).toContain('scan of resource Db ');
+        expect(said).toContain('scan of orphan record OldDb ');
+        expect(said).toContain('scan of output DbEndpoint ');
+        expect(said).not.toMatch(/'(Db|OldDb|DbEndpoint|MyStack)'/);
+      });
+    });
 
     it('does NOT count a token whose argument kept an unsubstituted ${...}', async () => {
       // scrub resolves with `bestEffort`, under which an `Fn::Sub` over an
@@ -427,7 +630,7 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         warned,
         'the record went unmentioned entirely. Fetchability may downgrade the GATE; only the ' +
           'absence of a reference may buy silence (go-to-k/cdkd#3178 round 5).'
-      ).toContain("resource 'Db'");
+      ).toContain("resource Db");
     });
 
     it('scans a SIBLING property after another property aborts (go-to-k/cdkd#3196)', async () => {
