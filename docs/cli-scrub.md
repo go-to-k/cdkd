@@ -297,9 +297,21 @@ would name the opposite remedy ("scrub looked and found a leak — rotate the
 secret") for a record scrub could not look at, and exit `0` would be the
 false-clean this whole check exists to prevent, in the mode a CI gate uses.
 
-Either way the message names the record and tells you not to run `cdkd deploy`
-or `cdkd destroy` against it — both read the same map, and an unreadable one is
-indistinguishable from an empty stack.
+Either way the message names the record. `cdkd deploy` and `cdkd destroy`
+refuse the same map themselves, so neither can be run against it by accident.
+
+**One row of a readable `resources` map that is not a resource record exits `2`
+the same way.** A row that is `null`, a string, a list, or an object with no
+`resourceType` is one the rewrite scrub saves cannot handle: a `null` row either
+stops it on a bare `TypeError` under the lock (when the template still
+positions the row and the stack recorded any secret) or is copied into the
+rebuilt map as it stands — reported clean when no secret was recorded at all,
+saved back the moment another record changed; a string or number the template
+positions is spread into an object and saved as one; and a row with no type is
+rewritten and saved still without one. A real run refuses, naming the rows;
+`--dry-run` drops them,
+warns, audits the rest of the record, and still exits `2` through the same
+audited-record refusal.
 
 **A record whose `outputs` map cannot be read exits `2` as well**, and it is
 decided separately: a record can be damaged in either container alone, so the
@@ -415,7 +427,7 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` | The read succeeded, but the producer's own state still stores the plaintext instead of the expression. | `cdkd scrub '<producer>'` first, then re-run. For a chain, every stack in it, head first. |
 | `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` | A secret reference whose ARN names another region could not be read in that region. | Grant the read there, or restore the secret. scrub will not fall back to the stack's own region. |
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
-| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object; its `outputs` map is `null` or not an object; or its `orphans` field is present but not a list, or holds a record that is not an object, has no string `logicalId` or shares it with another record, or whose `state` is not a readable resource entry with a non-empty string `physicalId` — including that entry's `properties` and `attributes` maps. A real run refuses the stack, which under `--all` is reported as `SCRUB_STACKS_FAILED`; `--dry-run` audits the other containers and reports this code rather than a clean result. An ABSENT `outputs` map or `orphans` list is not a defect and is never refused. | Inspect the record with `cdkd state show '<stack>' --stack-region '<region>' --json` and repair or remove it. For the `resources` half, do NOT `cdkd deploy` or `cdkd destroy` against it first — those still read that map unguarded. For the `outputs` and `orphans` halves both commands refuse it themselves. |
+| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object, or holds a row that is not an object or carries no `resourceType`; its `outputs` map is `null` or not an object; or its `orphans` field is present but not a list, or holds a record that is not an object, has no string `logicalId` or shares it with another record, or whose `state` is not a readable resource entry with a non-empty string `physicalId` — including that entry's `properties` and `attributes` maps. A real run refuses the stack, which under `--all` is reported as `SCRUB_STACKS_FAILED`; `--dry-run` audits the other containers and reports this code rather than a clean result. An ABSENT `outputs` map or `orphans` list is not a defect and is never refused. | Inspect the record with `cdkd state show '<stack>' --stack-region '<region>' --json` and repair or remove it. `cdkd deploy` and `cdkd destroy` refuse every one of these shapes themselves. |
 | `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub '<producer>'` cannot run until that record is repaired — inspect it with `cdkd state show '<producer>' --stack-region '<region>' --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 

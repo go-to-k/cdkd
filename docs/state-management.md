@@ -946,6 +946,7 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
 | `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
+| `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record; every `Ref` / `Fn::GetAtt` in the run's environment that names a resource of this record resolves to nothing and is dropped, and a bare `--assume-role` falls back to the developer's credentials |
 
 The destroy row is the one where *repairing* would be unsafe rather than
 merely lossy. Read as empty, the count comes back zero, the empty-stack fast
@@ -1029,6 +1030,31 @@ legitimately publish no outputs.
 Each container is judged on its own: a record whose `resources` map is fine and
 whose `outputs` is damaged is refused with a message naming `outputs`, and vice
 versa.
+
+#### When one `resources` RECORD cannot be read
+
+The map being an object says nothing about the records in it. A record is
+readable only if it is an object carrying a string `resourceType` — the one
+field every reader touches before any other. A `null`, a string, a list, or an
+object with no type is a row nothing can route, and every command that reaches
+it answers the way it answers a damaged map:
+
+| Command | Answer |
+| --- | --- |
+| `cdkd deploy` | **Refuses** at the load (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the rows — under `--dry-run` too. The same refusal runs on the pre-lock `--recreate-via-cc-api` / `--recreate-via-sdk-provider` check, which reads the record itself: without it a `null` named row was reported as *missing from state*, with advice to drop the flag for it |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock, and again on the record the empty-stack path re-reads under the lock, naming the rows — a falsy row was skipped as "not found in state" and the record removed with its resource live; a row with no type was routed to a provider on no type with a physical id nothing checked; see [`cdkd destroy`](cli-destroy.md#an-unreadable-resource-record-refuses-the-destroy) |
+| `cdkd import` | **Refuses** a SELECTIVE merge over an unreadable row it does NOT re-import (`STATE_RESOURCES_MALFORMED`, exit `1`) — it copies every such row into the record it saves. A row named by `--resource` / `--resource-mapping` is replaced from the provider's answer, so `cdkd import <stack> --resource <id>=<physicalId> --force` is the repair of that row and is not refused pre-flight — if that row's import then does not succeed, the import refuses before saving rather than writing the row back; a whole-stack `--force` import or `--migrate-from-cloudformation` REPLACES the map from the template and is not refused either |
+| `cdkd orphan` | **Refuses** for a row on a record it would **keep**, under `--dry-run` too; a row you are orphaning is dropped as usual |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`) — the rewrite reads each row and saves the rebuilt map; under `--dry-run` it DROPS the rows, warns, and reports them in the audited-record refusal — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
+| `cdkd state refresh-observed`, `cdkd drift --accept` / `--revert` | **Refuse** before the lock, naming the rows — see [`cdkd drift`](cli-drift.md) |
+| `cdkd diff`, plain `cdkd drift` | **Drop** the rows, warn, and report the rest; `cdkd diff` also reports the deploy's refusal under `Blocking` on the stack you named and exits `3` |
+| `cdkd local *` (`--from-state`) | **Drops** the rows in memory and warns — it writes no state record. A `Ref` or `Fn::GetAtt` naming a dropped row resolves to nothing and is dropped like any other unresolvable reference, and a bare `--assume-role` read through one falls back to the developer's credentials. An unreadable **map** is read as empty the same way, with its own warning |
+| The rollback-orphan claim scan (`cdkd deploy` / `cdkd diff`) | **Skips** the row and keeps reading the rest of that sibling's record, at debug level — a row with no readable physical id claims nothing. The scan exists to stop this stack adopting a resource another stack still owns, so it reads past a damaged row rather than stopping at it |
+
+A row that names its type but no `physicalId` is readable here: it can be
+routed, and what its missing id costs is reported by the command that reaches
+it, in that command's own terms. Inspect the record with
+`cdkd state show '<stack>' --stack-region '<region>' --json` and repair the row.
 
 #### When a resource `properties` map is not an object
 

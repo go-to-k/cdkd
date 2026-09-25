@@ -512,6 +512,13 @@ not read. `--dry-run` refuses too. `cdkd diff` drops those records, warns, and
 previews the rest of the stack. Inspect the record with `cdkd state show '<stack>'
 --stack-region '<region>' --json`, repair or remove it, then re-run.
 
+The same refusal — and the map refusal above it — runs on the pre-lock
+`--recreate-via-cc-api` / `--recreate-via-sdk-provider` check, which reads the
+record itself before the engine does. Without it a `null` row named by either
+flag was reported as *missing from state*, with advice to drop the flag for a
+resource whose broken row was the reason it could not be recreated, and a row
+with no `resourceType` reached the confirmation prompt with no type to show.
+
 ## Exit codes
 
 | Code | Meaning |

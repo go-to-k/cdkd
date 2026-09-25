@@ -184,7 +184,7 @@ launchtemplate-asg-inplace	2026-09-24T22:46:12Z	PASS	82	verify.sh	rc ok, 0 orpha
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-09-24T13:18:12Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke	2026-09-25T05:52:32Z	PASS	35	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
+local-invoke	2026-09-25T11:37:16Z	PASS	70	verify.sh	rc ok, docker sweep clean, 0 orphans; sha 7f3ebd731 (#3202)
 local-invoke-agentcore	2026-09-24T15:26:43Z	PASS	115	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-invoke-agentcore-from-state	2026-09-24T13:25:51Z	PASS	91	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke-buildkit	2026-09-24T13:15:21Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override

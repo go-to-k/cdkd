@@ -627,8 +627,11 @@ attributes. Turn it on for stacks already deployed with `cdkd deploy`.
 
 Off by default, in which case unresolvable placeholders are dropped with a
 warn. A state load failure degrades per stack to the same warn-and-fall-back
-path, so a missing or unreadable state file never aborts the server. With
-`--watch`, state is re-read on every reload.
+path, so a missing or unreadable state file never aborts the server. A record
+whose `resources` map is not an object is read as empty, and a row in it that
+is not a resource record is dropped — each with a warning naming the stack and,
+for rows, the logical ids — so a placeholder naming one resolves to nothing and
+is dropped like any other. With `--watch`, state is re-read on every reload.
 
 Use `--stack-region` when the same stack name has state in more than one
 region, and `--state-bucket` / `--state-prefix` when the state does not live at

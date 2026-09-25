@@ -310,6 +310,16 @@ export function validateRecreateTargets(input: {
       unknownLogicalIds.push(logicalId);
       continue;
     }
+    // PRECONDITION, owed by the caller: every row of `input.state.resources`
+    // is a readable resource record (go-to-k/cdkd#3202). This falsy test
+    // cannot tell an ABSENT row from a `null` one, so a `null` row would be
+    // reported as "missing from state" and the renderer would then tell the
+    // operator to drop the flag for it — leaving the resource un-recreated
+    // with the broken row in place — while a typeless row reaches the
+    // confirmation prompt as `resourceType: undefined`. `deploy.ts`, the one
+    // caller, refuses both through `refuseMalformedResourcesForDeploy` /
+    // `refuseMalformedResourceEntriesForDeploy` on this same record before
+    // calling here; a second caller owes the same two calls.
     const recordedResource = input.state.resources[logicalId];
     if (!recordedResource) {
       missingFromState.push(logicalId);

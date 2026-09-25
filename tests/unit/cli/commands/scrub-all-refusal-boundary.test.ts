@@ -1110,3 +1110,55 @@ describe('cdkd scrub: an unreadable orphans container reaches the VERDICT (go-to
     }
   });
 });
+
+/**
+ * The COMMAND-level half of go-to-k/cdkd#3202's `cdkd scrub` site.
+ * `scrub-malformed-and-nameless.test.ts` enters at `scrubStack` and asserts the
+ * `malformedResourceRows` FINDING; this is what proves the field is wired into
+ * the verdict — without the feed, `--dry-run --fail` exits through the silent
+ * `ScrubNeededError` over a record it could not fully read.
+ */
+describe('cdkd scrub: an unreadable resources ROW reaches the VERDICT (go-to-k/cdkd#3202)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    synthStacks.length = 0;
+    synthStacks.push(makeStackInfo('Damaged'));
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      // The MAP is an object and the other containers are healthy, so the bag
+      // refusal and every sibling's text would be the wrong one here.
+      (state.resources as Record<string, unknown>)['Broken'] = null;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  it('--dry-run --fail exits 2 through the audited-record refusal, naming the stack', async () => {
+    const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
+      (e: unknown) => e
+    );
+    expect((err as { code?: string }).code).toBe('STATE_RESOURCES_MALFORMED');
+    expect((err as { code?: string }).code).not.toBe('SCRUB_NEEDED');
+    expect((err as { exitCode?: number }).exitCode).toBe(2);
+    const message = String((err as { message?: string }).message);
+    // The WIDENED sentence: the pre-#3202 text said "an EMPTY resource set
+    // because their state record has no readable 'resources' map", which is
+    // false over a map that is an object holding one dropped row.
+    expect(message).toContain('an INCOMPLETE resource set');
+    expect(message, 'the sentence no longer covers the ROW shape').toContain(
+      'a row inside it that cannot be read as a resource'
+    );
+    expect(message).toContain('Damaged');
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('a REAL run refuses the stack rather than auditing it, with scrub`s own text', async () => {
+    const err = await scrubCommand([], commandOptions({})).catch((e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('SCRUB_STACKS_FAILED');
+    const errored = commandLogger.error.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('Broken');
+    expect(errored).toContain('cannot be read as resources');
+    expect(errored).toContain("'cdkd scrub' REBUILDS and SAVES");
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+});

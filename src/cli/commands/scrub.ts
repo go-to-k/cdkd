@@ -94,6 +94,8 @@ import {
   malformedOrphansWarning,
   malformedOutputsWarning,
   malformedResourcesWarning,
+  malformedResourceEntriesWarning,
+  malformedScrubResourceEntriesRefusalMessage,
   malformedStateRefusalMessage,
   producerCoordinateKey,
   producerRecordKey,
@@ -102,7 +104,9 @@ import {
   repairMalformedOrphanRecordsForReadOnly,
   repairMalformedOrphansForReadOnly,
   unreadableOrphanRecords,
+  unreadableResourceEntries,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 
@@ -906,7 +910,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // other.
       logger.info(`No plaintext secrets found in ${shownStack}`);
     }
-    if (scrubbed.malformedResources) {
+    // Either shape of `resources` damage lands in ONE list, for the reason the
+    // orphan pair below shares one (go-to-k/cdkd#3202): the verdict is one —
+    // this stack's resource map could not be fully read, exit 2, repair the
+    // record — and the WARNINGS above already distinguish the map from a row.
+    if (scrubbed.malformedResources || scrubbed.malformedResourceRows) {
       malformedRecords.push(stack.stackName);
     }
     if (scrubbed.malformedOutputs) {
@@ -2296,11 +2304,16 @@ function malformedRecordsAuditedError(
     names.map((n) => displayIdent(n)).join(', ');
   const parts: string[] = [];
   if (stackNames.length > 0) {
+    // WIDENED by go-to-k/cdkd#3202 from "an EMPTY resource set" to an INCOMPLETE
+    // one, the way go-to-k/cdkd#3500 widened the orphan arm: a readable map can
+    // hold a row no reader can use, and the dry-run arm DROPS that row and
+    // reports it through this same list.
     parts.push(
-      `${stackNames.length} stack(s) were audited with an EMPTY resource set because their ` +
-        `state record has no readable 'resources' map: ${safeNames(stackNames)}. The report ` +
-        `above describes their outputs only — nothing is known about their resources, so this ` +
-        `run cannot certify them clean.`
+      `${stackNames.length} stack(s) were audited with an INCOMPLETE resource set because ` +
+        `their state record has no readable 'resources' map, or a row inside it that cannot ` +
+        `be read as a resource: ${safeNames(stackNames)}. Whichever it was, the warning above ` +
+        `names it per stack. The report above describes their readable resources and their ` +
+        `outputs only — nothing is known about the rest, so this run cannot certify them clean.`
     );
   }
   if (outputStackNames.length > 0) {
@@ -4797,6 +4810,14 @@ export interface ScrubStackResult {
    * run can meet either alone and the remedies differ.
    */
   malformedOrphanRows?: true;
+  /**
+   * A readable `resources` map held a row that is not a resource record,
+   * dropped under `--dry-run` (go-to-k/cdkd#3202). Separate from
+   * {@link malformedResources} for the reason the orphan pair is: a run can
+   * meet either alone and the remedies differ — a non-object map has to be
+   * rewritten, a torn row repaired inside an otherwise good map.
+   */
+  malformedResourceRows?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -5088,6 +5109,31 @@ export async function scrubStack(
         malformedStateRefusalMessage(stack.stackName, region),
         STATE_RESOURCES_MALFORMED
       );
+    }
+    // The ROWS of a readable map (go-to-k/cdkd#3202), decided the same way and
+    // BELOW the bag branch: an unreadable bag has no rows to name, and both
+    // helpers return `[]` for one. The rewrite below reads `record.properties`
+    // on a row today's template still declares and copies one it no longer
+    // declares into the saved map AS IT STANDS — so a real run over a `null`
+    // row either dies on a bare `TypeError` under the lock or persists the row
+    // it could not read. REFUSE on a real run, through scrub's own class for
+    // the exit-code reason the bag branch gives; under `--dry-run` DROP the
+    // rows, warn, and carry the finding out so the run cannot end clean.
+    let malformedResourceRows: true | undefined;
+    if (opts.dryRun) {
+      const droppedRows = repairMalformedResourceEntriesForReadOnly(state);
+      if (droppedRows.length > 0) {
+        malformedResourceRows = true;
+        logger.warn(malformedResourceEntriesWarning(stack.stackName, region, droppedRows));
+      }
+    } else {
+      const unreadableRows = unreadableResourceEntries(state);
+      if (unreadableRows.length > 0) {
+        throw new ScrubRefusalError(
+          malformedScrubResourceEntriesRefusalMessage(stack.stackName, region, unreadableRows),
+          STATE_RESOURCES_MALFORMED
+        );
+      }
     }
     // The `outputs` bag, decided the same way and reported separately
     // (go-to-k/cdkd#3192). A SECOND branch rather than a widened condition
@@ -6132,6 +6178,7 @@ export async function scrubStack(
         // `findUnrepairedCrossStackReadNames` has nothing to flag against.
         unrepairedReadNames: 0,
         ...(malformedResources ? { malformedResources } : {}),
+        ...(malformedResourceRows ? { malformedResourceRows } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
         ...(malformedOrphans ? { malformedOrphans } : {}),
         ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
@@ -6485,6 +6532,7 @@ export async function scrubStack(
       ...(malformedOutputs ? { malformedOutputs } : {}),
       ...(malformedOrphans ? { malformedOrphans } : {}),
       ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
+      ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };
