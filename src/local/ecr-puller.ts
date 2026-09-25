@@ -470,10 +470,10 @@ async function assumeRoleForEcr(
 
 /**
  * Authenticate the local docker daemon against the target ECR registry.
- * Kept apart from `DockerAssetPublisher.ecrLogin`, and it no longer mirrors it:
- * the publisher still prefers `proxyEndpoint`, which is right only because it
- * pushes to the CALLER's own registry, while a pull here can name any account
- * and any host form, so this one always logs in to the pull host.
+ * Kept apart from `DockerAssetPublisher.ecrLogin`, which follows the same rule
+ * (it logs in to the push host, #3681) but builds its host from an account and
+ * region, while a pull here can name any account and any host form parsed from
+ * the image URI.
  *
  * The login endpoint is ALWAYS the host the PULL targets (issues #1855 /
  * #3670): docker's credential store is keyed on the hostname verbatim, so a

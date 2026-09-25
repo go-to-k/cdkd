@@ -12,6 +12,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { buildDockerImage } from './docker-build.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
@@ -29,27 +30,40 @@ function ecrUrlSuffix(region: string): string {
   return derivePartitionAndUrlSuffix(region).urlSuffix;
 }
 
-/**
- * Registries this process has already logged in to, keyed by registry host
- * (`<accountId>.dkr.ecr.<region>.<urlSuffix>`, which uniquely encodes the
- * account + region credential context). ECR authorization tokens are valid
- * for ~12h and a deploy process is short-lived, so a successful login is
- * reused for the process lifetime — mirroring `cdk-assets`, which skips
- * re-login on repeat publishes. Keyed per registry (NOT globally) so that
- * cross-account / cross-region assets each get their own login.
- *
- * Module-level (not an instance field) because the deploy pipeline may
- * construct more than one `DockerAssetPublisher` per run (e.g. one per
- * WorkGraph asset-publish node), and the login is genuinely process-wide.
- */
-const loggedInRegistries = new Set<string>();
+/** An AWS account id: exactly twelve digits. */
+const ACCOUNT_ID = /^\d{12}$/;
 
 /**
- * Test-only: reset the process-lifetime ECR login cache so each test starts
- * from a clean slate.
+ * The DNS-label charset a region id is drawn from (a trailing hyphen is not
+ * refused; the host stays under the AWS-owned suffix either way).
+ * `src/utils/ecr-uri.ts` holds the same class for the pull side.
  */
-export function resetEcrLoginCache(): void {
-  loggedInRegistries.clear();
+const REGION_LABEL = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/**
+ * The ECR registry host an asset is pushed to. The push URI AND the
+ * `docker login` endpoint are both built from this one value, so the login
+ * always targets the host the push uses (issue #3681).
+ *
+ * The region comes from the asset manifest, and the ECR password is sent to
+ * this host, so both halves are charset-gated HERE: a region like
+ * `x.example.com/` would otherwise name a host AWS does not own. The suffix is
+ * the AWS-owned one `derivePartitionAndUrlSuffix` returns. A known-region
+ * check is deliberately absent, so a region cdkd has not heard of yet still
+ * publishes.
+ */
+function ecrRegistryHost(accountId: string, region: string): string {
+  if (typeof accountId !== 'string' || !ACCOUNT_ID.test(accountId)) {
+    throw new AssetError(
+      `Refusing to publish a Docker image asset: ${displayIdent(accountId)} is not a 12-digit AWS account id`
+    );
+  }
+  if (typeof region !== 'string' || region.length > 63 || !REGION_LABEL.test(region)) {
+    throw new AssetError(
+      `Refusing to publish a Docker image asset: the destination region ${displayIdent(region)} is not a valid AWS region id`
+    );
+  }
+  return `${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 }
 
 /**
@@ -94,7 +108,8 @@ export class DockerAssetPublisher {
         ? this.resolvePlaceholders(dest.region, accountId, region)
         : region;
 
-      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
+      const registryHost = ecrRegistryHost(accountId, destRegion);
+      const ecrUri = `${registryHost}/${repositoryName}:${imageTag}`;
 
       this.logger.debug(`Publishing Docker image ${asset.displayName || assetHash} → ${ecrUri}`);
 
@@ -118,7 +133,7 @@ export class DockerAssetPublisher {
         await this.buildImage(asset, cdkOutputDir, localTag, cdkOutputDir);
 
         // Tag and push (login lazily, only if the push hits an auth failure).
-        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, accountId, destRegion);
+        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, registryHost);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {
@@ -169,7 +184,8 @@ export class DockerAssetPublisher {
         ? this.resolvePlaceholders(dest.region, accountId, region)
         : region;
 
-      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
+      const registryHost = ecrRegistryHost(accountId, destRegion);
+      const ecrUri = `${registryHost}/${repositoryName}:${imageTag}`;
 
       const client = new ECRClient({ ...ambientClientDefaults(), region: destRegion });
 
@@ -179,7 +195,7 @@ export class DockerAssetPublisher {
           continue;
         }
 
-        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, accountId, destRegion);
+        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, registryHost);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {
@@ -269,13 +285,12 @@ export class DockerAssetPublisher {
    * round-trip (~3.3s saved). We attempt the push FIRST and only pay the login
    * when it is actually needed:
    *
-   *   1. If this PROCESS already logged into the registry (issue #1184 cache),
-   *      push directly — still self-healing: a mid-process token expiry falls
-   *      into the same auth-failure retry below.
-   *   2. Otherwise push optimistically. On a NON-auth failure (network,
-   *      repo-not-found, etc.) surface the error unchanged. On an auth failure
-   *      (no pre-existing cred, OR a stale/expired cred), run a forced ECR
-   *      login and retry the push ONCE.
+   *   1. Push optimistically. A login earlier in this process (or session)
+   *      left a credential in docker's store, so a repeat push to the same
+   *      registry needs no new login — docker's store is the only login cache.
+   *   2. On a NON-auth failure (network, repo-not-found, etc.) surface the
+   *      error unchanged. On an auth failure (no pre-existing cred, OR a
+   *      stale/expired cred), log in to ECR and retry the push ONCE.
    *
    * A stale cred and a missing cred take the SAME branch, so cdkd never
    * fail-hard on an expired credential — it re-logs in and retries.
@@ -284,8 +299,7 @@ export class DockerAssetPublisher {
     client: ECRClient,
     localTag: string,
     fullUri: string,
-    accountId: string,
-    region: string
+    registryHost: string
   ): Promise<void> {
     await this.tagImage(localTag, fullUri);
 
@@ -304,38 +318,20 @@ export class DockerAssetPublisher {
       );
     }
 
-    // Auth failure: force a fresh login (bypassing the per-process cache, which
-    // may hold a now-stale token), then retry the push exactly once.
-    await this.ecrLogin(client, accountId, region, { force: true });
+    // Auth failure: log in afresh, then retry the push exactly once.
+    await this.ecrLogin(client, registryHost);
     await this.pushImage(fullUri);
   }
 
   /**
-   * Authenticate with ECR via `docker login --password-stdin`.
+   * Authenticate with ECR via `docker login --password-stdin`, against
+   * `registryHost` — the host the push targets (`ecrRegistryHost`).
    *
-   * The login is cached per registry (`<accountId>.dkr.ecr.<region>.<urlSuffix>`) for the
-   * process lifetime: a repeat publish to the same registry returns early
-   * without the `GetAuthorizationToken` call or the `docker login` subprocess
-   * (mirrors `cdk-assets`). ECR tokens are valid ~12h and a deploy process is
-   * short-lived, so this is safe. Keyed per registry so cross-account /
-   * cross-region assets each get their own login.
-   *
-   * `force: true` bypasses the per-process cache short-circuit — used by the
-   * lazy-login retry after a push fails auth, where the cached entry may hold a
-   * token that AWS has already expired.
+   * Called only after a push failed auth, so it always logs in: a repeat push
+   * to a registry already logged in to succeeds on the credential docker
+   * stored and never reaches here (#1193).
    */
-  private async ecrLogin(
-    client: ECRClient,
-    accountId: string,
-    region: string,
-    options: { force?: boolean } = {}
-  ): Promise<void> {
-    const registryKey = `${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
-    if (!options.force && loggedInRegistries.has(registryKey)) {
-      this.logger.debug(`Reusing cached ECR login for ${registryKey}`);
-      return;
-    }
-
+  private async ecrLogin(client: ECRClient, registryHost: string): Promise<void> {
     const response = await client.send(new GetAuthorizationTokenCommand({}));
     const authData = response.authorizationData?.[0];
 
@@ -350,15 +346,18 @@ export class DockerAssetPublisher {
         'ECR authorization token has unexpected shape (missing username/password)'
       );
     }
-    const endpoint =
-      authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
+    // Log in to the host the push targets, never `authData.proxyEndpoint`
+    // (issue #3681): the request carries no `registryIds`, so `proxyEndpoint`
+    // names the CALLER's default registry, and docker keys credentials on the
+    // hostname verbatim. It equals the push host only while the push account is
+    // the caller's own; `registryHost` is the push URI's host by construction
+    // (both come from `ecrRegistryHost`). Same rule as `src/local/ecr-puller.ts`
+    // on the pull side (#3670).
+    const endpoint = `https://${registryHost}`;
 
     const loginArgs = ['login', '--username', username, '--password-stdin', endpoint];
     try {
       await runDockerStreaming(loginArgs, { input: password });
-      // Only cache after a successful login so a failed attempt is retried on
-      // the next publish rather than silently skipped.
-      loggedInRegistries.add(registryKey);
     } catch (err) {
       throw new AssetError(
         `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`,

@@ -199,14 +199,13 @@ Publishes file assets (Lambda code packages, etc.) to S3:
 
 Publishes Docker image assets to ECR:
 
-- Authenticates with ECR via `GetAuthorizationToken`, then `docker login`. The
-  login is cached per registry (`<accountId>.dkr.ecr.<region>.<urlSuffix>`,
-  the suffix derived from the region so `aws-cn` / `us-iso*` registries resolve
-  — issue #1745)
-  for the process lifetime, so a repeat publish to the same registry skips the
-  `GetAuthorizationToken` call and the `docker login` subprocess (mirrors
-  `cdk-assets`; ECR tokens are valid ~12h and a deploy process is short-lived).
-  Keyed per registry so cross-account / cross-region assets each log in once.
+- Pushes first and logs in only when the push fails auth: a credential left in
+  docker's store by an earlier login lets a repeat push to the same registry
+  skip `GetAuthorizationToken` and `docker login` entirely (#1193).
+- The login targets the registry host the push uses
+  (`<accountId>.dkr.ecr.<region>.<urlSuffix>`, the suffix derived from the
+  region so `aws-cn` / `us-iso*` registries resolve — issue #1745), never the
+  token's `proxyEndpoint`, which names the caller's own registry (issue #3681).
 - Builds Docker images from source
 - Tags and pushes images to the ECR repository
 
