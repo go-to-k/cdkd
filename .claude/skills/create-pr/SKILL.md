@@ -29,7 +29,7 @@ Run all quality checks and create a GitHub PR if everything passes.
 
 4. **Check if PR already exists** for the current branch:
    - `gh pr view --json number,url -q '.url' 2>/dev/null`
-   - If a PR exists, update its title/body (see /verify-pr step 12) and report the URL
+   - If a PR exists, update its title/body (see /verify-pr step 12), report the URL, and stop — skip steps 5–8
 
 5. **Gather PR context**:
    - `git log main...HEAD --oneline` — all commits in this branch

@@ -27,7 +27,7 @@ signal establishes LIFE, never absence, so "someone is here" means STOP.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
-# tree, so a silently reset cwd (appendix) shows up IN THE OUTPUT.
+# tree, so a silently reset cwd (gotchas.md) shows up IN THE OUTPUT.
 git rev-parse --show-toplevel   # STOP unless you meant to adopt this tree
 git status --porcelain          # non-empty: someone's uncommitted work
 git branch --show-current
@@ -101,7 +101,7 @@ instead of the RANGE, a global needle where each subject spells its own, and
   `git diff` after; `perl -0pi` without `/g` hits only the first match); a case
   REACHES that line by EVERY arm that can, which licenses a case per arm but
   never a fence change nor DELETING a guard as "implied"; and the command ran
-  where you think it did (appendix). Read the TALLY, never the rc.
+  where you think it did (gotchas.md). Read the TALLY, never the rc.
 
 ### 5-f'. Scanner/fence calibration (when the fix ships a repo-wide check)
 

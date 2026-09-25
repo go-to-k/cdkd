@@ -46,7 +46,7 @@ preview half of the Outputs-only persist `cdkd deploy` does.
   deploy keeps them as `undefined`; without the list every failure reads as a
   phantom REMOVE.
 - `computeOutputsDiff` compares bag KEY by bag KEY — the `outputMapsEqual`
-  predicate deploy gates its persist on . Its caller, `computeStackDiff`
+  predicate deploy gates its persist on. Its caller, `computeStackDiff`
   (`diff-recursive.ts`), previews the no-change merge through
   `mergeNoChangeOutputs` when the resource diff is empty and its other
   conditions hold, and WARNS when a delta was suppressed, which disambiguates

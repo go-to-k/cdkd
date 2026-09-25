@@ -9,8 +9,8 @@ paths:
 - **file-asset-publisher.ts** / **docker-asset-publisher.ts** — S3 ZIP upload;
   ECR image build and push.
 - **Three manifest-supplied paths are containment-checked
-  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the rest of the
-  manifest is WARNED about, never refused (#3497, below).** Checked:
+  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the passthroughs
+  listed below are WARNED about, never refused (#3497).** Checked:
   `source.path` through `resolveFileAssetSourcePath` and `source.directory`
   through `resolveDockerContextDirectory` — each THE one spelling its two call
   sites share, since a second hand-written copy is how a guard on one twin
@@ -84,8 +84,8 @@ paths:
   upload, that build an image, and that only read, so a baked-in clause
   narrates something half of them do not do. `resolveFileAssetSourcePath` runs at the TOP of
   `publish`, above the `objectExists` short-circuit, so an
-  already-present object cannot skip it and no HeadObject reaches an unchecked
-  bucket. **WARNED but never refused**
+  already-present object cannot skip it, and a refused path sends no HeadObject
+  to the manifest-named bucket. **WARNED but never refused**
   ([#3497](https://github.com/go-to-k/cdkd/issues/3497),
   `manifest-passthrough-warnings.ts`): every BuildKit passthrough
   (`dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`,

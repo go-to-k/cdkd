@@ -26,7 +26,9 @@ the only mechanical merge conditions.
   in one call, run the gated command in the next, re-creating not appending.
   - A blocked `cp` restore leaves a file MID-PROBE (failing in the suite, passing
     alone, reading as pollution), so verify a restore in the same call; and make
-    `/tmp` consumables per LANE (`mktemp`), or a retry eats another's.
+    `/tmp` consumables per LANE (`mktemp`, print the path, and pass it LITERALLY
+    to the next call — shell variables do not survive between calls), or a
+    retry eats another's.
 - **"All green" is the EXIT CODE, not the summary** — a run can print every test
   passing and exit 1 (test-file type errors show as `Errors`), and
   `vp run typecheck` skips `**/*.test.ts`: run `typecheck:test`, read ITS rc.

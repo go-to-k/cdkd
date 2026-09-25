@@ -1,5 +1,5 @@
 ---
-description: isPasteableIdent — the one rule for a value cdkd interpolates into a command it tells an operator to RUN, its three consumers, and its stricter logical-id sibling
+description: isPasteableIdent — the one rule for a value cdkd interpolates into a command it tells an operator to RUN, its consumers, and its stricter logical-id sibling
 paths:
   - 'src/utils/display-safe.ts'
   - 'src/cli/commands/state-file-keys.ts'
