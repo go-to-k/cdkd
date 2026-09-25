@@ -1310,13 +1310,18 @@ deliberately not guarded — deleting an alias removes a pointer, not key
 material.
 
 `AWS::S3Tables::Namespace` is deliberately **not** guarded, on a measurement
-taken on 2026-09-25: AWS refuses to delete a namespace that still holds a table, answering
-`BadRequestException: The namespace that you tried to delete is not empty.`, and
-the Cloud Control delete fails the same way. cdkd's own delete for a namespace
-issues a bare `DeleteNamespace` and enumerates no tables, so a namespace rename
-(a replacement a plain `cdkd deploy` reaches with no flag) cannot take a table
-with it: if the old namespace still holds tables, the deploy fails at that
-delete instead. The type was guarded on the fail-safe side until that probe.
+taken on 2026-09-25: AWS refuses to delete a namespace that still holds a
+table, answering `BadRequestException: The namespace that you tried to delete
+is not empty.`, and the Cloud Control delete fails the same way. cdkd's own
+delete for a namespace issues a bare `DeleteNamespace` and enumerates no
+tables, so a namespace rename (a replacement a plain `cdkd deploy` reaches with
+no flag) cannot take a table with it. The replacement creates the new
+namespace first; if the old one still holds tables, its delete is refused and
+cdkd warns `Failed to delete old resource` and carries on. The old namespace
+and its tables stay in AWS, no longer tracked in state, for you to move or
+delete by hand. A delete-first replacement (`--replace`, `--recreate-via-*`)
+fails at that delete instead. The type was guarded on the fail-safe side until
+that probe.
 
 Replacing a type in the table above asks for `--force-stateful-recreation`.
 The guard list widens over time and always in that direction; see

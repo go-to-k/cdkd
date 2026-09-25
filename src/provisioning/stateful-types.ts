@@ -187,10 +187,16 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Cloud Control DELETE of the type fails the same way (`InvalidRequest`,
   // same message). cdkd's own delete, `S3TablesProvider.deleteNamespace`,
   // enumerates no tables and issues a bare `DeleteNamespace`, so neither route
-  // can destroy a table: a rename of a non-empty namespace (its createOnly
+  // can destroy a table. A rename of a non-empty namespace (its createOnly
   // `Namespace` / `TableBucketARN` make that a property-driven replacement)
-  // fails at the delete instead of losing data. The type was guarded until
-  // then on the fail-safe side of that open question.
+  // creates the new namespace first; the old one's cleanup delete is then
+  // refused, which the deploy engine WARNS about and moves past, leaving the
+  // old namespace and its tables in AWS, untracked by state, rather than lost.
+  // The delete-first paths (`--replace`'s fallback, `--recreate-via-*`, the
+  // Cloud Control update-failure fallback) fail at that delete instead. The
+  // measurement covers one region (us-east-1) and both delete routes; a
+  // partition whose `DeleteNamespace` cascaded would be the residual. The type
+  // was guarded until then on the fail-safe side of that open question.
   // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` calls
   // `emptyVectorBucket` unconditionally, deleting every vector index in it.
   'AWS::S3Vectors::VectorBucket',
