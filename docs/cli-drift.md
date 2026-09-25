@@ -58,7 +58,7 @@ those the comparator falls back to `properties`, the user-templated intent.
 The difference matters: the observed baseline is what makes a console-side
 change to a key you never templated surface as drift, while the fallback only
 catches changes to keys you did template. Run
-[`cdkd state refresh-observed <stack>`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
+[`cdkd state refresh-observed '<stack>'`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
 populate an observed baseline in place.
 
 The comparator only looks at keys present in cdkd state. AWS-managed fields
@@ -274,7 +274,7 @@ including a decrypted secret — as one side of a drift row that nothing could
 mask, because a refused record spells no `{{resolve:...}}` for the redaction to
 key on. Successful resources are in sync; re-run `cdkd drift '<stacks...>'`
 to see what is left, then either `cdkd drift '<stacks...>' --revert` for the
-recoverable failures or `cdkd deploy <stack> --replace` for the
+recoverable failures or `cdkd deploy '<stack>' --replace` for the
 update-not-supported ones. (That is the partial-failure message's own spelling:
 a QUOTED placeholder, because the `[stacks...]` that `cdkd drift --help` prints
 is a bracket expression when pasted — it matches one character from
@@ -607,7 +607,7 @@ on that fallback, so it reports `drift unknown`.
 > identified by a **composite, `|`-delimited physical id** rather than a
 > single scalar. That composite is what `cdkd state show` /
 > `cdkd state resources` print and what
-> `cdkd import --resource <logicalId>=<physicalId>` expects — quote it on a
+> `cdkd import --resource '<logicalId>=<physicalId>'` expects — quote it on a
 > shell command line. The per-type format table is in
 > [State Management](state-management.md#composite-pipe-delimited-physicalids).
 
@@ -677,7 +677,7 @@ list produces a well-formed-looking map keyed `0`, `1`, … rather than failing,
 which would persist rows for resources that do not exist and erase the only
 evidence the record was broken. So both refuse instead, naming the stack, the
 region and the offending logical ids, before the lock is acquired and before
-anything is written. Inspect the record with `cdkd state show <stack> --json`.
+anything is written. Inspect the record with `cdkd state show '<stack>' --json`.
 
 ### `--accept` (state ← AWS)
 
@@ -773,7 +773,7 @@ under `--dry-run`. A Glue Iceberg table's `table_type` / `metadata_location`,
 and the roughly eighteen untemplated attributes an ELBv2 load balancer
 reports, survive the revert instead of being reset.
 
-Run **`cdkd state refresh-observed <stack>`**, or redeploy, if you want them
+Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
 reverted too. Either populates `observedProperties`, after which the baseline
 IS a deploy-time AWS snapshot, an out-of-band addition is genuinely
 identifiable and IS stripped, and the notice stops firing.
