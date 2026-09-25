@@ -1,5 +1,5 @@
 import type { Logger, LogLevel } from '../types/config.js';
-import { displaySafe } from './display-safe.js';
+import { displaySafe, terminalSafe } from './display-safe.js';
 import { getLiveRenderer } from './live-renderer.js';
 import { getCurrentStackOutputBuffer } from './stack-context.js';
 
@@ -176,6 +176,9 @@ export class ConsoleLogger implements Logger {
     // five readers in issue #2170 (issue #3003).
     const formattedArgs =
       args.length > 0 ? ' ' + displaySafe(args.map((a) => JSON.stringify(a)).join(' ')) : '';
+    // The message itself is sanitized HERE rather than at each of ~3000 call
+    // sites, most of which interpolate a value raw (go-to-k/cdkd#3479).
+    message = terminalSafe(message);
 
     // Verbose mode: full timestamps and level
     if (this.level === 'debug') {

@@ -28,6 +28,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  safeMsg,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
@@ -658,7 +659,7 @@ async function stateListCommand(options: {
     const degraded = details.filter((d) => d.stateReadError !== null || d.lockReadError !== null);
     if (degraded.length > 0) {
       logger.warn(
-        `${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
+        safeMsg`${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
           `their rows say why.`
       );
     }
@@ -2084,7 +2085,7 @@ async function stateOrphanCommand(
     for (const stackName of stackArgs) {
       const stackRefs = refs.filter((r) => r.stackName === stackName);
       if (stackRefs.length === 0) {
-        logger.info(`No state found for stack: ${stackName}, skipping`);
+        logger.info(safeMsg`No state found for stack: ${stackName}, skipping`);
         continue;
       }
 
@@ -2218,7 +2219,7 @@ async function stateOrphanCommand(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
         );
         if (!ok) {
-          logger.info(`Cancelled removal of state for stack: ${stackName}`);
+          logger.info(safeMsg`Cancelled removal of state for stack: ${stackName}`);
           continue;
         }
       }
@@ -2248,7 +2249,7 @@ async function stateOrphanCommand(
           await setup.stateBackend.deleteLegacyState(stackName);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
-        logger.info(`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
+        logger.info(safeMsg`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
       }
     }
   } finally {
@@ -2534,7 +2535,7 @@ async function stateDestroyCommand(
       }
     }
 
-    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+    logger.info(safeMsg`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
     let totalErrors = 0;
     // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
@@ -2594,7 +2595,7 @@ async function stateDestroyCommand(
         targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
         if (targets.length === 0) {
           logger.warn(
-            `Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
+            safeMsg`Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
           );
           continue;
         }
@@ -2603,14 +2604,14 @@ async function stateDestroyCommand(
       } else {
         const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
         throw new Error(
-          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+          safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
             `Use --stack-region <region> to pick one.`
         );
       }
 
       for (const [refIndex, ref] of targets.entries()) {
         logger.info(
-          `\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
+          safeMsg`\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
         );
 
         const stateResult = await setup.stateBackend.getState(
@@ -2619,7 +2620,7 @@ async function stateDestroyCommand(
         );
         if (!stateResult) {
           logger.warn(
-            `No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
+            safeMsg`No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
           );
           continue;
         }
@@ -3034,7 +3035,7 @@ async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<As
       });
     } catch (error) {
       logger.warn(
-        `Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
+        safeMsg`Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
       );
     }
   }
@@ -3141,7 +3142,7 @@ async function stateInfoCommand(options: {
       tolerateNonStandardClient: true,
       onRebuild: ({ bucketRegion, currentRegion }) => {
         logger.debug(
-          `State bucket '${bucket}' is in '${bucketRegion}' (state-info client was '${String(currentRegion)}'); building a region-corrected S3 client for info reads.`
+          safeMsg`State bucket '${bucket}' is in '${bucketRegion}' (state-info client was '${String(currentRegion)}'); building a region-corrected S3 client for info reads.`
         );
       },
     });
@@ -3407,7 +3408,7 @@ async function stateRefreshObservedCommand(
         } else {
           const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
           throw new Error(
-            `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+            safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
               `Re-run with --stack-region <region> to disambiguate.`
           );
         }
@@ -3565,7 +3566,7 @@ async function stateRefreshObservedCommand(
     const summary = options.dryRun
       ? `Plan: ${totalRefreshed} resource(s) would be refreshed, ${totalUnsupported} unsupported, ${totalFailed} would fail (--dry-run, no state was written)`
       : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed`;
-    logger.info(`\n${summary}`);
+    logger.info(safeMsg`\n${summary}`);
 
     // Issue #2944. Its OWN line rather than a fourth count in the summary, and
     // at `warn`: a refused resource is one the user asked to refresh and cdkd
@@ -3576,7 +3577,7 @@ async function stateRefreshObservedCommand(
     // is unchanged.
     if (totalRefusedBaseline > 0) {
       logger.warn(
-        `${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
+        safeMsg`${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
           `a 'cdkd import' run refused to capture their ` +
           `observed-properties baseline, because their recorded properties can no longer position the secret ` +
           `redaction — refreshing against those properties could persist a resolved secret into state.json in ` +
@@ -3653,11 +3654,11 @@ async function warnOnLiveForeignLock(
     const owner = info.owner;
     const operation = info.operation ? `, operation: ${info.operation}` : '';
     logger.warn(
-      `Force-releasing a LIVE lock on ${where} ` +
+      safeMsg`Force-releasing a LIVE lock on ${where} ` +
         // Agrees with `lock-contention-message.ts`: an unusable owner withholds
         // the "still running" CERTIFICATION but not the expiry, when the lock
         // file carries a readable one.
-        `${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
+        safeMsg`${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
         (owner && expiryKnown
           ? `That process is still running and will keep writing; its next state write `
           : expiryKnown
@@ -3742,7 +3743,7 @@ async function refreshObservedForStack(
   const entries = Object.entries(state.resources);
 
   if (entries.length === 0) {
-    logger.info(`✓ ${stackName} (${region}): no resources in state, skipping`);
+    logger.info(safeMsg`✓ ${stackName} (${region}): no resources in state, skipping`);
     return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0 };
   }
 
@@ -3774,8 +3775,8 @@ async function refreshObservedForStack(
       else wouldUnsupported++;
     }
     logger.info(
-      `Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
-        (wouldRefuse > 0 ? `, ${wouldRefuse} refused (import baseline refusal)` : '')
+      safeMsg`Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
+        (wouldRefuse > 0 ? safeMsg`, ${wouldRefuse} refused (import baseline refusal)` : '')
     );
     return {
       refreshed: wouldRefresh,
@@ -3973,8 +3974,8 @@ async function refreshObservedForStack(
         } catch (err) {
           failed++;
           logger.warn(
-            `  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
-              `readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
+            safeMsg`  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
+              safeMsg`readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
           );
         }
       });
@@ -3999,19 +4000,18 @@ async function refreshObservedForStack(
     await stateBackend.saveState(stackName, region, state, saveOptions);
 
     logger.info(
-      `✓ ${stackName} (${region}): ` +
-        `${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
+      safeMsg`✓ ${stackName} (${region}): ` +
+        safeMsg`${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
         // Issue #2944: appended rather than always printed, so a stack with no
         // refused record renders byte-identically to the pre-v10 line.
-        (refusedBaseline > 0 ? `, ${refusedBaseline} refused (import baseline refusal)` : '')
+        (refusedBaseline > 0 ? safeMsg`, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
 
     return { refreshed, unsupported, failed, refusedBaseline };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(
-        `Failed to release lock for ${stackName} (${region}): ` +
-          (err instanceof Error ? err.message : String(err))
+        safeMsg`Failed to release lock for ${stackName} (${region}): ${err instanceof Error ? err.message : String(err)}`
       );
     });
   }

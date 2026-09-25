@@ -207,6 +207,18 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
   });
 
+  it('flattens a planted region onto the region-ambiguity line (go-to-k/cdkd#3374)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'S', region: 'us-east-1' },
+      { stackName: 'S', region: 'eu-west-1\nForged: all clear' },
+    ]);
+
+    await expect(runStateDestroy(['destroy', 'S', '--yes'])).rejects.toThrow();
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('us-east-1, eu-west-1 Forged: all clear.');
+    expect(message).not.toContain('\nForged');
+  });
+
   it('passes --yes through to the runner so per-stack prompt is skipped', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({
