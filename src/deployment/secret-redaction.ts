@@ -984,9 +984,12 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  * value would refuse — a template that deployed before this feature — which is
  * a regression rather than a trade.
  *
- * WHAT IT IS. `stack + region + output key -> the plaintext that key held
- * before redaction`, written at the moment the producer's outputs are redacted
- * and read at the three cross-stack sites above. It answers only for a producer
+ * WHAT IT IS. `credential identity + stack + region + output key -> the
+ * plaintext that key held before redaction` (the identity since
+ * go-to-k/cdkd#3691: the writer's `credentialFingerprint`, which every reader
+ * computes the same way from the clients it resolves with), written at the
+ * moment the producer's outputs are redacted and read at the three cross-stack
+ * sites above. It answers only for a producer
  * THIS PROCESS deployed in THIS run, which is exactly the population that has a
  * plaintext to hand back: a separate `cdkd deploy` of the consumer has none, and
  * that case is refused rather than guessed at.
@@ -1013,7 +1016,12 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  */
 const recoverableMaskedOutputs = new Map<string, unknown>();
 
-function maskedOutputKey(stackName: string, region: string, outputKey: string): string {
+function maskedOutputKey(
+  identity: string,
+  stackName: string,
+  region: string,
+  outputKey: string
+): string {
   // NUL-separated, and go-to-k/cdkd#3496 records why that is NOT the same as
   // injective. The reason given here was that a `:` / `/` occurs inside real
   // stack names, regions and export names so any PRINTABLE separator can be
@@ -1038,7 +1046,14 @@ function maskedOutputKey(stackName: string, region: string, outputKey: string): 
   // re-registers the value as a mask-only needle, so state still persists the
   // mask. Nothing is widened by the collision. If this module ever takes an
   // import for another reason, encode this and delete the paragraph.
-  return `${stackName}\u0000${region}\u0000${outputKey}`;
+  //
+  // `identity` FIRST (go-to-k/cdkd#3691): the credential identity the value
+  // was recorded under, so a library caller that switches `AwsClients` between
+  // accounts in one process is not handed account A's plaintext for account
+  // B's same-named stack. It is `credentialFingerprint(...)`, a JSON string, and
+  // JSON escapes a NUL to text, so this part cannot carry the separator, and a
+  // collision can never cross two identities. Opaque here: it is only compared.
+  return `${identity}\u0000${stackName}\u0000${region}\u0000${outputKey}`;
 }
 
 /**
@@ -1046,12 +1061,13 @@ function maskedOutputKey(stackName: string, region: string, outputKey: string): 
  * See {@link recoverableMaskedOutputs}.
  */
 export function recordRecoverableMaskedOutput(
+  identity: string,
   stackName: string,
   region: string,
   outputKey: string,
   plaintext: unknown
 ): void {
-  recoverableMaskedOutputs.set(maskedOutputKey(stackName, region, outputKey), plaintext);
+  recoverableMaskedOutputs.set(maskedOutputKey(identity, stackName, region, outputKey), plaintext);
 }
 
 /**
@@ -1062,11 +1078,12 @@ export function recordRecoverableMaskedOutput(
  * the value is gone and cdkd must refuse rather than write the mask to AWS.
  */
 export function recoverMaskedOutput(
+  identity: string,
   stackName: string,
   region: string,
   outputKey: string
 ): unknown | undefined {
-  return recoverableMaskedOutputs.get(maskedOutputKey(stackName, region, outputKey));
+  return recoverableMaskedOutputs.get(maskedOutputKey(identity, stackName, region, outputKey));
 }
 
 /** Drop every remembered plaintext. Cleared on the `resetAccountInfoCache` lifetime. */

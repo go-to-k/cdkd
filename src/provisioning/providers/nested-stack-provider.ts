@@ -40,6 +40,10 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 // in every instance (see the per-arm note at the `errorCount` throw).
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../utils/ambient-client-defaults.js';
 import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
 import {
   describeFileReadFailure,
@@ -739,9 +743,12 @@ export class NestedStackProvider implements ResourceProvider {
     refuseMalformedNestedChildOutputs(childStateData.state, childStackName, childRegion);
     const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
     const noEchoAttributeNames: string[] = [];
+    // The identity the child was deployed with, which is this process's
+    // current one (go-to-k/cdkd#3691).
+    const identity = credentialFingerprint(ambientCredentialConfig());
     for (const [outputKey, persisted] of Object.entries(childStateData.state.outputs ?? {})) {
       if (!carriesSecretMask(persisted)) continue;
-      const recovered = recoverMaskedOutput(childStackName, childRegion, outputKey);
+      const recovered = recoverMaskedOutput(identity, childStackName, childRegion, outputKey);
       if (recovered === undefined) continue;
       const attributeName = this.outputAttributeName(outputKey);
       attributes[attributeName] = recovered;

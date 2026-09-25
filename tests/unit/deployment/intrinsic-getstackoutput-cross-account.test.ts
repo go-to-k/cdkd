@@ -127,6 +127,12 @@ import {
 } from '../../../src/deployment/retryable-errors.js';
 import { clearCrossAccountCredentialsCache } from '../../../src/utils/role-arn.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../src/utils/ambient-client-defaults.js';
+/** The credential identity the code under test keys the recovery store by (go-to-k/cdkd#3691). */
+const AMBIENT_ID = (): string => credentialFingerprint(ambientCredentialConfig());
 
 const PRODUCER_ROLE = 'arn:aws:iam::111122223333:role/cdkd-state-reader';
 const PRODUCER_ACCOUNT = '111122223333';
@@ -345,7 +351,7 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     // The neighbouring `CrossAccountSecretRefusalError` refuses exactly this
     // confusion for a redacted dynamic reference; it does not fire here only
     // because the mask is not a dynamic reference, so this path falls through it.
-    recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', 'CONSUMER-ACCOUNT-SECRET');
+    recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-east-1', 'Token', 'CONSUMER-ACCOUNT-SECRET');
 
     mockStsSend.mockResolvedValueOnce({
       Credentials: {

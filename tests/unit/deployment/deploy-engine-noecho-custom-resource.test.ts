@@ -7,6 +7,12 @@ import {
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../src/utils/ambient-client-defaults.js';
+/** The credential identity the code under test keys the recovery store by (go-to-k/cdkd#3691). */
+const AMBIENT_ID = (): string => credentialFingerprint(ambientCredentialConfig());
 
 // Issue #2274, end to end through the REAL `IntrinsicFunctionResolver` — the
 // resolver is deliberately NOT mocked here, because the registration this
@@ -39,6 +45,10 @@ vi.mock('../../../src/utils/logger.js', () => ({
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    // A NON-default identity (go-to-k/cdkd#3691), so a writer that keyed the
+    // recovery store by a constant instead of the active clients' identity
+    // records under the wrong one and the recovery assertions below miss.
+    credentialConfig: { profile: 'noecho-writer-3691' },
   }),
 }));
 
@@ -859,7 +869,7 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
     // the PRODUCER's persisted outputs, so masking one made the first deploy of
     // a consumer refuse a template that deployed before this feature. The
     // engine remembers the plaintext behind each output it just masked, keyed
-    // by (stack, region, output key), and the three read sites recover from it.
+    // by (identity, stack, region, output key), and the three read sites recover from it.
     it('remembers the plaintext behind an output it just masked', async () => {
       clearRecoverableMaskedOutputs();
       mockDiffCalculator.calculateDiff.mockResolvedValue(twoCreates());
@@ -879,9 +889,13 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       expect(savedState().outputs['Token']).toBe(SECRET_MASK);
       // ...while the in-run channel can still answer for it, at that exact
       // coordinate and no other.
-      expect(recoverMaskedOutput(STACK, 'us-east-1', 'Token')).toBe(GENERATED);
-      expect(recoverMaskedOutput(STACK, 'eu-west-1', 'Token')).toBeUndefined();
-      expect(recoverMaskedOutput('OtherStack', 'us-east-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(AMBIENT_ID(), STACK, 'us-east-1', 'Token')).toBe(GENERATED);
+      expect(recoverMaskedOutput(AMBIENT_ID(), STACK, 'eu-west-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(AMBIENT_ID(), 'OtherStack', 'us-east-1', 'Token')).toBeUndefined();
+      // ...and under the identity that deployed it (go-to-k/cdkd#3691).
+      expect(
+        recoverMaskedOutput(JSON.stringify(['another-account', null]), STACK, 'us-east-1', 'Token')
+      ).toBeUndefined();
       clearRecoverableMaskedOutputs();
     });
 
@@ -900,7 +914,7 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       await makeEngine().deploy(STACK, template);
 
       expect(savedState().outputs['Token']).toBe(GENERATED);
-      expect(recoverMaskedOutput(STACK, 'us-east-1', 'Token')).toBeUndefined();
+      expect(recoverMaskedOutput(AMBIENT_ID(), STACK, 'us-east-1', 'Token')).toBeUndefined();
       clearRecoverableMaskedOutputs();
     });
   });

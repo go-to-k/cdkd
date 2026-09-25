@@ -6187,21 +6187,17 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    */
   const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
     [
-      'src/deployment/deploy-engine.ts',
-      7,
-      'the cross-stack 3-part keys, (logicalId, physicalId), and one COMMENT quoting ' +
-        'the key shape. HELD by open PRs at the time of go-to-k/cdkd#3496 — this is ' +
-        'a WAIT, not a verdict, and the rows are still open there',
-    ],
-    [
       'src/deployment/secret-redaction.ts',
-      4,
-      'maskedOutputKey, CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
-        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY: this module imports ' +
-        'NOTHING by a recorded decision, the encoding lives in a module it would have ' +
-        'to import, and the collision adds no reach — whoever can forge such a ' +
-        'coordinate can aim the real one. Its two FALSE justifications are fixed; see ' +
-        'go-to-k/cdkd#3496',
+      5,
+      'maskedOutputKey (four parts since go-to-k/cdkd#3691: a credential-identity ' +
+        'fingerprint, JSON and so NUL-free, then stack / region / output key), ' +
+        'CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
+        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY, on REACH alone: the ' +
+        'identity part cannot carry a NUL, so no collision crosses identities, and within ' +
+        'one the collision adds nothing — whoever can forge such a coordinate can aim the ' +
+        'real one. (Not on layering: JSON.stringify would encode it with no import; what ' +
+        'keeping one spelling in record-keys.ts protects is the reason it is not ' +
+        're-spelled here.) See go-to-k/cdkd#3496',
     ],
     [
       'src/provisioning/providers/efs-provider.ts',
@@ -6399,12 +6395,6 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
       'src/cli/upload-cfn-template.ts',
       1,
       'an S3 OBJECT key being written, not a key anything is looked up by',
-    ],
-    [
-      'src/deployment/deploy-engine.ts',
-      1,
-      'a NUL-joined key, classified in NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS above ' +
-        '-- go-to-k/cdkd#3496',
     ],
     [
       'src/deployment/intrinsic-function-resolver.ts',

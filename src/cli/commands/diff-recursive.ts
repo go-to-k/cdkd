@@ -2375,10 +2375,16 @@ export function renderChangeLines(
             // it so the apparent string -> {Ref} delta is not misread as a
             // literal value edit.
             // go-to-k/cdkd#3662: the in-place twin — the reader was promoted
-            // because an attribute it reads of an updated resource (a nested
-            // stack output, a custom resource's `Data`) MAY move, which only
-            // the deploy learns; the old side is the resolved value, the new
-            // side the reading intrinsic.
+            // because a value it reads MAY move in this deploy, which only the
+            // deploy learns: an attribute of an updated resource (a nested
+            // stack output, a custom resource's `Data`), a custom resource's
+            // physical id through `Ref` (#3722), or a nested child's parameter
+            // carrying a fresh `NoEcho` value (#3717, a deploy-only arm that
+            // `cdkd diff` never reaches). ONE label for all of them, the name
+            // of the first: the display's job is to say the delta is not a
+            // literal edit, and the JSON field (`inPlacePropagated`) is one
+            // flag. The old side is the resolved value, the new side the
+            // reading intrinsic.
             const propagated = propChange.replacementPropagated
               ? ' [replacement propagated]'
               : propChange.inPlacePropagated
