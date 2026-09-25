@@ -1438,7 +1438,8 @@ export class GlueProvider implements ResourceProvider {
    *     precedent, decided when `update()` could not tell a template push
    *     from the state-borne bag `drift --revert` and the rollback revert arm
    *     hand it — since issue #3141 `UpdateContext.replayingState` plus
-   *     `desiredFromAwsReadback` can, and this arm was not re-decided), and
+   *     `desiredFromAwsReadback` can, and this arm was not re-decided — issue
+   *     #3728), and
    *     then RETAINS the PREVIOUS side's block, which is why
    *     `previousDatabaseInput` is threaded in. Omitting instead would ERASE a
    *     live resource link, because `UpdateDatabase` replaces `DatabaseInput`
