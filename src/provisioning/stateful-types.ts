@@ -278,6 +278,14 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Edge / URL-immutability — CloudFront URL change breaks downstream
   // consumers and the change has a ~20-minute propagation window.
   'AWS::CloudFront::Distribution',
+  // Nested stack (issue #2548). `NestedStackProvider.delete` destroys the whole
+  // child stack, every resource in it, with no per-resource guard. Reachable
+  // without any recreate flag: `StackName` is createOnly in the registry
+  // schema and is kept by the silent-drop narrowing, so a `StackName` edit
+  // accepted with `--prefer-sdk-route AWS::CloudFormation::Stack:StackName`
+  // diffs as a replacement — whose idempotent-create refusal then prescribes
+  // `--replace`, the delete-first path.
+  'AWS::CloudFormation::Stack',
 
   // ---------------------------------------------------------------------
   // Tier-2 (Cloud-Control-routed) additions — issue [#2553].

@@ -1279,6 +1279,7 @@ Destroy loses all data for these, unconditionally.
 | Source control / artifacts | `AWS::CodeCommit::Repository` — the delete destroys the repository's entire git history. `AWS::CodeArtifact::Repository` holds the packages, and `AWS::CodeArtifact::Domain` is not a mere grouping: it owns the deduplicated asset storage every repository in it references |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
 | Retained records | `AWS::IoTSiteWise::Workspace` — guarded on an open question: AWS makes encryption at rest required on it, but whether deleting one cascades to the datasets inside is unmeasured. `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive` — both retain content for a configured period. `AWS::Rbin::Rule` joins them on the fail-safe side of an open question: the rule itself is fully template-declared, but what happens to the snapshots and AMIs already sitting in the Recycle Bin under it when it is deleted is unmeasured |
+| Nested stacks | `AWS::CloudFormation::Stack` — replacing a nested stack destroys the whole child stack, every resource it owns, with no per-resource guard. Its `StackName` is immutable, so a `StackName` edit deployed with `--prefer-sdk-route AWS::CloudFormation::Stack:StackName` is a replacement |
 | Edge / identifier immutability | `AWS::CloudFront::Distribution` — the URL changes, which breaks consumers, and propagation takes roughly 20 minutes. `AWS::SMSVOICE::PhoneNumber` and `AWS::SMSVOICE::SenderId` are the same class: a release returns the identifier to the pool, the replacement gets a different one, and the original may be unobtainable |
 
 The list has mechanical lower bounds cdkd enforces in unit tests, so it is
@@ -1332,6 +1333,13 @@ the same footing, but routes through Cloud Control and is unmeasured here), and
 `AWS::CodeCommit::Repository` drops the git history. `AWS::KMS::Alias` is
 deliberately not guarded — deleting an alias removes a pointer, not key
 material.
+
+`AWS::EC2::Instance` and `AWS::SQS::Queue` are deliberately not guarded either.
+An instance's root volume is ephemeral by design — keep persistent data on an
+`AWS::EC2::Volume`, which is guarded — and a queue's backlog is transient.
+Asking for `--force-stateful-recreation` on every AMI refresh or queue rename
+would cost a dev/test workflow more than it protects, and CloudFormation
+replaces both without asking as well.
 
 `AWS::S3Tables::Namespace` is deliberately **not** guarded: AWS refuses to delete a namespace that still holds a
 table, answering `BadRequestException: The namespace that you tried to delete
