@@ -298,19 +298,19 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     const nested = new NestedStackChildDirectDestroyError('Child', 'Prod*').message;
     expect(nested).toMatch(/^Cascade-delete with: cdkd destroy '<parent>'$/m);
     // The CHILD argument goes to `cdkd state destroy`, which resolves by exact
-    // membership — so a pattern-shaped child name is still NAMED. Without these
-    // two, restoring `patternMatched` on that call survives every assertion
-    // above while withholding the only command that works (proxy round 2).
-    // The expected spelling is written out per name rather than derived through
-    // `shellQuote`: `/` is in its safe charset and `*` is not, so a derived
-    // expectation would agree with the code under test by construction.
-    for (const [child, expected] of [
-      ['Prod*', "cdkd state destroy 'Prod*'"],
-      ['Stage/Prod', 'cdkd state destroy Stage/Prod'],
-    ] as const) {
+    // membership, so `patternMatched` would be wrong there. But since
+    // go-to-k/cdkd#3759 every one of these commands takes `plainIdent`, which
+    // withholds `Prod*` and `Stage/Prod` too: neither can be a real stack name
+    // (CloudFormation admits letters, digits and `-`; a nested child adds `~`),
+    // so only a planted key loses the named command.
+    for (const child of ['Prod*', 'Stage/Prod']) {
       const message = new NestedStackChildDirectDestroyError(child, 'Parent').message;
-      expect(message, child).toContain(`Destroy the child alone with: ${expected}`);
+      expect(message, child).toMatch(/^Destroy the child alone with: cdkd state destroy '<stack>'$/m);
     }
+    // ...while a nested child's real `Parent~Child` name is still named.
+    expect(new NestedStackChildDirectDestroyError('Parent~Child', 'Parent').message).toMatch(
+      /^Destroy the child alone with: cdkd state destroy 'Parent~Child'$/m
+    );
     // The CONTROLS, one per hint: an ordinary name is still NAMED, so neither
     // case above is satisfied by a hint that withholds everything. The nested
     // one needs its own — the termination-protection control does not cover it,
@@ -321,6 +321,48 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     const ordinaryNested = new NestedStackChildDirectDestroyError('Child', 'ProdStack').message;
     expect(ordinaryNested).toMatch(/^Cascade-delete with: cdkd destroy ProdStack$/m);
     expect(ordinaryNested).toMatch(/^Destroy the child alone with: cdkd state destroy Child$/m);
+  });
+
+  it('the destroy errors name no value that could forge their labelled lines (go-to-k/cdkd#3759)', async () => {
+    const { StackTerminationProtectionError, NestedStackChildDirectDestroyError } = await import(
+      '../../../src/utils/error-handler.js'
+    );
+    const forged = (label: string) =>
+      [`Prod\n${label}: cdkd destroy --all --force #`, `Prod${' '.repeat(60)}${label}: cdkd destroy --all --force #`];
+    for (const name of forged('Retry with')) {
+      const message = new StackTerminationProtectionError(name).message;
+      expect(message).toContain('has terminationProtection: true');
+      expect(message).not.toContain('--all --force');
+      expect(message.split('\n').filter((l) => l.startsWith('Retry with:'))).toEqual([
+        "Retry with: cdkd destroy '<stack>'",
+      ]);
+      expect(message).toContain('is not a plain identifier');
+    }
+    for (const name of forged('Cascade-delete with')) {
+      const message = new NestedStackChildDirectDestroyError('Child', name, name).message;
+      expect(message).toContain('is a nested child of');
+      expect(message).not.toContain('--all --force');
+      expect(message.split('\n').filter((l) => l.startsWith('Cascade-delete with:'))).toEqual([
+        "Cascade-delete with: cdkd destroy '<parent>'",
+      ]);
+    }
+    for (const name of forged('Destroy the child alone with')) {
+      const message = new NestedStackChildDirectDestroyError(name, 'Parent').message;
+      expect(message).not.toContain('--all --force');
+      expect(message.split('\n').filter((l) => l.startsWith('Destroy the child alone with:'))).toEqual([
+        "Destroy the child alone with: cdkd state destroy '<stack>'",
+      ]);
+    }
+  });
+
+  it('plainOrDescribed names a plain identifier and describes anything else (go-to-k/cdkd#3759)', async () => {
+    const { plainOrDescribed } = await import('../../../src/utils/pasteable-command.js');
+    expect(plainOrDescribed('Parent~Child', 'stack name')).toBe('Parent~Child');
+    for (const v of ['a b', 'a\nb', 'a:b', '--all', 'x*', '']) {
+      expect(plainOrDescribed(v, 'stack name'), JSON.stringify(v)).toBe(
+        'a stack name that is not a plain identifier'
+      );
+    }
   });
 
   it('rendersExactly compares against the RAW value, so it cannot pass vacuously', () => {

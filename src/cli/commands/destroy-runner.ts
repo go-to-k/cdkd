@@ -1,5 +1,5 @@
 import * as readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { pasteableCommand, plainOrDescribed } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -1405,9 +1405,16 @@ export async function runDestroyForStack(
             // `state show` hint carries it for the same reason — a readback of
             // the wrong region's record is the same mistake, one step earlier.
             `\n${label}: ${
+              // `plainIdent` on both values: a target beside a labelled line is
+              // named only when it cannot spell one (go-to-k/cdkd#3759).
               pasteableCommand(command, [
-                { value: t, hole: 'stack' },
-                { flag: '--stack-region', value: regionForState, hole: 'region' },
+                { value: t, hole: 'stack', opts: { plainIdent: true } },
+                {
+                  flag: '--stack-region',
+                  value: regionForState,
+                  hole: 'region',
+                  opts: { plainIdent: true },
+                },
               ]).command
             }`
         )
@@ -2155,12 +2162,14 @@ export async function runDestroyForStack(
           : `The RESOURCE_GUARD_INDETERMINATE entries name the check and the reason ` +
             `and survive the run.` +
             `\nRead them with: ${
-              pasteableCommand('cdkd events', [{ value: stackName, hole: 'stack' }]).command
+              pasteableCommand('cdkd events', [
+                { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+              ]).command
             }`;
       logger.warn(
         `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +
           `be completed during this destroy and cdkd proceeded anyway: ` +
-          `${[...guardIndeterminateTargets].join(', ')}. ` +
+          `${[...guardIndeterminateTargets].map((t) => plainOrDescribed(t, 'logical id')).join(', ')}. ` +
           `A check can be suppressed by DENYING the permission it needs, so treat this as ` +
           `unconfirmed rather than benign. ${durablePointer}`
       );
@@ -2182,7 +2191,7 @@ export async function runDestroyForStack(
       const showHint = hintFor('cdkd state show', targets, 'Inspect it with');
       const orphanHint = hintFor('cdkd state orphan', targets, 'Drop the record with');
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
           `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
           `the records.` +
@@ -2233,7 +2242,7 @@ export async function runDestroyForStack(
       const dedupedCommands = (lines: string): string =>
         [...new Set(lines.split('\n').filter((l) => l !== ''))].map((l) => `\n${l}`).join('');
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
           `If the same resource keeps failing, dropping the state record is the last resort: ` +
           `it removes the record without deleting AWS resources.` +

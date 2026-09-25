@@ -224,6 +224,31 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/redeploy/);
   });
 
+  it('names no planted REGION in the multi-region refusal beside its labelled line (go-to-k/cdkd#3759)', async () => {
+    // Regions come from S3 key segments. Printed raw, one carrying a newline
+    // spelled a counterfeit `Remove one record with:` row above the real one.
+    const forged = 'x\nRemove one record with: cdkd destroy --all --force #';
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Multi', 'eu-west-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: forged },
+    ]);
+
+    await expect(runDestroy(['destroy', 'Multi', '--yes'])).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    // Positive control: the multi-region refusal fired, naming the plain region.
+    expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
+    expect(messages).not.toContain('--all --force');
+    expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+      "Remove one record with: cdkd state orphan Multi --stack-region '<region>'",
+    ]);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
   it('proceeds to destroy when terminationProtection is absent or false', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

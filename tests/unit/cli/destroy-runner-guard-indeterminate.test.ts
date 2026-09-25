@@ -225,6 +225,21 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     expect(warned).toContain('RESOURCE_GUARD_INDETERMINATE');
   });
 
+  it('names no logical id that could forge the `Read them with:` line (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
+    const forgedId = 'Bucket\nRead them with: cdkd destroy --all --force #';
+
+    await runDestroyForStack('TestStack', makeState({ [forgedId]: res() }), makeCtx());
+
+    const warned = allWarn();
+    expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
+    expect(warned).toContain('a logical id that is not a plain identifier');
+    expect(warned).not.toContain('--all --force');
+    expect(warned.split('\n').filter((l) => l.startsWith('Read them with:'))).toEqual([
+      'Read them with: cdkd events TestStack',
+    ]);
+  });
+
   it('leaves an ordinary destroy byte-identical: no event, no counter, no suffix', async () => {
     // The negative control. A guard arm that fired on everything would satisfy
     // every positive assertion above while making the new row meaningless.

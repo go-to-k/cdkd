@@ -1,5 +1,5 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
-import { pasteableCommand } from './pasteable-command.js';
+import { pasteableCommand, plainOrDescribed, withheldTargetClause } from './pasteable-command.js';
 import { displayAwsMessage } from './display-safe.js';
 import { getLogger } from './logger.js';
 
@@ -572,21 +572,22 @@ export class StackTerminationProtectionError extends CdkdError {
   public readonly stackName: string;
 
   constructor(stackName: string, cause?: Error) {
+    // Trailing labelled line, gated value (go-to-k/cdkd#3436): the name comes
+    // from a state key or an assembly, and inside the sentence's quotes it
+    // pasted as shell. `patternMatched`: `cdkd destroy` resolves its argument
+    // through `stack-matcher.ts`, so a record named `Prod*` would select every
+    // stack it matches. `plainIdent`, and the same predicate in the prose: a
+    // name beside a labelled line is named only when it cannot spell one
+    // (go-to-k/cdkd#3759).
+    const retry = pasteableCommand('cdkd destroy', [
+      { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+    ]);
     super(
-      `Stack '${stackName}' has terminationProtection: true and cannot be destroyed. ` +
-        `Set terminationProtection: false in the CDK code, redeploy, then retry the destroy.` +
-        // Trailing labelled line, gated value (go-to-k/cdkd#3436): the name comes
-        // from a state key or an assembly, and inside the sentence's quotes it
-        // pasted as shell.
-        // `patternMatched`: `cdkd destroy` resolves its argument through
-        // `stack-matcher.ts`, so a record named `Prod*` would select every stack
-        // it matches. Shell-quoting stops the SHELL expanding it; only this gate
-        // stops cdkd expanding it.
-        `\nRetry with: ${
-          pasteableCommand('cdkd destroy', [
-            { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-          ]).command
-        }`,
+      `Stack '${plainOrDescribed(stackName, 'stack name')}' has terminationProtection: true ` +
+        `and cannot be destroyed. Set terminationProtection: false in the CDK code, redeploy, ` +
+        `then retry the destroy.` +
+        withheldTargetClause(retry, 'stack', 'cdkd destroy') +
+        `\nRetry with: ${retry.command}`,
       'STACK_TERMINATION_PROTECTION',
       cause
     );
@@ -636,14 +637,19 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
   public readonly parentLogicalId?: string;
 
   constructor(stackName: string, parentStack: string, parentLogicalId?: string, cause?: Error) {
-    const logicalIdSuffix = parentLogicalId ? ` (parent's logical id: ${parentLogicalId})` : '';
+    const logicalIdSuffix = parentLogicalId
+      ? ` (parent's logical id: ${plainOrDescribed(parentLogicalId, 'logical id')})`
+      : '';
     // Hoisted rather than built inline in the template: this message is quoted
     // in `docs/design/459-nested-stacks.md`, and a template whose holes carry
     // object literals is far harder to read beside that quotation. The
     // docs-parity checker handles either spelling now that it takes its literal
     // parts from the TypeScript parser.
+    // `plainIdent` on both commands and the same predicate in the prose: a
+    // name beside a labelled line is named only when it cannot spell one
+    // (go-to-k/cdkd#3759).
     const cascadeCommand = pasteableCommand('cdkd destroy', [
-      { value: parentStack, hole: 'parent', opts: { patternMatched: true } },
+      { value: parentStack, hole: 'parent', opts: { patternMatched: true, plainIdent: true } },
     ]).command;
     // `cdkd state destroy` deletes the AWS RESOURCES and then the record — it is
     // the synth-free destroy, not a record-only drop (`state.ts`'s own naming
@@ -654,10 +660,11 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // `state.ts`), so a record legitimately named `Prod*` is addressable and
     // withholding it would cost the operator the only command that works.
     const childDestroyCommand = pasteableCommand('cdkd state destroy', [
-      { value: stackName, hole: 'stack' },
+      { value: stackName, hole: 'stack', opts: { plainIdent: true } },
     ]).command;
     super(
-      `Stack '${stackName}' is a nested child of '${parentStack}'${logicalIdSuffix}; ` +
+      `Stack '${plainOrDescribed(stackName, 'stack name')}' is a nested child of ` +
+        `'${plainOrDescribed(parentStack, 'stack name')}'${logicalIdSuffix}; ` +
         `directly destroying a nested stack is not supported. Either cascade-delete this ` +
         `child along with its parent, or destroy the child on its own — which deletes its ` +
         `AWS resources and its record, and leaves the parent's reference dangling (the ` +

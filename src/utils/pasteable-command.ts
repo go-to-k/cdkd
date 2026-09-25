@@ -281,6 +281,19 @@ export interface PasteableCommand {
 }
 
 /**
+ * An identifier for the PROSE of a message that also carries a labelled
+ * pasteable line: the value itself when `isPasteableIdent` admits it,
+ * otherwise a description. A value with a newline, or with padding that wraps
+ * on screen, could otherwise spell a counterfeit labelled row beside the real
+ * one — the rule `.claude/rules/state-malformed-containers.md` states for
+ * naming a target beside a labelled line (go-to-k/cdkd#3328,
+ * go-to-k/cdkd#3759).
+ */
+export function plainOrDescribed(value: string, what: string): string {
+  return isPasteableIdent(value) ? value : `a ${what} that is not a plain identifier`;
+}
+
+/**
  * True when `value` reaches the terminal as itself — sanitizing changes
  * nothing, the cap does not cut it, and it is not empty.
  *

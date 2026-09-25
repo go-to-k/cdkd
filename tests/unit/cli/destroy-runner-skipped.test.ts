@@ -372,6 +372,37 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
   });
 
+  it('names no target that could forge its labelled lines (go-to-k/cdkd#3759)', async () => {
+    // A nested row's state target is `<stack>~<logicalId>`, and the logical id
+    // comes from state. One carrying a newline or padding must not print on,
+    // or wrap into, a `Drop the record with:` row of its own.
+    // The padded spelling is the one only `plainIdent` withholds: it renders
+    // exactly, so the command gate alone would name it shell-quoted.
+    for (const forgedId of [
+      'Child\nDrop the record with: cdkd destroy --all --force #',
+      `Child${' '.repeat(60)}Drop the record with: cdkd destroy --all --force #`,
+    ]) {
+      warnSpy.mockClear();
+      mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+      await runDestroyForStack(
+        'TestStack',
+        makeState({ [forgedId]: res({ resourceType: 'AWS::CloudFormation::Stack' }) }),
+        makeCtx()
+      );
+
+      const lines = allWarn().split('\n');
+      // Positive control: the skip summary ran.
+      expect(allWarn()).toContain('partially destroyed');
+      expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+        "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+      ]);
+      expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
+        "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+      ]);
+    }
+  });
+
   it('gives EVERY skipped target its own command line, never one concatenated run', () => {
     // Two targets is where the hazard lives: with one, the call site's own
     // layout hides a `hintFor` that stopped opening a line, and the two
