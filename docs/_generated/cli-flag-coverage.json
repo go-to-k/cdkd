@@ -1913,6 +1913,7 @@
     "--table-input",
     "--table-name",
     "--tag-filters",
+    "--tag-keys",
     "--tagging",
     "--tags",
     "--tags-to-add",

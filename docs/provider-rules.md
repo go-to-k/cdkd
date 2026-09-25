@@ -1862,6 +1862,19 @@ Four rules, each load-bearing:
 - **Return the input by identity** when nothing applies, so an unaffected resource pays nothing.
 - **Reach for it only for a per-array-element member.** A top-level key a readback stopped emitting is `getDriftUnknownPaths()`'s job; a difference that is only about ORDER is `getDriftUnorderedPaths()`'.
 
+### `canonicalizeDriftPair()` when the readback's SHAPE changes
+
+When `readCurrentState` starts emitting something it used to omit, every `observedProperties` record captured before the change lacks it, so the first `cdkd drift` after upgrading reports it on every untouched resource. `canonicalizeDriftProperties()` cannot absorb that: it sees one bag, so it cannot tell a legacy baseline from a current one, and stripping the new member from both sides would hide its drift forever.
+
+`canonicalizeDriftPair(resourceType, baseline, aws)` (issue [#3573](https://github.com/go-to-k/cdkd/issues/3573)) gets both bags, after the per-side hook. Key the rule on the BASELINE's shape: a legacy baseline selects the absorption, and a current-shape one is compared in full. State is not rewritten; the next deploy's capture moves the record to the current shape. The GlobalTable provider is the example: its readback gained the local (deploy-region) replica entry, and a baseline with no local entry is completed with the readback's.
+
+**Complete the baseline from the readback; do not drop from the readback.** Two write paths consume these bags:
+
+- `cdkd drift --revert` passes its DESIRED bag, the recorded baseline, through the same hook against the raw readback and sends the returned baseline to `update()`. A member missing there is a REMOVAL to the provider. A legacy GlobalTable record sent without its local entry untagged the local table.
+- `--accept` writes each change's `awsValue` from the AWS side. Leaving that side intact means an accept stores the current shape and heals the record.
+
+It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
+
 ### When there is NO observed baseline at all
 
 The paragraph above describes the round-trip when `observedProperties` exists.

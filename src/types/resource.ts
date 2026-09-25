@@ -1281,6 +1281,43 @@ export interface ResourceProvider {
   ): Record<string, unknown>;
 
   /**
+   * Canonicalize the two drift comparison bags TOGETHER, for a rule that must
+   * read one side to decide what the other means (issue
+   * [#3573](https://github.com/go-to-k/cdkd/issues/3573)). `cdkd drift` calls
+   * it once per resource, after {@link canonicalizeDriftProperties}.
+   *
+   * It exists for a READBACK SHAPE CHANGE: when a provider's `readCurrentState`
+   * starts emitting something it used to omit, every `observedProperties`
+   * record written before the change lacks it, and the first drift after
+   * upgrading reports it. The per-side hook cannot absorb that without hiding
+   * the same difference on a record written after the change, so the rule is
+   * keyed on the BASELINE's shape: "the baseline is the legacy shape" selects
+   * the absorption, and a current-shape baseline is compared in full.
+   *
+   * Nothing here rewrites state: the next deploy's capture replaces a legacy
+   * baseline with the current shape. `--accept` persists its output, exactly
+   * as {@link canonicalizeDriftProperties}' does, and `drift --revert` also
+   * passes its DESIRED bag (the recorded baseline) through it against the raw
+   * readback and sends the returned baseline. So complete a legacy baseline
+   * from the readback rather than drop from the readback: a member missing
+   * from the desired side is a REMOVAL to `update()`.
+   *
+   * MUST be NON-MUTATING, and return BOTH inputs by identity when nothing
+   * applies. Async only so a provider can resolve the same client region its
+   * own `readCurrentState` used; it must issue no AWS call.
+   *
+   * @param resourceType e.g. `AWS::DynamoDB::GlobalTable`
+   * @param baseline the drift baseline (`observedProperties`, else `properties`)
+   * @param aws the AWS-current readback
+   * @returns the two canonicalized bags
+   */
+  canonicalizeDriftPair?(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
+
+  /**
    * Find an already-deployed AWS resource matching the given logicalId from
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.

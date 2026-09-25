@@ -2183,33 +2183,65 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('surfaces per-replica sub-specs for cross-region replicas via regional client (Issue #389)', async () => {
-      mockSend.mockResolvedValueOnce({
-        Table: {
-          TableArn: TABLE_ARN,
-          Replicas: [{ RegionName: 'eu-west-1' }], // cross-region only, no local
-        },
+      // The local and eu-west-1 replicas are read CONCURRENTLY (Promise.all),
+      // and since #3573 the local entry is read even when DescribeTable lists
+      // only the other region. So answer per CLIENT, not by a `*Once` queue:
+      // the eu-west-1 client reports everything ENABLED, the local one
+      // nothing, and the eu entry can only carry ENABLED if it was read
+      // through the regional client.
+      const remoteSend = vi.fn((command: unknown) => {
+        if (command instanceof DescribeContributorInsightsCommand) {
+          return Promise.resolve({ ContributorInsightsStatus: 'ENABLED' });
+        }
+        if (command instanceof DescribeContinuousBackupsCommand) {
+          return Promise.resolve({
+            ContinuousBackupsDescription: {
+              PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'ENABLED' },
+            },
+          });
+        }
+        if (command instanceof DescribeKinesisStreamingDestinationCommand) {
+          return Promise.resolve({ KinesisDataStreamDestinations: [] });
+        }
+        return Promise.resolve({ Tags: [{ Key: 'Env', Value: 'prod' }] });
       });
-      // Cross-region replica: 3 sub-spec calls + ListTagsOfResource fire
-      // against the regional client (which routes through mockSend via
-      // the constructor mock). Then DescribeTimeToLive runs on the
-      // local client.
-      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'ENABLED' });
-      mockSend.mockResolvedValueOnce({
-        ContinuousBackupsDescription: {
-          PointInTimeRecoveryDescription: {
-            PointInTimeRecoveryStatus: 'ENABLED',
-          },
-        },
-      });
-      mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
-      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'Env', Value: 'prod' }] });
-      mockSend.mockResolvedValueOnce({
-        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+      vi.mocked(DynamoDBClient).mockImplementationOnce(((cfg: { region?: string } | undefined) => {
+        regionalClientSpy(cfg?.region);
+        return { send: remoteSend, config: { region: () => Promise.resolve(cfg?.region) } };
+      }) as never);
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof DescribeTableCommand) {
+          return Promise.resolve({
+            Table: {
+              TableArn: TABLE_ARN,
+              Replicas: [{ RegionName: 'eu-west-1' }], // cross-region only, no local
+            },
+          });
+        }
+        if (command instanceof DescribeContributorInsightsCommand) {
+          return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
+        }
+        if (command instanceof DescribeContinuousBackupsCommand) {
+          return Promise.resolve({
+            ContinuousBackupsDescription: {
+              PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+            },
+          });
+        }
+        if (command instanceof DescribeKinesisStreamingDestinationCommand) {
+          return Promise.resolve({ KinesisDataStreamDestinations: [] });
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return Promise.resolve({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } });
+        }
+        return Promise.resolve({ Tags: [] });
       });
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
-      expect(replica!['Region']).toBe('eu-west-1');
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');
+      expect(replica).toBeDefined();
       // Pre-#389 these were undefined; post-#389 the regional client
       // surfaces them.
       expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: true });
@@ -2457,52 +2489,74 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('reverse-maps per-replica ReadCapacityAutoScalingSettings for a cross-region replica via regional autoscaling client (Issue #395)', async () => {
-      mockSend.mockResolvedValueOnce({
-        Table: {
-          TableArn: TABLE_ARN,
-          Replicas: [{ RegionName: 'eu-west-1' }], // cross-region only
-          BillingModeSummary: { BillingMode: 'PROVISIONED' },
-          ProvisionedThroughput: { WriteCapacityUnits: 7 },
-        },
-      });
-      // Cross-region replica: 3 sub-spec calls + ListTagsOfResource fire
-      // against the regional DynamoDB client.
-      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
-      mockSend.mockResolvedValueOnce({
-        ContinuousBackupsDescription: {
-          PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
-        },
-      });
-      mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
-      mockSend.mockResolvedValueOnce({ Tags: [] });
-      mockSend.mockResolvedValueOnce({
-        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
-      });
-
-      // Autoscaling probes — fire in order:
-      //   1. cross-region replica's read dimension (regional autoscaling client)
-      //   2. local table's write dimension (default autoscaling client)
-      // The regional client uses Min/Max + TargetValue = 75; the local
-      // write probe has no scalable target → null → flat fallback.
+      // Per-CLIENT dispatch, not a `*Once` queue: since #3573 the local
+      // replica is read too, concurrently with eu-west-1, so a queue's order
+      // is not the call order. Only the eu-west-1 autoscaling client has a
+      // target; the local read and write probes find none.
+      const euAutoScalingSend = vi.fn((command: unknown) =>
+        Promise.resolve(
+          (command as { constructor: { name: string } }).constructor.name ===
+            'DescribeScalableTargetsCommand'
+            ? { ScalableTargets: [{ MinCapacity: 1, MaxCapacity: 20 }] }
+            : {
+                ScalingPolicies: [
+                  {
+                    PolicyType: 'TargetTrackingScaling',
+                    TargetTrackingScalingPolicyConfiguration: { TargetValue: 75 },
+                  },
+                ],
+              }
+        )
+      );
+      const { ApplicationAutoScalingClient } = await import(
+        '@aws-sdk/client-application-auto-scaling'
+      );
+      const autoScalingCtor = vi.mocked(ApplicationAutoScalingClient);
+      const originalCtor = autoScalingCtor.getMockImplementation();
+      autoScalingCtor.mockImplementation(((cfg: { region?: string } | undefined) => {
+        regionalAutoScalingClientSpy(cfg?.region);
+        return { send: cfg?.region === 'eu-west-1' ? euAutoScalingSend : mockAutoScalingSend };
+      }) as never);
       mockAutoScalingSend.mockReset();
-      // Read (cross-region replica eu-west-1):
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 1, MaxCapacity: 20 }],
+      mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof DescribeTableCommand) {
+          return Promise.resolve({
+            Table: {
+              TableArn: TABLE_ARN,
+              Replicas: [{ RegionName: 'eu-west-1' }], // cross-region only
+              BillingModeSummary: { BillingMode: 'PROVISIONED' },
+              ProvisionedThroughput: { WriteCapacityUnits: 7 },
+            },
+          });
+        }
+        if (command instanceof DescribeContributorInsightsCommand) {
+          return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
+        }
+        if (command instanceof DescribeContinuousBackupsCommand) {
+          return Promise.resolve({
+            ContinuousBackupsDescription: {
+              PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+            },
+          });
+        }
+        if (command instanceof DescribeKinesisStreamingDestinationCommand) {
+          return Promise.resolve({ KinesisDataStreamDestinations: [] });
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return Promise.resolve({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } });
+        }
+        return Promise.resolve({ Tags: [] });
       });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          {
-            PolicyType: 'TargetTrackingScaling',
-            TargetTrackingScalingPolicyConfiguration: { TargetValue: 75 },
-          },
-        ],
-      });
-      // Write (local):
-      mockAutoScalingSend.mockResolvedValueOnce({ ScalableTargets: [] });
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
-      expect(replica!['Region']).toBe('eu-west-1');
+      let observed: Record<string, unknown> | undefined;
+      try {
+        observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      } finally {
+        autoScalingCtor.mockImplementation(originalCtor!);
+      }
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');
       expect(replica!['ReadProvisionedThroughputSettings']).toEqual({
         ReadCapacityAutoScalingSettings: {
           MinCapacity: 1,
@@ -2510,6 +2564,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           TargetTrackingScalingPolicyConfiguration: { TargetValue: 75 },
         },
       });
+      // The local replica found no target, so it carries no read settings.
+      const local = replicas.find((entry) => entry['Region'] === 'us-east-1');
+      expect(local).not.toHaveProperty('ReadProvisionedThroughputSettings');
       // Write surface falls back to flat (local probe returned empty).
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityUnits: 7,
@@ -2719,28 +2776,62 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('omits the offending sub-spec key when the per-region call fails (best-effort)', async () => {
-      mockSend.mockResolvedValueOnce({
-        Table: {
-          TableArn: TABLE_ARN,
-          Replicas: [{ RegionName: 'eu-west-1' }],
-        },
+      // Per-CLIENT dispatch (see the #389 case): the eu-west-1 client fails
+      // PITR and ListTagsOfResource, the local client answers everything. The
+      // whole drift read must continue and surface only the keys that worked.
+      const remoteSend = vi.fn((command: unknown) => {
+        if (command instanceof DescribeContributorInsightsCommand) {
+          return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
+        }
+        if (command instanceof DescribeContinuousBackupsCommand) {
+          return Promise.reject(new Error('access denied in eu-west-1'));
+        }
+        if (command instanceof DescribeKinesisStreamingDestinationCommand) {
+          return Promise.resolve({ KinesisDataStreamDestinations: [] });
+        }
+        return Promise.reject(new Error('tag api boom'));
       });
-      // ContributorInsights succeeds, PITR throws, Kinesis succeeds,
-      // ListTagsOfResource throws. The whole drift read must continue
-      // and surface only the keys that worked.
-      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
-      mockSend.mockRejectedValueOnce(new Error('access denied in eu-west-1'));
-      mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
-      mockSend.mockRejectedValueOnce(new Error('tag api boom'));
-      mockSend.mockResolvedValueOnce({
-        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+      vi.mocked(DynamoDBClient).mockImplementationOnce(((cfg: { region?: string } | undefined) => {
+        regionalClientSpy(cfg?.region);
+        return { send: remoteSend, config: { region: () => Promise.resolve(cfg?.region) } };
+      }) as never);
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof DescribeTableCommand) {
+          return Promise.resolve({
+            Table: { TableArn: TABLE_ARN, Replicas: [{ RegionName: 'eu-west-1' }] },
+          });
+        }
+        if (command instanceof DescribeContributorInsightsCommand) {
+          return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
+        }
+        if (command instanceof DescribeContinuousBackupsCommand) {
+          return Promise.resolve({
+            ContinuousBackupsDescription: {
+              PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+            },
+          });
+        }
+        if (command instanceof DescribeKinesisStreamingDestinationCommand) {
+          return Promise.resolve({ KinesisDataStreamDestinations: [] });
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return Promise.resolve({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } });
+        }
+        return Promise.resolve({ Tags: [] });
       });
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');
       expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: false });
       expect(replica!['PointInTimeRecoverySpecification']).toBeUndefined();
       expect(replica!['Tags']).toEqual([]); // best-effort fallback
+      // The failures are the eu-west-1 client's alone: the local entry read fine.
+      const local = replicas.find((entry) => entry['Region'] === 'us-east-1');
+      expect(local!['PointInTimeRecoverySpecification']).toEqual({
+        PointInTimeRecoveryEnabled: false,
+      });
     });
 
     // ─── create path: PROVISIONED BillingMode (Item B follow-up) ─────

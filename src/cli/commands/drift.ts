@@ -3087,7 +3087,19 @@ async function runDriftForStack(
               ),
             }
           : protocolNormalized;
-        const changes = calculateResourceDrift(canonicalized.baseline, canonicalized.aws, {
+        // Issue #3573: the provider's PAIR canonicalizer, for a rule that reads
+        // one side to decide the other -- a readback shape change absorbed only
+        // against a baseline written in the legacy shape. After the per-side
+        // pass, so it sees the same bags the comparator will. `runRevert`
+        // applies it to its desired bag as well.
+        const paired = provider.canonicalizeDriftPair
+          ? await provider.canonicalizeDriftPair(
+              resource.resourceType,
+              canonicalized.baseline,
+              canonicalized.aws
+            )
+          : canonicalized;
+        const changes = calculateResourceDrift(paired.baseline, paired.aws, {
           ignorePaths: observedIgnorePaths.length
             ? [...ignorePaths, ...observedIgnorePaths]
             : ignorePaths,
@@ -5883,6 +5895,21 @@ async function runRevert(
         // stripped. See `mergeUntemplatedValue`.
         let newProperties: Record<string, unknown>;
         try {
+          // Issue #3573: the desired bag IS the recorded baseline, so it gets
+          // the same pair pass detection compared through, against the raw
+          // readback the overlay takes as its previous side. A legacy record
+          // missing a member the readback now carries is completed from that
+          // readback; sent without it, `update()` would read the member as
+          // REMOVED. Identity for a provider without the hook.
+          if (provider.canonicalizeDriftPair) {
+            desiredProperties = (
+              await provider.canonicalizeDriftPair(
+                outcome.resourceType,
+                desiredProperties,
+                outcome.awsProperties
+              )
+            ).baseline;
+          }
           const overlaid = buildRevertNewProperties(
             outcome.changes,
             desiredProperties,
