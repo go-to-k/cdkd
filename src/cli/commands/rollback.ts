@@ -11,7 +11,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { AwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
-import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
@@ -33,6 +34,8 @@ import {
 } from '../../deployment/rollback-executor.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  describeRegionValueKind,
+  isReadableBag,
   type ResourceState,
   type StackState,
   orphansAfterRollback,
@@ -49,6 +52,7 @@ import {
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedState,
+  STATE_REGION_DIVERGED,
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
 
@@ -222,6 +226,86 @@ function safeStack(value: unknown): string {
  */
 function safeRoleArn(value: unknown): string {
   return displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+}
+
+/**
+ * Refuse a rollback over a record whose body `region` disagreed with the key it
+ * was read from, while it still lists resources (go-to-k/cdkd#3370) — the
+ * rollback half of `refuseDivergentRecordRegionForDestroy` (go-to-k/cdkd#3328).
+ *
+ * The replay acts in the KEY's region (`RollbackExecutorContext.region`) and
+ * reads a `*NotFound` delete as "already gone", exactly as the destroy does: if
+ * the record's own region is the honest half, a rolled-back CREATE's delete
+ * comes back not-found, the replay drops the row and saves, and the resource is
+ * left live in the other region with nothing naming it.
+ *
+ * ONE refusal for the whole command rather than one per replay arm, because the
+ * trigger already partitions the arms exactly. Every arm that calls AWS — the
+ * CREATE delete, the in-place `revert`, BOTH reverse-replacement arms (whose
+ * re-CREATE writes as well as deletes), and `--revert-failed`'s delete and
+ * forced update — requires a CURRENT state row for the op's logical id
+ * (`classifyRollbackOp` / `classifyFailedOp`); a completed DELETE is
+ * `unrecoverable-delete` and calls nothing. So a record listing no resources can
+ * replay nothing against AWS, and is let through for the reason the destroy
+ * gives: it is the recovery path, not the hazard. A record listing any can
+ * reach every arm, so every arm is refused.
+ *
+ * Its own message rather than the destroy's builder, whose opening, consequence
+ * and remedy all speak about a DESTROY. This one offers no command at all — the
+ * remedy is a repair — so it needs none of that builder's exact-rendering gate,
+ * and it names the stack the way every other message in this file does. The
+ * body's value is withheld and its KIND printed, the rule `getState`'s warn
+ * takes: a region a record supplies is the misdirection channel.
+ */
+function refuseDivergentRecordRegionForRollback(
+  state: StackState,
+  stackName: string,
+  keyRegion: string,
+  divergentBodyRegion: unknown
+): void {
+  if (divergentBodyRegion === undefined) return;
+  // FAIL CLOSED on a bag this cannot count, as the destroy sibling does.
+  // Unreachable from the call site (`refuseMalformedState` refused such a bag
+  // first), and kept so a reorder cannot read "unknown" as "zero".
+  const resourceCount = isReadableBag(state.resources)
+    ? Object.keys(state.resources).length
+    : undefined;
+  if (resourceCount === 0) return;
+  const lists =
+    resourceCount === undefined
+      ? 'its resources map cannot be read'
+      : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
+  throw markNonRetryable(
+    new CdkdError(
+      `cdkd will not roll back '${safeStack(stackName)}' (${safe(keyRegion)}): the state record ` +
+        `read from that region's key carries a 'region' of its own ` +
+        `(${describeRegionValueKind(divergentBodyRegion)}) that is not the key's, and ${lists} — ` +
+        `so cdkd cannot tell which region they are in. cdkd stamps the key's region into every ` +
+        `record it writes, so this record was not written by cdkd. The replay would issue every ` +
+        `delete and revert against the key's region; if the record's own region is the honest ` +
+        `half, each delete comes back not-found, which the replay reads as ALREADY DELETED — it ` +
+        `would report the resource rolled back, drop it from the record, and leave it standing ` +
+        `in the other region. Nothing was changed. Re-run with --verbose to see what the ` +
+        `record's region field holds, repair that field to match the key it is stored under, ` +
+        `and run the rollback again.`,
+      STATE_REGION_DIVERGED
+    )
+  );
+}
+
+/**
+ * The warn-line reason for declining the retry SAVE over a record that was
+ * rewritten mid-run with a divergent body region (go-to-k/cdkd#3370). Names no
+ * stack — the warn it lands in is about the current run's stack already — and
+ * prints the value's KIND only, for the reason
+ * {@link refuseDivergentRecordRegionForRollback} gives.
+ */
+function divergedDuringRollbackMessage(divergentBodyRegion: unknown): string {
+  return (
+    `the state record was rewritten during this rollback, and the rewrite carries a 'region' ` +
+    `of its own (${describeRegionValueKind(divergentBodyRegion)}) that is not the region of its ` +
+    `key, so cdkd did not write over it`
+  );
 }
 
 /**
@@ -510,6 +594,16 @@ export async function rollbackCommand(
       // below keeps one of them. Two distinct numeric ids do not collide; two
       // rows SHARING a string id do, and are refused here too (go-to-k/cdkd#3643).
       refuseMalformedOrphanRecords(baseState, stackName, region);
+      // A record whose body `region` disagreed with the key it was read from
+      // (go-to-k/cdkd#3370) — BELOW `refuseMalformedState`, which proves the
+      // bag this counts can be read, and ABOVE the plan preview, the prompt and
+      // every replay arm, so the refusal covers all of them at once.
+      refuseDivergentRecordRegionForRollback(
+        baseState,
+        stackName,
+        region,
+        stateData.divergentBodyRegion
+      );
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
       // `DeletionPolicy: Retain` (issue #2934). Declared beside
@@ -644,6 +738,16 @@ export async function rollbackCommand(
         } catch {
           try {
             const fresh = await setup.stateBackend.getState(stackName, region);
+            // The record was rewritten under this run (the first save's
+            // conditional write lost), and the rewrite carries a body region
+            // that is not the key's (go-to-k/cdkd#3370). Saving `next()` over
+            // it would stamp the KEY's region in — deciding the very question
+            // the start-of-run refusal declines to decide. Leave it: the throw
+            // lands in the warn below, and the re-run it asks for meets that
+            // refusal.
+            if (fresh?.divergentBodyRegion !== undefined) {
+              throw new Error(divergedDuringRollbackMessage(fresh.divergentBodyRegion));
+            }
             currentEtag = await setup.stateBackend.saveState(stackName, region, next(), {
               ...(fresh?.etag !== undefined && { expectedEtag: fresh.etag }),
             });

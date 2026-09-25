@@ -56,15 +56,19 @@ body with no `region` at all is read as belonging to its key's region, the
 same way a legacy (`version: 1`) record with no region is readable from any
 region.
 
-**A destroy is the one operation that refuses on such a record**, and only
-when it still lists resources. Reading a record is safe under either answer,
+**A destroy and a `cdkd rollback` are the operations that refuse on such a
+record**, and only when it still lists resources. Reading a record is safe under either answer,
 but DELETING is not: if the key is the dishonest half, every delete would be
 issued where the resources are not, come back not-found — which a destroy
 reads as "already deleted" — and the run would report success, remove the
 record, and leave your resources standing with nothing naming them. cdkd
 cannot tell which half is honest, so `cdkd destroy` / `cdkd state destroy`
 stop and say so — as does a `cdkd deploy` that removes a nested stack, which
-destroys the child's resources through the same path. A record with no
+destroys the child's resources through the same path. `cdkd rollback` refuses
+for the same reason before replaying anything: its replay deletes and reverts
+in the key's region and reads a not-found delete as already rolled back. It
+also declines to save over a record that was rewritten with a disagreeing
+`region` while the rollback ran. A record with no
 resources is not refused: there is nothing to strand, so cleaning one up still
 works. To act on the refusal, destroy
 against the region the resources are really in, or correct the record's

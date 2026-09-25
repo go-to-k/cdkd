@@ -142,7 +142,10 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 // go-to-k/cdkd#3436 the name reaches those through `pasteableCommand`'s gate on
 // a labelled line instead of through `safeStack` inside prose quotes, so they
 // are no longer renders of this helper.
-const EXPECTED_STACK_NAME_RENDERS = 9;
+//
+// Went 9 -> 10 in go-to-k/cdkd#3370: the divergent-record-region refusal names
+// the stack it will not roll back.
+const EXPECTED_STACK_NAME_RENDERS = 10;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -161,8 +164,11 @@ const EXPECTED_STACK_NAME_RENDERS = 9;
  * OLD type beside its new one (`replacementTypes`), plus the two new labels
  * (`refuse-replacement-routing`, `skip-failed-type-change`). All resource types
  * and logical ids; no stack name among them.
+ *
+ * Went 62 -> 63 in go-to-k/cdkd#3370: the divergent-record-region refusal
+ * renders the KEY's region beside the stack it names.
  */
-const EXPECTED_SAFE_REFERENCES = 62;
+const EXPECTED_SAFE_REFERENCES = 63;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN

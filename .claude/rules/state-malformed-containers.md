@@ -154,6 +154,12 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   byte-identically to a healthy sibling. **Any message here that names a target
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
+- **`cdkd rollback` refuses the same record with its OWN message**
+  (`refuseDivergentRecordRegionForRollback` in `rollback.ts`,
+  go-to-k/cdkd#3370), not this builder — whose opening, consequence and remedy
+  speak about a DESTROY. Same conjunction, same code, kind-only; it offers no
+  command, so it needs no exactness gate. ONE command-level refusal covers every
+  replay arm because every AWS-calling arm needs a current state row.
 
 ## Where a pasteable command goes (go-to-k/cdkd#3516)
 
