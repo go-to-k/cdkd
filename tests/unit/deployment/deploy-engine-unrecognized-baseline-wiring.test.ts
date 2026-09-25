@@ -12,7 +12,8 @@
  *   - the pre-flight `validateResourceProperties` rows;
  *   - the no-change skip's desired-side narrowing (an OUTCOME: the provider is
  *     not called, because `withoutAcceptedSilentDropProperties` runs for real);
- *   - `replaceDecision` (property-driven replacement);
+ *   - `replaceDecision` (property-driven replacement), and the progress label
+ *     that mirrors it;
  *   - `replDecision` (the UPDATE-not-supported replacement).
  *
  * The registry is a double, so the routing sites assert the ARGUMENT the engine
@@ -274,6 +275,41 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
     expect(creates[0]!['properties']).toEqual({ ...RECORDED, AlarmName: 'alarm-2' });
     expect(creates[0]!['previousProperties']).toEqual(RECORDED);
     expect(provider.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('replacement: the progress LABEL and the dispatch agree on an unchanged unknown key', async () => {
+    // The label (`peekRoutingForLabel`) mirrors `replaceDecision`; if it
+    // dropped the record's bag, it would judge the unchanged key on PRESENCE
+    // and print `[CC API]` over a replacement the dispatch sends to the SDK
+    // provider. The double answers with the REAL predicate, so the decision
+    // each call would get is observable as well as the argument.
+    mockProviderRegistry.getProviderFor.mockImplementation(
+      (input: { resourceType: string; properties?: Record<string, unknown>; previousProperties?: Record<string, unknown> }) =>
+        findRoutableUnrecognizedProperties(
+          input.resourceType,
+          input.properties,
+          new Set(),
+          input.previousProperties
+        ).length > 0
+          ? { provider, provisionedBy: 'cc-api' as const }
+          : { provider, provisionedBy: 'sdk' as const }
+    );
+    const template = arrange({ ...RECORDED, AlarmName: 'alarm-2' }, [
+      { path: 'AlarmName', oldValue: 'alarm-1', newValue: 'alarm-2', requiresReplacement: true },
+    ]);
+    await deployAndCatch(makeEngine(), template);
+    const calls = routingCalls();
+    const results = mockProviderRegistry.getProviderFor.mock.results.map(
+      (r) => (r.value as { provisionedBy: string }).provisionedBy
+    );
+    const labelIndex = calls.findIndex((c) => 'forceCcApi' in c);
+    const dispatchIndex = calls.findIndex((c) => 'properties' in c && !('forceCcApi' in c));
+    expect(labelIndex, JSON.stringify(calls)).toBeGreaterThanOrEqual(0);
+    expect(dispatchIndex, JSON.stringify(calls)).toBeGreaterThanOrEqual(0);
+    expect(calls[labelIndex]!['previousProperties']).toEqual(RECORDED);
+    expect(calls[dispatchIndex]!['previousProperties']).toEqual(RECORDED);
+    expect(results[labelIndex]).toBe('sdk');
+    expect(results[dispatchIndex]).toBe('sdk');
   });
 
   it('replDecision (UPDATE-not-supported replacement) passes the record bag', async () => {

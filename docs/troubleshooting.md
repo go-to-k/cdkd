@@ -2085,7 +2085,8 @@ Three reasons:
    with the same value from an earlier SDK-provider deploy, cdkd keeps the
    resource where it is and warns instead. Change the value (or remove it,
    deploy, and add it back) to route it; a read-only property never routes,
-   because no engine sets one.
+   because no engine sets one. On a type Cloud Control cannot manage, such a
+   property never routes either, and the warning says so.
 3. **The property is nested, not top-level.** The silent-drop check works on
    top-level properties; a missing key inside a nested object is a different
    problem.

@@ -1123,9 +1123,13 @@ export class ProviderRegistry {
    *   too, which is why it does not route.
    * - UNROUTABLE TYPE: Cloud Control cannot take the type over
    *   (`disableCcApiFallback` / `NON_PROVISIONABLE`), so the value has no route.
-   * - UNCHANGED: the state record already holds the key with this value, so
-   *   the resource was deployed on the SDK route with it and stays there. It
-   *   has never reached AWS; changing it is what routes the resource.
+   * - UNCHANGED: the state record already holds the key with this value (or
+   *   a value that cannot be compared before resolution), so the resource
+   *   stays on the SDK route, which does not send it. Changing it routes the
+   *   resource. "Never reached AWS" would overclaim: a record `cdkd import`
+   *   wrote carries the template's bag, whose value the live resource may hold.
+   * - UNROUTABLE TYPE also covers a `'cc-broken'` sticky-CC exemption, whose
+   *   Cloud Control handler cannot manage the type at all.
    *
    * Fires only on the SDK route. `provisionedBy: 'cc-api'` from state (minus
    * the `STICKY_CC_MIGRATION_EXEMPT` types that return to their SDK provider)
@@ -1161,9 +1165,11 @@ export class ProviderRegistry {
     // here too; the registry's own reason only words it.
     const unroutable =
       this.ccRouteUnavailableReason(resourceType) ??
-      (coverage?.ccRouteUnavailable === true
-        ? "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)"
-        : undefined);
+      (STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken'
+        ? "Cloud Control's handler cannot manage this type correctly"
+        : coverage?.ccRouteUnavailable === true
+          ? "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)"
+          : undefined);
     // Not auto-routed and not read-only means the key did not qualify to route:
     // either the type has no Cloud Control route, or the recorded bag holds it
     // unchanged (`findRoutableUnrecognizedProperties`' baseline arm).
@@ -1188,8 +1194,8 @@ export class ProviderRegistry {
     } else if (rest.length > 0) {
       sentences.push(
         `${rest.join(', ')} ${isAre(rest)} not in cdkd's CFn schema snapshot and unchanged ` +
-          `since this resource was deployed on the SDK route, so it stays there and ` +
-          `${rest.length === 1 ? 'the value has' : 'the values have'} never reached AWS. ` +
+          `since this resource was deployed on the SDK route, so it stays there and cdkd ` +
+          `does not send ${rest.length === 1 ? 'it' : 'them'}. ` +
           `Changing ${rest.length === 1 ? 'it' : 'one'} routes the resource via Cloud Control ` +
           `API, which applies a property AWS published since the snapshot and rejects a ` +
           `misspelled one, as CloudFormation does.`

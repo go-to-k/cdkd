@@ -2448,6 +2448,10 @@ export class DeployEngine {
       resourceType: resource.resourceType,
       properties: resource.properties,
       provisionedBy: resource.provisionedBy,
+      // The record is its own baseline (issue #3713): an unrecognized key it
+      // carries is by definition unchanged, so the read stays on the layer
+      // that wrote the record instead of moving to Cloud Control.
+      previousProperties: resource.properties,
     });
     if (!provider.import) return { kind: 'not-attempted' };
     const found = await provider.import({
@@ -5703,19 +5707,17 @@ export class DeployEngine {
     // lesson of {@link recreateDirectionFor}'s docstring.
     if (needsReplacement) {
       // Mirror `replaceDecision` argument for argument: it routes the NEW
-      // physical resource, so it passes NO `previousProperties` (stickiness
-      // exists to spare an EXISTING resource from churn, and a replacement is
-      // not that), the recreate hint as `provisionedBy`, and `forceCcApi` only
-      // for the CC direction. Passing `existingState: undefined` drops the
-      // record-derived inputs in one move, since `deriveLabelRouting` derives
-      // both from it.
-      // The synthetic record carries ONLY `provisionedBy`, which is exactly the
-      // mirror: `deriveLabelRouting` derives `provisionedBy` and
-      // `previousProperties` from this argument, so a record with the hint and
-      // no `properties` reproduces `replaceDecision`'s
-      // `{ ...(hint && { provisionedBy: hint }) }` with no `previousProperties`.
-      const hintRecord =
-        recreateDirection === undefined ? undefined : { provisionedBy: recreateDirection };
+      // physical resource, so it passes the recreate hint as `provisionedBy`
+      // (never the record's layer — stickiness exists to spare an EXISTING
+      // resource from churn, and a replacement is not that), `forceCcApi` only
+      // for the CC direction, and the record's bag as `previousProperties` —
+      // the baseline an unrecognized property is compared against (issue
+      // #3713). `deriveLabelRouting` derives both from this synthetic record,
+      // so it carries the hint and the record's `properties`, nothing else.
+      const hintRecord = {
+        ...(recreateDirection !== undefined && { provisionedBy: recreateDirection }),
+        ...(existingState?.properties !== undefined && { properties: existingState.properties }),
+      };
       return deriveLabelRouting(
         change,
         hintRecord,

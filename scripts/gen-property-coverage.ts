@@ -65,6 +65,7 @@ const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 const REGISTER_PROVIDERS_FILE = resolve(repoRoot, 'src/provisioning/register-providers.ts');
+const PROVIDER_REGISTRY_FILE = resolve(repoRoot, 'src/provisioning/provider-registry.ts');
 const OUT_FILE = resolve(
   repoRoot,
   'src/provisioning/property-coverage.generated.ts'
@@ -305,6 +306,32 @@ export const renderSilentDrop = (
 };
 
 /**
+ * The `'cc-broken'` members of `STICKY_CC_MIGRATION_EXEMPT`, read from
+ * `provider-registry.ts` as TEXT (issue #3713): a type whose Cloud Control
+ * handler cannot manage it must not receive an unrecognized property, so it
+ * folds into `ccRouteUnavailable`. Text rather than an import because this
+ * script stays bootstrap-free; `property-coverage-cc-fallback-binding.test.ts`
+ * binds the result to the runtime table in both directions, so a shape this
+ * parser misses fails there. Refuses a read it cannot vouch for.
+ */
+export function parseCcBrokenTypes(registrySource: string): Set<string> {
+  const table =
+    /STICKY_CC_MIGRATION_EXEMPT[^=]*=\s*new Map(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
+      registrySource
+    );
+  if (!table) throw new Error('could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry.ts');
+  const entries = table[1]!.split(/\n {2}\[/).slice(1);
+  if (entries.length === 0) throw new Error('STICKY_CC_MIGRATION_EXEMPT parsed to zero entries');
+  const broken = new Set<string>();
+  for (const entry of entries) {
+    const key = /^\s*'(AWS::[\w:]+)'\s*,/.exec(entry);
+    if (!key) throw new Error(`unparseable STICKY_CC_MIGRATION_EXEMPT entry: ${entry.slice(0, 80)}`);
+    if (/\bmode:\s*'cc-broken'/.test(entry)) broken.add(key[1]!);
+  }
+  return broken;
+}
+
+/**
  * Registry-vs-output cross-check (issue #1034): every type registered in
  * `register-providers.ts` that HAS a CFn schema fixture on disk MUST end up
  * in the generated coverage map. A miss means the provider's
@@ -354,7 +381,11 @@ interface PerTypeCoverage {
    * unrecognized key that is read-only must not route through Cloud Control.
    */
   readOnly: string[];
-  /** The type's SDK provider declares `disableCcApiFallback` (issue #3713). */
+  /**
+   * Cloud Control cannot take an unrecognized property for this type (issue
+   * #3713): its SDK provider declares `disableCcApiFallback`, or the type is a
+   * `'cc-broken'` sticky-CC exemption whose handler cannot manage it.
+   */
   ccRouteUnavailable: boolean;
 }
 
@@ -383,6 +414,7 @@ function main(): void {
     }
   }
 
+  const ccBroken = parseCcBrokenTypes(readFileSync(PROVIDER_REGISTRY_FILE, 'utf8'));
   const coverageByType = new Map<string, PerTypeCoverage>();
   let totalHandled = 0;
   let totalDrops = 0;
@@ -416,7 +448,7 @@ function main(): void {
       silentDrop,
       createOnlyDrops,
       readOnly: [...readOnly].sort((a, b) => a.localeCompare(b)),
-      ccRouteUnavailable: combinedCcFallbackDisabled.has(type),
+      ccRouteUnavailable: combinedCcFallbackDisabled.has(type) || ccBroken.has(type),
     });
     totalHandled += handled.size;
     totalDrops += silentDrop.length;
@@ -520,9 +552,10 @@ export interface PropertyCoverage {
    */
   readonly readOnly: ReadonlySet<string>;
   /**
-   * The type's SDK provider declares \`disableCcApiFallback\`, so Cloud Control
-   * cannot take the resource over. An unrecognized key on such a type stays on
-   * the SDK route with a warn instead of routing (issue #3713).
+   * Cloud Control cannot take an unrecognized key for this type — its SDK
+   * provider declares \`disableCcApiFallback\`, or it is a \`'cc-broken'\`
+   * sticky-CC exemption. Such a key stays on the SDK route with a warn instead
+   * of routing (issue #3713).
    */
   readonly ccRouteUnavailable: boolean;
 }

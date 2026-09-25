@@ -56,9 +56,10 @@ export interface PropertyCoverage {
    */
   readonly readOnly: ReadonlySet<string>;
   /**
-   * The type's SDK provider declares `disableCcApiFallback`, so Cloud Control
-   * cannot take the resource over. An unrecognized key on such a type stays on
-   * the SDK route with a warn instead of routing (issue #3713).
+   * Cloud Control cannot take an unrecognized key for this type — its SDK
+   * provider declares `disableCcApiFallback`, or it is a `'cc-broken'`
+   * sticky-CC exemption. Such a key stays on the SDK route with a warn instead
+   * of routing (issue #3713).
    */
   readonly ccRouteUnavailable: boolean;
 }
@@ -3046,7 +3047,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [

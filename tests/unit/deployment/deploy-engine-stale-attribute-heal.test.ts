@@ -272,6 +272,31 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
     expect(record.attributes?.['Arn']).toBe(REAL_ARN);
   });
 
+  it('passes the record as its own unrecognized-property baseline (#3713)', async () => {
+    // An sdk record holding a key the schema snapshot does not know: on
+    // PRESENCE that key routes the read to Cloud Control, a layer that never
+    // wrote the record. The record's bag as `previousProperties` makes the key
+    // unchanged, so the read stays on the SDK provider. With a mocked registry
+    // the route is not observable, so the ARGUMENT is asserted.
+    const withUnknown = { ...PARAM_PROPS, CdkdTotallyNewPropertyFromTheFuture: 'held' };
+    mockStateBackend.getState!.mockResolvedValue(
+      stateOf({ Param: staleRecord({ properties: withUnknown, provisionedBy: 'sdk' }) })
+    );
+
+    await makeEngine().deploy(STACK, template);
+
+    const healCalls = mockProviderRegistry.getProviderFor!.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((c) => c['resourceType'] === 'AWS::SSM::Parameter');
+    expect(healCalls, JSON.stringify(healCalls)).toHaveLength(1);
+    const call = healCalls[0]!;
+    expect(call['properties']).toEqual(withUnknown);
+    expect(call['provisionedBy']).toBe('sdk');
+    // The SAME bag, not merely an equal one: the record is the baseline.
+    expect(call['previousProperties']).toBe(call['properties']);
+    expect(mockProvider.import).toHaveBeenCalledTimes(1);
+  });
+
   describe('a read that cannot heal degrades — never a failed deploy', () => {
     const denied = (): Error => {
       const err = new Error('User: arn:aws:sts::111122223333:assumed-role/D/s is not authorized');

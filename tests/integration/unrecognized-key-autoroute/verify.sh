@@ -199,8 +199,12 @@ assert_cc_rejection() {
   rejection=$(grep -iE 'extraneous key|unsupported propert|model validation|not permitted|ValidationException' <<<"${others}" || true)
   [ -n "${rejection}" ] || {
     echo "FAIL (${label}): the deploy failed, but no Cloud Control validation rejection appears in its output; it failed for another reason" >&2; exit 1; }
-  grep -qF "${UNKNOWN_KEY}" <<<"${rejection}" || {
-    echo "FAIL (${label}): a Cloud Control validation rejection is present but does not name ${UNKNOWN_KEY} (rejected for something else, or the wording drifted): ${rejection}" >&2; exit 1; }
+  # The loose match above is the SENTINEL; this is the parsed marker, anchored
+  # on the key inside the validation clause itself, so a different validation
+  # failure that merely echoes the bag cannot pass. Wording observed live:
+  # `Model validation failed (#: extraneous key [<key>] is not permitted)`.
+  grep -qiE "extraneous key \[${UNKNOWN_KEY}\] is not permitted" <<<"${rejection}" || {
+    echo "FAIL (${label}): a Cloud Control validation rejection is present but its clause does not name ${UNKNOWN_KEY} (rejected for something else, or the wording drifted): ${rejection}" >&2; exit 1; }
   echo "    OK (${label}): routed via Cloud Control and rejected naming ${UNKNOWN_KEY}"
 }
 
@@ -320,6 +324,11 @@ PLAIN3=$(deploy_ok "phase 3" env CDKD_TEST_UPDATE=typo \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   --prefer-sdk-route "AWS::SNS::Topic:CdkdIntegUnknownKey")
 assert_not_routed "phase 3" "${PLAIN3}"
+# The allow-list also suppresses the drop warn; phase 4's warn is the positive
+# sibling that proves this line's wording exists.
+if grep -qF "${UNKNOWN_KEY} is not in cdkd's CFn schema snapshot" <<<"${PLAIN3}"; then
+  echo "FAIL (phase 3): --prefer-sdk-route did not suppress the drop warn for ${UNKNOWN_KEY}" >&2; exit 1
+fi
 LAYER3=$(record "${LOGICAL_ID}" '.provisionedBy')
 [ "${LAYER3}" = "sdk" ] || { echo "FAIL: --prefer-sdk-route did not keep the record on sdk (provisionedBy=${LAYER3})" >&2; exit 1; }
 DN3=$(live_display_name)
@@ -350,9 +359,8 @@ LAYER5=$(record "${LOGICAL_ID}" '.provisionedBy')
 [ "${LAYER5}" = "sdk" ] || { echo "FAIL: a read-only key moved the record to provisionedBy=${LAYER5}" >&2; exit 1; }
 PHYS5=$(record "${LOGICAL_ID}" '.physicalId')
 [ "${PHYS5}" = "${PHYS1}" ] || { echo "FAIL: physicalId changed (${PHYS1} -> ${PHYS5})" >&2; exit 1; }
-LIVE_ARN5=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
-  --query 'Attributes.TopicArn' --output text)
-[ "${LIVE_ARN5}" = "${TOPIC_ARN}" ] || { echo "FAIL: live TopicArn ${LIVE_ARN5}, expected ${TOPIC_ARN}" >&2; exit 1; }
+# Both SDK-route buckets in one line: the read-only key and the unchanged one.
+assert_warn "phase 5" "${PLAIN5}" "${UNKNOWN_KEY} is not in cdkd's CFn schema snapshot and unchanged"
 DN5=$(live_display_name)
 [ "${DN5}" = "cdkd-integ-v4" ] || { echo "FAIL: live DisplayName ${DN5}, expected cdkd-integ-v4" >&2; exit 1; }
 echo "    OK: stayed on sdk, same topic, DisplayName applied"

@@ -3132,20 +3132,20 @@ export function renderChangelogFragment({
   if (count > 0 && removedCount > 0) {
     headline =
       `- **The ${CYCLE_PLACEHOLDER} schema refresh adds ${added} and withdraws ${withdrawn}, ` +
-      `so cdkd starts classifying the first set, and a template still carrying one of the second is ` +
-      `dropped with a warn ${provenance}** -- ` +
+      `so cdkd starts classifying the first set, and a template still carrying one of the second ` +
+      `treats it as unrecognized ${provenance}** -- ` +
       `added: ${pairs.join('; ')}; withdrawn: ${removedPairs.join('; ')}. ${changed}`;
   } else if (count > 0) {
     headline =
       `- **AWS published ${added} the ${CYCLE_PLACEHOLDER} schema refresh now carries, so cdkd ` +
-      `classifies ${count === 1 ? 'it' : 'each'} instead of dropping ` +
-      `${count === 1 ? 'it' : 'them'} with a warn ${provenance}** -- ` +
+      `classifies ${count === 1 ? 'it' : 'each'} instead of treating ` +
+      `${count === 1 ? 'it' : 'them'} as unrecognized ${provenance}** -- ` +
       `${pairs.join('; ')}. ${changed}`;
   } else {
     headline =
       `- **AWS withdrew ${withdrawn} in the ${CYCLE_PLACEHOLDER} schema refresh, so cdkd stops ` +
       `classifying ${removedCount === 1 ? 'it' : 'them'} and a template still carrying ` +
-      `${removedCount === 1 ? 'it' : 'one'} is dropped with a warn ${provenance}** -- ` +
+      `${removedCount === 1 ? 'it' : 'one'} treats it as unrecognized ${provenance}** -- ` +
       `${removedPairs.join('; ')}. ${changed}`;
   }
 
@@ -3242,7 +3242,7 @@ export function renderChangelogFragment({
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
         `${removedCount === 1 ? 'it' : 'them'}, so a template still carrying ` +
         `${removedCount === 1 ? 'it' : 'one'} is an UNRECOGNIZED property from this merge on: ` +
-        `warned, and dropped on the SDK route.`,
+        `Cloud Control rejects it unless it is unchanged.`,
       EXPLANATION
     );
   }

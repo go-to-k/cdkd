@@ -46,8 +46,14 @@ Each exclusion is derivable offline, so the predicate stays a table lookup.
 | A read-only key | CloudFormation **ignores** one: `AWS::SNS::Topic` with `TopicArn` set reaches `CREATE_COMPLETE`. Cloud Control does not refuse one either, but trusts it: `CreateResource` for `AWS::SNS::Topic` with a bogus `TopicArn` succeeded, created the real topic under its generated ARN, and reported the BOGUS value as the `Identifier`. cdkd would record that as the physical id and later update or delete the wrong ARN, orphaning the real topic. The generator emits the schema's `readOnlyProperties` for this. |
 | `Ref` / `Fn::*` keys | Intrinsic keys, not property names. |
 | A key in `--prefer-sdk-route` | The user chose the drop. |
-| A type whose SDK provider declares `disableCcApiFallback`, or `NON_PROVISIONABLE` | There is no Cloud Control route. Routing would make `getProviderFor` refuse a template it deploys today. The generator emits `ccRouteUnavailable`, and a unit test binds it to each registered provider's runtime flag. |
+| A type whose SDK provider declares `disableCcApiFallback`, or `NON_PROVISIONABLE` | There is no Cloud Control route. Routing would make `getProviderFor` refuse a template it deploys today. |
+| A `'cc-broken'` sticky-CC exemption (`AWS::Scheduler::Schedule`) | Its Cloud Control handler cannot manage the type: a schedule in a custom group fails UPDATE with NotFound, so routing a real new property would break a deploy that works today. |
 | A key the state record holds unchanged (compared as JSON, so a prototype or key-order difference is not a change; a recorded `{{resolve:...}}` secret cannot be compared and counts as unchanged) | Zero regression for existing deployments. Without it, an unrelated update would flip an SDK resource to Cloud Control, failing on a typo or on a type whose SDK physical id is not Cloud Control's identifier. Changing or adding the key is what routes. |
+
+The generator folds the last two rows into `ccRouteUnavailable`, reading
+`disableCcApiFallback` from provider source and the `'cc-broken'` entries from
+`STICKY_CC_MIGRATION_EXEMPT`; a unit test binds it to the runtime flag and
+table in both directions.
 
 What stays on the SDK route is still warned about, naming which of the three
 reasons applies (read-only, unroutable type, unchanged since an SDK-route
@@ -61,10 +67,15 @@ deploy).
   read it, so none can disagree with the route.
 - **Every existing-resource caller threads the record's bag** as the baseline
   (`previousProperties` / `recordedProperties`): the update dispatch, both
-  replacement creates, the pre-flight report, the no-change skip, the diff
-  narrowing, the recreate validators and the diff annotation. A caller that
-  omits it gets presence semantics, which is correct only for a new physical
-  resource.
+  replacement creates and the replacement progress label, the stale-attribute
+  heal read, the pre-flight report, the no-change skip, the diff narrowing,
+  the recreate validators and the diff annotation. A caller that omits it gets
+  presence semantics, which is correct only for a new physical resource.
+- **A value that cannot be compared counts as unchanged**: a recorded
+  `{{resolve:...}}` secret, and a RAW template value holding an intrinsic (the
+  pre-flight report and `cdkd diff` read the raw bag, the record holds the
+  resolved one). Routing itself compares resolved bags, so this only keeps
+  those surfaces from announcing a route the deploy does not take.
 - **The sticky-escape (`wouldReturnToSdkProvider`) uses presence**, never the
   baseline, so an unrecognized key always keeps a `cc-api` resource on Cloud
   Control.

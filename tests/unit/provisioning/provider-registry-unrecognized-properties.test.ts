@@ -174,12 +174,27 @@ function pickReadOnlyFixture(): { resourceType: string; readOnlyProperty: string
   throw new Error('No routable Tier 1 type declares a read-only property — update this picker.');
 }
 
-/** A Tier 1 type whose SDK provider declares `disableCcApiFallback`. */
+/**
+ * A Tier 1 type whose SDK provider declares `disableCcApiFallback` — flagged
+ * `ccRouteUnavailable` for THAT reason, so the `'cc-broken'` exemptions (the
+ * flag's other source) are skipped and have cases of their own.
+ */
 function pickUnroutableType(): string {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    if (cov.ccRouteUnavailable) return resourceType;
+    if (!cov.ccRouteUnavailable) continue;
+    if (STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken') continue;
+    return resourceType;
   }
   throw new Error('No Tier 1 type is ccRouteUnavailable — update this picker.');
+}
+
+/** The shipped table's `'cc-broken'` members — at least one, or the cases are vacuous. */
+function ccBrokenTypes(): string[] {
+  const types = [...STICKY_CC_MIGRATION_EXEMPT]
+    .filter(([, entry]) => entry.mode === 'cc-broken')
+    .map(([type]) => type);
+  expect(types.length).toBeGreaterThanOrEqual(1);
+  return types;
 }
 
 describe('findRoutableUnrecognizedProperties (issue #3713)', () => {
@@ -348,19 +363,29 @@ describe('ProviderRegistry routes an unrecognized property via Cloud Control (is
   });
 
   /**
-   * `AWS::Scheduler::Schedule`-style `'cc-broken'` exemptions return a
-   * `cc-api` record to the SDK provider, so the resource's route is re-derived
-   * from the bag — and an unrecognized key then routes it, as a silent drop
-   * does, rather than being dropped on the SDK route.
+   * A `'cc-broken'` exemption (`AWS::Scheduler::Schedule`) returns a `cc-api`
+   * record to its SDK provider unconditionally, because its Cloud Control
+   * handler cannot manage the type. An unrecognized key must therefore NOT
+   * route it back there: the type is `ccRouteUnavailable`, the resource stays
+   * on the SDK route, and the key is warned about with the cc-broken reason.
    */
-  it('routes a cc-broken sticky-exempt type carrying one, rather than warning', () => {
-    const ccBrokenTypes = [...STICKY_CC_MIGRATION_EXEMPT]
-      .filter(([, entry]) => entry.mode === 'cc-broken')
-      .map(([type]) => type);
-    expect(ccBrokenTypes.length).toBeGreaterThanOrEqual(1);
-    for (const exemptType of ccBrokenTypes) {
-      expect(PROPERTY_COVERAGE_BY_TYPE.get(exemptType)?.ccRouteUnavailable).toBe(false);
-      const { registry, debug, warn } = makeRegistry();
+  it('keeps a cc-broken sticky-exempt type on the SDK route and warns with its reason', () => {
+    for (const exemptType of ccBrokenTypes()) {
+      expect(PROPERTY_COVERAGE_BY_TYPE.get(exemptType)?.ccRouteUnavailable, exemptType).toBe(true);
+      // The routing decision: the sticky-escape falls through to the SDK stub.
+      const routed = registryWithSdk(exemptType);
+      const decision = routed.registry.getProviderFor({
+        resourceType: exemptType,
+        properties: { [UNKNOWN_PROP]: 1 },
+        provisionedBy: 'cc-api',
+        previousProperties: {},
+      });
+      expect(decision.provisionedBy, exemptType).toBe('sdk');
+      expect(decision.sdkMigration, exemptType).toBe(true);
+      expect(decision.ccRouteReason, exemptType).toBeUndefined();
+
+      // The pre-flight report: no route line, one warn naming the cc-broken reason.
+      const { registry, info, debug, warn } = makeRegistry();
       registry.validateResourceProperties([
         {
           logicalId: 'MyResource',
@@ -369,11 +394,15 @@ describe('ProviderRegistry routes an unrecognized property via Cloud Control (is
           provisionedBy: 'cc-api',
         },
       ]);
-      expect(unknownWarns(warn), exemptType).toEqual([]);
-      // A `cc-api` record demotes the route line to debug (sticky continuation).
-      expect(debug.mock.calls.map((c) => String(c[0])).join('\n'), exemptType).toContain(
-        UNKNOWN_PROP
-      );
+      const routeLines = [...info.mock.calls, ...debug.mock.calls]
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('routing via Cloud Control API'));
+      expect(routeLines, exemptType).toEqual([]);
+      const lines = unknownWarns(warn);
+      expect(lines, exemptType).toHaveLength(1);
+      expect(lines[0]).toContain('cannot be routed via Cloud Control API');
+      expect(lines[0]).toContain("Cloud Control's handler cannot manage this type correctly");
+      expect(lines[0]).not.toContain('disableCcApiFallback');
     }
   });
 });
@@ -398,7 +427,8 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
     expect(lines[0]).toContain(fx.resourceType);
     expect(lines[0]).toContain('will NOT reach AWS');
     expect(lines[0]).toContain(`${UNKNOWN_PROP} is not in cdkd's CFn schema snapshot and unchanged`);
-    expect(lines[0]).toContain('the value has never reached AWS');
+    expect(lines[0]).toContain('so it stays there and cdkd does not send it.');
+    expect(lines[0]).not.toContain('never reached AWS');
     expect(lines[0]).toContain('rejects a misspelled one');
     expect(lines[0]).toContain(`--prefer-sdk-route ${fx.resourceType}:${UNKNOWN_PROP}`);
   });
@@ -429,7 +459,49 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
     const lines = unknownWarns(warn);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('cannot be routed via Cloud Control API');
+    // No provider is registered here, so the reason comes from the COVERAGE
+    // flag's arm — the one the routing predicate reads.
+    expect(lines[0]).toContain('(disableCcApiFallback)');
+    expect(lines[0]).not.toContain("Cloud Control's handler cannot manage");
     expect(lines[0]).toContain(encodeURIComponent(`Support property ${unroutable}.${UNKNOWN_PROP}`));
+  });
+
+  /**
+   * The REGISTRY's reason is the left operand of the unroutable choice, and it
+   * is observable only where the coverage flag disagrees with the registered
+   * provider — normally impossible (`property-coverage-cc-fallback-binding.test.ts`
+   * binds them). A stub declaring `disableCcApiFallback` on a type the coverage
+   * table calls routable makes it reachable. The key must be UNCHANGED against
+   * the record: a changed one still qualifies to route (the predicate reads the
+   * coverage flag only), and `reportSilentDropDecisions` then refuses the
+   * resource before any warn. Unchanged, nothing routes, and the registry's
+   * reason turns the "unchanged" sentence into the "no route" one.
+   */
+  it('names the registered provider’s own opt-out when it disagrees with the coverage flag', () => {
+    expect(PROPERTY_COVERAGE_BY_TYPE.get(fx.resourceType)?.ccRouteUnavailable).toBe(false);
+    const { registry, warn } = makeRegistry();
+    registry.register(fx.resourceType, {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      disableCcApiFallback: true,
+    } as never);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: fx.resourceType,
+        properties: { [UNKNOWN_PROP]: 1 },
+        provisionedBy: 'sdk',
+        previousProperties: { [UNKNOWN_PROP]: 1 },
+      },
+    ]);
+    const lines = unknownWarns(warn);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(
+      "cannot be routed via Cloud Control API (the type's SDK provider opts out of the Cloud " +
+        'Control fallback (disableCcApiFallback))'
+    );
+    expect(lines[0]).not.toContain('does not send it');
   });
 
   it('stays silent for a handled property', () => {
@@ -499,7 +571,8 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`${UNKNOWN_PROP}Two`);
     expect(lines[0]).toContain('are not in');
-    expect(lines[0]).toContain('the values have never reached AWS');
+    expect(lines[0]).toContain('so it stays there and cdkd does not send them.');
+    expect(lines[0]).not.toContain('never reached AWS');
   });
 
   it('still warns when the only silent drop is allow-listed and the key is unchanged', () => {
@@ -563,5 +636,62 @@ describe('the baseline comparison (issue #3713)', () => {
         { [UNKNOWN_PROP]: 'prefix-other' }
       )
     ).toEqual([UNKNOWN_PROP]);
+  });
+
+  it('treats a desired value holding an intrinsic as unchanged — it cannot be compared unresolved', () => {
+    const recorded = { [UNKNOWN_PROP]: 'us-east-1' };
+    // Top-level, nested in an object, and inside an array: every position the
+    // walk claims to see.
+    for (const desired of [
+      { Ref: 'AWS::Region' },
+      { Nested: { 'Fn::Sub': '${AWS::Region}' } },
+      ['a', { 'Fn::GetAtt': ['Other', 'Arn'] }],
+    ]) {
+      expect(
+        findRoutableUnrecognizedProperties(fx.resourceType, { [UNKNOWN_PROP]: desired }, none, recorded),
+        JSON.stringify(desired)
+      ).toEqual([]);
+    }
+    // Control: a plain value that differs from the record still routes, and
+    // so does an object whose keys only LOOK like intrinsics.
+    expect(
+      findRoutableUnrecognizedProperties(fx.resourceType, { [UNKNOWN_PROP]: 'eu-west-1' }, none, recorded)
+    ).toEqual([UNKNOWN_PROP]);
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: { Reference: 'x', FnSub: 'y' } },
+        none,
+        recorded
+      )
+    ).toEqual([UNKNOWN_PROP]);
+    // Without a record the intrinsic still routes on presence: the arm is
+    // part of the BASELINE comparison, never a blanket exclusion.
+    expect(
+      findRoutableUnrecognizedProperties(fx.resourceType, { [UNKNOWN_PROP]: { Ref: 'AWS::Region' } }, none)
+    ).toEqual([UNKNOWN_PROP]);
+  });
+
+  it('reads a null or non-object recorded bag as no baseline — no throw, the key routes', () => {
+    // A hand-edited or legacy record can carry `properties: null`; the type
+    // says otherwise, hence the casts. `Object.hasOwn(null, …)` throws.
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { [UNKNOWN_PROP]: 1 },
+        none,
+        null as unknown as Record<string, unknown>
+      )
+    ).toEqual([UNKNOWN_PROP]);
+    // A string record: `Object.hasOwn('abc', 'length')` is TRUE, so without
+    // the object guard its `.length` would read as a recorded baseline.
+    expect(
+      findRoutableUnrecognizedProperties(
+        fx.resourceType,
+        { length: 3 },
+        none,
+        'abc' as unknown as Record<string, unknown>
+      )
+    ).toEqual(['length']);
   });
 });

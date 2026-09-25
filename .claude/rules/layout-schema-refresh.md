@@ -27,15 +27,14 @@ The PRODUCER of `tests/fixtures/cfn-schemas/*.json`, the offline oracle every
 coverage critic and the deploy-time SDK-vs-Cloud-Control routing table derive
 from. Two capture SOURCES, one fixture shape.
 
-- **Freshness is a correctness property, not hygiene**
-  ([#2718](https://github.com/go-to-k/cdkd/issues/2718)):
+- **Freshness feeds the SDK route and the metadata, not delivery**
+  ([#2718](https://github.com/go-to-k/cdkd/issues/2718),
+  [#3713](https://github.com/go-to-k/cdkd/issues/3713)):
   `ProviderRegistry.getProviderFor` routes from `property-coverage.generated.ts`,
-  built offline from these fixtures with NO runtime `DescribeType`. A top-level
-  property AWS publishes after the snapshot is in no fixture, so
-  `findSilentDropProperties` returns nothing for it (`property-coverage.ts`
-  treats "not in the schema" as a typo or an `addPropertyOverride` escape hatch),
-  the resource stays on the SDK provider, and the property is **silently
-  dropped** while the deploy reports success.
+  built offline with NO runtime `DescribeType`. A property AWS publishes after
+  the snapshot is UNRECOGNIZED and routes through Cloud Control, so it reaches
+  AWS; a stale fixture costs the SDK route, the backfill row, and the read-only
+  / create-only data those checks read.
 - **`DescribeType` mode**: `node scripts/refresh-cfn-schemas.mjs
   [type-filter] [--only-missing]`, needs `cloudformation:DescribeType`, rewrites
   every type it captures. The ONLY route for types the public bundle does

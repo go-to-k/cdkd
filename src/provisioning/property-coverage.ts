@@ -147,7 +147,8 @@ export function findRoutableUnrecognizedProperties(
       !coverage.readOnly.has(property) &&
       !allowedKeys.has(`${resourceType}:${property}`) &&
       !(
-        recordedProperties !== undefined &&
+        recordedProperties != null &&
+        typeof recordedProperties === 'object' &&
         Object.hasOwn(recordedProperties, property) &&
         sameJsonValue(recordedProperties[property], templateProperties[property])
       )
@@ -170,7 +171,24 @@ function sameJsonValue(recorded: unknown, desired: unknown): boolean {
   // all; treating it as unchanged keeps the resource on the route it already
   // has, which is the safe direction for an existing deployment.
   if (JSON.stringify(recordedJson)?.includes('{{resolve:') === true) return true;
-  return isDeepStrictEqual(recordedJson, toJsonValue(desired));
+  const desiredJson = toJsonValue(desired);
+  // The pre-flight report and `cdkd diff` read the template's RAW bag, where a
+  // value can still be an intrinsic; the record holds its resolved form. Such
+  // a value cannot be compared before resolution either, and treating it as
+  // unchanged keeps those surfaces from announcing a Cloud Control route the
+  // resolved routing decision does not take. The routing call sites pass
+  // RESOLVED bags, so none of them reaches this arm.
+  if (containsIntrinsic(desiredJson)) return true;
+  return isDeepStrictEqual(recordedJson, desiredJson);
+}
+
+/** True when `value` holds a `Ref` / `Fn::*` object anywhere. */
+function containsIntrinsic(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsIntrinsic);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.entries(value).some(
+    ([key, child]) => key === 'Ref' || key.startsWith('Fn::') || containsIntrinsic(child)
+  );
 }
 
 function toJsonValue(value: unknown): unknown {

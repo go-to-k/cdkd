@@ -6,11 +6,11 @@ name: CFn schema fixture refresh
 # WHY THIS EXISTS. `ProviderRegistry.getProviderFor` decides SDK-vs-Cloud-Control
 # from `src/provisioning/property-coverage.generated.ts`, which is derived
 # OFFLINE from those fixtures — there is no runtime `DescribeType` on the routing
-# path. So a top-level property AWS publishes after the snapshot is in no
-# fixture, produces no `silentDrop` entry, does not auto-route to Cloud Control,
-# and is DROPPED while the deploy reports success. That is the issue #614 failure
-# class arriving through the one input the #614 machinery cannot observe, and
-# before this job nothing in the repo watched for it: no workflow had a
+# path. A top-level property AWS publishes after the snapshot is in no fixture;
+# it routes through Cloud Control as an unrecognized property (issue #3713), so
+# it reaches AWS, but cdkd cannot hand it to an SDK provider or apply its
+# create-only / nested-required data until the fixture lands. Before this job
+# nothing in the repo watched for that: no workflow had a
 # `schedule:` trigger, and `scripts/refresh-cfn-schemas.mjs` needed credentials
 # and a human remembering to run it.
 #
@@ -51,10 +51,10 @@ name: CFn schema fixture refresh
 #     measured cycle carried 9 drifted types at once; a day's worth is
 #     typically zero or one.
 #
-# What the cadence actually buys is time-to-AUTO-ROUTE. Between cycles a user
-# is not blind — the deploy path warns that the property will not reach AWS —
-# but the property does not actually work until the fixture lands, and that
-# wait is what shrinks from weeks to a day.
+# What the cadence buys is a current snapshot: the backfill list, the SDK
+# route for newly wired properties, and the read-only / create-only data the
+# routing and replacement checks read. A new property already reaches AWS
+# between cycles through Cloud Control.
 #
 # THE PR IS ALLOWED TO LAND RED, and that is the hand-off rather than a bug. The
 # job touches almost nothing encoding judgment — no `unhandledByDesign`, no
@@ -155,9 +155,7 @@ jobs:
       #
       # Skipping was also the costlier answer where it mattered most: a RED PR
       # is the one that stays open for days, and that is exactly the window in
-      # which every new AWS addition would have been held back — with no user
-      # workaround, since a warned-about property still does not reach AWS
-      # until its fixture lands.
+      # which every later refresh would have been held back behind it.
       - name: Look for an open refresh PR
         id: open_pr
         env:

@@ -2084,12 +2084,12 @@ Newly unaccounted writable properties land in `_todo-backfill.json`; do not file
 
 There is deliberately **no CI staleness check** on `main`. It would go red whenever AWS publishes a property — noise on a schedule nobody controls, the same reasoning `gen:aws-cli-removals` carries in `vite.config.ts`. A scheduled job whose red is confined to its own PR is the shape that argument leaves open.
 
-**What stays on the SDK route.** An unrecognized property does not route in four cases, and each produces a deploy-time **warning** that names the property, says it will not reach AWS, and gives the reason:
+**What stays on the SDK route.** An unrecognized property does not route in four cases. The first three produce a deploy-time **warning** that names the property, says it will not reach AWS, and gives the reason; the fourth is silent:
 
 | Case | Why it stays |
 | --- | --- |
 | The property is read-only | CloudFormation ignores a read-only property in a template too. |
-| The type has no Cloud Control route | Its provider declares `disableCcApiFallback`, or the type is `NON_PROVISIONABLE`. |
+| The type has no usable Cloud Control route | Its provider declares `disableCcApiFallback`, the type is `NON_PROVISIONABLE`, or its Cloud Control handler cannot manage it (a `'cc-broken'` sticky-CC exemption). |
 | The resource was deployed on the SDK route with the property, and its value is unchanged | cdkd keeps an existing resource on its route. Changing the value routes it. |
 | `--prefer-sdk-route <Type>:<Prop>` names it | You chose the drop; the warning is suppressed. |
 
