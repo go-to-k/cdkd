@@ -626,28 +626,154 @@ describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', (
       expect(drifts).toEqual([]);
     });
 
-    it('CARRIES the residual for a table that DOES declare indexes (issue #1784)', async () => {
-      // Pinned so the accepted trade is visible rather than discovered: the
-      // comparator is never asked about a path that crosses an array, so the
-      // only expressible suppression here is the WHOLE list — which would mean
-      // never detecting an out-of-band index change again. The stranded report
-      // is one-sided, non-mutating, and cleared by the next deploy or by
-      // `cdkd drift --accept`.
-      const declared = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [TEMPLATE_GSI] };
+  });
+
+  describe('canonicalizeDriftProperties (issue #1812)', () => {
+    /** What `cdkd drift` does: canonicalize BOTH sides, then compare. */
+    function driftAgainst(
+      declared: Record<string, unknown>,
+      baseline: Record<string, unknown>,
+      current: Record<string, unknown>
+    ) {
+      return calculateResourceDrift(
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, baseline),
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, current),
+        {
+          ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE, declared),
+          unorderedPaths: provider.getDriftUnorderedPaths(RESOURCE_TYPE),
+          unionWalkObjects: true,
+        }
+      );
+    }
+
+    it('converges a STALE observed baseline on a table that declares indexes', async () => {
+      const declared = {
+        TableName: TABLE_NAME,
+        GlobalSecondaryIndexes: [TEMPLATE_GSI],
+        LocalSecondaryIndexes: [TEMPLATE_LSI],
+      };
       const staleObserved = {
         TableName: TABLE_NAME,
         GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION],
+        LocalSecondaryIndexes: [AWS_LSI_DESCRIPTION],
+      };
+      const current = await readback(declared, {
+        GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION_IN_USE],
+        LocalSecondaryIndexes: [AWS_LSI_DESCRIPTION],
+      });
+
+      // Without the seam the stale record drifts: the case is not vacuous.
+      expect(
+        calculateResourceDrift(staleObserved, current!, {
+          ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE, declared),
+          unorderedPaths: provider.getDriftUnorderedPaths(RESOURCE_TYPE),
+          unionWalkObjects: true,
+        }).map((d) => d.path)
+      ).toEqual(['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']);
+      expect(driftAgainst(declared, staleObserved, current!)).toEqual([]);
+    });
+
+    it('converges a stale PROVISIONED capacity block by trimming its bookkeeping', async () => {
+      const declared = {
+        TableName: TABLE_NAME,
+        BillingMode: 'PROVISIONED',
+        GlobalSecondaryIndexes: [
+          { ...TEMPLATE_GSI, ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 } },
+        ],
+      };
+      const provisioned = {
+        ...AWS_GSI_DESCRIPTION,
+        ProvisionedThroughput: {
+          NumberOfDecreasesToday: 1,
+          LastDecreaseDateTime: '2026-08-13T00:00:00.000Z',
+          ReadCapacityUnits: 5,
+          WriteCapacityUnits: 5,
+        },
+      };
+      const staleObserved = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [provisioned] };
+      const current = await readback(declared, {
+        BillingModeSummary: { BillingMode: 'PROVISIONED' },
+        GlobalSecondaryIndexes: [provisioned],
+      });
+
+      expect(driftAgainst(declared, staleObserved, current!)).toEqual([]);
+    });
+
+    it('still reports a REAL capacity change behind a stale baseline', async () => {
+      const declared = {
+        TableName: TABLE_NAME,
+        BillingMode: 'PROVISIONED',
+        GlobalSecondaryIndexes: [
+          { ...TEMPLATE_GSI, ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 } },
+        ],
+      };
+      const stale = {
+        ...AWS_GSI_DESCRIPTION,
+        ProvisionedThroughput: { NumberOfDecreasesToday: 0, ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+      };
+      const current = await readback(declared, {
+        BillingModeSummary: { BillingMode: 'PROVISIONED' },
+        GlobalSecondaryIndexes: [
+          {
+            ...stale,
+            ProvisionedThroughput: { NumberOfDecreasesToday: 0, ReadCapacityUnits: 25, WriteCapacityUnits: 5 },
+          },
+        ],
+      });
+
+      expect(
+        driftAgainst(declared, { TableName: TABLE_NAME, GlobalSecondaryIndexes: [stale] }, current!).map(
+          (d) => d.path
+        )
+      ).toEqual(['GlobalSecondaryIndexes']);
+    });
+
+    it('still reports a REAL out-of-band index removal behind a stale baseline', async () => {
+      const declared = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [TEMPLATE_GSI] };
+      const staleObserved = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION] };
+      const current = await readback(declared, {});
+
+      expect(driftAgainst(declared, staleObserved, current!).map((d) => d.path)).toEqual([
+        'GlobalSecondaryIndexes',
+      ]);
+    });
+
+    it('returns a template or a current readback by IDENTITY, so a declared value stays reported', async () => {
+      const declared = {
+        TableName: TABLE_NAME,
+        GlobalSecondaryIndexes: [
+          {
+            ...TEMPLATE_GSI,
+            WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
+          },
+        ],
+        LocalSecondaryIndexes: [TEMPLATE_LSI],
       };
       const current = await readback(declared, {
         GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION],
+        LocalSecondaryIndexes: [AWS_LSI_DESCRIPTION],
       });
 
-      const drifts = calculateResourceDrift(staleObserved, current!, {
-        ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE, declared),
-        unorderedPaths: provider.getDriftUnorderedPaths(RESOURCE_TYPE),
-        unionWalkObjects: true,
-      });
-      expect(drifts.map((d) => d.path)).toEqual(['GlobalSecondaryIndexes']);
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, declared)).toBe(declared);
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, current!)).toBe(current);
+      expect(
+        (current!['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!['WarmThroughput']
+      ).toEqual({ ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 });
+    });
+
+    it('does not mutate its input, and passes malformed or foreign bags through', () => {
+      const stale = { TableName: TABLE_NAME, GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION, 'x', null] };
+      const before = structuredClone(stale);
+      const out = provider.canonicalizeDriftProperties(RESOURCE_TYPE, stale);
+      expect(stale).toEqual(before);
+      expect(out['GlobalSecondaryIndexes']).toEqual([TEMPLATE_GSI, 'x', null]);
+
+      const notAList = { GlobalSecondaryIndexes: { 'Fn::If': [] } };
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, notAList)).toBe(notAList);
+      const foreign = { GlobalSecondaryIndexes: [AWS_GSI_DESCRIPTION] };
+      expect(provider.canonicalizeDriftProperties('AWS::DynamoDB::GlobalTable', foreign)).toBe(
+        foreign
+      );
     });
   });
 
