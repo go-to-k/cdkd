@@ -33,7 +33,7 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-24T22:46:12Z	PASS	53	verify.sh	rc ok, 0 orphans (#3663)
 cache-streaming	2026-08-10T04:52:34Z	PASS	527	verify.sh	0810 sweep b4; elasticache-provider re-verify, GetAtt redis endpoint, 0 orph
-cc-api-fallback	2026-09-24T22:46:12Z	PASS	42	verify.sh	rc ok, 0 orphans (#3663)
+cc-api-fallback	2026-09-25T07:49:17Z	PASS	45	verify.sh	rc ok, orph clean (#1794)
 cc-api-fallback-transitions	2026-09-24T22:46:12Z	PASS	92	verify.sh	rc ok, 0 orphans (#3663)
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
