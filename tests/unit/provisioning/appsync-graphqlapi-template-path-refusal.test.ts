@@ -398,6 +398,17 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
     });
 
     it.each([
+      ['held only by AWS', { STAGE: 'a', constructor: 'x' }, { STAGE: 'a' }, { STAGE: 'a', constructor: 'x' }],
+      ['held only by the previous side', { STAGE: 'a' }, { constructor: 'x', STAGE: 'a' }, { STAGE: 'a' }],
+    ])('a prototype-named key (%s) is read as an own key only', async (_l, live, previous, expected) => {
+      liveEnv = live;
+      const result = await replay(previous);
+
+      expect(result.effectiveProperties?.['EnvironmentVariables']).toEqual(expected);
+      expect(() => structuredClone(result.effectiveProperties)).not.toThrow();
+    });
+
+    it.each([
       ['an empty map', {}],
       ['an absent member', undefined],
     ])('drops the key when AWS reports %s', async (_l, live) => {

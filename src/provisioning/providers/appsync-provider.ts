@@ -1914,13 +1914,16 @@ export class AppSyncProvider implements ResourceProvider {
       // The previous side's key order first, then keys only AWS holds: the
       // comparator is `JSON.stringify`, so AWS's order would read as a change.
       const recorded: Record<string, unknown> = {};
+      // OWN keys only: `in` also answers for `constructor` / `toString`, which
+      // are legal AppSync variable names.
+      const previousOwn = previousMap ?? {};
       const keys = [
-        ...Object.keys(previousMap ?? {}).filter((key) => key in live),
-        ...Object.keys(live).filter((key) => !(key in (previousMap ?? {}))),
+        ...Object.keys(previousOwn).filter((key) => Object.hasOwn(live, key)),
+        ...Object.keys(live).filter((key) => !Object.hasOwn(previousOwn, key)),
       ];
       for (const key of keys) {
         const value = live[key]!;
-        const declared = previousMap?.[key];
+        const declared = Object.hasOwn(previousOwn, key) ? previousOwn[key] : undefined;
         recorded[key] = declared !== undefined && String(declared) === value ? declared : value;
       }
       return { value: recorded };
