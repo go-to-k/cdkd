@@ -2,7 +2,7 @@
 
 ## 5. One tree per lane, then implement
 
-Stages 5–8 run in a lane subagent per issue; real-AWS integ and merge (§9)
+Stages 5–8 run in a lane agent per issue; real-AWS integ and merge (§9)
 stay with the parent, so a lane stops at merge-ready.
 
 ### 5-a. The tree
@@ -35,7 +35,7 @@ cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
 Also read the issue thread for a claim naming this branch (the cross-clone
-signal); a live lane's tree gets orders.
+signal); a live lane's tree gets instructions, not edits.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
 this tree arrived on is the OUTER TOOL's: committing onto it would DELETE that
@@ -66,7 +66,7 @@ done                                                               # RIGHT
   `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
-- A defect this lane is NOT fixing gets FILED (`references/filing.md`, §5-f).
+- A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
 
 ### 5-c. The fix itself
 

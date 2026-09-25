@@ -66,9 +66,9 @@ gh issue view <hit> --json body -q .body > "$U" \
 ```
 
 **The chaining and `-s` are load-bearing**: unchained, a failed `view` hands
-`edit` a one-row body REPLACING the umbrella's. Never fold twice at once; write `owner/repo#N`; and state a
-folded row's severity as PROSE, since the body-wide CI scan reads a `Severity:`
-key as the UMBRELLA's.
+`edit` a one-row body REPLACING the umbrella's. Never fold twice at once; write
+`owner/repo#N`; and state a folded row's severity as PROSE, since the body-wide
+CI scan reads a `Severity:` key as the UMBRELLA's.
 
 On a MISS, file it:
 
