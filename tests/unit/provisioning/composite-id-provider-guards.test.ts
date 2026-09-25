@@ -209,7 +209,8 @@ describe('AWS::Glue::Table composite id decode', () => {
       'MyTable',
       ID,
       'AWS::Glue::Table',
-      { DatabaseName: 'other', TableInput: { Name: 'a|b' } },
+      // Both bags prefix-match; only the deployed one names the recorded table.
+      { DatabaseName: 'mydb|a', TableInput: { Name: 'a|b' } },
       PROPS
     );
     expect(sent(GetTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
