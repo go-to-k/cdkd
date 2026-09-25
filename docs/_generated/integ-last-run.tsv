@@ -153,7 +153,7 @@ import-migrate-vpc	2026-09-25T05:37:37Z	PASS	335	verify.sh	rc ok, orph clean; 31
 import-nested-stack	2026-09-25T13:29:32Z	PASS	142	verify.sh	rc 0, state clean, PR 3763
 import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
 import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
-import-value-strong-ref	2026-09-25T13:29:32Z	PASS	152	verify.sh	rc 0, state clean, PR 3763
+import-value-strong-ref	2026-09-25T21:42:18Z	PASS	140	verify.sh	rc ok, orph clean (#3027 PR #3794)
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -163,7 +163,7 @@ intrinsics-torture-2	2026-09-24T00:57:33Z	PASS	54	verify.sh	PR #3579; rc ok, des
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-09-25T13:23:17Z	PASS	95	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-25T18:24:47Z	PASS	100	verify.sh	rc ok, orph clean; #3515 secret env own-keys, tree acbd47b90
+lambda	2026-09-25T21:42:18Z	PASS	110	verify.sh	rc ok, orph clean (#3027 PR #3794)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -280,7 +280,7 @@ schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
-schema-v9-to-v10-migration	2026-09-25T11:38:41Z	PASS	161	verify.sh	rc 0, state clean, PR 3613 head
+schema-v9-to-v10-migration	2026-09-25T21:42:18Z	PASS	151	verify.sh	rc ok, orph clean (#3027 PR #3794)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secrets-array-nested	2026-09-25T15:07:30Z	PASS	391	verify.sh	rc ok, orph clean; phase 2r re-capture (#3595); discrimination probe (engine reverted) red at the re-capture assertion
@@ -301,7 +301,7 @@ sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixt
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
 ssm-secure-dynamic-ref	2026-09-25T15:26:44Z	PASS	115	verify.sh	rc ok, orph clean (#3595 lane)
-stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
+stack-lock-renewal	2026-09-25T21:42:18Z	PASS	551	verify.sh	rc ok, orph clean (#3027 PR #3794)
 stage-assets	2026-09-25T09:36:54Z	PASS	75	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 stale-attribute-heal	2026-09-19T20:26:58Z	PASS	62	verify.sh	first run; rc ok, orph clean; red at phase 4 on the pre-#1852 engine
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
