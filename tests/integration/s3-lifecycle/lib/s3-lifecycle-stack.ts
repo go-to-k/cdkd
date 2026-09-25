@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * An S3 bucket with lifecycle rules — a daily pattern. The fixture mixes a
@@ -215,6 +216,23 @@ export class S3LifecycleStack extends cdk.Stack {
         'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled',
         'yes'
       );
+    }
+    // Phase 2c (issue #3740): the #1759 warn-and-SKIP now lives on the REPLAY
+    // path only, so verify.sh drives it through the rollback REVERT arm. An
+    // ordinary in-place change (a tag) on this bucket lands, then a queue AWS
+    // refuses fails the deploy (`--no-rollback`); verify.sh doctors the
+    // journal's previous record to carry `'yes'` and runs `cdkd rollback`.
+    // allow-mode-gated-drop: the probe tag exists only for the failing deploy; the rollback and every later step correctly remove it.
+    if (update && process.env.CDKD_TEST_EB_REVERT === 'true') {
+      ebMalformed.tags.setTag('RevertProbe', '1');
+    }
+    // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (update && process.env.CDKD_TEST_EB_REVERT === 'true') {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${cdk.Stack.of(this).stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      failing.addDependency(ebMalformed);
     }
 
     // Issue #1748: the TOLERATED key spellings, which no L2 and no typed L1

@@ -395,6 +395,7 @@
         "rollback-cross-region-secret",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
+        "s3-lifecycle",
         "secrets-dynamic-ref",
         "type-change-replacement"
       ]

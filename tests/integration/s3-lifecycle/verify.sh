@@ -156,6 +156,7 @@ cd "$(dirname "$0")"
 STACK="CdkdS3LifecycleExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_NAME="cdkd-lifecycle-test-${ACCOUNT_ID}"
 LEGACY_BUCKET="cdkd-lifecycle-legacy-${ACCOUNT_ID}"
@@ -208,6 +209,9 @@ cleanup() {
   aws s3api delete-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${EB_MALFORMED_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1 || true
+  fi
   # Issue #2227 arm: the colliding bucket has a per-run unique name and lives in
   # ANOTHER region, so the sweep above (all "${REGION}", fixed names) cannot
   # reach it. Folded into this handler rather than given its own
@@ -1289,7 +1293,8 @@ if ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'EventBridgeEnabled must be a bool
 fi
 echo "    [phase 2b] the malformed EventBridgeEnabled was REFUSED (exit ${PHASE2B_RC})"
 assert_eventbridge_absent "phase 2b"
-# Nothing else moved: the lifecycle rules phase 2 applied are intact.
+# The rest of the stack did not move either: the lifecycle rules phase 2 applied
+# on the main bucket are intact.
 RULE_COUNT_P2B="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query 'length(Rules)' --output text)"
 if [ "${RULE_COUNT_P2B}" != "4" ]; then
@@ -1297,6 +1302,62 @@ if [ "${RULE_COUNT_P2B}" != "4" ]; then
   exit 1
 fi
 assert_no_drift "phase 2b"
+
+# --- Phase 2c: the #1759 warn-and-SKIP on the REPLAY path (issue #3740) -------
+# The same malformed value reaches the notification applier only through a
+# replay now. Fail an ordinary update of the bucket (a tag, then a queue AWS
+# refuses, `--no-rollback`), doctor the journal's previous record to carry
+# `EventBridgeEnabled: 'yes'` (a record an older binary could have written),
+# and `cdkd rollback`: the revert arm must WARN and SKIP the whole
+# notification configuration, and AWS must still hold no EventBridge block.
+echo "==> Phase 2c: a REVERT replaying a MALFORMED EventBridgeEnabled must warn and skip, never enable"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_EB_REVERT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback
+PHASE2C_RC=$?
+set -e
+if [ "${PHASE2C_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2c]: the inject-fail deploy SUCCEEDED, so there is no journal to roll back" >&2
+  exit 1
+fi
+JOURNAL_FILE="$(mktemp)"
+DOCTORED_FILE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${JOURNAL_FILE}" >/dev/null
+jq '(.segments[].operations[] | select(.logicalId == "EbMalformedBucket" and .changeType == "UPDATE")
+  | .previousState.properties.NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled) = "yes"' \
+  "${JOURNAL_FILE}" > "${DOCTORED_FILE}"
+DOCTORED_COUNT="$(jq '[.segments[].operations[] | select(.logicalId == "EbMalformedBucket" and .changeType == "UPDATE")
+  | .previousState.properties.NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled
+  | select(. == "yes")] | length' "${DOCTORED_FILE}")"
+if [ "${DOCTORED_COUNT}" != "1" ]; then
+  echo "FAIL [phase 2c]: expected exactly one EbMalformedBucket UPDATE op to doctor, got ${DOCTORED_COUNT}" >&2
+  jq -c '[.segments[].operations[] | {logicalId, changeType}]' "${JOURNAL_FILE}" >&2
+  exit 1
+fi
+aws s3 cp "${DOCTORED_FILE}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+rm -f "${JOURNAL_FILE}" "${DOCTORED_FILE}"
+
+set +e
+PHASE2C_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+PHASE2C_ROLLBACK_RC=$?
+set -e
+printf '%s\n' "${PHASE2C_OUT}"
+if [ "${PHASE2C_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2c]: cdkd rollback exited ${PHASE2C_ROLLBACK_RC}" >&2
+  exit 1
+fi
+PHASE2C_PLAIN="$(printf '%s' "${PHASE2C_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+# Two independent markers: the guard's sentence and the skip decision.
+if ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'EventBridgeEnabled must be a boolean' ||
+   ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'Leaving the whole notification configuration unapplied'; then
+  echo "FAIL [phase 2c]: the revert did not warn-and-skip the malformed EventBridgeEnabled (#1759)" >&2
+  exit 1
+fi
+echo "    [phase 2c] the revert WARNED and skipped the malformed EventBridgeEnabled (#1759)"
+assert_eventbridge_absent "phase 2c"
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after the phase 2c rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

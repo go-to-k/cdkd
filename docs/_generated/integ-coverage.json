@@ -5771,6 +5771,7 @@
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
+        "s3-lifecycle",
         "scheduler-custom-group",
         "secrets-dynamic-ref",
         "sns-inline-subscription",
@@ -5908,6 +5909,9 @@
           "l1"
         ],
         "s3-analytics-inventory": [
+          "l1"
+        ],
+        "s3-lifecycle": [
           "l1"
         ],
         "scheduler-custom-group": [
