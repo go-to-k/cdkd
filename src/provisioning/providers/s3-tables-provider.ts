@@ -1486,7 +1486,7 @@ export class S3TablesProvider implements ResourceProvider {
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};
 
-    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
     const upserts: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
       if (prev[k] !== v) upserts[k] = v;
@@ -1616,7 +1616,7 @@ export class S3TablesProvider implements ResourceProvider {
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};
 
-    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
     const upserts: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
       if (prev[k] !== v) upserts[k] = v;

@@ -48,6 +48,9 @@ describe('S3TablesProvider — AWS::S3Tables::TableBucket Tags wire (#609 backfi
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
+    // case that routes via mockImplementation does not leak into the next.
+    mockSend.mockImplementation(() => undefined);
     provider = new S3TablesProvider();
   });
 
@@ -134,6 +137,37 @@ describe('S3TablesProvider — AWS::S3Tables::TableBucket Tags wire (#609 backfi
       expect(call).toBeInstanceOf(UntagResourceCommand);
       expect(call.input.resourceArn).toBe(BUCKET_ARN);
       expect(call.input.tagKeys).toEqual(['gone']);
+    });
+
+    it('removes a dropped tag keyed `constructor` via UntagResource (#3515 — applyTableBucketTagsDiff own-key membership)', async () => {
+      // #3515: `!(k in next)` saw `constructor` on Object.prototype, so the
+      // removed key was never untagged and stayed live on AWS.
+      // Route by command type (no `*Once` queue): pre-fix the path sends
+      // nothing, so a sequential primer would leak into a later case.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UntagResourceCommand || cmd instanceof TagResourceCommand) {
+          return Promise.resolve({});
+        }
+        return Promise.reject(new Error(`Unexpected command: ${(cmd as object).constructor.name}`));
+      });
+
+      await provider.update(
+        'L',
+        BUCKET_ARN,
+        'AWS::S3Tables::TableBucket',
+        { Tags: [{ Key: 'keep', Value: 'k' }] },
+        {
+          Tags: [
+            { Key: 'keep', Value: 'k' },
+            { Key: 'constructor', Value: 'old' },
+          ],
+        }
+      );
+      const sent = mockSend.mock.calls.map((c) => c[0]);
+      const untags = sent.filter((c) => c instanceof UntagResourceCommand);
+      expect(untags.map((c) => c.input.tagKeys)).toEqual([['constructor']]);
+      // `keep` is unchanged, so nothing is upserted.
+      expect(sent.filter((c) => c instanceof TagResourceCommand)).toEqual([]);
     });
 
     it('value-rewrite on same key → TagResource (only, not Untag)', async () => {

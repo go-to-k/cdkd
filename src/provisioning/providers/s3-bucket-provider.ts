@@ -918,7 +918,7 @@ function deepSameValue(a: unknown, b: unknown): boolean {
   if (isPlainObject(a) && isPlainObject(b)) {
     const keysA = Object.keys(a);
     if (keysA.length !== Object.keys(b).length) return false;
-    return keysA.every((key) => key in b && deepSameValue(a[key], b[key]));
+    return keysA.every((key) => Object.hasOwn(b, key) && deepSameValue(a[key], b[key]));
   }
   return false;
 }

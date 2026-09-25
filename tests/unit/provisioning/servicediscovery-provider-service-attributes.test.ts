@@ -56,6 +56,9 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
+    // case that routes via mockImplementation does not leak into the next.
+    mockSend.mockImplementation(() => undefined);
     provider = new ServiceDiscoveryProvider();
   });
 
@@ -174,6 +177,38 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       expect(del).toBeDefined();
       expect(del!.input).toEqual({ ServiceId: 'srv-1', Attributes: ['tier'] });
       expect(callOf(UpdateServiceAttributesCommand)).toBeUndefined();
+    });
+
+    it('removes an attribute keyed `constructor` via DeleteServiceAttributes (#3515 — updateService removedAttrKeys own-key membership)', async () => {
+      // #3515: `!(k in newAttrs)` saw `constructor` on Object.prototype, so the
+      // removed attribute was never deleted and stayed live on AWS.
+      // Route by command type (no `*Once` queue): pre-fix the path sends
+      // nothing, so a sequential primer would leak into a later case.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (
+          cmd instanceof DeleteServiceAttributesCommand ||
+          cmd instanceof UpdateServiceAttributesCommand
+        ) {
+          return Promise.resolve({});
+        }
+        return Promise.reject(new Error(`Unexpected command: ${(cmd as object).constructor.name}`));
+      });
+
+      await provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        { ServiceAttributes: { keep: 'k' } },
+        { ServiceAttributes: { keep: 'k', constructor: 'old' } }
+      );
+
+      const sent = mockSend.mock.calls.map((c) => c[0]);
+      const deletes = sent.filter((c) => c instanceof DeleteServiceAttributesCommand);
+      expect(deletes.map((c) => c.input)).toEqual([
+        { ServiceId: 'srv-1', Attributes: ['constructor'] },
+      ]);
+      // `keep` is unchanged, so nothing is upserted.
+      expect(sent.filter((c) => c instanceof UpdateServiceAttributesCommand)).toEqual([]);
     });
 
     it('is a no-op (zero SDK calls) when ServiceAttributes is unchanged', async () => {

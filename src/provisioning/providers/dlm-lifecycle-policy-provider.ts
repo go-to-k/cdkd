@@ -402,7 +402,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         );
       }
       if (tagsChanged && arn) {
-        const removedKeys = Object.keys(oldTags).filter((k) => !(k in newTags));
+        const removedKeys = Object.keys(oldTags).filter((k) => !Object.hasOwn(newTags, k));
         if (removedKeys.length > 0) {
           await this.getClient().send(
             new UntagResourceCommand({ ResourceArn: arn, TagKeys: removedKeys })

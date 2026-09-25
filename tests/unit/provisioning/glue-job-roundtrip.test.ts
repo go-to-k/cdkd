@@ -221,6 +221,48 @@ describe('GlueJobProvider', () => {
     });
   });
 
+  // #3515 — glue-provider.ts GlueJobProvider.applyTagDiff (~L3758) removal loop
+  it('update() removes a dropped tag keyed `constructor` via UntagResource (own-key membership, #3515)', async () => {
+    mockSend.mockImplementation((cmd) => {
+      return Promise.resolve({});
+    });
+
+    await provider.update(
+      'L',
+      'my-job',
+      'AWS::Glue::Job',
+      { Tags: [{ Key: 'keep', Value: 'k' }] },
+      {
+        Tags: [
+          { Key: 'keep', Value: 'k' },
+          { Key: 'constructor', Value: 'c' },
+        ],
+      }
+    );
+
+    const removed = mockSend.mock.calls
+      .filter((c) => c[0] instanceof UntagResourceCommand)
+      .map((c) => (c[0] as UntagResourceCommand).input.TagsToRemove);
+    expect(removed).toEqual([['constructor']]);
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof TagResourceCommand)).toHaveLength(0);
+  });
+
+  // Negative control for the case above (#3515): a tag keyed `constructor`
+  // kept on BOTH sides is not removed. An own-key test that over-answers for
+  // prototype-member names passes the removal case and fails only this one.
+  it('update() keeps a tag keyed `constructor` present on both sides (#3515 negative control)', async () => {
+    mockSend.mockImplementation(() => Promise.resolve({}));
+    const tags = [
+      { Key: 'keep', Value: 'k' },
+      { Key: 'constructor', Value: 'c' },
+    ];
+
+    await provider.update('L', 'my-job', 'AWS::Glue::Job', { Tags: tags }, { Tags: tags });
+
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof UntagResourceCommand)).toHaveLength(0);
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof TagResourceCommand)).toHaveLength(0);
+  });
+
   it('update() does not call TagResource / UntagResource when tags are unchanged', async () => {
     const tags = [{ Key: 'env', Value: 'prod' }];
     await provider.update(

@@ -1218,7 +1218,7 @@ export class AppSyncProvider implements ResourceProvider {
       this.arnCache.set(apiId, arn);
     }
 
-    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
+    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !Object.hasOwn(newMap, k));
     const tagsToAdd: Record<string, string> = {};
     for (const [k, v] of Object.entries(newMap)) {
       if (oldMap[k] !== v) tagsToAdd[k] = v;

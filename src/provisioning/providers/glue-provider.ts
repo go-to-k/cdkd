@@ -3755,7 +3755,7 @@ export class GlueJobProvider implements ResourceProvider {
       if (oldTags[k] !== v) toAdd[k] = v;
     }
     for (const k of Object.keys(oldTags)) {
-      if (!(k in newTags)) toRemove.push(k);
+      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
     }
     // TagResource / UntagResource use the same Glue API (TagResource for add).
     if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
@@ -4371,7 +4371,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
       if (oldTags[k] !== v) toAdd[k] = v;
     }
     for (const k of Object.keys(oldTags)) {
-      if (!(k in newTags)) toRemove.push(k);
+      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
     }
     if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
       const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
@@ -5231,7 +5231,7 @@ export class GlueTriggerProvider implements ResourceProvider {
       if (oldTags[k] !== v) toAdd[k] = v;
     }
     for (const k of Object.keys(oldTags)) {
-      if (!(k in newTags)) toRemove.push(k);
+      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
     }
     if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
       const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');

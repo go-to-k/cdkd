@@ -2491,6 +2491,59 @@ describe('ApiGatewayProvider', () => {
         );
         expect(mockSend).not.toHaveBeenCalled();
       });
+
+      it('emits `add` (not `replace`) for a NEW RequestParameters key named `constructor` (#3515)', async () => {
+        // #3515 appendMapPatchOps add/replace: `key in prev` found
+        // `constructor` on Object.prototype and chose `replace`.
+        mockSend.mockResolvedValueOnce({});
+        await provider.update(
+          'MyMethod',
+          'api-id|resource-id|GET',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            RequestParameters: { keep: true, constructor: true },
+          },
+          {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            RequestParameters: { keep: true },
+          }
+        );
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'add', path: '/requestParameters/constructor', value: 'true' },
+        ]);
+      });
+
+      it('emits `remove` for a dropped RequestParameters key named `constructor` (#3515)', async () => {
+        // #3515 appendMapPatchOps remove: `key in next` found `constructor`
+        // on Object.prototype, so no remove op was emitted.
+        mockSend.mockResolvedValueOnce({});
+        await provider.update(
+          'MyMethod',
+          'api-id|resource-id|GET',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            RequestParameters: { keep: true },
+          },
+          {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            RequestParameters: { keep: true, constructor: true },
+          }
+        );
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'remove', path: '/requestParameters/constructor' },
+        ]);
+      });
     });
 
     describe('delete', () => {

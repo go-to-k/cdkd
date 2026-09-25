@@ -582,7 +582,7 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     const newMap = mapKeyValueListToRecord(newTags) ?? {};
     const oldMap = mapKeyValueListToRecord(oldTags) ?? {};
 
-    const keysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
+    const keysToRemove = Object.keys(oldMap).filter((k) => !Object.hasOwn(newMap, k));
     const tagsToAdd: Record<string, string> = {};
     for (const [k, v] of Object.entries(newMap)) {
       if (oldMap[k] !== v) tagsToAdd[k] = v;
