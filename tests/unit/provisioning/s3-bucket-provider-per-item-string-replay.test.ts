@@ -404,13 +404,20 @@ describe('update path: the wiring nothing else covers', () => {
   // `update(..., previousState.properties, ...)`, so the DESIRED bag on this
   // path is a state record too. Without these, dropping the third argument at
   // an update call site leaves the suite green while the malformed record
-  // hard-throws on every rollback.
+  // hard-throws on every rollback. The rows pass `replayingState`, the flag
+  // the revert arms set: since issue #3740 a template-path update refuses the
+  // same value before any call.
   for (const site of SITES) {
     for (const [label, value] of malformedValues) {
       it(`${site.name}: warns and skips for a value that is ${label}`, async () => {
-        await provider.update('B', BUCKET, RESOURCE_TYPE, site.one(value), {
-          BucketName: BUCKET,
-        });
+        await provider.update(
+          'B',
+          BUCKET,
+          RESOURCE_TYPE,
+          site.one(value),
+          { BucketName: BUCKET },
+          { replayingState: true }
+        );
         expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining(REFUSAL(site)));
         expect(sentCommands(site.command)).toHaveLength(0);
       });

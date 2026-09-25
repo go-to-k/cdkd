@@ -193,13 +193,16 @@ describe('provider UpdateContext fence — the real tree', () => {
       'DynamoDBTableProvider',
       'EC2Provider',
       'ELBv2Provider',
+      'IAMAccessKeyProvider',
       'KinesisStreamProvider',
       'LambdaFunctionProvider',
+      'LambdaUrlProvider',
       'LogsLogGroupProvider',
       'Route53Provider',
       'S3BucketProvider',
       'SNSTopicProvider',
       'SSMParameterProvider',
+      'SecretsManagerSecretProvider',
       'ServiceDiscoveryProvider',
     ]);
   });

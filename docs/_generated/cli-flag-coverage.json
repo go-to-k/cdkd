@@ -389,10 +389,13 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "dynamodb-globaltable",
         "lambda-url-authtype-replay",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-sqs-cooldown",
+        "s3-analytics-inventory",
+        "s3-lifecycle",
         "secrets-dynamic-ref",
         "type-change-replacement"
       ]

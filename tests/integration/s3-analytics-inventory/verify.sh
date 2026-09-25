@@ -26,9 +26,14 @@
 #      destination bucket, format and prefix. Against the pre-fix binary this
 #      phase still passes — a correct template was never the broken case — so
 #      the value here is regression protection for the destination guard.
-#   2. (#1670) Re-deploy with CDKD_TEST_UPDATE=malformed-substitute: three
-#      fields are BLANK, so each read warns and SENDS its default. Assert the
-#      deploy succeeds, that it WARNED (the anti-vacuity guard), that AWS holds
+#   2a. (#3740) Re-deploy with CDKD_TEST_UPDATE=malformed-substitute: three
+#      fields are BLANK. A template-path update REFUSES them before any write;
+#      assert the non-zero exit, the refusal text, and the unchanged record.
+#   2b. (#1670) The same blanks on the REPLAY path: fail a valid update
+#      (`updated,inject-fail`, `--no-rollback`), doctor the journal's previous
+#      record with the blanks, and `cdkd rollback`: the revert arm's reads warn
+#      and SEND their defaults. Assert the rollback succeeds, that it WARNED
+#      (the anti-vacuity guard), that AWS holds
 #      the defaults, and — the direct assertion #1670 is about — that the STATE
 #      record holds the SUBSTITUTED value rather than the declared blank. Also
 #      assert the recorded AND observed analytics destinations are the FLATTENED
@@ -143,6 +148,7 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -252,21 +258,88 @@ assert_eq "the empty CORS collection is RECORDED (not dropped)" "[]" \
   "$(printf '%s' "${STATE_EMPTY}" \
      | jq -c '.state.resources.EmptyCollectionBucket.properties.CorsConfiguration.CorsRules')"
 
-# --- Phase 2: the warn-and-SUBSTITUTE arms (issue #1670) --------------------
-echo "==> Phase 2: re-deploy with BLANK OutputSchemaVersion / Format values"
-# `malformed-substitute` blanks three fields the provider reads through
-# `readSubstitutedConfigString`. On the UPDATE path the read warns and SENDS
-# its default, the Put SUCCEEDS, and before #1670 the engine recorded the
-# DECLARED blank — a value AWS never held and `readCurrentState` can never
-# return, i.e. permanent phantom drift.
-#
-# The mode keeps every OTHER value at its phase-1 setting, so the substituted
-# result is byte-identical to the phase-1 template. Phase 3 relies on that.
-MALFORMED_LOG="$(CDKD_TEST_UPDATE=malformed-substitute node "${LOCAL_DIST}" deploy "${STACK}" \
+# --- Phase 2a: the blanks are REFUSED on the template path (issue #3740) ------
+echo "==> Phase 2a: re-deploy with BLANK OutputSchemaVersion / Format values — must be REFUSED before any write"
+# Since issue #3740 a template-path update refuses a malformed value the update
+# would Put, before any write (a pre-flight asks each applier its own question
+# on a probe that writes nothing). Only the replay paths still warn and
+# SUBSTITUTE, which phase 2b drives.
+set +e
+REFUSED_LOG="$(CDKD_TEST_UPDATE=malformed-substitute node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
-printf '%s\n' "${MALFORMED_LOG}"
+REFUSED_RC=$?
+set -e
+printf '%s\n' "${REFUSED_LOG}"
+if [ "${REFUSED_RC}" -eq 0 ]; then
+  echo "FAIL: phase 2a: the blank values deployed (exit 0); issue #3740 refuses them on the template path" >&2
+  exit 1
+fi
+# Two independent markers: the guard's own sentence, and the pre-flight suffix.
+case "${REFUSED_LOG}" in
+  *"DataExport.OutputSchemaVersion must be a non-empty string"*"fix the template value"*) ;;
+  *)
+    echo "FAIL: phase 2a: the deploy failed, but not with the #3740 template-path refusal" >&2
+    exit 1
+    ;;
+esac
+assert_eq "recorded analytics OutputSchemaVersion after the refused deploy (unchanged)" "V_1" \
+  "$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json \
+    | jq -r '.state.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.OutputSchemaVersion')" 
 
-echo "==> Phase 2: assert each substitution was ANNOUNCED"
+# --- Phase 2b: the warn-and-SUBSTITUTE arms on the REPLAY path (issue #1670) --
+echo "==> Phase 2b: fail a valid UPDATE, doctor the journal's previous record with the blanks, then cdkd rollback"
+# The revert arm replays `previousState.properties` — a cdkd STATE record, which
+# can carry a blank an older binary recorded — and there the read still warns
+# and SENDS its default; before #1670 the engine then recorded the DECLARED
+# blank, a value AWS never held (permanent phantom drift). The journal is
+# doctored AFTER the failed deploy rather than state before it, so the failing
+# deploy's own diff stays an ordinary valid update.
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+set +e
+CDKD_TEST_UPDATE=updated,inject-fail node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback
+INJECT_RC=$?
+set -e
+if [ "${INJECT_RC}" -eq 0 ]; then
+  echo "FAIL: phase 2b: the inject-fail deploy SUCCEEDED, so there is no journal to roll back" >&2
+  exit 1
+fi
+JOURNAL_FILE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${JOURNAL_FILE}" >/dev/null
+DOCTORED_FILE="$(mktemp)"
+jq --arg blank '   ' '
+  (.segments[].operations[] | select(.logicalId == "SourceBucket" and .changeType == "UPDATE")
+    | .previousState.properties) |= (
+      .AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.OutputSchemaVersion = $blank
+      | .AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.Format = $blank
+      | .InventoryConfigurations[0].Destination.Format = $blank)
+' "${JOURNAL_FILE}" > "${DOCTORED_FILE}"
+DOCTORED_COUNT="$(jq '[.segments[].operations[] | select(.logicalId == "SourceBucket" and .changeType == "UPDATE")
+  | .previousState.properties.InventoryConfigurations[0].Destination.Format | select(. == "   ")] | length' "${DOCTORED_FILE}")"
+if [ "${DOCTORED_COUNT}" != "1" ]; then
+  echo "FAIL: phase 2b: expected exactly one SourceBucket UPDATE op to doctor in the journal, got ${DOCTORED_COUNT}" >&2
+  jq -c '[.segments[].operations[] | {logicalId, changeType}]' "${JOURNAL_FILE}" >&2
+  exit 1
+fi
+aws s3 cp "${DOCTORED_FILE}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+rm -f "${JOURNAL_FILE}" "${DOCTORED_FILE}"
+
+set +e
+MALFORMED_LOG="$(node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+ROLLBACK_RC=$?
+set -e
+printf '%s\n' "${MALFORMED_LOG}"
+if [ "${ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: phase 2b: cdkd rollback exited ${ROLLBACK_RC}" >&2
+  exit 1
+fi
+case "${MALFORMED_LOG}" in
+  *"SourceBucket"*) ;;
+  *) echo "FAIL: phase 2b: the rollback never touched SourceBucket" >&2; exit 1 ;;
+esac
+
+echo "==> Phase 2b: assert each substitution was ANNOUNCED"
 # This is the anti-vacuity guard for every assertion below it. The substituted
 # values equal the ones phase 1 already recorded, so a run in which the Put
 # never fired would satisfy the state assertions without exercising a single
@@ -286,7 +359,7 @@ assert_warned "AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.Da
 assert_warned "AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination.Format"
 assert_warned "AWS::S3::Bucket InventoryConfigurations[].Destination.Format"
 
-echo "==> Phase 2: assert AWS holds the SUBSTITUTED values"
+echo "==> Phase 2b: assert AWS holds the SUBSTITUTED values"
 ANALYTICS_SUB="$(aws s3api get-bucket-analytics-configuration \
   --bucket "${SOURCE_BUCKET}" --id daily-analytics --region "${REGION}")"
 assert_eq "analytics OutputSchemaVersion on AWS" "V_1" \
@@ -298,7 +371,7 @@ INVENTORY_SUB="$(aws s3api get-bucket-inventory-configuration \
 assert_eq "inventory destination format on AWS" "CSV" \
   "$(printf '%s' "${INVENTORY_SUB}" | jq -r '.InventoryConfiguration.Destination.S3BucketDestination.Format')"
 
-echo "==> Phase 2: assert the STATE record holds what was SENT, not what was declared"
+echo "==> Phase 2b: assert the STATE record holds what was SENT, not what was declared"
 STATE_SUB="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --stack-region "${REGION}" --json)"
 SRC_RES='.state.resources.SourceBucket'
@@ -601,5 +674,8 @@ assert_gone_eventually "report bucket ${REPORT_BUCKET} still exists after destro
 echo "==> Phase 6: assert the state file is gone"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 
 echo "PASS: s3-analytics-inventory"

@@ -74,7 +74,7 @@ describe('LambdaUrlProvider AuthType effectiveProperties (issue #1654)', () => {
       TargetFunctionArn: FN_ARN,
       AuthType: 'AWS_IAM',
       InvokeMode: 'BUFFERED',
-    });
+    }, { replayingState: true });
 
     // The exact previous string, matching what went on the wire — NOT the
     // malformed desired value and NOT the create default 'NONE'.
@@ -101,7 +101,8 @@ describe('LambdaUrlProvider AuthType effectiveProperties (issue #1654)', () => {
       FN_ARN,
       RESOURCE_TYPE,
       { TargetFunctionArn: FN_ARN, AuthType: desiredAuth },
-      { TargetFunctionArn: FN_ARN, AuthType: 'AWS_IAM' }
+      { TargetFunctionArn: FN_ARN, AuthType: 'AWS_IAM' },
+      { replayingState: true }
     );
 
     expect(updateInput()?.['AuthType']).toBe('AWS_IAM');
@@ -117,7 +118,7 @@ describe('LambdaUrlProvider AuthType effectiveProperties (issue #1654)', () => {
       TargetFunctionArn: FN_ARN,
       AuthType: null,
       InvokeMode: 'BUFFERED',
-    });
+    }, { replayingState: true });
 
     // Both sides are junk, so `UpdateFunctionUrlConfig` was sent WITHOUT
     // AuthType and its merge semantics retained the live value — which cdkd
@@ -143,7 +144,8 @@ describe('LambdaUrlProvider AuthType effectiveProperties (issue #1654)', () => {
       FN_ARN,
       RESOURCE_TYPE,
       { TargetFunctionArn: FN_ARN, AuthType: '', InvokeMode: 'RESPONSE_STREAM' },
-      { TargetFunctionArn: FN_ARN, InvokeMode: 'BUFFERED' }
+      { TargetFunctionArn: FN_ARN, InvokeMode: 'BUFFERED' },
+      { replayingState: true }
     );
 
     // `toBeDefined` first: without it `'AuthType' in (undefined ?? {})` is

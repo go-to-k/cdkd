@@ -2053,6 +2053,7 @@
             "applyGraphQLApiConfig",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2292,6 +2293,7 @@
             "applyGraphQLApiConfig",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2310,6 +2312,7 @@
             "applyEnvironmentVariables",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2432,6 +2435,7 @@
             "applyGraphQLApiConfig",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2562,6 +2566,7 @@
             "applyGraphQLApiConfig",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2863,6 +2868,7 @@
             "applyGraphQLApiConfig",
             "create",
             "createGraphQLApi",
+            "refuseChangedMalformedGraphQLApiBlocks",
             "update",
             "updateGraphQLApi"
           ]
@@ -2903,6 +2909,7 @@
       "gaps": [],
       "blindSpots": [
         "computed key in applyGraphQLApiConfig()",
+        "computed key in refuseChangedMalformedGraphQLApiBlocks()",
         "computed key in updateDataSource()",
         "computed key in updateGraphQLApi()",
         "computed key in updateResolver()"
@@ -5939,6 +5946,7 @@
       "blindSpots": [
         "computed key in canonicalizeDriftProperties()",
         "computed key in collectDesiredKeyAttributeNames()",
+        "computed key in update()",
         "extractLocalTags(...) in update()",
         "object spread in canonicalizeDriftProperties()",
         "object spread in create()",
@@ -17032,7 +17040,8 @@
         "object spread in canonicalizeItemList()",
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",
         "S3BucketProvider.applyEffectiveOverrides(...) in update()",
-        "S3BucketProvider.versioningOrLoggingRefusal(...) in update()"
+        "S3BucketProvider.versioningOrLoggingRefusal(...) in update()",
+        "this.noWriteProbe().applySubConfigDiffs(...) in update()"
       ]
     },
     {

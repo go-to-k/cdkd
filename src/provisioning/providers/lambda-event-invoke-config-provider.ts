@@ -137,6 +137,15 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     // create path refuses at its own call site before reaching this helper
     // (issue #1513). `coerceNumber` because an unquoted YAML `Qualifier: 1` is
     // a NUMBER today and deploys fine.
+    //
+    // Who reaches the warning: `create()` only on a replay (its own read runs
+    // first and refuses on the template path), and `update()` on every caller.
+    // The update arm KEEPS the warning on the template path too, decided when
+    // the #3728 split was widened (issue #3740): `Qualifier` is createOnly (CFn
+    // schema), so a changed value is a REPLACEMENT and never reaches
+    // `update()`. A malformed value here is one the recorded configuration
+    // already carries, and the only template edit that changes it replaces the
+    // resource.
     const qualifier = requireConfigString(
       properties['Qualifier'],
       '$LATEST',

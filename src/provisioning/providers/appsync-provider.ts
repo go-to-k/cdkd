@@ -645,7 +645,8 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::AppSync::GraphQLSchema':
         return this.updateGraphQLSchema(
@@ -696,6 +697,75 @@ export class AppSyncProvider implements ResourceProvider {
   // ─── update helpers ────────────────────────────────────────────────
 
   /**
+   * The template-path pre-flight for `updateGraphQLApi` (issue
+   * [#3740](https://github.com/go-to-k/cdkd/issues/3740)): throw the refusal a
+   * template-path create raises for a malformed nested block, or return.
+   *
+   * It runs the SAME converters the update arms run — the ones behind
+   * `applyGraphQLApiConfig` and `applyEnvironmentVariables`'s container read —
+   * so each refuses exactly where its arm would warn, with the sentence a
+   * template-path create throws.
+   * Only a block that CHANGED from the recorded one is asked: an unchanged
+   * malformed block is not a pending operation (the arm drops the WHOLE block —
+   * for `AdditionalAuthenticationProviders` the whole list, even when only one
+   * nested member is malformed — and AppSync treats the omitted member as "no
+   * change"), so refusing it would fail an update that changes something else.
+   */
+  private refuseChangedMalformedGraphQLApiBlocks(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): void {
+    const changed = (key: string): boolean =>
+      !this.deepEqual(properties[key], previousProperties[key]);
+    // The converters' own `onUnusable` seam COLLECTS the refusal instead of
+    // warning: it receives the very sentence the no-callback arm would throw,
+    // and no `catch` is needed to re-word it (a catch here could also capture
+    // an unrelated typed throw and re-label it).
+    const refusals: string[] = [];
+    const guard: ShapeGuardOptions = {
+      logicalId,
+      onUnusable: (message: string) => refusals.push(message),
+    };
+    if (changed('UserPoolConfig')) {
+      this.toSdkUserPoolConfig(properties['UserPoolConfig'], 'UserPoolConfig', guard);
+    }
+    if (changed('OpenIDConnectConfig')) {
+      this.toSdkOpenIDConnectConfig(
+        properties['OpenIDConnectConfig'],
+        'OpenIDConnectConfig',
+        guard
+      );
+    }
+    if (changed('LambdaAuthorizerConfig')) {
+      this.toSdkLambdaAuthorizerConfig(
+        properties['LambdaAuthorizerConfig'],
+        'LambdaAuthorizerConfig',
+        guard
+      );
+    }
+    if (changed('AdditionalAuthenticationProviders')) {
+      this.toSdkAdditionalAuthProviders(properties['AdditionalAuthenticationProviders'], guard);
+    }
+    if (changed('EnhancedMetricsConfig')) {
+      this.toSdkEnhancedMetricsConfig(properties['EnhancedMetricsConfig'], guard);
+    }
+    if (changed('EnvironmentVariables')) {
+      this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables', guard);
+    }
+    if (refusals.length > 0) {
+      throw new ProvisioningError(
+        `${refusals[0]}. Nothing was applied to GraphQL API ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+  }
+
+  /**
    * Structural equality for the small object / array shapes that ride on
    * AppSync update inputs. `JSON.stringify` is sufficient because none of
    * these shapes contain `undefined` keys at this layer (the create /
@@ -710,7 +780,12 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // Read for the ORIGIN of the desired bag only (`replayingState` /
+    // `desiredFromAwsReadback`): it decides whether a malformed nested block
+    // refuses (a template-path update) or warns (a rollback revert or
+    // `cdkd drift --revert`) — issue #3740.
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // `Name` is immutable on AWS — UpdateGraphqlApi REQUIRES `name` in the
     // input shape but rejects any value other than the existing one.
@@ -744,6 +819,25 @@ export class AppSyncProvider implements ResourceProvider {
           `AWS AppSync GraphqlApi.${immutable} is immutable — destroy + redeploy to change it`
         );
       }
+    }
+
+    // The template-path half of the nested-block shape guards (issue #3740,
+    // the #3728 shape), before ANY call. `applyGraphQLApiConfig` and
+    // `applyEnvironmentVariables` warn-and-drop a malformed block on every
+    // caller, leaving the live value untouched; that stays for the two
+    // state-borne callers (`replayingState`, `desiredFromAwsReadback`), whose
+    // bag the user cannot edit from the template. On a template-path update the
+    // block is template-borne and mutable in place, so it is refused the way a
+    // template-path create refuses it — and HERE, because the
+    // `EnvironmentVariables` arm runs after `UpdateGraphqlApi` has landed.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      this.refuseChangedMalformedGraphQLApiBlocks(
+        properties,
+        previousProperties,
+        logicalId,
+        physicalId,
+        resourceType
+      );
     }
 
     // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
@@ -839,7 +933,10 @@ export class AppSyncProvider implements ResourceProvider {
         logicalId,
         // An UPDATE's desired bag is a STATE record whenever the rollback
         // executor or `drift --revert` replays it, so a malformed nested block
-        // warns rather than making the resource un-rollbackable.
+        // warns rather than making the resource un-rollbackable. On a
+        // template-path update a CHANGED malformed block never gets here
+        // (`refuseChangedMalformedGraphQLApiBlocks` refused it above); what
+        // still warns there is an UNCHANGED one, which this call leaves alone.
         shapeGuard: {
           logicalId,
           onUnusable: (message: string) =>
@@ -1546,12 +1643,28 @@ export class AppSyncProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
-    return entries.map((entry, index) => {
+    // An entry-level or nested downgrade drops the WHOLE list, never one
+    // member of one entry: `UpdateGraphqlApi` REPLACES the list, so sending the
+    // rest would rewrite the live providers the "(leaving the live value
+    // untouched)" warning promises to keep. Returning `undefined` omits the
+    // member, which AppSync treats as "no change" (and a replay-create
+    // proceeds without the block, as its warning says).
+    let dropped = false;
+    const entryOptions: ShapeGuardOptions | undefined = options?.onUnusable
+      ? {
+          ...options,
+          onUnusable: (message: string) => {
+            dropped = true;
+            options.onUnusable?.(message);
+          },
+        }
+      : options;
+    const providers = entries.map((entry, index) => {
       const at = `AdditionalAuthenticationProviders[${index}]`;
       // `requireConfigArray` validates the CONTAINER, not its ELEMENTS — a
       // list of strings would index to `undefined` on every key and send an
       // empty provider object to AWS: the same silent drop one level down.
-      const cfn = this.asObject(entry, at, options) ?? {};
+      const cfn = this.asObject(entry, at, entryOptions) ?? {};
       const provider: AdditionalAuthenticationProvider = {};
       if (cfn['AuthenticationType'] !== undefined) {
         provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
@@ -1559,21 +1672,26 @@ export class AppSyncProvider implements ResourceProvider {
       const oidc = this.toSdkOpenIDConnectConfig(
         cfn['OpenIDConnectConfig'],
         `${at}.OpenIDConnectConfig`,
-        options
+        entryOptions
       );
       if (oidc) provider.openIDConnectConfig = oidc;
       // The additional-provider variant is AWS's CognitoUserPoolConfig, which
       // has NO defaultAction member — a different shape from the top-level one.
-      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig'], `${at}.UserPoolConfig`);
+      const pool = this.toSdkCognitoUserPoolConfig(
+        cfn['UserPoolConfig'],
+        `${at}.UserPoolConfig`,
+        entryOptions
+      );
       if (pool) provider.userPoolConfig = pool;
       const lambda = this.toSdkLambdaAuthorizerConfig(
         cfn['LambdaAuthorizerConfig'],
         `${at}.LambdaAuthorizerConfig`,
-        options
+        entryOptions
       );
       if (lambda) provider.lambdaAuthorizerConfig = lambda;
       return provider;
     });
+    return dropped ? undefined : providers;
   }
 
   private toSdkEnhancedMetricsConfig(
@@ -1737,8 +1855,11 @@ export class AppSyncProvider implements ResourceProvider {
       // The PUT is a WHOLE-MAP replace, so treating a malformed desired value
       // as "absent" would clear every live variable. On a template-path CREATE
       // refusing is right; on UPDATE — or on a create that REPLAYS a cdkd state
-      // record — the user has no template-side remedy, so warn and leave AWS
-      // untouched.
+      // record — warn and leave AWS untouched. A template-path UPDATE reaches
+      // this warning only with an UNCHANGED malformed value: a changed one is
+      // refused before any call (issue #3740,
+      // `refuseChangedMalformedGraphQLApiBlocks`), since this arm runs after
+      // `UpdateGraphqlApi` has landed.
       if (!isUpdate && !replayingState) throw error;
       this.logger.warn(
         `AppSync GraphqlApi ${logicalId}: ${

@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ddb from 'aws-cdk-lib/aws-dynamodb';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Real-AWS test fixture for cdkd's `AWS::DynamoDB::GlobalTable` SDK
@@ -823,6 +824,33 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       // intrinsic would produce a usable string and reach AWS as a bogus mode.
       // `addPropertyOverride` because the L1 prop is typed `string`.
       billingSeedTable.addPropertyOverride('BillingMode', { Unusable: 'not-a-string' });
+    }
+
+    // ─── Issue #3740: staging the REPLAY path for the warn arms ───────────
+    //
+    // A template-path update REFUSES a malformed StreamSpecification /
+    // GlobalSecondaryIndexes / BillingMode since issue #3740, so the #1653 /
+    // #1683 / #1738 warn-and-skip arms are reached only through a replay.
+    // verify.sh drives the rollback REVERT arm: `revert-probe` makes an
+    // ordinary in-place change (a local-replica tag) on the four junk tables,
+    // `inject-fail` fails the deploy after they land (`--no-rollback`), the
+    // journal's previous records are doctored to carry the malformed values,
+    // and `cdkd rollback` replays them. The queue is never created (AWS rejects
+    // the retention period), so it never outlives its step.
+    const revertTables = [streamRecoveryTable, gsiRecoveryTable, gsiProvRecoveryTable, billingSeedTable];
+    // allow-mode-gated-drop: the probe tag exists only for the failing deploy; the rollback and every later step correctly remove it.
+    if (updateMode.includes('revert-probe')) {
+      for (const table of revertTables) {
+        table.addPropertyOverride('Replicas.0.Tags', [{ Key: 'RevertProbe', Value: '1' }]);
+      }
+    }
+    // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (updateMode.includes('inject-fail')) {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${this.stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      for (const table of revertTables) failing.addDependency(table);
     }
 
     // ─── Issue #1857: the WarmThroughput numeric coercion ──────────────────
