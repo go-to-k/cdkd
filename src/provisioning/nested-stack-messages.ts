@@ -29,7 +29,9 @@
  * prevent. `tests/unit/provisioning/nested-stack-provider.test.ts` pins that
  * property against the union of both phrase sets.
  *
- * @param childStackName the child's `<parent>~<childLogicalId>` state key
+ * @param childStackName the child's `<parent>~<childLogicalId>` state key as
+ *   the PROSE may print it — the caller passes it through `plainOrDescribed`,
+ *   since this leaf cannot import it (go-to-k/cdkd#3759)
  * @param errorCount     resources in the child that failed to delete
  * @param alsoSkippedCount resources the child SKIPPED (no AWS call issued)
  * @param alsoInterrupted  whether the child's destroy was also interrupted

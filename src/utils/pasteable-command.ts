@@ -294,6 +294,17 @@ export function plainOrDescribed(value: string, what: string): string {
 }
 
 /**
+ * {@link plainOrDescribed} for a sentence that quotes the name: `'value'` when
+ * `isPasteableIdent` admits it, otherwise the same description UNQUOTED, so the
+ * prose never reads `'a stack name that is not a plain identifier'` as if that
+ * were the name. A plain name's spelling is byte-identical to the literal
+ * `'${value}'` it replaces, which `docs/design/459-nested-stacks.md` quotes.
+ */
+export function quotedOrDescribed(value: string, what: string): string {
+  return isPasteableIdent(value) ? `'${value}'` : plainOrDescribed(value, what);
+}
+
+/**
  * True when `value` reaches the terminal as itself — sanitizing changes
  * nothing, the cap does not cut it, and it is not empty.
  *

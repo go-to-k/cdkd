@@ -337,7 +337,25 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
         "Retry with: cdkd destroy '<stack>'",
       ]);
       expect(message).toContain('is not a plain identifier');
+      // `plainOrDescribed`'s prose also says "is not a plain identifier", so
+      // the line above cannot tell the clause is there. Only the clause
+      // points at `cdkd state list --long`.
+      expect(message).toContain("list the records as stored with 'cdkd state list --long'");
     }
+    // Positive control: a plain name gets no clause.
+    expect(new StackTerminationProtectionError('Prod').message).not.toContain('cdkd state list');
+    // One clause per withheld hole, all of them in the prose BEFORE the
+    // labelled lines, which stay last.
+    const clauses = (message: string): number => message.split("This record's name").length - 1;
+    const beforeLabels = (message: string): void => {
+      const lastClause = message.lastIndexOf("'cdkd state list --long'");
+      expect(lastClause).toBeGreaterThan(-1);
+      expect(lastClause).toBeLessThan(message.indexOf('\nCascade-delete with:'));
+      expect(message.indexOf('\nCascade-delete with:')).toBeLessThan(
+        message.indexOf('\nDestroy the child alone with:')
+      );
+      expect(message.split('\n').at(-1)).toMatch(/^Destroy the child alone with: /);
+    };
     for (const name of forged('Cascade-delete with')) {
       const message = new NestedStackChildDirectDestroyError('Child', name, name).message;
       expect(message).toContain('is a nested child of');
@@ -345,6 +363,8 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       expect(message.split('\n').filter((l) => l.startsWith('Cascade-delete with:'))).toEqual([
         "Cascade-delete with: cdkd destroy '<parent>'",
       ]);
+      expect(clauses(message)).toBe(1);
+      beforeLabels(message);
     }
     for (const name of forged('Destroy the child alone with')) {
       const message = new NestedStackChildDirectDestroyError(name, 'Parent').message;
@@ -352,6 +372,32 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       expect(message.split('\n').filter((l) => l.startsWith('Destroy the child alone with:'))).toEqual([
         "Destroy the child alone with: cdkd state destroy '<stack>'",
       ]);
+      expect(clauses(message)).toBe(1);
+      beforeLabels(message);
+    }
+    // Both holes at once: two clauses, one per hole.
+    const both = new NestedStackChildDirectDestroyError('Prod*', 'Stage/Prod').message;
+    expect(both).toMatch(/^Cascade-delete with: cdkd destroy '<parent>'$/m);
+    expect(both).toMatch(/^Destroy the child alone with: cdkd state destroy '<stack>'$/m);
+    expect(clauses(both)).toBe(2);
+    // `Stage/Prod` is pattern-shaped for `cdkd destroy`, so ITS clause names
+    // that verb; `Prod*` is refused by `plainIdent` alone for `state destroy`.
+    expect(both).toContain("would be read as a PATTERN by 'cdkd destroy'");
+    expect(both).toContain('is not a plain identifier (a letter or digit');
+    beforeLabels(both);
+    // Positive control: plain names get no clause and are quoted as before.
+    const plain = new NestedStackChildDirectDestroyError('Parent~Child', 'Parent').message;
+    expect(clauses(plain)).toBe(0);
+    expect(plain).toContain("Stack 'Parent~Child' is a nested child of 'Parent';");
+  });
+
+  it('quotedOrDescribed quotes a plain identifier and describes anything else UNQUOTED (go-to-k/cdkd#3759)', async () => {
+    const { quotedOrDescribed } = await import('../../../src/utils/pasteable-command.js');
+    expect(quotedOrDescribed('Parent~Child', 'stack name')).toBe("'Parent~Child'");
+    for (const v of ['a b', 'a\nb', 'x*', '']) {
+      expect(quotedOrDescribed(v, 'stack name'), JSON.stringify(v)).toBe(
+        'a stack name that is not a plain identifier'
+      );
     }
   });
 

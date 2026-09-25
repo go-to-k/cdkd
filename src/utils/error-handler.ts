@@ -1,5 +1,10 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
-import { pasteableCommand, plainOrDescribed, withheldTargetClause } from './pasteable-command.js';
+import {
+  pasteableCommand,
+  plainOrDescribed,
+  quotedOrDescribed,
+  withheldTargetClause,
+} from './pasteable-command.js';
 import { displayAwsMessage } from './display-safe.js';
 import { getLogger } from './logger.js';
 
@@ -583,7 +588,7 @@ export class StackTerminationProtectionError extends CdkdError {
       { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
     ]);
     super(
-      `Stack '${plainOrDescribed(stackName, 'stack name')}' has terminationProtection: true ` +
+      `Stack ${quotedOrDescribed(stackName, 'stack name')} has terminationProtection: true ` +
         `and cannot be destroyed. Set terminationProtection: false in the CDK code, redeploy, ` +
         `then retry the destroy.` +
         withheldTargetClause(retry, 'stack', 'cdkd destroy') +
@@ -648,29 +653,39 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // `plainIdent` on both commands and the same predicate in the prose: a
     // name beside a labelled line is named only when it cannot spell one
     // (go-to-k/cdkd#3759).
-    const cascadeCommand = pasteableCommand('cdkd destroy', [
+    const cascade = pasteableCommand('cdkd destroy', [
       { value: parentStack, hole: 'parent', opts: { patternMatched: true, plainIdent: true } },
-    ]).command;
+    ]);
     // `cdkd state destroy` deletes the AWS RESOURCES and then the record — it is
     // the synth-free destroy, not a record-only drop (`state.ts`'s own naming
     // note). `cdkd state orphan` is the record-only one, and is NOT what this
     // message offers.
     // NO `patternMatched` here, unlike the cascade above: `cdkd state destroy`
     // resolves each argument by exact membership (`knownStackNames.has(name)` in
-    // `state.ts`), so a record legitimately named `Prod*` is addressable and
-    // withholding it would cost the operator the only command that works.
-    const childDestroyCommand = pasteableCommand('cdkd state destroy', [
+    // `state.ts`), so a pattern is not what it would misread. `plainIdent`
+    // withholds any non-plain name all the same — `Prod*` included — and no
+    // real stack name is one, so no genuine child loses its command
+    // (go-to-k/cdkd#3759).
+    const childDestroy = pasteableCommand('cdkd state destroy', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
-    ]).command;
+    ]);
+    // Every hole the message prints is explained BEFORE the labelled lines,
+    // which stay last. Hoisted, like the commands, so the template stays
+    // short enough for the docs-parity checker to derive (it caps the raw
+    // template text).
+    const withheld =
+      withheldTargetClause(cascade, 'parent', 'cdkd destroy') +
+      withheldTargetClause(childDestroy, 'stack', 'cdkd state destroy');
+    const child = quotedOrDescribed(stackName, 'stack name');
+    const parent = quotedOrDescribed(parentStack, 'stack name');
     super(
-      `Stack '${plainOrDescribed(stackName, 'stack name')}' is a nested child of ` +
-        `'${plainOrDescribed(parentStack, 'stack name')}'${logicalIdSuffix}; ` +
+      `Stack ${child} is a nested child of ${parent}${logicalIdSuffix}; ` +
         `directly destroying a nested stack is not supported. Either cascade-delete this ` +
         `child along with its parent, or destroy the child on its own — which deletes its ` +
         `AWS resources and its record, and leaves the parent's reference dangling (the ` +
-        `synth-free escape hatch).` +
-        `\nCascade-delete with: ${cascadeCommand}` +
-        `\nDestroy the child alone with: ${childDestroyCommand}`,
+        `synth-free escape hatch).${withheld}` +
+        `\nCascade-delete with: ${cascade.command}` +
+        `\nDestroy the child alone with: ${childDestroy.command}`,
       'NESTED_STACK_CHILD_DIRECT_DESTROY',
       cause
     );

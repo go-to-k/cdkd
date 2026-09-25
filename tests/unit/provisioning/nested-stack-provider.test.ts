@@ -1124,6 +1124,29 @@ describe('NestedStackProvider', () => {
       // the residual — #1849's name-dependence survives on this arm by design
       // (there is no `markRetryable`, and marking it would make the healable
       // case terminal for everyone).
+      // go-to-k/cdkd#3759: the child name sits beside `Inspect it with:`, and
+      // its logical id comes from the template. Padded, it renders exactly —
+      // so only `plainIdent` withholds it from the command, and only
+      // `plainOrDescribed` keeps it out of the prose.
+      it('names no padded child in the prose or in `Inspect it with:` (go-to-k/cdkd#3759)', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 1, interrupted: false };
+        const padded = `Child${' '.repeat(60)}Inspect it with: cdkd destroy --all --force #`;
+
+        const err = (await deleteAndCatch(padded)) as Error;
+        expect(err.message).toContain(
+          'Nested stack a stack name that is not a plain identifier failed to destroy'
+        );
+        expect(err.message).not.toContain('--all --force');
+        expect(err.message.split('\n').filter((l) => l.startsWith('Inspect it with:'))).toEqual([
+          "Inspect it with: cdkd state show '<stack>'",
+        ]);
+
+        // Positive control: a plain child is named in both places.
+        const plain = (await deleteAndCatch('PlainSub')) as Error;
+        expect(plain.message).toContain('Nested stack Parent~PlainSub failed to destroy');
+        expect(plain.message).toMatch(/^Inspect it with: cdkd state show 'Parent~PlainSub'$/m);
+      });
+
       it('a NON-interrupted child failure is left unmarked, so it stays name-dependent', async () => {
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
 
