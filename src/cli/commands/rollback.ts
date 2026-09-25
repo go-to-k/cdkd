@@ -1,21 +1,5 @@
 import { Command, Option } from 'commander';
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
-
-/**
- * The `Re-run with: cdkd rollback` line every refusal here ends in. The name
- * can come from a journal S3 key, and it sits beside a labelled line, so it is
- * named only when it is a plain identifier, and a hole is explained
- * (go-to-k/cdkd#3773).
- */
-export function rerunRollback(stackName: string): string {
-  const rerun = pasteableCommand('cdkd rollback', [
-    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
-  ]);
-  return (
-    withheldTargetClause(rerun, 'stack', 'cdkd rollback', "This stack's name") +
-    `\nRe-run with: ${rerun.command}`
-  );
-}
 import {
   commonOptions,
   stateOptions,
@@ -71,6 +55,22 @@ import {
   STATE_REGION_DIVERGED,
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
+
+/**
+ * The `Re-run with: cdkd rollback` line that a warning and two refusals here
+ * end in. The name can come from a journal S3 key, and it sits beside a
+ * labelled line, so it is named only when it is a plain identifier, and a hole
+ * is explained (go-to-k/cdkd#3773).
+ */
+export function rerunRollback(stackName: string): string {
+  const rerun = pasteableCommand('cdkd rollback', [
+    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+  ]);
+  return (
+    withheldTargetClause(rerun, 'stack', 'cdkd rollback', "This stack's name") +
+    `\nRe-run with: ${rerun.command}`
+  );
+}
 
 interface RollbackOptions {
   force?: boolean;

@@ -794,6 +794,12 @@ describe('the run listing keeps its exact benign layout (issue #2438)', () => {
       "Read one run's events with: cdkd events '<stack>' --run '<runId>'",
     ]);
     expect(out).toContain("This stack's name is not a plain identifier");
+    // The explanation comes BEFORE the line it explains.
+    const plain = out.replace(/\u001b\[[0-9;]*m/g, '');
+    expect(plain.indexOf("This stack's name is not a plain identifier")).toBeGreaterThanOrEqual(0);
+    expect(plain.indexOf("This stack's name is not a plain identifier")).toBeLessThan(
+      plain.indexOf("\nRead one run's events with:")
+    );
   });
 });
 

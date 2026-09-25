@@ -4,13 +4,14 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -300,6 +301,50 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
     expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
     expect(plain).not.toContain('cdkd state list --long');
+  });
+
+  it('folds a newline in a state-listed STACK name onto its progress and skip lines (go-to-k/cdkd#3773)', async () => {
+    // No synth, so the name is an S3 key segment. Printed raw, its newline
+    // started a line the operator reads as cdkd's own.
+    const name = 'Ghost\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted';
+    warnSpy.mockClear();
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(null);
+
+    await runDestroy(['destroy', '--all', '--yes']).catch(() => undefined);
+    const infos = infoSpy.mock.calls.map((c) => String(c[0] ?? ''));
+    const preparing = infos.filter((l) => l.includes('Preparing to destroy stack:'));
+    const skipped = warnSpy.mock.calls
+      .map((c) => String(c[0] ?? ''))
+      .filter((l) => l.includes('No state found for stack'));
+    // Positive controls: both lines fired, naming the folded stack.
+    expect(preparing).toEqual(['\nPreparing to destroy stack: Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted']);
+    expect(infos.filter((l) => l.includes('stack(s) to destroy:'))).toEqual([
+      'Found 1 stack(s) to destroy: Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted',
+    ]);
+    expect(skipped).toEqual(['No state found for stack Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted, skipping']);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('folds a newline in a SYNTHESIZED stack name onto its --remove-protection bypass line (go-to-k/cdkd#3773)', async () => {
+    const name = 'Ghost\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted';
+    warnSpy.mockClear();
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo(name, 'us-east-1', true)],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(null);
+
+    await runDestroy(['destroy', '--all', '--yes', '--remove-protection']).catch(() => undefined);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? ''));
+    // Positive control: the bypass fired, naming the folded stack.
+    expect(warned.filter((l) => l.includes('terminationProtection'))).toEqual([
+      'Stack Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted has terminationProtection: true — bypassing because --remove-protection set',
+    ]);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
   });
 
   it('proceeds to destroy when terminationProtection is absent or false', async () => {

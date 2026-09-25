@@ -2022,6 +2022,9 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
   });
 
   it('rerunRollback names a plain stack and withholds a padded or newline one (go-to-k/cdkd#3773)', () => {
+    // The PADDED name is the one that exercises `plainIdent`: it renders
+    // exactly, so the command gate alone would name it shell-quoted. The
+    // newline name is already withheld as `altered` without it.
     expect(rerunRollback('S')).toBe('\nRe-run with: cdkd rollback S');
     for (const name of [
       `S${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`,
@@ -2035,6 +2038,110 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(out).toContain("This stack's name");
       expect(out.indexOf("This stack's name")).toBeLessThan(out.indexOf('\nRe-run with:'));
     }
+  });
+
+  /**
+   * The three `rerunRollback` call sites, each driven with a name that renders
+   * exactly (so only `plainIdent` withholds it) -- a helper-level case cannot
+   * see a site reverted to the bare gate (go-to-k/cdkd#3773).
+   */
+  const PADDED_STACK = `S${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`;
+  const rerunLines = (message: string): string[] =>
+    message.split('\n').filter((l) => l.startsWith('Re-run with:'));
+
+  function installPaddedCreateSegment(): FakeBackend {
+    const backend = installOneCreateSegment();
+    backend.listStacks.mockResolvedValue([{ stackName: PADDED_STACK, region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({
+      state: {
+        version: 8,
+        stackName: PADDED_STACK,
+        region: 'us-east-1',
+        resources: {
+          Bucket: {
+            physicalId: 'phys-Bucket',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'e0',
+    });
+    backend.loadRollbackJournal.mockResolvedValue({
+      journalVersion: 1,
+      stackName: PADDED_STACK,
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'no-rollback-failure',
+          initialDeploy: false,
+          operations: [
+            {
+              logicalId: 'Bucket',
+              changeType: 'CREATE',
+              resourceType: 'AWS::S3::Bucket',
+              physicalId: 'phys-Bucket',
+            },
+          ],
+        },
+      ],
+    });
+    return backend;
+  }
+
+  it('the failed-persist WARNING names no padded stack on its Re-run line (go-to-k/cdkd#3773)', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const backend = installPaddedCreateSegment();
+    backend.saveState.mockRejectedValue(new Error('PreconditionFailed'));
+    await rollbackCommand(PADDED_STACK, { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to persist state after a rollback operation'));
+
+    expect(line).toBeDefined();
+    expect(rerunLines(line!)).toEqual(["Re-run with: cdkd rollback '<stack>'"]);
+  });
+
+  it('the INTERRUPTED refusal names no padded stack on its Re-run line (go-to-k/cdkd#3773)', async () => {
+    // Fire ONLY the listeners the command added, during the replayed delete
+    // (the pattern in tests/unit/cli/rollback-lock-release-ordering.test.ts).
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    const preExisting = new Set(process.listeners('SIGINT'));
+    replayProvider.delete.mockImplementationOnce(async () => {
+      for (const listener of process.listeners('SIGINT')) {
+        if (preExisting.has(listener)) continue;
+        (listener as unknown as () => void)();
+      }
+    });
+    installPaddedCreateSegment();
+    let err: unknown;
+    try {
+      err = await rollbackCommand(PADDED_STACK, { ...baseOpts }).catch((e) => e);
+    } finally {
+      process.stderr.write = realWrite;
+    }
+
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect((err as Error).message).toContain('Rollback interrupted');
+    expect(rerunLines((err as Error).message)).toEqual(["Re-run with: cdkd rollback '<stack>'"]);
+  });
+
+  it('the FAILED-OPERATIONS refusal names no padded stack on its Re-run line (go-to-k/cdkd#3773)', async () => {
+    replayProvider.delete.mockClear();
+    replayProvider.delete.mockRejectedValueOnce(new Error('AWS delete boom'));
+    installPaddedCreateSegment();
+    const err = await rollbackCommand(PADDED_STACK, { ...baseOpts }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect((err as Error).message).toContain('failed operation(s)');
+    expect(rerunLines((err as Error).message)).toEqual(["Re-run with: cdkd rollback '<stack>'"]);
   });
 
   it('the failed-strip warning renders the S3 error through the DENYLIST too', async () => {

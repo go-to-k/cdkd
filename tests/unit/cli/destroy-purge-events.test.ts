@@ -133,6 +133,36 @@ describe('purgeEventsAfterDestroy', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(/Failed to purge.*AccessDenied/s);
   });
+
+  it('folds a newline in the stack, region and error onto one line (go-to-k/cdkd#3773)', async () => {
+    // The name is the operator's argument or an S3 key segment, and the error
+    // is AWS text: a newline in any of them started a line of its own.
+    const stack = 'Ghost\n  Purged deployment-event history for RealStack';
+    const region = 'us-east-1\nforged-region-row';
+    const purged = fakeLogger();
+    await purgeEventsAfterDestroy(
+      fakeReader(PRUNED).reader,
+      stack,
+      region,
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      purged.logger
+    );
+    const failed = fakeLogger();
+    await purgeEventsAfterDestroy(
+      fakeReader(PRUNED, { throws: new Error('AccessDenied\nforged-error-row') }).reader,
+      stack,
+      region,
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      failed.logger
+    );
+    const purgedLine = String(purged.info.mock.calls[0]![0]);
+    const failedLine = String(failed.warn.mock.calls[0]![0]);
+    // Positive controls: each line fired, naming the folded values.
+    expect(purgedLine).toContain('Ghost   Purged deployment-event history for RealStack (us-east-1 forged-region-row)');
+    expect(failedLine).toContain('Ghost   Purged deployment-event history for RealStack: AccessDenied forged-error-row');
+    expect(purgedLine).not.toMatch(/[\n\r]/);
+    expect(failedLine).not.toMatch(/[\n\r]/);
+  });
 });
 
 /**

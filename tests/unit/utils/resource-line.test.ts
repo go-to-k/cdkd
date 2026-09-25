@@ -45,6 +45,18 @@ describe('formatResourceLine', () => {
     expect(line).toContain(`(${type})`);
   });
 
+  // go-to-k/cdkd#3773: a newline in a logical id, type or skip reason would
+  // start a line the operator reads as cdkd's own.
+  it.each([
+    ['logical id', 'Victim\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted', type, undefined],
+    ['resource type', id, 'AWS::S3::Bucket\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted', undefined],
+    ['verb override', id, type, 'skipped (boom\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted)'],
+  ] as const)('folds a newline in the %s onto the one line', (_field, lid, rtype, verb) => {
+    const line = formatResourceLine('skipped', lid, rtype, verb);
+    expect(line).not.toMatch(/[\n\r]/);
+    expect(line).toContain('RealDatabase');
+  });
+
   // Issue #1752: `skipped` is the one op that is NEITHER success nor failure.
   describe('skipped (issue #1752)', () => {
     it('renders a yellow warning glyph — not a check and not a cross', () => {
