@@ -989,7 +989,13 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  * go-to-k/cdkd#3691: the writer's `credentialFingerprint`, which every reader
  * computes the same way from the clients it resolves with), written at the
  * moment the producer's outputs are redacted and read at the three cross-stack
- * sites above. It answers only for a producer
+ * sites above. The fingerprint covers only an EXPLICIT `profile` /
+ * `accessKeyId`: a library caller that switches accounts through the
+ * process-wide environment or default credential chain (e.g. `AWS_PROFILE`,
+ * `AWS_ACCESS_KEY_ID`, the shared config file, web identity) with clients
+ * carrying neither shares one identity key across those accounts — the same
+ * boundary as the resolver's value caches (go-to-k/cdkd#3692). It answers
+ * only for a producer
  * THIS PROCESS deployed in THIS run, which is exactly the population that has a
  * plaintext to hand back: a separate `cdkd deploy` of the consumer has none, and
  * that case is refused rather than guessed at.
