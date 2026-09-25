@@ -31,6 +31,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
@@ -351,6 +352,27 @@ function formatStackRefSafe(ref: StackStateRef): string {
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
+ * `state resources` / `state show` refusing a legacy region-less record. The
+ * name is the operator's own positional, rendered through `safe` in the prose;
+ * the `cdkd deploy` beside the labelled line takes `plainIdent`, as
+ * `refresh-observed`'s legacy refusal does (go-to-k/cdkd#3696), so all three
+ * decide "may I name this target" by one predicate and explain a hole with the
+ * gate's own reason.
+ */
+function legacyRecordRefusal(stackName: string): Error {
+  const migrate = pasteableCommand('cdkd deploy', [
+    { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+  ]);
+  return new Error(
+    `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
+      `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
+      `after it.` +
+      withheldTargetClause(migrate, 'stack', 'cdkd deploy') +
+      `\nMigrate with: ${migrate.command}`
+  );
 }
 
 /**
@@ -907,16 +929,7 @@ async function stateResourcesCommand(
     const refs = await setup.stateBackend.listStacks();
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
-      throw new Error(
-        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
-          `after it.` +
-          `\nMigrate with: ${
-            pasteableCommand('cdkd deploy', [
-              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-            ]).command
-          }`
-      );
+      throw legacyRecordRefusal(stackName);
     }
     const stateResult = await setup.stateBackend.getState(stackName, ref.region);
     if (!stateResult) {
@@ -1294,16 +1307,7 @@ async function stateShowCommand(
     const refs = await setup.stateBackend.listStacks();
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
-      throw new Error(
-        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
-          `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
-          `after it.` +
-          `\nMigrate with: ${
-            pasteableCommand('cdkd deploy', [
-              { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-            ]).command
-          }`
-      );
+      throw legacyRecordRefusal(stackName);
     }
 
     const [stateResult, lockInfo] = await Promise.all([
@@ -2207,15 +2211,18 @@ async function stateOrphanCommand(
         // space — which `formatStackRefSafe` records as a residual on
         // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
+        // `plainIdent` for the same reason as the legacy refusals in this file
+        // (go-to-k/cdkd#3696): a labelled `Destroy with:` line names a target
+        // only when it is a plain identifier, and a hole says why.
+        const destroyCmd = pasteableCommand('cdkd destroy', [
+          { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+        ]);
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
-            `Delete the actual resources instead with the command below.\n` +
-            `Destroy with: ${
-              pasteableCommand('cdkd destroy', [
-                { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-              ]).command
-            }\n\n`
+            `Delete the actual resources instead with the command below.` +
+            withheldTargetClause(destroyCmd, 'stack', 'cdkd destroy') +
+            `\nDestroy with: ${destroyCmd.command}\n\n`
         );
         const ok = await confirmStateOrphanRemoval(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
@@ -3404,43 +3411,34 @@ async function stateRefreshObservedCommand(
     // prose owes the reader is a faithful IDENTITY, not a shell word.
     for (const target of targets) {
       if (!target.region) {
-        // `displayIdent`, not `shellQuote(safeStackName(...))` (M9 of the
-        // go-to-k/cdkd#3499 review). `safeStackName` is `displaySafe`, which
-        // TRIMS: a planted v1 key `cdkd/ProdStack /state.json` printed as
-        // `Stack ProdStack`, byte-identical to a healthy sibling, directly
-        // above a `Migrate with: cdkd deploy '<stack>'` template. The operator
-        // fills the hole with the name they were shown and WRITES to the real
-        // `ProdStack`. `displayIdent` quotes what it altered, so the two cannot
-        // read alike, and `shellQuote` is gone because nothing here is a shell
-        // word any more.
-        //
-        // This is NOT an argument for aligning the prose with the two sibling
-        // refusals in this file: they render a user-typed CLI argument, this
-        // one an S3 key segment an attacker can plant. What M5 made uniform is
-        // the COMMAND — its label, its placement, hole-vs-withhold. Prose
-        // rendering is a different axis and the sites differ on it for a
-        // reason.
-        // ONE `displayIdent` read, not two — `displayIdent`'s own header asks
-        // for that, since each call re-reads `value.toString()` and a hostile
-        // object can answer differently each time (m18 of the
-        // go-to-k/cdkd#3499 review). There is nothing to compare it against
-        // here any more: since M11 the decision about whether the name is
-        // safe to NAME belongs to `pasteableCommand`, which reads the RAW
-        // value, and this rendering is only what the PROSE shows.
-        const stack = displayIdent(target.stackName, {
-          maxCodePoints: STACK_REF_MAX_CODE_POINTS,
-        });
-        // The gate this site spelled out by hand is `pasteableCommand`'s
-        // (go-to-k/cdkd#3436), and every clause of it survives: the name is
-        // named only when it renders EXACTLY (an altered one can name a
-        // DIFFERENT stack in the user's app, and `cdkd deploy` WRITES), it is
-        // withheld when `cdkd deploy` would read it as a PATTERN — a legacy key
-        // named `*` renders exactly and would deploy every stack — or as an
-        // OPTION, since quoting does not stop Commander parsing `'--all'` as a
-        // flag. Withheld, the hole is printed rather than the altered spelling.
-        // The command is LAST and UNWRAPPED on its own labelled line.
+        // The name is an S3 KEY segment an attacker can plant, and it sits
+        // beside a labelled `Migrate with:` line, so BOTH the prose and the
+        // command take `isPasteableIdent` — the rule for naming a target
+        // beside a labelled line (`state-malformed-containers.md`,
+        // go-to-k/cdkd#3328; go-to-k/cdkd#3696). `displayIdent` is not
+        // enough for the prose: it folds a newline and quotes what it alters,
+        // but keeps interior spaces, so `ProdStack` + padding + `Migrate
+        // with: cdkd destroy --all --force #` still wraps into a counterfeit
+        // row. A name the predicate refuses is described, not shown — the
+        // clause below gives the gate's own reason, and `cdkd state list`
+        // shows it. `plainIdent` makes the command's verdict the same one, so
+        // the prose never names a value the command withholds.
+        const named = isPasteableIdent(target.stackName);
+        const subject = named
+          ? `Stack ${target.stackName}`
+          : `A stack whose name is not a plain identifier (see 'cdkd state list')`;
+        // The command is LAST and UNWRAPPED on its own labelled line, named
+        // only when the gate names it: not when it would not render EXACTLY
+        // (an altered name can name a DIFFERENT stack, and `cdkd deploy`
+        // WRITES), is a PATTERN (`*` deploys every stack), an OPTION (quoting
+        // does not stop Commander parsing `'--all'`), or not a plain
+        // identifier.
         const migrate = pasteableCommand('cdkd deploy', [
-          { value: target.stackName, hole: STACK_HOLE, opts: { patternMatched: true } },
+          {
+            value: target.stackName,
+            hole: STACK_HOLE,
+            opts: { patternMatched: true, plainIdent: true },
+          },
         ]);
         // The SAME shape as the two sibling refusals in this file, deliberately
         // (M5 of the go-to-k/cdkd#3499 review). `main` withheld the example
@@ -3451,7 +3449,7 @@ async function stateRefreshObservedCommand(
         // sentences. Per-site judgement about what is safe HERE is the habit
         // this PR exists to end.
         throw new Error(
-          `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
+          `${subject} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
             // The clause comes from the GATE's own reason, not from a second
             // predicate here (M11 of the go-to-k/cdkd#3499 review). Keyed on

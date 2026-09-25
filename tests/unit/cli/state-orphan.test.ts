@@ -285,6 +285,35 @@ describe('cdkd state orphan', () => {
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
+  it('holds a NON-PLAIN name out of the `Destroy with:` line, and says why (go-to-k/cdkd#3696)', async () => {
+    // Exact, so the command gate alone would name it; `plainIdent` withholds
+    // it beside the labelled line, and the clause names `cdkd destroy`'s
+    // rule rather than `cdkd deploy`'s.
+    mockListStacks.mockResolvedValue([{ stackName: 'Old;Stack', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+
+    const out = await runStateOrphan(['orphan', 'Old;Stack']);
+
+    expect(out).toMatch(/AWS resources will NOT be deleted/);
+    expect(out).toContain('is not a plain identifier');
+    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>'$/m);
+    expect(out).not.toContain("cdkd destroy 'Old;Stack'");
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+  it('names the PATTERN reason with `cdkd destroy`, the verb this line runs (go-to-k/cdkd#3696)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod*', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+
+    const out = await runStateOrphan(['orphan', 'Prod*']);
+
+    expect(out).toContain("would be read as a PATTERN by 'cdkd destroy'");
+    expect(out).not.toContain("'cdkd deploy'");
+    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>'$/m);
+  });
+
   it('prompts and cancels when the user answers `n` (or empty)', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);

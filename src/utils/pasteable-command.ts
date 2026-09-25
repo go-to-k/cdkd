@@ -424,13 +424,11 @@ export function withheldTargetClause(
   built: PasteableCommand,
   hole: string,
   /**
-   * The verb the two shape-specific arms name — `'cdkd deploy'` at both live
-   * callers, so the hardcoded spelling this replaced was CORRECT for both. A
-   * PARAMETER since M13 of the go-to-k/cdkd#3613 review for the caller that
-   * does not exist yet: this helper is shared now, and a third site building a
-   * different command would have inherited a sentence naming the wrong one,
-   * silently, with the message still well-formed. (An earlier version of this
-   * comment said `state.ts` had already hit that; it had not.)
+   * The verb the two shape-specific arms name — `'cdkd deploy'` at the legacy
+   * region-less refusals, `'cdkd destroy'` at `state orphan`'s warning
+   * (go-to-k/cdkd#3696). A PARAMETER since M13 of the go-to-k/cdkd#3613
+   * review: a hardcoded verb would name the wrong command at any caller
+   * building a different one, silently, with the message still well-formed.
    */
   verb: string
 ): string {

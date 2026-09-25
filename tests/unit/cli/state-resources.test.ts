@@ -483,6 +483,29 @@ describe('cdkd state resources', () => {
     expect(held).not.toContain("cdkd deploy 'Prod*'");
   });
 
+  it('holds an exact but NON-PLAIN legacy name out of the migrate command, and says why (go-to-k/cdkd#3696)', async () => {
+    // `Old;Stack` renders exactly, so the command gate alone would name it
+    // shell-quoted. Beside a labelled line the rule is `isPasteableIdent`
+    // (go-to-k/cdkd#3328): the hole prints with the `not-plain` reason, and
+    // the command is still the message's last line.
+    mockListStacks.mockResolvedValue([{ stackName: 'Old;Stack', region: undefined }]);
+    await runStateResources(['resources', 'Old;Stack']).catch(() => undefined);
+    const held = errorSpy.mock.calls.map(String).join('\n');
+    expect(held).toContain('only a legacy state record');
+    expect(held).toContain('is not a plain identifier');
+    expect(held).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(held.trimEnd().endsWith("Migrate with: cdkd deploy '<stack>'")).toBe(true);
+    expect(held).not.toContain("cdkd deploy 'Old;Stack'");
+
+    // The PATTERN reason keeps its own sentence, naming the verb.
+    errorSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod*', region: undefined }]);
+    await runStateResources(['resources', 'Prod*']).catch(() => undefined);
+    const pattern = errorSpy.mock.calls.map(String).join('\n');
+    expect(pattern).toContain("would be read as a PATTERN by 'cdkd deploy'");
+    expect(pattern).not.toContain('is not a plain identifier');
+  });
+
   it('emits a JSON array of full resource details with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
