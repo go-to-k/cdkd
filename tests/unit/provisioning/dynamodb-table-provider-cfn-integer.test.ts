@@ -1150,7 +1150,13 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           },
           // A non-empty secret bag is what makes the masker a real
           // `String.replace` call rather than the identity default.
-          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+          // `replayingState`: the skip is a state-borne caller's arm since
+          // issue #3728 (the template path refuses at pre-flight, and its own
+          // numeric-name case lives in the zero-capacity split test file).
+          {
+            maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>'),
+            replayingState: true,
+          }
         )
       ).resolves.not.toThrow();
 

@@ -378,6 +378,91 @@ function liveCeilingAlreadyMatches(
 }
 
 /**
+ * Is this per-index capacity AWS's on-demand `{0, 0}` placeholder — BOTH
+ * members resolving to 0 through {@link toFiniteNumber}, so a string-spelled
+ * `{'0', '0'}` counts and a half-zero `{0, 7}` does not?
+ *
+ * The ONE predicate behind both answers to that value on the UPDATE path: the
+ * template-path pre-flight refusal ({@link zeroCapacityIndexRefusal}) and the
+ * warn-skip the two non-template callers still take
+ * (`DynamoDBTableProvider.skipZeroCapacityIndexUpdate`). Sharing it is what
+ * keeps the refusal from being narrower or wider than the skip it replaces on
+ * the template path.
+ */
+function isZeroCapacityPlaceholder(requested: ProvisionedThroughput | undefined): boolean {
+  if (requested === undefined || requested === null || typeof requested !== 'object') return false;
+  return (
+    toFiniteNumber(requested.ReadCapacityUnits) === 0 &&
+    toFiniteNumber(requested.WriteCapacityUnits) === 0
+  );
+}
+
+/**
+ * The template-path pre-flight refusal for a per-index `ProvisionedThroughput`
+ * of `{0, 0}` (issue [#3728](https://github.com/go-to-k/cdkd/issues/3728)), or
+ * `undefined` when no index would reach `applyGsiUpdates`' capacity arms
+ * carrying one.
+ *
+ * SCOPE, matched to what those arms act on rather than to every entry that
+ * holds the value. An index is named only when its capacity is a PENDING
+ * operation: it is absent from the recorded previous side (a new index, or the
+ * adopted-index arm), or its `ProvisionedThroughput` differs from the recorded
+ * one (the same-name arm's own change test, `JSON.stringify` against
+ * `JSON.stringify`). A steady-state template that has always carried the
+ * placeholder emits no capacity op, so refusing it would fail a deploy that
+ * sends nothing — the same gate the `StreamSpecification` refusal takes.
+ *
+ * Wider than the skip in ONE direction, deliberately: a brand-new index, whose
+ * `Create` action never consulted the skip and sent `{0, 0}` for AWS to reject
+ * AFTER the tag diff and any billing flip had landed. Refusing it here trades
+ * that half-applied failure for one that applied nothing.
+ */
+function zeroCapacityIndexRefusal(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  logicalId: string,
+  maskSecrets: SecretMasker
+): string | undefined {
+  const asEntries = (value: unknown): Array<Record<string, unknown>> =>
+    (Array.isArray(value) ? (value as unknown[]) : []).filter(
+      (entry): entry is Record<string, unknown> =>
+        entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+    );
+  // Keyed exactly as `applyGsiUpdates` keys `prevByName`: truthy names only.
+  const previousByName = new Map<unknown, Record<string, unknown>>();
+  for (const entry of asEntries(previousProperties['GlobalSecondaryIndexes'])) {
+    if (entry['IndexName']) previousByName.set(entry['IndexName'], entry);
+  }
+  const offending = asEntries(properties['GlobalSecondaryIndexes'])
+    .filter((entry) => Boolean(entry['IndexName']))
+    .filter((entry) =>
+      isZeroCapacityPlaceholder(entry['ProvisionedThroughput'] as ProvisionedThroughput | undefined)
+    )
+    .filter((entry) => {
+      const previous = previousByName.get(entry['IndexName']);
+      return (
+        previous === undefined ||
+        JSON.stringify(previous['ProvisionedThroughput']) !==
+          JSON.stringify(entry['ProvisionedThroughput'])
+      );
+    })
+    // A RESOLVED property value, masked raw so a name below
+    // `MIN_NEEDLE_LENGTH` still reaches the whole-value arm; a numeric name
+    // renders as the literal `indexScopeAt` uses.
+    .map((entry) =>
+      typeof entry['IndexName'] === 'string' ? maskSecrets(entry['IndexName']) : '<unnamed>'
+    );
+  if (offending.length === 0) return undefined;
+  return (
+    `AWS::DynamoDB::Table ${logicalId}: GlobalSecondaryIndexes ${offending.join(', ')} declare ` +
+    `ProvisionedThroughput {ReadCapacityUnits: 0, WriteCapacityUnits: 0}, which is AWS's ` +
+    `on-demand placeholder rather than a capacity DynamoDB accepts (the minimum is 1). Declare ` +
+    `a capacity of at least 1, or remove the per-index ProvisionedThroughput on a ` +
+    `PAY_PER_REQUEST table. Nothing was applied to the table`
+  );
+}
+
+/**
  * The sentinel DynamoDB accepts to CLEAR an on-demand request-unit maximum
  * (issue [#3373](https://github.com/go-to-k/cdkd/issues/3373)).
  *
@@ -1787,11 +1872,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    // Read for ONE thing today: `maskSecrets` (issue #1932 item 3, adopted here
-    // by issue #1997). The update path carries the same RESOLVED bag as
+    // Read for two things. `maskSecrets` (issue #1932 item 3, adopted here by
+    // issue #1997): the update path carries the same RESOLVED bag as
     // `create()`, so the masking requirement is identical on both — a masker
     // present on one and absent from the other is not a partial fix, it is a fix
-    // with a hole in the shape of whichever path a given deploy takes.
+    // with a hole in the shape of whichever path a given deploy takes. And the
+    // ORIGIN of the desired bag (`replayingState` / `desiredFromAwsReadback`),
+    // which decides whether the pre-flight refusals below refuse (a template
+    // deploy) or downgrade (a rollback revert or `cdkd drift --revert`).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // ONE masked sink for every warning in this method (issue #1997), rather
@@ -1835,6 +1923,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
+        }
+      }
+
+      // A per-index `ProvisionedThroughput` of `{0, 0}` is REFUSED on the
+      // template path (issue #3728), here — before any call — for the reason
+      // `create()` fails on the same value: DynamoDB's minimum is 1, so the
+      // template can never take effect, and the remedy is one template edit.
+      // `applyGsiUpdates` used to warn-SKIP it on every caller, which deployed
+      // green while recording a capacity that was never sent. The two
+      // state-borne callers keep that skip (`skipZeroCapacityIndexUpdate` says
+      // why): neither hands a bag the user can edit from the template.
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        const zeroCapacityRefusal = zeroCapacityIndexRefusal(
+          properties,
+          previousProperties,
+          logicalId,
+          maskSecrets
+        );
+        if (zeroCapacityRefusal !== undefined) {
+          throw new ProvisioningError(zeroCapacityRefusal, resourceType, logicalId, physicalId);
         }
       }
 
@@ -5813,39 +5921,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * capacity — including a half-declared or malformed one — still goes out and
    * is answered by AWS, the fail-OPEN direction this file uses everywhere.
    *
-   * CALLER-BLIND, decided rather than overlooked (PR review). A TEMPLATE-borne
-   * `{0, 0}` warn-skips here while `create()` fails loudly on the same value,
-   * which reads like the "loud failure for a quiet lie" trade the adopted-index
-   * arm below forbids. It was decided for three reasons; the first no longer
-   * holds as written (see its own bullet), the other two still do:
+   * NOT caller-blind any more (issue #3728). A TEMPLATE-borne `{0, 0}` never
+   * reaches this skip: `update()` REFUSES it at pre-flight, before any call —
+   * see {@link zeroCapacityIndexRefusal} — exactly as `create()` fails loudly
+   * on the same value. What still arrives here is the two NON-template desired
+   * bags, and for them the warn-skip stands:
    *
-   *  - When this was decided, no discriminator separated the callers that
-   *    matter. `ResourceProvider.update` takes an optional `UpdateContext`, and
-   *    `desiredFromAwsReadback` on it is set ONLY by `cdkd drift --revert`
-   *    (`src/cli/commands/drift.ts`). The rollback executor's revert arms DO
-   *    pass a context (a `maskSecrets` capability, issue #1932) but never set
-   *    that flag: their desired bag is `previousState.properties`, a TEMPLATE
-   *    recorded earlier. At the time they were therefore indistinguishable
-   *    from an ordinary template deploy — and THAT is the pair this decision
-   *    turns on. (An earlier revision said the revert arms "pass NO context",
-   *    which stopped being true with #1932 — issue #1999.) Since issue #3141
-   *    they ALSO set `UpdateContext.replayingState`, so the caller is now
-   *    knowable: the per-index `OnDemandThroughput` refusal in `update()` gates
-   *    on exactly that pair of flags (the go-to-k/cdkd#3401 review). This arm
-   *    was not re-decided when that became possible; splitting it the same way
-   *    would turn a template-path warn-skip into a refusal, a behaviour change
-   *    that needs its own review rather than a comment edit (issue #3728).
-   *  - The repo's general rule for the UPDATE path is WARN-never-throw (issues
-   *    #1545 / #1552): the desired bag here can BE a historical cdkd state
-   *    record, and a refusal would make the table un-updatable and
-   *    un-rollbackable with no template-side remedy.
-   *  - The lie is bounded and self-surfacing. AWS never accepted `{0, 0}` at
-   *    create either, so no live table can be holding it; and where the value
-   *    would actually matter — a PROVISIONED table, whose indexes hold a real
-   *    capacity — recording `{0, 0}` diverges from the readback and `cdkd drift`
-   *    REPORTS it. On a PAY_PER_REQUEST table the recorded `{0, 0}` matches what
-   *    `DescribeTable` reports for every index anyway, so there is no divergence
-   *    to hide.
+   *  - `cdkd drift --revert` (`UpdateContext.desiredFromAwsReadback`), the
+   *    caller this skip was written for: its desired bag is a pre-#1767
+   *    `observedProperties` blob, which the user cannot edit from the template.
+   *  - The rollback executor's two revert arms (`UpdateContext.replayingState`,
+   *    since issue #3141): their desired bag is `previousState.properties`, a
+   *    cdkd STATE record, so a refusal would make the table un-rollbackable with
+   *    no template-side remedy (issues #1545 / #1552).
+   *
+   * The lie the skip tells on those paths is bounded and self-surfacing. AWS
+   * never accepted `{0, 0}` at create either, so no live table can be holding
+   * it; and where the value would actually matter — a PROVISIONED table, whose
+   * indexes hold a real capacity — recording `{0, 0}` diverges from the readback
+   * and `cdkd drift` REPORTS it. On a PAY_PER_REQUEST table the recorded
+   * `{0, 0}` matches what `DescribeTable` reports for every index anyway, so
+   * there is no divergence to hide.
+   *
+   * Until issue #3728 this skip was caller-blind: when it was written no
+   * discriminator separated a template deploy from the rollback revert arms
+   * (they set neither flag), and the template path warn-skipped too. That
+   * reason expired with #3141, and the template path now takes the refusal.
    */
   private skipZeroCapacityIndexUpdate(
     // `unknown`, for the reason {@link indexScopeAt} exists (the
@@ -5856,13 +5957,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     requested: ProvisionedThroughput | undefined,
     maskSecrets: SecretMasker
   ): boolean {
-    if (requested === undefined) return false;
-    if (
-      toFiniteNumber(requested.ReadCapacityUnits) !== 0 ||
-      toFiniteNumber(requested.WriteCapacityUnits) !== 0
-    ) {
-      return false;
-    }
+    if (!isZeroCapacityPlaceholder(requested)) return false;
     // ONE masked sink (issue #1997) — BUILT, not an inline wrap. `indexName` is
     // a RESOLVED property value (the declared `IndexName`) and is ALSO masked
     // raw: a DynamoDB index name may be as short as 3 characters, which is

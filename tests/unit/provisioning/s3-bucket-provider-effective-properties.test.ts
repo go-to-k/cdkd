@@ -174,9 +174,15 @@ describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
       VersioningConfiguration: { Status: 'Enabled' },
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      ...previousProperties,
-    });
+    // State-borne: a template-path update refuses this value (issue #3728).
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { ...previousProperties },
+      { replayingState: true }
+    );
 
     expect(sentCommands(PutBucketVersioningCommand)).toHaveLength(0);
     expect(result.effectiveProperties?.['VersioningConfiguration']).toEqual({ Status: 'Enabled' });
@@ -528,9 +534,20 @@ describe('UPDATE: every applier records under ITS OWN key (wiring fence)', () =>
         LifecycleConfiguration: UNSKIPPED_SIBLING,
       };
 
-      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-        ...previousProperties,
-      });
+      // The template path, except for the versioning / logging rows: their
+      // warn-and-skip is a state-borne caller's arm since issue #3728 (a
+      // template-path update refuses those values up front), so they run as a
+      // rollback revert replaying a record.
+      const stateBorneOnly =
+        site.key === 'VersioningConfiguration' || site.key === 'LoggingConfiguration';
+      const result = await provider.update(
+        'B',
+        BUCKET,
+        RESOURCE_TYPE,
+        properties,
+        { ...previousProperties },
+        stateBorneOnly ? { replayingState: true } : undefined
+      );
 
       expect(result.effectiveProperties).toBeDefined();
       expect(result.effectiveProperties?.[site.key]).toEqual(site.expected);

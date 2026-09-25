@@ -329,7 +329,14 @@ export class Route53Provider implements ResourceProvider {
           previousProperties
         );
       case 'AWS::Route53::RecordSet':
-        return this.updateRecordSet(logicalId, physicalId, resourceType, properties, context);
+        return this.updateRecordSet(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1108,6 +1115,7 @@ export class Route53Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 record set ${logicalId}: ${physicalId}`);
@@ -1122,35 +1130,68 @@ export class Route53Provider implements ResourceProvider {
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
 
-    // The same guard as the create path, but the downgrade is UNCONDITIONAL
-    // (issue #1711) — the `updateRoute` precedent. When it was decided
-    // `update()` could not tell a template-borne update from the STATE-borne
-    // desired bag that `rollback-executor.ts`'s revert arm and `cdkd drift
-    // --revert` both hand it. Since issue #3141 it can
-    // (`UpdateContext.replayingState` plus `desiredFromAwsReadback`); this arm
-    // was not re-decided, since gating it would turn a template-path warning
-    // into a refusal (issue #3728). Refusing would make a record an
-    // older binary already wrote under the ambiguous id un-revertable, with
-    // no template edit that repairs it. So the pre-guard behavior stands here
-    // and the ambiguous id becomes ANNOUNCED rather than silent, while the
-    // refusal keeps its teeth on the create path, where the value is always
-    // template-borne. Placed before the UPSERT and outside the `try` anyway,
-    // so a future arm that DOES throw cannot be re-wrapped as "Failed to
-    // update record set".
-    const compositeId = packCompositeId(
-      resourceType,
-      logicalId,
-      [
-        { name: 'hostedZoneId', value: hostedZoneId },
-        { name: 'recordName', value: recordName },
-        { name: 'recordType', value: recordType },
-      ],
-      {
+    // The same guard as the create path, split PER SEGMENT on whether THIS
+    // update introduced the separator (issue #3728; the warning itself dates
+    // from issue #1711).
+    //
+    // - REFUSED: a template-path update whose `Name` or `Type` carries the
+    //   separator and DIFFERS from the recorded value. Both are mutable in
+    //   place (the type's only createOnly properties are `HostedZoneId` /
+    //   `HostedZoneName`), so the UPSERT below writes a record under the new,
+    //   ambiguous id — exactly what the create path refuses, reached through a
+    //   rename instead of a create, and fixed by the same template edit.
+    // - WARNED, as before: a segment the recorded resource ALREADY carries (an
+    //   older binary wrote the record under the ambiguous id before the create
+    //   path refused it), and every segment on the two state-borne paths (the
+    //   rollback executor's revert arms set `replayingState`, `cdkd drift
+    //   --revert` sets `desiredFromAwsReadback`). None of those is fixable
+    //   from the template: the only edit is renaming the DNS record, which
+    //   serves a different name rather than repairing this one, and refusing
+    //   would make the existing record un-updatable and un-revertable. The
+    //   hosted-zone segment is always in this group — its properties are
+    //   createOnly, so an update never changes it.
+    //
+    // Placed before the UPSERT and outside the `try`, so the refusal is not
+    // re-wrapped as "Failed to update record set".
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    const recordedSegmentValues: Readonly<Record<string, unknown>> = {
+      recordName: previousProperties['Name'],
+      recordType: previousProperties['Type'],
+    };
+    const segments = [
+      { name: 'hostedZoneId', value: hostedZoneId },
+      { name: 'recordName', value: recordName },
+      { name: 'recordType', value: recordType },
+    ];
+    // "Differs" is judged the way Route 53 identifies a record — trailing dot
+    // and letter case do not make a different name — and FAILS TOWARD THE
+    // WARNING whenever the recorded side cannot be compared: absent, not a
+    // string, or a redacted dynamic reference (`redactSecretsForState` writes
+    // `{{resolve:...}}` into the record where the desired side holds the
+    // plaintext), since refusing there would strand a record whose name
+    // never changed. The hosted-zone segment has no recorded entry here at
+    // all (its properties are createOnly), so it always reads as not
+    // comparable and keeps the warning.
+    const sameRecordedSegment = (value: unknown, recorded: unknown): boolean => {
+      if (typeof recorded !== 'string' || recorded.includes('{{resolve:')) return true;
+      const normalize = (text: string): string => text.replace(/\.$/, '').toLowerCase();
+      return normalize(String(value)) === normalize(recorded);
+    };
+    const introducesSeparator =
+      !stateBorneDesired &&
+      segments.some(
+        (segment) =>
+          String(segment.value).includes(COMPOSITE_ID_SEPARATOR) &&
+          !sameRecordedSegment(segment.value, recordedSegmentValues[segment.name])
+      );
+    const compositeId = packCompositeId(resourceType, logicalId, segments, {
+      ...(!introducesSeparator && {
         onRefusal: (message: string) => this.logger.warn(message),
-        // Issue #2176 -- see the sibling create site.
-        maskSecrets: context?.maskSecrets,
-      }
-    );
+      }),
+      // Issue #2176 -- see the sibling create site.
+      maskSecrets: context?.maskSecrets,
+    });
 
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);

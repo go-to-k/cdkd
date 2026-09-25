@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const childLogger = (
   getLogger() as unknown as { child: () => { warn: ReturnType<typeof vi.fn> } }
@@ -93,14 +94,160 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
   }
 
   const base = { BucketName: BUCKET_NAME };
+  // A rollback revert replaying a record — the caller this file is about. The
+  // versioning / logging warn-and-skip arms are reached only by the
+  // state-borne callers since issue #3728; `templateUpdate` below is the
+  // template path, which refuses the same values before any call.
   const update = (next: Record<string, unknown>, prev: Record<string, unknown>) =>
-    provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev);
+    provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev, { replayingState: true });
+  const templateUpdate = (
+    next: Record<string, unknown>,
+    prev: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ) => provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev, context);
+  const revertUpdate = (next: Record<string, unknown>, prev: Record<string, unknown>) =>
+    provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev, {
+      desiredFromAwsReadback: true,
+    });
   const replayCreate = (props: Record<string, unknown>) =>
     provider.create('L', 'AWS::S3::Bucket', { BucketName: BUCKET_NAME, ...props }, {
       replayingState: true,
     });
   const templateCreate = (props: Record<string, unknown>) =>
     provider.create('L', 'AWS::S3::Bucket', { BucketName: BUCKET_NAME, ...props });
+
+  // ---------------- the template-path split (issue #3728) ----------------
+
+  describe('a TEMPLATE-path update refuses before any call; the state-borne callers warn', () => {
+    const enabled = { ...base, VersioningConfiguration: { Status: 'Enabled' } };
+    const logging = { ...base, LoggingConfiguration: { DestinationBucketName: 'logs' } };
+
+    it.each([
+      ['no context', undefined],
+      ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+    ])('versioning: a malformed Status is REFUSED (%s), with NO call issued', async (_l, ctx) => {
+      const error = await templateUpdate(
+        { ...base, VersioningConfiguration: 42 as never },
+        enabled,
+        ctx
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(
+        /^AWS::S3::Bucket VersioningConfiguration must be an object/
+      );
+      expect((error as Error).message).toContain('Nothing was applied to bucket');
+      // Before the region probe and every applier, not merely before the
+      // versioning Put: a throw at the arm itself would be mid-update.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an unresolved Fn::If', { 'Fn::If': ['C', { Status: 'Enabled' }, { Status: 'Suspended' }] }],
+      ['the string container', 'Enabled'],
+    ])('versioning: %s is REFUSED on the template path, with NO call issued', async (_l, v) => {
+      const error = await templateUpdate(
+        { ...base, VersioningConfiguration: v as never },
+        enabled
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(/VersioningConfiguration must be an object/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['destination', { DestinationBucketName: 7 }, /DestinationBucketName must be a non-empty/],
+      ['prefix', { DestinationBucketName: 'logs', LogFilePrefix: {} }, /LogFilePrefix must be a/],
+    ])('logging: a malformed %s is REFUSED, with NO call issued', async (_l, block, pattern) => {
+      const error = await templateUpdate(
+        { ...base, LoggingConfiguration: block as never },
+        logging
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(pattern);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('versioning: `cdkd drift --revert` keeps the warn-and-skip', async () => {
+      await revertUpdate({ ...base, VersioningConfiguration: 42 as never }, enabled);
+      expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+      expect(warnings()).toMatch(/neither enabling nor suspending it/);
+    });
+
+    it('logging: `cdkd drift --revert` keeps the warn-and-skip', async () => {
+      await revertUpdate(
+        { ...base, LoggingConfiguration: { DestinationBucketName: 7 } as never },
+        logging
+      );
+      expect(callsOf(PutBucketLoggingCommand)).toHaveLength(0);
+      expect(warnings()).toMatch(/rather than clearing access logging/);
+    });
+
+    it('does NOT refuse an UNCHANGED malformed value — nothing is pending for it', async () => {
+      // The arms' own gate: an unchanged block is never applied, so refusing it
+      // would fail a deploy that sends nothing for this property.
+      const malformed = {
+        ...base,
+        VersioningConfiguration: 42 as never,
+        LoggingConfiguration: { DestinationBucketName: 7 } as never,
+      };
+      await expect(templateUpdate(malformed, malformed)).resolves.toBeDefined();
+      expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+      expect(callsOf(PutBucketLoggingCommand)).toHaveLength(0);
+    });
+
+    // The refusal must share the applier's FALLBACKS, not only its keys: a
+    // blank prefix is legitimate ("no prefix") and an unrecognized Status
+    // still goes to AWS to be refused there by name.
+    it('does NOT refuse a BLANK LogFilePrefix on the template path', async () => {
+      await templateUpdate(
+        { ...base, LoggingConfiguration: { DestinationBucketName: 'logs', LogFilePrefix: '' } },
+        base
+      );
+      const calls = callsOf(PutBucketLoggingCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toMatchObject({
+        BucketLoggingStatus: { LoggingEnabled: { TargetBucket: 'logs', TargetPrefix: '' } },
+      });
+    });
+
+    it('does NOT refuse an unrecognized Status on the template path — AWS answers it', async () => {
+      await templateUpdate({ ...base, VersioningConfiguration: { Status: 'Enabling' } }, base);
+      expect(callsOf(PutBucketVersioningCommand)).toHaveLength(1);
+    });
+
+    it('REFUSES a present-but-blank Status on the template path (the Suspended fallback)', async () => {
+      const error = await templateUpdate(
+        { ...base, VersioningConfiguration: { Status: '' } },
+        enabled
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(/VersioningConfiguration\.Status must be a non-empty/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('still checks logging when versioning ALSO changed, validly, in the same deploy', async () => {
+      const error = await templateUpdate(
+        {
+          ...base,
+          VersioningConfiguration: { Status: 'Suspended' },
+          LoggingConfiguration: { DestinationBucketName: 7 } as never,
+        },
+        { ...enabled, LoggingConfiguration: { DestinationBucketName: 'logs' } }
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(/DestinationBucketName must be a non-empty/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('does NOT refuse a logging REMOVAL, which is the legitimate clear', async () => {
+      await templateUpdate(base, logging);
+      const calls = callsOf(PutBucketLoggingCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toMatchObject({ BucketLoggingStatus: {} });
+    });
+  });
 
   // ---------------- VersioningConfiguration.Status ----------------
 
@@ -269,6 +416,9 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
 
   // ---------------- InventoryConfigurations schedule ----------------
 
+  // On the TEMPLATE path: the inventory arm is not split by issue #3728 (it
+  // is one of the arms #3740 tracks), so it still warns on every caller, and
+  // these cases pin that for a template-path update.
   describe('inventory ScheduleFrequency / Schedule.Frequency', () => {
     const inventoryItem = (extra: Record<string, unknown>) => ({
       Id: 'inv1',
@@ -281,7 +431,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
     it('falls through to Schedule.Frequency when the FIRST source is malformed', async () => {
       // The third downgrade shape. The second source is a value the template
       // also declares, so it is a real answer — unlike inventing a cadence.
-      await update(
+      await templateUpdate(
         {
           ...base,
           InventoryConfigurations: [
@@ -307,7 +457,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
       // absent container as "usable" let the fall-through land on
       // `readConfigString`'s own Weekly default and silently re-cadence a live
       // inventory report — the substitution the guard exists to refuse.
-      await update(
+      await templateUpdate(
         { ...base, InventoryConfigurations: [inventoryItem({ ScheduleFrequency: {} })] },
         base
       );
@@ -322,7 +472,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
       // LIVE inventory report. The skip unit is one configuration item,
       // matching the `IncludedObjectVersions` guard in the same applier (the
       // Put is per-Id).
-      await update(
+      await templateUpdate(
         {
           ...base,
           InventoryConfigurations: [inventoryItem({ ScheduleFrequency: {}, Schedule: 'Daily' })],
@@ -346,7 +496,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
     it('a well-formed ScheduleFrequency still WINS over Schedule.Frequency', async () => {
       // The precedence is preserved, not merely the fall-through: a correct
       // first source must not start losing to the second one.
-      await update(
+      await templateUpdate(
         {
           ...base,
           InventoryConfigurations: [

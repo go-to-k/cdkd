@@ -1479,25 +1479,64 @@ describe('CognitoUserPoolProvider', () => {
         expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
       });
 
-      // `update()` has no context parameter, so it cannot tell a template push
-      // from the state-borne bag `drift --revert` / the rollback revert arm
-      // hand it. The downgrade is unconditional there.
-      it('warns instead of refusing on update, and drops it from UpdateUserPool', async () => {
-        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
-        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd-null' } }); // DescribeUserPool
+      // Issue #3728: the update path splits on the ORIGIN of the desired bag.
+      // A template-path update refuses before any call, like create; the two
+      // state-borne callers keep the warning (and drop the value from
+      // UpdateUserPool).
+      it('refuses on a template-path update, before any AWS call', async () => {
+        const error = await provider
+          .update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', {
+            MfaConfiguration: null,
+          }, {})
+          .catch((e: unknown) => e);
 
-        await provider.update(
-          'MyUserPool',
-          'us-east-1_abc123',
-          'AWS::Cognito::UserPool',
-          { MfaConfiguration: null },
-          {}
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toMatch(
+          /^AWS::Cognito::UserPool MfaConfiguration must be a non-empty string/
         );
-
-        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-        expect(warned).toContain('AWS::Cognito::UserPool MfaConfiguration must be a non-empty');
-        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+        expect((error as Error).message).toContain('Nothing was applied to user pool us-east-1_abc123');
+        expect(mockSend).not.toHaveBeenCalled();
       });
+
+      // Explicit non-replay flags: a guard keyed on the context's PRESENCE
+      // would pass the bare-call case above and downgrade this one.
+      it('still refuses when the context carries both flags as false', async () => {
+        await expect(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { MfaConfiguration: null },
+            {},
+            { replayingState: false, desiredFromAwsReadback: false }
+          )
+        ).rejects.toBeInstanceOf(ProvisioningError);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['a rollback revert arm (replayingState)', { replayingState: true }],
+        ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+      ])(
+        'warns instead of refusing on %s, and drops it from UpdateUserPool',
+        async (_label, context) => {
+          mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+          mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd-null' } }); // DescribeUserPool
+
+          await provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { MfaConfiguration: null },
+            {},
+            context
+          );
+
+          const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+          expect(warned).toContain('AWS::Cognito::UserPool MfaConfiguration must be a non-empty');
+          expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+        }
+      );
 
       // A blank string is accepted as absence rather than refused (the guard's
       // blank-fallback rule), but it must NOT reach the wire: the pre-fix `??`
@@ -1682,7 +1721,10 @@ describe('CognitoUserPoolProvider', () => {
           // Declared but malformed, alongside a WebAuthn config so the update
           // still routes through SetUserPoolMfaConfig and resolves to OFF.
           { MfaConfiguration: null, WebAuthnRelyingPartyID: 'auth.example.com' },
-          {}
+          {},
+          // A refused value reaches the announcement only on a state-borne
+          // update since issue #3728; the template path refuses it up front.
+          { replayingState: true }
         );
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
@@ -1870,7 +1912,10 @@ describe('CognitoUserPoolProvider', () => {
           'us-east-1_abc123',
           'AWS::Cognito::UserPool',
           { MfaConfiguration: [], WebAuthnRelyingPartyID: 'auth.example.com' },
-          {}
+          {},
+          // State-borne since issue #3728 -- see the sibling "names the
+          // REFUSAL" case.
+          { desiredFromAwsReadback: true }
         );
 
         expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OFF');
@@ -3467,7 +3512,10 @@ describe('CognitoUserPoolProvider', () => {
           'us-east-1_abc123',
           'AWS::Cognito::UserPool',
           { MfaConfiguration: null, EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
-          {}
+          {},
+          // The warn-and-default arm is a state-borne caller's since issue
+          // #3728; a template-path update refuses this value instead.
+          { replayingState: true }
         );
 
         const sent = mockSend.mock.calls[2][0].input.MfaConfiguration;

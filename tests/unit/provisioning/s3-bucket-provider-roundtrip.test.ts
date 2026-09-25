@@ -2086,8 +2086,11 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   }
 
   const base = { BucketName: BUCKET_NAME };
-  const update = (next: Record<string, unknown>, prev: Record<string, unknown>) =>
-    provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev);
+  const update = (
+    next: Record<string, unknown>,
+    prev: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ) => provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev, context);
 
   // ---------------- VersioningConfiguration ----------------
 
@@ -2731,10 +2734,15 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     // unchanged and is what both issues are actually about: no suspend is
     // issued either way. See the create-path test below — that side still
     // throws, and the two deliberately DISAGREE now.
-    await update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
-      ...base,
-      VersioningConfiguration: { Status: 'Enabled' },
-    });
+    //
+    // Since issue #3728 the warn-and-skip belongs to the STATE-BORNE callers
+    // (hence the replay context); a template-path update refuses the value
+    // before any call, as create does.
+    await update(
+      { ...base, VersioningConfiguration: 'Enabled' as never },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } },
+      { replayingState: true }
+    );
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
     expect(warnings()).toMatch(/VersioningConfiguration must be an object \(got a string\)/);
     expect(warnings()).toMatch(/Leaving the bucket's LIVE versioning state unchanged/);
@@ -2761,10 +2769,11 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     // through to the 'Suspended' default.
     // Warn-and-skip on the UPDATE path since #1605 (see the headline test
     // above); the load-bearing half is still that no Put goes out.
-    await update({ ...base, VersioningConfiguration: { Status: '' } }, {
-      ...base,
-      VersioningConfiguration: { Status: 'Enabled' },
-    });
+    await update(
+      { ...base, VersioningConfiguration: { Status: '' } },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } },
+      { replayingState: true }
+    );
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
     expect(warnings()).toMatch(/VersioningConfiguration\.Status must be a non-empty string/);
 

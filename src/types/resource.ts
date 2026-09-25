@@ -759,9 +759,10 @@ export interface CreateContext extends SecretMaskingContext {
    * PRE-FLIGHT REFUSAL (see `docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards`) must downgrade
    * to a WARNING here: refusing would leave the old resource unrestorable with
    * no action the user can take. This is the create-side twin of the
-   * refuse-on-template / warn-on-replay asymmetry `update()` already has — the
-   * update path is a replay path unconditionally, whereas `create()` is one
-   * only when this flag is set.
+   * refuse-on-template / warn-on-replay asymmetry `update()` has — decided
+   * there on {@link UpdateContext.replayingState} and
+   * {@link UpdateContext.desiredFromAwsReadback} (issue #3728), and here on
+   * this flag alone, since `create()` has no readback caller.
    *
    * **What a provider MUST NOT conclude from it.** Nothing about the
    * properties' CONTENT: they are neither more nor less trustworthy than
