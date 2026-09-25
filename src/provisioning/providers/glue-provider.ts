@@ -2237,7 +2237,8 @@ export class GlueProvider implements ResourceProvider {
         })
       );
       // Always normalize to cdkd's composite form: `updateTable` /
-      // `deleteTable` / `readTable` all split the stored physicalId on `|`, so
+      // `deleteTable` / `readTable` all decode the stored physicalId as
+      // `<db>|<table>` ({@link decodeTableId}), so
       // recording CloudFormation's bare table name would adopt the resource
       // into a state record the rest of the provider cannot use — trading a
       // visible not-found for a silent one. That is the #1658 failure mode

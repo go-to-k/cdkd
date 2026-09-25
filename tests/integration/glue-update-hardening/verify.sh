@@ -89,7 +89,9 @@ TRIGGER_NAME_FALLBACK="${LOWER}-trigger"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# Phase 2b's out-of-band tables, created in the stack's table database.
+# Phase 2b's out-of-band tables, created in the stack's table database. One
+# name for both the phase and cleanup, which runs before any output is read.
+TABLE_DB_NAME="${LOWER}-table-db"
 PIPE_TABLE_LID="PipeNamedTable"
 PIPE_TABLE_NAME="x|y"
 DECOY_TABLE_NAME="x"
@@ -99,7 +101,7 @@ cleanup() {
   set +eu
   local t
   for t in "${PIPE_TABLE_NAME}" "${DECOY_TABLE_NAME}"; do
-    aws glue delete-table --database-name "${LOWER}-table-db" --name "${t}" \
+    aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${t}" \
       --region "${REGION}" >/dev/null 2>&1
   done
   local destroy_rc=1
@@ -430,12 +432,12 @@ assert_skewed_info 'CA' 'update'
 # The redeploy's template-removal DELETE must remove `x|y` and leave `x` alone;
 # before the fix it deleted the decoy and left `x|y` behind.
 echo "==> Phase 2b: template-removal DELETE of a '|'-named Glue table"
-aws glue create-table --database-name "${SKEWED_DB_NAME}" --region "${REGION}" \
+aws glue create-table --database-name "${TABLE_DB_NAME}" --region "${REGION}" \
   --table-input "{\"Name\":\"${PIPE_TABLE_NAME}\"}"
-aws glue create-table --database-name "${SKEWED_DB_NAME}" --region "${REGION}" \
+aws glue create-table --database-name "${TABLE_DB_NAME}" --region "${REGION}" \
   --table-input "{\"Name\":\"${DECOY_TABLE_NAME}\"}"
 INJECTED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -c \
-  --arg lid "${PIPE_TABLE_LID}" --arg db "${SKEWED_DB_NAME}" --arg t "${PIPE_TABLE_NAME}" \
+  --arg lid "${PIPE_TABLE_LID}" --arg db "${TABLE_DB_NAME}" --arg t "${PIPE_TABLE_NAME}" \
   '.resources[$lid] = {physicalId: ($db + "|" + $t), resourceType: "AWS::Glue::Table",
      properties: {DatabaseName: $db, TableInput: {Name: $t}}, attributes: {}, dependencies: []}')
 if [ -z "${INJECTED}" ]; then
@@ -443,7 +445,7 @@ if [ -z "${INJECTED}" ]; then
   exit 1
 fi
 printf '%s' "${INJECTED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
-if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r --arg lid "${PIPE_TABLE_LID}" '.resources[$lid].physicalId // empty')" != "${SKEWED_DB_NAME}|${PIPE_TABLE_NAME}" ]; then
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r --arg lid "${PIPE_TABLE_LID}" '.resources[$lid].physicalId // empty')" != "${TABLE_DB_NAME}|${PIPE_TABLE_NAME}" ]; then
   echo "FAIL: the injected ${PIPE_TABLE_LID} record did not land in S3" >&2
   exit 1
 fi
@@ -451,11 +453,11 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-if ! gone_probe aws glue get-table --database-name "${SKEWED_DB_NAME}" --name "${PIPE_TABLE_NAME}" --region "${REGION}"; then
+if ! gone_probe aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${PIPE_TABLE_NAME}" --region "${REGION}"; then
   echo "FAIL: table '${PIPE_TABLE_NAME}' survived its template-removal DELETE (the id was mis-decoded)" >&2
   exit 1
 fi
-if gone_probe aws glue get-table --database-name "${SKEWED_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"; then
+if gone_probe aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"; then
   echo "FAIL: decoy table '${DECOY_TABLE_NAME}' was deleted in place of '${PIPE_TABLE_NAME}'" >&2
   exit 1
 fi
@@ -463,7 +465,7 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r --arg li
   echo "FAIL: state still records ${PIPE_TABLE_LID} after its DELETE" >&2
   exit 1
 fi
-aws glue delete-table --database-name "${SKEWED_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"
+aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"
 echo "    OK: '${PIPE_TABLE_NAME}' deleted, decoy '${DECOY_TABLE_NAME}' untouched"
 
 # --- Phase 3: destroy -------------------------------------------------
