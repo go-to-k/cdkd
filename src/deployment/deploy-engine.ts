@@ -2380,7 +2380,8 @@ export class DeployEngine {
    * Re-read a STALE record's attributes from AWS (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — the resolver calls
    * this, through `ResolverContext.attributeHealer`, only when `Fn::GetAtt` is
-   * about to take the physical-id fallback.
+   * about to take the physical-id fallback, or reaches one of the resolver's
+   * heal-first arms (issue [#3627](https://github.com/go-to-k/cdkd/issues/3627)).
    *
    * The read is the provider's `import()` with `knownPhysicalId` — the same
    * primitive `orphan-adoption.ts` verifies a record with. It is READ-ONLY by
