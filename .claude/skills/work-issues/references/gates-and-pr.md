@@ -36,7 +36,8 @@ the only mechanical merge conditions.
 All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
-`Closes #<n>`.
+`Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll, not
+a recipe of your own.
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
 replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
