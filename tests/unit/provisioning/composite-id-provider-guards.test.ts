@@ -103,6 +103,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { DeleteTableCommand, GetTableCommand, UpdateTableCommand } from '@aws-sdk/client-glue';
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
@@ -179,6 +180,95 @@ describe('AWS::Glue::Table composite id guard', () => {
     );
     expect(result.physicalId).toBe('mydb|a|b');
     expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("tableName 'a|b'"));
+  });
+});
+
+describe('AWS::Glue::Table composite id decode', () => {
+  // `mydb|a|b` is what a state-replay create (above) records, and what binaries
+  // before the create-time refusal recorded. A bare split reads it as table `a`.
+  const ID = 'mydb|a|b';
+  const PROPS = { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } };
+
+  function sent(command: new (...args: never[]) => unknown) {
+    return mockGlueSend.mock.calls
+      .map(([c]) => c as { input: Record<string, unknown> })
+      .filter((c) => c instanceof command)
+      .map((c) => c.input);
+  }
+
+  it('deletes the table the recorded DatabaseName anchors, not the first segment', async () => {
+    mockGlueSend.mockResolvedValue({});
+    const result = await new GlueProvider().delete('MyTable', ID, 'AWS::Glue::Table', PROPS);
+    expect(result).toBeUndefined();
+    expect(sent(DeleteTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+  });
+
+  it('updates the anchored table, preferring the deployed bag', async () => {
+    mockGlueSend.mockResolvedValue({});
+    await new GlueProvider().update(
+      'MyTable',
+      ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'other', TableInput: { Name: 'a|b' } },
+      PROPS
+    );
+    expect(sent(GetTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+    expect(sent(UpdateTableCommand)).toEqual([
+      expect.objectContaining({ DatabaseName: 'mydb', TableInput: expect.objectContaining({ Name: 'a|b' }) }),
+    ]);
+  });
+
+  it('reads the anchored table for drift', async () => {
+    mockGlueSend.mockResolvedValue({ Table: { Name: 'a|b' } });
+    const state = await new GlueProvider().readCurrentState(
+      ID,
+      'MyTable',
+      'AWS::Glue::Table',
+      PROPS
+    );
+    expect(sent(GetTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+    expect(state).toMatchObject({ DatabaseName: 'mydb', Name: 'a|b' });
+  });
+
+  it('anchors a database name that itself carries the separator', async () => {
+    mockGlueSend.mockResolvedValue({});
+    await new GlueProvider().delete('MyTable', 'my|db|orders', 'AWS::Glue::Table', {
+      DatabaseName: 'my|db',
+    });
+    expect(sent(DeleteTableCommand)).toEqual([{ DatabaseName: 'my|db', Name: 'orders' }]);
+  });
+
+  it('still decodes a plain two-segment id when the bag has no usable DatabaseName', async () => {
+    mockGlueSend.mockResolvedValue({});
+    await new GlueProvider().delete('MyTable', 'mydb|orders', 'AWS::Glue::Table', {
+      DatabaseName: { Ref: 'Db' },
+    });
+    expect(sent(DeleteTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'orders' }]);
+  });
+
+  describe('with no anchor, an id with more than one separator is ambiguous', () => {
+    // Before the fix each of these acted on `mydb.a` — a table the record does not name.
+    it('delete skips instead of deleting the first-segment table', async () => {
+      const result = await new GlueProvider().delete('MyTable', ID, 'AWS::Glue::Table', {
+        DatabaseName: 'elsewhere',
+      });
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      expect(mockGlueSend).not.toHaveBeenCalled();
+    });
+
+    it('update refuses', async () => {
+      await expect(
+        new GlueProvider().update('MyTable', ID, 'AWS::Glue::Table', { TableInput: {} }, {})
+      ).rejects.toThrow(/Invalid physicalId format for Glue Table MyTable/);
+      expect(mockGlueSend).not.toHaveBeenCalled();
+    });
+
+    it('read returns undefined', async () => {
+      await expect(
+        new GlueProvider().readCurrentState(ID, 'MyTable', 'AWS::Glue::Table')
+      ).resolves.toBeUndefined();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+    });
   });
 });
 
