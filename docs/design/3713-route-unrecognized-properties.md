@@ -77,8 +77,9 @@ deploy).
   (`unresolvedAs`): the pre-flight report, `cdkd diff` and the progress label
   count it as unchanged, so they never announce a route the resolved decision
   may not take, and the pre-flight warn says the route is decided once the
-  value resolves; the `--recreate-via-sdk-provider` validator counts it as
-  changed, so it refuses rather than let the resolved dispatch route. Routing
+  value resolves; the recreate validators (both the `--recreate-via-cc-api`
+  overlap check and the `--recreate-via-sdk-provider` round-trip check) count it
+  as changed, so they refuse rather than let the resolved dispatch route. Routing
   itself compares resolved bags.
 - **The sticky-escape (`wouldReturnToSdkProvider`) uses presence**, never the
   baseline, so an unrecognized key always keeps a `cc-api` resource on Cloud
