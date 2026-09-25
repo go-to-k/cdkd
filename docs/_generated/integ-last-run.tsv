@@ -5,9 +5,9 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-09-05T03:27:04Z	PASS	91	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (exit-2 survivor contract)
+acm-certificate	2026-09-25T19:22:55Z	PASS	100	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
-alb	2026-09-24T23:20:39Z	FAIL	210	verify.sh	pre-existing: routing.http.response.server.enabled removal assertion (tooling backlog, was #2085); main build fails identically, so not #3663. Destroy clean, 0 orphans
+alb	2026-09-25T19:22:55Z	FAIL	221	verify.sh	pre-existing: routing.http.response.server.enabled removal assertion (same as main); destroy clean, 0 orphans (#3786)
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
@@ -47,7 +47,7 @@ cloudwatch-anomaly-detector	2026-08-25T16:16:55Z	PASS	56	verify.sh	third and fin
 codebuild-project	2026-09-24T22:46:12Z	PASS	79	verify.sh	rc ok, 0 orphans (#3663)
 codecommit	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
-cognito	2026-09-25T13:35:54Z	PASS	276	verify.sh	rc ok, orph clean (#3728)
+cognito	2026-09-25T19:22:55Z	PASS	245	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
 cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
 cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph
@@ -94,14 +94,14 @@ dynamodb-stream-filter	2026-09-20T10:56:17Z	PASS	56	verify.sh	rc ok, orph clean;
 dynamodb-streams	2026-09-20T10:56:17Z	PASS	256	verify.sh	rc ok, orph clean; #3458 stream ResourcePolicy + Tags arms M1-M5; red at M1 on the pre-fix provider
 dynamodb-tableclass-switch	2026-09-20T06:14:17Z	PASS	94	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-ttl-attr-change	2026-09-20T06:14:17Z	PASS	60	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
-ec2-instance	2026-09-24T19:02:32Z	PASS	125	verify.sh	#2804 SG inline ingress+egress wiring path; 11 del 0 err 0 orph
+ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-23T23:13:03Z	PASS	69	verify.sh	rc ok, orph clean (#1981 lane)
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
-ecs-fargate	2026-09-24T23:20:39Z	PASS	386	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
+ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-09-25T13:49:20Z	PASS	70	verify.sh	rc ok, orph clean; sha 0c502fe99 (#3718, post-rebase)
@@ -113,7 +113,7 @@ emr-cluster	2026-09-24T22:46:12Z	PASS	765	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-09-23T15:53:15Z	PASS	90	verify.sh	PR #3560 (Events Rule Arn noteAttributeSecrecy); rc 0, 10 deleted 0 errors, 0 orphans
+eventbridge	2026-09-25T19:22:55Z	PASS	80	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
@@ -135,7 +135,7 @@ getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: 
 glue-securityconfig-replace	2026-09-23T23:37:05Z	PASS	59	verify.sh	rc ok, orph clean (#1981 lane)
 glue-update-hardening	2026-09-25T14:29:57Z	PASS	160	verify.sh	rc ok, orph clean; phase 2d CatalogId move refusal (#3756)
 iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
-iam-managed-policy	2026-08-13T16:29:17Z	PASS	49	verify.sh	#1815 partition predicates; detach-before-delete destroy 0 err, 0 orphans
+iam-managed-policy	2026-09-25T19:22:55Z	PASS	35	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-08-19T10:26:57Z	PASS	108	verify.sh	issue 2026: 27 runs; repro captured http=500; fix live-verified after review round 2
 iam-role-policies-drift-clean	2026-09-25T15:55:34Z	PASS	86	verify.sh	rc ok, orph clean (#3595 lane)
@@ -240,7 +240,7 @@ outputs-only-export	2026-09-24T15:24:57Z	PASS	113	verify.sh	rc ok, orph clean (#
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-14T16:07:02Z	PASS	2299	verify.sh	#3103 gating: DBCluster attrs live; 23 deleted 0 err 0 orph
+rds-aurora	2026-09-25T19:22:55Z	PASS	1718	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 rds-dbinstance-backfill	2026-09-24T00:27:58Z	PASS	729	verify.sh	rc ok, orph clean (#1981 lane)
 rds-full-stack	2026-09-24T22:46:12Z	PASS	752	verify.sh	rc ok, 0 orphans (#3663)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
@@ -248,7 +248,7 @@ recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc 
 recreate-via-cc-api	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-25T16:41:38Z	PASS	1322	verify.sh	rc 0, state clean, PR 3787 (rerun after a peer lock)
+remove-protection	2026-09-25T19:22:55Z	PASS	1312	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
 replacement-immutable-name	2026-09-19T18:00:07Z	PASS	109	verify.sh	rc ok, orph clean; #2668 type-change routing
@@ -262,10 +262,10 @@ rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph c
 rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 rollback-replay-effective-props	2026-09-25T18:05:55Z	PASS	717	verify.sh	rc ok, CDKD_INTEG_MULTI_REGION=1, phase 5 cross-region drift clean without the #3573 allowance, 0 orphans (#3776)
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
-route53	2026-09-25T13:35:54Z	PASS	377	verify.sh	rc ok, orph clean (#3728)
+route53	2026-09-25T19:22:55Z	PASS	406	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
-s3-cloudfront	2026-09-24T06:28:51Z	PASS	275	verify.sh	rc ok, orph clean (#3585)
+s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 s3-directory-bucket	2026-09-24T22:46:12Z	PASS	89	verify.sh	rc ok, 0 orphans (#3663)
 s3-event-notification	2026-09-24T06:18:07Z	PASS	90	verify.sh	rc ok, orph clean (#3585)
 s3-lifecycle	2026-09-25T09:36:54Z	PASS	281	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
@@ -275,7 +275,7 @@ s3-subconfig-removal	2026-09-25T13:35:54Z	PASS	80	verify.sh	rc ok, orph clean (#
 s3-tables	2026-09-25T18:05:55Z	PASS	55	verify.sh	rc ok, 0 orphans (#3771)
 s3-vectors	2026-09-24T22:46:12Z	PASS	61	verify.sh	rc ok, 0 orphans (#3663)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-09-25T09:51:48Z	PASS	90	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
+scheduler-custom-group	2026-09-25T19:22:55Z	PASS	95	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
@@ -293,7 +293,7 @@ servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-09-24T19:02:32Z	PASS	166	verify.sh	#2804 SG wiring drain selects first rejection by time; 3 stacks 19 del 0 err 0 orph
 sns-event-source	2026-08-22T19:12:07Z	PASS		verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
-sns-inline-subscription	2026-08-26T08:41:59Z	PASS	90	verify.sh	issue 2178 masker-threading sweep (sns-topic subscribeInline); 0 err, 0 orphans
+sns-inline-subscription	2026-09-25T19:22:55Z	PASS	55	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 sns-pending-subscription	2026-09-17T17:36:20Z	PASS	163	verify.sh	issue 3329 gate pair: confirms Subscribe with ReturnSubscriptionArn=true returns a REAL ARN even for a pending-confirmation subscription (the premise the create-path shape gate rests on); delete-path pending skip fired, destroy 2 deleted 0 errors, 0 orphans
 sns-sqs-event	2026-09-25T09:51:48Z	PASS	80	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
@@ -319,6 +319,6 @@ update-replace	2026-09-23T17:27:53Z	PASS	82	verify.sh	rc ok, orph clean (#3566 c
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-08-09T14:30:04Z	PASS	254	verify.sh	issues #1411/#1412 CC routing asserted live; rc ok, orph clean
+vpc-nat-gateway	2026-09-25T19:22:55Z	PASS	251	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean

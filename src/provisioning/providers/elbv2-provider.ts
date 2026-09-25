@@ -57,7 +57,10 @@ import {
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
-import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
+import {
+  protectedReplacementAdvice,
+  pasteableAwsCommand,
+} from '../replacement-protection-advice.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -728,7 +731,7 @@ export class ELBv2Provider implements ResourceProvider {
             // property value reaching here would be surprising — but
             // "surprising" is not "impossible", and an unmasked line sitting
             // beside masked ones is what a later author copies.
-            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`
+            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
           );
         }
         throw innerError;
@@ -1293,8 +1296,8 @@ export class ELBv2Provider implements ResourceProvider {
             // beside masked ones is what a later author copies.
             `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
               `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: aws elbv2 delete-target-group ` +
-              `--target-group-arn ${tgArn}`
+              `required before the next deploy: ` +
+              `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
           );
         }
         throw innerError;
@@ -1708,7 +1711,7 @@ export class ELBv2Provider implements ResourceProvider {
                 `attributes were applied. Nothing in cdkd state refers to it, so cdkd is deleting ` +
                 `it now — left behind it would fail the next deploy with DuplicateListener and ` +
                 `neither rollback nor destroy could reach it. If that delete does not complete, ` +
-                `remove it manually: aws elbv2 delete-listener --listener-arn ${listenerArn}`
+                `remove it manually: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
             )
           );
         }
@@ -1723,8 +1726,8 @@ export class ELBv2Provider implements ResourceProvider {
             // (issue #2050).
             `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
               `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: aws elbv2 delete-listener ` +
-              `--listener-arn ${listenerArn}`
+              `required before the next deploy: ` +
+              `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
           );
         }
         throw innerError;

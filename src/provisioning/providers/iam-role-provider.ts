@@ -202,8 +202,16 @@ export class IAMRoleProvider implements ResourceProvider {
             `Cleaned up partially-created IAM role ${logicalId} (${roleName}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The name in the commands below is left BARE on purpose (issue
+          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+          // and trims leading and trailing `-`, so no template spelling reaches
+          // the shell as anything but one plain word. Pinned by this type's
+          // partial-create cleanup test.
+          // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
+          // redirections.
           this.logger.warn(
-            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn <arn>), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name <name>), then aws iam delete-role --role-name ${roleName}`
+            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'), then aws iam delete-role --role-name ${roleName}`
           );
         }
         throw innerError;

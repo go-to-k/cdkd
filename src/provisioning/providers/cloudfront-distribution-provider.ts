@@ -32,6 +32,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
@@ -794,7 +795,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         // Warn and proceed instead.
         this.logger.warn(
           `CloudFront Distribution ${logicalId} (${distributionId}) did not reach Deployed within the wait budget; continuing (propagation finishes in the background). ` +
-            `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}. ` +
+            `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}. ` +
             `Raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
         );
       }
@@ -809,7 +810,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     this.logger.info(
       `CloudFront Distribution ${logicalId} accepted (not waiting for Deployed${fullWaitHint}). ` +
-        `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}`
+        `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}`
     );
   }
 

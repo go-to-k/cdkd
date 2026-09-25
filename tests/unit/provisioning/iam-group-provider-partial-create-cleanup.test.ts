@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { FORGED_CTRL, FORGED_QUOTE } from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::Group';
 
@@ -106,5 +107,24 @@ describe('IAMUserGroupProvider createGroup partial-create cleanup (Issue #376)',
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws iam delete-group --group-name');
     expect(warnMsg).toContain('my-test-group-xxx');
+  });
+
+  describe('the recovery command names the group BARE, by provenance (issue #3136)', () => {
+    // See the IAM user file: the name is the generator's `[A-Za-z0-9-]` output.
+    it.each([FORGED_QUOTE, FORGED_CTRL])('a forged GroupName reaches the command as a plain word', async (forged) => {
+      mockSend.mockResolvedValueOnce({ Group: { Arn: 'arn:aws:iam::123:group/MyGroup' } }); // CreateGroupCommand
+      mockSend.mockRejectedValueOnce(new Error('PutGroupPolicy boom')); // original
+      mockSend.mockRejectedValueOnce(new Error('ListAttachedGroupPolicies also failed'));
+      await expect(
+        provider.create('MyGroup', RESOURCE_TYPE, {
+          GroupName: forged,
+          Policies: [
+            { PolicyName: 'InlinePol', PolicyDocument: { Version: '2012-10-17', Statement: [] } },
+          ],
+        })
+      ).rejects.toThrow('PutGroupPolicy boom');
+      const msg = String(warnSpy.mock.calls[0][0]);
+      expect(msg).toMatch(/aws iam delete-group --group-name [A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/);
+    });
   });
 });

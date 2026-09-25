@@ -26,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Target definition from CloudFormation AWS::Events::Rule
@@ -314,8 +315,14 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             `Cleaned up partially-created EventBridge rule ${logicalId} (${ruleName}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The rule name and bus are TEMPLATE values, so the command renders
+          // through `pasteableAwsCommand` (issue #3136): sanitized and
+          // shell-quoted, and withheld whole when one cannot be printed exactly.
+          const aws = pasteableAwsCommand();
+          const busArg = eventBusName ? aws` --event-bus-name ${eventBusName}` : aws``;
+          const command = aws`aws events list-targets-by-rule --rule ${ruleName}${busArg} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${busArg} --ids; aws events delete-rule --name ${ruleName}${busArg}`;
           this.logger.warn(
-            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws events list-targets-by-rule --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} --ids; aws events delete-rule --name ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''}`
+            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${command.render()}`
           );
         }
         throw innerError;

@@ -35,6 +35,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * The value SNS enforces for a topic that never set `MaximumMessageSize`
@@ -289,7 +290,7 @@ export class SNSTopicProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           warn(
-            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws sns delete-topic --topic-arn ${topicArn}`
+            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
           );
         }
         throw innerError;

@@ -295,7 +295,7 @@ describe('SchedulerScheduleProvider', () => {
       // custom-group schedule cannot be addressed without properties.
       const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warned).toContain(
-        'delete it manually: aws scheduler delete-schedule --name my-sched --group-name <group>'
+        "delete it manually: aws scheduler delete-schedule --name my-sched --group-name '<group>'"
       );
     });
 
@@ -311,7 +311,9 @@ describe('SchedulerScheduleProvider', () => {
       mockSend.mockResolvedValueOnce({});
       await provider.delete('Sched', 'my sched; rm -rf /', TYPE, undefined);
       const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain("--name 'my sched; rm -rf /' --group-name <group>");
+      expect(warned).toContain("--name 'my sched; rm -rf /' --group-name '<group>'");
+      // Issue #3136: a bare `<group>` is two shell redirections.
+      expect(warned).not.toContain('--group-name <group>');
     });
 
     it('SUPPRESSES the manual delete hint when the id cannot be reproduced safely', async () => {

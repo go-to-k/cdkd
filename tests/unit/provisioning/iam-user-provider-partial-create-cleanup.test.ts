@@ -32,6 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
+import { FORGED_CTRL, FORGED_QUOTE } from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::User';
 
@@ -105,5 +106,27 @@ describe('IAMUserGroupProvider createUser partial-create cleanup (Issue #376)', 
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws iam delete-user --user-name');
     expect(warnMsg).toContain('my-test-user-xxx');
+  });
+
+  describe('the recovery commands name the user BARE, by provenance (issue #3136)', () => {
+    // The name is `generateResourceNameWithFallback`'s output, which rewrites
+    // everything outside `[A-Za-z0-9-]`: a forged template name reaches the
+    // command only as one plain word, so the site does not route through
+    // `pasteableAwsCommand`. If the generator ever stops sanitizing, these fail.
+    it.each([FORGED_QUOTE, FORGED_CTRL])('a forged UserName reaches the commands as a plain word', async (forged) => {
+      mockSend.mockResolvedValueOnce({ User: { Arn: 'arn:aws:iam::123:user/MyUser' } }); // CreateUserCommand
+      mockSend.mockRejectedValueOnce(new Error('PutUserPermissionsBoundary boom')); // original
+      mockSend.mockRejectedValueOnce(new Error('ListGroupsForUser also failed')); // cleanup fails
+      await expect(
+        provider.create('MyUser', RESOURCE_TYPE, {
+          UserName: forged,
+          PermissionsBoundary: 'arn:aws:iam::aws:policy/PermBoundary',
+        })
+      ).rejects.toThrow('PutUserPermissionsBoundary boom');
+      const msg = String(warnSpy.mock.calls[0][0]);
+      const names = [...msg.matchAll(/--user-name ([^\s)]+)/g)].map((m) => m[1]);
+      expect(names).toHaveLength(3);
+      for (const name of names) expect(name).toMatch(/^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/);
+    });
   });
 });
