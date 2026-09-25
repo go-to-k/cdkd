@@ -28,6 +28,7 @@ import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { s3BucketArn } from '../utils/s3-endpoints.js';
 import {
   disableInstanceApiTermination,
   isTerminationProtectionPropagationError,
@@ -2609,9 +2610,13 @@ export class CloudControlProvider implements ResourceProvider {
     // Fallback: compute attributes that CC API may not return
     switch (resourceType) {
       case 'AWS::S3::Bucket':
-        // S3 bucket ARN: arn:aws:s3:::bucket-name
+        // S3 bucket ARN: arn:<partition>:s3:::bucket-name. The partition comes
+        // from the CC client's own region through the same builder the SDK
+        // `S3BucketProvider` records with (issue #1794), so the two routes
+        // cannot record different ARNs for one template. A bucket ARN has no
+        // account field, so no STS round trip is needed.
         if (!enriched['Arn']) {
-          enriched['Arn'] = `arn:aws:s3:::${physicalId}`;
+          enriched['Arn'] = s3BucketArn(physicalId, await this.cloudControlClient.config.region());
         }
         break;
 
