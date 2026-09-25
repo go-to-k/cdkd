@@ -2614,9 +2614,20 @@ export class CloudControlProvider implements ResourceProvider {
         // from the CC client's own region through the same builder the SDK
         // `S3BucketProvider` records with (issue #1794), so the two routes
         // cannot record different ARNs for one template. A bucket ARN has no
-        // account field, so no STS round trip is needed.
+        // account field, so no STS round trip is needed. Best-effort like the
+        // KMS / ECR arms: the bucket already exists, so a region that cannot be
+        // read leaves `Arn` ABSENT rather than failing the create.
         if (!enriched['Arn']) {
-          enriched['Arn'] = s3BucketArn(physicalId, await this.cloudControlClient.config.region());
+          try {
+            enriched['Arn'] = s3BucketArn(
+              physicalId,
+              await this.cloudControlClient.config.region()
+            );
+          } catch (error) {
+            this.logger.debug(
+              `Failed to construct S3 Bucket Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
+            );
+          }
         }
         break;
 

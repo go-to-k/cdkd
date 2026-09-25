@@ -3,12 +3,19 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const ccClientRegion = vi.hoisted(() => ({ value: 'us-east-1' }));
 const getAccountInfoCalls = vi.hoisted(() => ({ count: 0 }));
 
+const ccClientRegionError = vi.hoisted(() => ({ value: undefined as Error | undefined }));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     // `config.region` is a PROVIDER function on a real SDK client, not a string.
     cloudControl: {
       send: vi.fn(),
-      config: { region: () => Promise.resolve(ccClientRegion.value) },
+      config: {
+        region: () =>
+          ccClientRegionError.value
+            ? Promise.reject(ccClientRegionError.value)
+            : Promise.resolve(ccClientRegion.value),
+      },
     },
     cloudFormation: { send: vi.fn() },
   }),
@@ -71,6 +78,7 @@ describe('CloudControlProvider S3 bucket Arn follows the partition (issue #1794)
 
   beforeEach(() => {
     ccClientRegion.value = 'us-east-1';
+    ccClientRegionError.value = undefined;
     getAccountInfoCalls.count = 0;
     provider = new CloudControlProvider();
   });
@@ -106,6 +114,17 @@ describe('CloudControlProvider S3 bucket Arn follows the partition (issue #1794)
       expect(enriched['Arn']).toBe(s3BucketArn('my-bucket', region));
     }
   );
+
+  // The bucket already exists when enrichment runs, so an unreadable region must
+  // leave `Arn` absent (never a guessed partition) and must not throw — a throw
+  // here fails a create that succeeded.
+  it('leaves Arn absent, without throwing, when the client region cannot be read', async () => {
+    ccClientRegionError.value = new Error('Region is missing');
+
+    const enriched = await enrich('my-bucket', { BucketName: 'my-bucket' });
+
+    expect(enriched).toEqual({ BucketName: 'my-bucket' });
+  });
 
   it('keeps an Arn Cloud Control already reported', async () => {
     ccClientRegion.value = 'cn-north-1';

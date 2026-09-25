@@ -264,7 +264,7 @@ describe('CloudControlProvider generic sparse-model read-back (issue #1105)', ()
   it('per-type enrichment still applies after the generic pass (S3 Bucket Arn fallback)', async () => {
     // The S3 Arn fallback derives its partition from the CC client's region
     // (issue #1794).
-    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudControlConfigRegion.mockResolvedValueOnce('us-east-1');
     wireCreateSuccess({
       identifier: 'my-bucket',
       resourceModel: JSON.stringify({}),
