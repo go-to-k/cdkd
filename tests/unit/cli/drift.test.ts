@@ -2231,6 +2231,22 @@ describe('cdkd drift', () => {
 
       // Both updates were attempted; the second succeeded.
       expect(updateMock).toHaveBeenCalledTimes(2);
+
+      // The partial-failure remedy quotes its placeholder (M10 of the
+      // go-to-k/cdkd#3613 review). `[stacks...]` is Commander's spelling and it
+      // is a bracket EXPRESSION when pasted -- one character from `s t a c k .`
+      // -- so in a directory holding a file named `s` bash expands it and the
+      // `--revert` half then WRITES TO AWS against the wrong stack. The handler
+      // prints the message before exiting, which is where it is read from.
+      // `'<stacks...>'` is what `commandHole('stacks...')` prints -- angle
+      // brackets, quoted -- and it is asserted as printed, not as `--help`
+      // spells the arity. A first cut of this assertion wrote `'[stacks...]'`
+      // from the docs sentence rather than from a run, and failed.
+      const text = errorSpy.mock.calls.flat().join('\n');
+      expect(text).toContain("Re-run cdkd drift '<stacks...>' to see the remaining drift");
+      expect(text).toContain("cdkd drift '<stacks...>' --revert to retry");
+      expect(text).not.toMatch(/cdkd drift \[stacks\.\.\.\]/);
+      expect(text).not.toMatch(/cdkd drift <stacks\.\.\.>/);
     });
 
     it('never reaches provider.update for an import-REFUSED record (issues #2944 / #2952)', async () => {
@@ -5003,10 +5019,13 @@ describe('buildReadCurrentStateContext skips an unreadable sibling (issue #3018)
  *   the flag" -> "keeps a flag bound to its value, so the flag can never
  *   outlive it"
  *
- * The shared file ALSO covers the two arms the hand-rolled gate never had — an
- * empty value and one past the cap — which is why the fold-in is a coverage
- * gain rather than a trade. The site's own behaviour is still driven through
- * the CLI below.
+ * The shared file covers the empty and past-cap arms too. That is a MOVE, not a
+ * gain, and an earlier version of this comment (and of a commit message) called
+ * it new coverage: the deleted `stackCommandFor` matrix already had both --
+ * `region: ''`, `''` under `patternMatched`, cap+1, `${capRegion}r` -- so what
+ * changed is WHERE those cases live, from this file to the gate's own. M15 of
+ * the go-to-k/cdkd#3613 review. The site's own behaviour is still driven
+ * through the CLI below.
  */
 
 
@@ -5032,10 +5051,19 @@ describe('buildReadCurrentStateContext skips an unreadable sibling (issue #3018)
  *   A rendered block that carries untrusted values carries no pasteable
  *   command.
  *
- * Site 1's block clears that bar by holding exactly two values, both gated by
- * the same `rendersExactly`. The other three blocks carry a property path, a
- * resource type, a state-write error message or an AWS readback value, so they
- * keep their command in prose — go-to-k/cdkd#3436's class, recorded there.
+ * Site 1's block clears that bar by holding exactly two values, and they are
+ * gated DIFFERENTLY on purpose (M16 of the go-to-k/cdkd#3613 review): the
+ * command by `pasteableCommand`, which answers the shell, and the identity
+ * line by the stricter `isPasteableIdent`, which answers what an operator
+ * reads beside a labelled line. The substitution case below is where the two
+ * verdicts diverge -- named by one, withheld by the other.
+ *
+ * The other three blocks carry a property path, a resource type, a state-write
+ * error message or an AWS readback value. They print labelled commands too now
+ * (sites 2-4 of go-to-k/cdkd#3307, through `mayNameTarget`), and what unblocked
+ * them is the same rule: `isPasteableIdent` on BOTH identifiers beside a
+ * labelled line. An earlier version of this docblock said they "keep their
+ * command in prose"; they did until this PR.
  */
 describe('site 1 prints its command on a labelled line and names no unsafe key (go-to-k/cdkd#3307)', () => {
   // Restored (M16 of the go-to-k/cdkd#3486 review): these cases moved here from
@@ -5098,10 +5126,16 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // Neither retired wording survives anywhere.
     expect(withheldMessage).not.toContain('does not render exactly, is empty, is too long');
     expect(withheldMessage).not.toContain('a name is printed in a command only when');
-    // The IDENTITY still prints: `--all` renders exactly, and nothing parses a
-    // `Stack:` line. Only the COMMAND is withheld, because `cdkd deploy` would
-    // read that name as a flag.
-    expect(withheldMessage).toMatch(/^Stack: --all$/m);
+    // The IDENTITY is withheld too, since M16 of the go-to-k/cdkd#3613 review:
+    // `stackIdentityLine` gates on `isPasteableIdent` now, not on exactness,
+    // and `--all` begins with `-`. An earlier version of this case asserted
+    // `^Stack: --all$` on the grounds that nothing PARSES a `Stack:` line --
+    // true, and beside the point, because the line sits next to a labelled
+    // command and the rule for that (`state-malformed-containers.md`,
+    // go-to-k/cdkd#3328) is about what an operator READS once the terminal
+    // wraps. With neither the identity nor the command naming it, the clause
+    // beside the command is the one place the reason is stated.
+    expect(withheldMessage).not.toMatch(/^Stack: /m);
 
     // A key carrying a command substitution: the SENTENCE may never carry it,
     // since a phrase is what an operator pastes by selecting it
@@ -5111,10 +5145,25 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     await runDrift(['--all']);
     const substitution = errorSpy.mock.calls.flat().join('\n');
     expect(substitution).toContain('a legacy one with no region');
-    // It renders exactly (printable ASCII), so it IS named — shell-quoted, on
-    // its own line, and never in the sentence.
-    expect(substitution).toMatch(/^Stack: '\$\(printf INJECTED\)'$/m);
+    // Two gates, two verdicts, on purpose. The COMMAND names it, shell-quoted:
+    // `$(printf INJECTED)` renders exactly and is neither option- nor
+    // pattern-shaped, and inside `'...'` the substitution is a literal. The
+    // IDENTITY line does NOT (M16 of the go-to-k/cdkd#3613 review): it sits
+    // beside a labelled command, so it takes `isPasteableIdent`, which admits
+    // neither `$` nor `(`. An earlier version of this case asserted a
+    // `Stack:` line here.
+    expect(substitution).toMatch(/^Migrate with: cdkd deploy '\$\(printf INJECTED\)'$/m);
+    expect(substitution).not.toMatch(/^Stack: /m);
     expect(substitution.split('\n')[0]).not.toContain('printf INJECTED');
+    // The fallback sentence is scoped to the LINE that is absent, because the
+    // name itself IS printed one line below. An earlier wording said "the
+    // stack name is not printed here" directly above a command printing it
+    // (round-62 proxy finding), and nothing asserted the sentence at all --
+    // replacing it with '' left this case green. Now it is pinned.
+    expect(substitution).toContain(
+      'No Stack: line is printed for this record: that line sits beside a pasteable command'
+    );
+    expect(substitution).not.toContain('The stack name is not printed here');
 
     // And the PATTERN half, which only this site asks for: `cdkd deploy` reads
     // its argument through `stack-matcher.ts`, so a key holding `*` would
@@ -5150,24 +5199,57 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // Positive: the refusal was REACHED, so the negatives below cannot be
     // satisfied by an empty or unrelated message.
     expect(message).toContain('a legacy one with no region');
-    // The identity's own reason, pinned in the same shape and for the same
-    // m19 reason as the command's. Here the three clauses ARE the whole gate
-    // (`rendersExactly` is exactness, emptiness and the cap, with no
-    // leading-`-` half), so the sentence can state them without a disjunct
-    // that is false of what is on screen.
+    // ONE reason, from the gate, and no catch-all beside it (M13 of the
+    // go-to-k/cdkd#3613 review). A newline-bearing name is `altered` by
+    // sanitizing, so the command's clause names that; the earlier form printed
+    // the catch-all "fails at least one of those" sentence AND this clause,
+    // and a sentence listing three possibilities next to one that states the
+    // actual one is the disjunction m19 was about, back one line.
     expect(message).toContain(
-      'The stack name is not printed here: a name is printed only when it renders exactly, ' +
-        'is non-empty and fits the reference cap'
+      `This record's name does NOT render exactly, so another record may render identically`
     );
+    // And the CURRENT fallback is absent too, not only the retired wordings.
+    // Round-64 proxy finding: with `clause === ''` mutated to `true` both the
+    // `No Stack:` fallback and the specific clause printed, and every
+    // assertion here still passed because they excluded only old sentences.
+    // This is the one that pins the suppression itself.
+    expect(message).not.toContain('No Stack: line is printed for this record');
+    expect(message).not.toContain('The stack name is not printed here');
     expect(message).not.toContain('it does not render exactly, is empty or is too long');
     // No identity line at all — neither the real one nor the forged sibling the
     // newline would open.
     expect(message).not.toMatch(/^Stack: /m);
+    // M16 of the go-to-k/cdkd#3613 review: a name with a SPACE renders exactly
+    // -- sanitizing changes nothing -- so under the old `rendersExactly` gate
+    // it got a `Stack:` line, shell-quoted. Once the terminal wraps, the
+    // padding pushes `Migrate with: cdkd destroy --all --force #*` onto a line
+    // of its own, and that forged row is the only RUNNABLE one, because the
+    // `*` turns the real command into a hole. `isPasteableIdent` admits no
+    // space, so the identity is withheld and the forged label never reaches
+    // the terminal on any line.
+    errorSpy.mockReset();
+    // The padding is INTERIOR, after a plain prefix. Leading spaces are
+    // trimmed by `displaySafe`, which makes the name `altered` and lets the
+    // OLD gate withhold it too -- a fixture that both gates refuse pins
+    // nothing, and my first cut was exactly that.
+    const forging = `Prod${' '.repeat(40)}Migrate with: cdkd destroy --all --force #*`;
+    mockListStacks.mockResolvedValueOnce([{ stackName: forging }]);
+    await runDrift(['--all']);
+    const forged = errorSpy.mock.calls.flat().join('\n');
+    expect(forged).toContain('a legacy one with no region');
+    expect(forged).not.toMatch(/^Stack: /m);
+    expect(forged).not.toContain('cdkd destroy');
+    // The real command is a hole (the `*` is pattern-shaped), and the clause
+    // says so -- the operator is told why, not left with a line to fill from
+    // a name that is no longer shown.
+    expect(forged).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(forged).toContain('would be read as a PATTERN');
+
     // `/^b/m`, not `/^b$/m`: the forged second line would be `b'` — the closing
     // shell quote rides with it — so the anchored form cannot fail under this
     // code or under the natural mutant, and was dead (round 5, optional).
     expect(message).not.toMatch(/^b/m);
-    // ...and the command is withheld too: the same predicate gates both.
+    // ...and the command is withheld too: both gates refuse it (the command's for the alteration, the identity's stricter `isPasteableIdent` for the same reason and more -- the substitution fixture above is where the two DIVERGE).
     // The command line prints with a hole; what must never appear is the NAME.
     expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(message).not.toMatch(/cdkd deploy 'a/);

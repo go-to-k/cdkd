@@ -3220,7 +3220,7 @@ function createStateInfoCommand(): Command {
 
 /**
  * The hole the legacy refusal's `cdkd deploy` prints for a name it cannot
- * name, and the key {@link withheldNameClause} reads the reason back by. ONE
+ * name, and the key {@link withheldTargetClause} reads the reason back by. ONE
  * spelling so the two cannot drift apart (m22 of the go-to-k/cdkd#3499 review).
  */
 const STACK_HOLE = 'stack';
@@ -3467,7 +3467,7 @@ async function stateRefreshObservedCommand(
             // admits — rendered bare and authoritative above an unexplained
             // hole, inviting the operator to type the name that deploys every
             // stack in the app.
-            withheldTargetClause(migrate, STACK_HOLE) +
+            withheldTargetClause(migrate, STACK_HOLE, 'cdkd deploy') +
             `\nMigrate with: ${migrate.command}`
         );
       }

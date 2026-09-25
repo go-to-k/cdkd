@@ -139,6 +139,8 @@ export interface PasteableReport {
   readonly commandLiteralsExamined: number;
   /** Exemptions whose target no longer exists — a refusal, not a warning. */
   readonly staleExemptions: readonly string[];
+  /** Exemptions that matched MORE than one finding — a refusal (M11). */
+  readonly overmatchedExemptions: readonly string[];
 }
 
 /**
@@ -1459,20 +1461,30 @@ export function runSelfProbes(): string[] {
 export function applyExemptions(
   findings: readonly PasteableFinding[],
   exemptions: typeof EXEMPTIONS
-): { kept: PasteableFinding[]; stale: string[] } {
+): { kept: PasteableFinding[]; stale: string[]; overmatched: string[] } {
   const kept: PasteableFinding[] = [];
-  const used = new Set<number>();
+  const matches = new Map<number, number>();
   for (const finding of findings) {
     const index = exemptions.findIndex(
       (e) =>
         e.file === finding.file && e.shape === finding.shape && finding.excerpt.includes(e.contains)
     );
     if (index === -1) kept.push(finding);
-    else used.add(index);
+    else matches.set(index, (matches.get(index) ?? 0) + 1);
   }
+  const key = (e: (typeof EXEMPTIONS)[number]): string => `${e.file}:${e.shape}:${e.contains}`;
   return {
     kept,
-    stale: exemptions.filter((_, i) => !used.has(i)).map((e) => `${e.file}:${e.shape}:${e.contains}`),
+    stale: exemptions.filter((_, i) => !matches.has(i)).map(key),
+    // An entry is for ONE site. Matching a second finding is a REFUSAL, not a
+    // second exemption: M11 of the go-to-k/cdkd#3613 review measured two
+    // `cdkd import ... ${x}=` sites in `export.ts` giving two findings and
+    // ZERO surviving under one entry -- so a REGRESSION of the gated twin back
+    // to its old prose form would have been silently exempted while the
+    // original target still existed. The entry's `contains` prefix is what
+    // made both match, and tightening the prefix is not the fix: the next
+    // regression would spell itself differently again. The count is.
+    overmatched: exemptions.filter((_, i) => (matches.get(i) ?? 0) > 1).map(key),
   };
 }
 
@@ -1491,10 +1503,15 @@ export function checkPasteableCommandShapes(root: string): PasteableReport {
     commandLiteralsExamined += result.commandLiterals;
   }
 
-  const { kept, stale: staleExemptions } = applyExemptions(findings, EXEMPTIONS);
+  const {
+    kept,
+    stale: staleExemptions,
+    overmatched: overmatchedExemptions,
+  } = applyExemptions(findings, EXEMPTIONS);
 
   return {
     findings: kept,
+    overmatchedExemptions,
     filesScanned: files.length,
     spansExamined,
     commandLiteralsExamined,
@@ -1511,9 +1528,12 @@ export function checkPasteableCommandShapes(root: string): PasteableReport {
  * that reports everything (leaving every floor satisfied and the counts
  * LARGER) dies on a known verdict rather than on a magnitude.
  *
- * Exit codes: 0 clean, 1 findings or stale exemptions, 2 the probes or a floor
- * failed — a distinction worth having, since the second means the critic is
- * broken rather than the tree.
+ * Exit codes: 0 clean; 1 findings, a STALE exemption, or an OVERMATCHED one
+ * (an entry covering more than one finding, M11); 2 the probes failed, a floor
+ * was not met, or a floor SEAM was not a number (M14) — a distinction worth
+ * having, since 2 means the critic is broken rather than the tree. The
+ * round-62 proxy pass found this line naming only the original two causes
+ * per code after both refusal paths had been added.
  */
 export function main(argv: readonly string[] = process.argv.slice(2)): number {
   const rootFlag = argv.find((a) => a.startsWith('--root='))?.slice('--root='.length);
@@ -1536,21 +1556,31 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   // ONE seam per floor, which review forced: with only the file seam, deleting
   // either of the other two clauses reddened nothing, so two thirds of the
   // "per SHAPE, not one aggregate" claim was itself unpinned.
-  const floorFor = (env: string, fallback: number): number => {
+  // A non-numeric seam value is "the critic is broken" -- exit 2 -- and it is
+  // REPORTED rather than thrown. M14 of the go-to-k/cdkd#3613 review: a throw
+  // escapes `main()` uncaught, and an uncaught throw exits 1, which is the
+  // "tree is dirty" verdict. The 0/1/2 split is the whole point of having an
+  // exit code, so a broken seam must land on 2 like every other broken-critic
+  // condition.
+  const floorFor = (env: string, fallback: number): number | undefined => {
     const raw = process.env[env];
     if (raw === undefined) return fallback;
     const parsed = Number(raw);
     if (!Number.isFinite(parsed)) {
-      throw new Error(`check-pasteable-command-shapes: ${env}=${raw} is not a number`);
+      process.stderr.write(`check-pasteable-command-shapes: ${env}=${raw} is not a number\n`);
+      return undefined;
     }
     return parsed;
   };
+  const fileFloor = floorFor('CDKD_PASTEABLE_FLOOR_FILES', FLOORS.filesScanned);
+  const spanFloor = floorFor('CDKD_PASTEABLE_FLOOR_SPANS', FLOORS.spansExamined);
+  const commandFloor = floorFor('CDKD_PASTEABLE_FLOOR_COMMANDS', FLOORS.commandLiteralsExamined);
+  if (fileFloor === undefined || spanFloor === undefined || commandFloor === undefined) return 2;
   if (
     enforceFloors &&
-    (report.filesScanned < floorFor('CDKD_PASTEABLE_FLOOR_FILES', FLOORS.filesScanned) ||
-      report.spansExamined < floorFor('CDKD_PASTEABLE_FLOOR_SPANS', FLOORS.spansExamined) ||
-      report.commandLiteralsExamined <
-        floorFor('CDKD_PASTEABLE_FLOOR_COMMANDS', FLOORS.commandLiteralsExamined))
+    (report.filesScanned < fileFloor ||
+      report.spansExamined < spanFloor ||
+      report.commandLiteralsExamined < commandFloor)
   ) {
     process.stderr.write(
       `floor not met: ${report.filesScanned} files, ${report.spansExamined} spans, ` +
@@ -1561,10 +1591,21 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   for (const stale of report.staleExemptions) {
     process.stderr.write(`stale exemption (its target is gone): ${stale}\n`);
   }
+  for (const over of report.overmatchedExemptions) {
+    process.stderr.write(
+      `overmatched exemption (one entry covered more than one finding): ${over}\n`
+    );
+  }
   for (const f of report.findings) {
     process.stderr.write(`${f.file}:${f.line} [${f.shape}] ${f.excerpt}\n`);
   }
-  if (report.findings.length > 0 || report.staleExemptions.length > 0) return 1;
+  if (
+    report.findings.length > 0 ||
+    report.staleExemptions.length > 0 ||
+    report.overmatchedExemptions.length > 0
+  ) {
+    return 1;
+  }
   process.stdout.write(
     `check OK — ${report.filesScanned} files, ${report.spansExamined} quoted spans, ` +
       `${report.commandLiteralsExamined} command literals, 0 findings\n`

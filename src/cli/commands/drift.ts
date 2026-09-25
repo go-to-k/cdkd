@@ -60,16 +60,17 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
+  ROLE_ARN_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
-  displaySafe,
   isPasteableIdent,
-  ROLE_ARN_MAX_CODE_POINTS,
-  STACK_REF_MAX_CODE_POINTS,
-  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
-import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -1052,23 +1053,37 @@ async function driftCommand(
           { value: ref.stackName, hole: 'stack', opts: { patternMatched: true } },
         ]);
         const identity = stackIdentityLine(ref.stackName);
+        // Bound ONCE (M13 of the go-to-k/cdkd#3613 review): the earlier form
+        // called `withheldTargetClause` twice, and printed the old catch-all
+        // sentence ("fails at least one of those") AND the precise clause when
+        // both the identity and the command were withheld. The clause names the
+        // true reason; the catch-all named a disjunction three quarters false.
+        // So the catch-all prints only when there is NO clause to print.
+        const clause = withheldTargetClause(migrate, 'stack', 'cdkd deploy');
         throw new Error(
           `A state record for this stack is a legacy one with no region, which drift cannot ` +
             `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
             `detection after it.` +
-            (identity === undefined
-              ? `\nThe stack name is not printed here: a name is printed only when it renders ` +
-                `exactly, is non-empty and fits the reference cap — this one fails at least ` +
-                `one of those.`
-              : `\n${identity}`) +
+            (identity !== undefined
+              ? `\n${identity}`
+              : clause === ''
+                ? // Scoped to the IDENTITY LINE, not to the name (round-62
+                  // proxy finding): for `$(printf INJECTED)` the command below
+                  // NAMES the value, shell-quoted, while this line withholds
+                  // it under the stricter `isPasteableIdent` -- so "the stack
+                  // name is not printed here" was false one line above where
+                  // it was printed. The sentence now says which LINE is
+                  // absent and why, and the command speaks for itself.
+                  `\nNo Stack: line is printed for this record: that line sits beside a ` +
+                  `pasteable command, so it names only a plain identifier, and this name is ` +
+                  `not one.`
+                : '') +
             // The clause opens with a space, for `state.ts`'s site where it
             // continues a sentence. Here it follows the `Stack:` LINE, so it
             // needs its own — without it the reason ran on from the identity
             // and `^Stack: --all$` stopped matching, which is how this was
             // caught.
-            (withheldTargetClause(migrate, 'stack') === ''
-              ? ''
-              : `\n${withheldTargetClause(migrate, 'stack').trimStart()}`) +
+            (clause === '' ? '' : `\n${clause.trimStart()}`) +
             `\nMigrate with: ${migrate.command}`
         );
       }
@@ -6413,12 +6428,30 @@ async function runRevert(
         // blanks quoted runs before looking for holes. The reword is kept
         // because it is right, not because a check demanded it.
         //
-        // Quoting `[stacks...]` would be wrong for a different reason than a
-        // shell one: the brackets and the `...` are Commander's GRAMMAR --
-        // optional, variadic -- not characters to type, so wrapping them reads
-        // as a literal argument name.
-        `Re-run 'cdkd drift [stacks...]' to see the remaining drift, then ` +
-        `'cdkd drift [stacks...] --revert' to retry.`
+        // The placeholder is QUOTED, and an earlier version of this comment
+        // argued the opposite -- that the brackets and the `...` are
+        // Commander's GRAMMAR rather than characters to type, so wrapping them
+        // would read as a literal argument name. That argument does not
+        // survive measurement, and M10 of the review is the third time on this
+        // lane it has been made and killed: `[stacks...]` is a bracket
+        // EXPRESSION matching ONE character from `s t a c k .`, so in a
+        // directory holding a file named `s` bash expands it and the line
+        // silently retargets. On the `--revert` half that WRITES TO AWS. zsh
+        // expands a MATCHING pattern the same way; what it does differently is
+        // abort on NO match, where bash passes the literal through -- so zsh
+        // is the safer shell only in the directory where nothing was at risk.
+        // (A first cut of this comment said zsh "aborts instead", which is
+        // false for the case that matters.)
+        //
+        // `commandHole('stacks...')` prints `'<stacks...>'` -- angle brackets,
+        // as `state.ts`'s three `Usage:` lines print theirs -- which is NOT the
+        // `[stacks...]` that `--help` shows for this optional variadic. That is
+        // a deliberate trade: the quoted hole is the one spelling this repo
+        // has measured inert under a shell, and a reader who types the line
+        // verbatim gets the quotes stripped rather than passed. The arity is
+        // unchanged; only the bracket kind differs from `--help`.
+        `Re-run cdkd drift ${commandHole('stacks...')} to see the remaining drift, then ` +
+        `cdkd drift ${commandHole('stacks...')} --revert to retry.`
     );
   }
 }
@@ -7325,43 +7358,30 @@ function formatScalar(value: unknown): string {
 }
 
 /**
- * Does `value` reach the terminal as itself — sanitizing changes nothing, and
- * the state-reference cap does not cut it?
- *
- * Module-private and shared by {@link stackCommandFor} and
- * {@link stackIdentityLine}: the identity line and the command it sits above
- * must agree about which names are safe to print, and two spellings of this
- * predicate is how they would come to disagree.
- */
-function rendersExactly(value: string): boolean {
-  // EMPTY is not exact: an empty `--stack-region ''` is not "not supplied" to
-  // every reader, and an empty identity line names nothing — the same call
-  // `buildForceUnlockCommand` makes one directory over.
-  if (value === '') return false;
-  const safe = displaySafe(value, { asciiOnly: true });
-  return safe === value && !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
-}
-
-/**
  * The `Stack: '<name>'` line that carries a record's identity NEXT TO a
  * pasteable command, or `undefined` when the name cannot be printed at all.
  *
  * A labelled command line is a trusted-looking shape, and a stack name is an
  * S3 key segment `listStacks` validates only for non-emptiness — so a name
  * carrying a newline printed ABOVE one forges a second labelled line that the
- * operator has every reason to trust. The same gate as the command, on its own
- * line, shell-quoted: inside a sentence a `$(...)` name executes when the
- * phrase is pasted, and `displayIdent`'s JSON quotes would not stop that —
- * double quotes do not close command substitution.
+ * operator has every reason to trust.
  *
- * USED BY SITE 1 ALONE, deliberately. A labelled command line is only safe in
- * a block whose OTHER values are gated too, and site 1's block carries exactly
- * two: this identity and the command beside it. The blocks that also carry a
- * property path, a resource type, a state-write error message or an AWS
- * readback value cannot meet that bar
- * by sanitizing — an arbitrary value cannot be gated for exactness and still
- * printed — so they keep their command in prose and the whole class is
- * [#3436](https://github.com/go-to-k/cdkd/issues/3436)'s.
+ * A STRICTER gate than the command's, not the same one — M16 of the
+ * go-to-k/cdkd#3613 review. The command gate answers the shell: a `$(...)`
+ * name is named, shell-quoted, because inside `'...'` the substitution is a
+ * literal. This line answers what an operator READS: it sits beside a labelled
+ * command, so it takes `isPasteableIdent` per `state-malformed-containers.md`
+ * (go-to-k/cdkd#3328), which refuses the space and the `:` exactness keeps —
+ * the characters a name uses to spell a fake `Migrate with:` row once the
+ * terminal wraps. So `$(printf INJECTED)` is named by the command and
+ * withheld here, on purpose, and the test pins both halves.
+ *
+ * USED BY SITE 1 ALONE, deliberately. Sites 2–4 also print labelled commands
+ * now (through `mayNameTarget`, `isPasteableIdent` on both identifiers), but
+ * their blocks ALSO display the stack name in their own headers, so a separate
+ * identity line there would be a second copy of a value the block already
+ * shows. An earlier version of this comment said those sites "keep their
+ * command in prose"; they did until this PR, and the sentence outlived it.
  */
 function stackIdentityLine(
   stackName: string,
@@ -7377,7 +7397,18 @@ function stackIdentityLine(
    */
   indent = ''
 ): string | undefined {
-  return rendersExactly(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
+  // `isPasteableIdent`, not `rendersExactly` (M16 of the go-to-k/cdkd#3613
+  // review). This line sits BESIDE a labelled command line, and that is the
+  // shape `.claude/rules/state-malformed-containers.md` (go-to-k/cdkd#3328)
+  // governs: exactness keeps a SPACE and a `:`, so a name such as
+  // `<padding>Migrate with: cdkd destroy --all --force #*` renders exactly,
+  // wraps into a fake `Migrate with:` row once the terminal folds it, and that
+  // row is the only RUNNABLE one -- the `*` turns the real command into a
+  // hole. Sites 2-4 already took the rule as `mayNameTarget`; site 1 is
+  // go-to-k/cdkd#3307's own, and this PR closes that issue, so it takes it
+  // here. A refused name prints no `Stack:` line at all, and the withheld
+  // clause beside the command says why.
+  return isPasteableIdent(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
 }
 
 /**

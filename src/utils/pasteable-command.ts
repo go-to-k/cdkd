@@ -67,17 +67,17 @@
  *   same way; they are not this function, so a rule change reaches them only by
  *   hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
- *   migrated here — `provisioning/providers/**` (S3 Tables, Route 53, DynamoDB),
+ *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
  *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
  *   today.
- * - **A spelled-out template or usage synopsis printing a BARE `<hole>`.**
  *
- * Two entries left this list in go-to-k/cdkd#3613 and saying so is the point:
+ * Three entries left this list in go-to-k/cdkd#3613 and saying so is the point:
  * the `cdkd drift` sites of
  * [#3307](https://github.com/go-to-k/cdkd/issues/3307) ALL build through this
- * function now and `drift.ts`'s own `stackCommandFor` is gone, and the source
- * fence that would find the bare-hole shape EXISTS —
- * `scripts/check-pasteable-command-shapes.ts`, whose unit test is its
+ * function now and `drift.ts`'s own `stackCommandFor` is gone; the S3 Tables
+ * provider's raw-value prose was fixed there too; and a bare-`<hole>` synopsis
+ * is no longer uncovered, because the source fence that finds that shape
+ * EXISTS — `scripts/check-pasteable-command-shapes.ts`, whose unit test is its
  * enforcement. A list of what is not yet covered goes stale the moment
  * something is, so derive it rather than reading it: the fence reports the
  * shapes, and its `EXEMPTIONS` name the sites deliberately left for a
@@ -352,6 +352,12 @@ export function pasteableCommand(
  * same clause said nothing above a hole the operator was then invited to fill
  * with the name printed beside it.
  *
+ * SCOPE: the sentence is about a STATE RECORD's name — it opens "This record's
+ * name" and ends by pointing at `cdkd state list --long` — so it fits a caller
+ * whose value is a state-key stack segment and nothing else. Both live callers
+ * are exactly that (the two legacy-key migrate refusals); a caller naming
+ * anything else needs its own sentence, not this one with a different verb.
+ *
  * WHICH reasons are reachable is the CALLER's question, not this function's,
  * and every arm is answered here because the gate can return any of them. For
  * a name that comes from an S3 key segment — `state refresh-observed`'s legacy
@@ -378,14 +384,27 @@ export function pasteableCommand(
  * right thing, and substituting one arm's text for another's is exactly the
  * disagreement M11 closed.
  */
-export function withheldTargetClause(built: PasteableCommand, hole: string): string {
+export function withheldTargetClause(
+  built: PasteableCommand,
+  hole: string,
+  /**
+   * The verb the two shape-specific arms name — `'cdkd deploy'` at both live
+   * callers, so the hardcoded spelling this replaced was CORRECT for both. A
+   * PARAMETER since M13 of the go-to-k/cdkd#3613 review for the caller that
+   * does not exist yet: this helper is shared now, and a third site building a
+   * different command would have inherited a sentence naming the wrong one,
+   * silently, with the message still well-formed. (An earlier version of this
+   * comment said `state.ts` had already hit that; it had not.)
+   */
+  verb: string
+): string {
   // Keyed on the hole NAME the caller passes, which couples the two (m22 of
   // the go-to-k/cdkd#3499 review). Renaming the hole at the call site would
   // drop this sentence while the hole itself still printed — silently, since
   // the message stays well-formed. Taking the name as an ARGUMENT is what
   // keeps the two spellings from drifting apart across MODULES, now that two
-  // files render this clause. the hole NAME is a PARAMETER, so a caller cannot spell it one way here and
-  // `state-refresh-observed.test.ts` pins the PAIRING per REASON — not per
+  // files render this clause. `state-refresh-observed.test.ts` pins the
+  // PAIRING per REASON — not per
   // case: each of the five reasons has at least one case asserting both the
   // hole in the command and the sentence about it, so a lookup that stopped
   // matching cannot leave the suite green. (The hostile-name loop asserts the
@@ -413,11 +432,11 @@ export function withheldTargetClause(built: PasteableCommand, hole: string): str
       break;
     case 'option-shaped':
       why =
-        `begins with a '-', so it is not safe to print as an argument to 'cdkd deploy' — a ` +
+        `begins with a '-', so it is not safe to print as an argument to '${verb}' — a ` +
         `name like '--all' is parsed as the FLAG and targets every stack`;
       break;
     case 'pattern-shaped':
-      why = `would be read as a PATTERN by 'cdkd deploy', which can match other stacks`;
+      why = `would be read as a PATTERN by '${verb}', which can match other stacks`;
       break;
     default: {
       // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499
@@ -427,7 +446,7 @@ export function withheldTargetClause(built: PasteableCommand, hole: string): str
       // path that can only be reached when the type system was bypassed would
       // have failed by printing something plausible. It fails loudly instead.
       const _exhaustive: never = reason;
-      throw new Error(`withheldNameClause: unhandled WithholdReason ${String(_exhaustive)}`);
+      throw new Error(`withheldTargetClause: unhandled WithholdReason ${String(_exhaustive)}`);
     }
   }
   return (

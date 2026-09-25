@@ -4,9 +4,10 @@ import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
-  displaySafe,
-  truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
+  displaySafe,
+  isPasteableIdent,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import {
   displayAssemblyPath,
@@ -2238,14 +2239,17 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
     // this lane recorded as the reason sanitizing is not a remedy -- and I
     // reintroduced it three PRs later.
     //
-    // Gated, the id is NAMED only when it renders exactly, is non-empty, fits
-    // the cap and does not read as an OPTION, and is printed as a quoted hole
-    // otherwise. Named, it is SHELL-quoted, which is what makes `$( )` inert in
-    // argv where JSON quotes do not. A PATTERN character (`*` / `/`) is NOT
-    // refused here and must not be claimed to be: that arm needs
-    // `opts.patternMatched`, which this caller does not pass, and correctly so
-    // -- `--resource` takes a logical id, not a pattern, so a `/` in one is an
-    // ordinary character. Review caught the over-claim.
+    // Gated by `isPasteableIdent` inside `importRepairCommand` (M9 of the
+    // go-to-k/cdkd#3613 review), which is STRICTER than the command gate: the
+    // id is NAMED only when it is a plain identifier -- alphanumeric start,
+    // then `[A-Za-z0-9~_.-]` -- and printed as a quoted hole otherwise. So a
+    // `*` or `/` IS refused here, along with `=`, `$`, `(` and a space. An
+    // earlier version of this comment said the pattern characters were not
+    // refused; that was true of the command gate alone (its pattern arm needs
+    // `opts.patternMatched`, which this caller does not pass), and stopped
+    // being true of this site when M9 put `isPasteableIdent` in front of it.
+    // Named, it is SHELL-quoted, which is what makes `$( )` inert in argv where
+    // JSON quotes do not.
     `\nRepair with: ${importRepairCommand(logicalId)}`
   );
 }
@@ -2281,10 +2285,27 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
  * reason to grow two spellings here.)
  */
 function importRepairCommand(logicalId: string): string {
+  // `isPasteableIdent`, not the command gate alone, and the reason is an
+  // ARGUMENT GRAMMAR rather than a shell one (M9 of the go-to-k/cdkd#3613
+  // review). `cdkd import` splits `--resource` on the FIRST `=`
+  // (`parseResourceFlags` in `import.ts`), and the gate does not refuse `=`:
+  // it is an ordinary character that renders exactly and needs no quoting. So
+  // a state key `A=B` renders `--resource 'A=B'='<physicalId>'`, which parses
+  // as logical id `A` with physical id `B=<whatever the operator filled in>`
+  // -- and the `--force` then lands on a DIFFERENT, real resource `A`.
+  //
+  // Shell-safe and argument-safe are different questions, and this is the
+  // second time on this lane that a command was moved out of the injection
+  // class while still MEANING the wrong thing (the first was passing a logical
+  // id where `cdkd import` declares `[stack]`). `isPasteableIdent` admits
+  // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$`, which has no `=`, so it answers both.
+  const named = isPasteableIdent(logicalId);
   return `${
     pasteableCommand('cdkd import', [
       { hole: 'stack' },
-      { flag: '--resource', value: logicalId, hole: 'logicalId' },
+      named
+        ? { flag: '--resource', value: logicalId, hole: 'logicalId' }
+        : { flag: '--resource', hole: 'logicalId' },
     ]).command
   }=${commandHole('physicalId')} --force`;
 }

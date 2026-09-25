@@ -379,23 +379,31 @@ describe('pasteable-command shape fence — it does not report everything', () =
     }
   }, 180_000);
 
-  it('REFUSES a floor seam that is not a number, rather than ignoring it', () => {
-    // The seams exist so floor enforcement is observable, and a seam that
-    // silently accepts garbage disables the clause it was meant to exercise.
-    // Review measured the guard's mutant surviving: with the finiteness test
-    // replaced by `false` the run returned success and the comparison was gone.
+  it('REFUSES a floor seam that is not a number, on EVERY seam, with exit 2', () => {
+    // Parameterized over all three seams (M9-M16 proxy pass): the first cut
+    // drove only SPANS, and deleting either of the other two
+    // `=== undefined` branches left the run printing the error and exiting 0
+    // -- a broken seam silently disabling the floor it was meant to exercise.
+    // And `toBe(2)`, not `not.toBe(0)` (M14 of the review): the first cut
+    // THREW, and an uncaught throw exits 1, the "tree is dirty" verdict.
     const script = fileURLToPath(
       new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
     );
-    const bad = spawnSync(process.execPath, [script], {
-      encoding: 'utf8',
-      timeout: SPAWN_TIMEOUT_MS,
-      cwd: REPO_ROOT,
-      env: { ...process.env, CDKD_PASTEABLE_FLOOR_SPANS: 'lots' },
-    });
-    expect(bad.status, bad.stdout).not.toBe(0);
-    expect(bad.stderr).toContain('CDKD_PASTEABLE_FLOOR_SPANS=lots');
-  }, 120_000);
+    for (const seam of [
+      'CDKD_PASTEABLE_FLOOR_FILES',
+      'CDKD_PASTEABLE_FLOOR_SPANS',
+      'CDKD_PASTEABLE_FLOOR_COMMANDS',
+    ]) {
+      const bad = spawnSync(process.execPath, [script], {
+        encoding: 'utf8',
+        timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
+        env: { ...process.env, [seam]: 'lots' },
+      });
+      expect(bad.status, `${seam}=lots did not exit 2: ${bad.stdout}${bad.stderr}`).toBe(2);
+      expect(bad.stderr).toContain(`${seam}=lots`);
+    }
+  }, 240_000);
 
   it('actually COMPARES each probe verdict, not merely runs the probes', () => {
     // `CDKD_SELF_PROBE_FORCE_FAIL` does not short-circuit the loop — review
@@ -418,6 +426,80 @@ describe('pasteable-command shape fence — it does not report everything', () =
     // And the message names the DISAGREEMENT, not just the label -- a failure
     // reporting only "a probe failed" cannot tell the arms apart.
     expect(injected.stderr).toMatch(/expected \[\], got \[quoted-command\]/);
+  }, 120_000);
+
+  it('exits 1 when the LIVE exemption goes stale against a --root= tree', () => {
+    // M14 of the review: dropping `|| report.staleExemptions.length > 0` from
+    // `main` survived every case, because the real tree never makes the live
+    // entry stale. A scratch root that lacks the entry's file does, and the
+    // binary must refuse it with exit 1 -- the "tree is dirty" verdict, since
+    // an exemption outliving its target is a dirt of the tree's own making.
+    expect(EXEMPTIONS.length, 'this case needs a live entry to make stale').toBeGreaterThan(0);
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-pasteable-stale-'));
+    try {
+      writeFileSync(join(root, 'clean.ts'), 'export const m = `nothing to see`;\n', 'utf8');
+      const stale = spawnSync(process.execPath, [script, `--root=${root}`], {
+        encoding: 'utf8',
+        timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
+      });
+      expect(stale.status, stale.stderr).toBe(1);
+      expect(stale.stderr).toContain('stale exemption');
+      expect(stale.stderr).toContain(EXEMPTIONS[0]!.file);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('exits 1 when the LIVE exemption covers TWO findings in a --root= tree', () => {
+    // M11 through the binary: the entry is reproduced at its own path with
+    // its target literal written TWICE, so one entry matches two findings.
+    expect(EXEMPTIONS.length, 'this case needs a live entry to overmatch').toBeGreaterThan(0);
+    const entry = EXEMPTIONS[0]!;
+    const script = fileURLToPath(
+      new URL('../../../scripts/check-pasteable-command-shapes.ts', import.meta.url)
+    );
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-pasteable-over-'));
+    try {
+      const target = join(root, entry.file);
+      mkdirSync(join(target, '..'), { recursive: true });
+      // Two prose-quoted `cdkd import` commands carrying an interpolation,
+      // both containing the entry's `contains` prefix.
+      writeFileSync(
+        target,
+        "export const a = `Repair ('cdkd import <stack> --resource ${id}=<p> --force').`;\n" +
+          "export const b = `Repair ('cdkd import <stack> --resource ${id}=<p> --force').`;\n",
+        'utf8'
+      );
+      const over = spawnSync(process.execPath, [script, `--root=${root}`], {
+        encoding: 'utf8',
+        timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
+      });
+      expect(over.status, over.stderr).toBe(1);
+      expect(over.stderr).toContain('overmatched exemption');
+      // The verdict must be the OVERMATCH's alone (round-65 proxy finding). A
+      // second live entry whose file is absent from this scratch tree would go
+      // stale and produce exit 1 by itself, masking removal of the overmatch
+      // clause while its diagnostic still printed. So: no stale entry, and no
+      // ordinary finding either -- both sites here are matched by the entry,
+      // which is the premise, and a surviving finding would mean it was not.
+      expect(over.stderr).not.toContain('stale exemption');
+      // Filename-AGNOSTIC (round-66 proxy finding): a guard keyed on
+      // `export.ts` alone would let an ordinary finding in a sibling file
+      // supply the exit 1 unnoticed. Any `<file>:<line> [<shape>]` diagnostic
+      // is an ordinary finding, whatever file it names -- and the in-process
+      // scan of the same root says the same thing from the other side.
+      expect(over.stderr).not.toMatch(
+        /^\S+:\d+ \[(quoted-command|quoted-interpolation|open-hole)\]/m
+      );
+      expect(checkPasteableCommandShapes(root).findings).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }, 120_000);
 
   it('exits 1 -- not 2 -- for a DIRTY tree, naming the site', () => {
@@ -769,6 +851,19 @@ describe('pasteable-command shape fence — exemptions cannot go stale', () => {
     const stale = applyExemptions(findings, [gone]);
     expect(stale.kept).toHaveLength(1);
     expect(stale.stale).toEqual(['cli/commands/deleted.ts:open-hole:cdkd bootstrap']);
+
+    // ONE entry, TWO matching findings: a REFUSAL, not two exemptions (M11).
+    // Review measured the failure this closes: two `cdkd import ... ${x}=`
+    // sites in `export.ts` gave two findings and zero survived under a single
+    // entry, so a regression of the GATED twin back to its prose form would
+    // have been silently exempted while the original target still existed.
+    const twice = applyExemptions([...findings, { ...findings[0]!, line: 99 }], [live]);
+    expect(twice.kept).toEqual([]);
+    expect(twice.stale).toEqual([]);
+    expect(twice.overmatched).toEqual(['cli/commands/probe.ts:open-hole:cdkd force-unlock']);
+    // ...and the single-match case above is NOT overmatched, so the count
+    // discriminates rather than firing on every use.
+    expect(matched.overmatched).toEqual([]);
 
     // THREE near-misses, each differing from the live entry in exactly ONE
     // field. Review measured the pair above: the stale fixture differed in both

@@ -1149,9 +1149,17 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).toMatch(/cloudformation:DescribeType/);
     expect(reason).toMatch(/Re-deploying does NOT clear it/);
     expect(reason).not.toMatch(/Re-deploy the stack once/);
+    // The NAMING arm of the gate (round-65 proxy finding): every hostile-id
+    // case in this block asserts WITHHOLDING, so `named = false` -- a gate
+    // that withholds every valid id -- satisfied all of them. `Table` is a
+    // plain identifier and must be NAMED, shell-quoted, or the command is
+    // useless for the ordinary operator the message exists for. UNQUOTED:
+    // `shellQuote` quotes only what its bare charset rejects, and `Table` is
+    // entirely inside it, so the line reads as an operator would type it.
+    expect(reason).toContain("--resource Table='<physicalId>' --force");
   });
 
-  it('names the logical id through the paste GATE, never the display renderer', async () => {
+  it('WITHHOLDS a hostile logical id from the repair command, and never renders it through displayIdent there', async () => {
     // The P1 this lane shipped and review probed. The remedy line is a
     // `cdkd import` an operator PASTES, and the first cut rendered the logical
     // id through `displayIdent` inside it, with a comment asserting the holes
@@ -1160,10 +1168,13 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     // the pasted line created the file. That is go-to-k/cdkd#3486's round-3
     // finding, reintroduced three PRs later.
     //
-    // This id renders EXACTLY (printable ASCII, no leading `-`, no `*` or `/`),
-    // so the gate NAMES it -- shell-quoted. The distinction under test is the
-    // QUOTE KIND, not withholding: `'...'` makes `$( )` literal in argv,
-    // `"..."` does not.
+    // What this case pins is WITHHOLDING. It used to pin quote KIND -- the id
+    // renders exactly, so the command gate NAMED it shell-quoted -- and M9 of
+    // the go-to-k/cdkd#3613 review moved this site to `isPasteableIdent`,
+    // which refuses `$` and `(`. The quote-kind distinction is still true of
+    // the gate in general and is not exercised here any more; the title and
+    // this comment said otherwise until the proxy pass read them against the
+    // assertions.
     const hostile = 'Tbl$(touch OWNED)';
     const state = stateWith({
       [hostile]: {
@@ -1181,16 +1192,54 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     const reason = plan.blocked[0]!.reason;
     // Positive control: the arm under test is the one that fired.
     expect(reason).toMatch(/redaction mask/);
-    // SHELL-quoted by the gate...
-    expect(reason).toContain(`--resource 'Tbl$(touch OWNED)'=`);
-    // ...and NOT JSON-quoted, which is what `displayIdent` would have emitted
-    // and what ran when pasted.
-    expect(reason).not.toContain('--resource "Tbl$(touch OWNED)"');
+    // WITHHELD, and this expectation CHANGED with M9 of the review. The command
+    // gate alone NAMED this id, shell-quoted, and that was right about the
+    // SHELL: `shellQuote` makes the whole value one argv token, so `$( )` is
+    // literal there where `displayIdent`'s JSON quotes leave it live. What the
+    // gate cannot answer is `cdkd import`'s own ARGUMENT GRAMMAR -- it splits
+    // `--resource` on the first `=` -- so this site now takes the stricter
+    // `isPasteableIdent`, and every id it refuses prints as a hole.
+    expect(reason).toContain("--resource '<logicalId>'='<physicalId>' --force");
+    // Scoped to the COMMAND LINE, not the whole message. The id still appears
+    // in the PROSE through `displayIdent`, which is that renderer's job and is
+    // go-to-k/cdkd#3232's class rather than this one -- an assertion over the
+    // whole message would fail on correct code, which is a trap this lane has
+    // already fallen into once.
+    const command = reason.split('\nRepair with: ')[1] ?? '';
+    expect(command, 'the command line is missing').not.toBe('');
+    expect(command).not.toContain('touch OWNED');
     // The positional is a HOLE, not the logical id: `cdkd import` declares it
     // as `[stack]`, and an earlier cut passed the RESOURCE there -- a command
     // naming a resource where a stack goes, from a function with no stack name
     // in scope. A shape fence cannot see that; only reading the command can.
     expect(reason).toContain(`Repair with: cdkd import '<stack>' --resource`);
+  });
+
+  it('WITHHOLDS a logical id carrying `=`, which would retarget --force', async () => {
+    // M9 of the go-to-k/cdkd#3613 review, and an ARGUMENT-grammar defect rather
+    // than a shell one: `cdkd import` splits `--resource` on the FIRST `=`, so
+    // `--resource 'A=B'='<physicalId>'` parses as logical id `A` with physical
+    // id `B=<filled>`. The operator's `--force` then lands on a DIFFERENT, real
+    // resource. The command gate cannot see it -- `=` renders exactly and needs
+    // no quoting -- so `isPasteableIdent` is what refuses it.
+    const state = stateWith({
+      'A=B': {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: SECRET_MASK },
+      },
+    });
+    const template = { Resources: { 'A=B': { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    const reason = plan.blocked[0]!.reason;
+    // Positive control: the arm under test fired.
+    expect(reason).toMatch(/redaction mask/);
+    // The id is a HOLE, so the command cannot address the wrong resource...
+    expect(reason).toContain("--resource '<logicalId>'='<physicalId>' --force");
+    // ...and the dangerous rendering never appears.
+    expect(reason).not.toContain("--resource 'A=B'");
   });
 
   it('CONTROL: the same record with a real recorded ARN exports', async () => {

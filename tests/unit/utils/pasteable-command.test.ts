@@ -15,12 +15,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vite-plus/test';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
-import {
-  commandHole,
-  pasteableCommand,
-  rendersExactly,
-  shellQuote,
-} from '../../../src/utils/pasteable-command.js';
+import { commandHole, pasteableCommand, rendersExactly, shellQuote, withheldTargetClause } from '../../../src/utils/pasteable-command.js';
 import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
 
 
@@ -444,4 +439,25 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     });
   });
 
+});
+
+describe('withheldTargetClause names the VERB it is given', () => {
+  // The verb is a PARAMETER since M13 of the go-to-k/cdkd#3613 review, and
+  // both live callers pass `cdkd deploy` -- so a test through either caller
+  // cannot tell the parameter from the hardcoded spelling it replaced. This
+  // exercises both shape-specific arms with a verb no caller uses, which is
+  // the only way the parameter is pinned rather than asserted.
+  it('spells the option-shaped and pattern-shaped arms with the caller\'s verb', () => {
+    const option = pasteableCommand('cdkd destroy', [{ value: '--all', hole: 'stack' }]);
+    const optionClause = withheldTargetClause(option, 'stack', 'cdkd destroy');
+    expect(optionClause).toContain("not safe to print as an argument to 'cdkd destroy'");
+    expect(optionClause).not.toContain('cdkd deploy');
+
+    const pattern = pasteableCommand('cdkd destroy', [
+      { value: 'Prod*', hole: 'stack', opts: { patternMatched: true } },
+    ]);
+    const patternClause = withheldTargetClause(pattern, 'stack', 'cdkd destroy');
+    expect(patternClause).toContain("would be read as a PATTERN by 'cdkd destroy'");
+    expect(patternClause).not.toContain('cdkd deploy');
+  });
 });
