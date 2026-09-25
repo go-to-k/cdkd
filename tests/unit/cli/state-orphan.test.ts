@@ -314,6 +314,20 @@ describe('cdkd state orphan', () => {
     expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>'$/m);
   });
 
+  it('names no padded name on the `Destroy with:` line (go-to-k/cdkd#3696)', async () => {
+    const forged = `ProdStack${' '.repeat(60)}Destroy with: cdkd destroy --all --force #`;
+    mockListStacks.mockResolvedValue([{ stackName: forged, region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+
+    const out = await runStateOrphan(['orphan', forged]);
+
+    expect(out).toMatch(/AWS resources will NOT be deleted/);
+    const labelled = out.split('\n').filter((l) => l.startsWith('Destroy with:'));
+    expect(labelled).toEqual(["Destroy with: cdkd destroy '<stack>'"]);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
   it('prompts and cancels when the user answers `n` (or empty)', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);

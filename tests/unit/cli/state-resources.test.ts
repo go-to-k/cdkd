@@ -506,6 +506,20 @@ describe('cdkd state resources', () => {
     expect(pattern).not.toContain('is not a plain identifier');
   });
 
+  it('names no padded legacy name on the `Migrate with:` line (go-to-k/cdkd#3696)', async () => {
+    // Exact, `*`-free and not option-shaped, so only `plainIdent` withholds
+    // it. The prose still echoes the operator's own positional (mid-line);
+    // what must hold is that the ONE line starting with the label is the
+    // real command, carrying the hole.
+    const forged = `ProdStack${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+    mockListStacks.mockResolvedValue([{ stackName: forged, region: undefined }]);
+    await runStateResources(['resources', forged]).catch(() => undefined);
+    const message = errorSpy.mock.calls.map(String).join('\n');
+    expect(message).toContain('only a legacy state record');
+    const labelled = message.split('\n').filter((l) => l.startsWith('Migrate with:'));
+    expect(labelled).toEqual(["Migrate with: cdkd deploy '<stack>'"]);
+  });
+
   it('emits a JSON array of full resource details with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(

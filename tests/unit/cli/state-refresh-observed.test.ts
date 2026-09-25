@@ -1513,7 +1513,7 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       expect(message).not.toContain(String.fromCharCode(0x1b));
       expect(message).not.toContain('Old');
       expect(message).toContain(
-        "A stack whose name is not a plain identifier (see 'cdkd state list') has only a legacy"
+        "A stack whose name is not a plain identifier (see 'cdkd state list --long') has only a legacy"
       );
       expect(message).toContain('does NOT render exactly');
       expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
@@ -1681,6 +1681,13 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       // NOT the exactness sentence: `--all` renders exactly. Keying the clause
       // on rendering alone would print the wrong reason here, or none.
       expect(message).not.toContain('does NOT render exactly');
+      // The PROSE takes the same predicate as the command (go-to-k/cdkd#3696).
+      // `--all` is where `isPasteableIdent` and the old rendering predicate
+      // disagree: the latter would print `Stack --all` above the hole.
+      expect(message).toContain(
+        "A stack whose name is not a plain identifier (see 'cdkd state list --long') has only a legacy"
+      );
+      expect(message).not.toContain('Stack --all');
     });
 
     for (const [label, name] of [
@@ -1710,6 +1717,9 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
         expect(message.trimEnd().endsWith(`Migrate with: cdkd deploy '<stack>'`)).toBe(true);
         expect(message).not.toContain('does NOT render exactly');
         expect(message).not.toContain(`begins with a '-'`);
+        // The prose does not show a name the command withheld (go-to-k/cdkd#3696).
+        expect(message).not.toContain(`Stack ${name} has only`);
+        expect(message).toContain('A stack whose name is not a plain identifier');
       });
     }
 

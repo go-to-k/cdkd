@@ -3420,13 +3420,13 @@ async function stateRefreshObservedCommand(
         // but keeps interior spaces, so `ProdStack` + padding + `Migrate
         // with: cdkd destroy --all --force #` still wraps into a counterfeit
         // row. A name the predicate refuses is described, not shown — the
-        // clause below gives the gate's own reason, and `cdkd state list`
-        // shows it. `plainIdent` makes the command's verdict the same one, so
+        // clause below gives the gate's own reason, and `cdkd state list
+        // --long` shows it. `plainIdent` makes the command's verdict the same one, so
         // the prose never names a value the command withholds.
         const named = isPasteableIdent(target.stackName);
         const subject = named
           ? `Stack ${target.stackName}`
-          : `A stack whose name is not a plain identifier (see 'cdkd state list')`;
+          : `A stack whose name is not a plain identifier (see 'cdkd state list --long')`;
         // The command is LAST and UNWRAPPED on its own labelled line, named
         // only when the gate names it: not when it would not render EXACTLY
         // (an altered name can name a DIFFERENT stack, and `cdkd deploy`
