@@ -127,6 +127,23 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi
+  # The ScriptBucket's auto-delete custom-resource Lambda runs on destroy and
+  # leaves its /aws/lambda/${STACK}* log group behind (not stack-managed; CFn
+  # leaves it too). Sweep it so the run is orphan-zero, refusing an empty or
+  # foreign scope, which would widen the prefix to every Lambda log group.
+  case "${STACK}" in
+    GlueUpdateHardening?*)
+      local lg
+      for lg in $(aws logs describe-log-groups \
+        --log-group-name-prefix "/aws/lambda/${STACK}" --region "${REGION}" \
+        --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
+      done
+      ;;
+    *)
+      echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
+      ;;
+  esac
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
