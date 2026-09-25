@@ -3459,13 +3459,14 @@ const CONFLICTING_PLAINTEXT = Symbol('conflicting plaintext');
  * no bag can equal, which refuses it exactly as the scan did.
  *
  * The branch is HARD to reach from the resolver — one resolver's
- * `cachedDynamicReferences` yields one plaintext per expression, so a single
- * pass cannot produce two — but it is no longer unreachable from there since
- * that cache became per-resolver (issue #1933): two resolvers in two regions
- * legitimately resolve one expression to two different plaintexts, and a caller
- * merging their maps lands exactly here. It is reachable through this module's
- * API regardless, and it is FENCED, by the "recorded against MORE THAN ONE
- * plaintext" case. An earlier draft of this comment claimed the divergence was
+ * `cachedDynamicReferences` yields one plaintext per expression and credential
+ * identity (issue #3660), so a single pass cannot produce two — but it is no
+ * longer unreachable from there since that cache became per-resolver (issue
+ * #1933): two resolvers in two regions legitimately resolve one expression to
+ * two different plaintexts, and a caller merging their maps lands exactly here.
+ * It is reachable through this module's API regardless, and it is FENCED, by
+ * the "recorded against MORE THAN ONE plaintext" case. An earlier draft of
+ * this comment claimed the divergence was
  * unobservable, reasoning that `plaintextOf[E] === bag` implies
  * `secrets.get(bag) === E` so accepting and falling back agree. That misses the
  * case where a SECOND candidate also matches: accepting `E` then makes it two
