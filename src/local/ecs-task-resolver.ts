@@ -4,7 +4,11 @@ import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
-import { looksLikeEcrHostWithForeignSuffix, parseEcrRegistryHost } from '../utils/ecr-uri.js';
+import {
+  hasEcrRegistryHostLabels,
+  looksLikeEcrHostWithForeignSuffix,
+  parseEcrRegistryHost,
+} from '../utils/ecr-uri.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { matchStacks } from '../cli/stack-matcher.js';
@@ -267,7 +271,7 @@ export interface EcsImageResolutionNeeds {
   needsCrossStackResolver: boolean;
   /**
    * Any container's `Image` is a flat-extractable ECR-hosted URI (host
-   * part contains `.dkr.ecr.`) whose repository path component does NOT
+   * part carries an ECR form's labels) whose repository path component does NOT
    * match the conventional `CDK_ASSET_IMAGE_REPO_RE` shapes. The CLI
    * uses this flag to gate the lazy bootstrap-marker read (issue #1025):
    * a region bootstrapped with `cdkd bootstrap --container-repo <name>`
@@ -1043,10 +1047,11 @@ const CDK_ASSET_IMAGE_REPO_RE = /(?:cdk-[a-z0-9]+|cdkd)-container-assets-/;
 /**
  * Extract the repository path component of an ECR-hosted image URI.
  *
- * The host part (before the first `/`) must contain `.dkr.ecr.` — this
- * tolerates both concrete hosts (`123456789012.dkr.ecr.us-east-1.amazonaws.com`)
- * and placeholder-bearing hosts
- * (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`). The repo
+ * The host part (before the first `/`) must carry an ECR form's label run
+ * (`hasEcrRegistryHostLabels`, issue #1846: plain, FIPS or dual-stack, any
+ * case) — this tolerates both concrete hosts
+ * (`123456789012.dkr.ecr.us-east-1.amazonaws.com`) and placeholder-bearing
+ * hosts (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`). The repo
  * component is the substring after the first `/`, stripped of a trailing
  * `@<digest>` (first `@`) and then a trailing `:<tag>` (last `:` — ECR
  * repo names cannot contain `:` but CAN contain `/`, so the last colon is
@@ -1058,7 +1063,7 @@ function extractEcrRepoComponent(uri: string): string | undefined {
   const slash = uri.indexOf('/');
   if (slash <= 0) return undefined;
   const host = uri.slice(0, slash);
-  if (!host.includes('.dkr.ecr.')) return undefined;
+  if (!hasEcrRegistryHostLabels(host)) return undefined;
   let repo = uri.slice(slash + 1);
   const at = repo.indexOf('@');
   if (at !== -1) repo = repo.slice(0, at);

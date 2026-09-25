@@ -44,13 +44,11 @@ export interface EcrRegistryHostForm {
  * every partition and {@link parseEcrRegistryHost} pairs it WITH the region (see
  * `gc.ts`'s `AWS_URL_SUFFIXES` doc for why the two strictnesses must not merge).
  *
- * A THIRD, looser spelling of "this is an ECR registry host" still lives outside
- * this table — `isCdkAssetImageUri`'s `host.includes('.dkr.ecr.')` in
- * `src/local/ecs-task-resolver.ts`, which recognizes only the plain form and is
- * case-SENSITIVE. It is tracked as issue #1846 rather than folded in here: it
- * must keep tolerating an UNRESOLVED host
- * (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`), so it cannot
- * simply become a call to either matcher.
+ * A THIRD, looser consumer reads only the LABELS column:
+ * {@link hasEcrRegistryHostLabels}, the host test behind `cdkd local run-task`'s
+ * asset-image predicate (issue #1846). It must keep tolerating an UNRESOLVED
+ * host (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`), so it
+ * cannot be a call to either matcher.
  *
  * Every row is read off the AWS-published `ecr` endpoint list
  * (https://docs.aws.amazon.com/general/latest/gr/ecr.html) plus the docker
@@ -165,6 +163,31 @@ export function ecrRegistryHostPattern(segments: {
 }
 
 /**
+ * A dot-delimited run of one form's LABELS, anywhere in the host, in any case.
+ * The `i` flag without `u` does not fold U+212A onto `k`, as in
+ * {@link ECR_URI_HOST_REGEX}.
+ */
+const ECR_HOST_LABELS_RUN = new RegExp(
+  `\\.(?:${ECR_HOST_FORMS_LONGEST_FIRST.map((form) => escapeRegExp(form.labels)).join('|')})\\.`,
+  'i'
+);
+
+/**
+ * True when `host` carries the label run of any {@link ECR_REGISTRY_HOST_FORMS}
+ * row between dots — `.dkr.ecr.`, `.dkr.ecr-fips.`, `.dkr-ecr.` or
+ * `.dkr-ecr-fips.`, case-insensitively (issue #1846).
+ *
+ * This is a SHAPE test, not a registry verdict: the account, region and suffix
+ * are not checked, because its one caller (`ecs-task-resolver.ts`'s
+ * asset-image predicate) must also accept a host whose other segments are still
+ * `${AWS::...}` placeholders. It must never gate a `docker login`; that is
+ * {@link parseEcrRegistryHost}'s job.
+ */
+export function hasEcrRegistryHostLabels(host: string): boolean {
+  return ECR_HOST_LABELS_RUN.test(host);
+}
+
+/**
  * Matching the HOST half of an ECR image URI:
  * `<acct>.<labels>.<region>.<urlSuffix>/`.
  *
@@ -238,10 +261,10 @@ export function ecrRegistryHostPattern(segments: {
  * SHAPE, which is why both verdicts were quiet.
  *
  * The five `d`-only flips are an improvement in kind — a host AWS does not serve
- * now says so instead of passing silently as a public image — but the caller's
- * MESSAGE was written for the #1764 partition-gap case and now over-claims for a
- * form/suffix mispairing (`amazonaws.com` IS `us-east-1`'s partition suffix).
- * `src/local/ecs-task-resolver.ts` owns that wording; recorded on issue #1846.
+ * now says so instead of passing silently as a public image. The caller's
+ * message in `src/local/ecs-task-resolver.ts` therefore names the host FORM and
+ * suffix together, not only the suffix: `amazonaws.com` IS `us-east-1`'s
+ * partition suffix, so a partition-gap wording would mislead for a mispairing.
  *
  * `<r>` above is a commercial region. Issue #3670 then scoped the three
  * non-plain forms to the `aws` / `aws-us-gov` partitions, flipping more
