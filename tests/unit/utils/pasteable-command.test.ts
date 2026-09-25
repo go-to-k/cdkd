@@ -239,7 +239,16 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       'cdkd deploy'
     );
     expect(clause).toContain('is not a plain identifier');
-    expect(clause).toContain('could read as a labelled line of this message');
+    // The reason is the RULE, true of every value the arm answers (M22 of the
+    // go-to-k/cdkd#3613 review): a `$(...)` name can run and a padded one can
+    // wrap, but `_x` reaches this arm too and does neither, so the sentence
+    // says what the plain-identifier shape buys rather than what THIS value
+    // would do.
+    expect(clause).toContain(
+      'the only shape named in a command here, since a name outside it can run as shell or ' +
+        'read as a line of this message once the terminal wraps'
+    );
+    expect(clause).not.toContain('so once the terminal wraps it could read as a labelled line');
     expect(clause).toContain('so it is not named in the command below');
   });
 

@@ -1567,13 +1567,17 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   const floorFor = (env: string, fallback: number): number | undefined => {
     const raw = process.env[env];
     if (raw === undefined) return fallback;
-    // `Number('')` is `0`, finite, so an EMPTY seam value -- `FLOOR=` with
-    // nothing after it, the shell's ordinary way of unsetting the wrong thing
-    // -- would silently zero that floor (round-3 optional on the
-    // go-to-k/cdkd#3613 review). Refused with the non-numeric ones.
-    const parsed = raw === '' ? Number.NaN : Number(raw);
+    // `Number('')` is `0`, finite, and so is `Number('  ')`: an EMPTY or
+    // whitespace-only seam value -- `FLOOR=` with nothing after it, the
+    // shell's ordinary way of unsetting the wrong thing, or `FLOOR=' '` --
+    // would silently zero that floor (round-3 and round-4 optionals on the
+    // go-to-k/cdkd#3613 review). Refused with the non-numeric ones, and the
+    // value is JSON-quoted in the refusal so a blank one is visible.
+    const parsed = raw.trim() === '' ? Number.NaN : Number(raw);
     if (!Number.isFinite(parsed)) {
-      process.stderr.write(`check-pasteable-command-shapes: ${env}=${raw} is not a number\n`);
+      process.stderr.write(
+        `check-pasteable-command-shapes: ${env}=${JSON.stringify(raw)} is not a number\n`
+      );
       return undefined;
     }
     return parsed;

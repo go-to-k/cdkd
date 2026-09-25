@@ -5092,6 +5092,15 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // so appending prose after the command — the layout hazard
     // go-to-k/cdkd#3363 is about — left every regex green (m5).
     expect(okMessage.trimEnd().endsWith('Migrate with: cdkd deploy LegacyStack')).toBe(true);
+    // And the `Stack:` line is IMMEDIATELY before it -- the named half of
+    // "exactly one of the identity line and the clause prints" (round-4
+    // optional on the go-to-k/cdkd#3613 review; the withheld half is pinned
+    // the same way in the `$(printf INJECTED)` case below). A site printing
+    // both slots puts an empty line or the clause here instead.
+    const okLines = okMessage.trimEnd().split('\n');
+    const okMigrate = okLines.findIndex((line) => line.startsWith('Migrate with: '));
+    expect(okMigrate).toBeGreaterThan(0);
+    expect(okLines[okMigrate - 1]).toBe('Stack: LegacyStack');
     // The identity is NOT in the sentence: `displayIdent`'s JSON quotes
     // neutralise no shell metacharacter, so a key named `$(printf X)` executed
     // when the sentence was pasted (go-to-k/cdkd#3363's rule, measured here).
@@ -5155,11 +5164,26 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     expect(substitution).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(substitution).not.toMatch(/^Stack: /m);
     expect(substitution).not.toContain('printf INJECTED');
-    expect(substitution).toContain(
+    const notPlainClause =
       `This record's name is not a plain identifier (a letter or digit, then letters, digits, ` +
-        `'~', '_', '.' or '-'), so once the terminal wraps it could read as a labelled line of ` +
-        `this message — so it is not named in the command below`
+      `'~', '_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
+      `can run as shell or read as a line of this message once the terminal wraps — so it is ` +
+      `not named in the command below; list the records as stored with 'cdkd state list ` +
+      `--long' and act on the one whose key matches.`;
+    expect(substitution).toContain(notPlainClause);
+    // "Exactly one of the identity line and the clause prints" is pinned by
+    // POSITION, not by two absences (round-4 optional on the go-to-k/cdkd#3613
+    // review): printing BOTH slots at the site survived every case, because
+    // the named case asserted the `Stack:` line's presence and the withheld
+    // case the clause's, and neither looked at what sat between them and the
+    // command. The line immediately before `Migrate with:` is the WHOLE
+    // clause here and the WHOLE `Stack:` line in the named case above.
+    const substitutionLines = substitution.trimEnd().split('\n');
+    const substitutionMigrate = substitutionLines.findIndex((line) =>
+      line.startsWith('Migrate with: ')
     );
+    expect(substitutionMigrate).toBeGreaterThan(0);
+    expect(substitutionLines[substitutionMigrate - 1]).toBe(notPlainClause);
     // The catch-all that used to print for exactly this input -- a name the
     // command named but the identity withheld -- has no input left and is
     // gone; both retired wordings are pinned absent.

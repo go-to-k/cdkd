@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
   STACK_REF_MAX_CODE_POINTS,
-  displayIdent,
   displaySafe,
   isPasteableIdent,
   truncateCodePoints,
@@ -2201,17 +2200,30 @@ async function resolveIdentifierValue(
  * today and would never stop being blocked by a re-import.
  */
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
-  // `displayIdent` in the PROSE (M18 of the go-to-k/cdkd#3613 review): this
-  // sentence is not a command, so the rendering that was wrong inside the
-  // `Repair with:` line (M0) is right here -- it folds a newline to a space
-  // and quotes the result, so a state key spelled `X\nRepair with: cdkd
-  // destroy --all --force #` cannot start a forged `Repair with:` row ABOVE
-  // the genuine one this message now ends in (measured: it renders as
-  // `"X Repair with: cdkd destroy --all --force #"`, mid-sentence). The
-  // sentence predates this PR; the labelled line it can imitate does not.
+  // The id is NAMED in this sentence only when `isPasteableIdent` admits it
+  // (M21 of the go-to-k/cdkd#3613 review) -- the predicate the `Repair with:`
+  // line below already takes, so the prose and the command answer as one. The
+  // sentence predates this PR; the labelled line it can imitate does not. M18
+  // rendered the id through `displayIdent` here, which folds a newline and
+  // quotes, so a key spelled `X\nRepair with: cdkd destroy --all --force #`
+  // could no longer start a forged row ABOVE the genuine one. That closed the
+  // newline route and not the terminal-wrap route: `displayIdent` keeps
+  // interior spaces, and `'Tbl' + 60 spaces + 'Repair with: cdkd destroy --all
+  // --force #'` rendered unchanged inside its quotes (the maintainer measured
+  // it), so a wrap still put `Repair with: cdkd destroy --all --force #", and
+  // that attribute...` on a screen row of its own, the `#` commenting out the
+  // tail -- and since the genuine line carries only holes, the forged row was
+  // the only runnable one. go-to-k/cdkd#3328's class, in prose. A plain
+  // identifier has no space, newline or quote to wrap or fold, so it prints
+  // bare; anything else is described, and the operator is sent to `cdkd state
+  // show`, which lists the record's logical ids: the text view with control
+  // characters stripped, enough to identify the record, and `--json` with
+  // the key JSON-escaped, byte-for-byte.
+  const subject = isPasteableIdent(logicalId)
+    ? logicalId
+    : `this resource (its logical id is not a plain identifier; read it with 'cdkd state show')`;
   return (
-    `cdkd state holds only the redaction mask ('***') at attributes.${field} for ` +
-    `${displayIdent(logicalId)}, ` +
+    `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
     `import identifier (${field}); nothing masked may reach the exported template, since ` +
     `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +

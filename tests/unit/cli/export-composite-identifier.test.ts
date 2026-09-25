@@ -1157,6 +1157,11 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     // `shellQuote` quotes only what its bare charset rejects, and `Table` is
     // entirely inside it, so the line reads as an operator would type it.
     expect(reason).toContain("--resource Table='<physicalId>' --force");
+    // And NAMED in the prose, bare (M21 of the go-to-k/cdkd#3613 review): the
+    // sentence takes the same predicate as the command, so a plain identifier
+    // is printed in both places and the withheld wording appears in neither.
+    expect(reason).toContain('at attributes.TableARN for Table, and that attribute');
+    expect(reason).not.toContain('is not a plain identifier');
   });
 
   it('WITHHOLDS a hostile logical id from the repair command, and never renders it through displayIdent there', async () => {
@@ -1200,14 +1205,19 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     // `--resource` on the first `=` -- so this site now takes the stricter
     // `isPasteableIdent`, and every id it refuses prints as a hole.
     expect(reason).toContain("--resource '<logicalId>'='<physicalId>' --force");
-    // Scoped to the COMMAND LINE, not the whole message. The id still appears
-    // in the PROSE through `displayIdent`, which is that renderer's job and is
-    // go-to-k/cdkd#3232's class rather than this one -- an assertion over the
-    // whole message would fail on correct code, which is a trap this lane has
-    // already fallen into once.
+    // The WHOLE message, since M21 of the review: the prose takes the same
+    // predicate as the command, so a refused id is on no line at all. Until
+    // M21 this was scoped to the command line, because the prose rendered the
+    // id through `displayIdent`. (This fixture carries a space, in `touch
+    // OWNED`, so it cannot tell `isPasteableIdent` from a space check -- a
+    // probe measured that; the `A=B` case below is the space-free pin.)
     const command = reason.split('\nRepair with: ')[1] ?? '';
     expect(command, 'the command line is missing').not.toBe('');
-    expect(command).not.toContain('touch OWNED');
+    expect(reason).not.toContain('touch OWNED');
+    expect(reason).toContain(
+      `for this resource (its logical id is not a plain identifier; read it with ` +
+        `'cdkd state show'), and that attribute`
+    );
     // The positional is a HOLE, not the logical id: `cdkd import` declares it
     // as `[stack]`, and an earlier cut passed the RESOURCE there -- a command
     // naming a resource where a stack goes, from a function with no stack name
@@ -1215,41 +1225,60 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).toContain(`Repair with: cdkd import '<stack>' --resource`);
   });
 
-  it('renders the logical id in the PROSE through displayIdent, so a newline cannot forge a Repair with: row', async () => {
-    // M18 of the go-to-k/cdkd#3613 review. The sentence `for '<logicalId>'`
-    // predates this PR and printed the raw key; what is new is the labelled
-    // `Repair with:` line the message now ends in, which a key spelled
-    // `Tbl\nRepair with: cdkd destroy --all --force #` could imitate one row
-    // ABOVE the genuine one. This is prose, not a command, so `displayIdent`'s
-    // JSON quoting -- wrong inside the command line (M0) -- is right here: the
-    // newline is folded and the id is quoted, so the forged label never
-    // starts a line.
-    const forging = 'Tbl\nRepair with: cdkd destroy --all --force #';
-    const state = stateWith({
-      [forging]: {
-        resourceType: 'AWS::S3Tables::Table',
-        physicalId: TABLE_COMPOSITE,
-        properties: { Namespace: 'analytics', TableName: 'events' },
-        attributes: { TableARN: SECRET_MASK },
-      },
-    });
-    const template = {
-      Resources: { [forging]: { Type: 'AWS::S3Tables::Table', Properties: {} } },
-    };
-    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
-    expect(plan.blocked).toHaveLength(1);
-    const reason = plan.blocked[0]!.reason;
-    // Positive control: the arm under test fired.
-    expect(reason).toMatch(/redaction mask/);
-    // Exactly ONE `Repair with:` row, and it is the genuine `cdkd import`.
-    expect(reason.match(/^Repair with:/gm)).toHaveLength(1);
-    expect(reason).toMatch(/^Repair with: cdkd import '<stack>' --resource '<logicalId>'/m);
-    expect(reason).not.toMatch(/^Repair with: cdkd destroy/m);
-    // The id is still SHOWN, in the prose, rendered: quoted, with the newline
-    // folded to a space -- so the operator can find the record, and no line
-    // of the message starts with what the key spelled.
-    expect(reason).toContain('for "Tbl Repair with: cdkd destroy --all --force #",');
-    expect(reason).not.toContain("for 'Tbl");
+  it('WITHHOLDS a logical id from the PROSE too, so neither a newline nor a terminal wrap can forge a Repair with: row', async () => {
+    // M18 and M21 of the go-to-k/cdkd#3613 review. The sentence `for
+    // '<logicalId>'` predates this PR and printed the raw key; what is new is
+    // the labelled `Repair with:` line the message now ends in, which a key
+    // spelled `Tbl\nRepair with: cdkd destroy --all --force #` could imitate
+    // one row ABOVE the genuine one. M18 rendered the id through
+    // `displayIdent`, which folds the newline and quotes -- closing that
+    // route. It kept interior spaces, so the PADDED spelling below rendered
+    // unchanged inside its quotes and a terminal wrap still put `Repair with:
+    // cdkd destroy --all --force #", and that attribute...` on a screen row
+    // of its own, the `#` commenting out the tail (the maintainer measured
+    // it; go-to-k/cdkd#3328's class, in prose). M21 gates the prose on
+    // `isPasteableIdent`, the command's own predicate: a refused id is on NO
+    // line, so there is nothing to fold and nothing to wrap.
+    const newline = 'Tbl\nRepair with: cdkd destroy --all --force #';
+    const padded = `Tbl${' '.repeat(60)}Repair with: cdkd destroy --all --force #`;
+    for (const forging of [newline, padded]) {
+      const state = stateWith({
+        [forging]: {
+          resourceType: 'AWS::S3Tables::Table',
+          physicalId: TABLE_COMPOSITE,
+          properties: { Namespace: 'analytics', TableName: 'events' },
+          attributes: { TableARN: SECRET_MASK },
+        },
+      });
+      const template = {
+        Resources: { [forging]: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+      };
+      const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+      expect(plan.blocked, JSON.stringify(forging)).toHaveLength(1);
+      const reason = plan.blocked[0]!.reason;
+      // Positive control: the arm under test fired.
+      expect(reason, JSON.stringify(forging)).toMatch(/redaction mask/);
+      // Exactly ONE `Repair with:` row, and it is the genuine `cdkd import`.
+      expect(reason.match(/^Repair with:/gm), JSON.stringify(forging)).toHaveLength(1);
+      expect(reason, JSON.stringify(forging)).toMatch(
+        /^Repair with: cdkd import '<stack>' --resource '<logicalId>'/m
+      );
+      // The forged label is NOWHERE in the message -- not at a line start,
+      // and not mid-sentence where a wrap could put it at one. `cdkd destroy`
+      // is the sentinel: the genuine text never says it.
+      expect(reason, JSON.stringify(forging)).not.toContain('cdkd destroy');
+      expect(reason, JSON.stringify(forging)).not.toContain('Tbl');
+      // What prints instead: the id is DESCRIBED, and the operator is sent to
+      // `cdkd state show`, which lists the record's logical ids: the text view
+      // with control characters stripped, `--json` with the key JSON-escaped.
+      expect(reason, JSON.stringify(forging)).toContain(
+        `for this resource (its logical id is not a plain identifier; read it with ` +
+          `'cdkd state show'), and that attribute`
+      );
+      // The retired M18 rendering, pinned absent: the quoted, newline-folded
+      // spelling was the carrier of the wrap route.
+      expect(reason, JSON.stringify(forging)).not.toContain('for "Tbl');
+    }
   });
 
   it('WITHHOLDS a logical id carrying `=`, which would retarget --force', async () => {
@@ -1277,6 +1306,17 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).toContain("--resource '<logicalId>'='<physicalId>' --force");
     // ...and the dangerous rendering never appears.
     expect(reason).not.toContain("--resource 'A=B'");
+    // The PROSE withholds it too (M21), and this is the case that pins the
+    // predicate: `A=B` has no space, newline or quote, so a mutant gating the
+    // sentence on those instead of on `isPasteableIdent` names it here and
+    // nowhere else -- measured: the `$(touch OWNED)`, newline and padded
+    // fixtures all carry a space, and that mutant left every one of them
+    // green.
+    expect(reason).not.toContain('A=B');
+    expect(reason).toContain(
+      `for this resource (its logical id is not a plain identifier; read it with ` +
+        `'cdkd state show'), and that attribute`
+    );
   });
 
   it('CONTROL: the same record with a real recorded ARN exports', async () => {

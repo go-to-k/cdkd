@@ -479,10 +479,15 @@ export function withheldTargetClause(
       // The clause names the SHAPE the operator can check by eye, because the
       // command line beside it shows a hole and nothing else: no line of this
       // message prints the name, so the sentence is the only place the reader
-      // learns what disqualified it.
+      // learns what disqualified it. It states the RULE and why the rule
+      // exists, not a hazard of this value (M22 of the go-to-k/cdkd#3613
+      // review): a padded name can wrap into a labelled line and `$(...)` can
+      // run, but `_x` reaches this arm too and does neither, and a reason
+      // that is true of only part of the population misleads the rest.
       why =
         `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' ` +
-        `or '-'), so once the terminal wraps it could read as a labelled line of this message`;
+        `or '-'), the only shape named in a command here, since a name outside it can run as ` +
+        `shell or read as a line of this message once the terminal wraps`;
       break;
     default: {
       // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499

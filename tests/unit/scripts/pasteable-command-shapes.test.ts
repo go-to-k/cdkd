@@ -401,22 +401,34 @@ describe('pasteable-command shape fence — it does not report everything', () =
         env: { ...process.env, [seam]: 'lots' },
       });
       expect(bad.status, `${seam}=lots did not exit 2: ${bad.stdout}${bad.stderr}`).toBe(2);
-      expect(bad.stderr).toContain(`${seam}=lots`);
+      expect(bad.stderr).toContain(`${seam}="lots" is not a number`);
     }
     // And the EMPTY value, on one seam: `Number('')` is `0`, finite, so the
     // finite check alone accepted `FLOOR=` and silently zeroed that floor
-    // (round-3 optional on the go-to-k/cdkd#3613 review). One seam suffices
-    // because the three share `floorFor`; the loop above is what pins that
-    // each seam consults it at all.
-    const empty = spawnSync(process.execPath, [script], {
-      encoding: 'utf8',
-      timeout: SPAWN_TIMEOUT_MS,
-      cwd: REPO_ROOT,
-      env: { ...process.env, CDKD_PASTEABLE_FLOOR_FILES: '' },
-    });
-    expect(empty.status, `an empty floor seam did not exit 2: ${empty.stdout}${empty.stderr}`).toBe(2);
-    expect(empty.stderr).toContain('CDKD_PASTEABLE_FLOOR_FILES= is not a number');
-  }, 240_000);
+    // (round-3 optional on the go-to-k/cdkd#3613 review). `Number(' ')` is `0`
+    // too, so a WHITESPACE-ONLY value is the same defect one character over
+    // (round-4 optional) -- the `=== ''` check that closed the first left the
+    // second open, which is why the trim is what the seam takes. One seam
+    // suffices because the three share `floorFor`; the loop above is what pins
+    // that each seam consults it at all. The refusal JSON-quotes the value, so
+    // a blank one is visible in it.
+    for (const [blank, rendered] of [
+      ['', '""'],
+      [' ', '" "'],
+    ] as const) {
+      const empty = spawnSync(process.execPath, [script], {
+        encoding: 'utf8',
+        timeout: SPAWN_TIMEOUT_MS,
+        cwd: REPO_ROOT,
+        env: { ...process.env, CDKD_PASTEABLE_FLOOR_FILES: blank },
+      });
+      expect(
+        empty.status,
+        `a blank floor seam (${rendered}) did not exit 2: ${empty.stdout}${empty.stderr}`
+      ).toBe(2);
+      expect(empty.stderr).toContain(`CDKD_PASTEABLE_FLOOR_FILES=${rendered} is not a number`);
+    }
+  }, 300_000);
 
   it('actually COMPARES each probe verdict, not merely runs the probes', () => {
     // `CDKD_SELF_PROBE_FORCE_FAIL` does not short-circuit the loop — review
