@@ -5731,6 +5731,7 @@
     {
       "resourceType": "AWS::SQS::Queue",
       "integs": [
+        "appsync",
         "basic",
         "bench-cdk-sample",
         "bench-sdk",
@@ -5782,6 +5783,9 @@
         "tags-propagation"
       ],
       "signals": {
+        "appsync": [
+          "l1"
+        ],
         "basic": [
           "l1"
         ],

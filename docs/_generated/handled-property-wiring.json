@@ -2912,7 +2912,8 @@
         "computed key in refuseChangedMalformedGraphQLApiBlocks()",
         "computed key in updateDataSource()",
         "computed key in updateGraphQLApi()",
-        "computed key in updateResolver()"
+        "computed key in updateResolver()",
+        "object spread in withEnvironmentVariablesRecord()"
       ]
     },
     {
