@@ -77,7 +77,7 @@ import {
   PR_NUMBER_PLACEHOLDER,
   CYCLE_PLACEHOLDER,
   CHANGELOG_ENTRY_LIMIT,
-  classifyGitShowFailure,
+  committedVersions,
   assertFixtureFloor,
   collectFixtureDeltas,
   loadDeclaredProperties,
@@ -2314,54 +2314,45 @@ describe('collectFixtureDeltas', () => {
     expect(readCurrent, 'the sentinel fell through to the comparison').toBe(0);
   });
 
-  it('classifies real git failures: path-not-in-HEAD is new, the rest are unreadable', () => {
-    // Measured against real git output. `unknown revision` and `invalid object`
-    // are whole-REVISION failures — an unborn HEAD says
-    // `fatal: invalid object name 'HEAD'` — and matching them as "brand-new"
-    // made every fixture look new and the refresh look clean, the exact
-    // fail-open this classification closes. Neither can match a genuine
-    // path-not-in-HEAD, which says `does not exist in 'HEAD'`.
+  it('reads committed fixtures from real git: path-not-in-HEAD is new, the rest are unreadable', () => {
+    // An unborn HEAD answers `HEAD:<path> missing` for every path, exactly like
+    // a brand-new fixture; it must still read as UNREADABLE.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-git-'));
     try {
       execFileSync('git', ['init', '-q', dir]);
-      // Unborn HEAD: a whole-revision failure, NOT a missing path.
-      const unborn = (() => {
-        try {
-          execFileSync('git', ['show', 'HEAD:anything'], { cwd: dir, encoding: 'utf8' });
-          return '';
-        } catch (e) {
-          return String((e as { stderr?: unknown }).stderr ?? '');
-        }
-      })();
-      expect(unborn, 'git no longer reports an unborn HEAD this way').not.toBe('');
-      // The CLASSIFICATION, not just what git prints: matching the
-      // whole-revision wording as "brand-new" is what made a broken repository
-      // render the refresh as clean.
-      expect(classifyGitShowFailure(unborn)).toBe(UNREADABLE);
+      expect(committedVersions(['seed.json'], dir).get('seed.json')).toBe(UNREADABLE);
 
-      // And the genuine path-not-in-HEAD, from a repo that HAS a commit.
-      writeFileSync(join(dir, 'seed.txt'), 'x');
-      execFileSync('git', ['-C', dir, 'add', 'seed.txt']);
+      writeFileSync(join(dir, 'seed.json'), '{"a":1}\n');
+      writeFileSync(join(dir, 'other.json'), 'ünïcode\n');
+      execFileSync('git', ['-C', dir, 'add', '.']);
       execFileSync('git', ['-C', dir, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 's']);
-      const missing = (() => {
-        try {
-          execFileSync('git', ['show', 'HEAD:nope.json'], { cwd: dir, encoding: 'utf8' });
-          return '';
-        } catch (e) {
-          return String((e as { stderr?: unknown }).stderr ?? '');
-        }
-      })();
-      expect(classifyGitShowFailure(missing)).toBeUndefined();
+      const got = committedVersions(['seed.json', 'nope.json', 'other.json'], dir);
+      expect(got.get('seed.json')).toBe('{"a":1}\n');
+      expect(got.get('nope.json')).toBeUndefined();
+      // Multi-byte content: the batch output is framed by BYTE size, so a
+      // character-indexed parse would misalign every object after this one.
+      expect(got.get('other.json')).toBe('ünïcode\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
-  it('treats a git failure with no recognisable wording as unreadable', () => {
-    // ENOENT and ENOBUFS both surface with empty stderr — the safe direction is
-    // "could not read", never "brand-new".
-    expect(classifyGitShowFailure('')).toBe(UNREADABLE);
-    expect(classifyGitShowFailure('fatal: not a git repository')).toBe(UNREADABLE);
+  it('treats a directory that is not a repository as unreadable, never brand-new', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-nogit-'));
+    try {
+      // The ceiling keeps git from finding an enclosing repository when TMPDIR
+      // itself lives inside a checkout.
+      const ceiling = process.env['GIT_CEILING_DIRECTORIES'];
+      process.env['GIT_CEILING_DIRECTORIES'] = dirname(dir);
+      try {
+        expect(committedVersions(['a.json'], dir).get('a.json')).toBe(UNREADABLE);
+      } finally {
+        if (ceiling === undefined) delete process.env['GIT_CEILING_DIRECTORIES'];
+        else process.env['GIT_CEILING_DIRECTORIES'] = ceiling;
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('falls back to the filename as a TYPE name, not as a filename', () => {
@@ -3632,7 +3623,7 @@ describe('renderChangelogFragment', () => {
     // The headline survives whatever else goes: it carries both lists, the
     // counts and the warn/drop outcome.
     expect(fragment.startsWith('- **')).toBe(true);
-    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('as unrecognized');
   });
 
   it('keeps the withdrawal CONSEQUENCE when the trim fires', () => {
@@ -3655,7 +3646,7 @@ describe('renderChangelogFragment', () => {
       })),
     })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
-    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('as unrecognized');
     expect(fragment).toContain('UNRECOGNIZED property');
   });
 

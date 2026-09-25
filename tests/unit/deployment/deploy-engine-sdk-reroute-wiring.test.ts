@@ -325,16 +325,27 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
     await provisionOf(engine)(LOGICAL_ID, change, stateResources(), STACK, {
       Resources: { [LOGICAL_ID]: { Type: TYPE, Properties: { TopicName: 'new' } } },
     }).catch(() => undefined);
-    // The label must MIRROR `replaceDecision`, which passes neither
-    // `provisionedBy` nor `previousProperties`. Asserting only `forceCcApi`
-    // was not enough: a first fix dropped the pin and left the sticky inputs
-    // in, so rule 2 still returned `cc-api` for any non-exempt record and the
-    // label kept printing `[CC API]` over an SDK dispatch. The mutant that
-    // restored `existingState` survived that weaker assertion.
-    const labelCall = getProviderFor.mock.calls[0]![0] as Record<string, unknown>;
+    // The label must MIRROR `replaceDecision`. That call passes NO
+    // `provisionedBy` (the sticky rule the pin suppresses never applies to a
+    // new physical resource) and, since #3713, the RECORD's bag as
+    // `previousProperties` — the baseline an unrecognized key is compared
+    // against, which is not a sticky input: with no `provisionedBy`, rule 2 is
+    // never consulted. Asserting only `forceCcApi` was not enough: a first fix
+    // dropped the pin and left `provisionedBy` in, so rule 2 still returned
+    // `cc-api` for any non-exempt record and the label kept printing
+    // `[CC API]` over an SDK dispatch.
+    const calls = getProviderFor.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const labelCall = calls[0]!;
+    // The replacement's create decision: it carries properties, the old
+    // delete does not, and the label is the only one setting `forceCcApi`.
+    const replaceCall = calls.find((c) => 'properties' in c && !('forceCcApi' in c));
+    expect(replaceCall, JSON.stringify(calls)).toBeDefined();
     expect(labelCall['forceCcApi']).toBe(false);
     expect(labelCall['provisionedBy']).toBeUndefined();
-    expect(labelCall['previousProperties']).toBeUndefined();
+    expect(replaceCall!['provisionedBy']).toBeUndefined();
+    // Identity: the state record's bag at both sites, not the differ's side.
+    expect(replaceCall!['previousProperties']).toBe(RECORDED_PROPS);
+    expect(labelCall['previousProperties']).toBe(replaceCall!['previousProperties']);
   });
 
   it('the label mirrors the dispatch for a --recreate-via-sdk-provider target', async () => {
@@ -353,10 +364,18 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       }),
       STACK
     );
-    const labelCall = getProviderFor.mock.calls[0]![0] as Record<string, unknown>;
+    const calls = getProviderFor.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const labelCall = calls[0]!;
     expect(labelCall['provisionedBy']).toBe('sdk');
-    expect(labelCall['previousProperties']).toBeUndefined();
     expect(labelCall['forceCcApi']).toBe(false);
+    // The dispatch is `replaceDecision`: the same hint and the record's bag as
+    // the unrecognized-property baseline (#3713). The label passes both.
+    const replaceCall = calls.find(
+      (c, i) => i > 0 && 'properties' in c && c['provisionedBy'] === 'sdk'
+    );
+    expect(replaceCall, JSON.stringify(calls)).toBeDefined();
+    expect(replaceCall!['previousProperties']).toBe(RECORDED_PROPS);
+    expect(labelCall['previousProperties']).toBe(replaceCall!['previousProperties']);
   });
 
   it('the label mirrors the dispatch for a --recreate-via-cc-api target', async () => {
@@ -368,10 +387,18 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       }),
       STACK
     );
-    const labelCall = getProviderFor.mock.calls[0]![0] as Record<string, unknown>;
+    const calls = getProviderFor.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const labelCall = calls[0]!;
     expect(labelCall['provisionedBy']).toBe('cc-api');
-    expect(labelCall['previousProperties']).toBeUndefined();
     expect(labelCall['forceCcApi']).toBe(true);
+    // The dispatch is `replaceDecision`: the same hint and the record's bag as
+    // the unrecognized-property baseline (#3713). The label passes both.
+    const replaceCall = calls.find(
+      (c, i) => i > 0 && 'properties' in c && c['provisionedBy'] === 'cc-api'
+    );
+    expect(replaceCall, JSON.stringify(calls)).toBeDefined();
+    expect(replaceCall!['previousProperties']).toBe(RECORDED_PROPS);
+    expect(labelCall['previousProperties']).toBe(replaceCall!['previousProperties']);
   });
 
   it('a recreate target in a CHILD stack does not steer the parent label', async () => {

@@ -1244,6 +1244,11 @@ export class S3TablesProvider implements ResourceProvider {
     // lands on CC. Canonicalizing unconditionally would therefore hand Cloud
     // Control `arn|ns|name` and break exactly the tables the ARN form was
     // (accidentally) correct for before this PR.
+    //
+    // Schema-known drops only, deliberately: a key the snapshot does not know
+    // routes on a deploy only when it differs from the record (issue #3713),
+    // and the record this import writes carries the template's bag, so the
+    // next deploy keeps such a table on the SDK route.
     const ccRouted = findSilentDropProperties('AWS::S3Tables::Table', input.properties).length > 0;
     if (ccRouted) {
       this.logger.debug(

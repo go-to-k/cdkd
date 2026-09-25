@@ -216,6 +216,7 @@
         "import-attributes",
         "import-auto-mode",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-nested-stack",
@@ -529,6 +530,7 @@
         "import-attributes",
         "import-auto-mode",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-nested-stack",
@@ -650,6 +652,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -666,7 +669,8 @@
       "flag": "--prefer-sdk-route",
       "integs": [
         "cc-api-fallback-transitions",
-        "sdk-to-cc-autoroute"
+        "sdk-to-cc-autoroute",
+        "unrecognized-key-autoroute"
       ]
     },
     {
@@ -822,6 +826,7 @@
         "import-attribute-readback-network",
         "import-auto-mode",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-nested-stack",
@@ -946,6 +951,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -1144,6 +1150,7 @@
         "import-attributes",
         "import-auto-mode",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-nested-stack",
@@ -1266,6 +1273,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -1458,6 +1466,7 @@
         "import-attributes",
         "import-auto-mode",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-nested-stack",
@@ -1560,6 +1569,7 @@
         "stepfunctions-s3-definition",
         "synthetics-canary",
         "throttle-wide-dag",
+        "unrecognized-key-autoroute",
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle"

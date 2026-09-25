@@ -1750,10 +1750,11 @@ export function renderDiagnosis(input) {
     lines.push(
       `### Writable properties AWS added (${count}) — no decision needed`,
       '',
-      'These route through Cloud Control automatically once this merges. They',
-      'reach the standing backfill issue WHEN THIS MERGES, not now — that list is',
-      'regenerated from `main`, so closing this PR leaves it untouched. Wiring',
-      'them into an SDK provider is separate work.',
+      'These already reach AWS: a property the committed snapshot does not know',
+      'routes its resource through Cloud Control, so merging is not what delivers',
+      'them. They reach the standing backfill issue WHEN THIS MERGES, not now —',
+      'that list is regenerated from `main`, so closing this PR leaves it',
+      'untouched. Wiring them into an SDK provider is separate work.',
       ''
     );
     for (const entry of writableAdded) {
@@ -2117,53 +2118,57 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
 }
 
 /**
- * Whether a failed `git show HEAD:<path>` means "brand-new fixture" or "could
- * not read".
+ * Read every fixture's committed version from git in ONE `git cat-file --batch`
+ * (a process per fixture costs seconds per run). `undefined` = brand-new
+ * fixture (path not in HEAD).
  *
- * Exported because the distinction is the whole point and it was wrong: the
- * first cut also matched `unknown revision` and `invalid object`, which are
- * whole-REVISION failures — an unborn HEAD reports
- * `fatal: invalid object name 'HEAD'` — so a broken repository made every
- * fixture look brand-new and the whole refresh look clean. Neither pattern can
- * match a genuine path-not-in-HEAD, which says `does not exist in 'HEAD'`.
+ * Only a path missing from a READABLE HEAD means "brand-new". Any other failure
+ * — git absent, not a repository, an unborn HEAD — is this report failing to
+ * read and must stay UNREADABLE, or every fixture looks new and the refresh
+ * looks clean. That is why `HEAD` itself is the first request: an unborn HEAD
+ * answers `HEAD:<path> missing` for every path, exactly like a brand-new
+ * fixture.
  *
- * @param {string} stderr
- * @returns {undefined | typeof UNREADABLE} `undefined` = not in HEAD
+ * @param {string[]} relPaths
+ * @param {string} [cwd]
+ * @returns {Map<string, string | undefined | typeof UNREADABLE>}
  */
-export function classifyGitShowFailure(stderr) {
-  return /does not exist|exists on disk, but not in/i.test(stderr) ? undefined : UNREADABLE;
-}
-
-/**
- * Read a type's committed fixture from git, or `undefined` when it is new.
- *
- * @param {string} relPath
- * @returns {string | undefined | typeof UNREADABLE}
- */
-function committedVersion(relPath) {
+export function committedVersions(relPaths, cwd = REPO_ROOT) {
+  /** @type {Map<string, string | undefined | typeof UNREADABLE>} */
+  const result = new Map(relPaths.map((p) => [p, UNREADABLE]));
+  let out;
   try {
-    return execFileSync('git', ['show', `HEAD:${relPath}`], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
+    out = execFileSync('git', ['cat-file', '--batch'], {
+      cwd,
+      input: ['HEAD', ...relPaths.map((p) => `HEAD:${p}`)].map((l) => `${l}\n`).join(''),
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
-  } catch (/** @type {any} */ error) {
-    // "not in HEAD" is a brand-new fixture and means nothing to compare. Any
-    // OTHER failure — git absent, a broken repo, the 32 MB buffer exceeded — is
-    // this report failing to read, and collapsing the two made every fixture
-    // look new and the whole refresh look clean. Measured: every file
-    // undefined yields the clean verdict, over a step that only runs when
-    // drift exists.
-    //
-    // Only the PATH-shaped failures mean "brand-new fixture". `unknown
-    // revision` and `invalid object` are whole-REVISION failures — an unborn
-    // HEAD reports `fatal: invalid object name 'HEAD'` — and matching them made
-    // every fixture look new and the whole refresh look clean, which is the
-    // exact fail-open this function was changed to close. Measured: neither can
-    // ever match a genuine path-not-in-HEAD, which says
-    // `does not exist in 'HEAD'`.
-    return classifyGitShowFailure(String(error?.stderr ?? ''));
+  } catch {
+    return result;
   }
+  let pos = 0;
+  /** @returns {{type: string, body?: Buffer} | undefined} */
+  const next = () => {
+    const eol = out.indexOf(0x0a, pos);
+    if (eol === -1) return undefined;
+    const header = out.subarray(pos, eol).toString('utf8');
+    pos = eol + 1;
+    if (header.endsWith(' missing')) return { type: 'missing' };
+    const [, type, size] = header.split(' ');
+    if (!/^\d+$/.test(size ?? '')) return { type: 'unknown' };
+    const body = out.subarray(pos, pos + Number(size));
+    pos += Number(size) + 1;
+    return { type, body };
+  };
+  if (next()?.type !== 'commit') return result;
+  for (const p of relPaths) {
+    const obj = next();
+    if (obj === undefined) break;
+    if (obj.type === 'missing') result.set(p, undefined);
+    else if (obj.type === 'blob' && obj.body) result.set(p, obj.body.toString('utf8'));
+  }
+  return result;
 }
 
 /**
@@ -3131,20 +3136,20 @@ export function renderChangelogFragment({
   if (count > 0 && removedCount > 0) {
     headline =
       `- **The ${CYCLE_PLACEHOLDER} schema refresh adds ${added} and withdraws ${withdrawn}, ` +
-      `so cdkd starts classifying the first set, and a template still carrying one of the second is ` +
-      `dropped with a warn ${provenance}** -- ` +
+      `so cdkd starts classifying the first set, and a template still carrying one of the second ` +
+      `treats it as unrecognized ${provenance}** -- ` +
       `added: ${pairs.join('; ')}; withdrawn: ${removedPairs.join('; ')}. ${changed}`;
   } else if (count > 0) {
     headline =
       `- **AWS published ${added} the ${CYCLE_PLACEHOLDER} schema refresh now carries, so cdkd ` +
-      `classifies ${count === 1 ? 'it' : 'each'} instead of dropping ` +
-      `${count === 1 ? 'it' : 'them'} with a warn ${provenance}** -- ` +
+      `classifies ${count === 1 ? 'it' : 'each'} instead of treating ` +
+      `${count === 1 ? 'it' : 'them'} as unrecognized ${provenance}** -- ` +
       `${pairs.join('; ')}. ${changed}`;
   } else {
     headline =
       `- **AWS withdrew ${withdrawn} in the ${CYCLE_PLACEHOLDER} schema refresh, so cdkd stops ` +
       `classifying ${removedCount === 1 ? 'it' : 'them'} and a template still carrying ` +
-      `${removedCount === 1 ? 'it' : 'one'} is dropped with a warn ${provenance}** -- ` +
+      `${removedCount === 1 ? 'it' : 'one'} treats it as unrecognized ${provenance}** -- ` +
       `${removedPairs.join('; ')}. ${changed}`;
   }
 
@@ -3241,7 +3246,7 @@ export function renderChangelogFragment({
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
         `${removedCount === 1 ? 'it' : 'them'}, so a template still carrying ` +
         `${removedCount === 1 ? 'it' : 'one'} is an UNRECOGNIZED property from this merge on: ` +
-        `warned, and dropped on the SDK route.`,
+        `Cloud Control rejects it unless it is unchanged.`,
       EXPLANATION
     );
   }
@@ -3742,6 +3747,8 @@ function main() {
     (f) => f.endsWith('.json') && !f.startsWith('_')
   );
   assertFixtureFloor(fixtureFiles.length, declared.size);
+  const fixturesRel = relative(REPO_ROOT, fixturesDir);
+  const committed = committedVersions(fixtureFiles.map((file) => `${fixturesRel}/${file}`));
   const {
     removed,
     writableAdded,
@@ -3754,7 +3761,10 @@ function main() {
     // Follows the seam too. Leaving this hard-coded while `currentOf` moved is
     // harmless for the empty directory the test uses, and wrong for any other:
     // it would diff scratch content against the real committed fixtures.
-    committedOf: (file) => committedVersion(`${relative(REPO_ROOT, fixturesDir)}/${file}`),
+    committedOf: (file) => {
+      const key = `${fixturesRel}/${file}`;
+      return committed.has(key) ? committed.get(key) : UNREADABLE;
+    },
     currentOf: (file) => readFileSync(join(fixturesDir, file), 'utf8'),
     providerFiles,
     declared,

@@ -12,7 +12,8 @@
  *
  * The heal is LAZY: it runs only when a resolution is about to take the
  * resolver's physical-id fallback (a refusal for an `*Arn` / `*Url` name, a
- * warn-and-return otherwise), re-reads the resource through its provider's
+ * warn-and-return otherwise), or reaches one of the resolver's heal-first
+ * arms (issue #3627: DynamoDB `StreamArn`, IAM `RoleId`, IAM `Arn`), re-reads the resource through its provider's
  * read-only `import()` ONCE per deploy, serves the value from that read, and
  * hands the read-back map to the deploy engine, which merges it into the record
  * at the state-save choke point. Design: `docs/design/1852-stale-attribute-heal.md`.
@@ -64,8 +65,9 @@ export type StaleAttributeHealer = (
  * Per-resolution marker the resolver threads through a DERIVED context (never a
  * shared field — many resolutions run concurrently on one resolver instance).
  *
- * - `probe`: the physical-id fallback raises {@link StaleAttributeMissSignal}
- *   instead of deciding, so the caller can heal first.
+ * - `probe`: the physical-id fallback (and a heal-first arm, issue #3627)
+ *   raises {@link StaleAttributeMissSignal} instead of deciding, so the caller
+ *   can heal first.
  * - `settled`: the heal ran (or was declined); the fallback decides, and words
  *   its refusal from `outcome`.
  */

@@ -24,6 +24,9 @@
 #                                and reads the NoEcho one into its own SSM
 #                                parameter (a SAME-STACK reader).
 #   CdkdCrNoEchoConsumerExample  imports both into two SSM parameters.
+#   CdkdCrNoEchoParamExample     a NoEcho CR fed to nested child ParamChild as a
+#                                stack parameter, and an ordinary CR whose
+#                                physical id moves with its Seed, read by Ref.
 #
 # PHASES:
 #   1. deploy --all (verbose, captured). Recovery: both consumers of the NoEcho
@@ -71,7 +74,17 @@
 #      equal to its record rather than REFUSED as a redacted read: the deploy
 #      exits 0, the skip line is asserted, and AWS keeps the phase-3 token.
 #      PlainParam carries the new plain value.
-#   6. destroy --all; everything gone; state versions swept and asserted zero.
+#   6. deploy --all with CDKD_TEST_UPDATE=seed,producer-seed,plain-seed,parent-seed:
+#      only CdkdCrNoEchoParamExample changes, where one handler serves a NoEcho
+#      CR and an ordinary one, and both re-run.
+#      - go-to-k/cdkd#3717: the nested ParamChild reads the NoEcho token only
+#        through a stack PARAMETER. Its diff side is `***` against a recorded
+#        `***`, so only the fresh-parameter promotion reaches its
+#        ParentTokenParam, which must hold the NEW token on AWS while every
+#        persisted copy stays `***`.
+#      - go-to-k/cdkd#3722: IdCr's handler answers the Update with a new
+#        PhysicalResourceId, and IdRefParam (`Ref IdCr`) must follow it.
+#   7. destroy --all; everything gone; state versions swept and asserted zero.
 #
 # A RED whole-blob grep is not automatically a fixture defect. The mask-only
 # channel keeps no durable NoEcho flag on the record (go-to-k/cdkd#2449), so a
@@ -129,16 +142,22 @@ PARENT="CdkdCrNoEchoNestedExample"
 CHILD="${PARENT}~Child"
 PRODUCER="CdkdCrNoEchoProducerExample"
 CONSUMER="CdkdCrNoEchoConsumerExample"
+PARAM_PARENT="CdkdCrNoEchoParamExample"
+PARAM_CHILD="${PARAM_PARENT}~ParamChild"
 REGION="${AWS_REGION:-us-east-1}"
 
 PARENT_KEY="cdkd/${PARENT}/${REGION}/state.json"
 CHILD_KEY="cdkd/${CHILD}/${REGION}/state.json"
 PRODUCER_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
+PARAM_PARENT_KEY="cdkd/${PARAM_PARENT}/${REGION}/state.json"
+PARAM_CHILD_KEY="cdkd/${PARAM_CHILD}/${REGION}/state.json"
 PARENT_PREFIX="$(s3_stack_prefix "${PARENT}" "${REGION}")"
 CHILD_PREFIX="$(s3_stack_prefix "${CHILD}" "${REGION}")"
 PRODUCER_PREFIX="$(s3_stack_prefix "${PRODUCER}" "${REGION}")"
 CONSUMER_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
+PARAM_PARENT_PREFIX="$(s3_stack_prefix "${PARAM_PARENT}" "${REGION}")"
+PARAM_CHILD_PREFIX="$(s3_stack_prefix "${PARAM_CHILD}" "${REGION}")"
 # The shared exports index is a SIBLING key no stack prefix reaches. It is
 # shared with every other stack in the region, so it is only ever READ here and
 # purged `noncurrent` by KEY, never `all` and never by prefix.
@@ -154,6 +173,9 @@ PRODUCER_NOECHO_PARAM="/cdkd-integ/cr-noecho-nested/producer/noecho"
 CONSUMER_PLAIN_PARAM="/cdkd-integ/cr-noecho-nested/consumer/plain"
 CHILD_FUNCTION="cdkd-integ-crnoecho-nested-child"
 PRODUCER_FUNCTION="cdkd-integ-crnoecho-nested-producer"
+PARAM_FUNCTION="cdkd-integ-crnoecho-nested-param"
+PARAM_CHILD_TOKEN_PARAM="/cdkd-integ/cr-noecho-nested/param-child/token"
+ID_REF_PARAM="/cdkd-integ/cr-noecho-nested/param-parent/id-ref"
 
 # The values the handlers assemble (`<Prefix>-<Seed>`, lib/shared.ts). NOT
 # credentials: fixed, inert literals, distinctive so the whole-blob greps below
@@ -163,6 +185,11 @@ CHILD_TOKEN_V1="noecho-child-token-integ"
 CHILD_TOKEN_V2="noecho-child-token-updated"
 PRODUCER_TOKEN="noecho-producer-token-integ"
 PRODUCER_TOKEN_V2="noecho-producer-token-updated"
+PARAM_TOKEN="noecho-param-token-integ"
+PARAM_TOKEN_V2="noecho-param-token-rotated"
+# IdCr's physical ids (lib/shared.ts, IdFromSeed). Not secret.
+ID_V1="cr-noecho-nested-id-integ"
+ID_V2="cr-noecho-nested-id-rotated"
 CHILD_PLAIN="plain-child-value-integ"
 CHILD_PLAIN_V2="plain-child-value-updated"
 CHILD_PLAIN_V3="plain-child-value-rotated"
@@ -190,18 +217,19 @@ cleanup() {
         --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force >/dev/null 2>&1
       # Consumer before producer: a producer's destroy is refused while a
       # consumer's state still names its export.
-      for s in "${CONSUMER}" "${PRODUCER}" "${CHILD}" "${PARENT}"; do
+      for s in "${CONSUMER}" "${PRODUCER}" "${CHILD}" "${PARENT}" "${PARAM_CHILD}" "${PARAM_PARENT}"; do
         node "${LOCAL_DIST}" state destroy "${s}" \
           --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
       done
     fi
     for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" "${PARENT_STATIC_PARAM}" \
-             "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}"; do
+             "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}" \
+             "${PARAM_CHILD_TOKEN_PARAM}" "${ID_REF_PARAM}"; do
       aws ssm delete-parameter --region "${REGION}" --name "${p}" >/dev/null 2>&1
     done
     # Explicit, fixture-owned names (lib/*.ts), so these are exact deletes
     # rather than a prefix sweep, and no scope guard is needed.
-    for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}"; do
+    for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}" "${PARAM_FUNCTION}"; do
       aws lambda delete-function --region "${REGION}" --function-name "${f}" >/dev/null 2>&1
       aws logs delete-log-group --region "${REGION}" --log-group-name "/aws/lambda/${f}" >/dev/null 2>&1
     done
@@ -213,6 +241,8 @@ cleanup() {
       s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX:-}" noncurrent
       s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_PREFIX:-}" noncurrent
       s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_PREFIX:-}" noncurrent
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${PARAM_PARENT_PREFIX:-}" noncurrent
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${PARAM_CHILD_PREFIX:-}" noncurrent
       s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY:-}" noncurrent
     fi
     rm -f "${DEPLOY_LOG:-}"
@@ -258,7 +288,7 @@ DEPLOY_LOG="$(mktemp)"
 # Every token this run can produce. A phase-1 check includes the phase-3 token
 # too: it must be absent everywhere before phase 3 mints it, which is also the
 # guard that it really is handler-generated.
-TOKENS="${CHILD_TOKEN_V1} ${CHILD_TOKEN_V2} ${PRODUCER_TOKEN} ${PRODUCER_TOKEN_V2}"
+TOKENS="${CHILD_TOKEN_V1} ${CHILD_TOKEN_V2} ${PRODUCER_TOKEN} ${PRODUCER_TOKEN_V2} ${PARAM_TOKEN} ${PARAM_TOKEN_V2}"
 
 assert_no_tokens() { # assert_no_tokens <what> <text>
   local t n=0
@@ -356,6 +386,17 @@ assert_no_tokens_in_versions() { # <scope> <description>
     [ "${vid}" != "None" ] || continue
     if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
         --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      # The exports index is SHARED with every other stack in the region, and
+      # a concurrent run (another fixture's `noncurrent` purge of the same key,
+      # or `cdkd gc`) can remove a version between the listing and this read
+      # — measured on a go-to-k/cdkd#3717 run. Gone is not a finding THERE;
+      # the stack prefixes are this fixture's own, so it still is for them.
+      # A shell pattern rather than `printf | grep -q`, for the SIGPIPE reason
+      # `assert_no_tokens` gives.
+      if [ "${scope}" = "${INDEX_KEY}" ] \
+          && [[ "${body}" == *NoSuchVersion* || "${body}" == *NoSuchKey* ]]; then
+        continue
+      fi
       fail "${desc}: could not read s3://${STATE_BUCKET}/${key} version ${vid} (${body})"
     fi
     for t in ${TOKENS}; do
@@ -500,6 +541,32 @@ assert_import_arm() { # assert_import_arm <label> <token>
   assert_no_tokens "${label}: the current exports index" "${index}"
 }
 
+# Every persisted copy of the parameter arm (go-to-k/cdkd#3717 / #3722).
+assert_param_arm() { # assert_param_arm <label> <token> <IdCr physical id>
+  local label="$1" token="$2" id="$3" parent child
+  parent="$(read_state "${PARAM_PARENT_KEY}")" || fail "${label}: could not read ${PARAM_PARENT_KEY}"
+  child="$(read_state "${PARAM_CHILD_KEY}")" || fail "${label}: could not read ${PARAM_CHILD_KEY}"
+
+  echo "  -- ${label}: parameter arm, on AWS"
+  assert_eq "param-child ParentTokenParam on AWS" "$(ssm_value "${PARAM_CHILD_TOKEN_PARAM}")" "${token}"
+  assert_eq "param-parent IdRefParam on AWS" "$(ssm_value "${ID_REF_PARAM}")" "${id}"
+
+  echo "  -- ${label}: parameter arm, in cdkd state (non-disclosure)"
+  assert_eq "param-parent ParentNoEchoCr attributes.Value" \
+    "$(printf '%s' "${parent}" | jq -r '.resources.ParentNoEchoCr.attributes.Value // "<absent>"')" "${SECRET_MASK}"
+  assert_eq "param-parent ParamChild row properties.Parameters.ParentToken" \
+    "$(printf '%s' "${parent}" | jq -r '.resources.ParamChild.properties.Parameters.ParentToken // "<absent>"')" "${SECRET_MASK}"
+  assert_eq "param-child ParentTokenParam properties.Value" \
+    "$(param_state_value "${child}" "${PARAM_CHILD_TOKEN_PARAM}")" "${SECRET_MASK}"
+  assert_eq "param-parent IdCr physicalId" \
+    "$(printf '%s' "${parent}" | jq -r '.resources.IdCr.physicalId // "<absent>"')" "${id}"
+  assert_eq "param-parent IdRefParam properties.Value" \
+    "$(param_state_value "${parent}" "${ID_REF_PARAM}")" "${id}"
+
+  assert_no_tokens "${label}: the param-parent state blob" "${parent}"
+  assert_no_tokens "${label}: the param-child state blob" "${child}"
+}
+
 # The custom-resource response objects (`custom-resource-responses/<id>.json`,
 # a SHARED top-level prefix of the state bucket): cdkd PUTs an empty
 # placeholder per invoke, and a handler answering through `ResponseURL` would
@@ -545,6 +612,8 @@ assert_no_tokens_in_all_versions() { # <label>
   assert_no_tokens_in_versions "${CHILD_PREFIX}" "$1: child state prefix"
   assert_no_tokens_in_versions "${PRODUCER_PREFIX}" "$1: producer state prefix"
   assert_no_tokens_in_versions "${CONSUMER_PREFIX}" "$1: consumer state prefix"
+  assert_no_tokens_in_versions "${PARAM_PARENT_PREFIX}" "$1: param-parent state prefix"
+  assert_no_tokens_in_versions "${PARAM_CHILD_PREFIX}" "$1: param-child state prefix"
   assert_no_tokens_in_versions "${INDEX_KEY}" "$1: exports index key"
   assert_no_tokens_in_response_objects "$1"
 }
@@ -554,6 +623,7 @@ echo "==> Phase 1: deploy --all"
 run_deploy "Phase 1" Deploying -u CDKD_TEST_UPDATE
 assert_nested_arm "Phase 1" "${CHILD_TOKEN_V1}" "${CHILD_PLAIN}"
 assert_import_arm "Phase 1" "${PRODUCER_TOKEN}"
+assert_param_arm "Phase 1" "${PARAM_TOKEN}" "${ID_V1}"
 assert_no_tokens_in_all_versions "Phase 1"
 
 # --- Phase 2: a freshly deployed tree reports NO change ----------------------
@@ -574,12 +644,12 @@ fi
 # Sentinel: `diff` announces every stack it compares (`Calculating diff for
 # stack: <name>`, src/cli/commands/diff.ts) independently of its verdict
 # wording, so an empty or truncated capture cannot pass the token scan above.
-for s in "${PARENT}" "${PRODUCER}" "${CONSUMER}"; do
+for s in "${PARENT}" "${PRODUCER}" "${CONSUMER}" "${PARAM_PARENT}"; do
   if [[ "${DIFF_OUT}" != *"diff for stack: ${s}"* ]]; then
     fail "the diff output never announces stack ${s} — the capture is incomplete or the wording drifted, so the token scan above would be vacuous"
   fi
 done
-pass "cdkd diff --all --recursive --fail exited 0 over all three stacks"
+pass "cdkd diff --all --recursive --fail exited 0 over all four stacks"
 
 # --- Phase 3: UPDATE through NestedStackProvider.update ----------------------
 echo "==> Phase 3: deploy --all with CDKD_TEST_UPDATE=seed (child CR Seeds change)"
@@ -602,9 +672,9 @@ assert_promoted() { # assert_promoted <phase label> <logical-id prefix>...
   shift
   for p in "$@"; do
     if ! grep -qE "${PROMOTED_RE}${p}[0-9A-F]* " "${DEPLOY_LOG}"; then
-      fail "${label}: no 'UPDATE (in-place attr propagated): ${p}...' line — a reader of an updated nested stack's Outputs.<Key> diffed NO_CHANGE (go-to-k/cdkd#3631 / #3662), or the wording drifted"
+      fail "${label}: no 'UPDATE (in-place attr propagated): ${p}...' line — a reader of a value that moves in this deploy (a nested stack output, a custom resource's attribute or physical id, a fresh NoEcho parameter) diffed NO_CHANGE, or the wording drifted"
     fi
-    pass "${label}: ${p} promoted as a reader of the updated nested stack's outputs"
+    pass "${label}: ${p} promoted as a reader of a value that moves in this deploy"
   done
 }
 skip_re() { # skip_re <logical-id prefix>
@@ -680,32 +750,57 @@ for p in NoEchoParam StaticParam; do
 done
 assert_nested_arm "Phase 5" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V3}"
 assert_import_arm "Phase 5" "${PRODUCER_TOKEN_V2}"
+# Unchanged since phase 1: no earlier phase touches this stack.
+assert_param_arm "Phase 5" "${PARAM_TOKEN}" "${ID_V1}"
 assert_no_tokens_in_all_versions "Phase 5"
 
-# --- Phase 6: destroy --------------------------------------------------------
-echo "==> Phase 6: destroy --all"
+# --- Phase 6: a NoEcho parameter and a moving physical id --------------------
+# Only CdkdCrNoEchoParamExample's two CRs re-run (`parent-seed`). Both readers
+# have no own-property change, so each reaches AWS only through a promotion:
+# ParentTokenParam in the CHILD engine's diff (the fresh-parameter arm,
+# go-to-k/cdkd#3717), IdRefParam in the parent's (a Ref of a custom resource,
+# go-to-k/cdkd#3722). The first stack's nested child does not change, hence
+# the `Unchanged` sentinel.
+echo "==> Phase 6: deploy --all with CDKD_TEST_UPDATE=seed,producer-seed,plain-seed,parent-seed (the param stack's CRs re-run)"
+run_deploy "Phase 6" Unchanged CDKD_TEST_UPDATE=seed,producer-seed,plain-seed,parent-seed
+# The param stack's child must have gone through the UPDATE arm: without it the
+# AWS assertion below could only say the value is stale, not why.
+if ! grep -qF "Updating nested stack ${PARAM_CHILD}" "${DEPLOY_LOG}"; then
+  fail "Phase 6: no 'Updating nested stack ${PARAM_CHILD}' line — the ParamChild row was not updated with the fresh parameter, or the wording drifted"
+fi
+pass "Phase 6: ${PARAM_CHILD} updated through NestedStackProvider.update"
+assert_promoted "Phase 6" ParamChild IdRefParam ParentTokenParam
+assert_param_arm "Phase 6" "${PARAM_TOKEN_V2}" "${ID_V2}"
+assert_nested_arm "Phase 6" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V3}"
+assert_import_arm "Phase 6" "${PRODUCER_TOKEN_V2}"
+assert_no_tokens_in_all_versions "Phase 6"
+
+# --- Phase 7: destroy --------------------------------------------------------
+echo "==> Phase 7: destroy --all"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy --all \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-for k in "${PARENT_KEY}" "${CHILD_KEY}" "${PRODUCER_KEY}" "${CONSUMER_KEY}"; do
+for k in "${PARENT_KEY}" "${CHILD_KEY}" "${PRODUCER_KEY}" "${CONSUMER_KEY}" \
+         "${PARAM_PARENT_KEY}" "${PARAM_CHILD_KEY}"; do
   assert_gone "state file s3://${STATE_BUCKET}/${k} still exists after destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${k}"
 done
-pass "all four state files are gone"
+pass "all six state files are gone"
 for p in "${PARENT_NOECHO_PARAM}" "${PARENT_PLAIN_PARAM}" "${PARENT_STATIC_PARAM}" \
-         "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}"; do
+         "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}" \
+         "${PARAM_CHILD_TOKEN_PARAM}" "${ID_REF_PARAM}"; do
   assert_gone "SSM parameter ${p} still exists after destroy (orphan)" \
     aws ssm get-parameter --region "${REGION}" --name "${p}"
 done
-pass "all six SSM parameters are gone"
-for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}"; do
+pass "all eight SSM parameters are gone"
+for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}" "${PARAM_FUNCTION}"; do
   assert_gone "Lambda ${f} still exists after destroy (orphan)" \
     aws lambda get-function --region "${REGION}" --function-name "${f}"
 done
-pass "both handler Lambdas are gone"
+pass "all three handler Lambdas are gone"
 
 # Lambda creates its log group on invoke and neither CFn nor cdkd deletes it.
-for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}"; do
+for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}" "${PARAM_FUNCTION}"; do
   aws logs delete-log-group --region "${REGION}" --log-group-name "/aws/lambda/${f}" >/dev/null 2>&1 || true
 done
 
@@ -718,11 +813,15 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${PARENT_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_PREFIX}" all || true
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PARAM_PARENT_PREFIX}" all || true
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PARAM_CHILD_PREFIX}" all || true
 s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PARENT_PREFIX}" "custom-resource-noecho-nested parent state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "custom-resource-noecho-nested child state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_PREFIX}" "custom-resource-noecho-nested producer state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${CONSUMER_PREFIX}" "custom-resource-noecho-nested consumer state teardown"
+s3_assert_versions_swept "${STATE_BUCKET}" "${PARAM_PARENT_PREFIX}" "custom-resource-noecho-nested param-parent state teardown"
+s3_assert_versions_swept "${STATE_BUCKET}" "${PARAM_CHILD_PREFIX}" "custom-resource-noecho-nested param-child state teardown"
 
 echo ""
 echo "[verify] PASS — a NoEcho custom resource value crossed a nested-stack and an Fn::ImportValue boundary: real on AWS, masked in every persisted copy"

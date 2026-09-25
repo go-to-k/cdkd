@@ -491,6 +491,22 @@ describe('STATEFUL_TYPES (#615)', () => {
       expect(STATEFUL_TYPES.has('AWS::KMS::Alias')).toBe(false);
       expect(isStatefulRecreateTargetForReplace('AWS::KMS::Alias', {}, undefined)).toBe(null);
     });
+
+    it('AWS::S3Tables::Namespace is deliberately NOT guarded — AWS refuses to delete a non-empty namespace (#2539)', () => {
+      // Measured 2026-09-25 (us-east-1): `DeleteNamespace` on a namespace
+      // holding one table answered `BadRequestException: The namespace that
+      // you tried to delete is not empty.`, and the Cloud Control DELETE
+      // failed the same way; the table survived both. With cdkd's own delete
+      // enumerating no tables, a namespace replacement cannot destroy one, so
+      // the guard would only demand `--force-stateful-recreation` for nothing.
+      // Pinned so the entry does not return on the withdrawn "it might
+      // cascade" premise. Its siblings that DO destroy data stay guarded.
+      expect(STATEFUL_TYPES.has('AWS::S3Tables::Namespace')).toBe(false);
+      expect(isStatefulRecreateTargetSync('AWS::S3Tables::Namespace', {}, undefined)).toBe(null);
+      expect(isStatefulRecreateTargetForReplace('AWS::S3Tables::Namespace', {}, undefined)).toBe(null);
+      expect(isStatefulRecreateTargetForReplace('AWS::S3Tables::TableBucket', {}, undefined)).toBe('always');
+      expect(isStatefulRecreateTargetForReplace('AWS::S3Tables::Table', {}, undefined)).toBe('always');
+    });
   });
 });
 

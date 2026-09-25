@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
+  type StickyExemptEntry,
   wouldReturnToSdkProvider,
 } from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
@@ -363,5 +364,103 @@ describe('the removal deploy: BOTH bags are read, not just the desired one', () 
         exemptions: tableWith(resourceType),
       }),
     ).toBe(true);
+  });
+});
+
+/**
+ * Issue #3713: an unrecognized key counts on PRESENCE in the sticky-escape,
+ * never against the recorded baseline `getProviderFor` rules 3-5 apply. The
+ * escape moves a live resource OFF Cloud Control, where such a key is applied
+ * (or already was); on the SDK route it is dropped, so an unchanged key must
+ * still hold the resource where it is — and so must one just removed from the
+ * template, which only Cloud Control can unset.
+ */
+describe('the sticky-escape reads an unrecognized key on presence (#3713)', () => {
+  const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
+
+  /** A routable type, pretended into the table as an `'sdk-coverage'` member. */
+  function routableTable(): {
+    resourceType: string;
+    exemptions: Map<string, StickyExemptEntry>;
+  } {
+    for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+      if (cov.ccRouteUnavailable || STICKY_CC_MIGRATION_EXEMPT.has(resourceType)) continue;
+      return {
+        resourceType,
+        exemptions: new Map<string, StickyExemptEntry>([
+          [
+            resourceType,
+            {
+              mode: 'sdk-coverage' as const,
+              physicalIdForm: 'synthetic entry for the presence cases in this file',
+              issue: 'https://github.com/go-to-k/cdkd/issues/3713',
+              integFixture: 'cc-to-sdk-reroute',
+            },
+          ],
+        ]),
+      };
+    }
+    throw new Error('no routable non-exempt Tier 1 type');
+  }
+
+  it('control: both bags clean of the key flips', () => {
+    const { resourceType, exemptions } = routableTable();
+    expect(
+      wouldReturnToSdkProvider({
+        resourceType,
+        desiredProperties: {},
+        previousProperties: {},
+        exemptions,
+      }),
+    ).toBe(true);
+  });
+
+  it('refuses when BOTH bags hold the same unrecognized key, unchanged', () => {
+    const { resourceType, exemptions } = routableTable();
+    expect(
+      wouldReturnToSdkProvider({
+        resourceType,
+        desiredProperties: { [UNKNOWN]: 'same' },
+        previousProperties: { [UNKNOWN]: 'same' },
+        exemptions,
+      }),
+    ).toBe(false);
+  });
+
+  it('refuses the removal deploy: the key left the template but the record holds it', () => {
+    const { resourceType, exemptions } = routableTable();
+    expect(
+      wouldReturnToSdkProvider({
+        resourceType,
+        desiredProperties: {},
+        previousProperties: { [UNKNOWN]: 'applied-under-cloud-control' },
+        exemptions,
+      }),
+    ).toBe(false);
+  });
+
+  it('getProviderFor keeps a cc-api SNS topic on Cloud Control with an unchanged key', () => {
+    const type = 'AWS::SNS::Topic';
+    expect(STICKY_CC_MIGRATION_EXEMPT.get(type)?.mode).toBe('sdk-coverage');
+    expect(PROPERTY_COVERAGE_BY_TYPE.get(type)?.ccRouteUnavailable).toBe(false);
+    const registry = new ProviderRegistry();
+    registry.register(type, stubSdkProvider());
+    const decision = registry.getProviderFor({
+      resourceType: type,
+      properties: { TopicName: 't', [UNKNOWN]: 'same' },
+      previousProperties: { TopicName: 't', [UNKNOWN]: 'same' },
+      provisionedBy: 'cc-api',
+    });
+    expect(decision.provisionedBy).toBe('cc-api');
+    expect(decision.sdkMigration).toBeUndefined();
+    // Control: the same record without the key flips, so the key is the cause.
+    const flipped = registry.getProviderFor({
+      resourceType: type,
+      properties: { TopicName: 't' },
+      previousProperties: { TopicName: 't' },
+      provisionedBy: 'cc-api',
+    });
+    expect(flipped.provisionedBy).toBe('sdk');
+    expect(flipped.sdkMigration).toBe(true);
   });
 });

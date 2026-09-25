@@ -63,10 +63,12 @@ provider's declarations into the runtime, and CI fails if it drifts. Tier 2 (Clo
 Cloud Control forwards the full property map to AWS, so there is no
 write-side silent drop at cdkd for those.
 
-Properties not in the CFn schema (likely `addPropertyOverride` escape
-hatches or typos) pass through silently — CFn itself tolerates them.
-Read-only properties (AWS-managed Arns, Ids, etc.) also pass through
-silently; they cannot be set from the template side.
+A property missing from the CFn schema snapshot (published by AWS after it,
+a typo, or an `addPropertyOverride` key) routes the resource through Cloud
+Control as well, which applies a real property and rejects a misspelled one.
+Read-only properties (AWS-managed Arns, Ids, etc.) stay on the SDK provider
+with a warning; they cannot be set from the template side. The exceptions are
+listed in [Deploy: safety & compatibility flags](cli-deploy-safety.md).
 
 ## Three-tier coverage report
 

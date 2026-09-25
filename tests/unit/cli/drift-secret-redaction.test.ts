@@ -2602,7 +2602,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       new Error(`Rate exceeded while setting '${SECRET_PLAINTEXT}'`),
       { name: 'ThrottlingException' }
     );
-    const update = vi.fn().mockRejectedValue(throttled);
+    // Fails ONCE: one "Retrying ..." line is the subject, and a permanent
+    // rejection sits through the whole default backoff schedule (~47s).
+    const update = vi
+      .fn()
+      .mockRejectedValueOnce(throttled)
+      .mockResolvedValue({ physicalId: 'fn' });
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
     mockRegistryGetProvider.mockReturnValue({
@@ -2612,11 +2617,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     await runDrift(['TestStack', '--revert', '--yes']);
 
+    expect(update).toHaveBeenCalledTimes(2);
     const debugged = debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(debugged).toContain('Retrying');
     expect(debugged).not.toContain(SECRET_PLAINTEXT);
     expect(debugged).toContain(SECRET_MASK);
-  }, 60000);
+  });
 
   it('masks a VALUE at a path whose name carries a secret', async () => {
     // `nameCarriesSecret` feeds `secretBearing`, not just `maskedPaths`: a

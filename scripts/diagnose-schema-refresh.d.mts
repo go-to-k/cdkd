@@ -269,7 +269,10 @@ export declare function collectFixtureDeltas(input: {
   identifierChanges: IdentifierChange[];
 };
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
-export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;
+export declare function committedVersions(
+  relPaths: string[],
+  cwd?: string
+): Map<string, string | undefined | typeof UNREADABLE>;
 export declare const KNOWN_FLAGS: string[];
 
 /**
@@ -481,8 +484,9 @@ export interface RemovedDropEntry {
   properties: string[];
   /**
    * Whether the REFRESHED schema still leaves the type an actionable silent
-   * drop. False means the resource returns to the SDK path entirely; true
-   * means only these properties stop reaching AWS.
+   * drop. False means a resource without the withdrawn keys returns to the SDK
+   * path; true means it keeps auto-routing on another drop. A resource still
+   * carrying a withdrawn key treats it as unrecognized either way.
    */
   retainsOtherDrops: boolean;
 }

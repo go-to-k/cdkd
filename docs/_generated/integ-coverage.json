@@ -958,6 +958,7 @@
         "full-stack-demo",
         "glue-update-hardening",
         "import-attribute-readback",
+        "import-heal-prefix-record",
         "lambda",
         "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
@@ -1025,6 +1026,9 @@
         "import-attribute-readback": [
           "l2",
           "literal"
+        ],
+        "import-heal-prefix-record": [
+          "l1"
         ],
         "lambda": [
           "l2"
@@ -3825,6 +3829,7 @@
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "infra-security",
         "intrinsic-functions",
         "lambda-esm-self-managed-kafka",
@@ -3985,6 +3990,9 @@
         "import-deployed-parameter-secret": [
           "l1"
         ],
+        "import-heal-prefix-record": [
+          "l1"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -4126,6 +4134,7 @@
       "integs": [
         "iam-access-key",
         "import-attribute-readback-misc",
+        "import-heal-prefix-record",
         "infra-security"
       ],
       "signals": {
@@ -4133,6 +4142,9 @@
           "l2"
         ],
         "import-attribute-readback-misc": [
+          "l1"
+        ],
+        "import-heal-prefix-record": [
           "l1"
         ],
         "infra-security": [
@@ -5533,6 +5545,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations"
       ],
       "signals": {
@@ -5662,6 +5675,10 @@
           "literal"
         ],
         "type-change-replacement": [
+          "literal"
+        ],
+        "unrecognized-key-autoroute": [
+          "l1",
           "literal"
         ],
         "update-policy-mutations": [
@@ -5961,6 +5978,7 @@
         "import-attribute-readback-network",
         "import-attributes",
         "import-deployed-parameter-secret",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-nested-stack",
         "import-retain-destroy",
@@ -6107,6 +6125,9 @@
         ],
         "import-deployed-parameter-secret": [
           "l1"
+        ],
+        "import-heal-prefix-record": [
+          "l2"
         ],
         "import-lambda-url-attributes": [
           "l2"

@@ -1336,7 +1336,8 @@ masking at resolution time would make a template feeding such a value into
 secret.)
 
 **A new value reaches every consumer.** When the handler runs and returns a
-value, each resource reading it is updated with it, although the stored value
+value, each resource reading it is updated with it — including a resource in a
+nested stack that receives the value as a stack parameter — although the stored value
 and the new one both read `***` in state: two masks say nothing about the
 values behind them. When the handler returns the same value again, cdkd cannot
 tell, so:
@@ -1633,9 +1634,9 @@ Two more types **accept** a composite id without producing one:
 > [!IMPORTANT]
 > The separator is **not escaped**, so cdkd cannot manage a resource whose own
 > name contains a `|` even where AWS and CloudFormation can. A Glue table named
-> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which decodes to
-> database `mydb`, table `a` — both halves non-empty, so nothing downstream can
-> tell it is wrong. Rather than record an id that names a different resource,
+> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which is ambiguous:
+> a `Ref` to it would resolve to `b`, and a reader without the recorded
+> database name would read it as table `a`. Rather than record an ambiguous id,
 > `cdkd deploy` **refuses at pre-flight** with a message naming the offending
 > segment. Rename the resource, or manage it with the CDK CLI. This is a
 > known limitation.

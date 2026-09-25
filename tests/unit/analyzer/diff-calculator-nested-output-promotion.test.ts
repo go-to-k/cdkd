@@ -470,8 +470,10 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     // A custom resource's attributes are its handler's response `Data`, which
     // the update re-runs; none is a template property, so arm 1 cannot match.
     // The diff reads the previous run's value and the reader diffs NO_CHANGE,
-    // so without this arm it kept the old value. A `Ref` reader is still left
-    // alone, and so is a reader of a custom resource that did not update.
+    // so without this arm it kept the old value. Its `Ref` reader is promoted
+    // too, since the handler may return a new `PhysicalResourceId`
+    // (go-to-k/cdkd#3722); a reader of a custom resource that did not update
+    // is left alone.
     const state = baseState();
     const token = 'arn:aws:lambda:us-east-1:123456789012:function:h';
     state.resources['Cr'] = {
@@ -504,8 +506,78 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     expect(changes.get('Cr')?.changeType).toBe('UPDATE');
     expect(changes.get('Reader')?.changeType).toBe('UPDATE');
     expect(changes.get('Reader')?.propertyChanges?.map((pc) => pc.path)).toEqual(['Value']);
-    expect(changes.get('RefReader')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('RefReader')?.changeType).toBe('UPDATE');
     expect(changes.get('IdleReader')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('leaves a Ref reader of an in-place-updated NON-custom resource alone (go-to-k/cdkd#3722)', async () => {
+    // Only a custom resource's handler can move its physical id on Update;
+    // any other type keeps it, so the `Ref` read is not a reason to promote.
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'arn:aws:sns:us-east-1:123456789012:t',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { DisplayName: 'a' },
+      attributes: {},
+    };
+    state.resources['Reader'] = readerRow('arn:aws:sns:us-east-1:123456789012:t');
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { DisplayName: 'b' } },
+        Reader: readerResource({ Ref: 'Topic' }),
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Topic')?.changeType).toBe('UPDATE');
+    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('promotes a Ref / ${Param} reader of a FRESH NoEcho parameter, and only that (go-to-k/cdkd#3717)', async () => {
+    // A nested child's parameter carrying a `NoEcho` value the parent supplied
+    // in this deploy resolves to `***` on the diff side, as its record does;
+    // the calculator is told which parameters those are and promotes readers.
+    const state = baseState();
+    state.resources['ByRef'] = readerRow('***');
+    state.resources['BySub'] = { ...readerRow('token=***'), physicalId: '/app/sub' };
+    state.resources['OtherParam'] = { ...readerRow('plain'), physicalId: '/app/other' };
+    const template = {
+      Parameters: { Token: { Type: 'String' }, Plain: { Type: 'String' } },
+      Resources: {
+        ByRef: readerResource({ Ref: 'Token' }),
+        BySub: readerResource({ 'Fn::Sub': 'token=${Token}' }),
+        OtherParam: readerResource({ Ref: 'Plain' }),
+      },
+    } as unknown as CloudFormationTemplate;
+    // The diff side of a masked parameter is the mask itself.
+    const resolve = async (v: unknown): Promise<unknown> => {
+      const obj = v as Record<string, unknown> | null;
+      if (obj && obj['Ref'] === 'Token') return '***';
+      if (obj && obj['Ref'] === 'Plain') return 'plain';
+      if (obj && obj['Fn::Sub'] === 'token=${Token}') return 'token=***';
+      return v;
+    };
+
+    const unmarked = await new DiffCalculator().calculateDiff(state, template, resolve);
+    expect(unmarked.get('ByRef')?.changeType).toBe('NO_CHANGE');
+
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      template,
+      resolve,
+      undefined,
+      undefined,
+      new Set(['Token'])
+    );
+
+    expect(changes.get('ByRef')?.changeType).toBe('UPDATE');
+    expect(changes.get('ByRef')?.propertyChanges?.[0]).toMatchObject({
+      path: 'Value',
+      inPlacePropagated: true,
+    });
+    expect(changes.get('BySub')?.changeType).toBe('UPDATE');
+    expect(changes.get('OtherParam')?.changeType).toBe('NO_CHANGE');
   });
 
   it('promotes the reader of an updated custom resource of the generic CloudFormation type too', async () => {

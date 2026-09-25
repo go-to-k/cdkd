@@ -344,8 +344,8 @@ const UNCOVERED_TERMS: Record<string, string> = {
   ].join(' '),
   unreadable: [
     'Not a schema decision — it is the DIAGNOSIS failing to read its own input, and it has TWO',
-    'producers which differ in exactly the way that matters here. `committedVersion` sets it when',
-    '`git show HEAD:<fixture>` fails for a reason that is NOT "path not in HEAD"; there the',
+    'producers which differ in exactly the way that matters here. `committedVersions` sets it when',
+    'reading `HEAD:<fixture>` fails for a reason that is NOT "path not in HEAD"; there the',
     'working-tree copy CI parses is fine, so every fixture-driven check stays green and the term is',
     'genuinely uncovered. The `catch` around `comparePropertySets` sets it too, and that arm is',
     'NOT confined to the safe direction: the call parses BOTH sides, so an unparseable COMMITTED',
