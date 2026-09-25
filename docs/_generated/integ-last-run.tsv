@@ -87,6 +87,7 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-globaltable	2026-09-25T18:05:55Z	PASS	1698	verify.sh	rc ok, CDKD_INTEG_MULTI_REGION=1, step 12c-3 local-replica drift + legacy baseline clean, 0 orphans (#3776)
+dynamodb-globaltable	2026-09-25T17:44:06Z	PASS	1524	verify.sh	rc ok, 0 orphans (#3740: template refusals; #1653/#1683/#1738 arms via rollback revert)
 dynamodb-gsi-update	2026-09-25T13:35:54Z	PASS	1258	verify.sh	rc ok, orph clean (#3728)
 dynamodb-ondemand	2026-09-20T10:56:17Z	PASS	210	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
@@ -178,7 +179,7 @@ lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc
 lambda-microvm-image	2026-08-10T06:32:58Z	PASS	533	verify.sh	0810 P2 sweep b11r; 1st attempt blocked by stale local aws-cli 2.34.27 (no lambda-microvms service; cli_auto_prompt crashed non-TTY) - NOT a cdkd bug. PASS after brew upgrade awscli 2.36.19: async create, tag drift revert, --no-wait, 3 del 0 err
 lambda-reserved-concurrency	2026-07-26T19:05:27Z	PASS	56	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 lambda-snapstart	2026-07-31T06:37:35Z	PASS	190	verify.sh	fixture fix: version asserts N->N+1 from alias (monotonic counter, was :1/:2 hardcode); re-run clean 4->5, orph clean
-lambda-url-authtype-replay	2026-08-13T12:51:31Z	PASS	141	verify.sh	rc 0, destroy 5/0 errors, 0 orphans; #1735 composed-seam assert
+lambda-url-authtype-replay	2026-09-25T17:44:06Z	PASS	156	verify.sh	rc ok, orph clean (#3740: 2a template refusal; #1654 arms via rollback revert)
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
 launchtemplate-asg-inplace	2026-09-24T22:46:12Z	PASS	82	verify.sh	rc ok, 0 orphans (#3663)
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
@@ -264,11 +265,13 @@ rollback-replay-effective-props	2026-09-25T18:05:55Z	PASS	717	verify.sh	rc ok, C
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-09-25T19:22:55Z	PASS	406	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
+route53	2026-09-25T13:35:54Z	PASS	377	verify.sh	rc ok, orph clean (#3728)
+s3-analytics-inventory	2026-09-25T17:44:06Z	PASS	182	verify.sh	rc ok, orph clean (#3740: 2a template refusal, 2b #1670 substitutions via rollback revert)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 s3-directory-bucket	2026-09-24T22:46:12Z	PASS	89	verify.sh	rc ok, 0 orphans (#3663)
 s3-event-notification	2026-09-24T06:18:07Z	PASS	90	verify.sh	rc ok, orph clean (#3585)
-s3-lifecycle	2026-09-25T09:36:54Z	PASS	281	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
+s3-lifecycle	2026-09-25T17:44:06Z	PASS	306	verify.sh	rc ok, orph clean (#3740: phase 2b asserts the template-path EventBridgeEnabled refusal)
 s3-object-lock	2026-09-24T06:23:46Z	PASS	60	verify.sh	rc ok, orph clean (#3585)
 s3-replication-and-filter	2026-09-24T06:16:12Z	PASS	110	verify.sh	rc ok, orph clean (#3585)
 s3-subconfig-removal	2026-09-25T13:35:54Z	PASS	80	verify.sh	rc ok, orph clean (#3728)

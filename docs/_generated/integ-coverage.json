@@ -5741,6 +5741,7 @@
         "cross-region-concurrent-stacks",
         "data-pipeline",
         "drift-revert-arrays",
+        "dynamodb-globaltable",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -5769,6 +5770,7 @@
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
+        "s3-analytics-inventory",
         "scheduler-custom-group",
         "secrets-dynamic-ref",
         "sns-inline-subscription",
@@ -5810,6 +5812,9 @@
         ],
         "drift-revert-arrays": [
           "l2"
+        ],
+        "dynamodb-globaltable": [
+          "l1"
         ],
         "event-driven": [
           "l2"
@@ -5900,6 +5905,9 @@
           "l1"
         ],
         "rollback-sqs-cooldown": [
+          "l1"
+        ],
+        "s3-analytics-inventory": [
           "l1"
         ],
         "scheduler-custom-group": [
