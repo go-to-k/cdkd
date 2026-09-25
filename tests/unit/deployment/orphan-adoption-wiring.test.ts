@@ -405,4 +405,26 @@ describe('readSiblingPhysicalIds (#2934)', () => {
     expect(said).toContain('Num');
     expect(said).not.toContain('Fine');
   });
+
+  it('caps the rows the debug line names at five, and counts the rest', async () => {
+    // A planted sibling record with thousands of torn rows must not render one
+    // debug line per byte of it — the cap `namedEntriesClause` takes for the
+    // user-facing texts (review of go-to-k/cdkd#3202).
+    const resources: Record<string, unknown> = {};
+    for (let i = 0; i < 8; i++) resources[`Torn${i}`] = null;
+    backend.listStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({ state: { resources } });
+    const debug = vi.fn();
+    await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain('8 resource record(s)');
+    for (let i = 0; i < 5; i++) expect(said).toContain(`Torn${i}`);
+    expect(said).not.toContain('Torn5');
+    expect(said).toContain('and 3 more');
+  });
 });

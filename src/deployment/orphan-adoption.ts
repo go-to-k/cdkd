@@ -482,6 +482,13 @@ export async function planOrphanAdoption(params: {
   return outcome;
 }
 
+/**
+ * How many unreadable sibling rows the claim scan's debug line names before
+ * it says "and N more" — the same cap `namedEntriesClause` takes for the
+ * user-facing texts (go-to-k/cdkd#3202 review).
+ */
+const NAMED_UNREADABLE_SIBLING_ROWS = 5;
+
 /** The slice of the state backend {@link makeSiblingClaimReader} needs. */
 export interface SiblingStateReader {
   listStacks(): Promise<readonly { stackName: string; region?: string }[]>;
@@ -578,6 +585,14 @@ export function makeSiblingClaimReader(params: {
         // physical id is a claim this set must keep, since dropping it is the
         // narrowing above by another route. An empty string is not a claim on
         // anything, and `planOrphanAdoption` never looks one up.
+        //
+        // One shape the bag guard SHRINKS the set for, deliberately: a LIST
+        // bag whose elements carry a `physicalId` was walked by
+        // `Object.values` and claimed before, and is skipped whole now. Such a
+        // record is unreadable to every other command (the destroy and the
+        // deploy refuse it), so its ids are not evidence of a stack that will
+        // act on them — and the lower-bound contract above already covers a
+        // record this scan cannot read.
         if (!isReadableBag(sibling.state.resources)) {
           logger.debug(
             `orphan adoption: skipping ${displayStackName(ref.stackName)} — its state record ` +
@@ -597,11 +612,20 @@ export function makeSiblingClaimReader(params: {
           }
         }
         if (unreadable.length > 0) {
+          // CAPPED like `namedEntriesClause` in `malformed-resources-bag.ts`:
+          // each id is already bounded by `displayIdent`, but a planted record
+          // with thousands of torn rows would otherwise render one debug line
+          // per byte of it. Five named, the rest counted.
+          const named = unreadable
+            .slice(0, NAMED_UNREADABLE_SIBLING_ROWS)
+            .map((id) => displayIdent(id))
+            .join(', ');
+          const rest = unreadable.length - NAMED_UNREADABLE_SIBLING_ROWS;
           logger.debug(
             `orphan adoption: ${displayStackName(ref.stackName)} holds ${unreadable.length} ` +
-              `resource record(s) with no readable physical id — ` +
-              `${unreadable.map((id) => displayIdent(id)).join(', ')} — skipped; the ` +
-              `claim set is a lower bound without them`
+              `resource record(s) with no readable physical id — ${named}` +
+              `${rest > 0 ? ` and ${rest} more` : ''} — skipped; the claim set is a lower ` +
+              `bound without them`
           );
         }
       } catch (error) {

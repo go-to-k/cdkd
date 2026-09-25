@@ -2574,6 +2574,41 @@ describe('cdkd import', () => {
       expect(errorSpy).not.toHaveBeenCalled();
     });
 
+    it('does NOT refuse a --migrate-from-cloudformation import over the same row either — the other recovery route', async () => {
+      // Migration forces `selectiveMode = false` through the same expression
+      // the case above relies on (import.ts computes it once). Pinned
+      // separately so a later edit that splits the two arms cannot close this
+      // route silently (test review of go-to-k/cdkd#3202).
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ Broken: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'imported', attributes: {} })),
+      }));
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'S',
+        physicalId: 'S',
+        resources: new Map([
+          ['MyBucket', 'cdkd-test-my-bucket'],
+          ['MyQueue', 'queue-arn'],
+          ['MyTopic', 'topic-arn'],
+        ]),
+        nested: new Map(),
+      });
+
+      await runImport(['import', 'S', '--app', 'x', '--force', '--yes', '--migrate-from-cloudformation']);
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, unknown> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      expect(saved!.resources['Broken']).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
     /**
      * The `orphans` CONTAINER on the EXISTING record (issue
      * go-to-k/cdkd#3379), through the COMMAND. The module's source fences pin
