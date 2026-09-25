@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { createConcurrencyLimiter } from '../../../src/utils/concurrency-limiter.js';
+import {
+  BackgroundTaskCancelledError,
+  createConcurrencyLimiter,
+} from '../../../src/utils/concurrency-limiter.js';
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -100,6 +103,21 @@ describe('createConcurrencyLimiter', () => {
     await expect(urgent.promise).resolves.toBe('urgent');
   });
 
+  it('promote() on an already-urgent queued task keeps FIFO among urgent tasks', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    const t = manualTasks();
+    limiter.schedule(t.task('running'));
+    limiter.schedule(t.task('u1'));
+    const u2 = limiter.schedule(t.task('u2'));
+    u2.promote();
+    await flush();
+    for (const name of ['running', 'u1', 'u2']) {
+      t.finish(name);
+      await flush();
+    }
+    expect(t.started).toEqual(['running', 'u1', 'u2']);
+  });
+
   it('promote() after a task started is a no-op', async () => {
     const limiter = createConcurrencyLimiter(1);
     const t = manualTasks();
@@ -109,6 +127,54 @@ describe('createConcurrencyLimiter', () => {
     expect(limiter.pendingCount).toBe(0);
     t.finish('running');
     await expect(running.promise).resolves.toBe('running');
+  });
+
+  it('cancel() drops a queued background task and aborts a running one, freeing its slot', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    let seen: AbortSignal | undefined;
+    const running = limiter.schedule(
+      (signal) => {
+        seen = signal;
+        return new Promise<string>(() => {}); // ignores the abort on purpose
+      },
+      { background: true }
+    );
+    const queued = limiter.schedule(() => Promise.resolve('never'), { background: true });
+    const after = limiter.schedule(() => Promise.resolve('after'));
+    await flush();
+
+    expect(queued.cancel()).toBe(true);
+    expect(running.cancel()).toBe(true);
+    expect(seen?.aborted).toBe(true);
+    await expect(running.promise).rejects.toBeInstanceOf(BackgroundTaskCancelledError);
+    await expect(queued.promise).rejects.toBeInstanceOf(BackgroundTaskCancelledError);
+    // The slot came back although the aborted body never settled.
+    await expect(after.promise).resolves.toBe('after');
+    expect(limiter.pendingCount).toBe(0);
+    expect(running.cancel()).toBe(false); // idempotent
+  });
+
+  it('cancel() never touches an urgent task, nor a background one promoted while running or queued', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    const t = manualTasks();
+    const urgent = limiter.schedule(t.task('urgent'));
+    const promotedQueued = limiter.schedule(t.task('pq'), { background: true });
+    promotedQueued.promote();
+    expect(urgent.cancel()).toBe(false);
+    expect(promotedQueued.cancel()).toBe(false);
+    await flush();
+    t.finish('urgent');
+    await flush();
+
+    const limiter2 = createConcurrencyLimiter(1);
+    const promotedRunning = limiter2.schedule(t.task('pr'), { background: true });
+    await flush();
+    promotedRunning.promote();
+    expect(promotedRunning.cancel()).toBe(false);
+    t.finish('pr');
+    t.finish('pq');
+    await expect(promotedRunning.promise).resolves.toBe('pr');
+    await expect(promotedQueued.promise).resolves.toBe('pq');
   });
 
   it('refuses a non-positive limit', () => {

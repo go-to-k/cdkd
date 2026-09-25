@@ -146,6 +146,7 @@ import { injectiveKey } from '../state/record-keys.js';
 import {
   prefetchCreateOnlyPropertyPaths,
   templateResourceTypes,
+  type CreateOnlyPrefetch,
 } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
@@ -3320,18 +3321,16 @@ export class DeployEngine {
     stackName: string,
     template: CloudFormationTemplate
   ): Promise<DeployResult> {
-    const startTime = Date.now();
-    this.logger.debug(`Starting deployment for stack: ${stackName}`);
-
     // Warm the create-only DescribeType cache in parallel with the lock + state
     // read below. calculateDiff (further down) resolves each UPDATE resource's
     // create-only property paths via cloudformation:DescribeType (~0.8s cold per
     // type, cached per-type for the deploy lifetime). Kicking those lookups off
     // here for the template's distinct resource types — fire-and-forget — lets
     // the diff's awaits hit a warm cache instead of paying the round-trip inline
-    // on the critical path. getCreateOnlyPropertyPaths is idempotent (per-type
-    // module cache) and never throws (it swallows DescribeType errors), so this
-    // is pure latency-hiding with no correctness impact. Custom types short-
+    // on the critical path. prefetchCreateOnlyPropertyPaths is idempotent
+    // (per-type module cache) and never throws, and the diff awaits the same
+    // per-type lookups, so this is pure latency-hiding with no correctness
+    // impact. Custom types short-
     // circuit without an API call; on a pure-CREATE (first) deploy the diff makes
     // no create-only lookups at all, so the prefetched entries simply go unused
     // that run — bounded, deduped, non-blocking waste, never a correctness issue.
@@ -3352,9 +3351,28 @@ export class DeployEngine {
     // concurrency cap (issue #3718): an unbounded 134-type burst throttled
     // almost half its calls, and a lookup whose retries ran out lost the
     // live schema. The diff's own awaited lookups queue ahead of it.
-    prefetchCreateOnlyPropertyPaths(
+    //
+    // Cancelled when the deploy finishes, on every path (issue #3718): the
+    // prefetch is opportunistic, and an unfinished background lookup must not
+    // keep a finished deploy's process alive. The handle is this engine's own,
+    // so a nested child engine finishing cannot withdraw its parent's calls.
+    const createOnlyPrefetch = prefetchCreateOnlyPropertyPaths(
       templateResourceTypes(template.Resources).filter((type) => !hasNoRegistrySchema(type))
     );
+    try {
+      return await this.doDeployWithPrefetch(stackName, template, createOnlyPrefetch);
+    } finally {
+      createOnlyPrefetch.cancel();
+    }
+  }
+
+  private async doDeployWithPrefetch(
+    stackName: string,
+    template: CloudFormationTemplate,
+    createOnlyPrefetch: CreateOnlyPrefetch
+  ): Promise<DeployResult> {
+    const startTime = Date.now();
+    this.logger.debug(`Starting deployment for stack: ${stackName}`);
 
     // Live progress renderer: shows in-flight resources as a multi-line area
     // at the bottom of the terminal. Self-disables on non-TTY and when
@@ -3791,6 +3809,10 @@ export class DeployEngine {
         // the calculator promotes each reader instead.
         this.freshNoEchoParameters(parameterValues)
       );
+      // The diff was the prefetch's only consumer: withdraw what it did not
+      // need, so it stops spending the account's DescribeType quota that the
+      // deploy's own (write-only) lookups draw on.
+      createOnlyPrefetch.cancel();
 
       // Issue #2668: refuse a Type change into or out of
       // `AWS::CloudFormation::Stack` before anything is provisioned. Every

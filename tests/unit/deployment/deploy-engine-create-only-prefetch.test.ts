@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const prefetchCreateOnlyPropertyPaths = vi.fn<(types: Iterable<string>) => void>();
+const prefetchCancel = vi.fn();
 
 vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   const actual = await vi.importActual<
@@ -24,8 +25,10 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   >('../../../src/provisioning/create-only-properties.js');
   return {
     ...actual,
-    prefetchCreateOnlyPropertyPaths: (types: Iterable<string>) =>
-      prefetchCreateOnlyPropertyPaths([...types]),
+    prefetchCreateOnlyPropertyPaths: (types: Iterable<string>) => {
+      prefetchCreateOnlyPropertyPaths([...types]);
+      return { cancel: prefetchCancel };
+    },
     createOnlyChangeRequiresReplacement: vi.fn().mockReturnValue(false),
   };
 });
@@ -241,5 +244,35 @@ describe('DeployEngine - create-only DescribeType prefetch (#1180)', () => {
     const engine = makeEngine();
     await expect(engine.deploy(stackName, template)).resolves.toBeDefined();
     expect(order.slice(0, 2)).toEqual(['prefetch', 'lock']);
+  });
+
+  it('cancels its prefetch once the diff is computed, before any resource is provisioned (issue #3718)', async () => {
+    // The diff is the prefetch's only consumer; an unneeded background lookup
+    // must neither spend the quota the deploy's own lookups need nor hold the
+    // process open after the deploy.
+    const order: string[] = [];
+    prefetchCancel.mockImplementation(() => order.push('cancel'));
+    mockDiffCalculator.calculateDiff.mockImplementation(() => {
+      order.push('diff');
+      return Promise.resolve(makeCreateDiff());
+    });
+    mockProvider.create.mockImplementation((logicalId: string) => {
+      order.push('create');
+      return Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} });
+    });
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(order.indexOf('cancel')).toBe(order.indexOf('diff') + 1);
+    expect(order.indexOf('cancel')).toBeLessThan(order.indexOf('create'));
+  });
+
+  it('cancels its prefetch when the deploy FAILS before the diff (issue #3718)', async () => {
+    mockLockManager.acquireLockWithRetry.mockRejectedValue(new Error('lock boom'));
+
+    await expect(makeEngine().deploy(stackName, template)).rejects.toThrow();
+
+    expect(prefetchCreateOnlyPropertyPaths).toHaveBeenCalledTimes(1);
+    expect(prefetchCancel).toHaveBeenCalled();
   });
 });

@@ -1504,6 +1504,35 @@ async function resolveChildStackParameters(
  * and the user should re-synth, exactly as `NestedStackProvider` would
  * fail at deploy time.
  */
+/**
+ * The template's `Resources` entries whose logical id the state already
+ * records — the only rows that can diff as an UPDATE. Own keys only, and
+ * tolerant of a malformed section, since it feeds a prefetch that must never
+ * throw.
+ */
+function recordedTemplateResources(
+  template: CloudFormationTemplate,
+  state: StackState
+): Record<string, unknown> {
+  const recorded: Record<string, unknown> = nullPrototypeRecord<unknown>();
+  const resources: unknown = template.Resources;
+  const stateResources: unknown = state.resources;
+  if (
+    resources === null ||
+    typeof resources !== 'object' ||
+    stateResources === null ||
+    typeof stateResources !== 'object'
+  ) {
+    return recorded;
+  }
+  for (const [logicalId, resource] of Object.entries(resources)) {
+    if (Object.prototype.hasOwnProperty.call(stateResources, logicalId)) {
+      recorded[logicalId] = resource;
+    }
+  }
+  return recorded;
+}
+
 export async function buildDiffTree(args: {
   stackName: string;
   displayName: string;
@@ -1631,19 +1660,25 @@ export async function buildDiffTree(args: {
     isNestedChild,
   } = args;
 
-  // Warm the create-only DescribeType cache for this node's types while the
-  // state read and preprocessing below run, as `cdkd deploy` does (issue
-  // #3718). Without it `calculateDiff` resolved each type inline, one resource
-  // at a time. Every node of a `--recursive` walk passes through here, so a
-  // child's types are warmed when the walk reaches it. Background and
-  // capped, never throws, and changes no answer: the diff awaits the same
-  // per-type lookup it would otherwise start itself.
-  prefetchCreateOnlyPropertyPaths(templateResourceTypes(template.Resources));
-
   const { state, unreadable, deployRefusals } = await loadStateOrEmpty(
     stackName,
     region,
     stateBackend
+  );
+  // Warm the create-only DescribeType cache while the preprocessing below
+  // runs, as `cdkd deploy` does (issue #3718). Without it `calculateDiff`
+  // resolved each type inline, one resource at a time. Every node of a
+  // `--recursive` walk passes through here, so a child's types are warmed when
+  // the walk reaches it. Background and capped, never throws, and changes no
+  // answer: the diff awaits the same per-type lookup it would otherwise start
+  // itself.
+  //
+  // Only the types of template resources ALREADY IN STATE: create-only paths
+  // decide an UPDATE, and only those can be one, so a first diff (all CREATE)
+  // issues no call at all. Cancelled once this node's diff is computed —
+  // an unneeded background lookup must never hold the command open.
+  const createOnlyPrefetch = prefetchCreateOnlyPropertyPaths(
+    templateResourceTypes(recordedTemplateResources(template, state))
   );
   // TOP-LEVEL only (go-to-k/cdkd#3335), and the scope is a CONSERVATIVE
   // decision rather than a claim that the answer is unknowable. Some change
@@ -1662,6 +1697,28 @@ export async function buildDiffTree(args: {
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
+  let stackDiff: StackDiffResult;
+  try {
+    stackDiff = await computeStackDiff(
+      state,
+      template,
+      region,
+      stackName,
+      stateBackend,
+      diffCalculator,
+      {
+        ...(parameters && { parameters }),
+        ...(canonicalizeProperties && { canonicalizeProperties }),
+        ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(previewOrphanAdoption && { previewOrphanAdoption }),
+        // A live template of its own, so this node decides for itself; the
+        // inherited flag only matters for the DELETED children below.
+        inheritSecretBearingTemplate: false,
+      }
+    );
+  } finally {
+    createOnlyPrefetch.cancel();
+  }
   const {
     changes,
     outputChanges,
@@ -1670,15 +1727,7 @@ export async function buildDiffTree(args: {
     blocking,
     unreadableOrphans,
     deployRefusals: adoptedDeployRefusals,
-  } = await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
-    ...(parameters && { parameters }),
-    ...(canonicalizeProperties && { canonicalizeProperties }),
-    ...(cfnFallback !== undefined && { cfnFallback }),
-    ...(previewOrphanAdoption && { previewOrphanAdoption }),
-    // A live template of its own, so this node decides for itself; the
-    // inherited flag only matters for the DELETED children below.
-    inheritSecretBearingTemplate: false,
-  });
+  } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
   // `cc-api` record is invisible in the un-spliced bag — the row would print

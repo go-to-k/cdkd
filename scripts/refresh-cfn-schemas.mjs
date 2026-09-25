@@ -46,7 +46,11 @@ import AdmZip from 'adm-zip';
 // A `.ts` LEAF under src/: the live resolver parses a DescribeType schema with
 // the same function, so the shipped offline fallback cannot disagree with the
 // live answer for one schema (issue #3718). Loaded through Node's type
-// stripping, like the `.ts` modules `diagnose-schema-refresh.mjs` imports.
+// stripping, like the `.ts` modules `diagnose-schema-refresh.mjs` imports:
+// the default from Node 22.18 (the repo pins 24 in `.node-version` and CI),
+// and `node --experimental-strip-types` below that, which the
+// `gen:cfn-schemas-from-zip` task passes. Duplicating the parser in plain JS
+// instead would re-open the two-spellings drift this import exists to close.
 import { parseCreateOnlyPropertyPointers } from '../src/provisioning/create-only-paths.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

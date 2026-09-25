@@ -49,15 +49,19 @@ const MAX_THROTTLE_RETRIES = 4;
  *
  * The quota behaves as a RATE limit, not a concurrency one: measured in
  * us-east-1, a 30-call burst after idle drew no throttle, but 134 calls drew
- * throttles at 134 in parallel (45), at 20 (95) and even one at a time (73).
+ * throttles at 134 in parallel (45-61 across runs), at 20 (95) and even one at
+ * a time (73).
  * So no cap makes a 134-type prefetch throttle-free. What the cap buys is
  * ordering: with at most 20 in flight, an awaited lookup (URGENT) is sent
  * ahead of queued prefetches instead of joining the back of an unbounded
- * burst. Measured on the same 134 types, the 5 lookups a diff awaited 300 ms
+ * burst — at the cost of up to one round trip (~0.2 s) for an awaited lookup
+ * that arrives while the first 20 background calls hold every slot. Measured
+ * on the same 134 types, the 5 lookups a diff awaited 300 ms
  * after the prefetch started took 18 s before and 0.65-0.8 s with the cap, and
  * lookups that exhausted their retries fell from 86-94 to 9-23. The price is a
  * longer tail for the prefetch as a whole (35 s -> 53-63 s), which nothing
- * waits on. 20 keeps enough calls overlapped to spend the burst quickly.
+ * waits on and which its owner cancels once done. 20 keeps enough calls
+ * overlapped to spend the burst quickly.
  */
 export const DESCRIBE_TYPE_MAX_IN_FLIGHT = 20;
 
@@ -68,6 +72,16 @@ export const DESCRIBE_TYPE_MAX_IN_FLIGHT = 20;
  * fewer, not more.
  */
 const describeTypeLimiter = createConcurrencyLimiter(DESCRIBE_TYPE_MAX_IN_FLIGHT);
+
+/**
+ * DescribeType calls running and queued in the shared limiter. Test-only: the
+ * unit tests assert a finished command leaves nothing behind.
+ *
+ * @test-only-export
+ */
+export function describeTypeQueueDepth(): { active: number; pending: number } {
+  return { active: describeTypeLimiter.activeCount, pending: describeTypeLimiter.pendingCount };
+}
 
 /**
  * Issue `DescribeType` for a resource type, retrying throttle-shaped failures
@@ -92,31 +106,78 @@ export function describeTypeWithThrottleRetry(
 /**
  * {@link describeTypeWithThrottleRetry} with the scheduling handle exposed:
  * `background: true` queues the call behind every urgent one (a speculative
- * prefetch), and the returned `promote()` moves it to the front once a caller
- * starts awaiting that type.
+ * prefetch), `promote()` makes it urgent once a caller starts awaiting that
+ * type, and `cancel()` withdraws it while it is still background.
+ *
+ * A BACKGROUND call must never hold the process open: its request carries the
+ * task's `AbortSignal`, and its throttle backoff sleeps on an UNREF'd timer
+ * that the same signal cuts short, so a cancelled prefetch settles at once and
+ * an uncancelled one cannot keep a finished command alive. An urgent call is
+ * sent exactly as before.
  */
 export function scheduleDescribeType(
   resourceType: string,
   options: { client?: AwsClients['cloudFormation']; background?: boolean } = {}
 ): ScheduledTask<DescribeTypeCommandOutput> {
   const { client, background } = options;
+  // Resolved HERE, in the caller's context, not inside the task: a queued task
+  // is started by whichever task finishes first, inside THAT task's
+  // AsyncLocalStorage scope, so a lookup resolved there could go out on
+  // another stack's regional client (`runWithStackAwsClients`).
+  // A client that cannot be built fails the TASK, never this call: callers
+  // rely on getting a promise to settle.
+  let cfn: AwsClients['cloudFormation'] | undefined;
+  let clientError: unknown;
+  try {
+    cfn = client ?? getAwsClients().cloudFormation;
+  } catch (error) {
+    clientError = error;
+  }
   return describeTypeLimiter.schedule(
-    () =>
+    (signal) =>
       withRetry(
-        () =>
-          (client ?? getAwsClients().cloudFormation).send(
-            new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
-          ),
+        () => {
+          if (cfn === undefined) throw clientError;
+          const command = new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType });
+          return background ? cfn.send(command, { abortSignal: signal }) : cfn.send(command);
+        },
         resourceType,
         {
           maxRetries: MAX_THROTTLE_RETRIES,
-          isRetryable: (_message, error) => isThrottlingError(error),
+          isRetryable: (_message, error) => !signal.aborted && isThrottlingError(error),
           logger: getLogger().child('DescribeType'),
-          ...(describeTypeRetryDelays.sleep ? { sleep: describeTypeRetryDelays.sleep } : {}),
+          ...(describeTypeRetryDelays.sleep
+            ? { sleep: describeTypeRetryDelays.sleep }
+            : background
+              ? { sleep: (ms: number) => backgroundSleep(ms, signal) }
+              : {}),
         }
       ),
     { background: background === true }
   );
+}
+
+/**
+ * The backoff sleep of a BACKGROUND call: an unref'd timer, so a pending
+ * retry never keeps the event loop alive, rejected at once by `signal`.
+ */
+function backgroundSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('DescribeType prefetch cancelled'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error('DescribeType prefetch cancelled'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**

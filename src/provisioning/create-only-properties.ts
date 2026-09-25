@@ -33,7 +33,9 @@
  * schema-only create-only change for that resource.
  */
 
+import type { DescribeTypeCommandOutput } from '@aws-sdk/client-cloudformation';
 import { hasNoRegistrySchema, scheduleDescribeType } from './describe-type.js';
+import { BackgroundTaskCancelledError, type ScheduledTask } from '../utils/concurrency-limiter.js';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
@@ -48,18 +50,25 @@ import { getLogger } from '../utils/logger.js';
 const createOnlyPropertiesCache = new Map<string, Promise<ReadonlyArray<readonly string[]>>>();
 
 /**
- * `promote()` of each lookup still WAITING for a DescribeType slot, so an
- * awaited lookup of a type a prefetch already queued moves that one call to
- * the front instead of issuing a second one (issue #3718).
+ * The scheduling handle of each lookup still IN FLIGHT, so an awaited lookup
+ * of a type a prefetch already queued promotes that one call instead of
+ * issuing a second one, and a prefetch's `cancel()` can withdraw the calls it
+ * started (issue #3718).
  */
-const queuedLookupPromotions = new Map<string, () => void>();
+const inFlightLookups = new Map<string, InFlightLookup>();
+
+interface InFlightLookup {
+  readonly scheduled: ScheduledTask<DescribeTypeCommandOutput>;
+  /** Some caller is awaiting the answer (an urgent lookup, or one that joined). */
+  awaited: boolean;
+}
 
 /**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearCreateOnlyPropertiesCache(): void {
   createOnlyPropertiesCache.clear();
-  queuedLookupPromotions.clear();
+  inFlightLookups.clear();
 }
 
 /**
@@ -95,19 +104,55 @@ export function getCreateOnlyPropertyPaths(
   return lookupCreateOnlyPropertyPaths(resourceType, false);
 }
 
+/** What {@link prefetchCreateOnlyPropertyPaths} returns. */
+export interface CreateOnlyPrefetch {
+  /**
+   * Withdraw every call THIS prefetch started that nobody has awaited yet: a
+   * queued one is dropped and a running one aborted, caching nothing and
+   * warning nothing. A call an awaited lookup has since joined is promoted and
+   * so left alone, as is every call another prefetch started. Idempotent.
+   */
+  cancel(): void;
+}
+
 /**
  * Warm the cache for each of `resourceTypes` without waiting (issue #1180),
  * as BACKGROUND DescribeType calls behind every awaited lookup (issue #3718).
  * Duplicates and schema-less types are skipped; it never throws and never
  * leaves an unhandled rejection.
+ *
+ * The prefetch is purely opportunistic, so its owner MUST `cancel()` it when
+ * the work it was warming for is done: an unfinished background lookup (a
+ * throttle backoff can run to ~15 s) must never delay a command's completion.
+ * The handle is per call, so a nested-stack child engine cancelling its own
+ * prefetch cannot withdraw its parent's.
  */
-export function prefetchCreateOnlyPropertyPaths(resourceTypes: Iterable<string>): void {
+export function prefetchCreateOnlyPropertyPaths(
+  resourceTypes: Iterable<string>
+): CreateOnlyPrefetch {
+  const started: Array<[string, InFlightLookup]> = [];
   for (const type of new Set(resourceTypes)) {
-    if (hasNoRegistrySchema(type)) continue;
+    if (hasNoRegistrySchema(type) || createOnlyPropertiesCache.has(type)) continue;
     // lookupCreateOnlyPropertyPaths never rejects, but a fire-and-forget
     // call must not be the one place an unexpected rejection goes unhandled.
     void lookupCreateOnlyPropertyPaths(type, true).catch(() => {});
+    const lookup = inFlightLookups.get(type);
+    if (lookup) started.push([type, lookup]);
   }
+  return {
+    cancel: () => {
+      // Newest first: the calls still QUEUED are the later ones, and
+      // withdrawing a running call frees a slot, which would otherwise start
+      // the next queued call of this same prefetch before it is withdrawn.
+      for (const [type, lookup] of started.splice(0).reverse()) {
+        if (inFlightLookups.get(type) !== lookup || !lookup.scheduled.cancel()) continue;
+        // Dropped synchronously, so a lookup arriving after the cancel starts
+        // a fresh call instead of joining the withdrawn one.
+        inFlightLookups.delete(type);
+        createOnlyPropertiesCache.delete(type);
+      }
+    },
+  };
 }
 
 /**
@@ -145,22 +190,37 @@ function lookupCreateOnlyPropertyPaths(
   }
   const cached = createOnlyPropertiesCache.get(resourceType);
   if (cached) {
-    if (!background) queuedLookupPromotions.get(resourceType)?.();
+    // Promoting also makes a running prefetch call uncancellable: this
+    // caller is now awaiting it.
+    const inFlight = inFlightLookups.get(resourceType);
+    if (!background && inFlight) {
+      inFlight.awaited = true;
+      inFlight.scheduled.promote();
+    }
     return cached;
   }
   const scheduled = scheduleDescribeType(resourceType, { background });
-  queuedLookupPromotions.set(resourceType, scheduled.promote);
-  const entry = scheduled.promise
+  const lookup: InFlightLookup = { scheduled, awaited: !background };
+  inFlightLookups.set(resourceType, lookup);
+  const entry: Promise<ReadonlyArray<readonly string[]>> = scheduled.promise
     .then((response) => parseCreateOnlyResponse(resourceType, response.Schema))
-    .catch((error) => {
+    .catch((error: unknown) => {
+      // A withdrawn prefetch is not a failure: its owner no longer needs the
+      // answer, and `cancel()` already dropped it from the cache.
+      if (error instanceof BackgroundTaskCancelledError) return [];
       // The lookup failed: drop the in-flight entry so a later call retries
       // live, warn (once per failure), and fall back for this call.
-      createOnlyPropertiesCache.delete(resourceType);
-      return fallBackToSnapshot(resourceType, error);
+      if (createOnlyPropertiesCache.get(resourceType) === entry) {
+        createOnlyPropertiesCache.delete(resourceType);
+      }
+      // A failure nobody awaited logs at debug only: the fallback is not
+      // cached, so the diff's own lookup retries and warns once, and a
+      // no-permission run must not print one warning per prefetched type.
+      return fallBackToSnapshot(resourceType, error, lookup.awaited);
     })
     .finally(() => {
-      if (queuedLookupPromotions.get(resourceType) === scheduled.promote) {
-        queuedLookupPromotions.delete(resourceType);
+      if (inFlightLookups.get(resourceType) === lookup) {
+        inFlightLookups.delete(resourceType);
       }
     });
   createOnlyPropertiesCache.set(resourceType, entry);
@@ -169,10 +229,12 @@ function lookupCreateOnlyPropertyPaths(
 
 function fallBackToSnapshot(
   resourceType: string,
-  error: unknown
+  error: unknown,
+  awaited: boolean
 ): ReadonlyArray<readonly string[]> {
   const message = describeAwsFailure(error).detail;
-  const logger = getLogger().child('CreateOnlyProperties');
+  const child = getLogger().child('CreateOnlyProperties');
+  const logger = { warn: (line: string) => (awaited ? child.warn(line) : child.debug(line)) };
   const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
   if (snapshot) {
     logger.warn(
