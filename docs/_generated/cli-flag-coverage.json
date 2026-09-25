@@ -110,6 +110,7 @@
         "apigw-stage-props",
         "apigw-usage-plan-key",
         "appconfig",
+        "appsync",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -389,6 +390,7 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "appsync",
         "dynamodb-globaltable",
         "lambda-url-authtype-replay",
         "rollback-command",
