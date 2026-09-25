@@ -481,6 +481,21 @@ describe('undeclaredEmptyObservedKeys (issue #1498)', () => {
     ]);
   });
 
+  // Issue #3515: own-key membership. `in` read an Object.prototype member
+  // name as DECLARED, so a captured-empty undeclared key of that name was
+  // compared (phantom drift, and `--revert` would strip it) instead of skipped.
+  // Reachable only through a hand-edited state.json -- no cdkd-written baseline
+  // carries such a top-level key -- but the direction matters for `--revert`.
+  it('skips an undeclared captured-empty key named after an Object.prototype member (#3515)', () => {
+    expect(undeclaredEmptyObservedKeys({ constructor: [], Name: 'n' }, { Name: 'n' })).toEqual([
+      'constructor',
+    ]);
+  });
+
+  it('compares a DECLARED key named after an Object.prototype member (#3515 negative control)', () => {
+    expect(undeclaredEmptyObservedKeys({ constructor: [] }, { constructor: [] })).toEqual([]);
+  });
+
   it('returns undeclared keys captured as null / undefined / {}', () => {
     const observed = { A: null, B: undefined, C: {}, Name: 'n' };
     expect(undeclaredEmptyObservedKeys(observed, { Name: 'n' }).sort()).toEqual(['A', 'B', 'C']);

@@ -2410,7 +2410,10 @@ function isOutputSuppressed(
   const condition = output.Condition;
   if (typeof condition !== 'string') return false;
   if (conditions[condition] === true) return false;
-  return !(name in stateOutputs);
+  // `Object.hasOwn`, not `in` (issue #3515): an Output legally named
+  // `constructor` / `toString` answered `in` through the prototype chain, so a
+  // suppressed one read as WRITTEN and re-armed the refusal it exists to disarm.
+  return !Object.hasOwn(stateOutputs, name);
 }
 
 /**
