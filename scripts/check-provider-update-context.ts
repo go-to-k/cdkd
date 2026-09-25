@@ -288,7 +288,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'SQSQueuePolicyProvider',
   'SQSQueueProvider',
   'SchedulerScheduleProvider',
-  'SecretsManagerSecretProvider',
   'StepFunctionsProvider',
   'WAFv2WebACLProvider',
   'WaitConditionHandleProvider',

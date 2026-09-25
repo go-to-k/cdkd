@@ -4822,7 +4822,9 @@ export class S3BucketProvider implements ResourceProvider {
 
   /**
    * Apply the diff between previous and new sub-configs, issuing Put / Delete
-   * SDK calls only for differing keys. Called from `update()`.
+   * SDK calls only for differing keys. Called from `update()` TWICE on a
+   * template-path update: first on {@link noWriteProbe} with `refuseUnusable`
+   * (the pre-flight, which writes nothing), then for real.
    *
    * PublicAccessBlockConfiguration and Tags stay on `applyConfiguration` /
    * `applyTagDiff`. `PublicAccessBlockConfiguration` is deliberately NOT on the

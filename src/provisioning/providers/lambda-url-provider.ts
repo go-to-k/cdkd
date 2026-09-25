@@ -283,12 +283,14 @@ export class LambdaUrlProvider implements ResourceProvider {
     //    `drift-calculator` (it only descends into keys present in state),
     //    so the phantom drift is gone either way.
     //
-    //    Two consequences of the DROP that are easy to assume away:
-    //    the malformed template keeps re-warning on every later deploy for
-    //    most shapes, but NOT for `AuthType: null` — once the key is gone
-    //    from the previous side, the `changed` loop above compares
-    //    `JSON.stringify(null ?? null)` on both sides, finds no change, and
-    //    returns early without warning or calling AWS. That is benign (the
+    //    Two consequences of the DROP that are easy to assume away (the
+    //    drop happens only on the state-borne paths since issue #3740; a
+    //    template-path update refuses instead): a later template-path deploy
+    //    still carrying the malformed value is REFUSED for most shapes, but
+    //    NOT for `AuthType: null` — once the key is gone from the previous
+    //    side, the `changed` loop above compares `JSON.stringify(null ??
+    //    null)` on both sides, finds no change, and returns early without
+    //    refusing, warning or calling AWS. That is benign (the
     //    live auth type is untouched and state still claims nothing), but it
     //    means the announcement is not guaranteed to repeat. And the record
     //    with no `AuthType` is later readable by `create()` on a

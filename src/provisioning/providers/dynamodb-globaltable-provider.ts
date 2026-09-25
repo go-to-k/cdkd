@@ -1779,7 +1779,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       };
       let refusal: string | undefined;
-      if (properties['BillingMode'] !== undefined && changed('BillingMode')) {
+      if (changed('BillingMode')) {
         try {
           requireConfigString(
             properties['BillingMode'],
@@ -7556,6 +7556,27 @@ function pickAutoScalingCapacity(
 }
 
 /**
+ * The shape refusal for a present-but-NON-ARRAY `GlobalSecondaryIndexes`, or
+ * `undefined` when the value is absent or an array.
+ *
+ * ONE predicate for the two places that ask: {@link toSdkGlobalSecondaryIndexes}
+ * (which throws, or hands it to its replay downgrade) and `update()`'s
+ * template-path pre-flight (issue #3740), so the refusal cannot be narrower or
+ * wider than the downgrade it replaces on that path. The value is masked leaf
+ * by leaf BEFORE `JSON.stringify` escapes anything (issue #2178).
+ */
+export function globalSecondaryIndexesShapeDetail(
+  rawIndexes: unknown,
+  maskSecrets: MaskerFn = (text) => text
+): string | undefined {
+  if (rawIndexes === undefined || Array.isArray(rawIndexes)) return undefined;
+  return (
+    `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
+    `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`
+  );
+}
+
+/**
  * Translate the CFn `AWS::DynamoDB::GlobalTable` `GlobalSecondaryIndexes[]`
  * blob into the SDK's `GlobalSecondaryIndex[]` shape (Issue #1387).
  *
@@ -7592,27 +7613,6 @@ function pickAutoScalingCapacity(
  * written before this fix (and hand-authored templates) can carry them, and
  * silently re-deriving over an explicit value would be a regression.
  */
-/**
- * The shape refusal for a present-but-NON-ARRAY `GlobalSecondaryIndexes`, or
- * `undefined` when the value is absent or an array.
- *
- * ONE predicate for the two places that ask: {@link toSdkGlobalSecondaryIndexes}
- * (which throws, or hands it to its replay downgrade) and `update()`'s
- * template-path pre-flight (issue #3740), so the refusal cannot be narrower or
- * wider than the downgrade it replaces on that path. The value is masked leaf
- * by leaf BEFORE `JSON.stringify` escapes anything (issue #2178).
- */
-export function globalSecondaryIndexesShapeDetail(
-  rawIndexes: unknown,
-  maskSecrets: MaskerFn = (text) => text
-): string | undefined {
-  if (rawIndexes === undefined || Array.isArray(rawIndexes)) return undefined;
-  return (
-    `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-    `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`
-  );
-}
-
 export function toSdkGlobalSecondaryIndexes(
   properties: Record<string, unknown>,
   region: string,

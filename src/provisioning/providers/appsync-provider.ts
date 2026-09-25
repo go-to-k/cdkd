@@ -1660,7 +1660,11 @@ export class AppSyncProvider implements ResourceProvider {
       if (oidc) provider.openIDConnectConfig = oidc;
       // The additional-provider variant is AWS's CognitoUserPoolConfig, which
       // has NO defaultAction member — a different shape from the top-level one.
-      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig'], `${at}.UserPoolConfig`);
+      const pool = this.toSdkCognitoUserPoolConfig(
+        cfn['UserPoolConfig'],
+        `${at}.UserPoolConfig`,
+        options
+      );
       if (pool) provider.userPoolConfig = pool;
       const lambda = this.toSdkLambdaAuthorizerConfig(
         cfn['LambdaAuthorizerConfig'],

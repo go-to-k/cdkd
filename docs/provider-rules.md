@@ -159,6 +159,8 @@ const ipProtocol = requireConfigString(
 // record (a rollback revert or `cdkd drift --revert`) — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards):
 // a refusal there can leave the resource un-rollbackable with no template-side
 // remedy. A template-path update refuses the same value, before any call.
+// (`context` is `update()`'s `UpdateContext`; `previousStatus` is the recorded
+// status, the warn fallback, so a warning never ENABLES a key.)
 const stateBorneDesired =
   context?.replayingState === true || context?.desiredFromAwsReadback === true;
 const status = requireConfigString(
@@ -234,8 +236,11 @@ implementation. Three details are worth copying:
     client writes nothing (issue
     [#3740](https://github.com/go-to-k/cdkd/issues/3740)). Gate the refusal
     on the value having changed wherever an unchanged one sends nothing. One
-    arm still warns on every caller, decided before #3141 gave the revert arms
-    a flag: Glue's `DatabaseInput` (#3740), which says so at its site. On the
+    arm decided before #3141 gave the revert arms a flag still warns on every
+    caller: Glue's `DatabaseInput` (#3740), which says so at its site.
+    Separately, a create-only
+    value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` keeps the
+    warning on purpose, for the reason above. On the
     warn path, **pick the FALLBACK per site** (issue
     [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
     applying the CREATE DEFAULT is frequently worse than the refusal was,

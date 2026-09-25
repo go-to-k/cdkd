@@ -110,6 +110,22 @@ describe('LambdaUrlProvider malformed AuthType on update: template refuses, repl
     expect(result.effectiveProperties?.['AuthType']).toBe('AWS_IAM');
   });
 
+  it('is NOT gated on AuthType itself changing: an unchanged malformed value is refused when anything else changes', async () => {
+    // `AuthType` goes out on every UpdateFunctionUrlConfig past the early
+    // return, so it is always pending (issue #3740).
+    const error = await provider
+      .update(
+        'MyUrl',
+        FN_ARN,
+        RESOURCE_TYPE,
+        { TargetFunctionArn: FN_ARN, AuthType: '   ', InvokeMode: 'RESPONSE_STREAM' },
+        { TargetFunctionArn: FN_ARN, AuthType: '   ', InvokeMode: 'BUFFERED' }
+      )
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('does not refuse when nothing changed (the no-op early return runs first)', async () => {
     const same = { TargetFunctionArn: FN_ARN, AuthType: null };
     await expect(provider.update('MyUrl', FN_ARN, RESOURCE_TYPE, same, same)).resolves.toEqual({
@@ -119,7 +135,7 @@ describe('LambdaUrlProvider malformed AuthType on update: template refuses, repl
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('does not refuse a usable AuthType on the template path', async () => {
+  it('does not refuse a usable, changed AuthType on the template path', async () => {
     await edit('NONE');
     expect(updateInput()?.['AuthType']).toBe('NONE');
     expect(childLogger.warn).not.toHaveBeenCalled();

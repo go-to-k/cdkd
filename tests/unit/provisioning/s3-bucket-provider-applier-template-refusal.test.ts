@@ -138,6 +138,49 @@ const APPLIERS: Array<{ applier: string; key: string; malformed: unknown; previo
     ],
     refusal: /InventoryConfigurations\[\]\.IncludedObjectVersions must be a non-empty string/,
   },
+  // The warn-and-SUBSTITUTE reads refuse on the template path too, as they
+  // do on create: a state-borne update sends the fallback instead.
+  {
+    applier: 'analytics (substitute read: OutputSchemaVersion)',
+    key: 'AnalyticsConfigurations',
+    malformed: [
+      {
+        Id: 'a1',
+        StorageClassAnalysis: {
+          DataExport: {
+            OutputSchemaVersion: 42,
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        },
+      },
+    ],
+    previous: [{ Id: 'a1', StorageClassAnalysis: {} }],
+    refusal: /DataExport\.OutputSchemaVersion must be a non-empty string/,
+  },
+  {
+    applier: 'inventory (substitute read: ScheduleFrequency with a usable Schedule)',
+    key: 'InventoryConfigurations',
+    malformed: [
+      {
+        Id: 'i1',
+        Enabled: true,
+        IncludedObjectVersions: 'All',
+        ScheduleFrequency: {},
+        Schedule: { Frequency: 'Daily' },
+        Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+      },
+    ],
+    previous: [
+      {
+        Id: 'i1',
+        Enabled: true,
+        IncludedObjectVersions: 'All',
+        ScheduleFrequency: 'Daily',
+        Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+      },
+    ],
+    refusal: /InventoryConfigurations\[\]\.ScheduleFrequency must be/,
+  },
 ];
 
 /**

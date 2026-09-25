@@ -474,7 +474,39 @@ describe('AWS::IAM::AccessKey Status', () => {
     expect(inputOf().Status).toBe('Inactive');
   });
 
-  it('does not refuse a usable or ABSENT Status on the template path', async () => {
+  it('is NOT gated on a change: an UNCHANGED malformed Status is refused on the template path', async () => {
+    // `UpdateAccessKey` sends the status on every update (issue #3740).
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await expect(
+      provider.update(
+        'Key',
+        'AKIAEXAMPLE',
+        'AWS::IAM::AccessKey',
+        { UserName: 'alice', Status: '   ' },
+        { UserName: 'alice', Status: '   ' }
+      )
+    ).rejects.toBeInstanceOf(ProvisioningError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse a usable, changed Status on the template path', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await provider.update(
+      'Key',
+      'AKIAEXAMPLE',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice', Status: 'Inactive' },
+      { UserName: 'alice', Status: 'Active' }
+    );
+    expect(inputOf().Status).toBe('Inactive');
+    expect(logWarn).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse an ABSENT Status on the template path', async () => {
     mockSend.mockResolvedValue({});
     const provider = new IAMAccessKeyProvider();
 

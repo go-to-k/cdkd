@@ -1957,11 +1957,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // malformed value is not a pending operation (that arm keeps the mode it
       // compared against, so no flip goes out for it), the same gate the
       // `StreamSpecification` refusal above takes. Same read, key, fallback and
-      // path as that arm, so the two cannot disagree on a value.
+      // path as that arm, so the two cannot disagree on a value; an ABSENT
+      // value (the documented reset to PROVISIONED) takes the fallback there,
+      // so it needs no gate of its own.
       if (
         context?.replayingState !== true &&
         context?.desiredFromAwsReadback !== true &&
-        properties['BillingMode'] !== undefined &&
         JSON.stringify(properties['BillingMode']) !==
           JSON.stringify(previousProperties['BillingMode'])
       ) {

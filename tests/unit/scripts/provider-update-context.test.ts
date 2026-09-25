@@ -202,6 +202,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'S3BucketProvider',
       'SNSTopicProvider',
       'SSMParameterProvider',
+      'SecretsManagerSecretProvider',
       'ServiceDiscoveryProvider',
     ]);
   });

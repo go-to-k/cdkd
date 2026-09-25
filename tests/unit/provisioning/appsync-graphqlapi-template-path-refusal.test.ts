@@ -113,6 +113,17 @@ describe('AppSync GraphQLApi malformed nested block on update: template refuses,
       /AdditionalAuthenticationProviders\[0\] must be an object, got string/,
     ],
     [
+      'AdditionalAuthenticationProviders',
+      [{ AuthenticationType: 'AMAZON_COGNITO_USER_POOLS', UserPoolConfig: 'oops' }],
+      [
+        {
+          AuthenticationType: 'AMAZON_COGNITO_USER_POOLS',
+          UserPoolConfig: { UserPoolId: 'us-east-1_abc', AwsRegion: 'us-east-1' },
+        },
+      ],
+      /AdditionalAuthenticationProviders\[0\]\.UserPoolConfig must be an object, got string/,
+    ],
+    [
       'EnhancedMetricsConfig',
       'oops',
       { ResolverLevelMetricsBehavior: 'FULL_REQUEST_RESOLVER_METRICS' },

@@ -148,8 +148,8 @@ describe('DynamoDBTableProvider malformed BillingMode: template refuses, replay 
     expect(writes().some((cmd) => cmd instanceof TagResourceCommand)).toBe(true);
   });
 
-  it('does not refuse a usable value, nor an ABSENT one (the documented reset to PROVISIONED)', async () => {
-    await expect(edit('PROVISIONED')).resolves.toBeDefined();
+  it('does not refuse a usable CHANGED value, nor an ABSENT one (the documented reset to PROVISIONED)', async () => {
+    await expect(edit('PAY_PER_REQUEST')).resolves.toBeDefined();
     await expect(edit(undefined)).resolves.toBeDefined();
     expect(warnText()).not.toMatch(/BillingMode must be/);
   });
