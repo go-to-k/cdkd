@@ -66,7 +66,7 @@ cross-stack-secret-import	2026-09-25T07:12:00Z	PASS	371	verify.sh	PR 3706 lane: 
 custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 custom-resource-noecho-nested	2026-09-24T18:32:56Z	PASS	311	verify.sh	rc ok, orph clean; post-rebase re-run on PR #3668 head
 custom-resource-provider	2026-09-05T23:03:46Z	PASS	750	verify.sh	PR2662 gate run; skip-arm then clean re-destroy 26 deleted 0 errors, 0 orphans
-data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
+data-analytics	2026-09-25T10:50:52Z	PASS	101	verify.sh	maintainer merge-gate rerun of PR #3720, rc ok, orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-09-24T18:20:06Z	PASS	65	verify.sh	rc ok, orph clean; PR #3668 head
 deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destroy-runner ordering, rc 0, 19 del 0 err, LB/TG/SG/subnet/IGW/VPC/EC2 all gone
@@ -133,7 +133,7 @@ gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, s
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-24T23:20:39Z	PASS	75	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 glue-securityconfig-replace	2026-09-23T23:37:05Z	PASS	59	verify.sh	rc ok, orph clean (#1981 lane)
-glue-update-hardening	2026-09-24T22:46:12Z	PASS	92	verify.sh	rc ok, 0 orphans (#3663)
+glue-update-hardening	2026-09-25T10:50:52Z	PASS	111	verify.sh	maintainer merge-gate rerun of PR #3720, rc ok, orph clean; Phase 2b fails on a reverted glue-provider.ts
 iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
 iam-managed-policy	2026-08-13T16:29:17Z	PASS	49	verify.sh	#1815 partition predicates; detach-before-delete destroy 0 err, 0 orphans
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
@@ -145,7 +145,7 @@ import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, o
 import-attribute-readback-misc	2026-09-24T20:32:58Z	PASS	260	verify.sh	rc ok, orph clean; providers at origin/main FAIL all 7 rows
 import-attribute-readback-network	2026-09-24T14:52:27Z	PASS	327	verify.sh	rc ok, orph clean; CFn-written SSM values as oracle
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err
-import-auto-mode	2026-09-24T08:37:51Z	PASS	90	verify.sh	rc ok, orph clean; #2872 lane
+import-auto-mode	2026-09-25T10:50:52Z	PASS	85	verify.sh	maintainer merge-gate rerun of PR #3720, rc ok, orph clean
 import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, orph clean; #2872 stale-baseline arm (pre-fix probe red at 6c RootPwParam marked)
 import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
 import-migrate-vpc	2026-09-25T05:37:37Z	PASS	335	verify.sh	rc ok, orph clean; 31 imported 0 failed; VPCCidrBlock recorded as <assoc>|<vpc> (#3672)
