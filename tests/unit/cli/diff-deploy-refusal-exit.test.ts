@@ -244,6 +244,13 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
       "an 'orphans' field that is not a list",
       () => ({ ...record(healthy()), orphans: 'abc' as unknown as StackState['orphans'] }),
     ],
+    [
+      "an 'orphans' record the preview cannot read",
+      () => ({
+        ...record(healthy()),
+        orphans: [{ logicalId: 'Gone', orphanedAt: 1 }] as unknown as StackState['orphans'],
+      }),
+    ],
   ] as const) {
     for (const extra of [[] as string[], ['--fail']]) {
       it(`exits 3 over ${label} ${extra.length ? 'with' : 'without'} --fail (go-to-k/cdkd#3512)`, async () => {

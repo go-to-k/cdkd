@@ -481,8 +481,9 @@ meaning is "non-zero result", not "the command crashed":
 name another cdkd stack already records, or a state record container this
 preview repaired or dropped and the deploy refuses (a resource `properties`
 map, the `outputs` bag, the `resources` map or one of its entries, the
-`orphans` field or one of its records) — the second of those only on the stack
-you named, not on a nested child (see
+`orphans` field or one of its records), or a rollback-orphan record the preview
+keeps whose `properties` or `attributes` map the deploy refuses — the second and
+third of those only on the stack you named, not on a nested child (see
 [docs/cli-diff.md](cli-diff.md#exit-3-the-deploy-would-refuse)). The full preview is printed
 first, with the reasons under a `Blocking (cdkd deploy will refuse):` heading;
 the exit code is separate from `--fail` on purpose, so a CI job that gates on
