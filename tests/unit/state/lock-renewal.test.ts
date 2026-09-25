@@ -264,7 +264,7 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       expect(puts()).toHaveLength(2);
 
       expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-        "Lost the lock for stack 'test-stack'"
+        'Lost the lock for stack test-stack (us-east-1)'
       );
 
       // And the release must not delete the new owner's lock.
@@ -337,7 +337,7 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
 
     const expectLost = async (manager: LockManager): Promise<void> => {
       expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-        "Lost the lock for stack 'test-stack'"
+        'Lost the lock for stack test-stack (us-east-1)'
       );
       await manager.releaseLock('test-stack', 'us-east-1');
       expect(deletes()).toHaveLength(0);
@@ -424,7 +424,7 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
 
       expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-        "Lost the lock for stack 'test-stack'"
+        'Lost the lock for stack test-stack (us-east-1)'
       );
       await manager.releaseLock('test-stack', 'us-east-1');
       expect(deletes()).toHaveLength(0);

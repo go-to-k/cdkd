@@ -100,7 +100,7 @@ async function runEvents(args: string[]): Promise<Streams> {
   return { stdout: out.join(''), stderr: err.join(''), error };
 }
 
-const MIGRATED_LINE = "Migrated state for stack 'TestStack' to region-scoped layout (us-east-1)";
+const MIGRATED_LINE = 'Migrated state for stack TestStack to region-scoped layout (us-east-1)';
 const DEBUG_LINE = 'probing state bucket for TestStack';
 
 const INDEX_KEY = 'cdkd/TestStack/us-east-1/deployments/index.json';
