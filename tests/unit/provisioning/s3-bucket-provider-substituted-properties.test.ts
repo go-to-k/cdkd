@@ -166,6 +166,12 @@ const recordedInventoryItem = (destination: Record<string, unknown>) => ({
 /** A valid, previously-applied inventory item — the UPDATE path's previous side. */
 const LIVE_INVENTORY = inventoryItem({ BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' });
 
+// The flag the rollback revert arms set. A warn-and-substitute / warn-and-skip
+// read is a state-borne update's arm since issue #3740 (a template-path update
+// refuses the same malformed value before any call), so the UPDATE rows that
+// drive one pass it.
+const STATE_REPLAY = { replayingState: true } as const;
+
 describe('UPDATE: analytics OutputSchemaVersion records the SUBSTITUTED value', () => {
   for (const value of MALFORMED) {
     it(`records V_1, the value actually sent (${JSON.stringify(value)})`, async () => {
@@ -175,10 +181,14 @@ describe('UPDATE: analytics OutputSchemaVersion records the SUBSTITUTED value', 
       });
       const properties = { BucketName: BUCKET, AnalyticsConfigurations: [desired] };
 
-      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-        BucketName: BUCKET,
-        AnalyticsConfigurations: [LIVE_ANALYTICS],
-      });
+      const result = await provider.update(
+        'B',
+        BUCKET,
+        RESOURCE_TYPE,
+        properties,
+        { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS] },
+        STATE_REPLAY
+      );
 
       // The Put REALLY went out — this is a substitution, not a skip, and the
       // whole defect only exists because the deploy succeeds.
@@ -229,11 +239,18 @@ describe('UPDATE: analytics OutputSchemaVersion records the SUBSTITUTED value', 
       InventoryConfigurations: [LIVE_INVENTORY],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-      InventoryConfigurations: [LIVE_INVENTORY],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      {
+        BucketName: BUCKET,
+        AnalyticsConfigurations: [LIVE_ANALYTICS],
+        InventoryConfigurations: [LIVE_INVENTORY],
+      },
+      STATE_REPLAY
+    );
 
     // Position preserved (DiffCalculator compares arrays positionally, so a
     // reordered effective array manufactures a fresh phantom drift), the
@@ -264,10 +281,14 @@ describe('UPDATE: analytics OutputSchemaVersion records the SUBSTITUTED value', 
     };
     const snapshot = JSON.stringify(properties);
 
-    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-    });
+    await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS] },
+      STATE_REPLAY
+    );
 
     // The engine and `DiffCalculator` still read this object. Narrowing it in
     // place would silently rewrite the TEMPLATE side of the next comparison —
@@ -288,10 +309,14 @@ describe('UPDATE: the destination records in the FLATTENED CFn spelling (#1707)'
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS] },
+      STATE_REPLAY
+    );
 
     const recordedDest = at(
       result.effectiveProperties?.['AnalyticsConfigurations'],
@@ -322,10 +347,14 @@ describe('UPDATE: the destination records in the FLATTENED CFn spelling (#1707)'
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, InventoryConfigurations: [LIVE_INVENTORY] },
+      STATE_REPLAY
+    );
 
     const sent = sentCommands(PutBucketInventoryConfigurationCommand);
     expect(sent).toHaveLength(1);
@@ -380,7 +409,8 @@ describe('UPDATE: the SDK destination spellings are no longer read (#3602)', () 
         BUCKET,
         RESOURCE_TYPE,
         { BucketName: BUCKET, ...desired },
-        { BucketName: BUCKET, ...previous }
+        { BucketName: BUCKET, ...previous },
+        STATE_REPLAY
       );
 
       expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
@@ -406,10 +436,14 @@ describe('UPDATE: two substitutions in ONE item are both recorded', () => {
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS] },
+      STATE_REPLAY
+    );
 
     // The second substitution must build on the first, not replace it: an
     // implementation that rebuilds from the DECLARED item each time records
@@ -437,10 +471,14 @@ describe('UPDATE: a SUBSTITUTED item and a SKIPPED item coexist', () => {
       AnalyticsConfigurations: [substituting, skipping],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS, liveA2],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS, liveA2] },
+      STATE_REPLAY
+    );
 
     // The two arms mean opposite things and must not be collapsed: the applied
     // item records what was SENT, the skipped one records what AWS still HOLDS.
@@ -570,10 +608,14 @@ describe('inventory ScheduleFrequency: the FALL-THROUGH is a substitution too', 
     };
     const properties = { BucketName: BUCKET, InventoryConfigurations: [desired] };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, InventoryConfigurations: [LIVE_INVENTORY] },
+      STATE_REPLAY
+    );
 
     // The item was APPLIED — this arm falls through to the second source rather
     // than skipping — and `Daily` is what went on the wire...
@@ -644,10 +686,14 @@ describe('inventory ScheduleFrequency: the FALL-THROUGH is a substitution too', 
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, InventoryConfigurations: [LIVE_INVENTORY] },
+      STATE_REPLAY
+    );
 
     // Nothing was sent, so the effective entry is what AWS still HOLDS — the
     // skip arm, not the substitute arm. Recording the fall-through value here
@@ -684,10 +730,14 @@ describe('round trip: effective record vs readCurrentState', () => {
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      AnalyticsConfigurations: [LIVE_ANALYTICS],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, AnalyticsConfigurations: [LIVE_ANALYTICS] },
+      STATE_REPLAY
+    );
     const recorded = result.effectiveProperties!;
 
     // AWS now holds exactly what was PUT. Echo it back through the List API.
@@ -1126,10 +1176,14 @@ describe('#1718 the sibling per-item appliers', () => {
       Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      IntelligentTieringConfigurations: [live],
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET, IntelligentTieringConfigurations: [live] },
+      STATE_REPLAY
+    );
 
     // The row's own title is "skips the item", so assert the SKIP directly
     // rather than only its consequence (review of #1718): no Put went out, and
@@ -1572,10 +1626,14 @@ describe('issue #1751: a declared but unusable inventory Enabled', () => {
         InventoryConfigurations: [inventoryWithEnabled(value)],
       };
 
-      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-        BucketName: BUCKET,
-        InventoryConfigurations: [LIVE_INVENTORY],
-      });
+      const result = await provider.update(
+        'B',
+        BUCKET,
+        RESOURCE_TYPE,
+        properties,
+        { BucketName: BUCKET, InventoryConfigurations: [LIVE_INVENTORY] },
+        STATE_REPLAY
+      );
 
       // Nothing went on the wire for this item...
       expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);

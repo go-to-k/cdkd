@@ -22,6 +22,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -148,13 +149,19 @@ export class LambdaUrlProvider implements ResourceProvider {
 
   /**
    * Update a Lambda Function URL
+   *
+   * `context` is read for the ORIGIN of the desired bag only
+   * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
+   * malformed `AuthType` refuses (a template-path update) or warns (a rollback
+   * revert or `cdkd drift --revert`) — issue #3740.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Lambda URL ${logicalId}: ${physicalId}`);
 
@@ -186,12 +193,18 @@ export class LambdaUrlProvider implements ResourceProvider {
     // (issue #1493). The #1490 sweep of this idiom keyed on the `as string`
     // cast and so missed this typed-cast spelling.
     //
-    // The refusal is DOWNGRADED to a warning here (issue #1551), unlike the
-    // create-path site: `rollback-executor.ts` replays a rollback via
+    // Split on the ORIGIN of the desired bag (issue #3740, the #3728 shape).
+    // On a TEMPLATE-path update the value is template-borne and `AuthType` is
+    // mutable in place, so the template is where it gets fixed: REFUSE, before
+    // the only call, as `create()` does. NOT gated on `AuthType` itself having
+    // changed: once the early return above is passed, `AuthType` goes out on
+    // the `UpdateFunctionUrlConfig` below, so it is always pending. The refusal
+    // is DOWNGRADED to a warning (issue #1551) only for the two state-borne
+    // callers: `rollback-executor.ts`'s revert arms (`replayingState`) replay
     // `update(..., previousState.properties, ...)` and `cdkd drift --revert`
-    // does the same, so this desired bag can be a historical cdkd STATE
-    // record the user cannot edit from the template. A hard refusal would
-    // make such a URL un-rollbackable.
+    // (`desiredFromAwsReadback`) does the same with a readback, so their bag
+    // is one the user cannot edit from the template. A hard refusal there
+    // would make such a URL un-rollbackable.
     //
     // The fallback is the PREVIOUS value, never the create default: warning
     // and then defaulting to `'NONE'` would silently flip a live IAM-guarded
@@ -202,21 +215,39 @@ export class LambdaUrlProvider implements ResourceProvider {
     // same live-probed behavior the `InvokeMode` / `Cors` handling below
     // relies on), so the live auth type is retained rather than reset.
     let authTypeUnusable = false;
-    const requestedAuthType = requireConfigString(
-      properties['AuthType'],
-      'NONE',
-      'AWS::Lambda::Url AuthType',
-      {
-        onUnusable: (message) => {
-          authTypeUnusable = true;
-          this.logger.warn(
-            `${message} The function URL's existing auth type is kept for this ` +
-              `update rather than reset to the default (NONE), which would make ` +
-              `the URL public.`
-          );
-        },
-      }
-    ) as FunctionUrlAuthType;
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    let requestedAuthType: FunctionUrlAuthType;
+    try {
+      requestedAuthType = requireConfigString(
+        properties['AuthType'],
+        'NONE',
+        'AWS::Lambda::Url AuthType',
+        stateBorneDesired
+          ? {
+              onUnusable: (message) => {
+                authTypeUnusable = true;
+                this.logger.warn(
+                  `${message} The function URL's existing auth type is kept for this ` +
+                    `update rather than reset to the default (NONE), which would make ` +
+                    `the URL public.`
+                );
+              },
+            }
+          : {}
+      ) as FunctionUrlAuthType;
+    } catch (error) {
+      // Outside the `try` below, so the refusal is not re-labelled as an AWS
+      // update failure.
+      throw new ProvisioningError(
+        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+          `Lambda URL ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
     const previousAuthType = previousProperties['AuthType'];
     const authType = authTypeUnusable
       ? typeof previousAuthType === 'string' && previousAuthType.trim() !== ''

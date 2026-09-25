@@ -158,11 +158,15 @@ const ipProtocol = requireConfigString(
 // UPDATE-path sites WARN instead of throwing when the desired bag is a state
 // record (a rollback revert or `cdkd drift --revert`) — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards):
 // a refusal there can leave the resource un-rollbackable with no template-side
-// remedy. A template-path update may refuse the same value before any call.
-// (This IAM example still warns on every caller; issue #3740 tracks it.)
-const status = requireConfigString(properties['Status'], 'Active', 'AWS::IAM::AccessKey Status', {
-  onUnusable: (message) => this.logger.warn(message),
-});
+// remedy. A template-path update refuses the same value, before any call.
+const stateBorneDesired =
+  context?.replayingState === true || context?.desiredFromAwsReadback === true;
+const status = requireConfigString(
+  properties['Status'],
+  previousStatus,
+  'AWS::IAM::AccessKey Status',
+  stateBorneDesired ? { onUnusable: (message) => this.logger.warn(message) } : {}
+);
 ```
 
 And check WHERE the read lives before guarding it: a helper the `delete()` or
@@ -224,11 +228,15 @@ implementation. Three details are worth copying:
     stated at the site (issue
     [#3728](https://github.com/go-to-k/cdkd/issues/3728)). Refuse BEFORE the
     first write: a throw from a mid-update arm strands whatever the earlier
-    arms applied (a read such as a hosted-zone lookup may precede it). Not
-    every arm follows this yet: the ones decided before #3141 gave the revert
-    arms a flag still warn on every caller — Glue's `DatabaseInput` and the
-    sites listed in [#3740](https://github.com/go-to-k/cdkd/issues/3740) —
-    and each says so at its site. On the warn path, **pick the FALLBACK per site** (issue
+    arms applied (a read such as a hosted-zone lookup may precede it). Where
+    the arm itself runs mid-update, ask its OWN predicate from a pre-flight
+    rather than restating it — S3's per-config appliers run on a probe whose
+    client writes nothing (issue
+    [#3740](https://github.com/go-to-k/cdkd/issues/3740)). Gate the refusal
+    on the value having changed wherever an unchanged one sends nothing. One
+    arm still warns on every caller, decided before #3141 gave the revert arms
+    a flag: Glue's `DatabaseInput` (#3740), which says so at its site. On the
+    warn path, **pick the FALLBACK per site** (issue
     [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
     applying the CREATE DEFAULT is frequently worse than the refusal was,
     because the default lands on a LIVE resource — it flipped an IAM-guarded

@@ -515,7 +515,8 @@ describe('issue #1748: lifecycle transition aliases', () => {
           ],
         },
       },
-      { BucketName: BUCKET, LifecycleConfiguration: previousLifecycle }
+      { BucketName: BUCKET, LifecycleConfiguration: previousLifecycle },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
@@ -1205,7 +1206,8 @@ describe('issue #1759: the notification EventBridge / empty-family residuals', (
           EventBridgeConfiguration: { EventBridgeEnabled: 'yes' },
         },
       },
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
@@ -1313,7 +1315,8 @@ describe('the declared-null and refusal arms of each fold', () => {
           EventBridgeConfiguration: { EventBridgeEnabled: null },
         },
       },
-      { BucketName: BUCKET }
+      { BucketName: BUCKET },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
@@ -1342,7 +1345,8 @@ describe('the declared-null and refusal arms of each fold', () => {
       BUCKET,
       RESOURCE_TYPE,
       { BucketName: BUCKET, NotificationConfiguration: { EventBridgeConfiguration: 'true' } },
-      { BucketName: BUCKET }
+      { BucketName: BUCKET },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);

@@ -1946,6 +1946,44 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       }
 
+      // A malformed DESIRED `BillingMode` is REFUSED on the template path
+      // (issue #3740, the #3728 shape), here — before the `DescribeTable` and
+      // the tag diff below — rather than at its read further down, which runs
+      // after the tag diff has landed. The value is template-borne and
+      // `BillingMode` is mutable in place, so the remedy is one template edit;
+      // the read's warn-and-keep-the-previous-mode arm stays for the two
+      // state-borne callers, whose bag the user cannot edit from the template.
+      // Gated on the value having CHANGED from the recorded one: an unchanged
+      // malformed value is not a pending operation (that arm keeps the mode it
+      // compared against, so no flip goes out for it), the same gate the
+      // `StreamSpecification` refusal above takes. Same read, key, fallback and
+      // path as that arm, so the two cannot disagree on a value.
+      if (
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true &&
+        properties['BillingMode'] !== undefined &&
+        JSON.stringify(properties['BillingMode']) !==
+          JSON.stringify(previousProperties['BillingMode'])
+      ) {
+        try {
+          requireConfigString(
+            properties['BillingMode'],
+            'PROVISIONED',
+            'AWS::DynamoDB::Table BillingMode'
+          );
+        } catch (error) {
+          throw new ProvisioningError(
+            `AWS::DynamoDB::Table ${logicalId}: ${
+              error instanceof Error ? error.message : String(error)
+            }. Nothing was applied to the table; fix the template value`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+      }
+
       // Get current table description for attributes (also gives us the
       // table ARN we need for tag mutations).
       const response = await this.dynamoDBClient.send(
@@ -2015,11 +2053,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
         normalizeTableClass(properties['TableClass']) !==
         normalizeTableClass(previousProperties['TableClass']);
       // Shape-guard the DESIRED BillingMode before the change detection
-      // (issue #1545). WARN, never throw: `rollback-executor.ts` replays a
+      // (issue #1545). WARN, never throw, HERE: `rollback-executor.ts` replays a
       // rollback via `provider.update(..., previousState.properties, ...)`,
       // so the desired bag here can itself be a historical state record — a
       // hard refusal would make the table un-rollbackable with no
-      // template-side remedy. An UNUSABLE desired value falls back to the
+      // template-side remedy. A template-path update carrying a CHANGED
+      // malformed value never gets here: the pre-flight at the top of this
+      // method refuses it before any call (issue #3740); what still reaches
+      // this arm on the template path is an unchanged recorded value, for which
+      // no flip is requested. An UNUSABLE desired value falls back to the
       // PREVIOUS billing mode, NOT the create-path default: defaulting would
       // make the change detection see a real flip and silently re-price a
       // live table, which is strictly worse than the pre-guard behavior (AWS

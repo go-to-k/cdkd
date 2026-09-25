@@ -1589,11 +1589,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    // Read for ONE thing today: `maskSecrets` (issue #1932 item 3, adopted here
-    // by issue #1997). The update path carries the same RESOLVED bag as
+    // Read for two things. `maskSecrets` (issue #1932 item 3, adopted here by
+    // issue #1997): the update path carries the same RESOLVED bag as
     // `create()`, so the masking requirement is identical on both — a masker on
     // one path and not the other is a fix with a hole in the shape of whichever
-    // path a given deploy takes.
+    // path a given deploy takes. And the ORIGIN of the desired bag
+    // (`replayingState` / `desiredFromAwsReadback`), which decides whether the
+    // template-path refusals below refuse or the warn arms downgrade.
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // ONE masked sink for every warning in this method (issue #1997), rather
@@ -1743,6 +1745,73 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         logicalId,
         physicalId
       );
+    }
+
+    // ─── Template-path refusals (issue #3740, the #3728 shape) ──────────
+    // Three DESIRED-side reads further down warn-and-skip a malformed value on
+    // EVERY caller: `BillingMode` (keeps the mode it compared against),
+    // `StreamSpecification` (leaves the live stream alone) and a non-array
+    // `GlobalSecondaryIndexes` (suppresses the whole GSI diff). Each runs after
+    // the tag diff, and the GSI one after the flat-field `UpdateTable` too, so
+    // a throw there would strand what was already applied. On a TEMPLATE-path
+    // update each value is template-borne and mutable in place, so it is
+    // REFUSED here, before the ACTIVE wait, the `DescribeTable` and every
+    // write. The two state-borne callers keep the warnings: the rollback
+    // executor's revert arms (`replayingState`) and `cdkd drift --revert`
+    // (`desiredFromAwsReadback`) hand a bag the user cannot edit from the
+    // template.
+    //
+    // Each is gated on the value having CHANGED from the recorded one: an
+    // unchanged malformed value is not a pending operation (the warn arms
+    // send nothing for it), so refusing it would fail a deploy that changes
+    // something else. Each asks the same predicate, key, fallback and path as
+    // its arm.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      const changed = (key: string): boolean =>
+        JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
+      const refuse = (refusal: string): never => {
+        throw new ProvisioningError(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
+            `applied to the table; fix the template value`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      };
+      let refusal: string | undefined;
+      if (properties['BillingMode'] !== undefined && changed('BillingMode')) {
+        try {
+          requireConfigString(
+            properties['BillingMode'],
+            'PAY_PER_REQUEST',
+            'AWS::DynamoDB::GlobalTable BillingMode'
+          );
+        } catch (error) {
+          // `requireConfigString` throws only its own plain `Error`.
+          refuse(describeAwsFailure(error).detail);
+        }
+      }
+      // `!deepEqual` is the StreamSpecification arm's own change test. A
+      // removal (the absent desired side) needs no gate of its own:
+      // `configStringRefusal` answers `undefined` for a nullish container.
+      if (
+        refusal === undefined &&
+        !deepEqual(properties['StreamSpecification'], previousProperties['StreamSpecification'])
+      ) {
+        refusal = configStringRefusal(
+          properties['StreamSpecification'],
+          'StreamViewType',
+          'NEW_AND_OLD_IMAGES',
+          'AWS::DynamoDB::GlobalTable StreamSpecification'
+        );
+      }
+      if (refusal === undefined && changed('GlobalSecondaryIndexes')) {
+        refusal = globalSecondaryIndexesShapeDetail(
+          properties['GlobalSecondaryIndexes'],
+          maskSecrets
+        );
+      }
+      if (refusal !== undefined) refuse(refusal);
     }
 
     // Resolve the client region ONCE for the whole update — the Tags
@@ -1986,6 +2055,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // An ABSENT value keeps defaulting to PAY_PER_REQUEST, because that IS a
       // genuine template-declared flip. Only the present-but-unusable case
       // suppresses it.
+      //
+      // Reached with a malformed value only by the state-borne callers, or by
+      // a template-path update whose value is UNCHANGED from the record: a
+      // changed one is refused before any call (issue #3740, the pre-flight
+      // above the ACTIVE wait).
       let billingUnusable = false;
       const requestedBilling = requireConfigString(
         properties['BillingMode'],
@@ -2079,7 +2153,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // here an empty desired list means "the template declares no GSIs", so
       // step 6's diff would DELETE every live index. `desiredGsiUnusable`
       // therefore suppresses the GSI diff entirely: the indexes are left
-      // exactly as they are (keep-previous), never dropped.
+      // exactly as they are (keep-previous), never dropped. On a template-path
+      // update this arm is reached only with an UNCHANGED malformed block: a
+      // changed one is refused before any call (issue #3740, the pre-flight
+      // above the ACTIVE wait, sharing `globalSecondaryIndexesShapeDetail`).
       // The two sides get DIFFERENT treatment, because only one of them can be
       // recovered from AWS.
       let desiredGsiUnusable = false;
@@ -2266,7 +2343,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // The refusal is DOWNGRADED to a warning (issue #1551) because a
         // rollback replay / `drift --revert` feeds a cdkd STATE record in as
         // the desired bag, which the user cannot edit — a throw here would
-        // strand the replay. The downgrade SKIPS the block entirely rather
+        // strand the replay. A template-path update never reaches it with a
+        // malformed block: this branch runs only on a change, and the
+        // pre-flight above the ACTIVE wait refuses a changed malformed block
+        // before any call (issue #3740). The downgrade SKIPS the block entirely rather
         // than sending the `NEW_AND_OLD_IMAGES` default: defaulting would
         // silently re-point a live stream's view type (and enable a stream
         // the template never asked to enable), which is the destructive
@@ -7512,6 +7592,27 @@ function pickAutoScalingCapacity(
  * written before this fix (and hand-authored templates) can carry them, and
  * silently re-deriving over an explicit value would be a regression.
  */
+/**
+ * The shape refusal for a present-but-NON-ARRAY `GlobalSecondaryIndexes`, or
+ * `undefined` when the value is absent or an array.
+ *
+ * ONE predicate for the two places that ask: {@link toSdkGlobalSecondaryIndexes}
+ * (which throws, or hands it to its replay downgrade) and `update()`'s
+ * template-path pre-flight (issue #3740), so the refusal cannot be narrower or
+ * wider than the downgrade it replaces on that path. The value is masked leaf
+ * by leaf BEFORE `JSON.stringify` escapes anything (issue #2178).
+ */
+export function globalSecondaryIndexesShapeDetail(
+  rawIndexes: unknown,
+  maskSecrets: MaskerFn = (text) => text
+): string | undefined {
+  if (rawIndexes === undefined || Array.isArray(rawIndexes)) return undefined;
+  return (
+    `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
+    `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`
+  );
+}
+
 export function toSdkGlobalSecondaryIndexes(
   properties: Record<string, unknown>,
   region: string,
@@ -7545,10 +7646,8 @@ export function toSdkGlobalSecondaryIndexes(
   // indexes", while on update it would mean "delete every live index", which
   // is why `update()` suppresses its GSI diff instead of applying the result.
   // Any call site that leaves the hook undefined keeps the refusal.
-  if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
-    const shapeDetail =
-      `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-      `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`;
+  const shapeDetail = globalSecondaryIndexesShapeDetail(rawIndexes, maskSecrets);
+  if (shapeDetail !== undefined) {
     if (onUnusableIndexes) {
       onUnusableIndexes(shapeDetail);
       return [];

@@ -107,15 +107,26 @@ const malformedLifecycle = (value: unknown) => ({
   Rules: [{ Id: 'r1', Status: value, ExpirationInDays: 30 }],
 });
 
+// The flag the rollback revert arms set. The warn-and-skip arms below are the
+// state-borne callers' only since issue #3740 (a template-path update refuses
+// the same malformed value before any call), so the UPDATE rows that drive one
+// pass it.
+const STATE_REPLAY = { replayingState: true } as const;
+
 describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
   for (const value of MALFORMED) {
     it(`lifecycle: retains the previously applied configuration (${JSON.stringify(value)})`, async () => {
       const properties = { BucketName: BUCKET, LifecycleConfiguration: malformedLifecycle(value) };
       const previousProperties = { BucketName: BUCKET, LifecycleConfiguration: liveLifecycle };
 
-      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-        ...previousProperties,
-      });
+      const result = await provider.update(
+        'B',
+        BUCKET,
+        RESOURCE_TYPE,
+        properties,
+        { ...previousProperties },
+        STATE_REPLAY
+      );
 
       // The Put really was skipped — otherwise there is nothing to record.
       expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
@@ -145,9 +156,14 @@ describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
     };
     const previousProperties = { BucketName: BUCKET, LifecycleConfiguration: liveLifecycle };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      ...previousProperties,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { ...previousProperties },
+      STATE_REPLAY
+    );
 
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
     expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(liveLifecycle);
@@ -156,9 +172,14 @@ describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
   it('lifecycle: an ABSENT previous value removes the key rather than recording undefined', async () => {
     const properties = { BucketName: BUCKET, LifecycleConfiguration: malformedLifecycle(1) };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET },
+      STATE_REPLAY
+    );
 
     expect(result.effectiveProperties).toBeDefined();
     // `in`, not a value compare: an explicit `undefined` survives a value
@@ -233,9 +254,14 @@ describe('UPDATE: a skipped PER-ITEM Put substitutes that item IN PLACE', () => 
       ],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      ...previousProperties,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { ...previousProperties },
+      STATE_REPLAY
+    );
 
     // The valid sibling DID apply — the Put is per-Id, so only the malformed
     // item is skipped.
@@ -262,9 +288,14 @@ describe('UPDATE: a skipped PER-ITEM Put substitutes that item IN PLACE', () => 
       IntelligentTieringConfigurations: [{ Id: 'good', Status: 'Disabled', Tierings: TIERINGS }],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      ...previousProperties,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { ...previousProperties },
+      STATE_REPLAY
+    );
 
     expect(result.effectiveProperties?.['IntelligentTieringConfigurations']).toEqual([
       { Id: 'good', Status: 'Enabled', Tierings: TIERINGS },
@@ -277,9 +308,14 @@ describe('UPDATE: a skipped PER-ITEM Put substitutes that item IN PLACE', () => 
       IntelligentTieringConfigurations: [{ Id: 'added', Status: 1, Tierings: TIERINGS }],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { BucketName: BUCKET },
+      STATE_REPLAY
+    );
 
     expect(result.effectiveProperties).toBeDefined();
     expect('IntelligentTieringConfigurations' in result.effectiveProperties!).toBe(false);
@@ -534,19 +570,17 @@ describe('UPDATE: every applier records under ITS OWN key (wiring fence)', () =>
         LifecycleConfiguration: UNSKIPPED_SIBLING,
       };
 
-      // The template path, except for the versioning / logging rows: their
-      // warn-and-skip is a state-borne caller's arm since issue #3728 (a
-      // template-path update refuses those values up front), so they run as a
-      // rollback revert replaying a record.
-      const stateBorneOnly =
-        site.key === 'VersioningConfiguration' || site.key === 'LoggingConfiguration';
+      // Every row's warn-and-skip is a state-borne caller's arm — the
+      // versioning / logging rows since issue #3728, the per-config appliers
+      // since issue #3740 (a template-path update refuses those values up
+      // front) — so each runs as a rollback revert replaying a record.
       const result = await provider.update(
         'B',
         BUCKET,
         RESOURCE_TYPE,
         properties,
         { ...previousProperties },
-        stateBorneOnly ? { replayingState: true } : undefined
+        STATE_REPLAY
       );
 
       expect(result.effectiveProperties).toBeDefined();
@@ -650,9 +684,14 @@ describe('a NUMERIC Id still records its skip (code review on PR #1660)', () => 
       IntelligentTieringConfigurations: [previousItem],
     };
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      ...previousProperties,
-    });
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      { ...previousProperties },
+      STATE_REPLAY
+    );
 
     expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
     expect(result.effectiveProperties?.['IntelligentTieringConfigurations']).toEqual([previousItem]);

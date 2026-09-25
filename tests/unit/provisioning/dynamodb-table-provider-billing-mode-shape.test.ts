@@ -266,7 +266,8 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
           TABLE_NAME,
           RESOURCE_TYPE,
           { ...baseProps, BillingMode: value },
-          { ...baseProps, BillingMode: 'PROVISIONED' }
+          { ...baseProps, BillingMode: 'PROVISIONED' },
+          { replayingState: true }
         )
       ).resolves.toBeDefined();
 
@@ -308,7 +309,8 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, BillingMode: '' },
-        { ...baseProps }
+        { ...baseProps },
+        { replayingState: true }
       )
     ).resolves.toBeDefined();
 
@@ -352,7 +354,8 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, BillingMode: '' },
-        { ...baseProps }
+        { ...baseProps },
+        { replayingState: true }
       )
     ).resolves.toBeDefined();
 
@@ -385,7 +388,8 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
         ...baseProps,
         BillingMode: 'PROVISIONED',
         ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
-      }
+      },
+      { replayingState: true }
     );
 
     const updates = billingUpdateCalls();
