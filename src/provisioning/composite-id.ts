@@ -19,24 +19,22 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * ## Why it has to be guarded
  *
  * The separator is NOT escaped, so a segment that itself contains a `|`
- * produces an id with the wrong arity. Every decode site splits the stored id
- * back apart and the extra segment shifts everything — for a Glue table named
- * `a|b` in database `mydb` the recorded id `mydb|a|b` decodes to database
- * `mydb`, table `a`. Both halves are non-empty, so every existing
- * "is this id well-formed?" guard passes and the deploy SUCCEEDS. What breaks
- * is everything afterwards: `cdkd destroy` deletes the WRONG resource if one
- * exists under the decoded pair (or warn-and-skips, reporting success while
- * the real resource stays alive and billing), and `cdkd drift` reads back
- * `undefined` forever.
+ * produces an id with the wrong arity. A decode site that splits the stored id
+ * back apart shifts every later segment — for `<a>|<b|c>` a bare split yields
+ * `(a, b)`. Both halves are non-empty, so every "is this id well-formed?" guard
+ * passes and the deploy SUCCEEDS. What breaks is everything afterwards:
+ * `cdkd destroy` deletes the WRONG resource if one exists under the decoded
+ * pair (or warn-and-skips, reporting success while the real resource stays
+ * alive and billing), and `cdkd drift` reads back `undefined` forever.
  *
- * AWS itself accepts such a name — verified live us-east-1 2026-08-12,
- * `glue:CreateTable` with `TableInput.Name: 'a|b'` succeeds — and
- * CloudFormation manages the resource fine. The limitation is cdkd's own, so
- * the honest answer is to REFUSE at deploy time with a message that says so,
- * rather than to record an id that silently names something else. Escaping the
- * separator, or dropping the packing where the decode sites already receive
- * the properties bag, are the two real fixes and both remain open on #1672;
- * this guard is what closes the data-loss path in the meantime.
+ * AWS itself can accept such a segment — `glue:CreateTable` with
+ * `TableInput.Name: 'a|b'` succeeds — and CloudFormation manages the resource
+ * fine. The limitation is cdkd's own, so the honest answer is to REFUSE at
+ * deploy time with a message that says so, rather than to record an id that
+ * silently names something else. `AWS::Glue::Table`'s decode sites now anchor
+ * on the recorded `DatabaseName` instead of splitting, but its `Ref`
+ * extraction still takes the last segment, so the refusal stays for it too.
+ * Escaping the separator is the general fix and remains open on #1672.
  *
  * ## Two entry points, mirroring `config-shape.ts`
  *

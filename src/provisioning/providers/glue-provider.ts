@@ -386,7 +386,11 @@ function logCatalogScopedDeleteSkip(
  */
 type TableIdentityResult =
   | { ok: true; databaseName: string; tableName: string }
-  /** A name contains `|`, cdkd's own separator — no id shape can represent it. */
+  /**
+   * A name contains `|`, cdkd's own separator. The decode sites could anchor
+   * such an id, but the `Ref` resolver takes its last segment, and an imported
+   * bag with an unresolved `DatabaseName` leaves no anchor at all.
+   */
   | { ok: false; reason: 'pipe-in-name' }
   /** An id was supplied but no usable `(database, table)` pair came out of it. */
   | { ok: false; reason: 'unpairable' }
