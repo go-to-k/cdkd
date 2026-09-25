@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
-import { invokeRie, waitForRieReady } from '../../../src/local/rie-client.js';
+import { invokeRie, invokeRieStreaming, waitForRieReady } from '../../../src/local/rie-client.js';
 
 let server: Server;
 let port: number;
@@ -141,9 +141,23 @@ describe('IPv6 container host', () => {
     expect(received).toBe(JSON.stringify({ hello: 'v6' }));
   });
 
-  it('names the host bracketed in the not-ready error', async () => {
+  it('invokeRieStreaming reaches a server bound to ::1', async () => {
+    const result = await invokeRieStreaming('::1', v6Port, { hello: 'v6s' }, 5000);
+    expect(received).toBe(JSON.stringify({ hello: 'v6s' }));
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.body) chunks.push(Buffer.from(chunk as Uint8Array));
+    expect(Buffer.concat(chunks).toString()).toContain('ipv6');
+  });
+
+  it('names the raw host in the not-ready error', async () => {
     await expect(waitForRieReady('::1', 1, 200)).rejects.toThrow(
-      /did not become ready on \[::1\]:1 /
+      /did not become ready on ::1 port 1 /
+    );
+  });
+
+  it('keeps the zone id the URL form drops in the not-ready error', async () => {
+    await expect(waitForRieReady('fe80::1%lo0', 1, 200)).rejects.toThrow(
+      /did not become ready on fe80::1%lo0 port 1 /
     );
   });
 });

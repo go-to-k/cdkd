@@ -83,7 +83,9 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
 
   const tail = lastError instanceof Error ? `: ${lastError.message}` : '';
   throw new Error(
-    `RIE did not become ready on ${formatAuthority(host, port)} within ${timeoutMs}ms${tail}. ` +
+    // Raw host, not formatAuthority: the URL form drops a zone id, and the
+    // diagnostic must name the value the user passed.
+    `RIE did not become ready on ${host} port ${port} within ${timeoutMs}ms${tail}. ` +
       `The container may have exited early — check 'docker logs' output.`
   );
 }
