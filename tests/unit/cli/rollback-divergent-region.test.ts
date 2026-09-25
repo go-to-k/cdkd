@@ -191,6 +191,8 @@ function install(opts: {
   bodyRegion: string;
   /** Body region of the record at the retry save's re-read; omitted = no retry. */
   rereadBodyRegion?: string;
+  /** A second, OLDER segment replayed after `segment`. */
+  olderSegment?: Record<string, unknown>;
 }) {
   const popRollbackJournalSegment = vi.fn().mockResolvedValue(0);
   const deleteState = vi.fn().mockResolvedValue(undefined);
@@ -222,7 +224,10 @@ function install(opts: {
         journalVersion: 1,
         stackName: STACK,
         region: KEY_REGION,
-        segments: [structuredClone(opts.segment)],
+        segments: [
+          ...(opts.olderSegment ? [structuredClone(opts.olderSegment)] : []),
+          structuredClone(opts.segment),
+        ],
       }),
       saveState,
       popRollbackJournalSegment,
@@ -323,9 +328,9 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
   beforeEach(() => vi.clearAllMocks());
 
   /**
-   * An initial-deploy segment with TWO rolled-back CREATEs, so the run could
-   * both keep replaying after the decline and, with the record emptied, reach
-   * the terminal `deleteState` — the two things declining the save must stop.
+   * An initial-deploy segment with TWO rolled-back CREATEs, so the record is
+   * emptied and the run would reach the terminal `deleteState` — which, with
+   * the pop, is what declining the save must stop.
    */
   const TWO_CREATES = {
     resources: {
@@ -341,15 +346,17 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     },
   };
 
-  it('declines the retry save, stops the replay, keeps the journal and the record, exits partial', async () => {
+  it('declines the retry save, keeps the journal and the record, exits partial', async () => {
     const h = install({ ...TWO_CREATES, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     // The re-read happened (so the case reached the site under test)...
     expect(h.getState).toHaveBeenCalledTimes(2);
     // ...and only the LOST first attempt was a save: nothing wrote over the rewrite.
     expect(h.saveState, 'the retry wrote the key region over a divergent rewrite').toHaveBeenCalledTimes(1);
-    // The replay stopped after the op whose save was declined.
-    expect(replayProvider.delete, 'the replay kept going after the decline').toHaveBeenCalledTimes(1);
+    // The segment in flight FINISHES: the flag is not an interrupt, which the
+    // executor would also hand to in-arm retries (and could strand a
+    // reverse-replacement between its delete and its re-create).
+    expect(replayProvider.delete).toHaveBeenCalledTimes(2);
     // The segment stays, so the re-run has something to replay and meets the refusal...
     expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
     // ...and the record the save declined to overwrite is not deleted either.
@@ -363,28 +370,28 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     expect((thrown as Error).message).not.toContain(BODY_REGION);
   });
 
-  it('stops the --revert-failed replay too, and the completed ops after it', async () => {
-    // Two failed CREATEs replayed before one completed CREATE: the decline on
-    // the first failed op's save must stop the second AND the completed op.
+  it('does not replay an OLDER segment after the decline', async () => {
+    // Two segments; the newest is replayed first and its save is declined.
+    // The older one must not run: its ops would act after the record was seen
+    // rewritten, and the journal must keep both for the re-run.
     const h = install({
       resources: {
         A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
         B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
-        C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
       },
       segment: {
-        failedOperations: [
-          { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
-          { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
-        ],
-        operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
+        operations: [{ logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' }],
+      },
+      olderSegment: {
+        operations: [{ logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' }],
       },
       bodyRegion: KEY_REGION,
       rereadBodyRegion: BODY_REGION,
     });
-    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
-    expect(replayProvider.delete, 'the replay kept going after the decline').toHaveBeenCalledTimes(1);
+    expect(replayProvider.delete, 'the older segment was replayed after the decline').toHaveBeenCalledTimes(1);
+    expect(replayProvider.delete.mock.calls[0]![0]).toBe('B');
     expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect((thrown as Error).message).toContain('Rollback stopped');
   });

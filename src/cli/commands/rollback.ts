@@ -528,11 +528,15 @@ export async function rollbackCommand(
     // killing the process with the just-written lock stranded.
     let interrupted = false;
     // Set when the retry save declined to write over a record rewritten mid-run
-    // with a divergent body region (go-to-k/cdkd#3370). It STOPS the run like an
-    // interrupt, and also keeps the segment unpopped — which is also what keeps
-    // `state.json` in place, since the terminal `deleteState` needs an empty
-    // journal. Popping would leave the re-run nothing to replay, and that delete
-    // would remove the very record this declined to overwrite.
+    // with a divergent body region (go-to-k/cdkd#3370). The segment in flight
+    // FINISHES — deliberately NOT routed through `isInterrupted`, which the
+    // executor also hands to in-arm retries, so a stop there can abort a
+    // delete-new-first reverse-replacement between its delete and its re-create
+    // and leave neither resource. Those ops act in the region the START-of-run
+    // record agreed with, so finishing is safe. What the flag stops is the
+    // pop — which also keeps the initial-deploy `deleteState` from removing
+    // the very record this declined to overwrite, since that needs an empty
+    // journal — and every older segment; the run then exits partial.
     let declinedDivergentRewrite = false;
     let declinedDivergentReason = '';
     const sigintHandler = () => {
@@ -719,6 +723,10 @@ export async function rollbackCommand(
       // every remaining op into a 412. `afterOp` therefore never throws.
       let currentEtag = stateData.etag;
       const saveState = async (): Promise<void> => {
+        // Once a save declined a divergent rewrite, no later op's save may land
+        // on that record either. Not left to the stale ETag alone: an explicit
+        // skip does not depend on the backend refusing the conditional write.
+        if (declinedDivergentRewrite) return;
         // `skippedOutputs` (issue #2740) is dropped rather than spread through,
         // as `cdkd import`, `cdkd drift --accept` and the orphan rewrite drop
         // it. Like `import`, this writer can ADD an attribute key: the
@@ -751,10 +759,9 @@ export async function rollbackCommand(
             // conditional write lost), and the rewrite carries a body region
             // that is not the key's (go-to-k/cdkd#3370). Saving `next()` over
             // it would stamp the KEY's region in — deciding the very question
-            // the start-of-run refusal declines to decide. Leave it, and stop:
-            // the flag halts the replay after this op, keeps the journal
-            // segment and the record, and exits partial; the throw lands in the
-            // warn below.
+            // the start-of-run refusal declines to decide. Leave it: the flag
+            // keeps the journal segment and the record and exits partial once
+            // this segment's replay returns; the throw lands in the warn below.
             if (fresh?.divergentBodyRegion !== undefined) {
               declinedDivergentRewrite = true;
               declinedDivergentReason = divergedDuringRollbackMessage(fresh.divergentBodyRegion);
@@ -823,7 +830,7 @@ export async function rollbackCommand(
                     ctx,
                     {
                       afterOp: saveState,
-                      isInterrupted: () => interrupted || declinedDivergentRewrite,
+                      isInterrupted: () => interrupted,
                       // Failed-only segment: replayRollback below returns
                       // early without the STARTED/FINISHED envelope, so the
                       // failed-op replay owns it (events symmetry). For a
@@ -884,7 +891,7 @@ export async function rollbackCommand(
                   {
                     orphanLogicalIds,
                     afterOp: saveState,
-                    isInterrupted: () => interrupted || declinedDivergentRewrite,
+                    isInterrupted: () => interrupted,
                     // Pushed from INSIDE the replay, not after it returns: the
                     // `afterOp` above saves per op, so a record appended only
                     // on return would be missing from every intermediate save
@@ -901,9 +908,8 @@ export async function rollbackCommand(
           );
           totalFailures += result.failures;
           totalWarnings += result.warnings;
-          // Before the interrupt check: the replay reports the stop the flag
-          // caused as an interrupt, and this must not be relabelled as one. And
-          // before the pop, which a clean last op would otherwise reach.
+          // Before the pop, and before the interrupt check so a Ctrl-C landing
+          // in the same segment does not relabel this stop.
           if (declinedDivergentRewrite) break;
           if (result.interrupted) {
             interrupted = true;
