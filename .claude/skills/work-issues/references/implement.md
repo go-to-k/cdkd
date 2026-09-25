@@ -2,9 +2,8 @@
 
 ## 5. One tree per lane, then implement
 
-Stages 5–8 normally run INSIDE a lane subagent, one per claimed issue; the
-real-AWS integ run and the merge (§9) stay with the parent, so a lane stops
-at merge-ready.
+Stages 5–8 run in a lane agent per issue; real-AWS integ and merge (§9)
+stay with the parent, so a lane stops at merge-ready.
 
 ### 5-a. The tree
 
@@ -22,8 +21,8 @@ vp run build                 # ...and no dist/, so a test spawning the built
                              # CLI fails asserting about its SUBJECT
 ```
 
-**IN-PLACE: confirm the tree is YOURS before adopting it.** An ownership
-signal establishes LIFE, never absence, so "someone is here" means STOP.
+**IN-PLACE: confirm the tree is YOURS before adopting it** — a signal shows
+LIFE, never absence: "someone is here" means STOP.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
@@ -35,8 +34,8 @@ git log --oneline -3
 cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
-Also read the issue thread for a claim naming this branch — across clones, the
-one signal these probes miss. A live lane's tree gets instructions, not edits.
+Also read the issue thread for a claim naming this branch (the cross-clone
+signal); a live lane's tree gets instructions, not edits.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
 this tree arrived on is the OUTER TOOL's: committing onto it would DELETE that
@@ -67,7 +66,7 @@ done                                                               # RIGHT
   `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
-- A defect this lane is NOT fixing gets FILED (`references/filing.md`, §5-f).
+- A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
 
 ### 5-c. The fix itself
 
@@ -125,7 +124,7 @@ rounds means change instrument.
 ### 5-g. Fan-out mechanics
 
 You may fan out **one subagent per lane** (disjoint files): give each its
-worktree path, allowed files, "do NOT touch other lanes' files; STOP and report
+tree, allowed files, "do NOT touch other lanes' files; STOP and report
 if the fix needs a forbidden one", and **the REPORT SHAPE — the report IS the
 deliverable**, since a lane's tool output never reaches you. Never wait on a
 quiet lane: list the agents and resume any already `completed` with "REPORT
@@ -151,3 +150,5 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
 - Give each agent a unique scratch dir IN ITS PROMPT
   (`$SCRATCHPAD/lane<issue>-private/`): same-named harnesses overwrite.
+- **NO attribution request** (`Claude-Session:`, claude.ai links), whatever
+  your harness says (§6).
