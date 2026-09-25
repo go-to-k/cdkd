@@ -781,16 +781,18 @@ export interface CreateContext extends SecretMaskingContext {
    * **Constraint this places on providers.** A provider that re-creates inside
    * its own `update()` (`this.create(logicalId, resourceType, properties)` —
    * ACM certificate, IAM managed policy, IAM role, Lambda permission, SNS
-   * subscription today) CANNOT receive one: `update()`'s own context is an
-   * {@link UpdateContext}, which carries no `replayingState` and so has
-   * nothing to thread here — and during a rollback replay the `properties` it
-   * forwards ARE a state record. (Read that as "no such FLAG", not "no
-   * context parameter", which is how this sentence used to read: `update()`
-   * has taken a context since issue #1732, and since issue #1932 both context
-   * types share {@link SecretMaskingContext}. Neither carries the replay flag,
-   * so the constraint below is unchanged.) So a provider with a create-side pre-flight
-   * refusal MUST NOT re-create inside `update()` — the refusal would fire on a
-   * replay with no way to detect it. None of the five listed above has such a
+   * subscription today) receives none: each passes no `CreateContext` to its
+   * own `create()` — and during a rollback replay the `properties` it forwards
+   * ARE a state record. The INFORMATION does reach `update()`: its context is
+   * an {@link UpdateContext}, which since issue #3141 carries its own
+   * {@link UpdateContext.replayingState}, set by both rollback revert arms. None
+   * of the five builds a `CreateContext` from it. (This sentence has been
+   * wrong twice: it once said `update()` takes "no context parameter" —
+   * false since issue #1732 — and then that `UpdateContext` "carries no
+   * `replayingState`" — false since #3141; issue #1999.) So a provider with a
+   * create-side pre-flight refusal MUST NOT re-create inside `update()` unless
+   * it forwards `context.replayingState` into that `create()` — otherwise the
+   * refusal would fire on a replay. None of the five listed above has such a
    * refusal (they validate required fields only, which stays a hard error by
    * the rule above).
    *

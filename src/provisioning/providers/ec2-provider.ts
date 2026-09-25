@@ -5641,9 +5641,10 @@ export class EC2Provider implements ResourceProvider {
    * narrowing here the template's extra keys read as an ADDED property on the
    * next deploy — and every destination key is create-only in the registry
    * schema, so the diff would classify a REPLACEMENT and the engine's
-   * replacement create (which passes no context, and so gets no
-   * `onMultipleDestinations` downgrade) would hit the #1566 refusal. A
-   * previously-green no-op deploy would start failing.
+   * replacement create (whose context carries a `maskSecrets` capability but
+   * never `replayingState`, and so gets no `onMultipleDestinations`
+   * downgrade) would hit the #1566 refusal. A previously-green no-op deploy
+   * would start failing.
    *
    * Shares `narrowRouteDestinations` with the provisioning path so the two
    * cannot disagree about which key survives.
@@ -5652,8 +5653,8 @@ export class EC2Provider implements ResourceProvider {
    * half for the same reason: `IpProtocol` is create-only on that type in the
    * registry schema, so normalizing state alone would make the template's
    * original value read as a changed immutable property — a REPLACEMENT, whose
-   * create passes no context and so gets no `onUnusable` downgrade, turning a
-   * previously-green no-op deploy into a hard failure. Normalizing BOTH sides
+   * create never sets `replayingState` and so gets no `onUnusable` downgrade,
+   * turning a previously-green no-op deploy into a hard failure. Normalizing BOTH sides
    * is also what keeps the fix correct for records written BEFORE it existed,
    * which still carry the un-narrowed value.
    */

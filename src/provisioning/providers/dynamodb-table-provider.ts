@@ -5818,21 +5818,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * which reads like the "loud failure for a quiet lie" trade the adopted-index
    * arm below forbids. It stands for three reasons:
    *
-   *  - The discriminator that EXISTS does not separate the callers that matter.
-   *    `ResourceProvider.update` DOES take an optional `UpdateContext` — an
-   *    earlier draft of this comment claimed the signature carries no context
-   *    at all, which is simply false (`s3-bucket-provider.ts` consumes it
-   *    today) — but its one field, `desiredFromAwsReadback`, is set ONLY by
-   *    `cdkd drift --revert` (`src/cli/commands/drift.ts`). The rollback
-   *    executor's revert arms deliberately pass NO context: their desired bag
-   *    is `previousState.properties`, a TEMPLATE recorded earlier, so they are
-   *    indistinguishable from an ordinary template deploy — and THAT is the
-   *    pair this decision turns on. Knowing the value came from a readback
-   *    would not license throwing on the other two.
-   *  - With the caller unknowable, the repo's rule for the UPDATE path is
-   *    WARN-never-throw (issues #1545 / #1552): the desired bag here can BE a
-   *    historical cdkd state record, and a refusal would make the table
-   *    un-updatable and un-rollbackable with no template-side remedy.
+   *  - When this was decided, no discriminator separated the callers that
+   *    matter. `ResourceProvider.update` takes an optional `UpdateContext`, and
+   *    `desiredFromAwsReadback` on it is set ONLY by `cdkd drift --revert`
+   *    (`src/cli/commands/drift.ts`). The rollback executor's revert arms DO
+   *    pass a context (a `maskSecrets` capability, issue #1932) but never set
+   *    that flag: their desired bag is `previousState.properties`, a TEMPLATE
+   *    recorded earlier. At the time they were therefore indistinguishable
+   *    from an ordinary template deploy — and THAT is the pair this decision
+   *    turns on. (An earlier revision said the revert arms "pass NO context",
+   *    which stopped being true with #1932 — issue #1999.) Since issue #3141
+   *    they ALSO set `UpdateContext.replayingState`, so the caller is now
+   *    knowable: the per-index `OnDemandThroughput` refusal in `update()` gates
+   *    on exactly that pair of flags (the go-to-k/cdkd#3401 review). This arm
+   *    was not re-decided when that became possible; splitting it the same way
+   *    would turn a template-path warn-skip into a refusal, a behaviour change
+   *    that needs its own review rather than a comment edit.
+   *  - The repo's general rule for the UPDATE path is WARN-never-throw (issues
+   *    #1545 / #1552): the desired bag here can BE a historical cdkd state
+   *    record, and a refusal would make the table un-updatable and
+   *    un-rollbackable with no template-side remedy.
    *  - The lie is bounded and self-surfacing. AWS never accepted `{0, 0}` at
    *    create either, so no live table can be holding it; and where the value
    *    would actually matter — a PROVISIONED table, whose indexes hold a real

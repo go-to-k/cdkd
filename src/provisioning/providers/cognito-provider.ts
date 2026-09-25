@@ -2322,16 +2322,20 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
     // The update-path twin of `create()`'s guard (issue #1925 item 2). The
-    // downgrade is UNCONDITIONAL here rather than gated on a replay context —
-    // and it stays that way now that `update()` DOES take a context (issue
-    // #1932 item 3 added one for `maskSecrets`). Nothing on `UpdateContext`
-    // distinguishes a template push from the state-borne bag `cdkd drift
-    // --revert` and the rollback executor's revert arm hand it:
-    // `desiredFromAwsReadback` is set by `drift --revert` ALONE and is
-    // deliberately NOT set by the rollback arms (see its own doc), so gating on
-    // it would re-introduce the refusal on exactly the rollback path — and a
-    // refusal against a historical state record leaves the resource not merely
-    // un-updatable but UN-ROLLBACKABLE, with no template-side remedy. Same
+    // downgrade is UNCONDITIONAL here rather than gated on a replay context.
+    // When it was written nothing on `UpdateContext` distinguished a template
+    // push from the state-borne bag `cdkd drift --revert` and the rollback
+    // executor's revert arm hand it: `desiredFromAwsReadback` is set by
+    // `drift --revert` ALONE and is deliberately NOT set by the rollback arms
+    // (see its own doc), so gating on it would re-introduce the refusal on
+    // exactly the rollback path — and a refusal against a historical state
+    // record leaves the resource not merely un-updatable but UN-ROLLBACKABLE,
+    // with no template-side remedy. Since issue #3141 the revert arms DO set
+    // `UpdateContext.replayingState`, so gating on BOTH flags is now possible
+    // (the per-index `OnDemandThroughput` refusal in
+    // `dynamodb-table-provider.ts` does exactly that); this site was not
+    // re-decided, and doing so would turn a template-path warning into a
+    // refusal — a behaviour change, not a comment edit (issue #1999). Same
     // shape as `IAMAccessKeyProvider`'s `Status` and
     // `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
     const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
