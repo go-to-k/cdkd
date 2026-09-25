@@ -28,7 +28,7 @@ npm view @go-to-k/cdkd version engines --json
 cdkd requires Node.js 22.12 or later. If the user asks to install it, prefer an explicit version so the action is reproducible:
 
 ```bash
-npm install --global @go-to-k/cdkd@<version>
+npm install --global @go-to-k/cdkd@'<version>'
 cdkd --version
 ```
 
@@ -43,7 +43,7 @@ Before any AWS-changing command:
 3. Verify the active identity explicitly:
 
    ```bash
-   AWS_PROFILE=<profile> AWS_REGION=<region> aws sts get-caller-identity
+   AWS_PROFILE='<profile>' AWS_REGION='<region>' aws sts get-caller-identity
    ```
 
 4. State the resolved account, region, stack, and intended operation before proceeding.
@@ -56,12 +56,12 @@ Keep these ownership rules:
 - Treat `cdkd import`, `cdkd export`, `cdkd orphan`, and `cdkd state orphan` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
 - Never edit the S3 state object by hand. Use cdkd state and recovery commands.
 
-To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan <stack/ConstructPath>` drops one resource from cdkd state (the AWS resource stays), and `cdkd state orphan <stack>` removes the whole stack's state record (all AWS resources stay). Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
+To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan '<stack/ConstructPath>'` drops one resource from cdkd state (the AWS resource stays), and `cdkd state orphan '<stack>'` removes the whole stack's state record (all AWS resources stay). Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
 
 For a proposed CloudFormation migration, read the deployed CloudFormation template and compare its logical IDs with the current synthesized template so local changes do not accidentally leave retained resources unmanaged. Preview resource matching with the non-migrating form:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd import <stack> --dry-run
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd import '<stack>' --dry-run
 ```
 
 `--migrate-from-cloudformation` itself is intentionally incompatible with `--dry-run`: it writes cdkd state, adds retain policies, and retires the CloudFormation stack record. Do not bootstrap, import, or migrate until the user approves that ownership-change plan.
@@ -91,7 +91,7 @@ Check [supported resources](https://github.com/go-to-k/cdkd/blob/main/docs/suppo
 For a new cdkd-managed stack, bootstrap cdkd once per target AWS account after the preflight checks:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd bootstrap
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd bootstrap
 ```
 
 This creates cdkd's S3 state storage and cdkd-owned asset storage. It does not replace or remove the normal CDK bootstrap resources. The current default state bucket is account-scoped; older region-suffixed buckets are handled as a legacy layout. Use a custom `--state-bucket` or `CDKD_STATE_BUCKET` only when the project has an intentional isolation or naming requirement.
@@ -101,8 +101,8 @@ This creates cdkd's S3 state storage and cdkd-owned asset storage. It does not r
 Use an explicit stack name when more than one stack exists or whenever ambiguity would be risky:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd diff <stack>
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack> --dry-run
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>'
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>' --dry-run
 ```
 
 Review the complete plan for replacements, deletions, IAM changes, unsupported properties, retained resources, and state-bucket selection. Do not hide confirmation prompts with `--yes` or force flags by default.
@@ -112,7 +112,7 @@ Review the complete plan for replacements, deletions, IAM changes, unsupported p
 For an ordinary development deployment:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack>
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>'
 ```
 
 Choose the wait mode from what happens after deployment:
@@ -124,7 +124,7 @@ Choose the wait mode from what happens after deployment:
 For example, a deploy followed by a website smoke test should use:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack> --full-wait
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>' --full-wait
 ```
 
 Do not report success solely because resources appeared in AWS. Require a zero command exit status and complete the relevant verification.
@@ -134,29 +134,29 @@ Do not report success solely because resources appeared in AWS. Require a zero c
 After deployment, inspect cdkd's state and recorded deployment events:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd state info
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd state show <stack> --stack-region <region>
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd events <stack> --stack-region <region>
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd state info
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd state show '<stack>' --stack-region '<region>'
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd events '<stack>' --stack-region '<region>'
 ```
 
 Also verify the stack outputs, the critical AWS resource state, and an application-level smoke test when applicable. Treat a non-zero exit as an unsuccessful command, but interpret it per command: exit `1` normally indicates failure, while `diff --fail` and `drift` also use it to report detected changes; exit `2` indicates partial failure for commands that support it. Inspect state and events, then follow the command-specific recovery guidance.
 
 For an interrupted or failed deployment:
 
-1. Read the original error and `cdkd events <stack>`.
-2. Inspect `cdkd state show <stack>` before retrying.
+1. Read the original error and `cdkd events '<stack>'`.
+2. Inspect `cdkd state show '<stack>'` before retrying.
 3. Re-run the same command when the failure is safely retryable.
-4. Use `cdkd rollback <stack>` for a failed `--no-rollback` or interrupted deployment when rollback is appropriate.
-5. Use `cdkd force-unlock <stack>` only after proving no deployment is still running.
+4. Use `cdkd rollback '<stack>'` for a failed `--no-rollback` or interrupted deployment when rollback is appropriate.
+5. Use `cdkd force-unlock '<stack>'` only after proving no deployment is still running.
 
 ## Detect and reconcile drift
 
-`cdkd drift <stack>` compares each managed resource's live AWS configuration against cdkd state (state-driven; no synth) and exits `1` when drift is detected. Reconcile in one of two explicit directions:
+`cdkd drift '<stack>'` compares each managed resource's live AWS configuration against cdkd state (state-driven; no synth) and exits `1` when drift is detected. Reconcile in one of two explicit directions:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack>            # detect only
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --accept   # state <- AWS (keep the live change)
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --revert   # AWS <- state (undo the live change)
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd drift '<stack>'           # detect only
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd drift '<stack>' --accept  # state <- AWS (keep the live change)
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd drift '<stack>' --revert  # AWS <- state (undo the live change)
 ```
 
 `--accept` and `--revert` are mutually exclusive; both honor `--dry-run`. `--revert` changes live AWS resources — treat it as a destructive operation (see below).
@@ -167,12 +167,12 @@ cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}
 
 That is a statement about what cdkd WRITES. The state bucket is versioned, so a scrub (explicit or implicit) SUPERSEDES a plaintext version an older binary already wrote rather than erasing it: the earlier body stays readable with `GetObject` and a `VersionId`, and cdkd does not purge it. A green `--dry-run --fail` gate therefore means the CURRENT object is clean and nothing more — treat any value ever persisted in plaintext as compromised and ROTATE it.
 
-`cdkd scrub <stack>` is the permanent state secret-hygiene command — clean and audit, not incident-only tooling. It synthesizes the app to learn which values are secrets, then rewrites the state record so each plaintext secret becomes its `{{resolve:...}}` expression, WITHOUT a redeploy. It mutates no AWS resource, but it is not read-only: a real run writes `state.json`, takes and releases the stack lock, and — for an export the stack owns whose indexed value has diverged from the `{{resolve:...}}` expression now in state — patches the region-wide cross-stack exports index (before that index repair shipped, a legacy plaintext could survive there as the CURRENT object while `--dry-run --fail` reported green). `--dry-run` writes none of them. Use it to clean state written by an older cdkd, and use `--dry-run --fail` as a STANDING CI gate that continuously asserts no plaintext secret lives in state (secrets landing in IaC state is a structural, recurring concern, so it is worth checking on every build rather than once).
+`cdkd scrub '<stack>'` is the permanent state secret-hygiene command — clean and audit, not incident-only tooling. It synthesizes the app to learn which values are secrets, then rewrites the state record so each plaintext secret becomes its `{{resolve:...}}` expression, WITHOUT a redeploy. It mutates no AWS resource, but it is not read-only: a real run writes `state.json`, takes and releases the stack lock, and — for an export the stack owns whose indexed value has diverged from the `{{resolve:...}}` expression now in state — patches the region-wide cross-stack exports index (before that index repair shipped, a legacy plaintext could survive there as the CURRENT object while `--dry-run --fail` reported green). `--dry-run` writes none of them. Use it to clean state written by an older cdkd, and use `--dry-run --fail` as a STANDING CI gate that continuously asserts no plaintext secret lives in state (secrets landing in IaC state is a structural, recurring concern, so it is worth checking on every build rather than once).
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack>              # scrub in place
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run    # report only, no write
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run --fail  # CI gate: exit 1 on any finding
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd scrub '<stack>'            # scrub in place
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd scrub '<stack>' --dry-run  # report only, no write
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd scrub '<stack>' --dry-run --fail  # CI gate: exit 1 on any finding
 ```
 
 `--fail` exits `1` for a finding scrub cannot REMEDY as well as for plaintext it
@@ -199,8 +199,8 @@ Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state re
 Content-addressed assets are deliberately kept on `cdkd destroy` (another stack or a future rollback may reference the same hash), so cdkd-owned asset storage grows over time. `cdkd gc` deletes only assets no state file references, one region per invocation, and never touches CDK's own bootstrap storage:
 
 ```bash
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd gc --dry-run   # print the reclaim plan first
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd gc             # delete after reviewing the plan
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd gc --dry-run  # print the reclaim plan first
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd gc            # delete after reviewing the plan
 ```
 
 Keep the default `--older-than 30d` age guard unless the user explicitly accepts a shorter window; it protects in-flight publishes and recent rollback targets.
@@ -224,10 +224,10 @@ cdkd's main CI use case is per-PR preview environments: deploy on PR open/sync, 
 - One stack per PR: pass the PR number as CDK context (`-c prNumber=...`) and suffix the stack name in the app. State is keyed by (stack name, region) and locks are per-stack, so PR environments deploy concurrently.
 - Credentials: have the workflow's OIDC base role hold ONLY `sts:AssumeRole` on a dedicated deploy role, switch into it with `--role-arn` / `CDKD_ROLE_ARN`, and pin the deploy role's trust policy to that base role. The deploy role needs direct permissions for every deployed resource — CDK's `cdk-hnb659fds-*` roles do not work with cdkd. Run `cdkd bootstrap` once per account beforehand.
 - Non-interactive exception: in a CI workflow, `--yes` on `deploy` / `destroy` / `state destroy` is the sanctioned confirmation mechanism — the approval happened when a human reviewed the workflow. The interactive-confirmation rules above still apply whenever a human is driving the session.
-- Destroy on PR close with `cdkd state destroy <stack> --yes`: it works from the state record alone (no checkout, `npm ci`, or synth — works even after the branch is deleted). When the environment contains protection-enabled resources (RDS / DynamoDB deletion protection, EC2 termination protection, and more), add `--remove-protection` so the teardown completes in one pass — appropriate for ephemeral PR environments; do not default it for long-lived stacks.
-- Resources with `DeletionPolicy: Snapshot` leave a final snapshot behind on every close by default; add `--skip-final-snapshot` ONLY when the user confirms the environment's data is disposable (it is an explicit data-loss opt-out). To leave an object listing of the state bucket empty, `cdkd destroy --purge-events` also deletes the event history (after a `state destroy`, use `cdkd events prune <stack> --all`); the bucket is versioned, so earlier versions of those keys survive and stay readable with a `VersionId`.
-- A cancelled mid-deploy job can leave a stack lock; it expires after its TTL (30 minutes), or clear it with `cdkd force-unlock <stack>`.
-- Housekeeping: sweep stale environments via `cdkd state list --json` on a schedule; reclaim unreferenced assets with `cdkd gc` outside deploy hours (it aborts while any stack is locked). Read outputs for PR comments with `cdkd state show <stack> --json`.
+- Destroy on PR close with `cdkd state destroy '<stack>' --yes`: it works from the state record alone (no checkout, `npm ci`, or synth — works even after the branch is deleted). When the environment contains protection-enabled resources (RDS / DynamoDB deletion protection, EC2 termination protection, and more), add `--remove-protection` so the teardown completes in one pass — appropriate for ephemeral PR environments; do not default it for long-lived stacks.
+- Resources with `DeletionPolicy: Snapshot` leave a final snapshot behind on every close by default; add `--skip-final-snapshot` ONLY when the user confirms the environment's data is disposable (it is an explicit data-loss opt-out). To leave an object listing of the state bucket empty, `cdkd destroy --purge-events` also deletes the event history (after a `state destroy`, use `cdkd events prune '<stack>' --all`); the bucket is versioned, so earlier versions of those keys survive and stay readable with a `VersionId`.
+- A cancelled mid-deploy job can leave a stack lock; it expires after its TTL (30 minutes), or clear it with `cdkd force-unlock '<stack>'`.
+- Housekeeping: sweep stale environments via `cdkd state list --json` on a schedule; reclaim unreferenced assets with `cdkd gc` outside deploy hours (it aborts while any stack is locked). Read outputs for PR comments with `cdkd state show '<stack>' --json`.
 
 See the [CI per-PR guide](https://cdkd.dev/ci-per-pr/) for a complete GitHub Actions example.
 
@@ -236,17 +236,17 @@ See the [CI per-PR guide](https://cdkd.dev/ci-per-pr/) for a complete GitHub Act
 `cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
 
 ```bash
-cdkd local invoke <function>       # one-shot Lambda invoke
-cdkd local start-api               # long-running local API Gateway
-cdkd local run-task <task>         # one-shot ECS task
-cdkd local start-service <service> # long-running ECS service emulator
+cdkd local invoke '<function>'        # one-shot Lambda invoke
+cdkd local start-api                  # long-running local API Gateway
+cdkd local run-task '<task>'          # one-shot ECS task
+cdkd local start-service '<service>'  # long-running ECS service emulator
 ```
 
 The most important choice is the environment source: `--from-state` or `--from-cfn-stack`. A workload whose environment variables reference other resources (`Ref` / `Fn::GetAtt` table names, queue URLs — the common case) runs with those variables dropped unless one of the two fills them with the REAL values of the already-deployed resources — the physical IDs and attributes of the tables, queues, and buckets actually running in the AWS account:
 
 ```bash
-cdkd local invoke <function> --from-state       # env vars <- the deployed resources' real values, when the stack was deployed with cdkd deploy
-cdkd local invoke <function> --from-cfn-stack   # env vars <- the deployed resources' real values, when the stack was deployed with cdk deploy
+cdkd local invoke '<function>' --from-state      # env vars <- the deployed resources' real values, when the stack was deployed with cdkd deploy
+cdkd local invoke '<function>' --from-cfn-stack  # env vars <- the deployed resources' real values, when the stack was deployed with cdk deploy
 ```
 
 `--from-state` and `--from-cfn-stack` are mutually exclusive — pick the one matching how the stack was deployed. Both make read-only AWS calls, so they need credentials; a plain local run without them does not.
@@ -262,17 +262,17 @@ Use the same verified profile, region, state bucket, and binary form throughout 
 ```bash
 cdkd bootstrap
 cdkd synth
-cdkd diff <stack>
-cdkd deploy <stack> --dry-run
-cdkd deploy <stack>
-cdkd deploy <stack> --full-wait
+cdkd diff '<stack>'
+cdkd deploy '<stack>' --dry-run
+cdkd deploy '<stack>'
+cdkd deploy '<stack>' --full-wait
 cdkd state info
-cdkd state show <stack> --stack-region <region>
-cdkd events <stack> --stack-region <region>
-cdkd drift <stack>
-cdkd scrub <stack>
+cdkd state show '<stack>' --stack-region '<region>'
+cdkd events '<stack>' --stack-region '<region>'
+cdkd drift '<stack>'
+cdkd scrub '<stack>'
 cdkd gc --dry-run
-cdkd destroy <stack>
+cdkd destroy '<stack>'
 ```
 
 Options such as `--app`, `--state-bucket`, and context values may come from CLI flags, environment variables, or `cdk.json`. Inspect the project instead of assuming defaults.

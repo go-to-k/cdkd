@@ -285,7 +285,7 @@ provisioning WAS clean, yet writes a rollback journal segment and rethrows.
 So a consumer deploy that ADDED an `Fn::ImportValue` and then failed persisted
 the consumer's new resources while recording no import for them. The producer's
 strong-ref pre-flight (`findActiveImportConsumers`) then found nothing and
-`cdkd destroy <producer>` proceeded -- deleting a producer whose consumer was
+`cdkd destroy '<producer>'` proceeded -- deleting a producer whose consumer was
 live and importing from it. Unlike the v3-to-v4 case above this never healed on
 its own, because nothing re-recorded the import until the consumer's next
 SUCCESSFUL deploy.

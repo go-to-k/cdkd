@@ -67,7 +67,7 @@ make a corrupt lock permanent.
 The cost is that **running it against a live deploy leaves two processes writing
 to the same stack**. Before running it, confirm the owner is really gone: the
 command prints the lock's owner and operation before deleting, and `cdkd events
-<stack>` shows whether a run is still emitting events.
+'<stack>'` shows whether a run is still emitting events.
 
 Confirm the *account*, too. The command re-resolves the state bucket from the
 ambient profile, so a shortened invocation — dropping the `--profile` or

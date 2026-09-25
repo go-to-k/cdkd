@@ -12,10 +12,10 @@ intact, just no longer tracked by cdkd). Mirrors aws-cdk-cli's
 
 Two `orphan` variants at different granularities:
 
-- `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
+- `cdkd orphan '<constructPath>'...` — synth-driven, **per-resource**.
   Rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub /
   dependencies) so the next deploy doesn't re-create the orphan.
-- `cdkd state orphan <stack>...` — state-driven, **whole-stack**.
+- `cdkd state orphan '<stack>'...` — state-driven, **whole-stack**.
   Removes the entire state record. Works without the CDK app.
 
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`

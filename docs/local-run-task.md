@@ -5,7 +5,7 @@ description: "Run one ECS task definition locally on a Docker network with the E
 
 # cdkd local run-task
 
-`cdkd local run-task <target>` takes an `AWS::ECS::TaskDefinition` out of a CDK
+`cdkd local run-task '<target>'` takes an `AWS::ECS::TaskDefinition` out of a CDK
 app and starts every one of its containers on your Docker host — no AWS deploy
 required. It is the ECS counterpart of [`cdkd local invoke`](local-invoke.md):
 one synchronous task run, each container's stdout/stderr streamed with a
@@ -212,7 +212,7 @@ that `cdkd deploy` publishes into once a bootstrap marker exists. A migrated
 stack's rewritten template and its `--from-state` state carry the latter, so both
 classify identically.
 
-Custom-named cdkd asset repositories (`cdkd bootstrap --container-repo <name>`)
+Custom-named cdkd asset repositories (`cdkd bootstrap --container-repo '<name>'`)
 are recognized under `--from-state`: cdkd lazily reads the region's bootstrap
 marker from the state bucket and treats the image as a CDK asset when its
 repository component matches the marker's `containerRepo`. Two caveats:

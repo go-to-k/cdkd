@@ -5,7 +5,7 @@ description: "Hand a cdkd-managed stack over to CloudFormation with cdkd export.
 
 # cdkd export
 
-`cdkd export <stack>` is the mirror of [`cdkd import`](import.md): it hands a
+`cdkd export '<stack>'` is the mirror of [`cdkd import`](import.md): it hands a
 cdkd-managed stack over to CloudFormation. It builds a CloudFormation
 `ChangeSetType=IMPORT` changeset from cdkd state plus the synthesized template,
 executes it, and deletes cdkd state on success. AWS resources are unchanged
@@ -108,7 +108,7 @@ the export reads `attributes` at exactly one position, the recorded identifier
 of the few types whose cdkd physical id is not CloudFormation's identifier. Only
 a mask at THAT position blocks, because it would become the resource's identity
 in the import changeset; re-deploying does not clear it (the import re-masks),
-so the remedy is `cdkd import <stack> --resource <logicalId>=<physicalId>
+so the remedy is `cdkd import '<stack>' --resource '<logicalId>=<physicalId>'
 --force` with `cloudformation:DescribeType` granted, or exporting without the
 resource. Whatever produced the identifier, a value equal to the mask is
 refused before the changeset is built.
@@ -364,7 +364,7 @@ Parameter `Default` must then cover it.
 
 On a per-stack failure, cdkd state is preserved for the failed stack and every
 stack not yet imported. The error names which stacks moved and which remain, so
-`cdkd export <parent>` can be re-run after the cause is fixed — already
+`cdkd export '<parent>'` can be re-run after the cause is fixed — already
 imported children are re-adopted as nested references on the retry.
 
 `--dry-run` prints the per-stack plan summary without acquiring child locks or
@@ -461,8 +461,8 @@ scan can run, and checking is up to you.
 cdkd warns when state lacks `observedProperties` for one or more resources.
 Without that baseline `cdkd drift` cannot reliably compare against AWS, so the
 first `cdk deploy` after the migration may surface unexpected changes if AWS
-has drifted from the synth template. Run `cdkd state refresh-observed <stack>`
-(or any redeploy) before exporting, then `cdkd drift <stack>` to verify. The
+has drifted from the synth template. Run `cdkd state refresh-observed '<stack>'`
+(or any redeploy) before exporting, then `cdkd drift '<stack>'` to verify. The
 warning is non-blocking by design — you decide whether to proceed.
 
 A `resources` **bag** that is not a JSON object — `null`, absent, a list, a
@@ -482,7 +482,7 @@ is refused earlier, by name, with the rest of the resources cdkd cannot import,
 and so is a nested stack whose row carries no type. Any other templated
 resource whose row is an object with a physical id but no type is planned from
 the template's type and still named here. The record is malformed either way;
-inspect it with `cdkd state show <stack> --stack-region <region> --json` before
+inspect it with `cdkd state show '<stack>' --stack-region '<region>' --json` before
 migrating.
 
 When the stack's records are unreadable in that way, the `refresh-observed`
@@ -517,7 +517,7 @@ one loaded; it changes nothing either way.
 
 Exporting a half-deployed state to CloudFormation is almost certainly
 unintended, which is why the journal case prompts on its own: run
-`cdkd rollback <stack>` to revert, or `cdkd deploy` to fix forward, first.
+`cdkd rollback '<stack>'` to revert, or `cdkd deploy` to fix forward, first.
 `--dry-run` never prompts.
 
 All three prompts are **interactive-only**. On a non-TTY stdin each refuses

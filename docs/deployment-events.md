@@ -20,7 +20,7 @@ the full ordered run history.
 
 ```bash
 cdkd events MyStack                    # list recorded runs, newest first
-cdkd events MyStack --run <id>         # one run's full ordered event stream
+cdkd events MyStack --run '<id>'       # one run's full ordered event stream
 cdkd events MyStack --format json      # machine-readable, for tooling
 cdkd events MyStack --stack-region us-east-1   # disambiguate a multi-region name
 cdkd events prune MyStack --yes        # keep the newest 20 runs, delete the rest
@@ -237,13 +237,13 @@ Two mechanisms keep the `deployments/` prefix from growing without bound:
 - **Explicit purge: `cdkd events prune`.** `cdkd destroy` deliberately keeps
   event history (post-mortem context), so an object listing of the state
   bucket is never empty after a destroy on its own.
-  `cdkd events prune <stack>` is the way to clear that listing — see
+  `cdkd events prune '<stack>'` is the way to clear that listing — see
   [Pruning event history](#pruning-event-history-cdkd-events-prune).
 - **Purge as part of destroy: `cdkd destroy --purge-events`.** Opts into
   deleting the stack's event history immediately after a *clean* destroy, so
   one command leaves the listing empty. Kept on a failed /
   interrupted destroy (those events aid the retry); equivalent for an
-  already-destroyed stack is `cdkd events prune <stack> --all`.
+  already-destroyed stack is `cdkd events prune '<stack>' --all`.
 
 Neither one reclaims the storage or removes the content, because the state
 bucket is versioned — see
@@ -266,7 +266,7 @@ Each run writes to its own unique `{runId}.jsonl` key, so there is no
 concurrent writer by construction. `index.json` is written with
 **last-writer-wins** (no optimistic locking) — it is a derived view; the
 per-run `.jsonl` files are the source of truth, and `cdkd events --run
-<id>` reads a run directly by id even if the index lost a race.
+'<id>'` reads a run directly by id even if the index lost a race.
 
 ## Reading events back: `cdkd events`
 
@@ -279,7 +279,7 @@ cdkd events MyStack --run 20260613T012345678Z-1a2b3c4d
 
 # Machine-readable JSON (for tooling / AI-agent hand-off)
 cdkd events MyStack --format json
-cdkd events MyStack --run <id> --format json
+cdkd events MyStack --run '<id>' --format json
 
 # Disambiguate a stack with event history in more than one region
 cdkd events MyStack --stack-region us-east-1

@@ -84,19 +84,19 @@ Two conventions apply throughout:
 ### Deploy
 
 ```bash
-cdkd list                           # the stacks in the CDK app
-cdkd synth                          # synthesize the CloudFormation template only
-cdkd deploy                         # single-stack auto-detected
-cdkd deploy MyStack                 # by name (or 'MyStage/Api' display path)
+cdkd list                            # the stacks in the CDK app
+cdkd synth                           # synthesize the CloudFormation template only
+cdkd deploy                          # single-stack auto-detected
+cdkd deploy MyStack                  # by name (or 'MyStage/Api' display path)
 cdkd deploy --all
-cdkd deploy --dry-run               # show the changes without applying them
-cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
-cdkd deploy --no-wait               # return early; AWS settles the slow resources
-cdkd deploy --full-wait             # also wait where the default does not (ECS steady state, CloudFront Deployed)
-cdkd publish-assets                 # synth + upload assets only, no deploy (typical CI split)
+cdkd deploy --dry-run                # show the changes without applying them
+cdkd deploy --no-rollback            # Terraform-style: keep partial state on failure
+cdkd deploy --no-wait                # return early; AWS settles the slow resources
+cdkd deploy --full-wait              # also wait where the default does not (ECS steady state, CloudFront Deployed)
+cdkd publish-assets                  # synth + upload assets only, no deploy (typical CI split)
 
-cdkd events MyStack                 # past deploy / destroy runs, newest first
-cdkd events MyStack --run <runId>   # one run's full event stream
+cdkd events MyStack                  # past deploy / destroy runs, newest first
+cdkd events MyStack --run '<runId>'  # one run's full event stream
 ```
 
 `--no-wait` / default / `--full-wait` are explained per resource type in
@@ -212,7 +212,7 @@ cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext rema
 See the **[CLI Reference](cli-reference.md)** for the full flag
 matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
 `--prefer-sdk-route`, `--role-arn`, etc.), per-command details
-including the synth-driven per-resource `cdkd orphan <constructPath>`
+including the synth-driven per-resource `cdkd orphan '<constructPath>'`
 variant, and stage / wildcard pattern matching.
 
 ## Which commands need the CDK app
@@ -250,7 +250,7 @@ A state bucket created by an earlier cdkd keeps its legacy region-suffixed name
 (`cdkd-state-{accountId}-{region}`) and is still picked up automatically, with a
 deprecation warning; `cdkd state migrate` consolidates it into the region-free
 `cdkd-state-{accountId}`. Explicit pre-provisioning is
-`cdkd bootstrap --region <r>`.
+`cdkd bootstrap --region '<r>'`.
 
 ## Next steps
 

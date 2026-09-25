@@ -33,7 +33,7 @@ stays consistent:
 The state record is updated to match, and the CLI exits non-zero.
 
 Pass `cdkd deploy --no-rollback` to skip the rollback (Terraform-style:
-the partial state is preserved so you can `cdkd state show <stack>`,
+the partial state is preserved so you can `cdkd state show '<stack>'`,
 inspect what landed, fix the underlying issue, and re-run `cdkd deploy`
 to continue from the half-deployed state). Recommended only when you
 plan to manually inspect / repair; the default is safer for CI.

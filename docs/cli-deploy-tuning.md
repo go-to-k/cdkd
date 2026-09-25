@@ -140,7 +140,7 @@ critical path does not wait on them, the cost is again bounded by the longest
 single readback, and it happens once — later deploys are unaffected.
 `--no-capture-observed-state` skips the backfill along with the regular capture.
 
-`cdkd state refresh-observed <stack>` is the manual equivalent, for refreshing
+`cdkd state refresh-observed '<stack>'` is the manual equivalent, for refreshing
 the baseline without deploying — useful for resources no upcoming deploy will
 touch.
 
