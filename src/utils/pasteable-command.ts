@@ -278,13 +278,20 @@ export interface PasteableCommand {
    * itself, and also when the caller asked for one — see `withheld` for the
    * narrower question of what the GATE refused.
    *
-   * **Every caller in `src/` prints the hole.** The field exists for the
+   * **Every caller in `src/` prints the hole, bar the one exception recorded
+   * below.** The field exists for the
    * SENTENCE around it — a message that wants to say why it could not name the
    * record — not as a licence to suppress the command at one site and print it
    * at another. Per-site judgement about what is safe *here* is what kept
    * re-introducing this defect (M5 of the go-to-k/cdkd#3499 review), and the
    * fold-in of the older builders should land on that answer rather than
-   * re-open the choice. The two older builders that
+   * re-open the choice. The exception is `reportDriftBaselineGaps`
+   * (`cli/commands/export.ts`), which reads this field to SUPPRESS
+   * `cdkd state refresh-observed` rather than print a hole (M3 of the
+   * go-to-k/cdkd#3764 review): that command locks a record and rewrites its
+   * baseline, so a hole filled from the prose beside it could rewrite a
+   * different stack's, and the site renders its sentence from `withheld`. Its
+   * `cdkd state show` line, a read, prints the hole. The two older builders that
    * made that choice by hand — `buildForceUnlockCommand` and the `cdkd orphan`
    * properties refusal in `state/malformed-resources-bag.ts` — still carry
    * their own copies of this logic and do NOT consume this field yet; folding
