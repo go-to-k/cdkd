@@ -84,7 +84,12 @@
  * follow-up PR.
  */
 
-import { displaySafe, STACK_REF_MAX_CODE_POINTS, truncateCodePoints } from './display-safe.js';
+import {
+  displaySafe,
+  isPasteableIdent,
+  STACK_REF_MAX_CODE_POINTS,
+  truncateCodePoints,
+} from './display-safe.js';
 
 /**
  * Quote a value for a pasteable shell command.
@@ -165,6 +170,21 @@ export interface ValueGateOptions {
    * never named.
    */
   readonly patternMatched?: boolean;
+  /**
+   * True when the command sits BESIDE a labelled line — the shape
+   * `.claude/rules/state-malformed-containers.md` (go-to-k/cdkd#3328) governs —
+   * so the value is ALSO held to `isPasteableIdent`, and refused as
+   * `'not-plain'` when that predicate refuses it. Exactness keeps a space and
+   * a `:`, so `Prod<60 spaces>Migrate with: cdkd destroy --all --force #`
+   * passes every other arm and is NAMED, shell-quoted; once the terminal wraps
+   * that quoted argument, a screen row reads `Migrate with: cdkd destroy --all
+   * --force #'`, and the `#` comments out the stray quote — measured by the
+   * maintainer (M17 of the go-to-k/cdkd#3613 review): `bash -c "echo cdkd
+   * destroy --all --force #'"` prints the command at rc=0. The identity line
+   * beside such a command already took the rule; this is the command's half,
+   * so ONE predicate decides both lines.
+   */
+  readonly plainIdent?: boolean;
 }
 
 /**
@@ -198,7 +218,15 @@ export type WithholdReason =
    */
   | 'option-shaped'
   /** `*` or `/` where the command matches PATTERNS rather than names. */
-  | 'pattern-shaped';
+  | 'pattern-shaped'
+  /**
+   * Refused by `isPasteableIdent` under `plainIdent`, where the command sits
+   * beside a labelled line. LAST in the order on purpose: the predicate is
+   * strictly stronger than every other arm, so placed earlier it would take
+   * their sentences and say "not a plain identifier" of `--all`, which has a
+   * more specific true reason.
+   */
+  | 'not-plain';
 
 /** One value the command could not name, and why. */
 export interface WithheldValue {
@@ -269,7 +297,9 @@ export function rendersExactly(value: string): boolean {
  * WHY a value must become a hole, or `undefined` when it may be NAMED.
  *
  * FIRST MATCH WINS, in the order written: `empty`, `altered`, `too-long`,
- * `option-shaped`, `pattern-shaped` (m21 of the go-to-k/cdkd#3499 review). A
+ * `option-shaped`, `pattern-shaped`, `not-plain` (m21 of the go-to-k/cdkd#3499
+ * review; the sixth is M17 of go-to-k/cdkd#3613's, and sits last because it
+ * subsumes the other five — see its member note). A
  * value can satisfy several — `-\u001b[x` is both option-shaped and altered —
  * and the caller renders ONE sentence, so the order decides which. It runs
  * cheapest-and-most-fundamental first: a value that does not survive rendering
@@ -296,6 +326,7 @@ function withholdReason(
   if (opts?.patternMatched === true && (value.includes('*') || value.includes('/'))) {
     return 'pattern-shaped';
   }
+  if (opts?.plainIdent === true && !isPasteableIdent(value)) return 'not-plain';
   return undefined;
 }
 
@@ -361,11 +392,16 @@ export function pasteableCommand(
  * WHICH reasons are reachable is the CALLER's question, not this function's,
  * and every arm is answered here because the gate can return any of them. For
  * a name that comes from an S3 key segment — `state refresh-observed`'s legacy
- * refusal and `drift`'s — three of the five are reachable and two are bounded
+ * refusal and `drift`'s — four of the six are reachable and two are bounded
  * out by the key itself:
  *
  * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
  *   planted key can spell a name any of those ways in a handful of bytes.
+ * - `not-plain` is reachable only from a caller passing `plainIdent` —
+ *   `drift`'s site does (M17 of the go-to-k/cdkd#3613 review), `state.ts`'s
+ *   three do not yet (go-to-k/cdkd#3696) — and there it is the reason for
+ *   every name the five arms above admit but `isPasteableIdent` refuses:
+ *   `$(printf INJECTED)`, or a padded name spelling a labelled line.
  * - `empty` is not. `listStacks` drops a key whose stack segment is empty
  *   (`s3-state-backend.ts`'s `if (!stackName) continue`), so `target.stackName`
  *   is non-empty by the time the refusal is built.
@@ -404,11 +440,12 @@ export function withheldTargetClause(
   // the message stays well-formed. Taking the name as an ARGUMENT is what
   // keeps the two spellings from drifting apart across MODULES, now that two
   // files render this clause. `state-refresh-observed.test.ts` pins the
-  // PAIRING per REASON — not per
-  // case: each of the five reasons has at least one case asserting both the
-  // hole in the command and the sentence about it, so a lookup that stopped
-  // matching cannot leave the suite green. (The hostile-name loop asserts the
-  // hole alone; it is about the gate, not about the sentence.)
+  // PAIRING per REASON — not per case: each of the five reasons that site
+  // can return has at least one case asserting both the hole in the command
+  // and the sentence about it, so a lookup that stopped matching cannot leave
+  // the suite green; `drift.test.ts` pins the sixth, `not-plain`, which only
+  // a `plainIdent` caller reaches. (The hostile-name loop asserts the hole
+  // alone; it is about the gate, not about the sentence.)
   const reason = built.withheld.find((w) => w.hole === hole)?.reason;
   if (reason === undefined) return '';
   // A `switch` with a `never` default, not a ternary chain with a catch-all
@@ -437,6 +474,15 @@ export function withheldTargetClause(
       break;
     case 'pattern-shaped':
       why = `would be read as a PATTERN by '${verb}', which can match other stacks`;
+      break;
+    case 'not-plain':
+      // The clause names the SHAPE the operator can check by eye, because the
+      // command line beside it shows a hole and nothing else: no line of this
+      // message prints the name, so the sentence is the only place the reader
+      // learns what disqualified it.
+      why =
+        `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' ` +
+        `or '-'), so once the terminal wraps it could read as a labelled line of this message`;
       break;
     default: {
       // `throw`, not `return _exhaustive` (m25 of the go-to-k/cdkd#3499

@@ -5139,30 +5139,31 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
 
     // A key carrying a command substitution: the SENTENCE may never carry it,
     // since a phrase is what an operator pastes by selecting it
-    // (go-to-k/cdkd#3436's shape). The labelled line carries it shell-quoted.
+    // (go-to-k/cdkd#3436's shape). Nor, since M17, does the labelled line.
     errorSpy.mockReset();
     mockListStacks.mockResolvedValueOnce([{ stackName: '$(printf INJECTED)' }]);
     await runDrift(['--all']);
     const substitution = errorSpy.mock.calls.flat().join('\n');
     expect(substitution).toContain('a legacy one with no region');
-    // Two gates, two verdicts, on purpose. The COMMAND names it, shell-quoted:
-    // `$(printf INJECTED)` renders exactly and is neither option- nor
-    // pattern-shaped, and inside `'...'` the substitution is a literal. The
-    // IDENTITY line does NOT (M16 of the go-to-k/cdkd#3613 review): it sits
-    // beside a labelled command, so it takes `isPasteableIdent`, which admits
-    // neither `$` nor `(`. An earlier version of this case asserted a
-    // `Stack:` line here.
-    expect(substitution).toMatch(/^Migrate with: cdkd deploy '\$\(printf INJECTED\)'$/m);
+    // ONE predicate, one verdict (M17 of the go-to-k/cdkd#3613 review). Under
+    // M16 the identity line took `isPasteableIdent` while the command still
+    // took the gate alone, which NAMED this value shell-quoted -- two gates,
+    // two verdicts, and the command line was left as the carrier for a padded
+    // name spelling a labelled line (the case below). The command takes the
+    // same predicate now through `plainIdent`, so `$(printf INJECTED)` is a
+    // hole here, with the gate's own reason beside it.
+    expect(substitution).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(substitution).not.toMatch(/^Stack: /m);
-    expect(substitution.split('\n')[0]).not.toContain('printf INJECTED');
-    // The fallback sentence is scoped to the LINE that is absent, because the
-    // name itself IS printed one line below. An earlier wording said "the
-    // stack name is not printed here" directly above a command printing it
-    // (round-62 proxy finding), and nothing asserted the sentence at all --
-    // replacing it with '' left this case green. Now it is pinned.
+    expect(substitution).not.toContain('printf INJECTED');
     expect(substitution).toContain(
-      'No Stack: line is printed for this record: that line sits beside a pasteable command'
+      `This record's name is not a plain identifier (a letter or digit, then letters, digits, ` +
+        `'~', '_', '.' or '-'), so once the terminal wraps it could read as a labelled line of ` +
+        `this message — so it is not named in the command below`
     );
+    // The catch-all that used to print for exactly this input -- a name the
+    // command named but the identity withheld -- has no input left and is
+    // gone; both retired wordings are pinned absent.
+    expect(substitution).not.toContain('No Stack: line is printed for this record');
     expect(substitution).not.toContain('The stack name is not printed here');
 
     // And the PATTERN half, which only this site asks for: `cdkd deploy` reads
@@ -5208,11 +5209,11 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     expect(message).toContain(
       `This record's name does NOT render exactly, so another record may render identically`
     );
-    // And the CURRENT fallback is absent too, not only the retired wordings.
-    // Round-64 proxy finding: with `clause === ''` mutated to `true` both the
-    // `No Stack:` fallback and the specific clause printed, and every
-    // assertion here still passed because they excluded only old sentences.
-    // This is the one that pins the suppression itself.
+    // And no fallback beside it. A round-64 proxy finding pinned the
+    // suppression of the `No Stack:` catch-all here; since M17 that sentence
+    // has no input at all (identity and clause key on ONE predicate, so
+    // exactly one prints) and is deleted, and the exclusion stays as a
+    // retired-wording pin.
     expect(message).not.toContain('No Stack: line is printed for this record');
     expect(message).not.toContain('The stack name is not printed here');
     expect(message).not.toContain('it does not render exactly, is empty or is too long');
@@ -5223,10 +5224,10 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // -- sanitizing changes nothing -- so under the old `rendersExactly` gate
     // it got a `Stack:` line, shell-quoted. Once the terminal wraps, the
     // padding pushes `Migrate with: cdkd destroy --all --force #*` onto a line
-    // of its own, and that forged row is the only RUNNABLE one, because the
-    // `*` turns the real command into a hole. `isPasteableIdent` admits no
-    // space, so the identity is withheld and the forged label never reaches
-    // the terminal on any line.
+    // of its own. `isPasteableIdent` admits no space, so the identity is
+    // withheld. This fixture's `*` ALSO makes the command gate withhold it
+    // (pattern-shaped), which is why it could not see M17: the `*`-free
+    // sibling below is the one the command line carried.
     errorSpy.mockReset();
     // The padding is INTERIOR, after a plain prefix. Leading spaces are
     // trimmed by `displaySafe`, which makes the name `altered` and lets the
@@ -5245,11 +5246,54 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     expect(forged).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(forged).toContain('would be read as a PATTERN');
 
+    // M17: the same forgery WITHOUT the `*`. Exact, no leading `-`, no pattern
+    // character -- the command gate alone NAMES it, and the maintainer
+    // measured what that prints: `Migrate with: cdkd deploy 'Prod<60 spaces>
+    // Migrate with: cdkd destroy --all --force #'`, which a terminal wraps
+    // into a row reading `Migrate with: cdkd destroy --all --force #'`, where
+    // the `#` comments out the stray quote and bash runs the command at rc=0.
+    // With `plainIdent` on the command, the same predicate that withholds the
+    // `Stack:` line withholds the command's value, and the clause names it.
+    errorSpy.mockReset();
+    const plainForging = `Prod${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+    mockListStacks.mockResolvedValueOnce([{ stackName: plainForging }]);
+    await runDrift(['--all']);
+    const plainForged = errorSpy.mock.calls.flat().join('\n');
+    expect(plainForged).toContain('a legacy one with no region');
+    expect(plainForged).not.toMatch(/^Stack: /m);
+    expect(plainForged).not.toContain('cdkd destroy');
+    expect(plainForged).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(plainForged).toContain('is not a plain identifier');
+    // And no row of the message, wrapped at any width, starts a forged label:
+    // the name is on NO line, so there is nothing for the terminal to fold.
+    expect(plainForged).not.toContain('Migrate with: cdkd destroy');
+
+    // SPACE-FREE, at the site: the proxy pass measured that a mutant refusing
+    // on `includes(' ')` instead of `isPasteableIdent` left every site-1
+    // fixture green, since each padded forgery carries spaces. `Old;Stack` is
+    // the `;` name go-to-k/cdkd#3307's plan asked to still EMIT, shell-quoted
+    // -- superseded: it renders exactly and the command gate alone NAMED it,
+    // and it is withheld at both lines now, with the identity line's own
+    // predicate as the reason. The `'` sibling is the paste case below.
+    errorSpy.mockReset();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'Old;Stack' }]);
+    await runDrift(['--all']);
+    const semicolon = errorSpy.mock.calls.flat().join('\n');
+    expect(semicolon).toContain('a legacy one with no region');
+    expect(semicolon).not.toMatch(/^Stack: /m);
+    expect(semicolon).not.toContain('Old;Stack');
+    expect(semicolon).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(semicolon).toContain('is not a plain identifier');
+
     // `/^b/m`, not `/^b$/m`: the forged second line would be `b'` — the closing
     // shell quote rides with it — so the anchored form cannot fail under this
     // code or under the natural mutant, and was dead (round 5, optional).
     expect(message).not.toMatch(/^b/m);
-    // ...and the command is withheld too: both gates refuse it (the command's for the alteration, the identity's stricter `isPasteableIdent` for the same reason and more -- the substitution fixture above is where the two DIVERGE).
+    // ...and the command is withheld too, for the ALTERATION, which is first
+    // in the gate's order. (Since M17 the two never diverge: the command takes
+    // `isPasteableIdent` as well, through `plainIdent`, so the substitution
+    // fixture above is a hole on both lines rather than the divergence an
+    // earlier version of this comment called it.)
     // The command line prints with a hole; what must never appear is the NAME.
     expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(message).not.toMatch(/cdkd deploy 'a/);
@@ -5261,7 +5305,17 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
     // SENTENCE is pasted, and whole-line pasting alone is vacuous because an
     // unbalanced `(` makes bash run nothing. Sentences and clauses are what an
     // operator selects.
-    mockListStacks.mockResolvedValueOnce([{ stackName: '$(touch OWNED)' }]);
+    // `'` as well as `$( )`: the apostrophe is the other name
+    // go-to-k/cdkd#3307's plan asked to still emit. It is WITHHELD before the
+    // loop below runs -- exact, no leading `-`, no `*` or `/`, so the
+    // `not-plain` arm is what refuses it (proxy pass on the round-3 fixes; the
+    // space-free pin is the `Old;Stack` case above) -- so the loop pastes the
+    // FIXED message, never the value. What that buys is a check that the
+    // message's own text (the clause's quoted `'~'`, `'_'` and apostrophes,
+    // the `'<stack>'` hole) runs nothing when a sentence or clause of it is
+    // selected; shape 3 of `pasteable-command.ts`'s header, a value in prose,
+    // is not reachable here any more because no value reaches the prose.
+    mockListStacks.mockResolvedValueOnce([{ stackName: "Prod'$(touch OWNED)" }]);
     await runDrift(['--all']);
     const message = errorSpy.mock.calls.flat().join('\n');
     const segments = new Set<string>();
@@ -5273,16 +5327,21 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
       }
     }
     expect(segments.size).toBeGreaterThan(3);
-    // The segment COUNT does not prove the key was rendered: a withheld
-    // message yields more than three segments and no sentinel either, so this
-    // case would pass vacuously if site 1 ever stopped naming the key
-    // (m5 of the go-to-k/cdkd#3486 review).
-    expect(message).toContain("'$(touch OWNED)'");
+    // The segment COUNT does not prove the refusal was rendered, so pin the
+    // arm (m5 of the go-to-k/cdkd#3486 review). This control used to assert
+    // the key was NAMED, shell-quoted, on the command line; since M17 of the
+    // go-to-k/cdkd#3613 review site 1 names only a plain identifier, so what
+    // it pins now is the hole, the reason, and the key's absence from every
+    // line.
+    expect(message).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(message).toContain('is not a plain identifier');
+    expect(message).not.toContain('touch OWNED');
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-drift-paste-'));
     try {
-      // The POSITIVE control first: the same payload UNQUOTED does create the
-      // sentinel here, so a harness that cannot start bash — or a directory
-      // check that never sees anything — fails loudly rather than passing.
+      // The POSITIVE control first: the fixture's `$(touch OWNED)` payload,
+      // bare, does create the sentinel here, so a harness that cannot start
+      // bash — or a directory check that never sees anything — fails loudly
+      // rather than passing.
       const control = spawnSync('bash', ['-c', 'cdkd() { :; }; Stack: $(touch OWNED)'], {
         cwd: dir,
         encoding: 'utf8',

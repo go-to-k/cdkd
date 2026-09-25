@@ -403,6 +403,19 @@ describe('pasteable-command shape fence — it does not report everything', () =
       expect(bad.status, `${seam}=lots did not exit 2: ${bad.stdout}${bad.stderr}`).toBe(2);
       expect(bad.stderr).toContain(`${seam}=lots`);
     }
+    // And the EMPTY value, on one seam: `Number('')` is `0`, finite, so the
+    // finite check alone accepted `FLOOR=` and silently zeroed that floor
+    // (round-3 optional on the go-to-k/cdkd#3613 review). One seam suffices
+    // because the three share `floorFor`; the loop above is what pins that
+    // each seam consults it at all.
+    const empty = spawnSync(process.execPath, [script], {
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+      cwd: REPO_ROOT,
+      env: { ...process.env, CDKD_PASTEABLE_FLOOR_FILES: '' },
+    });
+    expect(empty.status, `an empty floor seam did not exit 2: ${empty.stdout}${empty.stderr}`).toBe(2);
+    expect(empty.stderr).toContain('CDKD_PASTEABLE_FLOOR_FILES= is not a number');
   }, 240_000);
 
   it('actually COMPARES each probe verdict, not merely runs the probes', () => {

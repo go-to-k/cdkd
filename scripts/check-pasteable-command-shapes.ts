@@ -1565,7 +1565,11 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   const floorFor = (env: string, fallback: number): number | undefined => {
     const raw = process.env[env];
     if (raw === undefined) return fallback;
-    const parsed = Number(raw);
+    // `Number('')` is `0`, finite, so an EMPTY seam value -- `FLOOR=` with
+    // nothing after it, the shell's ordinary way of unsetting the wrong thing
+    // -- would silently zero that floor (round-3 optional on the
+    // go-to-k/cdkd#3613 review). Refused with the non-numeric ones.
+    const parsed = raw === '' ? Number.NaN : Number(raw);
     if (!Number.isFinite(parsed)) {
       process.stderr.write(`check-pasteable-command-shapes: ${env}=${raw} is not a number\n`);
       return undefined;

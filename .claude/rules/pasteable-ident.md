@@ -63,12 +63,15 @@ rule. `state-file-keys.ts` RE-EXPORTS the name, so no existing caller moved.
 So it is the repo's answer for a PASTEABLE value generally rather than for a
 state-key segment specifically — `PASTEABLE_STATE_IDENT`'s name is narrower
 than its job. **Derive the callers before tightening either half rather than
-reading a number here**, which has gone stale twice: `grep -rn isPasteableIdent
-src/` returns five call sites at this writing — `gc.ts`, `local-start-api.ts`,
-`deploy-engine.ts`, `malformed-resources-bag.ts`'s two
-`mayNameTarget*` predicates, and `drift.ts`'s `mayNameTarget`
-(go-to-k/cdkd#3307) — spanning four layers, one of them a deploy-path error
-message. Only the first two are inside this file's `paths:` glob, for the same
+reading a number here**, which has gone stale three times: `grep -rn
+isPasteableIdent src/` returns, at this writing, `gc.ts`, `local-start-api.ts`,
+`deploy-engine.ts`, `export.ts`'s `importRepairCommand`,
+`malformed-resources-bag.ts`'s two `mayNameTarget*` predicates, `drift.ts`'s
+`mayNameTarget` and `stackIdentityLine` (go-to-k/cdkd#3307), and
+`pasteable-command.ts`'s `plainIdent` arm, through which a COMMAND beside a
+labelled line takes the same rule as the line (go-to-k/cdkd#3613 M17) —
+spanning four layers, one of them a deploy-path error message. Only the first
+two are inside this file's `paths:` glob, for the same
 budget reason the `src/deployment/` note above records, so the glob is NOT the
 caller list. Its cap is
 `STACK_REF_MAX_CODE_POINTS`, looser than a profile name needs and harmless,

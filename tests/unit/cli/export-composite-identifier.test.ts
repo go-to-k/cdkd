@@ -1215,6 +1215,43 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).toContain(`Repair with: cdkd import '<stack>' --resource`);
   });
 
+  it('renders the logical id in the PROSE through displayIdent, so a newline cannot forge a Repair with: row', async () => {
+    // M18 of the go-to-k/cdkd#3613 review. The sentence `for '<logicalId>'`
+    // predates this PR and printed the raw key; what is new is the labelled
+    // `Repair with:` line the message now ends in, which a key spelled
+    // `Tbl\nRepair with: cdkd destroy --all --force #` could imitate one row
+    // ABOVE the genuine one. This is prose, not a command, so `displayIdent`'s
+    // JSON quoting -- wrong inside the command line (M0) -- is right here: the
+    // newline is folded and the id is quoted, so the forged label never
+    // starts a line.
+    const forging = 'Tbl\nRepair with: cdkd destroy --all --force #';
+    const state = stateWith({
+      [forging]: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: SECRET_MASK },
+      },
+    });
+    const template = {
+      Resources: { [forging]: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    const reason = plan.blocked[0]!.reason;
+    // Positive control: the arm under test fired.
+    expect(reason).toMatch(/redaction mask/);
+    // Exactly ONE `Repair with:` row, and it is the genuine `cdkd import`.
+    expect(reason.match(/^Repair with:/gm)).toHaveLength(1);
+    expect(reason).toMatch(/^Repair with: cdkd import '<stack>' --resource '<logicalId>'/m);
+    expect(reason).not.toMatch(/^Repair with: cdkd destroy/m);
+    // The id is still SHOWN, in the prose, rendered: quoted, with the newline
+    // folded to a space -- so the operator can find the record, and no line
+    // of the message starts with what the key spelled.
+    expect(reason).toContain('for "Tbl Repair with: cdkd destroy --all --force #",');
+    expect(reason).not.toContain("for 'Tbl");
+  });
+
   it('WITHHOLDS a logical id carrying `=`, which would retarget --force', async () => {
     // M9 of the go-to-k/cdkd#3613 review, and an ARGUMENT-grammar defect rather
     // than a shell one: `cdkd import` splits `--resource` on the FIRST `=`, so

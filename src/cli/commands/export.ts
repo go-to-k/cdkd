@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
   STACK_REF_MAX_CODE_POINTS,
+  displayIdent,
   displaySafe,
   isPasteableIdent,
   truncateCodePoints,
@@ -2200,8 +2201,17 @@ async function resolveIdentifierValue(
  * today and would never stop being blocked by a re-import.
  */
 function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
+  // `displayIdent` in the PROSE (M18 of the go-to-k/cdkd#3613 review): this
+  // sentence is not a command, so the rendering that was wrong inside the
+  // `Repair with:` line (M0) is right here -- it folds a newline to a space
+  // and quotes the result, so a state key spelled `X\nRepair with: cdkd
+  // destroy --all --force #` cannot start a forged `Repair with:` row ABOVE
+  // the genuine one this message now ends in (measured: it renders as
+  // `"X Repair with: cdkd destroy --all --force #"`, mid-sentence). The
+  // sentence predates this PR; the labelled line it can imitate does not.
   return (
-    `cdkd state holds only the redaction mask ('***') at attributes.${field} for '${logicalId}', ` +
+    `cdkd state holds only the redaction mask ('***') at attributes.${field} for ` +
+    `${displayIdent(logicalId)}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
     `import identifier (${field}); nothing masked may reach the exported template, since ` +
     `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +

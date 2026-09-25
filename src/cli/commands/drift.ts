@@ -1049,41 +1049,42 @@ async function driftCommand(
         // (m19 of the go-to-k/cdkd#3486 review, which could only restate the
         // rule). `withheld` carries the REASON, so the clause says the true
         // one and cannot be keyed on a different predicate than the hole.
+        // `plainIdent` as well as `patternMatched` (M17 of the go-to-k/cdkd#3613
+        // review): this command sits beside a labelled line, so its value is
+        // held to `isPasteableIdent` -- the same predicate `stackIdentityLine`
+        // takes -- and not to the command gate alone. The command gate NAMES
+        // any exactly-rendering, non-option, non-pattern value, which admits
+        // `Prod<60 spaces>Migrate with: cdkd destroy --all --force #`; wrapped
+        // by the terminal, the shell-quoted argument yields a screen row that
+        // reads as a `Migrate with:` line whose `#` comments out the stray
+        // closing quote (measured by the maintainer, rc=0). One predicate at
+        // both lines means one verdict: a name is printed on BOTH or on
+        // NEITHER.
         const migrate = pasteableCommand('cdkd deploy', [
-          { value: ref.stackName, hole: 'stack', opts: { patternMatched: true } },
+          {
+            value: ref.stackName,
+            hole: 'stack',
+            opts: { patternMatched: true, plainIdent: true },
+          },
         ]);
         const identity = stackIdentityLine(ref.stackName);
-        // Bound ONCE (M13 of the go-to-k/cdkd#3613 review): the earlier form
-        // called `withheldTargetClause` twice, and printed the old catch-all
-        // sentence ("fails at least one of those") AND the precise clause when
-        // both the identity and the command were withheld. The clause names the
-        // true reason; the catch-all named a disjunction three quarters false.
-        // So the catch-all prints only when there is NO clause to print.
         const clause = withheldTargetClause(migrate, 'stack', 'cdkd deploy');
         throw new Error(
           `A state record for this stack is a legacy one with no region, which drift cannot ` +
             `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
             `detection after it.` +
-            (identity !== undefined
-              ? `\n${identity}`
-              : clause === ''
-                ? // Scoped to the IDENTITY LINE, not to the name (round-62
-                  // proxy finding): for `$(printf INJECTED)` the command below
-                  // NAMES the value, shell-quoted, while this line withholds
-                  // it under the stricter `isPasteableIdent` -- so "the stack
-                  // name is not printed here" was false one line above where
-                  // it was printed. The sentence now says which LINE is
-                  // absent and why, and the command speaks for itself.
-                  `\nNo Stack: line is printed for this record: that line sits beside a ` +
-                  `pasteable command, so it names only a plain identifier, and this name is ` +
-                  `not one.`
-                : '') +
-            // The clause opens with a space, for `state.ts`'s site where it
-            // continues a sentence. Here it follows the `Stack:` LINE, so it
-            // needs its own — without it the reason ran on from the identity
-            // and `^Stack: --all$` stopped matching, which is how this was
-            // caught.
-            (clause === '' ? '' : `\n${clause.trimStart()}`) +
+            // Exactly ONE of the two prints. `identity` is defined iff
+            // `isPasteableIdent` admits the name; `clause` is non-empty iff
+            // the gate refused it, and with `plainIdent` set the gate refuses
+            // exactly what `isPasteableIdent` refuses (every other arm is
+            // subsumed by it). So the catch-all sentence an earlier revision
+            // printed for a name the command named but the identity withheld
+            // has no input left, and is gone. The clause opens with a space
+            // for `state.ts`'s site, where it continues a sentence; here it
+            // is a line of its own between the explanation and the command
+            // (M19: an earlier comment justified the newline by a `Stack:`
+            // line it followed, which since M16 cannot print beside it).
+            `\n${identity ?? clause.trimStart()}` +
             `\nMigrate with: ${migrate.command}`
         );
       }
@@ -7366,15 +7367,18 @@ function formatScalar(value: unknown): string {
  * carrying a newline printed ABOVE one forges a second labelled line that the
  * operator has every reason to trust.
  *
- * A STRICTER gate than the command's, not the same one — M16 of the
+ * `isPasteableIdent`, not the command gate's exactness — M16 of the
  * go-to-k/cdkd#3613 review. The command gate answers the shell: a `$(...)`
- * name is named, shell-quoted, because inside `'...'` the substitution is a
- * literal. This line answers what an operator READS: it sits beside a labelled
- * command, so it takes `isPasteableIdent` per `state-malformed-containers.md`
- * (go-to-k/cdkd#3328), which refuses the space and the `:` exactness keeps —
- * the characters a name uses to spell a fake `Migrate with:` row once the
- * terminal wraps. So `$(printf INJECTED)` is named by the command and
- * withheld here, on purpose, and the test pins both halves.
+ * name is inert inside `'...'`. This line answers what an operator READS: it
+ * sits beside a labelled command, so it takes `isPasteableIdent` per
+ * `state-malformed-containers.md` (go-to-k/cdkd#3328), which refuses the
+ * space and the `:` exactness keeps — the characters a name uses to spell a
+ * fake `Migrate with:` row once the terminal wraps. Since M17 the COMMAND
+ * beside this line takes the same predicate (`pasteableCommand`'s
+ * `plainIdent`), so `$(printf INJECTED)` is withheld from BOTH — an earlier
+ * version of this comment recorded it as named by the command and withheld
+ * here, which was true between M16 and M17 and left the command line as the
+ * forgery's carrier.
  *
  * USED BY SITE 1 ALONE, deliberately. Sites 2–4 also print labelled commands
  * now (through `mayNameTarget`, `isPasteableIdent` on both identifiers), but
@@ -7401,13 +7405,16 @@ function stackIdentityLine(
   // review). This line sits BESIDE a labelled command line, and that is the
   // shape `.claude/rules/state-malformed-containers.md` (go-to-k/cdkd#3328)
   // governs: exactness keeps a SPACE and a `:`, so a name such as
-  // `<padding>Migrate with: cdkd destroy --all --force #*` renders exactly,
-  // wraps into a fake `Migrate with:` row once the terminal folds it, and that
-  // row is the only RUNNABLE one -- the `*` turns the real command into a
-  // hole. Sites 2-4 already took the rule as `mayNameTarget`; site 1 is
-  // go-to-k/cdkd#3307's own, and this PR closes that issue, so it takes it
-  // here. A refused name prints no `Stack:` line at all, and the withheld
-  // clause beside the command says why.
+  // `Prod<60 spaces>Migrate with: cdkd destroy --all --force #` renders
+  // exactly and wraps into a fake `Migrate with:` row once the terminal folds
+  // it -- a row whose `#` comments out whatever closing quote rides after it,
+  // so it RUNS as pasted (M17: an earlier example here ended in `*`, which
+  // made the command gate withhold it too and hid that the command line was
+  // the forgery's second carrier). The COMMAND beside this line takes the same
+  // predicate through `pasteableCommand`'s `plainIdent` option, so the two
+  // lines never disagree: a refused name prints no `Stack:` line and a hole
+  // in the command, and the withheld clause says why. Sites 2-4 took the rule
+  // as `mayNameTarget`; site 1 is go-to-k/cdkd#3307's own.
   return isPasteableIdent(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
 }
 
