@@ -54,9 +54,11 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 ```
 
 - **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
-  never fires. Poll `gh pr checks <N> --json state` (`--watch` returns at once
-  when no check has APPEARED) and require that checks EXIST. **PUSH FIRST, then
-  run the post-rebase suite while CI drains.**
+  never fires. Poll `gh pr checks <N> --json name,state` (`--watch` returns at
+  once when no check has APPEARED) and require that checks EXIST. It has no sha
+  field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
+  poll, so a loop reading non-zero as pending outlives a green CI (the
+  go-to-k/cdkd#3512 lane). **PUSH FIRST, then run the post-rebase suite while CI drains.**
 - **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
   infers it from the CWD, which persists across Bash calls, and the resulting
   `Could not resolve to a PullRequest` reads as a permissions problem.
