@@ -23,7 +23,10 @@ import {
   mergeNoChangeOutputs,
 } from '../../deployment/no-change-outputs-merge.js';
 import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.js';
-import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
+import type {
+  CanonicalizePropertiesFn,
+  CreateOnlyEquivalenceFn,
+} from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import {
   IntrinsicFunctionResolver,
@@ -734,6 +737,11 @@ export async function computeStackDiff(
      */
     canonicalizeProperties?: CanonicalizePropertiesFn;
     /**
+     * The deploy engine's createOnly equivalence check (issue #3769), so the
+     * preview plans the same update-or-replacement as the apply.
+     */
+    createOnlyValuesEquivalent?: CreateOnlyEquivalenceFn;
+    /**
      * `--no-cfn-fallback` (issue #1697): false disables the resolver's
      * CloudFormation fallback for cross-stack references, mirroring the
      * deploy engine's option so preview and apply resolve identically.
@@ -775,7 +783,13 @@ export async function computeStackDiff(
     ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
   } = {}
 ): Promise<StackDiffResult> {
-  const { parameters, canonicalizeProperties, cfnFallback, inheritSecretBearingTemplate } = options;
+  const {
+    parameters,
+    canonicalizeProperties,
+    createOnlyValuesEquivalent,
+    cfnFallback,
+    inheritSecretBearingTemplate,
+  } = options;
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
   });
@@ -1161,7 +1175,10 @@ export async function computeStackDiff(
     stateForDiff,
     effectiveTemplate,
     resolveFn,
-    canonicalizeProperties
+    canonicalizeProperties,
+    undefined,
+    undefined,
+    createOnlyValuesEquivalent
   );
 
   // Issue #1921: the Outputs section, resolved through the SAME resolver /
@@ -1569,6 +1586,8 @@ export async function buildDiffTree(args: {
    * narrows exactly like its apply.
    */
   canonicalizeProperties?: CanonicalizePropertiesFn;
+  /** Issue #3769: threaded like `canonicalizeProperties`, for the same reason. */
+  createOnlyValuesEquivalent?: CreateOnlyEquivalenceFn;
   /**
    * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
    * stack's region is in cdkd-assets mode. Every nested child template read
@@ -1653,6 +1672,7 @@ export async function buildDiffTree(args: {
     parentHasSecretReference,
     parameters,
     canonicalizeProperties,
+    createOnlyValuesEquivalent,
     assetRedirect,
     cfnFallback,
     previewOrphanAdoption,
@@ -1709,6 +1729,7 @@ export async function buildDiffTree(args: {
       {
         ...(parameters && { parameters }),
         ...(canonicalizeProperties && { canonicalizeProperties }),
+        ...(createOnlyValuesEquivalent && { createOnlyValuesEquivalent }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         // A live template of its own, so this node decides for itself; the
@@ -1857,6 +1878,7 @@ export async function buildDiffTree(args: {
         diffCalculator,
         parameters: childParameters,
         ...(canonicalizeProperties && { canonicalizeProperties }),
+        ...(createOnlyValuesEquivalent && { createOnlyValuesEquivalent }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),

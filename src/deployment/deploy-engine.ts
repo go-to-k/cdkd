@@ -129,7 +129,10 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry, STICKY_CC_MIGRATION_EXEMPT } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
-import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
+import {
+  makeCanonicalizePropertiesFn,
+  makeCreateOnlyEquivalenceFn,
+} from '../provisioning/canonicalize-properties.js';
 import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
@@ -3965,7 +3968,10 @@ export class DeployEngine {
         // value the parent supplied in THIS deploy. The diff side binds the
         // redacted bag above, where such a value is `***` like its record, so
         // the calculator promotes each reader instead.
-        this.freshNoEchoParameters(parameterValues)
+        this.freshNoEchoParameters(parameterValues),
+        // Issue #3769: shared with `cdkd diff` so both plan the same
+        // replacement-or-update for a createOnly spelling change.
+        makeCreateOnlyEquivalenceFn(this.providerRegistry)
       );
       // The diff was the prefetch's only consumer: withdraw what it did not
       // need, so it stops spending the account's DescribeType quota that the

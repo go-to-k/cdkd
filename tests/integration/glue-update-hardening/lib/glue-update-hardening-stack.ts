@@ -37,12 +37,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     named only Description / LocationUri / Parameters, so both blocks were
  *     dropped silently. CDKD_TEST_UPDATE flips the granted permission set so
  *     the update path is covered with a second distinct payload.
- *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
- *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
  *  8. A Glue Table `TableInput.Name` rename (issue #3724) is refused rather
  *     than written onto the table holding the new name; CDKD_TEST_RENAME
  *     flips the name, and `--replace --force-stateful-recreation` renames it.
- * 10. A malformed `DatabaseInput.TargetDatabase` on a template-path update
+ *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
+ *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
+ * 10. Adding `catalogId` = this account to a Glue Table that had none (issue
+ *     #3769) deploys in place; CDKD_TEST_CATALOG_SPELLING=own sets it.
+ * 11. A malformed `DatabaseInput.TargetDatabase` on a template-path update
  *     (issue #3740) is refused before any Glue call, the link intact;
  *     CDKD_TEST_DBINPUT_MALFORMED sets it.
  *
@@ -218,6 +220,26 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     });
     renameTable.addDependency(tableDb);
 
+    // 10. CDKD_TEST_CATALOG_SPELLING=own adds `catalogId` = this account to a
+    //     table deployed without one (issue #3769). `CatalogId` is createOnly
+    //     on a Table, but both spellings address the same Data Catalog, so the
+    //     change must deploy in place — not as a replacement, which the
+    //     stateful guard would block without --force-stateful-recreation.
+    //     `CfnTableProps.catalogId` is required, so the base shape removes it
+    //     with a deletion override — the template a non-CDK author writes.
+    const spellingTable = new glue.CfnTable(this, 'CatalogSpellingTable', {
+      catalogId: this.account,
+      databaseName: `${this.stackName}-table-db`.toLowerCase(),
+      tableInput: {
+        name: `${this.stackName}-catalog-spelling`.toLowerCase(),
+        tableType: 'EXTERNAL_TABLE',
+      },
+    });
+    spellingTable.addDependency(tableDb);
+    if (process.env.CDKD_TEST_CATALOG_SPELLING !== 'own') {
+      spellingTable.addPropertyDeletionOverride('CatalogId');
+    }
+
     // 7. Glue Database `TargetDatabase` / `CreateTableDefaultPermissions`
     //    (issue #1807). `buildDatabaseInput` named only Description /
     //    LocationUri / Parameters, so both blocks were dropped on the floor:
@@ -243,7 +265,7 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
     linkDb.addDependency(tableDb);
-    // 10. CDKD_TEST_DBINPUT_MALFORMED=true replaces the link's TargetDatabase
+    // 11. CDKD_TEST_DBINPUT_MALFORMED=true replaces the link's TargetDatabase
     //     with a string (issue #3740). `DatabaseInput` is mutable in place, so
     //     the change diffs as an UPDATE, and a template-path update must REFUSE
     //     the malformed block before any Glue call. Before the fix it warned,

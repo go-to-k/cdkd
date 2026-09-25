@@ -377,6 +377,36 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
     });
   });
 
+  describe('the engine WIRES the createOnly equivalence into the diff (issue #3769)', () => {
+    it('passes an equivalence check as calculateDiff\'s 7th argument that consults the provider hook', async () => {
+      const hook = vi.fn().mockReturnValue(true);
+      mockProviderRegistry.getProvider.mockReturnValue({
+        ...mockProvider,
+        createOnlyValuesEquivalent: hook,
+      });
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
+      mockProvider.update.mockResolvedValue({
+        physicalId: 'rtb-1|10.0.0.0/16',
+        wasReplaced: false,
+        attributes: {},
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
+
+      await makeEngine().deploy(stackName, template);
+
+      const equivalent = mockDiffCalculator.calculateDiff.mock.calls.at(-1)![6] as (
+        t: string,
+        k: string,
+        o: unknown,
+        n: unknown,
+        c: { accountId: string | undefined }
+      ) => boolean;
+      expect(typeof equivalent).toBe('function');
+      expect(equivalent(RESOURCE_TYPE, 'K', 1, 2, { accountId: 'a' })).toBe(true);
+      expect(hook).toHaveBeenCalledWith(RESOURCE_TYPE, 'K', 1, 2, { accountId: 'a' });
+    });
+  });
+
   describe('the field REPLACES rather than merges', () => {
     it('a key present in the desired bag but absent from effectiveProperties is dropped', async () => {
       // A merge implementation would silently pass every assertion above (the

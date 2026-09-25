@@ -97,6 +97,7 @@ import {
 } from '../config-shape.js';
 import type {
   CreateContext,
+  CreateOnlyEquivalenceContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -603,6 +604,29 @@ function classifyCatalog(value: unknown): CatalogSide {
 }
 
 /**
+ * Offline catalog equivalence for the diff (issue #3769): `true` only when both
+ * `CatalogId` values PROVABLY address the same Data Catalog — both default,
+ * the same literal, or a default and the deploying account's own id. Anything
+ * unplaceable, or a mixed pair with no known account, answers `false`, which
+ * keeps the schema's replacement. {@link refuseCatalogMove} accepts every pair
+ * this calls equivalent, so the in-place update the diff then plans is not
+ * refused at deploy.
+ */
+function catalogsEquivalent(
+  oldValue: unknown,
+  newValue: unknown,
+  accountId: string | undefined
+): boolean {
+  const a = classifyCatalog(oldValue);
+  const b = classifyCatalog(newValue);
+  if (a.kind === 'unusable' || b.kind === 'unusable') return false;
+  if (a.kind === 'default' && b.kind === 'default') return true;
+  if (a.kind === 'literal' && b.kind === 'literal') return a.id === b.id;
+  const literal = a.kind === 'literal' ? a.id : (b as { id: string }).id;
+  return accountId !== undefined && literal === accountId;
+}
+
+/**
  * Refuse an UPDATE whose `CatalogId` moves the entity to another Data Catalog
  * (issue #3756).
  *
@@ -712,6 +736,21 @@ export class GlueProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueProvider');
+
+  /**
+   * `CatalogId` is createOnly on a Table (and a Connection), but an absent one
+   * and the deploying account's own id address the same catalog — see
+   * {@link catalogsEquivalent} (issue #3769).
+   */
+  createOnlyValuesEquivalent(
+    _resourceType: string,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown,
+    context: CreateOnlyEquivalenceContext
+  ): boolean {
+    return key === 'CatalogId' && catalogsEquivalent(oldValue, newValue, context.accountId);
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::Database', new Set(['DatabaseInput', 'DatabaseName', 'CatalogId'])],
@@ -4618,6 +4657,21 @@ export class GlueConnectionProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
+
+  /**
+   * `CatalogId` is createOnly on a Table (and a Connection), but an absent one
+   * and the deploying account's own id address the same catalog — see
+   * {@link catalogsEquivalent} (issue #3769).
+   */
+  createOnlyValuesEquivalent(
+    _resourceType: string,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown,
+    context: CreateOnlyEquivalenceContext
+  ): boolean {
+    return key === 'CatalogId' && catalogsEquivalent(oldValue, newValue, context.accountId);
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId'])],

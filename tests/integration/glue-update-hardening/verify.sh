@@ -41,7 +41,9 @@
 #   9. Database `CatalogId` move (issue #3756). `CatalogId` is not createOnly
 #      on a Database, so the move diffs as an in-place UPDATE aimed at another
 #      account's catalog; a plain deploy must be REFUSED, the database intact.
-#  10. Database `DatabaseInput.TargetDatabase` malformed on a template-path
+#  10. Table `CatalogId` spelling change (issue #3769): absent -> this account
+#      is the same catalog, so it deploys in place with no stateful prompt.
+#  11. Database `DatabaseInput.TargetDatabase` malformed on a template-path
 #      update (issue #3740). It used to warn and re-send the previous block;
 #      the deploy must now be REFUSED before any Glue call, the link intact.
 #
@@ -604,7 +606,36 @@ fi
 assert_default_permissions 'ALL,DROP' 'catalog-refused'
 echo "    OK: CatalogId move refused; '${PERM_DB_NAME}' untouched (recorded CatalogId ${PERM_CATALOG_BEFORE})"
 
-# --- Phase 2e: a malformed DatabaseInput block is refused on a template-path update (#3740)
+# --- Phase 2e: a CatalogId spelling change deploys in place (#3769) ------
+# CatalogSpellingTable was deployed with no CatalogId; this deploy adds
+# `catalogId: this.account`. CatalogId is createOnly on a Table, but absent and
+# the deploying account's id are the SAME catalog, so the deploy must succeed
+# WITHOUT --force-stateful-recreation (before the fix it was planned as a
+# replacement, which the stateful guard blocks) and the table must be the same
+# one afterwards. The env keeps phase 2c's rename and drops phase 2d's move.
+echo "==> Phase 2e: CatalogId absent -> own account on a Table"
+SPELLING_TABLE_NAME="${LOWER}-catalog-spelling"
+SPELLING_CREATED_BEFORE=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${SPELLING_TABLE_NAME}" \
+  --region "${REGION}" --query 'Table.CreateTime' --output text)
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.CatalogSpellingTable.properties | has("CatalogId")')" != "false" ]; then
+  echo "FAIL: CatalogSpellingTable already records a CatalogId before phase 2e; the phase would prove nothing" >&2
+  exit 1
+fi
+CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_CATALOG_SPELLING=own node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+SPELLING_CREATED_AFTER=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${SPELLING_TABLE_NAME}" \
+  --region "${REGION}" --query 'Table.CreateTime' --output text)
+if [ "${SPELLING_CREATED_AFTER}" != "${SPELLING_CREATED_BEFORE}" ]; then
+  echo "FAIL: ${SPELLING_TABLE_NAME} was re-created (CreateTime ${SPELLING_CREATED_BEFORE} -> ${SPELLING_CREATED_AFTER}); the spelling change was planned as a replacement (issue #3769)" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.CatalogSpellingTable.properties.CatalogId // empty')" != "${ACCOUNT_ID}" ]; then
+  echo "FAIL: state does not record CatalogSpellingTable's new CatalogId ${ACCOUNT_ID}" >&2
+  exit 1
+fi
+echo "    OK: ${SPELLING_TABLE_NAME} updated in place (CreateTime ${SPELLING_CREATED_BEFORE}), CatalogId now recorded"
+
+# --- Phase 2f: a malformed DatabaseInput block is refused on a template-path update (#3740)
 # CDKD_TEST_DBINPUT_MALFORMED turns the resource link's TargetDatabase into a
 # string. DatabaseInput is mutable in place, so this is an UPDATE, and the
 # block is template-borne: cdkd must refuse it before any Glue call. Before the
@@ -612,9 +643,9 @@ echo "    OK: CatalogId move refused; '${PERM_DB_NAME}' untouched (recorded Cata
 # the exit code is the discriminator; the link and its state record must be
 # exactly as they were. (The warn-and-retain arm the rollback revert and
 # `drift --revert` keep is unit-tested; this template carries no other change.)
-echo "==> Phase 2e: malformed DatabaseInput.TargetDatabase on a template-path update"
+echo "==> Phase 2f: malformed DatabaseInput.TargetDatabase on a template-path update"
 set +e
-DBINPUT_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_DBINPUT_MALFORMED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+DBINPUT_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_CATALOG_SPELLING=own CDKD_TEST_DBINPUT_MALFORMED=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
 DBINPUT_RC=$?
 set -e
@@ -653,6 +684,7 @@ for chk in \
   "get-workflow --name ${WORKFLOW_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
   "get-table --database-name ${TABLE_DB_NAME} --name ${RENAME_TO}" \
+  "get-table --database-name ${TABLE_DB_NAME} --name ${LOWER}-catalog-spelling" \
   "get-database --name ${SKEWED_DB_NAME}" \
   "get-database --name ${LINK_DB_NAME}" \
   "get-database --name ${PERM_DB_NAME}"; do

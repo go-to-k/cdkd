@@ -673,7 +673,10 @@ is not create-only there, and the update would address the same-named
 database in the other Data Catalog. An absent `CatalogId` and your own account
 id count as the same catalog, so switching a database between those two
 spellings still updates in place. On a table or connection `CatalogId` is
-create-only, so any change to it is planned as a replacement instead.
+create-only, so a move to another catalog is planned as a replacement instead;
+switching between an absent `CatalogId` and your own account id is not a move,
+and updates in place there too, provided cdkd can resolve your account id and
+the resource is not managed through Cloud Control.
 
 Unlike `--recreate-via-cc-api` / `--recreate-via-sdk-provider`, which name a
 specific logical id and force a routing migration, `--replace` is a stack-wide

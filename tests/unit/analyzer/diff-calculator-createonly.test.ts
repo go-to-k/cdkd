@@ -329,3 +329,195 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     });
   });
 });
+
+/**
+ * Issue #3769: a provider may declare that two spellings of a createOnly
+ * property address the same thing (a Glue `CatalogId` absent vs the deploying
+ * account's id). The hook is consulted only where the schema fallback would
+ * plan a replacement, and fails closed.
+ */
+describe('DiffCalculator - createOnly equivalence hook (issue #3769)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetCreateOnly.mockResolvedValue([['CatalogId']]);
+  });
+
+  const stateWith = (properties: Record<string, unknown>): StackState => {
+    const state = baseState();
+    state.resources['Tbl'] = {
+      physicalId: 'db|t',
+      resourceType: 'AWS::Glue::Table',
+      properties,
+      attributes: {},
+    };
+    return state;
+  };
+  const templateWith = (properties: Record<string, unknown>): CloudFormationTemplate => ({
+    Resources: { Tbl: { Type: 'AWS::Glue::Table', Properties: properties } },
+  });
+  // The resolver answers AWS::AccountId; everything else passes through.
+  const resolveFn = vi.fn(async (value: unknown) =>
+    JSON.stringify(value) === JSON.stringify({ Ref: 'AWS::AccountId' }) ? '111111111111' : value
+  );
+
+  const diff = (equivalent: ReturnType<typeof vi.fn> | undefined, withResolver = true) =>
+    new DiffCalculator().calculateDiff(
+      stateWith({ DatabaseName: 'db' }),
+      templateWith({ DatabaseName: 'db', CatalogId: '111111111111' }),
+      withResolver ? resolveFn : undefined,
+      undefined,
+      undefined,
+      undefined,
+      equivalent as never
+    );
+
+  it('keeps a createOnly change in place when the provider calls the values equivalent', async () => {
+    const equivalent = vi.fn(() => true);
+    const changes = await diff(equivalent);
+
+    const pc = changes.get('Tbl')?.propertyChanges?.find((c) => c.path === 'CatalogId');
+    expect(changes.get('Tbl')?.changeType).toBe('UPDATE');
+    expect(pc?.requiresReplacement).toBe(false);
+    expect(equivalent).toHaveBeenCalledWith(
+      'AWS::Glue::Table',
+      'CatalogId',
+      undefined,
+      '111111111111',
+      { accountId: '111111111111' }
+    );
+  });
+
+  it('keeps the replacement when the provider says no, throws, or no hook is passed', async () => {
+    for (const equivalent of [
+      vi.fn(() => false),
+      vi.fn(() => {
+        throw new Error('boom');
+      }),
+      undefined,
+    ]) {
+      const changes = await diff(equivalent);
+      const pc = changes.get('Tbl')?.propertyChanges?.find((c) => c.path === 'CatalogId');
+      expect(pc?.requiresReplacement).toBe(true);
+    }
+  });
+
+  it('hands the provider an undefined accountId when the diff has no resolver', async () => {
+    const equivalent = vi.fn(() => false);
+    await diff(equivalent, false);
+
+    expect(equivalent).toHaveBeenCalledWith(
+      'AWS::Glue::Table',
+      'CatalogId',
+      undefined,
+      '111111111111',
+      { accountId: undefined }
+    );
+  });
+
+  it('fails closed when the account lookup throws or answers a non-string', async () => {
+    for (const answer of [
+      () => Promise.reject(new Error('sts down')),
+      () => Promise.resolve({ Ref: 'AWS::AccountId' }),
+      () => Promise.resolve(''),
+    ]) {
+      const equivalent = vi.fn(
+        (_t: string, _k: string, _o: unknown, n: unknown, c: { accountId: string | undefined }) =>
+          c.accountId !== undefined && c.accountId === n
+      );
+      const changes = await new DiffCalculator().calculateDiff(
+        stateWith({ DatabaseName: 'db' }),
+        templateWith({ DatabaseName: 'db', CatalogId: '111111111111' }),
+        async (value: unknown) =>
+          JSON.stringify(value) === JSON.stringify({ Ref: 'AWS::AccountId' }) ? answer() : value,
+        undefined,
+        undefined,
+        undefined,
+        equivalent as never
+      );
+      expect(equivalent.mock.calls[0]![4]).toEqual({ accountId: undefined });
+      const pc = changes.get('Tbl')?.propertyChanges?.find((c) => c.path === 'CatalogId');
+      expect(pc?.requiresReplacement).toBe(true);
+    }
+  });
+
+  it('does not ask for a Cloud Control-routed record', async () => {
+    const equivalent = vi.fn(() => true);
+    const state = stateWith({ DatabaseName: 'db' });
+    state.resources['Tbl']!.provisionedBy = 'cc-api';
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      templateWith({ DatabaseName: 'db', CatalogId: '111111111111' }),
+      resolveFn,
+      undefined,
+      undefined,
+      undefined,
+      equivalent as never
+    );
+
+    expect(equivalent).not.toHaveBeenCalled();
+    const pc = changes.get('Tbl')?.propertyChanges?.find((c) => c.path === 'CatalogId');
+    expect(pc?.requiresReplacement).toBe(true);
+  });
+
+  it('never demotes a replacement a hand-authored rule decided', async () => {
+    const equivalent = vi.fn(() => true);
+    const state = baseState();
+    state.resources['Layer'] = {
+      physicalId: 'arn:layer:1',
+      resourceType: 'AWS::Lambda::LayerVersion',
+      properties: { LayerName: 'a' },
+      attributes: {},
+    };
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      { Resources: { Layer: { Type: 'AWS::Lambda::LayerVersion', Properties: { LayerName: 'b' } } } },
+      resolveFn,
+      undefined,
+      undefined,
+      undefined,
+      equivalent as never
+    );
+
+    expect(equivalent).not.toHaveBeenCalled();
+    const pc = changes.get('Layer')?.propertyChanges?.find((c) => c.path === 'LayerName');
+    expect(pc?.requiresReplacement).toBe(true);
+  });
+
+  it('never asks about a change the schema does not call createOnly, and resolves the account once', async () => {
+    mockGetCreateOnly.mockResolvedValue([['CatalogId']]);
+    const equivalent = vi.fn((_t: string, _k: string, _o: unknown, _n: unknown, _c: unknown) => true);
+    const state = stateWith({ DatabaseName: 'db', TableInput: { Name: 'a' } });
+    state.resources['Tbl2'] = { ...state.resources['Tbl']!, physicalId: 'db|t2' };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Tbl: {
+          Type: 'AWS::Glue::Table',
+          Properties: { DatabaseName: 'db', TableInput: { Name: 'b' }, CatalogId: '111111111111' },
+        },
+        Tbl2: {
+          Type: 'AWS::Glue::Table',
+          Properties: { DatabaseName: 'db', TableInput: { Name: 'a' }, CatalogId: '111111111111' },
+        },
+      },
+    };
+    resolveFn.mockClear();
+
+    await new DiffCalculator().calculateDiff(
+      state,
+      template,
+      resolveFn,
+      undefined,
+      undefined,
+      undefined,
+      equivalent as never
+    );
+
+    // Two CatalogId questions (one per table), none for TableInput.
+    expect(equivalent).toHaveBeenCalledTimes(2);
+    expect(equivalent.mock.calls.every((c) => c[1] === 'CatalogId')).toBe(true);
+    const accountLookups = resolveFn.mock.calls.filter(
+      (c) => JSON.stringify(c[0]) === JSON.stringify({ Ref: 'AWS::AccountId' })
+    );
+    expect(accountLookups).toHaveLength(1);
+  });
+});

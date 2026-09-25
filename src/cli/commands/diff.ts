@@ -36,7 +36,10 @@ import {
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
+import {
+  makeCanonicalizePropertiesFn,
+  makeCreateOnlyEquivalenceFn,
+} from '../../provisioning/canonicalize-properties.js';
 import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orphan-adoption.js';
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import type { ResourceState, StackState } from '../../types/state.js';
@@ -271,6 +274,7 @@ async function diffCommand(
     const diffProviderRegistry = new ProviderRegistry();
     registerAllProviders(diffProviderRegistry);
     const canonicalizeProperties = makeCanonicalizePropertiesFn(diffProviderRegistry);
+    const createOnlyValuesEquivalent = makeCreateOnlyEquivalenceFn(diffProviderRegistry);
 
     // The SAME pre-pass `DeployEngine.executeDeployment` runs, wired from the
     // diff's own registry and state backend (issue go-to-k/cdkd#2943). It is
@@ -361,6 +365,8 @@ async function diffCommand(
           // Issue #1591: the preview must narrow exactly like the apply, or
           // `cdkd diff` forecasts a change `cdkd deploy` will never make.
           canonicalizeProperties,
+          // Issue #3769: the same createOnly equivalence the deploy consults.
+          createOnlyValuesEquivalent,
           ...(assetRedirect && { assetRedirect }),
           // Issue #1697: the diff's best-effort resolvers honor the same
           // CloudFormation fallback opt-out as deploy, so preview and apply

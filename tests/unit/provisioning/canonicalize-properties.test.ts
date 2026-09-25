@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
-import { makeCanonicalizePropertiesFn } from '../../../src/provisioning/canonicalize-properties.js';
+import {
+  makeCanonicalizePropertiesFn,
+  makeCreateOnlyEquivalenceFn,
+} from '../../../src/provisioning/canonicalize-properties.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -86,5 +89,53 @@ describe('makeCanonicalizePropertiesFn (#1591)', () => {
         ({ canonicalizeDesiredProperties: () => undefined }) as unknown as ResourceProvider,
     });
     expect(fn('AWS::EC2::Route', PROPS)).toBe(PROPS);
+  });
+});
+
+/**
+ * The createOnly equivalence builder (issue #3769) FAILS CLOSED: every
+ * degradation answers `false`, keeping the schema's replacement, because a
+ * wrong `true` updates in place what should have been replaced.
+ */
+describe('makeCreateOnlyEquivalenceFn (#3769)', () => {
+  const ctx = { accountId: '111111111111' };
+  const registryWith = (provider: Partial<ResourceProvider> | undefined) => ({
+    hasProvider: () => provider !== undefined,
+    getProvider: () => provider as ResourceProvider,
+  });
+
+  it('forwards every argument to the provider hook and returns its true', () => {
+    const hook = vi.fn(() => true);
+    const fn = makeCreateOnlyEquivalenceFn(registryWith({ createOnlyValuesEquivalent: hook }));
+
+    expect(fn('AWS::Glue::Table', 'CatalogId', undefined, '111111111111', ctx)).toBe(true);
+    expect(hook).toHaveBeenCalledWith('AWS::Glue::Table', 'CatalogId', undefined, '111111111111', ctx);
+  });
+
+  it('answers false for an unregistered type, a provider without the hook, a throwing hook, and a non-boolean answer', () => {
+    expect(makeCreateOnlyEquivalenceFn(registryWith(undefined))('T', 'K', 1, 2, ctx)).toBe(false);
+    expect(makeCreateOnlyEquivalenceFn(registryWith({}))('T', 'K', 1, 2, ctx)).toBe(false);
+    const throwing = makeCreateOnlyEquivalenceFn(
+      registryWith({
+        createOnlyValuesEquivalent: () => {
+          throw new Error('boom');
+        },
+      })
+    );
+    expect(throwing('T', 'K', 1, 2, ctx)).toBe(false);
+    const truthy = makeCreateOnlyEquivalenceFn(
+      registryWith({ createOnlyValuesEquivalent: (() => 'yes') as never })
+    );
+    expect(truthy('T', 'K', 1, 2, ctx)).toBe(false);
+  });
+
+  it('answers false when getProvider itself throws', () => {
+    const fn = makeCreateOnlyEquivalenceFn({
+      hasProvider: () => true,
+      getProvider: () => {
+        throw new Error('no provider');
+      },
+    });
+    expect(fn('T', 'K', 1, 2, ctx)).toBe(false);
   });
 });

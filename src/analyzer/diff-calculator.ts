@@ -1,4 +1,8 @@
-import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
+import type {
+  CloudFormationTemplate,
+  CreateOnlyEquivalenceContext,
+  TemplateResource,
+} from '../types/resource.js';
 import type {
   StackState,
   ChangeType,
@@ -79,6 +83,20 @@ export type CanonicalizePropertiesFn = (
   resourceType: string,
   properties: Record<string, unknown>
 ) => Record<string, unknown>;
+
+/**
+ * Provider-supplied equivalence of two spellings of a createOnly property
+ * (issue #3769) — see `ResourceProvider.createOnlyValuesEquivalent` for the
+ * contract. Injected as a function, like {@link CanonicalizePropertiesFn}, so
+ * the analyzer layer keeps no dependency on the provisioning layer.
+ */
+export type CreateOnlyEquivalenceFn = (
+  resourceType: string,
+  key: string,
+  oldValue: unknown,
+  newValue: unknown,
+  context: CreateOnlyEquivalenceContext
+) => boolean;
 
 /**
  * Per-type set of computed/derived read-only attributes whose value can change
@@ -185,9 +203,36 @@ export class DiffCalculator {
      * reading the parameter diffs NO_CHANGE however the value moved; each one
      * is promoted instead, and the engine decides from the resolved value.
      */
-    freshParameters?: ReadonlySet<string>
+    freshParameters?: ReadonlySet<string>,
+    /**
+     * Provider equivalence for a changed createOnly property (issue #3769):
+     * a `true` answer keeps the change an in-place UPDATE. Consulted only
+     * where the createOnly fallback would otherwise plan a replacement.
+     */
+    createOnlyValuesEquivalent?: CreateOnlyEquivalenceFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
+    // The deploying account, resolved at most once and only when an
+    // equivalence question actually reaches a provider. `resolveFn` is the
+    // same resolver the desired side went through, so this is the account
+    // `AWS::AccountId` resolved to there; any failure answers `undefined`,
+    // which a provider must treat as "cannot prove equivalence".
+    let accountIdLookup: Promise<string | undefined> | undefined;
+    const equivalence = createOnlyValuesEquivalent
+      ? {
+          fn: createOnlyValuesEquivalent,
+          accountId: (): Promise<string | undefined> =>
+            (accountIdLookup ??= (async () => {
+              if (!resolveFn) return undefined;
+              try {
+                const value = await resolveFn({ Ref: 'AWS::AccountId' });
+                return typeof value === 'string' && value !== '' ? value : undefined;
+              } catch {
+                return undefined;
+              }
+            })()),
+        }
+      : undefined;
 
     // REFUSE a record whose `properties` bag cannot be read as a map, before
     // anything dereferences it (issue
@@ -473,7 +518,11 @@ export class DiffCalculator {
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,
           currentPropsForCompare,
-          desiredPropsForCompare
+          desiredPropsForCompare,
+          // Only for an SDK-routed record: the hook's contract is that the
+          // provider's OWN update() accepts the change it calls equivalent,
+          // and a `cc-api` record is updated by Cloud Control instead.
+          sdkRouted ? equivalence : undefined
         );
 
         // Schema v5+ template-attribute diff: `DeletionPolicy` /
@@ -1101,7 +1150,11 @@ export class DiffCalculator {
   private async compareProperties(
     resourceType: string,
     currentProperties: Record<string, unknown>,
-    desiredProperties: Record<string, unknown>
+    desiredProperties: Record<string, unknown>,
+    equivalence?: {
+      fn: CreateOnlyEquivalenceFn;
+      accountId: () => Promise<string | undefined>;
+    }
   ): Promise<PropertyChange[]> {
     const changes: PropertyChange[] = [];
 
@@ -1158,10 +1211,33 @@ export class DiffCalculator {
               this.valuesEqual(a, b)
             )
           ) {
-            requiresReplacement = true;
-            this.logger.debug(
-              `Property ${key} of ${resourceType} changed a createOnly path per the CFn schema — requires replacement`
-            );
+            // Issue #3769: two spellings of the SAME value (an absent Glue
+            // `CatalogId` and the deploying account's id) are not a move.
+            // Asked only here, so the hook can never demote a replacement the
+            // hand-authored rules decided, and only the provider can say yes.
+            let equivalent = false;
+            if (equivalence) {
+              try {
+                equivalent = equivalence.fn(resourceType, key, oldValue, newValue, {
+                  accountId: await equivalence.accountId(),
+                });
+              } catch (error) {
+                this.logger.debug(
+                  `createOnlyValuesEquivalent failed for ${resourceType}.${key}: ${String(error)}`
+                );
+              }
+            }
+            if (equivalent) {
+              this.logger.debug(
+                `Property ${key} of ${resourceType} changed a createOnly path, but the provider ` +
+                  `reports both values address the same resource — in-place update`
+              );
+            } else {
+              requiresReplacement = true;
+              this.logger.debug(
+                `Property ${key} of ${resourceType} changed a createOnly path per the CFn schema — requires replacement`
+              );
+            }
           }
         }
 

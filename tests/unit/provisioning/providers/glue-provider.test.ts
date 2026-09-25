@@ -1034,6 +1034,58 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
   });
 });
 
+// Issue #3769: the diff-side twin of #3756's equivalence. Pure and offline —
+// the account comes from the diff context, never from STS here.
+describe('Glue createOnlyValuesEquivalent (issue #3769)', () => {
+  const ctx = (accountId?: string) => ({ accountId });
+  const glue = new GlueProvider();
+  const conn = new GlueConnectionProvider();
+
+  it.each([
+    ['absent vs own account', undefined, '111111111111', '111111111111', true],
+    ['own account vs absent', '111111111111', undefined, '111111111111', true],
+    ['pseudo parameter vs own account', { Ref: 'AWS::AccountId' }, '111111111111', '111111111111', true],
+    ['both absent', undefined, undefined, '111111111111', true],
+    ['same literal', '222222222222', '222222222222', undefined, true],
+    ['numeric vs string literal', 222222222222, '222222222222', undefined, true],
+    ['absent vs another account', undefined, '222222222222', '111111111111', false],
+    ['two different literals', '111111111111', '222222222222', '111111111111', false],
+    ['absent vs literal, account unknown', undefined, '111111111111', undefined, false],
+    ['unplaceable intrinsic', { Ref: 'CatalogParam' }, '111111111111', '111111111111', false],
+  ])('%s -> %s', (_label, oldValue, newValue, accountId, expected) => {
+    expect(
+      glue.createOnlyValuesEquivalent(
+        'AWS::Glue::Table',
+        'CatalogId',
+        oldValue,
+        newValue,
+        ctx(accountId as string | undefined)
+      )
+    ).toBe(expected);
+    expect(
+      conn.createOnlyValuesEquivalent(
+        'AWS::Glue::Connection',
+        'CatalogId',
+        oldValue,
+        newValue,
+        ctx(accountId as string | undefined)
+      )
+    ).toBe(expected);
+  });
+
+  it('answers false for any key but CatalogId', () => {
+    expect(
+      conn.createOnlyValuesEquivalent('AWS::Glue::Connection', 'Name', 'a', 'a', ctx('1'))
+    ).toBe(false);
+    expect(
+      glue.createOnlyValuesEquivalent('AWS::Glue::Table', 'DatabaseName', 'a', 'a', ctx('1'))
+    ).toBe(false);
+    expect(glue.createOnlyValuesEquivalent('AWS::Glue::Table', 'Name', undefined, undefined, ctx('1'))).toBe(
+      false
+    );
+  });
+});
+
 // Issue #1675: every Glue DELETE whose API accepts `CatalogId` must forward it
 // out of the properties bag. Omitting it silently targets this account's
 // DEFAULT Data Catalog, so a resource in a non-default catalog answers

@@ -868,6 +868,12 @@ export interface ReadCurrentStateContext {
   >;
 }
 
+/** What `ResourceProvider.createOnlyValuesEquivalent` may read about the deploy. */
+export interface CreateOnlyEquivalenceContext {
+  /** The deploying account id, or `undefined` when the diff could not resolve it. */
+  accountId: string | undefined;
+}
+
 /**
  * Resource provider interface
  */
@@ -1172,6 +1178,33 @@ export interface ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown>;
+
+  /**
+   * Whether two DIFFERENT spellings of a createOnly property address the SAME
+   * thing, so the change is an in-place UPDATE rather than a replacement
+   * (issue [#3769](https://github.com/go-to-k/cdkd/issues/3769)).
+   *
+   * Consulted by `DiffCalculator` only where the registry schema's
+   * `createOnlyProperties` would classify a changed top-level `key` as a
+   * replacement, and only for that key's top-level values. `cdkd deploy` and
+   * `cdkd diff` both reach it through `makeCreateOnlyEquivalenceFn`, so the
+   * preview and the apply agree.
+   *
+   * MUST be pure, synchronous and free of AWS calls, and MUST answer `false`
+   * whenever it cannot prove equivalence — a wrong `true` turns a real move
+   * into an in-place update aimed at the old resource. The provider's own
+   * `update()` MUST then accept exactly the change it called equivalent,
+   * addressing the same resource. `context.accountId` is the deploying
+   * account as the diff's resolver answers `AWS::AccountId`, or `undefined`
+   * when it could not.
+   */
+  createOnlyValuesEquivalent?(
+    resourceType: string,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown,
+    context: CreateOnlyEquivalenceContext
+  ): boolean;
 
   /**
    * State property paths holding an array that is semantically an UNORDERED

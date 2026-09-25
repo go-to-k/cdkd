@@ -1,4 +1,7 @@
-import type { CanonicalizePropertiesFn } from '../analyzer/diff-calculator.js';
+import type {
+  CanonicalizePropertiesFn,
+  CreateOnlyEquivalenceFn,
+} from '../analyzer/diff-calculator.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
@@ -46,6 +49,36 @@ export function makeCanonicalizePropertiesFn(registry: ProviderLookup): Canonica
         }`
       );
       return properties;
+    }
+  };
+}
+
+/**
+ * Build the diff-time createOnly equivalence check from a provider registry
+ * (issue #3769). Shared by `cdkd deploy` and `cdkd diff` for the same reason as
+ * {@link makeCanonicalizePropertiesFn}: the preview must plan what the apply
+ * does.
+ *
+ * FAILS CLOSED, the opposite of the normalizer above: an unregistered type, a
+ * provider without the hook, or a hook that throws all answer `false`, which
+ * keeps the schema's replacement. A wrong `true` would update a resource in
+ * place that should have been replaced.
+ */
+export function makeCreateOnlyEquivalenceFn(registry: ProviderLookup): CreateOnlyEquivalenceFn {
+  const logger = getLogger().child('canonicalize-properties');
+  return (resourceType, key, oldValue, newValue, context) => {
+    try {
+      if (!registry.hasProvider(resourceType)) return false;
+      const provider = registry.getProvider(resourceType);
+      return (
+        provider.createOnlyValuesEquivalent?.(resourceType, key, oldValue, newValue, context) ===
+        true
+      );
+    } catch (error) {
+      logger.debug(
+        `createOnlyValuesEquivalent failed for ${resourceType}: ${describeAwsFailure(error).detail}`
+      );
+      return false;
     }
   };
 }

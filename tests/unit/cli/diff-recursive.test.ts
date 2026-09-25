@@ -820,6 +820,56 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
   });
 });
 
+describe('createOnly equivalence threading (issue #3769)', () => {
+  // Pinned on the CALL: the three sites that hand the check to the calculator
+  // (computeStackDiff, buildDiffTree's root, the nested recursion) must each
+  // pass it through, or `cdkd diff` plans a replacement the deploy does not.
+  const equivalent = () => true;
+
+  it('computeStackDiff passes it as calculateDiff\'s 7th argument', async () => {
+    const calculator = new DiffCalculator();
+    const spy = vi.spyOn(calculator, 'calculateDiff');
+    await computeStackDiff(st('S', {}), { Resources: {} }, 'us-east-1', 'S', fakeBackend({}), calculator, {
+      parameters: undefined,
+      createOnlyValuesEquivalent: equivalent,
+    });
+    expect(spy.mock.calls[0]![6]).toBe(equivalent);
+  });
+
+  it('buildDiffTree forwards it to the root and into a NESTED child', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3769-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(childPath, JSON.stringify({ Resources: {} }));
+      const calculator = new DiffCalculator();
+      const spy = vi.spyOn(calculator, 'calculateDiff');
+      await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: {
+            Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+          },
+        },
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({
+          S: st('S', { Child: res(NESTED, {}) }),
+          'S~Child': st('S~Child', {}),
+        }),
+        diffCalculator: calculator,
+        isNestedChild: false,
+        createOnlyValuesEquivalent: equivalent,
+      });
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const call of spy.mock.calls) expect(call[6]).toBe(equivalent);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () => {
   // The diff's resolvers must honor `--no-cfn-fallback` exactly like the
   // deploy engine ("preview and apply resolve identically"). Four resolver
