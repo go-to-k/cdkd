@@ -2366,7 +2366,16 @@ export function renderChangeLines(
             // references will change after the upstream replacement. Label
             // it so the apparent string -> {Ref} delta is not misread as a
             // literal value edit.
-            const propagated = propChange.replacementPropagated ? ' [replacement propagated]' : '';
+            // go-to-k/cdkd#3662: the in-place twin — the reader was promoted
+            // because an attribute it reads of an updated resource (a nested
+            // stack output, a custom resource's `Data`) MAY move, which only
+            // the deploy learns; the old side is the resolved value, the new
+            // side the reading intrinsic.
+            const propagated = propChange.replacementPropagated
+              ? ' [replacement propagated]'
+              : propChange.inPlacePropagated
+                ? ' [attribute propagated]'
+                : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,

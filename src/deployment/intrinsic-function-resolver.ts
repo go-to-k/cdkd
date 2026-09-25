@@ -73,7 +73,8 @@ import {
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
   recordMaskOnlyValue,
-  recordMaskOnlyValuesIn,
+  recordFreshNoEchoValuesIn,
+  embedsFreshNoEchoValue,
   recoverMaskedOutput,
   carriesSecretMask,
   errorCauseChain,
@@ -5355,7 +5356,8 @@ export class IntrinsicFunctionResolver {
     const attributeIsDeclared =
       declared === true || (declared !== undefined && declared.has(attributeName));
     if (attributeIsDeclared && context.recordedSecretValues) {
-      recordMaskOnlyValuesIn(value, context.recordedSecretValues);
+      // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
+      recordFreshNoEchoValuesIn(value, context.recordedSecretValues);
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
@@ -8626,7 +8628,8 @@ export class IntrinsicFunctionResolver {
             );
       if (recovered !== undefined) {
         if (context.recordedSecretValues) {
-          recordMaskOnlyValuesIn(recovered, context.recordedSecretValues);
+          // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
+          recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues);
         }
         return recovered;
       }
@@ -10665,6 +10668,14 @@ export class IntrinsicFunctionResolver {
         this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
       recordMaskOnlyValue(context.recordedSecretValues, result);
+      // The encoding of a FRESH `NoEcho` value is fresh too (go-to-k/cdkd#3662),
+      // or a Base64 consumer of a re-minted token would be skipped as
+      // `***` == `***`. The encoding of an ordinary secret is NOT: its record
+      // already positions the reference, and marking it would update that
+      // resource on every deploy.
+      if (embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)) {
+        recordFreshNoEchoValuesIn(result, context.recordedSecretValues);
+      }
     }
 
     this.logger.debug(

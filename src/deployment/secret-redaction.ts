@@ -793,6 +793,115 @@ export function carriesSecretMask(value: unknown): boolean {
 }
 
 /**
+ * The mask-only plaintexts of a pass that are a `NoEcho` value SUPPLIED IN THIS
+ * DEPLOY (go-to-k/cdkd#3662), keyed by the pass's map exactly like
+ * {@link resolvedPairsOf}: a copy of the map is a different pass and starts
+ * with none.
+ *
+ * WHY A SIDE SET, when the sentinel value is otherwise the whole marker: the
+ * mask-only class has TWO populations and one question tells them apart. A
+ * `NoEcho` value (a handler's `Data`, or a producer output recovered from this
+ * process) is fresh evidence that can differ from what the record's `***`
+ * stood for. A DERIVED needle (`Fn::Base64` over a `{{resolve:...}}` input,
+ * issue #2759) is the encoding of a secret whose reference the record already
+ * positions, and treating it as fresh would update that resource on every
+ * deploy — measured on the #3662 review round with a Base64 `UserData`. The
+ * engine's no-change skip asks {@link carriesFreshNoEchoValue}, and only the
+ * first population answers it.
+ */
+const freshNoEchoValuesOf = new WeakMap<RecordedSecretValues, Set<string>>();
+
+function freshNoEchoSet(secrets: RecordedSecretValues): Set<string> {
+  let set = freshNoEchoValuesOf.get(secrets);
+  if (set === undefined) {
+    set = new Set();
+    freshNoEchoValuesOf.set(secrets, set);
+  }
+  return set;
+}
+
+/**
+ * {@link recordMaskOnlyValuesIn} for a `NoEcho` value supplied in THIS deploy,
+ * which additionally marks each leaf it registered as FRESH (see
+ * {@link freshNoEchoValuesOf}). The three writers are the ones that hold such a
+ * value: the resolver's `Fn::GetAtt` note for a resource whose provider
+ * declared `NoEcho` earlier in this run, the cross-stack recovery of an output
+ * this process masked, and `Fn::Base64` over an input that embeds one.
+ */
+export function recordFreshNoEchoValuesIn(
+  value: unknown,
+  secrets: RecordedSecretValues,
+  excluded?: ReadonlySet<string>
+): void {
+  recordMaskOnlyValuesIn(value, secrets, excluded);
+  const fresh = freshNoEchoSet(secrets);
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      // Only a leaf the call above really registered: an excluded one, one
+      // under the floor, or one carrying an expression stays out.
+      if (excluded?.has(node) !== true && isMaskOnlyPlaintext(secrets, node)) fresh.add(node);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+  };
+  walk(value);
+}
+
+/**
+ * Does `text` EMBED a fresh `NoEcho` value of this pass? Asked by
+ * `Fn::Base64`, whose encoded result is a new plaintext that carries the
+ * value's freshness along with its secrecy.
+ */
+export function embedsFreshNoEchoValue(text: string, secrets: RecordedSecretValues): boolean {
+  const fresh = freshNoEchoValuesOf.get(secrets);
+  if (fresh === undefined) return false;
+  for (const value of fresh) {
+    if (isMaskOnlyPlaintext(secrets, value) && text.includes(value)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `value` hold a string leaf that {@link redactSecretsForState} will
+ * replace with {@link SECRET_MASK} AND that is a `NoEcho` value supplied in
+ * this deploy (go-to-k/cdkd#3662)?
+ *
+ * A mask-only needle reaches only the whole-value arm, so such a leaf is
+ * masked exactly when the WHOLE leaf is the plaintext. What makes the question
+ * worth asking: the mask identifies nothing. Two expression-redacted bags that
+ * compare equal hold the same references, which is what a rotated secret
+ * behind an unchanged `{{resolve:...}}` means. Two mask-redacted bags that
+ * compare equal prove only that both hold SOME `NoEcho` value, so a caller
+ * deciding "nothing changed" from such a comparison has to ask this first.
+ *
+ * A leaf that already IS the mask does not count: it was read back from state
+ * (the resolver records that read as a redacted read), not supplied fresh in
+ * this pass. Neither does a derived needle (see {@link freshNoEchoValuesOf}).
+ */
+export function carriesFreshNoEchoValue(value: unknown, secrets: RecordedSecretValues): boolean {
+  const fresh = freshNoEchoValuesOf.get(secrets);
+  if (fresh === undefined || fresh.size === 0) return false;
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): boolean => {
+    if (typeof node === 'string') return fresh.has(node) && isMaskOnlyPlaintext(secrets, node);
+    if (node === null || typeof node !== 'object') return false;
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (Array.isArray(node)) return node.some((item) => walk(item));
+    return Object.values(node as Record<string, unknown>).some((child) => walk(child));
+  };
+  return walk(value);
+}
+
+/**
  * The plaintexts the PERSIST path may scan for as SUBSTRINGS — every recorded
  * one except the mask-only class. See the mask-only channel note above for why the
  * mask class is whole-leaf only.
