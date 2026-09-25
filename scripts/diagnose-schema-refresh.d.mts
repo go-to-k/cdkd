@@ -269,7 +269,10 @@ export declare function collectFixtureDeltas(input: {
   identifierChanges: IdentifierChange[];
 };
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
-export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;
+export declare function committedVersions(
+  relPaths: string[],
+  cwd?: string
+): Map<string, string | undefined | typeof UNREADABLE>;
 export declare const KNOWN_FLAGS: string[];
 
 /**
