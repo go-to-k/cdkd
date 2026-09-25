@@ -87,21 +87,21 @@ cleanup() {
     done
     aws rds delete-db-subnet-group --db-subnet-group-name "${SUBNET_GROUP}" \
       --region "${REGION}" >/dev/null 2>&1
-    for vpc in $(aws ec2 describe-vpcs --region "${REGION}" \
-      --filters "Name=tag:Name,Values=${VPC_TAG}" --query 'Vpcs[].VpcId' --output text); do
-      case "${vpc}" in
-        vpc-?*)
+    case "${VPC_TAG:-}" in
+      cdkd-integ-list-?*)
+        for vpc in $(aws ec2 describe-vpcs --region "${REGION}" \
+          --filters "Name=tag:Name,Values=${VPC_TAG}" --query 'Vpcs[].VpcId' --output text); do
           for sn in $(aws ec2 describe-subnets --region "${REGION}" \
             --filters "Name=vpc-id,Values=${vpc}" --query 'Subnets[].SubnetId' --output text); do
             aws ec2 delete-subnet --subnet-id "${sn}" --region "${REGION}"
           done
           aws ec2 delete-vpc --vpc-id "${vpc}" --region "${REGION}"
-          ;;
-        *)
-          echo "WARN: teardown sweep refused -- '${vpc}' is not a VPC id" >&2
-          ;;
-      esac
-    done
+        done
+        ;;
+      *)
+        echo "WARN: teardown sweep refused -- VPC_TAG '${VPC_TAG:-}' is not this fixture's tag" >&2
+        ;;
+    esac
   )
 }
 trap cleanup EXIT
@@ -170,6 +170,7 @@ echo "PASS: a bare Ref to List<AWS::EC2::Subnet::Id> reached RDS as a two-elemen
 
 expect_param select "${SUBNET_B}" "Fn::Select over the List<> parameter"
 expect_param join "${SUBNET_A}|${SUBNET_B}" "Fn::Join over the List<> parameter"
+# The parent passes "<a>, <b>"; a string-typed reading would keep the space.
 expect_param sub "subnets=${SUBNET_A},${SUBNET_B}" "Fn::Sub over the List<> parameter"
 expect_param csvselect "${SUBNET_B}" "CommaDelimitedList control, Fn::Select"
 expect_param csvjoin "${SUBNET_A}|${SUBNET_B}" "CommaDelimitedList control, Fn::Join"

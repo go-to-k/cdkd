@@ -80,8 +80,11 @@ export class ListParametersStack extends cdk.Stack {
           tags: [{ key: 'Name', value: `${VPC_TAG}-${i}` }],
         })
     );
+    // The space after each comma is load-bearing: the list coercion trims every
+    // member, a raw string would not, so `Fn::Sub` only tells the two apart
+    // when the input carries padding.
     const joined = cdk.Fn.join(
-      ',',
+      ', ',
       subnets.map((s) => s.ref)
     );
 
