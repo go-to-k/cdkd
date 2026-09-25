@@ -284,6 +284,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
         "Remove one record with: cdkd state orphan '<stack>' --stack-region '<region>'",
       ]);
       expect(messages, name).toContain(clauseText);
+      expect(messages).toContain("This stack's name");
       expect(messages.indexOf(clauseText)).toBeLessThan(messages.indexOf('\nRemove one record with:'));
       expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     }

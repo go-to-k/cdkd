@@ -341,6 +341,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
       // the line above cannot tell the clause is there. Only the clause
       // points at `cdkd state list --long`.
       expect(message).toContain("list the records as stored with 'cdkd state list --long'");
+      expect(message).toContain("This stack's name");
     }
     // Positive control: a plain name gets no clause.
     expect(new StackTerminationProtectionError('Prod').message).not.toContain('cdkd state list');

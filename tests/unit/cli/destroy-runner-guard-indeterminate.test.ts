@@ -258,6 +258,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
         "Read them with: cdkd events '<stack>'",
       ]);
       // Only the clause names the listing command; before the labelled line.
+      expect(warned).toContain("This stack's name");
       const clause = warned.indexOf("list the records as stored with 'cdkd state list --long'");
       expect(clause).toBeGreaterThan(-1);
       expect(clause).toBeLessThan(warned.indexOf('\nRead them with:'));
