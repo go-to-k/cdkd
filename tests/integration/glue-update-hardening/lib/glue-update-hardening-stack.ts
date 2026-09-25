@@ -37,6 +37,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     named only Description / LocationUri / Parameters, so both blocks were
  *     dropped silently. CDKD_TEST_UPDATE flips the granted permission set so
  *     the update path is covered with a second distinct payload.
+ *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
+ *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
  *  8. A Glue Table `TableInput.Name` rename (issue #3724) is refused rather
  *     than written onto the table holding the new name; CDKD_TEST_RENAME
  *     flips the name, and `--replace --force-stateful-recreation` renames it.
@@ -247,8 +249,13 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     // list is what makes the declared value differ from that default (probed:
     // an undeclared database reads back `[ALL]`, so `[SELECT]` / `[ALL,
     // DROP]` are both distinguishable from "cdkd sent nothing").
+    // 9. CDKD_TEST_CATALOG=foreign points this database at another account's
+    //    Data Catalog (issue #3756). `CatalogId` is not createOnly on a
+    //    Database, so the change diffs as an in-place UPDATE, which would
+    //    address a same-named database in THAT catalog; cdkd must refuse it.
+    //    The id is a placeholder no caller owns, so no real catalog is touched.
     new glue.CfnDatabase(this, 'DefaultPermissionsDatabase', {
-      catalogId: this.account,
+      catalogId: process.env.CDKD_TEST_CATALOG === 'foreign' ? '000000000000' : this.account,
       databaseInput: {
         name: `${this.stackName}-perm-db`.toLowerCase(),
         description: 'default table permissions probe',

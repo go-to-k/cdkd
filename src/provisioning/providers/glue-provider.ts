@@ -556,6 +556,147 @@ function refuseNestedRename(args: {
 }
 
 /**
+ * The recorded `CatalogId` a `readCurrentState` snapshot carries back, so a
+ * `drift --revert` built from that snapshot addresses the catalog the entity
+ * was READ from (issue #3756). `GetDatabase` / `GetTable` / `GetConnection` do
+ * not echo it, and a snapshot without it made the revert's update target this
+ * account's DEFAULT catalog. Echoed only when usable: the raw value keeps drift
+ * comparing like with like, and an unusable one (the account-id pseudo
+ * parameter, another intrinsic) stays absent, which is what the reads
+ * addressed for it.
+ */
+function withRecordedCatalogId(
+  snapshot: Record<string, unknown>,
+  properties: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const raw = properties?.['CatalogId'];
+  return catalogIdForApi(raw) === undefined ? snapshot : { ...snapshot, CatalogId: raw };
+}
+
+/**
+ * The `CatalogId` an UPDATE sends. A finite number (a YAML-numeric account id,
+ * which {@link withRecordedCatalogId} can now carry into a `drift --revert`
+ * bag) is stringified the way the readers and deletes do; anything else keeps
+ * the pre-existing cast, so an unresolved intrinsic still reaches AWS and is
+ * rejected there rather than silently defaulting to this account's catalog.
+ */
+function updateCatalogId(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? String(value)
+    : (value as string | undefined);
+}
+
+/** Which Data Catalog a `CatalogId` value addresses, as far as cdkd can tell offline. */
+type CatalogSide = { kind: 'default' } | { kind: 'literal'; id: string } | { kind: 'unusable' };
+
+/**
+ * Classify a `CatalogId`. Absent and the account-id pseudo parameter both mean
+ * the caller's own catalog ({@link isAccountIdPseudoParameter}); a usable
+ * literal is itself; anything else (another intrinsic, a malformed value)
+ * cannot be placed.
+ */
+function classifyCatalog(value: unknown): CatalogSide {
+  if (value == null || isAccountIdPseudoParameter(value)) return { kind: 'default' };
+  const id = catalogIdForApi(value);
+  return id === undefined ? { kind: 'unusable' } : { kind: 'literal', id };
+}
+
+/**
+ * Refuse an UPDATE whose `CatalogId` moves the entity to another Data Catalog
+ * (issue #3756).
+ *
+ * Every Glue update sends the DESIRED `CatalogId` while the state record names
+ * only the entity, so a changed catalog addresses the same-named entity in
+ * ANOTHER catalog — rewriting it while the recorded one is left alone.
+ * `AWS::Glue::Database` reaches this on every such edit (its registry schema
+ * marks only `DatabaseName` createOnly); Table and Connection mark `CatalogId`
+ * createOnly and reach it only when the createOnly lookup degrades.
+ *
+ * Equivalence is decided, not string-compared: absent and a literal equal to
+ * the caller's own account are the SAME catalog, so the mixed case asks STS
+ * (`callerAccountId`), which a CDK stack's `catalogId: Stack.of(this).account`
+ * hits whenever the recorded side holds the pseudo parameter an import left.
+ * An unusable DESIRED side is left to the wire as before, and an unusable
+ * RECORDED side (an imported raw intrinsic) cannot be placed, so it warns and
+ * proceeds: refusing would wedge every later deploy on a record the user
+ * cannot edit.
+ */
+async function refuseCatalogMove(args: {
+  resourceType: string;
+  logicalId: string;
+  noun: string;
+  entityName: string;
+  recorded: unknown;
+  desired: unknown;
+  stateful: boolean;
+  callerAccountId: () => Promise<string>;
+  warn: (message: string) => void;
+}): Promise<void> {
+  const recorded = classifyCatalog(args.recorded);
+  const desired = classifyCatalog(args.desired);
+  if (desired.kind === 'unusable') return;
+  if (recorded.kind === 'unusable') {
+    args.warn(
+      `Glue ${args.noun} ${args.logicalId}: the recorded CatalogId is not a usable value ` +
+        `(likely an unresolved intrinsic an import recorded), so cdkd cannot confirm the update ` +
+        `addresses the Data Catalog the ${args.noun} was deployed to; it proceeds against ` +
+        `${desired.kind === 'literal' ? `Data Catalog ${desired.id}` : "this account's default Data Catalog"}.`
+    );
+    return;
+  }
+  if (recorded.kind === 'default' && desired.kind === 'default') return;
+  if (recorded.kind === 'literal' && desired.kind === 'literal') {
+    if (recorded.id === desired.id) return;
+  } else {
+    const literal = recorded.kind === 'literal' ? recorded.id : (desired as { id: string }).id;
+    let callerAccount: string;
+    try {
+      callerAccount = await args.callerAccountId();
+    } catch (error) {
+      throw new ProvisioningError(
+        `Could not resolve the caller's account id (sts:GetCallerIdentity) to tell whether ` +
+          `CatalogId ${literal} is this account's default Data Catalog, so cdkd did not update ` +
+          `Glue ${args.noun} ${args.logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        args.resourceType,
+        args.logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    if (literal === callerAccount) return;
+  }
+  const describe = (side: CatalogSide): string =>
+    side.kind === 'literal' ? `Data Catalog ${side.id}` : "this account's default Data Catalog";
+  const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
+  throw new ResourceUpdateNotSupportedError(
+    args.resourceType,
+    args.logicalId,
+    `CatalogId moves the ${args.noun} '${args.entityName}' from ${describe(recorded)} to ` +
+      `${describe(desired)}, and an in-place update would address the same-named ${args.noun} ` +
+      `in the NEW catalog while the state record kept the old one. To move it, re-deploy with ` +
+      `${remedyFlags}, which DELETEs the ${args.noun} from ${describe(recorded)} and then ` +
+      `CREATEs it in ${describe(desired)} (under UpdateReplacePolicy: Retain the old one is ` +
+      `kept instead); or keep the recorded CatalogId`
+  );
+}
+
+/**
+ * A memoized "which account am I" for {@link refuseCatalogMove}'s mixed case,
+ * built per provider instance so the STS call happens at most once and only
+ * when a catalog comparison needs it. A failure is not cached.
+ */
+function makeCallerAccountResolver(region: string | undefined): () => Promise<string> {
+  let stsClient: STSClient | undefined;
+  let cached: string | undefined;
+  return async () => {
+    if (cached) return cached;
+    stsClient ??= new STSClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) });
+    cached = await resolveAccountId(stsClient);
+    return cached;
+  };
+}
+
+/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -568,6 +709,7 @@ function refuseNestedRename(args: {
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private readonly providerRegion = ambientRegion();
+  private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -766,8 +908,19 @@ export class GlueProvider implements ResourceProvider {
         `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
       stateful: true,
     });
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'database',
+      entityName: physicalId,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: true,
+      callerAccountId: this.callerAccountId,
+      warn: (message) => this.logger.warn(message),
+    });
 
-    const catalogId = properties['CatalogId'] as string | undefined;
+    const catalogId = updateCatalogId(properties['CatalogId']);
 
     // Read-merge-write for AWS-authored `DatabaseInput.Parameters` — see
     // {@link preserveAwsManagedParameters}. ONLY the read sits outside the
@@ -1061,8 +1214,19 @@ export class GlueProvider implements ResourceProvider {
         `does not manage) while the state record kept '${tableName}'`,
       stateful: true,
     });
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'table',
+      entityName: `${databaseName}.${tableName}`,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: true,
+      callerAccountId: this.callerAccountId,
+      warn: (message) => this.logger.warn(message),
+    });
 
-    const catalogId = properties['CatalogId'] as string | undefined;
+    const catalogId = updateCatalogId(properties['CatalogId']);
 
     // UPDATE only WARNS where create REFUSES, and the asymmetry is deliberate.
     //
@@ -2047,11 +2211,10 @@ export class GlueProvider implements ResourceProvider {
    *    `ViewExpandedText`, `TargetTable`). The table physicalId is
    *    `databaseName|tableName`; we recover both from the split.
    *
-   * `CatalogId` is intentionally not surfaced — `GetDatabase` /
-   * `GetTable` do not echo it back, and cdkd state's `CatalogId` is
-   * usually the AWS account id (defaulted by the API). Comparator only
-   * descends into keys present in state, so an absent surface key cannot
-   * fire false drift here.
+   * `CatalogId` is not READ — `GetDatabase` / `GetTable` do not echo it —
+   * but the recorded usable value is carried back
+   * ({@link withRecordedCatalogId}), so a `drift --revert` built from this
+   * snapshot addresses the catalog it was read from.
    *
    * Returns `undefined` when the resource is gone (`EntityNotFoundException`).
    * Other Glue resource types (`Job`, `Crawler`, `Connection`, `Trigger`,
@@ -2076,10 +2239,14 @@ export class GlueProvider implements ResourceProvider {
     // hand to `GetTable` as if it were an id) or a YAML-numeric account id.
     const catalogId = catalogIdForApi(properties?.['CatalogId']);
     switch (resourceType) {
-      case 'AWS::Glue::Database':
-        return this.readDatabase(physicalId, catalogId);
-      case 'AWS::Glue::Table':
-        return this.readTable(physicalId, catalogId, properties);
+      case 'AWS::Glue::Database': {
+        const snapshot = await this.readDatabase(physicalId, catalogId);
+        return snapshot && withRecordedCatalogId(snapshot, properties);
+      }
+      case 'AWS::Glue::Table': {
+        const snapshot = await this.readTable(physicalId, catalogId, properties);
+        return snapshot && withRecordedCatalogId(snapshot, properties);
+      }
       default:
         return undefined;
     }
@@ -4399,6 +4566,7 @@ function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, u
 export class GlueConnectionProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private readonly providerRegion = ambientRegion();
+  private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -4457,7 +4625,7 @@ export class GlueConnectionProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Connection ${logicalId}: ${physicalId}`);
     const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
@@ -4483,11 +4651,25 @@ export class GlueConnectionProvider implements ResourceProvider {
         `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
       stateful: false,
     });
-    const catalogId = properties['CatalogId'] as string | undefined;
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'connection',
+      entityName: physicalId,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: false,
+      callerAccountId: this.callerAccountId,
+      warn: (message) => this.logger.warn(message),
+    });
+    const catalogId = updateCatalogId(properties['CatalogId']);
     try {
       await this.getClient().send(
         new UpdateConnectionCommand({
-          ...(catalogId && { CatalogId: catalogId }),
+          // `!== undefined`, not truthiness: a falsy unusable value (NaN, '')
+          // must reach AWS and be rejected, not silently drop to the default
+          // catalog (issue #3756).
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
           Name: physicalId,
           ConnectionInput: buildConnectionInput(connectionInput, physicalId),
         })
@@ -4604,7 +4786,7 @@ export class GlueConnectionProvider implements ResourceProvider {
         ? pickDefined(conn.PhysicalConnectionRequirements as Record<string, unknown>)
         : {},
     };
-    return { ConnectionInput: ci };
+    return withRecordedCatalogId({ ConnectionInput: ci }, properties);
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
