@@ -56,9 +56,9 @@ verify, clean up.
    ```
 
    **Anything found → abort** with the orphan list and cleanup commands; do NOT
-   deploy on top of orphans. **Except a `lock.json` under the prefix: that is a
-   LIVE peer session on the same fixture** (stack names are fixed) — wait for it
-   to clear, then re-scan.
+   deploy on top of orphans. **Except a `lock.json` whose `expiresAt` is in the
+   future: a LIVE peer on the same fixture** — wait, then re-scan. Expired: a
+   killed run's orphan.
 
 5. **Run the test(s)**
 
@@ -323,9 +323,10 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
   still attempt destroy to clean up partial state.
 - **A run blocked BEFORE its assertions is not a test failure — say which it
-  was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as `FAIL` (the bar is exit-code-based) with a ledger note naming the
-  blocker and any hand-removed resources, clean up what the aborted run leaked,
-  and WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
+  was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
+  `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
+  and any hand-removed resources, clean up what the aborted run leaked, and
+  WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
   take.
 - **Never report success on a successful deploy alone** — destroy must complete
   and the orphan check must pass.
