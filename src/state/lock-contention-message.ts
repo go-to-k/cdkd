@@ -20,13 +20,13 @@
  * two of three. `subject` now varies only the noun.
  */
 
-import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+import { displaySafe, displayStackName, UNRENDERABLE } from '../utils/display-safe.js';
 // Both moved to `src/utils/pasteable-command.ts` with the shared builder
 // (go-to-k/cdkd#3436): `src/utils/**` imports nothing from `src/state/**`, so
 // the builder could not have reached them here. Re-exported because this
 // module's own callers and `.claude/rules/lock-contention-message.md` name
 // this path.
-import { commandHole, shellQuote } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, shellQuote } from '../utils/pasteable-command.js';
 
 export { commandHole, shellQuote };
 import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
@@ -133,121 +133,61 @@ function formatDuration(ms: number): string {
 
 /**
  * The `cdkd force-unlock ...` line, carrying every flag that decides which
- * lock object it resolves to.
+ * lock object it resolves to — built through the SHARED `pasteableCommand`
+ * gate since go-to-k/cdkd#3436's second half, and SUPPRESSED whole (`''`)
+ * whenever the gate withheld anything.
+ *
+ * SUPPRESS, not a hole, on purpose: `cdkd force-unlock` deletes another
+ * process's lock, so naming a stack that is not quite the record's is the
+ * wrong-lock-object harm this module exists to close, and a hole the operator
+ * fills from the prose beside it is the same harm one step later. What the
+ * fold-in CHANGES is the set of values that suppress. The builder's own copy
+ * gated on emptiness and exactness only (M-round finding recorded on
+ * go-to-k/cdkd#3436): a record named `--state-bucket=attacker` rendered
+ * exactly, passed every gate it had, and came out as
+ * `cdkd force-unlock '--state-bucket=attacker' ...` — the shell strips the
+ * quotes and Commander parses that argv entry as the FLAG — and a name past
+ * the stack-ref cap was named in full. The gate refuses both (`option-shaped`,
+ * `too-long`) beside `empty` and `altered`, which suppressed before too.
+ *
+ * Every other rule transfers verbatim: a value is sanitize-compared against
+ * the RAW (`myΩstack` sanitizes to `my stack`, a DIFFERENT stack), shell-quoted
+ * only when it survives that, and an EMPTY region — which `force-unlock.ts`
+ * reads as "not supplied" and widens to every region holding the name — is
+ * refused rather than emitted; an ABSENT region (a legacy lock key) is simply
+ * omitted. The three `LockRecoveryContext` fragments keep their own
+ * sanitize-and-exactness pair in {@link recoveryCommandFlags}, whose notes on
+ * the DENYLIST versus `asciiOnly` (a profile name is legitimately not ASCII)
+ * and on `--state-prefix ''` stand unchanged; its `exact` folds into the
+ * suppression here. Anything that can suppress is named in
+ * `UNREPRODUCIBLE_LOCK_VALUES` and in the no-command sentence — keep those in
+ * step with the gate.
  */
 export function buildForceUnlockCommand(
   stackName: string,
   /**
    * The lock's region, or `undefined` for a LEGACY lock key, which has none.
-   * A first cut made the legacy caller pass `''` and the emptiness guard below
-   * then suppressed the whole command — so that branch always fell through to
-   * a hand-built, UNQUOTED fallback, shipping exactly the paste defect this
+   * A first cut made the legacy caller pass `''` and the emptiness guard then
+   * suppressed the whole command — so that branch always fell through to a
+   * hand-built, UNQUOTED fallback, shipping exactly the paste defect this
    * function exists to prevent.
    */
   region: string | undefined,
   recovery?: LockRecoveryContext
 ): string {
-  // Sanitize BEFORE quoting. Quoting alone already neutralizes an injected
-  // `\ncurl ... | sh` (inside `'...'` it is a literal, not a separator), but it
-  // leaves a MULTI-LINE "recovery command" on the operator's terminal, which is
-  // its own forgery surface. A control character has no legitimate place in a
-  // stack name or a region, so drop it and then quote what remains.
-  // A value that sanitization CHANGED cannot be named in a command: the
-  // command would address a DIFFERENT lock. `myΩstack` sanitizes to
-  // `my stack`, and telling an operator to force-unlock that is the
-  // wrong-lock-object harm this whole module exists to close — the same
-  // reason an EMPTY value suppresses, one step earlier.
-  const safeStack = displaySafe(stackName, { asciiOnly: true });
-  const stackIsExact = safeStack === stackName;
-  // An ABSENT region is legitimate (a legacy lock key); an UNRENDERABLE or an
-  // ALTERED one is not.
-  const safeRegion = region === undefined ? undefined : displaySafe(region, { asciiOnly: true });
-  const regionIsExact = region === undefined || safeRegion === region;
-  // A value that sanitizes to NOTHING must not become an empty ARGUMENT:
-  // `force-unlock.ts` treats a falsy `--stack-region` as "not supplied" and
-  // widens the release to EVERY region holding that stack name — the opposite
-  // of what a region-qualified hint is for. Emitting no command is the honest
-  // answer; the message still names what could not be rendered
-  // (`UNREPRODUCIBLE_LOCK_CLAUSE`, which enumerates every value that can
-  // suppress — keep it in step with the guard below).
-  //
-  // THE THREE `LockRecoveryContext` FRAGMENTS, all of which used to reach the
-  // terminal through `shellQuote` ALONE — the standing exception to this
-  // function's own opening rule (issue
-  // [#3377](https://github.com/go-to-k/cdkd/issues/3377); `--profile` was the
-  // reported one, and go-to-k/cdkd#3390's security review measured the other
-  // two being the SAME defect two lines further down). Quoting answers a
-  // different question from sanitizing: inside `'...'` an injected
-  // `\ncurl ... | sh` is a literal, but an ESC or a C1 CSI byte is not
-  // neutralized by quoting at all — it still redraws the operator's terminal.
-  // ONE of the three is THIRD-PARTY PLANTABLE rather than merely
-  // operator-supplied, and the distinction is stated precisely because the
-  // first cut of this comment over-claimed it for all three
-  // (go-to-k/cdkd#3390 round 2): `config-loader.ts` resolves the BUCKET from a
-  // repo's `cdk.json` `context.cdkd.stateBucket`, so cloning a repository is
-  // enough to choose it. `--state-prefix` has exactly one source, its commander
-  // option — `context.cdkd` does not expose it and there is no
-  // `CDKD_STATE_PREFIX` — and `--profile` likewise comes from argv. All three
-  // are sanitized anyway, because argv is still untrusted text on a line an
-  // operator pastes; what differs is only how much reach an attacker needs.
-  //
-  // THE DENYLIST, not `asciiOnly`, and that asymmetry with `safeStack` /
-  // `safeRegion` above is the point rather than an oversight. A stack name
-  // comes from an S3 KEY and a region from a key SEGMENT: both have a known
-  // ASCII charset, so the positive allowlist is exact for them and carries no
-  // residual. These three do not. A profile name is a user's own label, and
-  // this PR argues four files over — at `writeProfileCredentialsFile`'s INI
-  // section header — that a non-ASCII one is LEGITIMATE. Running `asciiOnly`
-  // here would make `prod-café` inexact and suppress the whole command,
-  // including the stack, region and bucket the operator needs, for a value
-  // that pastes perfectly well once quoted. The denylist strips the forgery
-  // class (C0 + DEL, `U+0085` and C1, `U+2028`/`U+2029`, the Trojan-Source
-  // overrides), so exactness still refuses an ESC while a real name emits.
-  //
-  // TWO consequences of `displaySafe` that are NOT the forgery class, both
-  // measured in go-to-k/cdkd#3390 round 2 and both recorded rather than implied
-  // away. It TRIMS, so a fragment with leading or trailing whitespace
-  // (`--state-prefix 'team/x '`) is inexact and now suppresses where it
-  // previously emitted quoted — arguably right, since a trimmed prefix IS a
-  // different prefix and naming it would address a different key space, but it
-  // is a behaviour change and not merely a tightening. And it is a DENYLIST, so
-  // its recorded residual — the invisible formatters `U+200B`-`U+200D` /
-  // `U+FEFF` and the bidi MARKS `U+200E` / `U+200F` / `U+061C` — survives into
-  // the pasteable line. That is accepted here for a reason specific to this
-  // function rather than inherited from the helper: each fragment IS the value
-  // that identified the contended lock, so a command carrying it still
-  // addresses the right object; the residual can make the line LOOK different
-  // from its bytes, not act on something else. `asciiOnly` would close it and
-  // costs the whole `prod-café` hint, which is the worse trade.
-  //
-  // EXACTNESS is the second half, and it transfers verbatim from the stack
-  // name: a value whose rendering CHANGED cannot be named in the command,
-  // because the command would then address a DIFFERENT lock — for `--profile`,
-  // a different ACCOUNT. Dropping just the offending fragment is not the repair
-  // either: without `--profile` the command silently resolves the DEFAULT
-  // profile, which is the same widening the empty-region branch above refuses.
-  //
-  // Not `isPasteableIdent`: that predicate answers the OPTION case ("is this
-  // word still a flag once pasted"), which cannot arise for a value sitting in
-  // argument position after a flag and shell-quoted.
-  //
-  // NO separate empty-string clause beside `safeRegion === ''`, deliberately.
-  // An ABSENT fragment emits nothing, and so does an EMPTY profile or bucket,
-  // which simply means "none", so unlike the region there is no empty-ARGUMENT
-  // case to refuse, and adding one would suppress the whole command for a
-  // `profile: ''`. The dangerous shape is a TRUTHY value that sanitizes to
-  // nothing, and exactness already refuses it: `''` is not the raw value. The
-  // one fragment where EMPTY is a value is `--state-prefix`, which is emitted as
-  // `--state-prefix ''` — see {@link recoveryCommandFlags}.
   const recoveryFlags = recoveryCommandFlags(recovery);
-  if (!safeStack || safeRegion === '' || !stackIsExact || !regionIsExact || !recoveryFlags.exact) {
-    return '';
-  }
-  const head =
-    safeRegion === undefined
-      ? `cdkd force-unlock ${shellQuote(safeStack)}`
-      : `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`;
-  return [head, ...recoveryFlags.flags].join(' ');
+  const built = pasteableCommand(
+    'cdkd force-unlock',
+    region === undefined
+      ? [{ value: stackName, hole: 'stack' }]
+      : [
+          { value: stackName, hole: 'stack' },
+          { flag: '--stack-region', value: region, hole: 'region' },
+        ],
+    recoveryFlags.flags
+  );
+  if (!built.exact || !recoveryFlags.exact) return '';
+  return built.command;
 }
 
 /** What {@link recoveryCommandFlags} returns. */
@@ -285,7 +225,8 @@ export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCo
   // is printed (an inexact one prints as a hole instead), and quoting the
   // sanitized one is what makes "sanitize before quote" literally true at the
   // emit site rather than an invariant a reader has to reconstruct — the same
-  // shape as `safeStack` / `safeRegion`.
+  // shape the shared gate applies to the stack and region in
+  // `buildForceUnlockCommand`.
   // cdkd-profile-display: already sanitized AND already gated. Every value
   // below came out of `sanitizeRecoveryValue`, which applies `displaySafe` and
   // reports whether that CHANGED anything, and a fragment it changed is printed
@@ -380,8 +321,10 @@ export const UNREPRODUCIBLE_LOCK_VALUES = 'the name, region, profile, state buck
 
 export const UNREPRODUCIBLE_LOCK_CLAUSE =
   `Inspect the lock object directly: ${UNREPRODUCIBLE_LOCK_VALUES} recorded for ` +
-  `this stack cannot be reproduced safely on a command line, so any command ` +
-  `shown here would address a different lock.`;
+  `this stack cannot be reproduced safely on a command line (unrenderable, empty, ` +
+  `too long, or beginning with '-', which cdkd refuses rather than risk it parsing ` +
+  `as an option), so no command is shown: one built from it could address a ` +
+  `different lock.`;
 
 /**
  * The force-quit banner's recovery sentence.
@@ -466,10 +409,17 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // early-return branch for the unrenderable case, and the two had ALREADY
   // drifted (the branch dropped `advice`) — which is the divergence this module
   // exists to end, reproduced inside the module itself.
-  const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+  // The stack name in `displayIdent`'s boundary rather than inside cdkd's own
+  // `'...'` (go-to-k/cdkd#3436's paste fence measured the hand-quoted form: a
+  // name `x'$(touch OWNED) #` closed the prose quote and the rest ran when the
+  // sentence was pasted — the go-to-k/cdkd#3706 / #3725 convention, applied
+  // here). `displayStackName`, not `displayIdent`: the stack-ref cap (1152), the
+  // same the command is gated at, so a long nested name is not cut in the head
+  // while named whole in the command. A plain name renders bare; the region
+  // stays inside parentheses.
   const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
   const head =
-    `Could not acquire lock for ${subject} '${safeStack}' (${safeRegion}) — ${held}.` +
+    `Could not acquire lock for ${subject} ${displayStackName(stackName)} (${safeRegion}) — ${held}.` +
     (suffix ? ` ${suffix}` : '');
 
   // `buildForceUnlockCommand` returns '' when a value has nothing renderable
@@ -481,9 +431,10 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
     return (
       `${head} ${advice}. ` +
       `No recovery command can be shown: ${UNREPRODUCIBLE_LOCK_VALUES} recorded ` +
-      `for this lock contains characters that cannot be reproduced safely on a ` +
-      `command line, so any command shown here would address a different lock — ` +
-      `inspect the lock object directly.`
+      `for this lock cannot be reproduced safely on a command line (unrenderable, ` +
+      `empty, too long, or beginning with '-', which cdkd refuses rather than risk it ` +
+      `parsing as an option), so no command is shown: one built from it could ` +
+      `address a different lock — inspect the lock object directly.`
     );
   }
 

@@ -59,13 +59,13 @@
  * Re-derive the members with that issue's greps rather than trusting a list:
  * these are kinds of site, and each kind has more members than the examples.
  *
- * - **Its own copy of the gate.** `buildForceUnlockCommand`
- *   (`state/lock-contention-message.ts`), the `cdkd orphan` properties refusal
- *   (`state/malformed-resources-bag.ts`), `orphanCommandFor` (`cli/commands/
- *   export.ts`), and others in `deployment/deploy-engine.ts` and
- *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts` left this list in
- *   go-to-k/cdkd#3436's second half). They behave the same way; they are not
- *   this function, so a rule change reaches them only by hand.
+ * - **Its own copy of the gate.** The `cdkd orphan` properties refusal
+ *   (`state/malformed-resources-bag.ts`, go-to-k/cdkd#3523), `orphanCommandFor`
+ *   (`cli/commands/export.ts`), and others in `deployment/deploy-engine.ts` and
+ *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts` and
+ *   `buildForceUnlockCommand` left this list in go-to-k/cdkd#3436's second
+ *   half). They behave the same way; they are not this function, so a rule
+ *   change reaches them only by hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
  *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
  *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
@@ -278,24 +278,25 @@ export interface PasteableCommand {
    * itself, and also when the caller asked for one — see `withheld` for the
    * narrower question of what the GATE refused.
    *
-   * **Every caller in `src/` prints the hole, bar the one exception recorded
+   * **Every caller in `src/` prints the hole, bar the two exceptions recorded
    * below.** The field exists for the
    * SENTENCE around it — a message that wants to say why it could not name the
    * record — not as a licence to suppress the command at one site and print it
    * at another. Per-site judgement about what is safe *here* is what kept
    * re-introducing this defect (M5 of the go-to-k/cdkd#3499 review), and the
    * fold-in of the older builders should land on that answer rather than
-   * re-open the choice. The exception is `reportDriftBaselineGaps`
-   * (`cli/commands/export.ts`), which reads this field to SUPPRESS
-   * `cdkd state refresh-observed` rather than print a hole (M3 of the
-   * go-to-k/cdkd#3764 review): that command locks a record and rewrites its
-   * baseline, so a hole filled from the prose beside it could rewrite a
-   * different stack's, and the site renders its sentence from `withheld`. Its
-   * `cdkd state show` line, a read, prints the hole. The two older builders that
-   * made that choice by hand — `buildForceUnlockCommand` and the `cdkd orphan`
-   * properties refusal in `state/malformed-resources-bag.ts` — still carry
-   * their own copies of this logic and do NOT consume this field yet; folding
-   * them in is part of go-to-k/cdkd#3436's remaining half.
+   * re-open the choice. Two callers read this field to SUPPRESS a command
+   * rather than print the hole, and both are recorded exceptions, not a
+   * licence — each command WRITES, so a hole filled from the prose beside it is
+   * the harm one step later. `reportDriftBaselineGaps` (`cli/commands/export.ts`)
+   * suppresses `cdkd state refresh-observed` (M3 of the go-to-k/cdkd#3764
+   * review): it locks a record and rewrites its baseline, so a filled hole could
+   * rewrite a different stack's; the site renders its sentence from `withheld`,
+   * and its `cdkd state show` line, a read, prints the hole.
+   * `buildForceUnlockCommand` suppresses `cdkd force-unlock`, which deletes
+   * another process's lock, where a filled hole is the wrong-lock harm. The
+   * `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts` still
+   * carries its own copy (go-to-k/cdkd#3523).
    */
   readonly exact: boolean;
 }

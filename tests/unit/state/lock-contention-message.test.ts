@@ -7,6 +7,7 @@ import {
   forceQuitRecoveryClause,
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { Command } from 'commander';
 import { stateOptions } from '../../../src/cli/options.js';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -237,6 +238,134 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
   });
 });
 
+describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', () => {
+  it('SUPPRESSES a name that begins with -, refused rather than risked as an option', () => {
+    // The builder's own copy gated on emptiness and exactness only, so
+    // `--state-bucket=attacker` -- every character survives `displaySafe` --
+    // came out as `cdkd force-unlock '--state-bucket=attacker' ...`: the shell
+    // strips the quotes and Commander reads the argv entry as the FLAG (the
+    // m2r finding recorded on the issue). The shared gate refuses EVERY leading
+    // `-` as `option-shaped` -- conservatively, since a bare `-` or `-x` as a
+    // flag's value would parse as a value -- and this builder suppresses on
+    // any refusal.
+    expect(buildForceUnlockCommand('--state-bucket=attacker', 'us-east-1')).toBe('');
+    expect(buildForceUnlockCommand('-x', 'us-east-1')).toBe('');
+    // The CONTROL, or a builder that suppresses everything passes: a plain
+    // name still renders, byte-for-byte as before the fold-in.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'prod' })).toBe(
+      'cdkd force-unlock MyStack --stack-region us-east-1 --profile prod'
+    );
+  });
+
+  it('SUPPRESSES a name past the stack-ref cap, and names one at it', () => {
+    // No cap before the fold-in: a 5000-character name was named in full.
+    // Plain letters, so only the cap can decide, on both sides of it.
+    expect(buildForceUnlockCommand('q'.repeat(1153), 'us-east-1')).toBe('');
+    expect(buildForceUnlockCommand('q'.repeat(1152), 'us-east-1')).toBe(
+      `cdkd force-unlock ${'q'.repeat(1152)} --stack-region us-east-1`
+    );
+  });
+
+  it('applies both new refusals to the REGION too, on both sides of the cap', () => {
+    // The gate runs per value, and the region is a key segment as plantable as
+    // the name; a mutant bypassing the two refusals for the region alone would
+    // leave the stack-name cases above green (proxy pass).
+    expect(buildForceUnlockCommand('MyStack', '--all')).toBe('');
+    expect(buildForceUnlockCommand('MyStack', 'r'.repeat(1153))).toBe('');
+    expect(buildForceUnlockCommand('MyStack', 'r'.repeat(1152))).toBe(
+      `cdkd force-unlock MyStack --stack-region ${'r'.repeat(1152)}`
+    );
+  });
+
+  it('displays a long name WHOLE in the head, at the cap the command is gated at', async () => {
+    // `displayStackName` (1152), not `displayIdent`'s 255: a 256-code-point
+    // name would otherwise be cut in the head and named whole in the command
+    // one line later (Codex on this branch). Pinned at the BOUNDARY, both
+    // sides: at 1152 the head shows the name whole and the command names it;
+    // one over, the head is cut and the command is suppressed. A case at 256
+    // alone let a display cap of 256 pass (proxy pass).
+    const at = 'q'.repeat(1152);
+    const atCap = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: at,
+      region: 'us-east-1',
+    });
+    expect(atCap).toContain(`Could not acquire lock for stack ${at} (us-east-1)`);
+    expect(atCap).toContain(`run: cdkd force-unlock ${at} --stack-region us-east-1`);
+    const over = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: 'q'.repeat(1153),
+      region: 'us-east-1',
+    });
+    expect(over).not.toContain('q'.repeat(1153));
+    expect(over).toContain('q'.repeat(1152));
+    expect(over).not.toContain('cdkd force-unlock');
+  });
+
+  it('says WHY no command is shown for an option-shaped name, through the message builder', async () => {
+    const message = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: '--all',
+      region: 'us-east-1',
+    });
+    expect(message).not.toContain('cdkd force-unlock');
+    expect(message).toContain('No recovery command can be shown');
+    // The sentence names the new causes beside the old one, and the shared
+    // constant does too -- the enumeration test above pins the VALUES list;
+    // this pins the REASONS.
+    for (const text of [message, UNREPRODUCIBLE_LOCK_CLAUSE]) {
+      expect(text).toContain("beginning with '-', which cdkd refuses rather than risk it parsing as an option");
+      expect(text).toContain('too long');
+    }
+  });
+
+  it('pastes nothing runnable at any granularity, through the message builder itself', async () => {
+    // The paste fence for THIS site (`tests/unit/utils/paste-harness.ts`): the
+    // plain-name message is inert in every span; a payload one is held to the
+    // per-block criterion whether the gate named or withheld it.
+    const named = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      recovery: { profile: 'prod', stateBucket: 'cdkd-state-111122223333' },
+    });
+    expect(named).toContain('run: cdkd force-unlock MyStack --stack-region us-east-1 --profile prod');
+    const withheld: Array<{ value: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      withheld.push({
+        value,
+        message: await buildLockContentionMessage({
+          lockManager: lockManagerReturning(null),
+          stackName: value,
+          region: 'us-east-1',
+        }),
+      });
+    }
+    withPasteDir((dir) => {
+      expect(spansThatRun(named, dir)).toEqual([]);
+      // A payload that renders EXACTLY (printable ASCII, no leading `-`) is
+      // NAMED, shell-quoted, on the command -- the separator and substitution
+      // families are -- and the message still displays it in prose. Measured:
+      // NO span runs for any family here (the `(` of the region parenthesis
+      // aborts every span holding the head before expansion), so the stronger
+      // contract is what is pinned rather than the residual criterion, which
+      // would accept a future running display.
+      for (const { value, message } of withheld) {
+        if (message.includes('cdkd force-unlock')) {
+          expect(message, value).toContain(`run: cdkd force-unlock '`);
+        }
+        // The head's boundary is pinned DIRECTLY, not only through the paste:
+        // a shell-quoted head (`'x; touch OWNED; #'`) is inert under every
+        // family here too, so the harness alone would let it back (proxy
+        // pass). `displayStackName` JSON-quotes a non-plain value.
+        expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
+        expect(message, value).not.toContain(`for stack '${value}'`);
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      }
+    });
+  }, 120_000);
+});
+
 describe('buildLockContentionMessage (issue #2170)', () => {
   const base = { stackName: 'MyStack', region: 'us-east-1' };
 
@@ -355,9 +484,12 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     for (const msg of [stack, nested, child]) {
       expect(msg).toContain('Could not acquire lock for');
     }
-    expect(stack).toContain(`lock for stack 'MyStack'`);
-    expect(nested).toContain(`lock for nested stack 'MyStack'`);
-    expect(child).toContain(`lock for nested-stack child 'MyStack'`);
+    // A plain name renders BARE through `displayIdent`'s boundary since
+    // go-to-k/cdkd#3436's second half (a non-plain one is JSON-quoted); the
+    // hand-written `'...'` around it is gone.
+    expect(stack).toContain('lock for stack MyStack (');
+    expect(nested).toContain('lock for nested stack MyStack (');
+    expect(child).toContain('lock for nested-stack child MyStack (');
   });
 
   it('keeps a caller-supplied held clause and still adds the evidence', async () => {
@@ -632,6 +764,6 @@ describe('forceQuitRecoveryClause', () => {
     // It is spliced lowercase into `lock-manager.ts`'s sentence and used
     // capitalised here, so both spellings have to stay grammatical.
     expect(UNREPRODUCIBLE_LOCK_CLAUSE.startsWith('Inspect the lock object directly:')).toBe(true);
-    expect(UNREPRODUCIBLE_LOCK_CLAUSE.endsWith('would address a different lock.')).toBe(true);
+    expect(UNREPRODUCIBLE_LOCK_CLAUSE.endsWith('could address a different lock.')).toBe(true);
   });
 });
