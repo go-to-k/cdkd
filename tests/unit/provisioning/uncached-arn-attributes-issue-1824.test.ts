@@ -466,8 +466,10 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
         const msg = await refusalMessage(ARN_ID);
         expect(msg).toContain('Cannot adopt SSM parameter MyParam from an ARN');
         // The ACTIONABLE half, not merely the diagnosis: the flag form to re-run
-        // with, and the command that prints the name to pass.
-        expect(msg).toContain('--resource MyParam=<parameterName>');
+        // with, and the command that prints the name to pass. The placeholder
+        // is QUOTED since go-to-k/cdkd#3436 (`commandHole`): bare, `<parameterName>`
+        // was two redirections once the sentence after it was pasted with it.
+        expect(msg).toContain("--resource MyParam='<parameterName>'");
         // UNQUOTED since issue #3136: the command is rendered through the
         // shared `renderDisableCommand`, whose `shellQuote` leaves a value made
         // only of `[A-Za-z0-9._/@:+-]` bare — which every well-formed parameter

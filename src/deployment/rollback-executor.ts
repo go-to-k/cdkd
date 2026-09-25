@@ -46,7 +46,7 @@
  *    replays each op exactly once).
  */
 
-import { pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
@@ -273,6 +273,38 @@ function safe(value: unknown): string {
   return displayIdent(value);
 }
 
+/** The codes of the two refusals that end on {@link orphanRemedy}'s labelled LINE. */
+const OWN_REMEDY_LINE_CODES: ReadonlySet<string> = new Set([
+  'ROLLBACK_REPLACEMENT_UNROUTABLE',
+  'NAMED_REPLACEMENT_COLLISION',
+]);
+
+/**
+ * A caught rollback error's text for the per-op `Rollback failed for` line.
+ *
+ * Free-form text takes `displaySafe` on the WHOLE, which folds a newline into
+ * a space: a newline in an AWS message is the line forgery that render exists
+ * to remove (issue #3092). The two refusals in {@link OWN_REMEDY_LINE_CODES}
+ * are the exception, bounded by construction: every value in them is
+ * sanitized at the throw (`safe()`, `displaySafe`), so their line breaks are
+ * cdkd's own, and rendering them per LINE keeps the `To orphan it:` remedy on
+ * a line of its own on the terminal — the shape M1 of the go-to-k/cdkd#3764
+ * review asks for — where the whole-text render folded it back into the
+ * prose. Per line, not raw: should an unsanitized value ever reach one of
+ * those messages, each line is still sanitized and only the break survives,
+ * and the source-shape fences in `rollback-executor-log-injection.test.ts`
+ * refuse the unsanitized interpolation itself.
+ */
+function rollbackFailureText(error: unknown): string {
+  if (error instanceof CdkdError && OWN_REMEDY_LINE_CODES.has(error.code)) {
+    return error.message
+      .split('\n')
+      .map((line) => displaySafe(line))
+      .join('\n');
+  }
+  return displaySafe(error instanceof Error ? error.message : String(error));
+}
+
 /**
  * The one shape of `op.logicalId` this executor will print INSIDE a command it
  * invites the user to paste (`cdkd rollback --orphan <id>`): CloudFormation's
@@ -282,6 +314,44 @@ function safe(value: unknown): string {
  * legitimate id the executor merely SHOWS still goes through `safe()`.
  */
 const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
+
+/**
+ * The `cdkd rollback --orphan` remedy the two reverse-replacement refusals
+ * end on: a labelled LAST line of its own (`line`), and the sentence the prose
+ * carries when the id on it is a hole (`clause`, empty otherwise).
+ *
+ * ONE predicate decides both halves — {@link PASTEABLE_LOGICAL_ID}, stricter
+ * than `safe()` being the identity on the id: identity already refuses the
+ * TRIM (an id differing from a legitimate one only by a leading invisible
+ * renders identically to it), the boundary quoting, the cap and the
+ * placeholder, but a plain `~user` or `=x` is identity under `safe()` and is
+ * expanded by the user's shell before cdkd sees it. `typeof` first:
+ * `RegExp.test` coerces, so a non-string `logicalId` would otherwise print
+ * `--orphan undefined` / `123`. `parseRollbackJournal` refuses one since issue
+ * #3140, but the deploy engine's in-process rollback reaches this executor
+ * without that parser — defence in depth.
+ *
+ * Its OWN line, and the message's last, because the command used to run
+ * straight into prose (`--orphan RealDB to leave...`, `--orphan RealDB: one
+ * op failure...`), so an over-selection passed `to` as the stack argument —
+ * the one shape `pasteable-command.ts`'s contract rules out (M1 of the
+ * go-to-k/cdkd#3764 review). NO backtick wrapper, and the withheld
+ * placeholder is QUOTED (go-to-k/cdkd#3436): pasted WITH its wrapper a
+ * backtick span is command SUBSTITUTION, a worse wrapper than `'...'` and one
+ * the source fence cannot see. The explanation of a hole goes in the PROSE,
+ * before the line, so the line stays pasteable as a whole.
+ */
+function orphanRemedy(logicalId: unknown): { readonly clause: string; readonly line: string } {
+  const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);
+  return {
+    clause: pasteable
+      ? ''
+      : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
+        `so a pasted command could be reshaped by the shell or name a different resource — read ` +
+        `it from cdkd events and fill the quoted hole.`,
+    line: `\nTo orphan it: cdkd rollback --orphan ${pasteable ? logicalId : commandHole('id')}`,
+  };
+}
 
 /**
  * `UpdateReplacePolicy: Snapshot` on a rollback's delete-of-the-NEW-resource
@@ -1022,15 +1092,16 @@ export function resolveReplacementOldType(
  * is read off the journal alone, so no retry can change it.
  */
 function unroutableReplacementError(op: CompletedOperation, reason: string): Error {
+  // The remedy is a labelled last line built by `orphanRemedy`, which owns
+  // the gate on the id and the sentence for a withheld one.
+  const remedy = orphanRemedy(op.logicalId);
   return markNonRetryable(
     new CdkdError(
       `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
         `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
-        `was changed. The journal is kept: fix forward with \`cdkd deploy\`, or re-run with ` +
-        (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
-          ? `\`cdkd rollback --orphan ${op.logicalId}\``
-          : `\`cdkd rollback --orphan <id>\` (read the id from \`cdkd events\`)`) +
-        ` to leave this resource as it is and let the rest of the rollback proceed.`,
+        `was changed. The journal is kept: fix forward with cdkd deploy, or leave this resource ` +
+        `as it is and let the rest of the rollback proceed by re-running with the command below.` +
+        `${remedy.clause}${remedy.line}`,
       'ROLLBACK_REPLACEMENT_UNROUTABLE'
     )
   );
@@ -3008,6 +3079,7 @@ async function replaySingle(
             // inside a retried call, an unmarked refusal would burn the whole
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
+            const remedy = orphanRemedy(op.logicalId);
             throw markNonRetryable(
               new CdkdError(
                 // Issue #2038, and this file's stated policy two arms down:
@@ -3028,39 +3100,26 @@ async function replaySingle(
                     // Both physical ids take the identifier rendering, not the
                     // denylist the outer catch applies: this is the one message
                     // that carries the pasted `--orphan` remedy, so a planted
-                    // `previousState.physicalId` reading `...re-run with
-                    // \`cdkd rollback --orphan Victim\`` must show its boundary,
-                    // or it stands as a forged remedy AHEAD of the guarded one.
+                    // `previousState.physicalId` reading `...\nTo orphan it:
+                    // cdkd rollback --orphan Victim` must show its boundary (the
+                    // sanitizing also turns its newline into a space, so the
+                    // forged label can never start a line), or it stands as a
+                    // forged remedy AHEAD of the guarded one.
                     `the re-create of the old resource (${safe(prev.physicalId)}) collided with the ` +
                     `name still held by the new one (${safe(current.physicalId)}), and ` +
                     `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                     `not delete it to free the name. Delete the new resource yourself, or ` +
-                    `remove UpdateReplacePolicy: Retain, then re-run \`cdkd rollback\` — the ` +
+                    `remove UpdateReplacePolicy: Retain, then re-run cdkd rollback — the ` +
                     `journal is kept, so the revert resumes from here. To leave THIS resource ` +
-                    `alone and let the rest of the rollback proceed, re-run with ` +
-                    // This is a command the user is invited to paste, so the id is
-                    // printed only when it IS a CloudFormation logical id --
-                    // `PASTEABLE_LOGICAL_ID`, stricter than `safe()` being the
-                    // identity on it: identity already refuses the TRIM (an id
-                    // differing from a legitimate one only by a leading invisible
-                    // renders identically to it), the boundary quoting, the cap
-                    // and the placeholder, but a plain `~user` or `=x` is identity
-                    // under `safe()` and is expanded by the user's shell before
-                    // cdkd sees it. Otherwise the user is told why it is withheld
-                    // and where to read it.
-                    // `typeof` first: `RegExp.test` coerces, so a non-string
-                    // `logicalId` would otherwise print `--orphan undefined` /
-                    // `123`. `parseRollbackJournal` refuses one since issue
-                    // #3140, but the deploy engine's in-process rollback reaches
-                    // this executor without that parser -- defense-in-depth.
-                    (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
-                      ? `\`cdkd rollback --orphan ${op.logicalId}\`: one op failure stops the `
-                      : `\`cdkd rollback --orphan <id>\` (the id is withheld: it is not a plain ` +
-                        `CloudFormation logical id, so a pasted command could be reshaped by the ` +
-                        `shell or name a different resource -- read it from \`cdkd events\`): ` +
-                        `one op failure stops the `) +
-                    `segment loop, so a single pinned resource otherwise halts every OLDER ` +
-                    `segment too. Underlying collision: ${displaySafe(msg)}`,
+                    `alone and let the rest of the rollback proceed, re-run with the command ` +
+                    `below: one op failure stops the segment loop, so a single pinned resource ` +
+                    `otherwise halts every OLDER segment too.` +
+                    // The remedy is the message's labelled LAST line, built by
+                    // `orphanRemedy`, which owns the gate on the id and the
+                    // sentence for a withheld one; the AWS text stays in the
+                    // prose ABOVE it, so the line an operator selects is the
+                    // command alone.
+                    `${remedy.clause} Underlying collision: ${displaySafe(msg)}${remedy.line}`,
                   secrets
                 ),
                 'NAMED_REPLACEMENT_COLLISION',
@@ -3660,7 +3719,7 @@ async function replaySingle(
     // was the GHSA-p5qg-v9gv-hc7w fence missing on the rollback path.
     logger.warn(
       maskSecretsInText(
-        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): ${displaySafe(rollbackError instanceof Error ? rollbackError.message : String(rollbackError))}`,
+        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): ${rollbackFailureText(rollbackError)}`,
         secrets
       )
     );
@@ -4099,7 +4158,7 @@ export async function replayFailedOperations(
       logger.warn(
         maskSecretsInText(
           `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): ` +
-            `${displaySafe(revertError instanceof Error ? revertError.message : String(revertError))}`,
+            `${rollbackFailureText(revertError)}`,
           secrets
         )
       );

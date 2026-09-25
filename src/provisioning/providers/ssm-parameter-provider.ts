@@ -13,7 +13,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  isPasteableIdent,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -800,9 +806,23 @@ export class SSMParameterProvider implements ResourceProvider {
 
     const isArn = explicit.startsWith('arn:');
     const shape = isArn ? 'an ARN' : 'a version / label selector';
+    // The `--resource` fragment is a span the operator PASTES, so it takes the
+    // pasteable rule (go-to-k/cdkd#3436, the checkbox the #3269 lane left for
+    // it), not the prose one: the logical id is template-controlled, and
+    // `--resource` splits its value on the FIRST `=`, so an id carrying `=`
+    // retargets the flag while one carrying `'` or a space reshapes the pasted
+    // line. It is named only when `isPasteableIdent` admits it -- the same
+    // predicate `export.ts`'s `importRepairCommand` applies to the same flag --
+    // and holed otherwise; `shellQuote` is NOT the alternative, since a quoted
+    // `'a=b'` still reaches Commander as `a=b` and still splits. The
+    // placeholder is `commandHole`'s quoted form: bare, `<parameterName>` was
+    // two redirections the moment the sentence after it was pasted with it.
+    const resourceArg =
+      `${isPasteableIdent(input.logicalId) ? input.logicalId : commandHole('logicalId')}=` +
+      commandHole('parameterName');
     const remedy =
       input.knownPhysicalId === explicit
-        ? `pass the parameter NAME instead: --resource ${input.logicalId}=<parameterName>`
+        ? `pass the parameter NAME instead: --resource ${resourceArg}`
         : `set Properties.Name to the parameter NAME rather than ${shape}`;
     // The ARN case is the one with a derivation a reader may expect cdkd to
     // perform, so only it carries the why-not note.
@@ -841,8 +861,14 @@ export class SSMParameterProvider implements ResourceProvider {
         'safely on a command line, so any command shown here would read a different parameter.';
     throw new ProvisioningError(
       // The quoted `explicit` clause is PROSE, not a pasteable span, so it is
-      // display-sanitized in place rather than suppressed (issue #3269).
-      `Cannot adopt SSM parameter ${displaySafe(input.logicalId)} from ${shape} ('${displaySafe(explicit)}'): cdkd records ` +
+      // display-sanitized in place rather than suppressed (issue #3269). The
+      // logical id beside it takes `displayIdent`'s boundary rather than bare
+      // `displaySafe` (go-to-k/cdkd#3436's paste fence measured the bare form:
+      // an id `x; touch OWNED; #` ran when this sentence was pasted, the `#`
+      // commenting out everything after it). A plain id still renders bare, and
+      // the cap is the stack-ref one the `--resource` fragment's gate uses, so a
+      // 256-1152 code-point id is not named there under prose that cuts it.
+      `Cannot adopt SSM parameter ${displayIdent(input.logicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} from ${shape} ('${displaySafe(explicit)}'): cdkd records ` +
         `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
         `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
         `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +
