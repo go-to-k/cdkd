@@ -116,14 +116,19 @@ When the auto-route fires, cdkd logs an info line per affected resource:
         --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig.)
 ```
 
-Two categories never trigger the auto-route:
+A property missing from cdkd's CFn schema snapshot (one AWS published after
+it, a typo, or an `addPropertyOverride` key) triggers the auto-route too.
+Cloud Control applies a real property and rejects a misspelled one with
+`Model validation failed (#: extraneous key [...] is not permitted)`, as
+CloudFormation does.
 
-- **Properties not in the CFn schema** pass through silently. These are usually
-  `addPropertyOverride` escape hatches or typos, both of which CloudFormation
-  itself tolerates.
-- **Read-only properties** (AWS-managed ARNs, IDs, and so on) pass through
-  silently. You cannot set them from the template side, so they are no-ops if
-  they appear there.
+These stay on the SDK provider, with a warning that names the property:
+
+| Property | Why it does not route |
+| --- | --- |
+| Read-only (AWS-managed ARNs, IDs, and so on) | No engine sets one. CloudFormation ignores it, and Cloud Control would record it as the resource's identifier. |
+| Missing from the snapshot, on a type Cloud Control cannot manage | There is no Cloud Control route for the type. |
+| Missing from the snapshot, and unchanged since the resource was deployed on the SDK provider | An existing resource keeps its route. Changing the value routes it. |
 
 ### The override
 

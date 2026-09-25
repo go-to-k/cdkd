@@ -1942,7 +1942,14 @@ export function collectCcApiRoutes(
     if (!resource) continue;
     if (resource.Type === 'AWS::CDK::Metadata') continue;
     if (resource.Type === NESTED_STACK_RESOURCE_TYPE) continue;
-    const drops = findActionableSilentDrops(resource.Type, resource.Properties, EMPTY_ALLOW_SET);
+    // The record's bag is the baseline an unrecognized property is compared
+    // against, as `getProviderFor` does on the update path (issue #3713).
+    const drops = findActionableSilentDrops(
+      resource.Type,
+      resource.Properties,
+      EMPTY_ALLOW_SET,
+      state.resources[logicalId]?.properties
+    );
     if (drops.length > 0) {
       hits.set(
         logicalId,

@@ -2448,6 +2448,10 @@ export class DeployEngine {
       resourceType: resource.resourceType,
       properties: resource.properties,
       provisionedBy: resource.provisionedBy,
+      // The record is its own baseline (issue #3713): an unrecognized key it
+      // carries is by definition unchanged, so the read stays on the layer
+      // that wrote the record instead of moving to Cloud Control.
+      previousProperties: resource.properties,
     });
     if (!provider.import) return { kind: 'not-attempted' };
     const found = await provider.import({
@@ -3627,6 +3631,9 @@ export class DeployEngine {
           // resources demote the info-log to debug (avoids "routing via
           // Cloud Control API" repeated on every redeploy).
           provisionedBy: currentState.resources[logicalId]?.provisionedBy,
+          // The baseline an unrecognized property is compared against, so the
+          // routing lines describe the route `getProviderFor` takes (#3713).
+          previousProperties: currentState.resources[logicalId]?.properties,
         }));
       this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
       this.logger.debug(`All resource properties validated`);
@@ -5700,19 +5707,17 @@ export class DeployEngine {
     // lesson of {@link recreateDirectionFor}'s docstring.
     if (needsReplacement) {
       // Mirror `replaceDecision` argument for argument: it routes the NEW
-      // physical resource, so it passes NO `previousProperties` (stickiness
-      // exists to spare an EXISTING resource from churn, and a replacement is
-      // not that), the recreate hint as `provisionedBy`, and `forceCcApi` only
-      // for the CC direction. Passing `existingState: undefined` drops the
-      // record-derived inputs in one move, since `deriveLabelRouting` derives
-      // both from it.
-      // The synthetic record carries ONLY `provisionedBy`, which is exactly the
-      // mirror: `deriveLabelRouting` derives `provisionedBy` and
-      // `previousProperties` from this argument, so a record with the hint and
-      // no `properties` reproduces `replaceDecision`'s
-      // `{ ...(hint && { provisionedBy: hint }) }` with no `previousProperties`.
-      const hintRecord =
-        recreateDirection === undefined ? undefined : { provisionedBy: recreateDirection };
+      // physical resource, so it passes the recreate hint as `provisionedBy`
+      // (never the record's layer — stickiness exists to spare an EXISTING
+      // resource from churn, and a replacement is not that), `forceCcApi` only
+      // for the CC direction, and the record's bag as `previousProperties` —
+      // the baseline an unrecognized property is compared against (issue
+      // #3713). `deriveLabelRouting` derives both from this synthetic record,
+      // so it carries the hint and the record's `properties`, nothing else.
+      const hintRecord = {
+        ...(recreateDirection !== undefined && { provisionedBy: recreateDirection }),
+        ...(existingState?.properties !== undefined && { properties: existingState.properties }),
+      };
       return deriveLabelRouting(
         change,
         hintRecord,
@@ -6439,7 +6444,8 @@ export class DeployEngine {
             ? withoutAcceptedSilentDropProperties(
                 resourceType,
                 desiredForSkipCheck,
-                allowedSilentDrops
+                allowedSilentDrops,
+                currentResource.properties
               )
             : desiredForSkipCheck;
         if (
@@ -6707,6 +6713,14 @@ export class DeployEngine {
             resourceType,
             properties: resolvedProps,
             ...(recreateDirectionHint && { provisionedBy: recreateDirectionHint }),
+            // Issue #3713: the baseline an unrecognized property is compared
+            // against. A replacement mints a NEW physical resource, but one
+            // replacing a resource that deployed with the key unchanged keeps
+            // its route — on presence, a typo CloudFormation would reject but
+            // the SDK route tolerated would fail the replacement instead.
+            // Inert for the sticky-escape: without a `'cc-api'` record hint
+            // rule 2 is not consulted, and with one `forceCcApi` pins it.
+            previousProperties: currentResource.properties,
             // Issue #2719: `--recreate-via-cc-api` passes `provisionedBy:
             // 'cc-api'` as a HINT, and for a type with an `'sdk-coverage'`
             // exemption the sticky-escape would read that hint and divert the
@@ -7690,10 +7704,13 @@ export class DeployEngine {
                   );
                 }
               }
-              // The replacement create gets a fresh routing decision.
+              // The replacement create gets a fresh routing decision, against
+              // the record as its unrecognized-property baseline (issue #3713,
+              // same reason as `replaceDecision`).
               const replDecision = this.providerRegistry.getProviderFor({
                 resourceType,
                 properties: resolvedProps,
+                previousProperties: currentResource.properties,
               });
               const replProvider = replDecision.provider;
               const replProps =

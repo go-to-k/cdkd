@@ -6372,10 +6372,12 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/provisioning/property-coverage.ts',
-      2,
+      3,
       '`${resourceType}:${property}` membership in the ' +
         '--allow-unsupported-properties set; the property half comes from the ' +
-        'GENERATED drop table, a closed set',
+        'GENERATED drop table, a closed set, or (the unrecognized-key arm) is a ' +
+        'template key tested against the same user-supplied set -- a lookup ' +
+        'that decides a route, never a key anything is stored or served under',
     ],
     [
       'src/provisioning/provider-registry.ts',

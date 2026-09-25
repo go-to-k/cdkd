@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   findMissingCoverageTypes,
+  parseCcBrokenTypes,
   parseProviderSource,
 } from '../../../scripts/gen-property-coverage.js';
+import { STICKY_CC_MIGRATION_EXEMPT } from '../../../src/provisioning/provider-registry.js';
 
 const TYPE = 'AWS::Example::Thing';
 
@@ -91,5 +95,120 @@ describe('findMissingCoverageTypes — registry-vs-output cross-check', () => {
     const registered = new Set(['AWS::A::One', 'AWS::B::Two']);
     const output = new Set(['AWS::A::One', 'AWS::B::Two']);
     expect(findMissingCoverageTypes(registered, hasFixture, output)).toEqual([]);
+  });
+});
+
+describe('parseProviderSource — disableCcApiFallback (issue #3713)', () => {
+  it('flags every handledProperties type of a class declaring it true', () => {
+    const { ccFallbackDisabled } = parseProviderSource(`
+export class ExampleProvider {
+  readonly disableCcApiFallback = true;
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['${TYPE}', new Set(['Alpha'])],
+    ['AWS::Example::Other', new Set(['Beta'])],
+  ]);
+}
+`);
+    expect([...ccFallbackDisabled].sort()).toEqual(['AWS::Example::Other', TYPE].sort());
+  });
+
+  it('does not flag a class declaring it false, or a sibling class in the same file', () => {
+    const { ccFallbackDisabled, handled } = parseProviderSource(`
+export class Off {
+  readonly disableCcApiFallback = false;
+  handledProperties = new Map<string, ReadonlySet<string>>([['AWS::Example::Off', new Set()]]);
+}
+export class On {
+  readonly disableCcApiFallback = true;
+  handledProperties = new Map<string, ReadonlySet<string>>([['${TYPE}', new Set()]]);
+}
+export class Plain {
+  handledProperties = new Map<string, ReadonlySet<string>>([['AWS::Example::Plain', new Set()]]);
+}
+`);
+    // Parsed input floor: all three classes were seen.
+    expect(handled.size).toBe(3);
+    expect([...ccFallbackDisabled]).toEqual([TYPE]);
+  });
+});
+
+/** A `provider-registry.ts`-shaped exemption table around `entries`. */
+function exemptTable(entries: string): string {
+  return `
+export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> = new Map([
+${entries}
+]);
+
+export function wouldReturnToSdkProvider() {}
+`;
+}
+
+const CC_BROKEN_ENTRY = `  [
+    'AWS::Example::Broken',
+    {
+      // a comment mentioning mode: 'sdk-coverage' in prose
+      mode: 'cc-broken' as const,
+      physicalIdForm: 'x',
+    },
+  ],`;
+const SDK_COVERAGE_ENTRY = `  [
+    'AWS::Example::Slow',
+    {
+      mode: 'sdk-coverage' as const,
+      physicalIdForm: 'mentions cc-broken in prose only',
+    },
+  ],`;
+
+describe('parseCcBrokenTypes (issue #3713)', () => {
+  it("returns only the 'cc-broken' entries, whichever order they come in", () => {
+    // Parsed-input floor per shape: both entries were seen (the sdk-coverage
+    // one is rejected on its mode, not skipped), in either position.
+    expect([...parseCcBrokenTypes(exemptTable(`${CC_BROKEN_ENTRY}\n${SDK_COVERAGE_ENTRY}`))]).toEqual([
+      'AWS::Example::Broken',
+    ]);
+    expect([...parseCcBrokenTypes(exemptTable(`${SDK_COVERAGE_ENTRY}\n${CC_BROKEN_ENTRY}`))]).toEqual([
+      'AWS::Example::Broken',
+    ]);
+    expect([...parseCcBrokenTypes(exemptTable(SDK_COVERAGE_ENTRY))]).toEqual([]);
+    // A comment quoting the mode must not flag an sdk-coverage entry.
+    const commented = SDK_COVERAGE_ENTRY.replace(
+      "mode: 'sdk-coverage' as const,",
+      "// unlike mode: 'cc-broken', this one is slow only\n      mode: 'sdk-coverage' as const,"
+    );
+    expect(commented).toContain("// unlike mode: 'cc-broken'");
+    expect([...parseCcBrokenTypes(exemptTable(commented))]).toEqual([]);
+  });
+
+  it('refuses a source with no exemption table', () => {
+    expect(() => parseCcBrokenTypes('export const SOMETHING_ELSE = new Map([]);')).toThrow(
+      /could not read STICKY_CC_MIGRATION_EXEMPT/
+    );
+  });
+
+  it('refuses a table that parses to zero entries', () => {
+    expect(() => parseCcBrokenTypes(exemptTable(''))).toThrow(/parsed to zero entries/);
+  });
+
+  it('refuses an entry whose key is not a string literal', () => {
+    const constKeyed = `  [
+    SCHEDULER_TYPE,
+    { mode: 'cc-broken' as const },
+  ],`;
+    expect(() => parseCcBrokenTypes(exemptTable(`${CC_BROKEN_ENTRY}\n${constKeyed}`))).toThrow(
+      /unparseable STICKY_CC_MIGRATION_EXEMPT entry/
+    );
+  });
+
+  it('reads exactly the runtime cc-broken set out of the REAL provider-registry.ts', () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, '../../../src/provisioning/provider-registry.ts'),
+      'utf8'
+    );
+    const runtime = [...STICKY_CC_MIGRATION_EXEMPT]
+      .filter(([, entry]) => entry.mode === 'cc-broken')
+      .map(([type]) => type)
+      .sort();
+    expect(runtime.length).toBeGreaterThanOrEqual(1);
+    expect([...parseCcBrokenTypes(source)].sort()).toEqual(runtime);
   });
 });

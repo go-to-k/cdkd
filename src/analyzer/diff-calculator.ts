@@ -387,7 +387,8 @@ export class DiffCalculator {
             ? withoutAcceptedSilentDropProperties(
                 desiredResource.Type,
                 resolvedDesiredProps,
-                allowedUnsupportedProperties
+                allowedUnsupportedProperties,
+                currentResource.properties
               )
             : resolvedDesiredProps;
         const currentAfterDrops = sdkRouted

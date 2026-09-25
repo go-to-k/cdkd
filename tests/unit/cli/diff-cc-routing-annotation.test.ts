@@ -117,3 +117,33 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
     expect(hits.has('R')).toBe(false);
   });
 });
+
+/**
+ * Issue [#3713](https://github.com/go-to-k/cdkd/issues/3713): an unrecognized
+ * key routes through Cloud Control only when it differs from the record, as
+ * `getProviderFor` decides on the update path. The annotation must read the
+ * same baseline, or it names a route the deploy will not take.
+ */
+describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
+  const TYPE = 'AWS::SQS::Queue';
+  const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
+
+  it('PREMISE: the type is routable and carries no sticky-escape exemption', () => {
+    expect(STICKY_CC_MIGRATION_EXEMPT.has(TYPE)).toBe(false);
+  });
+
+  it('does NOT name a key the record already holds unchanged', () => {
+    const bag = { QueueName: 'q', [UNKNOWN]: 'same' };
+    const hits = collectCcApiRoutes(templateWith('R', TYPE, { ...bag }), stateWith('R', TYPE, { ...bag }));
+    // The record is on 'cc-api', so the sticky arm is what remains.
+    expect(hits.get('R')).toEqual(['sticky']);
+  });
+
+  it('names the key once its value differs from the record', () => {
+    const hits = collectCcApiRoutes(
+      templateWith('R', TYPE, { QueueName: 'q', [UNKNOWN]: 'changed' }),
+      stateWith('R', TYPE, { QueueName: 'q', [UNKNOWN]: 'same' })
+    );
+    expect(hits.get('R')).toEqual([UNKNOWN]);
+  });
+});

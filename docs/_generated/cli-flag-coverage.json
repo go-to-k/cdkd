@@ -650,6 +650,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -666,7 +667,8 @@
       "flag": "--prefer-sdk-route",
       "integs": [
         "cc-api-fallback-transitions",
-        "sdk-to-cc-autoroute"
+        "sdk-to-cc-autoroute",
+        "unrecognized-key-autoroute"
       ]
     },
     {
@@ -946,6 +948,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -1266,6 +1269,7 @@
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
+        "unrecognized-key-autoroute",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -1560,6 +1564,7 @@
         "stepfunctions-s3-definition",
         "synthetics-canary",
         "throttle-wide-dag",
+        "unrecognized-key-autoroute",
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle"
