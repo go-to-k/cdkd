@@ -47,7 +47,7 @@ cloudwatch-anomaly-detector	2026-08-25T16:16:55Z	PASS	56	verify.sh	third and fin
 codebuild-project	2026-09-24T22:46:12Z	PASS	79	verify.sh	rc ok, 0 orphans (#3663)
 codecommit	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
-cognito	2026-09-24T22:46:12Z	PASS	273	verify.sh	rc ok, 0 orphans (#3663)
+cognito	2026-09-25T13:35:54Z	PASS	276	verify.sh	rc ok, orph clean (#3728)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
 cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
 cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph
@@ -80,14 +80,14 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-24T22:46:12Z	PASS	1863	verify.sh	rc ok, 0 orphans (#3663)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-25T11:38:41Z	PASS	171	verify.sh	rc 0, state clean, PR 3613 head
+drift-revert	2026-09-25T13:35:54Z	PASS	160	verify.sh	rc ok, orph clean (#3728)
 drift-revert-arrays	2026-09-25T11:38:41Z	PASS	181	verify.sh	rc 0, state clean, PR 3613 head
 drift-revert-vpc	2026-09-25T11:38:41Z	PASS	272	verify.sh	rc 0, state clean, PR 3613 head
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-globaltable	2026-09-24T22:46:12Z	PASS	1342	verify.sh	rc ok, 0 orphans (#3663)
-dynamodb-gsi-update	2026-09-20T10:56:17Z	PASS	1276	verify.sh	rc ok, orph clean; #3458 update-path restructure
+dynamodb-gsi-update	2026-09-25T13:35:54Z	PASS	1258	verify.sh	rc ok, orph clean (#3728)
 dynamodb-ondemand	2026-09-20T10:56:17Z	PASS	210	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-stream-filter	2026-09-20T10:56:17Z	PASS	56	verify.sh	rc ok, orph clean; #3458 stream branch restructure
@@ -96,7 +96,7 @@ dynamodb-tableclass-switch	2026-09-20T06:14:17Z	PASS	94	verify.sh	rc ok, orph cl
 dynamodb-ttl-attr-change	2026-09-20T06:14:17Z	PASS	60	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 ec2-instance	2026-09-24T19:02:32Z	PASS	125	verify.sh	#2804 SG inline ingress+egress wiring path; 11 del 0 err 0 orph
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
-ec2-route-targets	2026-08-22T20:17:46Z	PASS	463	verify.sh	issue 2176 round-4; re-run after EC2 update-path masker threading; 0 errors, orphans clean
+ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-23T23:13:03Z	PASS	69	verify.sh	rc ok, orph clean (#1981 lane)
@@ -259,9 +259,9 @@ rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
-rollback-replay-effective-props	2026-09-23T21:27:56Z	PASS	688	verify.sh	CDKD_INTEG_MULTI_REGION=1 cross-region arm (#1741/#3569); drift bounded on #3573; 0 orphans us-east-1+eu-west-1
+rollback-replay-effective-props	2026-09-25T13:35:54Z	PASS	175	verify.sh	rc ok, orph clean (#3728)
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
-route53	2026-09-24T22:46:12Z	PASS	378	verify.sh	rc ok, 0 orphans (#3663)
+route53	2026-09-25T13:35:54Z	PASS	377	verify.sh	rc ok, orph clean (#3728)
 s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-24T06:28:51Z	PASS	275	verify.sh	rc ok, orph clean (#3585)
@@ -270,7 +270,7 @@ s3-event-notification	2026-09-24T06:18:07Z	PASS	90	verify.sh	rc ok, orph clean (
 s3-lifecycle	2026-09-25T09:36:54Z	PASS	281	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 s3-object-lock	2026-09-24T06:23:46Z	PASS	60	verify.sh	rc ok, orph clean (#3585)
 s3-replication-and-filter	2026-09-24T06:16:12Z	PASS	110	verify.sh	rc ok, orph clean (#3585)
-s3-subconfig-removal	2026-09-24T06:22:25Z	PASS	80	verify.sh	rc ok, orph clean (#3585)
+s3-subconfig-removal	2026-09-25T13:35:54Z	PASS	80	verify.sh	rc ok, orph clean (#3728)
 s3-tables	2026-09-25T11:38:41Z	PASS	51	verify.sh	rc 0, state clean, PR 3613 head
 s3-vectors	2026-09-24T22:46:12Z	PASS	61	verify.sh	rc ok, 0 orphans (#3663)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
