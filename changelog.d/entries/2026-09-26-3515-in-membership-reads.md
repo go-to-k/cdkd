@@ -4,4 +4,4 @@
   - An FSx create with `FileSystemType: constructor` passed the "supported type" guard instead of getting cdkd's named refusal.
   - `cdkd drift` compared an undeclared, captured-empty baseline key of that name instead of skipping it: phantom drift that `--revert` would act on. Only a hand-edited `state.json` can carry such a key.
   - All four sites use `Object.hasOwn` now.
-  - `cdkd local run-task` also dropped an env var named `__proto__` with no warning. The resolver's three env writes, the runner's merge of the template env and its `--env-vars` override writes all ran `Object.prototype`'s setter. They are own-key defines now, so the variable reaches the container. A SECRET of that name is still dropped (tracked on #3515).
+  - `cdkd local run-task` also dropped an env var named `__proto__` with no warning. The resolver's three env writes, the runner's merge of the template env and its `--env-vars` override writes all ran `Object.prototype`'s setter. They are own-key defines now, so the variable reaches the container.
