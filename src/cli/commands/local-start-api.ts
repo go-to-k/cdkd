@@ -132,6 +132,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { formatAuthority } from '../../utils/url-authority.js';
 import {
   applyCallerIdentityCredentials,
   AWS_CREDENTIAL_ENV_KEYS,
@@ -257,6 +258,21 @@ interface LocalStartApiOptions {
   mtlsCert?: string;
   /** Server-side mTLS private key (PEM). Must match `--mtls-cert`. */
   mtlsKey?: string;
+}
+
+/**
+ * The `Server listening on <url>  (<label>)` ready banner. Integ fixtures
+ * grep this prefix and read the port out of it, and users paste the URL into
+ * curl / `wscat`, so an IPv6 host must be bracketed or the URL does not parse.
+ */
+export function formatServerListeningBanner(
+  scheme: string,
+  host: string,
+  port: number,
+  pathSuffix: string,
+  label: string
+): string {
+  return `Server listening on ${scheme}://${formatAuthority(host, port)}${pathSuffix}  (${label})\n`;
 }
 
 /**
@@ -1088,7 +1104,7 @@ async function localStartApiCommand(
   // verify.sh marker scan is unchanged.
   for (const { group, server } of servers) {
     process.stdout.write(
-      `Server listening on ${server.scheme}://${server.host}:${server.port}  (${group.displayName})\n`
+      formatServerListeningBanner(server.scheme, server.host, server.port, '', group.displayName)
     );
   }
   // #462: emit one banner per WebSocket server. The protocol prefix
@@ -1098,7 +1114,13 @@ async function localStartApiCommand(
   for (const ws of wsServers) {
     const scheme = ws.server.scheme === 'https' ? 'wss' : 'ws';
     process.stdout.write(
-      `Server listening on ${scheme}://${ws.server.host}:${ws.server.port}${ws.apiPath}  (${ws.api.apiLogicalId} (WebSocket API))\n`
+      formatServerListeningBanner(
+        scheme,
+        ws.server.host,
+        ws.server.port,
+        ws.apiPath,
+        `${ws.api.apiLogicalId} (WebSocket API)`
+      )
     );
   }
   process.stdout.write('^C to stop and clean up containers.\n');
@@ -3006,7 +3028,9 @@ function filterSpecsForGroup(
  */
 function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
   for (const { group, server } of servers) {
-    process.stdout.write(`\n${group.displayName}  (http://${server.host}:${server.port})\n`);
+    process.stdout.write(
+      `\n${group.displayName}  (http://${formatAuthority(server.host, server.port)})\n`
+    );
     printRouteTable(group.routes);
   }
 }
