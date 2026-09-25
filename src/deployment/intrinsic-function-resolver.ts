@@ -5674,7 +5674,9 @@ export class IntrinsicFunctionResolver {
    * 1. PROBE — construct under a derived context whose fallback raises
    *    {@link StaleAttributeMissSignal} instead of deciding. Every per-type arm
    *    that CAN answer (the ~40 constructed ARNs, the live-read arms) returns
-   *    here exactly as before.
+   *    here exactly as before — except the heal-first arms
+   *    ({@link healBeforeConstructing}, issue #3627), which raise the signal
+   *    too because their answer may be wrong for a record lacking the value.
    * 2. HEAL — only on the signal: ask the context's healer, which re-reads the
    *    record's attributes through its provider once per deploy. A value for
    *    this attribute is served from that read.
@@ -5793,6 +5795,22 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Route an arm that ANSWERS without the record through the #1852 heal first.
+   *
+   * The heal runs only when a construction raises
+   * {@link StaleAttributeMissSignal}, which only `guardedPhysicalIdFallback`
+   * did — so an arm that returned `undefined` (DynamoDB `StreamArn`, IAM
+   * `RoleId`) or built a path-less IAM ARN never healed a record that lacks
+   * the attribute, such as one `cdkd import` wrote before issue #3627's
+   * read-backs. Under the probe phase this raises the signal; in the settled
+   * phase (the read found nothing) or with no healer it returns, and the arm
+   * answers as it always did.
+   */
+  private healBeforeConstructing(context: ResolverContext): void {
+    if (context.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
+  }
+
+  /**
    * The per-resource-type attribute construction itself.
    *
    * Many CloudFormation attributes are not returned by Cloud Control API,
@@ -5872,7 +5890,10 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:dynamodb:${region}:${accountId}:table/${physicalId}`;
         case 'StreamArn':
-          // Stream ARN would need to be fetched from API
+          // Not buildable from the table name. Heal first (issue #3627): a
+          // record imported before `import()` read it back lacks it, and
+          // answering here never reached the #1852 re-read.
+          this.healBeforeConstructing(context);
           return undefined;
         default:
           return this.guardedPhysicalIdFallback(
@@ -5913,9 +5934,14 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::IAM::Role') {
       switch (attributeName) {
         case 'Arn':
+          // The built ARN drops a non-`/` `Path`, so a record lacking `Arn` (one
+          // imported before `import()` read it back) is re-read first; the
+          // construction stays the answer when there is no heal (issue #3627).
+          this.healBeforeConstructing(context);
           return `arn:${partition}:iam::${accountId}:role/${physicalId}`;
         case 'RoleId':
-          // Role ID would need to be fetched from API
+          // Not buildable from the role name: heal first (issue #3627).
+          this.healBeforeConstructing(context);
           return undefined;
         default:
           return this.guardedPhysicalIdFallback(
@@ -6116,6 +6142,8 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::IAM::User') {
       switch (attributeName) {
         case 'Arn':
+          // Path-less construction; heal first (issue #3627), as for the Role.
+          this.healBeforeConstructing(context);
           return `arn:${partition}:iam::${accountId}:user/${physicalId}`;
         default:
           return this.guardedPhysicalIdFallback(
@@ -6132,6 +6160,8 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::IAM::Group') {
       switch (attributeName) {
         case 'Arn':
+          // Path-less construction; heal first (issue #3627), as for the Role.
+          this.healBeforeConstructing(context);
           return `arn:${partition}:iam::${accountId}:group/${physicalId}`;
         default:
           return this.guardedPhysicalIdFallback(
@@ -6148,6 +6178,8 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::IAM::InstanceProfile') {
       switch (attributeName) {
         case 'Arn':
+          // Path-less construction; heal first (issue #3627), as for the Role.
+          this.healBeforeConstructing(context);
           return `arn:${partition}:iam::${accountId}:instance-profile/${physicalId}`;
         default:
           return this.guardedPhysicalIdFallback(

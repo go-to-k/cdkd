@@ -1192,6 +1192,13 @@
       ]
     },
     {
+      "name": "import-heal-prefix-record",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-lambda-url-attributes",
       "annotated": true,
       "scenarios": [
@@ -2701,6 +2708,7 @@
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
         "import-attribute-readback-network",
+        "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-vpc",
         "import-retain-destroy",

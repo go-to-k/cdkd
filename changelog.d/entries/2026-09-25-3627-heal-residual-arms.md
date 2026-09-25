@@ -1,0 +1,5 @@
+- **`cdkd deploy` now heals DynamoDB `StreamArn`, IAM Role `RoleId` and path-bearing IAM `Arn` attributes missing from a record an older cdkd imported (issue [#3627](https://github.com/go-to-k/cdkd/issues/3627))** -- `src/deployment/intrinsic-function-resolver.ts`, `tests/unit/deployment/intrinsic-heal-before-constructing.test.ts`, and the new `tests/integration/import-heal-prefix-record/` fixture. The deploy-time stale-attribute heal ([#1852](https://github.com/go-to-k/cdkd/issues/1852)) runs only when a resolution is about to refuse or take the physical-id fallback. These resolver arms answered first:
+  - the DynamoDB `StreamArn` and IAM Role `RoleId` arms returned `undefined`;
+  - the IAM Role / User / Group / InstanceProfile `Arn` arms built an ARN that drops a non-`/` `Path`.
+
+  So a record imported before the `import()` read-backs stayed wrong on every deploy. Each arm now tries the heal first, and keeps its old answer when the re-read finds nothing. Measured live: a stack imported with cdkd 0.291.13 had all four rows wrong, and the first deploy with this fix corrected every record and live value.
