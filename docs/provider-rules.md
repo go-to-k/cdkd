@@ -1625,12 +1625,20 @@ Return attributes accessible via `Fn::GetAtt`:
 return {
   physicalId: bucketName,
   attributes: {
-    Arn: `arn:aws:s3:::${bucketName}`,
-    DomainName: `${bucketName}.s3.amazonaws.com`,
-    RegionalDomainName: `${bucketName}.s3.${region}.amazonaws.com`,
+    Arn: s3BucketArn(bucketName, region),
+    DomainName: s3BucketDomainName(bucketName, region),
+    RegionalDomainName: s3BucketRegionalDomainName(bucketName, region),
   },
 };
 ```
+
+Never hardcode `arn:aws:` or `amazonaws.com` in a value you build: outside the
+commercial partition (`aws-cn`, `aws-us-gov`, ...) both are wrong, and the value
+is still structurally valid, so nothing downstream catches it. Derive the
+partition and URL suffix from the region with `derivePartitionAndUrlSuffix`
+(`src/utils/aws-partition.ts`), or call a shared builder such as the
+`src/utils/s3-endpoints.ts` ones above, which the SDK and Cloud Control routes
+both use so they record the same value.
 
 ## `getAttribute()` for live `Fn::GetAtt` resolution
 
