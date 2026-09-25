@@ -248,7 +248,6 @@ recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc 
 recreate-via-cc-api	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-25T16:41:38Z	PASS	1322	verify.sh	rc 0, state clean, PR 3787 (rerun after a peer lock)
 remove-protection	2026-09-25T17:52:04Z	PASS	1307	verify.sh	rc ok, orph clean (#3136 PR #3786)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
