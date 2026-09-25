@@ -86,7 +86,7 @@ drift-revert-vpc	2026-09-25T13:23:17Z	PASS	255	verify.sh	rc ok, orph clean; sha 
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
-dynamodb-globaltable	2026-09-24T22:46:12Z	PASS	1342	verify.sh	rc ok, 0 orphans (#3663)
+dynamodb-globaltable	2026-09-25T18:05:55Z	PASS	1698	verify.sh	rc ok, CDKD_INTEG_MULTI_REGION=1, step 12c-3 local-replica drift + legacy baseline clean, 0 orphans (#3776)
 dynamodb-gsi-update	2026-09-25T13:35:54Z	PASS	1258	verify.sh	rc ok, orph clean (#3728)
 dynamodb-ondemand	2026-09-20T10:56:17Z	PASS	210	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
@@ -259,7 +259,7 @@ rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
-rollback-replay-effective-props	2026-09-25T13:35:54Z	PASS	175	verify.sh	rc ok, orph clean (#3728)
+rollback-replay-effective-props	2026-09-25T18:05:55Z	PASS	717	verify.sh	rc ok, CDKD_INTEG_MULTI_REGION=1, phase 5 cross-region drift clean without the #3573 allowance, 0 orphans (#3776)
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
 route53	2026-09-25T13:35:54Z	PASS	377	verify.sh	rc ok, orph clean (#3728)
 s3-analytics-inventory	2026-09-24T07:16:12Z	PASS	195	verify.sh	rc ok, orph clean (#3602)
