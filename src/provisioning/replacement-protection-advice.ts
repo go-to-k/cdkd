@@ -55,7 +55,11 @@
  * (`ssm-parameter-provider.ts`'s `refuseUnwritableParameterId`) — so the right
  * question for a NEW caller is not "can it use
  * {@link protectedReplacementAdvice} instead" but "is the value it pastes
- * cdkd-MINTED with a proven charset". Where it is not, it belongs here.
+ * cdkd-MINTED with a proven charset". Where it is not, it belongs here — through
+ * {@link renderDisableCommand} for one id at the end of a command, or through
+ * the tagged-template {@link pasteableAwsCommand} (same gate) for a command
+ * naming several values or one mid-command, which is how the provider sites
+ * of issue #3136's second half render.
  * `efs-provider.ts`'s `aws efs describe-access-points --query
  * "AccessPoints[?ClientToken=='<token>']"` is the recorded counter-example and
  * deliberately does NOT route through this: the token comes from
@@ -290,15 +294,130 @@ export function renderDisableCommand<
   // the direct call). Exporting the discharged `ResolvedDisableCommand`
   // instead would have re-opened the door the constraint exists to close.
   const resolved = disable as ResolvedDisableCommand;
-  const safeId = displaySafe(resolved.identifier, { asciiOnly: true });
-  if (!safeId || safeId !== resolved.identifier) return '';
-  // A SECRET-bearing id is suppressed for the same reason a sanitized one is:
-  // see {@link ProtectedReplacementDisableCommand.maskSecrets} for why the
-  // message-level mask cannot catch it once `shellQuote` has escaped a quote.
-  // Only a caller that HAS a masker can ask this; the rest are unchanged.
-  if (resolved.maskSecrets && resolved.maskSecrets(safeId) !== safeId) return '';
+  const quoted = pasteableArg(resolved.identifier, resolved.maskSecrets);
+  if (quoted === undefined) return '';
   const tail = resolved.after ? ` ${resolved.after}` : '';
-  return `${resolved.before} ${shellQuote(safeId)}${tail}`;
+  return `${resolved.before} ${quoted}${tail}`;
+}
+
+/**
+ * ONE value of a pasteable `aws ...` command, rendered the way
+ * {@link renderDisableCommand} renders its identifier — or `undefined` when it
+ * cannot be named, in which case the caller must print NO command.
+ *
+ * `displaySafe(asciiOnly)` first; a value sanitizing CHANGES (or an empty one)
+ * is refused, because a command naming the sanitized spelling acts on a
+ * DIFFERENT resource. A value the caller's masker would change is refused too
+ * (see {@link ProtectedReplacementDisableCommand.maskSecrets}). Everything else
+ * is `shellQuote`d, which leaves a clean id BARE.
+ */
+function pasteableArg(
+  value: string,
+  maskSecrets: ((text: string) => string) | undefined
+): string | undefined {
+  // A non-string (a template value typed only by a cast at the call site)
+  // has no exact spelling to print.
+  if (typeof value !== 'string') return undefined;
+  const safe = displaySafe(value, { asciiOnly: true });
+  if (!safe || safe !== value) return undefined;
+  if (maskSecrets && maskSecrets(safe) !== safe) return undefined;
+  return shellQuote(safe);
+}
+
+/**
+ * A command, or part of one, built by {@link pasteableAwsCommand}. `text` is
+ * `undefined` when any value it would name cannot be printed exactly.
+ *
+ * NOT exported as a class (only its type is): a caller able to `new` one could
+ * hand raw text to a tag as a "fragment" and skip the gate. Each instance also
+ * remembers the tag that built it, and a tag splices only its OWN fragments
+ * (see {@link pasteableAwsCommand}).
+ */
+class PasteableAwsCommand {
+  readonly text: string | undefined;
+  readonly #origin: object;
+
+  constructor(text: string | undefined, origin: object) {
+    this.text = text;
+    this.#origin = origin;
+  }
+
+  /** True when `tag` built this fragment. */
+  builtBy(tag: object): boolean {
+    return this.#origin === tag;
+  }
+
+  /** The command, or {@link WITHHELD_AWS_COMMAND} in its place. */
+  render(): string {
+    return this.text ?? WITHHELD_AWS_COMMAND;
+  }
+}
+
+export type { PasteableAwsCommand };
+
+/**
+ * What a message prints in place of a command {@link pasteableAwsCommand}
+ * withheld. It names no value, so nothing unsafe can reach the terminal
+ * through it.
+ */
+export const WITHHELD_AWS_COMMAND =
+  '[command withheld: a name or id it would carry cannot be printed exactly on a command ' +
+  'line, so a pasted copy could act on a different resource; use the console]';
+
+/**
+ * Build a pasteable `aws ...` command as a TAGGED TEMPLATE (issue
+ * [#3136](https://github.com/go-to-k/cdkd/issues/3136)), for the provider
+ * messages that name MORE than one value, or name one in the middle of a
+ * command, which {@link renderDisableCommand}'s `before` / `identifier` /
+ * `after` shape cannot express.
+ *
+ * The template's LITERAL spans are code by construction — a tag receives them
+ * as `TemplateStringsArray`, which no runtime value can become — and every
+ * `${...}` is a VALUE, each going through the same gate as
+ * `renderDisableCommand`'s identifier. One unnameable value withholds the
+ * WHOLE command (`text: undefined`): a command with one argument dropped or
+ * sanitized addresses something else.
+ *
+ * An optional flag is a NESTED command —
+ * `` ${bus ? cmd` --event-bus-name ${bus}` : cmd``} `` — spliced verbatim
+ * when nameable and withholding the outer one when not. A bare string there
+ * would be quoted as ONE argument, flag included, which is why a fragment is a
+ * distinct type rather than a pre-rendered string. Build every fragment with
+ * the SAME tag as the command it goes into: a fragment from another tag
+ * withholds the command.
+ *
+ * The masker applies per value, not to the finished line: `shellQuote`
+ * rewrites an inner `'`, after which a literal-occurrence mask no longer
+ * matches (the reason `renderDisableCommand` takes one).
+ */
+export function pasteableAwsCommand(
+  maskSecrets?: (text: string) => string
+): (
+  strings: TemplateStringsArray,
+  ...values: ReadonlyArray<string | PasteableAwsCommand>
+) => PasteableAwsCommand {
+  const tag = (
+    strings: TemplateStringsArray,
+    ...values: ReadonlyArray<string | PasteableAwsCommand>
+  ): PasteableAwsCommand => {
+    let text = strings[0] ?? '';
+    for (let i = 0; i < values.length; i++) {
+      const value = values[i]!;
+      // A fragment from ANOTHER tag withholds the command: its values passed
+      // that tag's masker, not this one's, so a masked command could otherwise
+      // splice in a secret an unmasked fragment let through.
+      const rendered =
+        value instanceof PasteableAwsCommand
+          ? value.builtBy(tag)
+            ? value.text
+            : undefined
+          : pasteableArg(value, maskSecrets);
+      if (rendered === undefined) return new PasteableAwsCommand(undefined, tag);
+      text += rendered + (strings[i + 1] ?? '');
+    }
+    return new PasteableAwsCommand(text, tag);
+  };
+  return tag;
 }
 
 /**

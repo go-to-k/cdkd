@@ -117,8 +117,15 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             `Cleaned up partially-created IAM instance profile ${logicalId} (${instanceProfileName}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The name in the commands below is left BARE on purpose (issue
+          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+          // and trims leading and trailing `-`, so no template spelling reaches
+          // the shell as anything but one plain word. Pinned by this type's
+          // partial-create cleanup test.
+          // The `<name>` hole is QUOTED: bare, it is two shell redirections.
           this.logger.warn(
-            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name <name>) then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
+            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>') then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
           );
         }
         throw innerError;

@@ -35,6 +35,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -179,8 +180,12 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             `Cleaned up partially-created managed policy ${logicalId} (${policyArn}) after attachment failure`
           );
         } catch (cleanupError) {
+          // The ARN is AWS-minted but embeds the TEMPLATE-chosen name and path,
+          // so every command below renders through `pasteableAwsCommand`
+          // (issue #3136): withheld when it cannot be printed exactly.
+          const aws = pasteableAwsCommand();
           this.logger.warn(
-            `Failed to clean up partially-created managed policy ${logicalId} (${policyArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: detach principals (aws iam list-entities-for-policy --policy-arn ${policyArn}), delete versions (aws iam list-policy-versions --policy-arn ${policyArn} then aws iam delete-policy-version), then aws iam delete-policy --policy-arn ${policyArn}`
+            `Failed to clean up partially-created managed policy ${logicalId} (${policyArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
           );
         }
         throw innerError;

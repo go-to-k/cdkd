@@ -47,6 +47,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -951,7 +952,7 @@ export class Route53Provider implements ResourceProvider {
         }
       }
       throw new ProvisioningError(
-        `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalId} (${physicalId}); re-run \`cdkd state destroy\` or disable manually via \`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery\``,
+        `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalId} (${physicalId}); re-run \`cdkd state destroy\` or disable manually via ${pasteableAwsCommand()`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery`.render()}`,
         'AWS::Route53::HostedZone',
         logicalId,
         physicalId

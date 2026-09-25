@@ -60,6 +60,12 @@ import {
   EC2Provider,
   describedInstanceAttributes,
 } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const PROPS = { ImageId: 'ami-12345678', InstanceType: 't3.micro', SubnetId: 'subnet-1' };
 
@@ -509,6 +515,44 @@ describe('IAM instance profile skip warning content under --no-wait (issue #1279
     expect(warning).toContain(
       `aws ec2 associate-iam-instance-profile --instance-id ${INSTANCE_ID} --iam-instance-profile Name=MyProfile`
     );
+  });
+
+  // Issue #3136: the profile is a TEMPLATE value, so both commands render
+  // through `pasteableAwsCommand` — quoted, or withheld when it cannot be
+  // printed exactly.
+  it('shell-quotes a forged profile name after Name=, and withholds for a control byte', async () => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: FORGED_QUOTE,
+    });
+    expectQuotedAfter(skipWarning()!, '--iam-instance-profile Name=', FORGED_QUOTE);
+
+    warnMock.mockReset();
+    mockRunInstancesOk('pending');
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: FORGED_CTRL,
+    });
+    expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
+  });
+
+  it('shell-quotes a forged ARN-shaped profile after Arn=', async () => {
+    const arn = `arn:aws:iam::123456789012:instance-profile/$(id)/${FORGED_QUOTE}`;
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: arn,
+    });
+    expectQuotedAfter(skipWarning()!, '--iam-instance-profile Arn=', arn);
+  });
+
+  it('withholds both commands for a profile the caller masker would change', async () => {
+    await new EC2Provider().create(
+      'MyInstance',
+      'AWS::EC2::Instance',
+      { ...PROPS, IamInstanceProfile: 'prof-s3cr3t' },
+      { maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***') }
+    );
+    expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
   });
 
   it('emits no skip warning when the template has no profile', async () => {

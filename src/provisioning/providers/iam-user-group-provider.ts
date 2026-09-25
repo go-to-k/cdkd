@@ -362,6 +362,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
             `Cleaned up partially-created IAM user ${logicalId} (${userName}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The name in the commands below is left BARE on purpose (issue
+          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+          // and trims leading and trailing `-`, so no template spelling reaches
+          // the shell as anything but one plain word. Pinned by this type's
+          // partial-create cleanup test.
           this.logger.warn(
             `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
           );
@@ -957,6 +963,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
             `Cleaned up partially-created IAM group ${logicalId} (${groupName}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The name in the commands below is left BARE on purpose (issue
+          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+          // and trims leading and trailing `-`, so no template spelling reaches
+          // the shell as anything but one plain word. Pinned by this type's
+          // partial-create cleanup test.
           this.logger.warn(
             `Failed to clean up partially-created IAM group ${logicalId} (${groupName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then aws iam delete-group --group-name ${groupName}`
           );

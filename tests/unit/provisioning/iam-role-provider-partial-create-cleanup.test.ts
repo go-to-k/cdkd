@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { FORGED_CTRL, FORGED_QUOTE } from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::Role';
 
@@ -121,5 +122,33 @@ describe('IAMRoleProvider partial-create cleanup (Issue #376)', () => {
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws iam delete-role --role-name');
     expect(warnMsg).toContain('MyRole');
+  });
+
+  describe('the recovery commands name the role BARE, by provenance (issue #3136)', () => {
+    // The name is `generateResourceNameWithFallback`'s output, which rewrites
+    // everything outside `[A-Za-z0-9-]`: a forged template name reaches the
+    // commands only as one plain word, so the site does not route through
+    // `pasteableAwsCommand`. If the generator ever stops sanitizing, this fails.
+    it.each([FORGED_QUOTE, FORGED_CTRL])('a forged RoleName reaches every command as a plain word, and the holes are quoted', async (forged) => {
+      mockSend.mockResolvedValueOnce({ Role: { Arn: 'arn:aws:iam::123:role/MyRole' } }); // CreateRoleCommand
+      mockSend.mockRejectedValueOnce(new Error('PutRolePolicy boom')); // PutRolePolicyCommand
+      mockSend.mockRejectedValueOnce(new Error('ListAttachedRolePolicies also failed'));
+      await expect(
+        provider.create('MyRole', RESOURCE_TYPE, {
+          RoleName: forged,
+          AssumeRolePolicyDocument: ASSUME_ROLE_POLICY,
+          Policies: [
+            { PolicyName: 'InlinePol', PolicyDocument: { Version: '2012-10-17', Statement: [] } },
+          ],
+        })
+      ).rejects.toThrow('PutRolePolicy boom');
+      const msg = String(warnSpy.mock.calls[0][0]);
+      const names = [...msg.matchAll(/--role-name ([^\s)]+)/g)].map((m) => m[1]);
+      expect(names).toHaveLength(5);
+      for (const name of names) expect(name).toMatch(/^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/);
+      // A bare `<arn>` / `<name>` is two shell redirections.
+      expect(msg).toContain(`--policy-arn '<arn>'`);
+      expect(msg).toContain(`--policy-name '<name>'`);
+    });
   });
 });

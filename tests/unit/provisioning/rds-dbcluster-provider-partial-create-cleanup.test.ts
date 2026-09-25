@@ -37,6 +37,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBCluster';
 
@@ -167,5 +173,56 @@ describe('RDSProvider createDBCluster partial-create cleanup (Issue #376)', () =
     expect(warnMsg).toContain('aws rds modify-db-cluster --db-cluster-identifier');
     expect(warnMsg).toContain('--no-deletion-protection');
     expect(warnMsg).toContain('aws rds delete-db-cluster --db-cluster-identifier');
+  });
+
+  describe('the recovery commands name the cluster through pasteableAwsCommand (issue #3136)', () => {
+    async function warnFor(id: string): Promise<string> {
+      mockSend.mockResolvedValueOnce({ DBCluster: { DBClusterIdentifier: id } });
+      waitForClusterAvailableSpy.mockRejectedValueOnce(new Error('Waiter failed'));
+      mockSend.mockRejectedValueOnce(new Error('ModifyDB also failed'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteDB also failed'));
+      await expect(
+        provider.create('MyCluster', RESOURCE_TYPE, {
+          DBClusterIdentifier: id,
+          Engine: 'aurora-mysql',
+          DeletionProtection: true,
+        })
+      ).rejects.toThrow('Waiter failed');
+      return String(warnSpy.mock.calls[0][0]);
+    }
+
+    it('shell-quotes an identifier carrying a quote in both commands', async () => {
+      const msg = await warnFor(FORGED_QUOTE);
+      expectQuotedAfter(msg, 'aws rds modify-db-cluster --db-cluster-identifier ', FORGED_QUOTE);
+      expectQuotedAfter(msg, 'aws rds delete-db-cluster --db-cluster-identifier ', FORGED_QUOTE);
+    });
+
+    it('the no-protection arm (delete only) quotes or withholds too', async () => {
+      for (const [id, outcome] of [
+        [FORGED_QUOTE, 'quoted'],
+        [FORGED_CTRL, 'withheld'],
+      ] as const) {
+        warnSpy.mockReset();
+        mockSend.mockResolvedValueOnce({ DBCluster: { DBClusterIdentifier: id } });
+        waitForClusterAvailableSpy.mockRejectedValueOnce(new Error('Waiter failed'));
+        mockSend.mockRejectedValueOnce(new Error('DeleteDB also failed'));
+        await expect(
+          provider.create('MyCluster', RESOURCE_TYPE, { DBClusterIdentifier: id, Engine: 'aurora-mysql' })
+        ).rejects.toThrow('Waiter failed');
+        const msg = String(warnSpy.mock.calls[0][0]);
+        expect(msg).not.toContain('modify-db-cluster');
+        if (outcome === 'quoted') {
+          expectQuotedAfter(msg, 'aws rds delete-db-cluster --db-cluster-identifier ', id);
+        } else {
+          expectWithheld(msg, '--db-cluster-identifier');
+        }
+      }
+    });
+
+    it('withholds both commands for an identifier carrying a control byte', async () => {
+      const msg = await warnFor(FORGED_CTRL);
+      expectWithheld(msg, '--db-cluster-identifier');
+      expect(msg).toContain('THE CLUSTER IS STILL RUNNING AND BILLING');
+    });
   });
 });

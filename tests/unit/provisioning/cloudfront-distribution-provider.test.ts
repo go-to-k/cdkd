@@ -41,6 +41,12 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 describe('CloudFrontDistributionProvider', () => {
   let provider: CloudFrontDistributionProvider;
@@ -305,6 +311,75 @@ describe('CloudFrontDistributionProvider', () => {
       expect(warn).toContain('did not reach Deployed');
       expect(warn).toContain('aws cloudfront wait distribution-deployed --id EDFDVBD6EXAMPLE');
       expect(warn).toContain('--resource-timeout AWS::CloudFront::Distribution');
+    });
+
+    // Issue #3136: the distribution id is AWS-minted (off the create
+    // response) and still routed through `pasteableAwsCommand` at both wait
+    // hints — quoted, or withheld when it cannot be printed exactly.
+    it('the default-path wait hint quotes a forged distribution id, or withholds it', async () => {
+      mockSend.mockResolvedValueOnce({ Distribution: { Id: `E1${FORGED_QUOTE}`, DomainName: 'd' } });
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput);
+      expectQuotedAfter(
+        childLogger.info.mock.calls.map((c) => String(c[0])).join('\n'),
+        'aws cloudfront wait distribution-deployed --id ',
+        `E1${FORGED_QUOTE}`
+      );
+
+      childLogger.info.mockClear();
+      mockSend.mockResolvedValueOnce({ Distribution: { Id: `E1${FORGED_CTRL}`, DomainName: 'd' } });
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput);
+      expectWithheld(
+        childLogger.info.mock.calls.map((c) => String(c[0])).join('\n'),
+        'aws cloudfront wait'
+      );
+    });
+
+    it('the --full-wait timeout hint quotes a forged distribution id', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      const id = `E1${FORGED_QUOTE}`;
+      mockSend.mockResolvedValueOnce({ Distribution: { Id: id, DomainName: 'd' } });
+      mockSend.mockResolvedValue({
+        Distribution: { Id: id, Status: 'InProgress', DistributionConfig: { Enabled: true } },
+      });
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+        await createPromise;
+      } finally {
+        vi.useRealTimers();
+      }
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('did not reach Deployed');
+      expectQuotedAfter(warn, 'aws cloudfront wait distribution-deployed --id ', id);
+    });
+
+    it('the --full-wait timeout hint withholds a distribution id carrying a control byte', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      const id = `E1${FORGED_CTRL}`;
+      mockSend.mockResolvedValueOnce({ Distribution: { Id: id, DomainName: 'd' } });
+      mockSend.mockResolvedValue({
+        Distribution: { Id: id, Status: 'InProgress', DistributionConfig: { Enabled: true } },
+      });
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+        await createPromise;
+      } finally {
+        vi.useRealTimers();
+      }
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('did not reach Deployed');
+      expectWithheld(warn, 'aws cloudfront wait');
     });
 
     it('a transient GetDistribution failure mid-wait does NOT fail the operation (polling continues)', async () => {
