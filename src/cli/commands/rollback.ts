@@ -771,6 +771,17 @@ export async function rollbackCommand(
               ...(fresh?.etag !== undefined && { expectedEtag: fresh.etag }),
             });
           } catch (retryError) {
+            // The decline gets its own text: the generic "re-run to reconcile"
+            // below would send the operator straight into the start-of-run
+            // refusal, which holds until the record's region field is repaired.
+            if (declinedDivergentRewrite) {
+              logger.warn(
+                `Did not persist state after a rollback operation: ${declinedDivergentReason}. ` +
+                  `The resource was reverted in AWS. Repair the record's region field to match ` +
+                  `the key it is stored under, then run the rollback again to reconcile state.`
+              );
+              return;
+            }
             logger.warn(
               `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
                 `The resource was reverted in AWS; re-run the rollback to reconcile state.` +
@@ -860,7 +871,16 @@ export async function rollbackCommand(
                   // Best-effort: on a strip failure the re-run merely
                   // re-attempts the revert.
                   const remaining = failedResult.remainingFailedOps;
-                  if (remaining.length !== segment.failedOperations.length) {
+                  // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
+                  // the handled ops' state rows were never saved, so stripping
+                  // them would leave the record describing work the journal no
+                  // longer carries. Kept, the re-run after the region repair
+                  // replays them against the unsaved rows and reconciles (a
+                  // failed-CREATE delete reads not-found as done).
+                  if (
+                    !declinedDivergentRewrite &&
+                    remaining.length !== segment.failedOperations.length
+                  ) {
                     try {
                       await setup.stateBackend.setRollbackJournalFailedOperations(
                         stackName,
@@ -961,7 +981,9 @@ export async function rollbackCommand(
       // 10. Exit codes.
       if (declinedDivergentRewrite) {
         throw new PartialFailureError(
-          `Rollback stopped: ${declinedDivergentReason}. Journal preserved — ` +
+          `Rollback stopped: ${declinedDivergentReason}.` +
+            (totalFailures > 0 ? ` ${totalFailures} operation(s) also failed.` : '') +
+            ` Journal preserved (this segment, any older ones, and their failed operations) — ` +
             `re-run the rollback once the record's region field matches its key.`
         );
       }

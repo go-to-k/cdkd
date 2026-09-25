@@ -196,6 +196,7 @@ function install(opts: {
 }) {
   const popRollbackJournalSegment = vi.fn().mockResolvedValue(0);
   const deleteState = vi.fn().mockResolvedValue(undefined);
+  const setRollbackJournalFailedOperations = vi.fn().mockResolvedValue(undefined);
   const record = (bodyRegion: string): StackState => ({
     version: 9,
     stackName: STACK,
@@ -231,7 +232,7 @@ function install(opts: {
       }),
       saveState,
       popRollbackJournalSegment,
-      setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
+      setRollbackJournalFailedOperations,
       deleteState,
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     },
@@ -246,7 +247,7 @@ function install(opts: {
     exportIndexStore: {},
     dispose: vi.fn(),
   });
-  return { getState, saveState, popRollbackJournalSegment, deleteState };
+  return { getState, saveState, popRollbackJournalSegment, deleteState, setRollbackJournalFailedOperations };
 }
 
 const opts = (revertFailed?: boolean) =>
@@ -396,35 +397,70 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
     expect((thrown as Error).message).toContain('Rollback stopped');
   });
 
-  it('declines during --revert-failed: the same segment\'s completed ops still run, unsaved and unpopped', async () => {
+  /** Two failed CREATEs and one completed CREATE in ONE segment. */
+  const FAILED_AND_COMPLETED = {
+    resources: {
+      A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
+      B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
+      C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
+    },
+    segment: {
+      // TWO failed ops, so a flag routed through the failed-op replay's
+      // `isInterrupted` would stop before B and red here.
+      failedOperations: [
+        { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
+        { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
+      ],
+      operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
+    },
+  };
+
+  it('declines during --revert-failed: the same segment\'s ops still run, unsaved, unpopped, unstripped', async () => {
     // The decline reached through `replayFailedOperations`' `afterOp`. The
-    // completed op in the SAME segment finishes (the flag is not an
-    // interrupt), its save is skipped, and the segment stays.
-    const h = install({
-      resources: {
-        A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
-        B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
-        C: { physicalId: 'pc', resourceType: TYPE, properties: {} },
-      },
-      segment: {
-        // TWO failed ops, so a flag routed through the failed-op replay's
-        // `isInterrupted` would stop before B and red here.
-        failedOperations: [
-          { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
-          { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
-        ],
-        operations: [{ logicalId: 'C', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pc' }],
-      },
-      bodyRegion: KEY_REGION,
-      rereadBodyRegion: BODY_REGION,
-    });
+    // remaining ops finish (the flag is not an interrupt), no save lands, the
+    // segment stays, and the handled failed ops stay in the journal: their
+    // rows were never saved, so stripping them would strand the record.
+    const h = install({ ...FAILED_AND_COMPLETED, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
     // Failed ops replay newest-first, so the order is B, A, then the completed C.
     expect(replayProvider.delete.mock.calls.map((c) => c[0])).toEqual(['B', 'A', 'C']);
     expect(h.saveState, 'a save landed after the decline').toHaveBeenCalledTimes(1);
     expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect(
+      h.setRollbackJournalFailedOperations,
+      'the handled failed ops were stripped though their rows were never saved'
+    ).not.toHaveBeenCalled();
     expect((thrown as Error).message).toContain('Rollback stopped');
+    // The decline's own warn, not the generic "re-run to reconcile" one.
+    const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain("Repair the record's region field");
+    expect(warned).not.toContain('Failed to persist state');
+  });
+
+  it('CONTROL: without a decline the handled failed ops ARE stripped', async () => {
+    const h = install({ ...FAILED_AND_COMPLETED, bodyRegion: KEY_REGION, rereadBodyRegion: KEY_REGION });
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    expect(thrown).toBeUndefined();
+    expect(h.setRollbackJournalFailedOperations).toHaveBeenCalledTimes(1);
+    expect(h.setRollbackJournalFailedOperations.mock.calls[0]![2]).toEqual([]);
+  });
+
+  it('names the per-op failure count beside the decline', async () => {
+    // A failing delete on the completed op after the decline: both facts must reach the exit.
+    const h = install({ ...FAILED_AND_COMPLETED, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
+    replayProvider.delete.mockImplementation(async (id: string) => {
+      if (id === 'C') throw new Error('AccessDenied');
+    });
+    try {
+      const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+      expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+      expect((thrown as Error).message).toContain('Rollback stopped');
+      expect((thrown as Error).message).toContain('1 operation(s) also failed');
+    } finally {
+      replayProvider.delete.mockReset();
+      replayProvider.delete.mockResolvedValue(undefined);
+    }
   });
 
   it('declines on the LAST op of a segment too: no pop, no deleteState', async () => {
