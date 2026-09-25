@@ -1893,7 +1893,8 @@ export class AppSyncProvider implements ResourceProvider {
         typeof raw === 'object' &&
         !Array.isArray(raw) &&
         Object.entries(raw).every(([k, v]) => this.environmentVariableRefusal(k, v) === undefined)
-          ? (raw as Record<string, unknown>)
+          ? // Every value passed the per-key predicate above.
+            (raw as Record<string, string | number | boolean>)
           : undefined;
       let live: Record<string, string> | undefined;
       try {
