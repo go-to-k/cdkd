@@ -37,7 +37,7 @@ would then fail at resolve time with `export 'BucketArn' not found in
 any stack`. This violated user expectations and was inconsistent with
 CloudFormation's safety model.
 
-cdkd now matches CFn: `cdkd destroy <producer>` refuses with a clear
+cdkd now matches CFn: `cdkd destroy '<producer>'` refuses with a clear
 error that names every consumer still referencing the producer.
 
 ### Why no `--force` escape hatch
@@ -127,7 +127,7 @@ the O(N) scan cost at destroy time.
 
 ## Resolving a refused destroy
 
-When `cdkd destroy <producer>` refuses with `StackHasActiveImportsError`,
+When `cdkd destroy '<producer>'` refuses with `StackHasActiveImportsError`,
 the user has two valid resolution paths:
 
 ### Path 1 — destroy the consumer first
@@ -163,7 +163,7 @@ producer reference), then retry the producer destroy.
 
 ### What about `cdkd state orphan`?
 
-`cdkd state orphan <consumer>` is **not** an intended escape hatch
+`cdkd state orphan '<consumer>'` is **not** an intended escape hatch
 for this error. It removes the consumer's state record entirely
 (including all its resources from cdkd's bookkeeping), which is
 disproportionate to the goal of "break a single reference."

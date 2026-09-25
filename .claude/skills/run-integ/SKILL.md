@@ -144,7 +144,7 @@ verify, clean up.
      "Name=vpc-id,Values=<vpc>"` → `delete-network-interface`; re-poll `in-use`
      until `available`), (2) SecurityGroups, (3) Subnets, (4) VPC.
    - S3 state orphans: `aws s3 rm s3://<bucket>/cdkd/<StackName>/ --recursive`
-     (or `cdkd state orphan <StackName>`, which also handles the lock key).
+     (or `cdkd state orphan '<StackName>'`, which also handles the lock key).
    - Other types: infer delete order from CFn dependency rules (children before
      parents). Always pass `--region`. Re-run step 6 after cleanup.
 

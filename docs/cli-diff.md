@@ -439,7 +439,7 @@ character, each printing a character of the record as its previous value — row
 `--fail` would exit `1` on.
 
 Every one of these warnings points at
-`cdkd state show <stack> --stack-region <region> --json`, which emits the record
+`cdkd state show '<stack>' --stack-region '<region>' --json`, which emits the record
 as stored, so the evidence survives the repair. The `resources` warning
 additionally says that `cdkd deploy` and `cdkd destroy` **refuse** such a
 record: they read the same map, an unreadable one is indistinguishable from an
@@ -643,7 +643,7 @@ The walk previews the full next deploy:
   together on one line after the counts — up to ten names, then how many more —
   listed in full in `--json`'s `unreadable`, and counted by `--fail`. `cdkd diff` never writes state, so nothing is lost either way,
   but the preview is about a record cdkd could not read. Inspect it with
-  `cdkd state show <stack> --json` before acting on the diff.
+  `cdkd state show '<stack>' --json` before acting on the diff.
 
 ### Cyclic nested templates are refused
 

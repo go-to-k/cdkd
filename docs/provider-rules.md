@@ -813,7 +813,7 @@ Two mechanical details any such abort inherits:
   message but the TEMPLATE logical id. The state-borne physical id is the worst
   candidate of all — the only skip family a REPLACE path meets today is
   literally "malformed physicalId in state", and `cdkd import --resource
-  <id>=<anything>` puts an arbitrary string there.
+  '<id>'='<anything>'` puts an arbitrary string there.
 - **...and then `markNonRetryable` the error, because keeping values out of the
   message cannot close the hole.** The match is a SUBSTRING, not an equality, so
   an ordinary composite logical id (`MyDependencyViolationSub`) still carries a
@@ -891,7 +891,7 @@ spelling the branches downstream use so a null-valued list cannot slip past.
 keeps going after a skip, and `deleteGroup` / `deleteUser` remove exactly those
 memberships, a deleted Lambda function drops its whole resource policy, a
 deleted IAM role drops its inline policies. Qualify the wording and name
-`cdkd state orphan <stack>`; do not copy the qualifier onto an arm where it is
+`cdkd state orphan '<stack>'`; do not copy the qualifier onto an arm where it is
 false (a layer version and a Custom Resource's external side effects are undone
 by nothing).
 

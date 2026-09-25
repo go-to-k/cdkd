@@ -1079,7 +1079,7 @@ export class XxxResourceProvider implements ResourceProvider {
 
 ### Step 3.5: Implement `import` (Optional but Recommended)
 
-The `import` method lets `cdkd import <stack> --app "..."` adopt
+The `import` method lets `cdkd import '<stack>' --app "..."` adopt
 already-deployed AWS resources of this type into cdkd state — covering
 disaster recovery (state file lost), adoption (moving from another IaC
 tool), and re-syncing after rollback. Skipping `import` is allowed (CC

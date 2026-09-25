@@ -5,7 +5,7 @@ description: "Run a long-running local ECS Service emulator — per-replica cont
 
 # cdkd local start-service
 
-`cdkd local start-service <targets...>` is the long-running counterpart of
+`cdkd local start-service '<targets...>'` is the long-running counterpart of
 [`cdkd local run-task`](local-run-task.md). It finds one or more
 `AWS::ECS::Service` resources in the synthesized template, boots `DesiredCount`
 task replicas of each (capped by `--max-tasks`), and keeps them running —

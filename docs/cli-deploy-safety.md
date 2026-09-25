@@ -100,7 +100,7 @@ The routing decision is recorded on the resource's state record as
 `provisionedBy: 'cc-api'` and stays sticky for the resource's lifetime.
 `cdkd drift`, `cdkd destroy` and everything else route through the same layer
 that created the resource, even after cdkd adds first-class SDK support for the
-property. `cdkd state show <stack>` displays the `ProvisionedBy:` field so you
+property. `cdkd state show '<stack>'` displays the `ProvisionedBy:` field so you
 can audit which layer owns each resource.
 
 Property coverage is tracked for **Tier 1** (SDK provider) types only. Tier 2
@@ -702,7 +702,7 @@ created declares `UpdateReplacePolicy: Retain`, cdkd will not delete that
 pinned copy to free the name. The op fails with the journal kept, so the revert
 resumes once you delete the new resource yourself or drop the policy; to leave
 that one resource alone and let the rest of the rollback finish, re-run with
-`cdkd rollback --orphan <logicalId>`. See
+`cdkd rollback --orphan '<logicalId>'`. See
 [cli-rollback.md](cli-rollback.md#reversing-a-replacement).
 
 The resource is briefly unavailable while it is deleted and recreated. The

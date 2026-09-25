@@ -139,9 +139,9 @@ LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attemp
 > though the parent's lock was acquired with retry.
 >
 > `cdkd orphan` and `cdkd state orphan` are different commands, not two
-> spellings of one: `cdkd orphan <paths...>` drops individual resources by
+> spellings of one: `cdkd orphan '<paths...>'` drops individual resources by
 > construct path and fails fast on the lock, while
-> `cdkd state orphan <stacks...>` drops whole stack records and takes no lock
+> `cdkd state orphan '<stacks...>'` drops whole stack records and takes no lock
 > of its own — it refuses while one is held, and `--force` makes it delete
 > that lock, including a live one.
 
@@ -2377,7 +2377,7 @@ account. Before this, each failed attempt left one that nothing tracked.
 Add the printed CNAME records to your DNS zone, then re-run the deploy:
 
 ```bash
-cdkd deploy <stack>
+cdkd deploy '<stack>'
 ```
 
 **Adding those records is not wasted work**, even though the certificate they
@@ -2393,12 +2393,12 @@ Two ways to change what the deploy does about the wait:
 # Wait LONGER. This is the provider's OWN cap -- 60 polls x 10s = 10 minutes --
 # and it is what fires, so raising it is what makes cdkd wait longer.
 # CDKD_ACM_POLL_INTERVAL_MS (default 10000) changes the gap between polls.
-CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy <stack>          # 20 minutes
+CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy '<stack>'        # 20 minutes
 
 # Do not wait at all. The certificate is created, RECORDED IN STATE, and the
 # deploy returns immediately -- downstream consumers will fail until it issues,
 # but the certificate survives for you to validate out of band.
-cdkd deploy <stack> --no-wait
+cdkd deploy '<stack>' --no-wait
 ```
 
 **`--resource-timeout` alone does not make this wait longer**: the poll cap is
@@ -2785,7 +2785,7 @@ See [Importing Existing Resources](import.md) for the full flag set.
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback <stack>` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
+A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback '<stack>'` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
 
 ### Q: Are custom resources supported?
 

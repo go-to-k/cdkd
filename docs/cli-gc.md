@@ -255,7 +255,7 @@ by digest in a deployed stack.
 
 | Refusal | When |
 | --- | --- |
-| `GC_LOCKED` | A stack in the state bucket holds an active lock. Wait for it, or clear a stale one with `cdkd force-unlock <stack>`. |
+| `GC_LOCKED` | A stack in the state bucket holds an active lock. Wait for it, or clear a stale one with `cdkd force-unlock '<stack>'`. |
 | `GC_STATE_UNREADABLE` | A state file is not valid JSON, so its references cannot be read. Repair or remove it, then re-run. |
 | `ASSET_STORAGE_FOREIGN_BUCKET` | The asset bucket exists but is not owned by this account, or access is denied. Nothing is touched. |
 | `GC_DELETE_FAILED` | One or more objects or images could not be deleted. |

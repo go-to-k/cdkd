@@ -96,7 +96,7 @@ cdkd deploy --full-wait             # also wait where the default does not (ECS 
 cdkd publish-assets                 # synth + upload assets only, no deploy (typical CI split)
 
 cdkd events MyStack                 # past deploy / destroy runs, newest first
-cdkd events MyStack --run <runId>   # one run's full event stream
+cdkd events MyStack --run '<runId>'  # one run's full event stream
 ```
 
 `--no-wait` / default / `--full-wait` are explained per resource type in
@@ -212,7 +212,7 @@ cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext rema
 See the **[CLI Reference](cli-reference.md)** for the full flag
 matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
 `--prefer-sdk-route`, `--role-arn`, etc.), per-command details
-including the synth-driven per-resource `cdkd orphan <constructPath>`
+including the synth-driven per-resource `cdkd orphan '<constructPath>'`
 variant, and stage / wildcard pattern matching.
 
 ## Which commands need the CDK app
@@ -250,7 +250,7 @@ A state bucket created by an earlier cdkd keeps its legacy region-suffixed name
 (`cdkd-state-{accountId}-{region}`) and is still picked up automatically, with a
 deprecation warning; `cdkd state migrate` consolidates it into the region-free
 `cdkd-state-{accountId}`. Explicit pre-provisioning is
-`cdkd bootstrap --region <r>`.
+`cdkd bootstrap --region '<r>'`.
 
 ## Next steps
 

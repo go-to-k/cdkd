@@ -60,7 +60,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    `aws s3 rm "s3://${BUCKET}/cdkd/${p}" --recursive --region us-east-1`. Re-run the
    `has_state` check immediately before each delete to guard against a concurrent deploy
    that re-created the stack. The per-stack product-level equivalent (for a user who
-   knows the stack name) is `cdkd events prune <stack> --all`; this skill step is the
+   knows the stack name) is `cdkd events prune '<stack>' --all`; this skill step is the
    bucket-wide bulk sweep for integ-test hygiene.
 
 4. **Scan AWS resources** for each stack name prefix, in both exact case and

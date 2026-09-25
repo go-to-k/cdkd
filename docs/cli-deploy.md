@@ -392,7 +392,7 @@ because it provisions nothing; that is where to go to see the rest of the stack.
 An **absent** `resources` field is a defect and is refused: a stack always has a
 resource map, even an empty one. An empty `{}` is healthy and deploys normally
 (it is what a first-ever deploy reads). Inspect the record with `cdkd state show
-<stack> --stack-region <region> --json`, repair or remove it, then re-run. Full
+'<stack>' --stack-region '<region>' --json`, repair or remove it, then re-run. Full
 table in
 [State Management](state-management.md#when-resources-is-not-an-object).
 
@@ -415,7 +415,7 @@ The same refusal covers a nested stack's **child** record, whose outputs the
 parent's `Outputs.<Key>` attributes are rebuilt from and persisted into the
 parent's own record.
 
-Inspect the record with `cdkd state show <stack> --stack-region <region>
+Inspect the record with `cdkd state show '<stack>' --stack-region '<region>'
 --json`, repair or remove it, then re-run. An **absent** `outputs` field is not
 a defect and is never refused: cdkd writes such records on purpose. The full
 per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
@@ -437,7 +437,7 @@ resources that are already in AWS, unadopted — or it dies in the adoption walk
 with a `TypeError` that names neither the field nor the stack, a string being
 walked one **character** per orphan record.
 
-Inspect the record with `cdkd state show <stack> --stack-region <region>
+Inspect the record with `cdkd state show '<stack>' --stack-region '<region>'
 --json`, repair or remove it, then re-run. An **absent** `orphans` field is not a
 defect and is never refused — it is the ordinary shape for a stack that has
 never had a failed deploy.
@@ -491,7 +491,7 @@ want to see the rest of the stack.
 
 An **absent** `properties` map is a defect and is refused; an empty `{}` is
 healthy, since a resource can legitimately declare no properties. Inspect the
-record with `cdkd state show <stack> --stack-region <region> --json`, repair or
+record with `cdkd state show '<stack>' --stack-region '<region>' --json`, repair or
 remove it, then re-run. Full table in
 [State Management](state-management.md#when-a-resource-properties-map-is-not-an-object).
 
@@ -509,8 +509,8 @@ change, which replaces the live resource.
 `cdkd deploy` refuses such a record before creating, updating or deleting any
 resource (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the records it could
 not read. `--dry-run` refuses too. `cdkd diff` drops those records, warns, and
-previews the rest of the stack. Inspect the record with `cdkd state show <stack>
---stack-region <region> --json`, repair or remove it, then re-run.
+previews the rest of the stack. Inspect the record with `cdkd state show '<stack>'
+--stack-region '<region>' --json`, repair or remove it, then re-run.
 
 ## Exit codes
 

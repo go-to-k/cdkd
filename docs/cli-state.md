@@ -525,7 +525,7 @@ Stack: MyParent~Child
 fast on a torn tree — a parent listing a nested-stack row whose child record
 does not exist — rather than printing a partial tree. Repair it by re-deploying
 the parent, by finishing whatever partial operation tore it, or, failing both,
-by [`cdkd state orphan <parent>`](#cdkd-state-orphan) and re-importing.
+by [`cdkd state orphan '<parent>'`](#cdkd-state-orphan) and re-importing.
 
 The `--json` shape under `--show-nested` is recursive
 `{state, lock, children: [...]}`, with `children` always present (an empty
@@ -753,7 +753,7 @@ saved: a record edited between that check and its own refresh. A legacy
 record with no region is refused, for that reason, after the confirmation
 prompt and before the first stack is refreshed, so nothing is written. Its
 message suggests migrating the record with any cdkd write, and prints a
-`cdkd deploy <stack>` example only when the stack name renders exactly and
+`cdkd deploy '<stack>'` example only when the stack name renders exactly and
 holds no `*` or `/` and does not start with `-` — a name that had to be
 sanitized could name a different stack in your app, `cdkd deploy` reads `*` and
 `/` as a pattern, and a leading `-` would be read as an option.
@@ -768,7 +768,7 @@ sanitized could name a different stack in your app, `cdkd deploy` reads `*` and
   count of the rest.
 
 Repairing instead would replace the only evidence that the record is broken
-with a well-formed one. Inspect it with `cdkd state show <stack> --json`, then
+with a well-formed one. Inspect it with `cdkd state show '<stack>' --json`, then
 repair or remove it — [`cdkd state orphan`](#cdkd-state-orphan) removes a
 record without touching the AWS resources.
 

@@ -95,7 +95,7 @@ pass is a teardown that leaves resources billing.
 | `--purge-events` (`cdkd destroy` only) | You want an object listing of the state bucket to come back empty (earlier object versions still survive) | The stack's deployment-event history is kept as post-mortem context |
 
 `cdkd state destroy` does not accept `--purge-events` — passing it is an
-unknown-option error. Run `cdkd events prune <stack> --all` after the teardown
+unknown-option error. Run `cdkd events prune '<stack>' --all` after the teardown
 instead.
 
 ## Housekeeping
@@ -107,13 +107,13 @@ instead.
   propagation.
 - A job cancelled mid-deploy (e.g. `concurrency.cancel-in-progress`)
   can leave a stack lock; it expires on its own TTL (30 minutes), or
-  run `cdkd force-unlock <stack>` to clear it immediately.
+  run `cdkd force-unlock '<stack>'` to clear it immediately.
 - Sweep forgotten environments with `cdkd state list --json` on a
   schedule, and reclaim unreferenced assets with
   `cdkd gc --older-than 30d --dry-run` — `gc` aborts if any stack is
   locked, so schedule it outside deploy hours.
 - To comment the environment URL on the PR, read stack outputs with
-  `cdkd state show <stack> --json`.
+  `cdkd state show '<stack>' --json`.
 - To gate a PR without deploying, `cdkd diff --fail` exits `1` when any
   change is detected (and `cdkd drift --json` machine-checks live
   divergence). See [Exit codes](cli-reference.md#exit-codes) for

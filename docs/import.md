@@ -803,7 +803,7 @@ table to predict behavior when migrating from `cdk import`.
 | Topic | `cdk import` (upstream) | `cdkd import` |
 | --- | --- | --- |
 | Mechanism | CloudFormation `CreateChangeSet` with `ResourcesToImport` — atomic, all-or-nothing. | Per-resource SDK calls (e.g. `s3:HeadBucket`, `lambda:GetFunction`, IAM `ListRoleTags`). **Not atomic.** |
-| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan <stack>` (drops the state record only). |
+| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan '<stack>'` (drops the state record only). |
 | Selective mode (`--resource-mapping <file>`) | Supported. Listed resources are imported; unlisted resources cause the changeset to fail. | Supported. Listed resources are imported; unlisted resources are reported as `out of scope` and left out of state (next `cdkd deploy` will CREATE them). |
 | Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
 | `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
@@ -837,7 +837,7 @@ table to predict behavior when migrating from `cdk import`.
   (and after confirmation), so a partial run is bounded, but if a
   later resource fails after several earlier ones already returned
   successfully and you confirm the write, those earlier ones are
-  in cdkd state. Use `cdkd state orphan <stack>` to back out.
+  in cdkd state. Use `cdkd state orphan '<stack>'` to back out.
 - If you import nested stacks: neither tool supports this. Convert
   to top-level CDK stacks first.
 
