@@ -272,7 +272,7 @@ s3-lifecycle	2026-09-25T09:36:54Z	PASS	281	verify.sh	PR 3725 lane: identifier ta
 s3-object-lock	2026-09-24T06:23:46Z	PASS	60	verify.sh	rc ok, orph clean (#3585)
 s3-replication-and-filter	2026-09-24T06:16:12Z	PASS	110	verify.sh	rc ok, orph clean (#3585)
 s3-subconfig-removal	2026-09-25T13:35:54Z	PASS	80	verify.sh	rc ok, orph clean (#3728)
-s3-tables	2026-09-25T11:38:41Z	PASS	51	verify.sh	rc 0, state clean, PR 3613 head
+s3-tables	2026-09-25T18:05:55Z	PASS	55	verify.sh	rc ok, 0 orphans (#3771)
 s3-vectors	2026-09-24T22:46:12Z	PASS	61	verify.sh	rc ok, 0 orphans (#3663)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-09-25T09:51:48Z	PASS	90	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)

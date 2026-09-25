@@ -51,13 +51,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
  * gone) both fail, so this list can only shrink.
  */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'src/cli/commands/deploy.ts': 'held by open PR #3613 when #3588 landed; route it next',
-  'src/cli/commands/export.ts': 'held by open PR #3613 when #3588 landed; route it next',
+  'src/cli/commands/deploy.ts':
+    'CLI-only: the command handler builds these clients, and no library entry point reaches it ' +
+    '(won\'t-do in #3588)',
+  'src/cli/commands/export.ts':
+    'CLI-only: the command handler builds these clients, and no library entry point reaches it ' +
+    '(won\'t-do in #3588)',
   'src/cli/config-loader.ts':
     "default-bucket probe deliberately reuses the STS client's resolved provider " +
     '(a CONDITIONAL credentials spread); CLI-only',
-  'src/provisioning/providers/s3-tables-provider.ts':
-    'held by open PR #3613 when #3588 landed; route it next',
 };
 
 const ROUTED_HELPERS = new Set(['ambientClientDefaults', 'clientDefaultsFor']);
