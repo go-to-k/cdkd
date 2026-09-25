@@ -1875,19 +1875,47 @@ export class AppSyncProvider implements ResourceProvider {
   ): Promise<EnvironmentVariablesRecord | undefined> {
     const isUpdate = previousProperties !== undefined;
     // An UPDATE that sends nothing leaves the live map as it was, so state
-    // keeps the PREVIOUS map — dropped when that is unusable too. Only a skip of
-    // a PENDING change narrows anything: an unchanged malformed map (a
-    // template-path update reaches the container warning only that way) is
-    // already what the record says.
-    const retainPrevious = (): EnvironmentVariablesRecord | undefined => {
+    // records THAT map. Only a skip of a PENDING change narrows anything: an
+    // unchanged malformed map (a template-path update reaches the container
+    // warning only that way) is already what the record says.
+    //
+    // The previous side is not always what AWS holds: `rollback --revert-failed`
+    // passes the FAILED update's attempted bag, whose PUT may never have run.
+    // So the live map is read, keeping the previous side's DECLARED value for
+    // each key whose live string it produces (an unquoted `RETRIES: 3` stays a
+    // number, and the next diff stays quiet). An unreadable live map falls back
+    // to the previous map, dropped when that is unusable too.
+    const retainPrevious = async (): Promise<EnvironmentVariablesRecord | undefined> => {
       const raw = previousProperties?.['EnvironmentVariables'];
       if (this.deepEqual(properties['EnvironmentVariables'], raw)) return undefined;
-      const usable =
+      const previousMap =
         raw != null &&
         typeof raw === 'object' &&
         !Array.isArray(raw) &&
-        Object.entries(raw).every(([k, v]) => this.environmentVariableRefusal(k, v) === undefined);
-      return { value: usable ? { ...(raw as Record<string, unknown>) } : undefined };
+        Object.entries(raw).every(([k, v]) => this.environmentVariableRefusal(k, v) === undefined)
+          ? (raw as Record<string, unknown>)
+          : undefined;
+      let live: Record<string, string> | undefined;
+      try {
+        const response = await this.getClient().send(
+          new GetGraphqlApiEnvironmentVariablesCommand({ apiId })
+        );
+        live = response.environmentVariables ?? {};
+      } catch (error) {
+        this.logger.debug(
+          `AppSync GraphqlApi ${logicalId}: could not read the live environment variables ` +
+            `(${describeAwsFailure(error).summary}); recording the previous map`
+        );
+        return { value: previousMap ? { ...previousMap } : undefined };
+      }
+      // AWS renders a cleared map as an absent member.
+      if (Object.keys(live).length === 0) return { value: undefined };
+      const recorded: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(live)) {
+        const declared = previousMap?.[key];
+        recorded[key] = declared !== undefined && String(declared) === value ? declared : value;
+      }
+      return { value: recorded };
     };
     let desired: Record<string, unknown> | undefined;
     try {
@@ -1912,7 +1940,7 @@ export class AppSyncProvider implements ResourceProvider {
         )
       );
       // Replay-CREATE: nothing was put, so the new API holds no variables.
-      return isUpdate ? retainPrevious() : { value: undefined };
+      return isUpdate ? await retainPrevious() : { value: undefined };
     }
     // The PREVIOUS side comes from cdkd state, never from the user's template:
     // a malformed value recorded there must not make the stack undeployable,
@@ -1961,7 +1989,7 @@ export class AppSyncProvider implements ResourceProvider {
               'leaving the live environment variables untouched'
           )
         );
-        return retainPrevious();
+        return await retainPrevious();
       }
       // A replay-CREATE has no live map to protect, so the skip unit is the
       // KEY: the restored API gets every variable that can be sent.

@@ -47,6 +47,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 import {
   UpdateGraphqlApiCommand,
   PutGraphqlApiEnvironmentVariablesCommand,
+  GetGraphqlApiEnvironmentVariablesCommand,
 } from '@aws-sdk/client-appsync';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
@@ -250,20 +251,30 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
   // A variable can hold a secret: no message may quote a VALUE.
   const SECRET = 'sup3r-s3cret-plaintext';
 
+  const PREVIOUS = { STAGE: 'prod', TOKEN: SECRET };
+  // What `GetGraphqlApiEnvironmentVariables` answers: a map, or a failure.
+  let liveEnv: Record<string, string> | undefined | Error;
+
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
-    mockSend.mockResolvedValue({
-      graphqlApi: {
-        apiId: 'api-1',
-        arn: 'arn:aws:appsync:us-east-1:123456789012:apis/api-1',
-        uris: { GRAPHQL: 'https://x/graphql' },
-      },
+    liveEnv = { ...PREVIOUS };
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetGraphqlApiEnvironmentVariablesCommand) {
+        return liveEnv instanceof Error
+          ? Promise.reject(liveEnv)
+          : Promise.resolve({ environmentVariables: liveEnv });
+      }
+      return Promise.resolve({
+        graphqlApi: {
+          apiId: 'api-1',
+          arn: 'arn:aws:appsync:us-east-1:123456789012:apis/api-1',
+          uris: { GRAPHQL: 'https://x/graphql' },
+        },
+      });
     });
     provider = new AppSyncProvider();
   });
-
-  const PREVIOUS = { STAGE: 'prod', TOKEN: SECRET };
   const edit = (desired: unknown, previous: unknown, context?: Record<string, unknown>) =>
     provider.update(
       'L',
@@ -345,8 +356,9 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
     ['a malformed map', { TOKEN: { nested: SECRET } }],
     ['a malformed container', 'junk'],
   ])(
-    'on a replay whose PREVIOUS map is also unusable (%s), drops the key from the record',
+    'on a replay whose PREVIOUS map is also unusable (%s) and the live read fails, drops the key',
     async (_l, previous) => {
+      liveEnv = new Error('AccessDeniedException');
       const result = await edit({ STAGE: 'prod', TOKEN: { other: 1 } }, previous, {
         replayingState: true,
       });
@@ -356,6 +368,66 @@ describe('AppSync GraphQLApi per-key EnvironmentVariables value: template refuse
       expect(result.effectiveProperties).not.toHaveProperty('EnvironmentVariables');
     }
   );
+
+  describe('the record is the LIVE map, not the previous side', () => {
+    const replay = (previous: unknown) =>
+      edit({ STAGE: 'prod', TOKEN: { nested: SECRET } }, previous, { replayingState: true });
+
+    it('records the live map when the previous side was never applied (rollback --revert-failed)', async () => {
+      // `--revert-failed` passes the FAILED update's attempted bag as previous.
+      const result = await replay({ STAGE: 'attempted', NEW: 'never-put' });
+
+      expect(sent(GetGraphqlApiEnvironmentVariablesCommand)).toHaveLength(1);
+      expect(result.effectiveProperties).toMatchObject({ EnvironmentVariables: PREVIOUS });
+    });
+
+    it('keeps the declared value of a key whose live string it produces', async () => {
+      liveEnv = { RETRIES: '3', FLAG: 'true', STAGE: 'live' };
+      const result = await replay({ RETRIES: 3, FLAG: true, STAGE: 'prod' });
+
+      expect(result.effectiveProperties).toMatchObject({
+        EnvironmentVariables: { RETRIES: 3, FLAG: true, STAGE: 'live' },
+      });
+    });
+
+    it.each([
+      ['an empty map', {}],
+      ['an absent member', undefined],
+    ])('drops the key when AWS reports %s', async (_l, live) => {
+      liveEnv = live;
+      const result = await replay(PREVIOUS);
+
+      expect(result.effectiveProperties).not.toHaveProperty('EnvironmentVariables');
+    });
+
+    it('records the live map when the recorded previous is ABSENT', async () => {
+      const result = await replay(undefined);
+
+      expect(result.effectiveProperties).toMatchObject({ EnvironmentVariables: PREVIOUS });
+    });
+
+    it('drops the key when the previous is ABSENT and the live read fails', async () => {
+      liveEnv = new Error('AccessDeniedException');
+      const result = await replay(undefined);
+
+      expect(result.effectiveProperties).not.toHaveProperty('EnvironmentVariables');
+    });
+
+    it('falls back to a usable previous map when the live read fails', async () => {
+      liveEnv = new Error('AccessDeniedException');
+      const result = await replay({ STAGE: 'recorded' });
+
+      expect(result.effectiveProperties).toMatchObject({
+        EnvironmentVariables: { STAGE: 'recorded' },
+      });
+      expect(sent(PutGraphqlApiEnvironmentVariablesCommand)).toHaveLength(0);
+    });
+
+    it('reads nothing when the map is unchanged', async () => {
+      await edit({ STAGE: 'prod', TOKEN: { nested: SECRET } }, { STAGE: 'prod', TOKEN: { nested: SECRET } });
+      expect(sent(GetGraphqlApiEnvironmentVariablesCommand)).toHaveLength(0);
+    });
+  });
 
   it('the malformed-CONTAINER replay warning records the retained previous map too', async () => {
     const result = await edit('oops', PREVIOUS, { replayingState: true });
