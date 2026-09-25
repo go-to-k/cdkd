@@ -4919,6 +4919,10 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     ['AWS::ApiGatewayV2::ApiMapping', 'map42|api.example.com', 'map42'],
     // SDK-provisioned instances store pipe-free ids — pass through unchanged.
     ['AWS::ApiGatewayV2::Authorizer', 'auth99', 'auth99'],
+    // issue #3700: CC `[Id, VpcId]`; `Ref` is the association id.
+    ['AWS::EC2::VPCCidrBlock', 'vpc-cidr-assoc-0abc|vpc-0def', 'vpc-cidr-assoc-0abc'],
+    // A bare association id (state written by a pre-#3701 migrate) passes through.
+    ['AWS::EC2::VPCCidrBlock', 'vpc-cidr-assoc-0abc', 'vpc-cidr-assoc-0abc'],
   ])(
     'Ref to %s returns the FIRST segment of the reversed compound physical id',
     async (resourceType, physicalId, expected) => {

@@ -346,6 +346,12 @@ const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
   // the extraction is a no-op there); only a #614-routed instance stores the
   // compound. Neither an ECS service ARN nor a cluster name can contain `|`.
   'AWS::ECS::Service',
+  // No SDK provider registers it, so it is always Cloud-Control-routed and
+  // stored as `<Id>|<VpcId>` (CC primaryIdentifier `[Id, VpcId]`, live
+  // `DescribeType`, us-east-1, 2026-09-25); the docs-verified `Ref` is the
+  // association id — the FIRST segment (issue #3700). A bare
+  // `vpc-cidr-assoc-…` from a pre-#3701 migrate is pipe-free and passes through.
+  'AWS::EC2::VPCCidrBlock',
 ]);
 
 /**

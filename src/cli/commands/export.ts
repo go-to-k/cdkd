@@ -482,10 +482,13 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   //
   // The BARE `<Id>` form is accepted too, and is not hypothetical: CloudFormation
   // reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as the association
-  // id alone, so a stack adopted via `cdkd import --migrate-from-cloudformation`
-  // carries that shape in state. `VpcId` is then recovered from the recorded
-  // properties, exactly as the `AWS::ApiGateway::Resource` entry above recovers
-  // `RestApiId`.
+  // id alone, and a stack adopted via `cdkd import --migrate-from-cloudformation`
+  // by a cdkd older than #3701 carries that shape in state. A current migrate
+  // completes it to `<Id>|<VpcId>` (`CloudControlProvider.import()`, issue
+  // #3672), so a bare id now arrives only from such older state or from a
+  // hand-written `--resource` value on an import whose schema could not be read.
+  // `VpcId` is then recovered from the recorded properties, exactly as the
+  // `AWS::ApiGateway::Resource` entry above recovers `RestApiId`.
   //
   // Without this entry the type's mere PRESENCE aborted the whole
   // `cdkd export` command — and any VPC carrying a secondary IPv4 CIDR or an
