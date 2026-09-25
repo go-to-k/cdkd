@@ -432,8 +432,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // against the wrong base. That warning caught this very line — a first pass
     // wrote 3428 from an eyeball count and it was off by 8.
     //
-    // Current: 3903 invocations, 70 services, 414 verbs (issue #3172's
-    // `state-info-command` arm; independently reproduced three times). A stale
+    // Current: 4430 invocations, 71 services, 430 verbs (measured by the
+    // procedure below; ordinary corpus growth since 3903, the last +16 from
+    // issue #3627's import-readback-final fixture). A stale
     // `Current:` is worse than none — a reader computes headroom off it, and
     // this line reading `3436 / 70 / 404` while the tree held 3899 is how the
     // ceiling below came to sit 1 invocation above the real total. RE-MEASURE
@@ -460,7 +461,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // malformed-`resources` arm to `state-info-command` — the tree had already
     // grown to within 2 invocations of the old ceiling, so this pair is a
     // re-track of ordinary corpus growth, not headroom bought for one fixture.
-    expect(stats.total).toBeGreaterThan(3630);
+    // Raised 3630 -> 4120 with the ceiling below at a re-measured
+    // `{ t: 4430, s: 71, v: 430 }` (issue #3627's import-readback and migrate
+    // fixtures took the total to exactly the old ceiling).
+    expect(stats.total).toBeGreaterThan(4120);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
     // silently — the same argument the total's floor rests on. A floor is only
@@ -469,8 +473,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // `services` stays at 65 because 70 x ~0.93 is still 65; `verbs` moves
     // 380 -> 385 because 414 x ~0.93 is 385, and a floor left behind the
     // measurement stops being one.
-    expect(stats.services.size).toBeGreaterThan(65);
-    expect(stats.verbs.size).toBeGreaterThan(385);
+    // Re-tracked at `{ s: 71, v: 430 }` (issue #3627): 71 x ~0.93 is 66,
+    // 430 x ~0.93 is 400.
+    expect(stats.services.size).toBeGreaterThan(66);
+    expect(stats.verbs.size).toBeGreaterThan(400);
     // CEILING as well as floor. Floors catch a parser that stops seeing things;
     // only a ceiling catches one that starts seeing things that are not there
     // (the quoted-prose / ARN false positives review found were exactly that,
@@ -497,7 +503,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // the old ceiling, so the arm's 4 invocations are what crossed it). Same
     // ~1.135x proportional headroom the ceiling has carried since it was
     // written.
-    expect(stats.total).toBeLessThan(4430);
+    // Raised 4430 -> 5030 with the floor above, at a re-measured 4430 (issue
+    // #3627's fixtures reached the old ceiling exactly). Same ~1.135x headroom.
+    expect(stats.total).toBeLessThan(5030);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);
