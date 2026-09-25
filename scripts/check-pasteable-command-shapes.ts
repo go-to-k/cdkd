@@ -198,9 +198,11 @@ const CDKD_VERB = /\bcdkd\s+[a-z][a-z-]*/;
  * **DOTS are part of the name.** The charset omitted them until review (M7),
  * which made `<stacks...>` -- Commander's own rendering of a variadic
  * argument, and the spelling this very PR wrote into four USAGE messages --
- * invisible. Measured under bash with a file named `stacks...` present:
- * `cdkd state orphan <stacks...> --all` exits 0 and CREATES a file called
- * `--all`, exactly as the dotless form does. An earlier round of this PR
+ * invisible. Measured under bash with a file named `stacks...` present and a
+ * stubbed `cdkd`: `cdkd state orphan <stacks...> --all` CREATES a file called
+ * `--all`, exactly as the dotless form does (the stub exits 0; the real
+ * binary exits 1 for the argument the redirection swallowed, and the file is
+ * created either way). An earlier round of this PR
  * claimed the dots "leave no redirection"; they do not, and that claim was
  * reasoned rather than run.
  */

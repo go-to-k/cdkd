@@ -979,13 +979,18 @@ export function createDestroyCommand(): Command {
         // The HOLE is quoted. A bare `<stack>` followed by a flag is the
         // redirection shape go-to-k/cdkd#3436 measured: pasted where a file
         // named `stack` exists, the `>` takes `--all` as an output TARGET and
-        // creates it, at exit 0. The earlier comment argued this is `--help`
+        // creates it BEFORE the binary runs. (Measured with a stubbed `cdkd`
+        // that exits 0; the real binary exits 1 with `missing required
+        // argument 'stack'`, since the redirection swallowed the argument --
+        // and the file is created either way. An earlier version of this
+        // comment gave only the stub's exit code.) The earlier comment argued this is `--help`
         // text stating a grammar, so Commander's bare rendering was the fix --
         // but that argument does not survive measurement, and BOTH spellings I
-        // reached for first are worse than they look. Under bash:
-        // `cdkd state orphan <stacks...> --all` exits 0 and creates a file
+        // reached for first are worse than they look. Under bash, with a
+        // stubbed `cdkd`: `cdkd state orphan <stacks...> --all` creates a file
         // called `--all` -- the dots are part of the redirect's word, not an
-        // escape from it. And `[stacks...]` is not inert either: it is a
+        // escape from it (the stub exits 0; the real binary exits 1 for the
+        // swallowed argument, with the file created all the same). And `[stacks...]` is not inert either: it is a
         // bracket EXPRESSION matching ONE character drawn from `s t a c k .`,
         // so in a directory holding a file named `s` it expands to `s` and
         // silently retargets the command rather than failing. (Two earlier
