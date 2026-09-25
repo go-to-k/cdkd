@@ -418,17 +418,20 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // Decided BEFORE the `try` below, so a template-path refusal from
     // `changedSecretValue` is not re-labelled as an AWS update failure, and
     // before the only write (`UpdateSecret`).
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
     let changedValue: { value: string | undefined; skippedGenerate: boolean };
     try {
-      changedValue = this.changedSecretValue(
-        properties,
-        previousProperties,
-        context?.replayingState === true || context?.desiredFromAwsReadback === true
-      );
+      changedValue = this.changedSecretValue(properties, previousProperties, stateBorneDesired);
     } catch (error) {
+      // A state-borne bag can still throw here (the literal `SecretString`
+      // shape refusal runs on every caller), and its remedy is not a template
+      // edit — so only the template path is told to fix the template.
+      const message = error instanceof Error ? error.message : String(error);
       throw new ProvisioningError(
-        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
-          `secret ${logicalId}; fix the template value`,
+        stateBorneDesired
+          ? `Failed to update secret ${logicalId}: ${message}`
+          : `${message}. Nothing was applied to secret ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
         physicalId,
@@ -849,7 +852,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // throw into a "nothing was applied" refusal before any call. `cdkd drift --revert` is NOT a
       // caller of this arm: its bag is seeded from the AWS readback plus the
       // DRIFTED keys only, and `getDriftUnknownPaths` keeps this key out of
-      // the comparison, so the block never rides a revert.
+      // the comparison, so the block never rides a revert (the flag still
+      // takes the downgrade, defensively, like every other state-borne bag).
       //
       // The downgrade is a SKIP and NOT `onUnusable`, because at this site
       // proceeding is the harm: `generateSecretString` reads every member off

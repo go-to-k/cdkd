@@ -1231,6 +1231,22 @@ describe('SecretsManagerSecretProvider malformed GenerateSecretString: template 
     );
   });
 
+  it('a state-borne literal refusal is not told to fix the template', async () => {
+    const error = await provider
+      .update(
+        'L',
+        SECRET_ARN,
+        TYPE,
+        { Name: 'my-secret', SecretString: 42 },
+        { Name: 'my-secret', SecretString: 'lit' },
+        { replayingState: true }
+      )
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/^Failed to update secret L: /);
+    expect((error as Error).message).not.toMatch(/fix the template value/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('does NOT refuse an UNCHANGED malformed block on the template path (no value is sent for it)', async () => {
     const same = bag({ Ref: 'GenConfig' });
     await provider.update('L', SECRET_ARN, TYPE, { ...same, Description: 'x' }, same);
