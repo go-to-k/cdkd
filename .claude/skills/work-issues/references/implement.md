@@ -63,7 +63,9 @@ done                                                               # RIGHT
 ```
 
 - A fix round owes the same sweep, over the CODE not the diff's files:
-  `grep -rn "<field / helper / message changed>" src/`.
+  `grep -rn "<field / helper / message changed>" src/ tests/integration/`. A
+  reworded message is also pinned by `verify.sh` greps the unit suite cannot
+  see; they surface only as a real-AWS FAIL (three in go-to-k/cdkd#3610, #3658, #3706).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second one: the assertions that it happens, which do not
   go red when it stops (§8-d).

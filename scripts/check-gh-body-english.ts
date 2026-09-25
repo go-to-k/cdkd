@@ -175,6 +175,79 @@ export function scanSubject(subject: Subject): Offender[] {
 }
 
 /**
+ * A Claude Code session link, or the `Claude-Session:` attribution trailer.
+ *
+ * The maintainer forbids both in published text, whatever a harness asks for,
+ * and `references/gates-and-pr.md` says so in prose. The prose was broken twice
+ * by a /work-issues PARENT copying the harness attribution line into lane
+ * prompts: first go-to-k/cdkd#3685 (the lane caught it), then six merged PR
+ * bodies (#3584 ... #3658, cleaned by hand). This is the second-occurrence
+ * build that `docs/tooling-backlog.md` named. It rides this check because this
+ * is already the required check that reads every published body.
+ *
+ * Only a SESSION link: `claude.ai/code/artifact/...` or a bare `claude.ai`
+ * mention is not the forbidden provenance and passes. The trailer counts only
+ * at the start of a line, where git and the harness put it.
+ */
+export const SESSION_LINK_RE = /claude\.ai\/code\/session_|^\s*Claude-Session:/i;
+
+/** Every line of one field carrying a session link or trailer, capped like `scanField`. */
+export function scanSessionLinks(field: string, text: string | undefined): Offender[] {
+  if (!text) return [];
+  const out: Offender[] = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!SESSION_LINK_RE.test(line)) continue;
+    out.push({
+      field,
+      line: i + 1,
+      text: line.length > 120 ? `${line.slice(0, 120)}…` : line,
+      characters: [],
+    });
+    if (out.length >= MAX_REPORT) break;
+  }
+  return out;
+}
+
+/** `scanSubject`'s field selection, for session links. */
+export function scanSubjectSessionLinks(subject: Subject): Offender[] {
+  const offenders: Offender[] = [];
+  if (subject.kind !== 'issue_comment') {
+    offenders.push(...scanSessionLinks('title', subject.title));
+  }
+  offenders.push(...scanSessionLinks('body', subject.body));
+  return offenders;
+}
+
+/** The session-link refusal. Offending lines are fenced exactly as `formatReport` fences them. */
+export function formatSessionLinkReport(subject: Subject, offenders: Offender[]): string {
+  const lines: string[] = [];
+  lines.push(`**Claude session link in this ${KIND_LABEL[subject.kind]}.**`);
+  lines.push('');
+  lines.push('Published text carries no `claude.ai/code/session_...` link and no');
+  lines.push('`Claude-Session:` trailer, whatever a harness asks for.');
+  lines.push('');
+  lines.push('Found:');
+  lines.push('');
+  for (const o of offenders) {
+    lines.push(`- \`${o.field}\` line ${o.line} —`);
+    lines.push('');
+    lines.push(
+      fencedQuote(o.text)
+        .split('\n')
+        .map((l) => `  ${l}`)
+        .join('\n'),
+    );
+    lines.push('');
+  }
+  lines.push('Fix: delete the line and edit the text.');
+  lines.push('');
+  lines.push('Rule: .claude/skills/work-issues/references/gates-and-pr.md');
+  return lines.join('\n');
+}
+
+/**
  * Whether the event was raised by a BOT, and this check must therefore not run.
  *
  * ## Why the rule lives here rather than only in the workflow
@@ -348,10 +421,14 @@ if (isMain()) {
     process.exit(2);
   }
   const offenders = scanSubject(subject);
-  if (offenders.length === 0) {
+  const sessionLinks = scanSubjectSessionLinks(subject);
+  if (offenders.length === 0 && sessionLinks.length === 0) {
     console.log(`gh-body-english: ${KIND_LABEL[subject.kind]} #${subject.number} is English-only.`);
     process.exit(0);
   }
-  console.log(formatReport(subject, offenders));
+  const reports: string[] = [];
+  if (offenders.length > 0) reports.push(formatReport(subject, offenders));
+  if (sessionLinks.length > 0) reports.push(formatSessionLinkReport(subject, sessionLinks));
+  console.log(reports.join('\n\n'));
   process.exit(1);
 }
