@@ -349,4 +349,186 @@ describe('countProtectedResources', () => {
     });
     expect(countProtectedResources(state)).toBe(1);
   });
+
+  // go-to-k/cdkd#3676: EMR's flag is NESTED (`Instances.TerminationProtected`),
+  // which the flat per-type property could not express.
+  describe('AWS::EMR::Cluster (nested Instances.TerminationProtected)', () => {
+    const emr = (
+      properties: Record<string, unknown>,
+      observedProperties?: Record<string, unknown>
+    ): StackState =>
+      makeState({
+        Cluster: {
+          physicalId: 'j-ABC',
+          resourceType: 'AWS::EMR::Cluster',
+          properties,
+          ...(observedProperties && { observedProperties }),
+          attributes: {},
+          dependencies: [],
+        },
+      });
+
+    it('counts a cluster whose template set it', () => {
+      expect(countProtectedResources(emr({ Instances: { TerminationProtected: true } }))).toBe(1);
+    });
+
+    it('counts a cluster whose observed baseline set it', () => {
+      expect(
+        countProtectedResources(emr({ Instances: {} }, { Instances: { TerminationProtected: true } }))
+      ).toBe(1);
+    });
+
+    it('does not count an unprotected cluster', () => {
+      expect(countProtectedResources(emr({ Instances: { TerminationProtected: false } }))).toBe(0);
+      expect(countProtectedResources(emr({ Instances: {} }))).toBe(0);
+    });
+
+    it('does not count, or throw on, a top-level flag or a torn Instances block', () => {
+      // A top-level key is not where EMR keeps the flag.
+      expect(countProtectedResources(emr({ TerminationProtected: true }))).toBe(0);
+      expect(countProtectedResources(emr({ Instances: 'torn' }))).toBe(0);
+      expect(countProtectedResources(emr({ Instances: null }))).toBe(0);
+      expect(countProtectedResources(emr({ Instances: [true] }))).toBe(0);
+    });
+  });
+
+  describe('AWS::DynamoDB::GlobalTable (flag on the local replica)', () => {
+    const table = (
+      properties: Record<string, unknown>,
+      observedProperties?: Record<string, unknown>
+    ): StackState =>
+      makeState({
+        Table: {
+          physicalId: 't',
+          resourceType: 'AWS::DynamoDB::GlobalTable',
+          properties,
+          ...(observedProperties && { observedProperties }),
+          attributes: {},
+          dependencies: [],
+        },
+      });
+
+    it('counts the flag on the replica in the record region, with no observed baseline', () => {
+      // What CDK synthesizes for `deletionProtection: true`. A deploy with the
+      // observed capture off leaves nothing else to read.
+      expect(
+        countProtectedResources(
+          table({ Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] })
+        )
+      ).toBe(1);
+    });
+
+    it("does not count another region's replica flag", () => {
+      expect(
+        countProtectedResources(
+          table({
+            Replicas: [
+              { Region: 'us-east-1', DeletionProtectionEnabled: false },
+              { Region: 'eu-west-1', DeletionProtectionEnabled: true },
+            ],
+          })
+        )
+      ).toBe(0);
+    });
+
+    it('counts protection enabled out of band over a template that says off', () => {
+      // The delete flips what AWS has, so the prompt must count it even though
+      // the template's replica flag is an explicit `false`.
+      expect(
+        countProtectedResources(
+          table(
+            { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: false }] },
+            { DeletionProtectionEnabled: true }
+          )
+        )
+      ).toBe(1);
+    });
+
+    it('still counts the top-level shape the observed baseline records', () => {
+      expect(countProtectedResources(table({}, { DeletionProtectionEnabled: true }))).toBe(1);
+    });
+
+    it('does not throw on a torn Replicas list', () => {
+      expect(countProtectedResources(table({ Replicas: 'torn' }))).toBe(0);
+      expect(countProtectedResources(table({ Replicas: [null, 5] }))).toBe(0);
+    });
+  });
+
+  it("counts a CFn boolean resolved to the string 'true'", () => {
+    const state = makeState({
+      Cluster: {
+        physicalId: 'j-ABC',
+        resourceType: 'AWS::EMR::Cluster',
+        properties: { Instances: { TerminationProtected: 'true' } },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('neither throws nor counts on a resourceType naming an Object.prototype key', () => {
+    // A plain-object map answers these with an INHERITED value: `for...of`
+    // over a function threw before the prompt, and the predicate map's
+    // inherited `Object` counted anything.
+    for (const resourceType of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const state = makeState({
+        R: {
+          physicalId: 'p',
+          resourceType,
+          properties: { DeletionProtection: true },
+          attributes: {},
+          dependencies: [],
+        },
+      });
+      expect(countProtectedResources(state), resourceType).toBe(0);
+    }
+  });
+
+  describe('AWS::ElasticLoadBalancingV2::LoadBalancer (an entry of LoadBalancerAttributes)', () => {
+    const lb = (
+      properties: Record<string, unknown>,
+      observedProperties?: Record<string, unknown>
+    ): StackState =>
+      makeState({
+        LB: {
+          physicalId: 'arn:lb',
+          resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          properties,
+          ...(observedProperties && { observedProperties }),
+          attributes: {},
+          dependencies: [],
+        },
+      });
+    const on = [{ Key: 'deletion_protection.enabled', Value: 'true' }];
+
+    it('counts protection enabled out of band over a template that says off', () => {
+      expect(
+        countProtectedResources(
+          lb(
+            { LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'false' }] },
+            { LoadBalancerAttributes: on }
+          )
+        )
+      ).toBe(1);
+    });
+
+    it('reads the observed baseline when the template lists other attributes only', () => {
+      expect(
+        countProtectedResources(
+          lb(
+            { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] },
+            { LoadBalancerAttributes: on }
+          )
+        )
+      ).toBe(1);
+    });
+
+    it('does not throw on, or count, a torn attribute list', () => {
+      expect(countProtectedResources(lb({ LoadBalancerAttributes: 'torn' }))).toBe(0);
+      expect(countProtectedResources(lb({ LoadBalancerAttributes: { Key: 'x' } }))).toBe(0);
+      expect(countProtectedResources(lb({ LoadBalancerAttributes: [null, 5, 'x'] }))).toBe(0);
+    });
+  });
 });
+

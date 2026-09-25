@@ -27,6 +27,7 @@ import {
   removeProtectionTypes,
 } from '../../../src/provisioning/remove-protection-types.js';
 import { ccProtectionRegistryTypes } from '../../../src/provisioning/cc-protection-properties.js';
+import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/cli/commands/destroy-runner.js';
 import {
   destroyRemoveProtectionHelp,
   stateDestroyRemoveProtectionHelp,
@@ -111,4 +112,21 @@ describe('--remove-protection types match the providers (go-to-k/cdkd#2660)', ()
       expect(help).toMatch(/, and AWS::[A-Za-z0-9]+::[A-Za-z0-9]+\.$/);
     });
   }
+
+  it('docs/cli-destroy.md --remove-protection table has a row for every covered type', () => {
+    const doc = readFileSync(join(import.meta.dirname, '../../../docs/cli-destroy.md'), 'utf8');
+    expect(removeProtectionTypes().filter((t) => !doc.includes(`| \`${t}\` |`))).toEqual([]);
+  });
+
+  /**
+   * go-to-k/cdkd#3676: the destroy prompt counts protected resources through
+   * `PROTECTION_PROPERTY_BY_TYPE`, and EMR was missing from it. Presence only:
+   * whether each locator reads the right SHAPE is pinned per type in
+   * `destroy-runner-count-protected.test.ts`.
+   */
+  it('the destroy prompt can count every covered type', () => {
+    expect(removeProtectionTypes().filter((t) => !(t in PROTECTION_PROPERTY_BY_TYPE))).toEqual(
+      []
+    );
+  });
 });
