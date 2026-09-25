@@ -229,7 +229,7 @@ nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph cle
 nested-stack	2026-09-25T13:49:20Z	PASS	101	verify.sh	rc ok, orph clean; sha 0c502fe99 (#3718, post-rebase)
 nested-stack-3level	2026-09-25T13:23:17Z	PASS	170	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 nested-stack-deep	2026-09-25T09:36:54Z	PASS	121	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-nested-stack-replace-guard	2026-09-25T14:38:30Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
+nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-secret	2026-09-25T05:24:16Z	PASS	198	verify.sh	rc ok, 0 orphans (#3692)
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
