@@ -1970,6 +1970,18 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     ).toBe(true);
   });
 
+  it('does NOT match a typed ResourceUpdateNotSupportedError whose message quotes the prose (issue #3757)', () => {
+    // The typed refusal is the `--replace` opt-in trigger; its suggestion
+    // interpolates template-chosen names, which can carry the phrase.
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Glue::Table',
+      'MyTable',
+      `renaming 'x' to 'does not support UPDATE' needs --replace`
+    );
+    expect(err.message).toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+    expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
+  });
+
   it('does NOT match the exception name quoted in a message (the unreachable half #2520 removed)', () => {
     // The predicate this replaced accepted
     // `msg.includes('UnsupportedActionException')`. Nothing cdkd produces puts
