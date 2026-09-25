@@ -813,7 +813,7 @@ Two mechanical details any such abort inherits:
   message but the TEMPLATE logical id. The state-borne physical id is the worst
   candidate of all — the only skip family a REPLACE path meets today is
   literally "malformed physicalId in state", and `cdkd import --resource
-  '<id>'='<anything>'` puts an arbitrary string there.
+  '<id>=<anything>'` puts an arbitrary string there.
 - **...and then `markNonRetryable` the error, because keeping values out of the
   message cannot close the hole.** The match is a SUBSTRING, not an equality, so
   an ordinary composite logical id (`MyDependencyViolationSub`) still carries a

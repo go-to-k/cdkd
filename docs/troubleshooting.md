@@ -139,9 +139,9 @@ LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attemp
 > though the parent's lock was acquired with retry.
 >
 > `cdkd orphan` and `cdkd state orphan` are different commands, not two
-> spellings of one: `cdkd orphan '<paths...>'` drops individual resources by
+> spellings of one: `cdkd orphan '<path>'...` drops individual resources by
 > construct path and fails fast on the lock, while
-> `cdkd state orphan '<stacks...>'` drops whole stack records and takes no lock
+> `cdkd state orphan '<stack>'...` drops whole stack records and takes no lock
 > of its own — it refuses while one is held, and `--force` makes it delete
 > that lock, including a live one.
 
@@ -2411,7 +2411,7 @@ raising `CDKD_ACM_POLL_ATTEMPTS` past 180 without also raising
 `--resource-timeout` silently caps the wait at 30 minutes. Raise both:
 
 ```bash
-CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy <stack> \
+CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy '<stack>' \
   --resource-timeout AWS::CertificateManager::Certificate=50m   # 45 min of polling
 ```
 

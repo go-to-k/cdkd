@@ -185,7 +185,7 @@ The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 asset storage — its body names the region's asset bucket
 (default `cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
 (default `cdkd-container-assets-{accountId}-{region}`; custom names via
-`cdkd bootstrap --asset-bucket '<name>'` / `--container-repo <name>` —
+`cdkd bootstrap --asset-bucket '<name>'` / `--container-repo '<name>'` —
 every consumer reads
 the names from the marker, never from the naming convention). Deploys read
 the marker per
@@ -1424,7 +1424,7 @@ path had produced).
 
 The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
-`cdkd import --resource '<logicalId>'='<physicalId>'` expects. A few types also
+`cdkd import --resource '<logicalId>=<physicalId>'` expects. A few types also
 accept a looser form on import — see
 [Importing Existing Resources](./import.md#auto-resolved-no-resource-flag-needed) for the
 per-type notes.

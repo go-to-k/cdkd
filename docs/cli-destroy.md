@@ -552,7 +552,7 @@ Verify that a nested stack destroys cleanly before removing it from the
 template.
 
 The remedy the summary prints names the **child's** state file
-(`cdkd state orphan '<parent>'~'<child>'`), not the parent's — the resource that
+(`cdkd state orphan '<parent>~<child>'`), not the parent's — the resource that
 failed lives in the child, and orphaning the parent would drop the very row that
 keeps the child reachable. A run with both failures and skips prints each remedy
 separately, since they differ in kind: a failure is retryable (`cdkd destroy`
@@ -584,7 +584,7 @@ which is not the same as whether a stack is "running":
 
 - the exact **region-qualified** `cdkd force-unlock '<stack>' --stack-region ...`
   once that stack's teardown owns the signal, i.e. it can name the lock;
-- a **hedged** `cdkd force-unlock '<stack-name>'` otherwise — both between two
+- a **hedged** `cdkd force-unlock <stack-name>` otherwise — both between two
   stacks (where the finished stack has already released its lock, unless that
   release itself failed) **and on the FIRST signal inside a stack that has not
   yet armed its teardown**, the window between the loop dispatching the stack

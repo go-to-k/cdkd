@@ -108,7 +108,7 @@ the export reads `attributes` at exactly one position, the recorded identifier
 of the few types whose cdkd physical id is not CloudFormation's identifier. Only
 a mask at THAT position blocks, because it would become the resource's identity
 in the import changeset; re-deploying does not clear it (the import re-masks),
-so the remedy is `cdkd import '<stack>' --resource '<logicalId>'='<physicalId>'
+so the remedy is `cdkd import '<stack>' --resource '<logicalId>=<physicalId>'
 --force` with `cloudformation:DescribeType` granted, or exporting without the
 resource. Whatever produced the identifier, a value equal to the mask is
 refused before the changeset is built.
