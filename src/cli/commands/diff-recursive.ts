@@ -259,6 +259,44 @@ const DEPLOY_REFUSES_OUTPUTS_REASON =
   `The 'outputs' bag cannot be read. This preview repaired it to empty; 'cdkd deploy' ` +
   `refuses the record instead, so the deploy this previews will not start.`;
 
+/*
+ * The reasons for the containers this command DROPS rather than repairs in
+ * place (go-to-k/cdkd#3512): the `resources` bag, a `resources` entry, the
+ * `orphans` container and an `orphans` row. Each already puts a row in the
+ * node's `unreadable`, which `--fail` counts; `cdkd deploy` refuses the record
+ * over every one of them, so each ALSO carries a blocking reason and exit 3
+ * says so. The rule is the one go-to-k/cdkd#3335 set for the two containers
+ * above: a container the deploy refuses is a reason, and whatever `unreadable`
+ * row it had stays — `--json`'s `unreadable` still means "dropped from the
+ * diff", and exit 3 outranks `--fail` where both fire.
+ *
+ * Count-only, like {@link deployRefusesPropertiesReason}: the rows are named in
+ * `unreadable` and in the warning printed beside this.
+ */
+const DEPLOY_REFUSES_RESOURCES_BAG_REASON =
+  `The 'resources' map cannot be read. This preview read it as empty; 'cdkd deploy' ` +
+  `refuses the record instead, so the deploy this previews will not start.`;
+
+function deployRefusesResourceEntriesReason(logicalIds: readonly string[]): string {
+  return (
+    `${logicalIds.length} resource record(s) in 'resources' cannot be read as resources. ` +
+    `This preview dropped them; 'cdkd deploy' refuses the record instead, so the deploy ` +
+    `this previews will not start.`
+  );
+}
+
+const DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON =
+  `The 'orphans' field is not a list. This preview read it as empty; 'cdkd deploy' ` +
+  `refuses the record instead, so the deploy this previews will not start.`;
+
+function deployRefusesDroppedOrphanRowsReason(logicalIds: readonly string[]): string {
+  return (
+    `${logicalIds.length} rollback-orphan record(s) in 'orphans' cannot be read as resources. ` +
+    `This preview dropped them; 'cdkd deploy' refuses the record instead, so the deploy ` +
+    `this previews will not start.`
+  );
+}
+
 /** How many unreadable row names the human preview lists before summarizing. */
 const UNREADABLE_PREVIEW_NAMES = 10;
 
@@ -375,12 +413,13 @@ async function loadStateOrEmpty(
     // node can report it (see `DiffTreeNode.unreadable`).
     const unreadable: string[] = [];
     // REPAIRED containers whose damage `cdkd deploy` REFUSES (go-to-k/cdkd#3335).
-    // Separate from `unreadable`, which means "dropped from the diff": these
-    // rows are still previewed, and the reader's question is different — not
-    // "did the diff read everything" but "will the deploy this previews start
-    // at all". They reach the node's `blocking`, so `countBlocking` raises the
-    // exit-3 `DeployRefusalPreviewError` that `cdkd diff` already spends on a
-    // refused adoption, ahead of `--fail`.
+    // Separate from `unreadable`, which means "dropped from the diff": the
+    // reader's question is different — not "did the diff read everything" but
+    // "will the deploy this previews start at all" — so a DROPPED container
+    // lands in both lists (go-to-k/cdkd#3512), and a repaired one previewed in
+    // place in this one alone. They reach the node's `blocking`, so
+    // `countBlocking` raises the exit-3 `DeployRefusalPreviewError` that
+    // `cdkd diff` already spends on a refused adoption, ahead of `--fail`.
     //
     // Without this a record whose template declares nothing in the damaged
     // container has no delta, so `--fail` exited 0 and a CI step gating on it
@@ -388,15 +427,13 @@ async function loadStateOrEmpty(
     const deployRefusals: string[] = [];
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
-      // This bag pushes to `unreadable` and NOT to `deployRefusals`, which is
-      // go-to-k/cdkd#3018's answer rather than an omission of
-      // go-to-k/cdkd#3335's: a row here is DROPPED from the diff, so `--fail`
-      // already counts it and the reader is told. `cdkd deploy` refuses this
-      // container too (`refuseMalformedResourcesForDeploy`), so exit 3 is
-      // arguably owed here as well — filed rather than folded in, since it
-      // changes what `unreadable` means for a container the issue treats as
-      // already covered — go-to-k/cdkd#3512.
+      // BOTH lists (go-to-k/cdkd#3512): the row says the diff dropped the bag,
+      // which `--fail` counts, and the reason says the deploy refuses the
+      // record (`refuseMalformedResourcesForDeploy`), which exit 3 reports —
+      // including when the template declares nothing, where the empty bag
+      // yields no change row at all.
       unreadable.push(UNREADABLE_RESOURCES_MAP_ROW);
+      deployRefusals.push(DEPLOY_REFUSES_RESOURCES_BAG_REASON);
     }
     // go-to-k/cdkd#3018. The bag repair above is not the whole rule, and the
     // gap was invisible to the sweep that produced it: a file IMPORTING this
@@ -412,7 +449,15 @@ async function loadStateOrEmpty(
     const dropped = repairMalformedResourceEntriesForReadOnly(result.state);
     if (dropped.length > 0) {
       logger.warn(malformedResourceEntriesWarning(stackName, region, dropped));
-      unreadable.push(...dropped);
+      // One at a time, never spread: `push(...ids)` passes each id as an
+      // ARGUMENT and throws a bare `RangeError` past the engine's argument
+      // limit — the orphan-row twin below records the measurement.
+      for (const id of dropped) unreadable.push(id);
+      // The same pair as the bag above (go-to-k/cdkd#3512): every entry this
+      // drops is one `refuseMalformedResourceEntriesForDeploy` refuses the
+      // record over — a `null` row and a typeless object alike, with or
+      // without a torn `properties` map.
+      deployRefusals.push(deployRefusesResourceEntriesReason(dropped));
     }
     // The same treatment one level DOWN, on each entry's `properties` bag
     // (go-to-k/cdkd#3191). A separate call rather than a widening of
@@ -471,6 +516,8 @@ async function loadStateOrEmpty(
     if (repairMalformedOrphansForReadOnly(result.state)) {
       logger.warn(malformedOrphansWarning(stackName, region));
       unreadable.push(UNREADABLE_ORPHANS_CONTAINER_ROW);
+      // `refuseMalformedOrphans` refuses the deploy over it (go-to-k/cdkd#3512).
+      deployRefusals.push(DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON);
     }
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves
@@ -995,6 +1042,12 @@ export async function computeStackDiff(
       // `false`: this command took the PREVIEWABLE predicate, so the diagnosis
       // must not name a torn map as a reason a row was dropped here.
       logger.warn(malformedOrphanRecordsWarning(stackName, region, unreadableOrphans, false));
+      // Every row dropped here is one `refuseMalformedOrphanRecords` refuses
+      // the deploy over — the previewable predicate is the NARROWER half of
+      // that one — so it is a reason as well as an `unreadable` row
+      // (go-to-k/cdkd#3512). Disjoint from the kept-row reason below: that arm
+      // walks `readableOrphans`, which excludes every row named here.
+      deployRefusals.push(deployRefusesDroppedOrphanRowsReason(unreadableOrphans));
     }
     // Names the `tornAdopted` arm below reports, so the arm after it does not say
     // the same thing about the same row twice (see that arm for why).

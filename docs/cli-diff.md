@@ -410,12 +410,12 @@ table:
 
 | Container | Read as | What the preview then shows |
 | --- | --- | --- |
-| `resources` | empty | Every resource the template declares previews as a `CREATE` |
+| `resources` | empty | Every resource the template declares previews as a `CREATE`, and `(resources map)` is named like a dropped row; on the TOP-LEVEL stack it also exits `3` |
 | `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
 | A resource's `properties` | empty | Every property that resource declares previews as an addition, and a create-only one previews as a **replacement** |
-| `orphans` | empty | No rollback-orphan record previews as an adoption, and `(orphans container)` is named in the preview, in `--json`'s `unreadable` and in the `--fail` count |
+| `orphans` | empty | No rollback-orphan record previews as an adoption, and `(orphans container)` is named in the preview, in `--json`'s `unreadable` and in the `--fail` count; on the TOP-LEVEL stack it also exits `3` |
 | One `orphans` record whose `properties` or `attributes` map is not an object | KEPT | The record is still previewed, and the preview WARNS naming the row at every node the run REACHES with an adoption preview — a plain `cdkd diff` visits only the top-level stack, `--recursive` visits its template-present children, and a state-only child being DELETED runs no preview at all, saying that `cdkd deploy` refuses the record over it. On the TOP-LEVEL stack it also exits `3`; a nested child warns without the exit code, for the reason [exit `3`](#exit-3-the-deploy-would-refuse) gives |
-| One `resources` entry, or one `orphans` record (not an object, no resource type, and for an orphan record no string `logicalId` or one another record also carries, or a `state` with no non-empty string `physicalId`) | DROPPED | The row is named in the preview, in `--json`'s `unreadable` and in the `--fail` count; a row the template still declares previews as a `CREATE`, one it no longer declares gets no row at all |
+| One `resources` entry, or one `orphans` record (not an object, no resource type, and for an orphan record no string `logicalId` or one another record also carries, or a `state` with no non-empty string `physicalId`) | DROPPED | The row is named in the preview, in `--json`'s `unreadable` and in the `--fail` count; a row the template still declares previews as a `CREATE`, one it no longer declares gets no row at all. On the TOP-LEVEL stack it also exits `3` |
 
 "Unreadable" is decided per container against the shape that container holds.
 For the three MAPS it is anything that is not a JSON object: a string, a list,
@@ -445,7 +445,9 @@ additionally says that `cdkd deploy` and `cdkd destroy` **refuse** such a
 record: they read the same map, an unreadable one is indistinguishable from an
 empty stack, and acting on that reading would make a deploy re-create every
 resource and a destroy delete none of them. So a `resources` preview that
-renders is followed by a refusal from either of those commands — see
+renders is followed by a refusal from either of those commands. On the stack
+you named, the preview says so itself: the refusal is reported under
+`Blocking` and the command exits `3`. See
 [when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
 The `outputs` warning costs this preview's Outputs
 section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
@@ -461,7 +463,8 @@ costs the same thing beyond the preview: `cdkd deploy`, `cdkd destroy`,
 `orphans` field is present and not a list, because such a field either counts as
 no orphans — leaving the resources an earlier failed deploy left live in AWS
 unreported, or rewritten into character-shaped records by a rollback — or aborts
-the command outright with no cause named. See
+the command outright with no cause named. On the stack you named, the refusal
+is reported under `Blocking` and the command exits `3`. See
 [when `orphans` is not a list](state-management.md#when-orphans-is-not-a-list), and
 [when one record cannot be read](state-management.md#when-one-orphans-record-cannot-be-read) for the row level below it.
 
@@ -484,7 +487,8 @@ those records come from a different part of the file and are spliced in after
 the load, so a torn one is emptied and named there too. An orphan record that
 is not readable as a resource at all — not an object, or carrying no resource
 type — is dropped before adoption is previewed, named with the dropped rows
-below, and counted the same way; a `null` one used to abort the command.
+below, and counted the same way — `cdkd deploy` refuses the record over it, so
+on the stack you named it also exits `3`.
 
 A single `resources` **entry** that is not an object, or carries no resource
 type, is not repaired but **dropped** from the record the diff reads, with or
@@ -496,7 +500,10 @@ still declares previews as a `CREATE`; one it no longer declares gets no row at
 all. So the dropped rows, `(resources map)` for an unreadable map and
 `(orphans container)` for an unreadable orphan list, are also named together on
 one line after the counts — up to ten names, then how many more — listed in full
-in `--json`'s `unreadable`, and counted by `--fail`.
+in `--json`'s `unreadable`, and counted by `--fail`. `cdkd deploy` refuses a
+record holding any of them, so on the stack you named each is also reported
+under `Blocking` and the command exits `3`, which takes precedence over
+`--fail`.
 
 With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed
@@ -843,17 +850,21 @@ live resource, so cdkd refuses. Resolve the ownership conflict — usually by
 removing the resource from whichever stack should not own it — and the next
 `cdkd diff` exits normally.
 
-**A container this command repaired and `cdkd deploy` refuses.** A resource's
-unreadable `properties` map, or an unreadable `outputs` bag, is repaired to
-empty for the preview (see [when the state record is
+**A container this command repaired or dropped and `cdkd deploy` refuses.** A
+resource's unreadable `properties` map, or an unreadable `outputs` bag, is
+repaired to empty for the preview (see [when the state record is
 malformed](#when-the-state-record-is-malformed)) while `cdkd deploy` refuses
 the record outright. A rollback-orphan record this diff adopted counts the same
 way, since its `properties` map is repaired after it is spliced in. The
 preview is therefore honest about the rows and wrong about what happens next,
 and this is the exit code that says so — including when the template declares
 nothing in the damaged container, where the repaired `{}` produces no change
-rows at all and `--fail` alone would exit `0`. Repair the record, or let the
-deploy's own refusal name it.
+rows at all and `--fail` alone would exit `0`. The containers this command
+DROPS count the same way — an unreadable `resources` map, a `resources` entry
+that is not a resource record, an `orphans` field that is not a list, and an
+`orphans` record the preview cannot read. Those are also named in `--json`'s
+`unreadable` and counted by `--fail`; this exit code takes precedence. Repair
+the record, or let the deploy's own refusal name it.
 
 **A rollback-orphan record this preview KEEPS that the deploy refuses.** A row
 whose `properties` or `attributes` map is not an object stays in the preview,

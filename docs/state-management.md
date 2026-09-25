@@ -939,7 +939,7 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`) — the map is the list of what to delete, so an unreadable one counted as zero resources and the run removed `state.json` down the empty-stack fast path |
 | `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
-| `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
 | `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
 
@@ -1137,7 +1137,8 @@ with no physical id, is reported as unresolvable rather than substituted.
 any resource (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too,
 naming the records it could not read. Otherwise the entry reads as absent and
 deploy plans a `CREATE` for a resource it already manages. `cdkd diff` drops
-those records, warns, and previews the rest.
+those records, warns, and previews the rest; on the stack you named it also
+reports the deploy's refusal under `Blocking` and exits `3`.
 
 The same scoped refusal covers a kept record's `attributes` map — the cache
 `Fn::GetAtt` of it is read from — when it is `null` or not an object; an absent
@@ -1162,7 +1163,7 @@ admits all four.
 | `cdkd import` | **Refuses** — it carries the container into the record it writes, so importing over a damaged one would leave a record every other command then refuses |
 | `cdkd orphan` | **Refuses**, under `--dry-run` too — it carries the container into its save without reading it, so it would report success over a record the next deploy refuses |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
-| `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see |
+| `cdkd diff` | **Repairs** in memory and warns — it writes nothing, and the container's stand-in row `(orphans container)` joins the node's unreadable list, which `--fail` and `--json` both see; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3` |
 
 A string is the shape that makes this worse than a lost preview: walking it
 character by character yields one garbage orphan record per character, and
@@ -1193,7 +1194,7 @@ answers a damaged container:
 | `cdkd import` | **Refuses** — it carries the records into the record it writes, verbatim |
 | `cdkd orphan` | **Refuses**, under `--dry-run` too |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); under `--dry-run` it DROPS the record, warns, and reports it in the audited-record refusal |
-| `cdkd diff` | **Drops** the record, names it in the preview, in `--json`'s `unreadable` and in the `--fail` count, and previews the rest. It drops only what the preview cannot read — an object, a string `logicalId`, and a readable `state` with a non-empty string `physicalId` (the preview resolves that id against AWS and against other stacks' records) — plus EVERY record whose `logicalId` another record also carries, since the preview keys its adoptions by that id and would show one adoption for two resources; a record whose `properties` or `attributes` map is torn is KEPT, and the preview then WARNS naming the row — at every node the run reaches with an adoption preview; a plain run visits only the top-level stack, and a state-only child being DELETED runs no preview at all — saying that `cdkd deploy` refuses the record over it; the TOP-LEVEL stack also exits `3`, so a clean run never precedes a deploy that will not start. A kept row that is ADOPTED additionally has its `properties` map repaired and named by the [`properties` repair](#when-a-resource-properties-map-is-not-an-object) |
+| `cdkd diff` | **Drops** the record, names it in the preview, in `--json`'s `unreadable` and in the `--fail` count, and previews the rest; on the stack you named the deploy's refusal is also reported under `Blocking` and exits `3`. It drops only what the preview cannot read — an object, a string `logicalId`, and a readable `state` with a non-empty string `physicalId` (the preview resolves that id against AWS and against other stacks' records) — plus EVERY record whose `logicalId` another record also carries, since the preview keys its adoptions by that id and would show one adoption for two resources; a record whose `properties` or `attributes` map is torn is KEPT, and the preview then WARNS naming the row — at every node the run reaches with an adoption preview; a plain run visits only the top-level stack, and a state-only child being DELETED runs no preview at all — saying that `cdkd deploy` refuses the record over it; the TOP-LEVEL stack also exits `3`, so a clean run never precedes a deploy that will not start. A kept row that is ADOPTED additionally has its `properties` map repaired and named by the [`properties` repair](#when-a-resource-properties-map-is-not-an-object) |
 
 Inspect the record with `cdkd state show <stack> --stack-region <region> --json`
 and repair the row rather than deleting the record: no command removes a single

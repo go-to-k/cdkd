@@ -230,6 +230,48 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     expect(code, '1 here would be `--fail` winning over the refusal').toBe(3);
   }, 30_000);
 
+  // go-to-k/cdkd#3512: the containers the diff DROPS. The template here declares
+  // `Q`, so each dropped shape also previews a CREATE — `--fail` has a change of
+  // its own, and 3 over 1 is the precedence being pinned.
+  for (const [label, make] of [
+    ["an unreadable 'resources' bag", () => record('abcdef' as unknown as StackState['resources'])],
+    ['a null resources entry', () => record({ ...healthy(), R: null as never })],
+    [
+      'a typeless entry with a torn properties map',
+      () => record({ ...healthy(), R: { properties: 'abc' } as never }),
+    ],
+    [
+      "an 'orphans' field that is not a list",
+      () => ({ ...record(healthy()), orphans: 'abc' as unknown as StackState['orphans'] }),
+    ],
+  ] as const) {
+    for (const extra of [[] as string[], ['--fail']]) {
+      it(`exits 3 over ${label} ${extra.length ? 'with' : 'without'} --fail (go-to-k/cdkd#3512)`, async () => {
+        stateForDiff.value = make();
+        const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+        expect(code, '1 here would be `--fail` winning, 0 the pre-fix gap').toBe(3);
+        expect(mockLoggerError.mock.calls.map((c) => String(c[0]))).toContain(
+          'DeployRefusalPreviewError: cdkd deploy would refuse to start: 1 blocking condition(s) reported above.'
+        );
+      }, 30_000);
+    }
+  }
+
+  it('CONTROL: a genuinely empty {} bag exits 0, and --fail says 1 for its CREATE', async () => {
+    // The healthy twin of the bag case above: `{}` is a stack holding nothing,
+    // not an unreadable map, so the only signal is `--fail`'s change.
+    for (const [extra, want] of [
+      [[] as string[], undefined],
+      [['--fail'], 1],
+    ] as const) {
+      stateForDiff.value = record({});
+      stateForDiff.reads = 0;
+      const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+      expect(code, `extra=${extra.join(' ')}`).toBe(want);
+      expect(stateForDiff.reads).toBeGreaterThan(0);
+    }
+  }, 30_000);
+
   it('exits 0 over a healthy record, with --fail and without', async () => {
     // The control: without it a throw that fired unconditionally would satisfy
     // every case above while making every ordinary `cdkd diff` exit 3.
