@@ -57,6 +57,15 @@ describe('formatResourceLine', () => {
     expect(line).toContain('RealDatabase');
   });
 
+  it.each(['created', 'updated', 'deleted', 'skipped'] as const)(
+    'folds a newline in the verb override for the %s op too (go-to-k/cdkd#3773)',
+    (op) => {
+      const line = formatResourceLine(op, id, type, 'x\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted');
+      expect(line).not.toMatch(/[\n\r]/);
+      expect(line).toContain('RealDatabase');
+    }
+  );
+
   // Issue #1752: `skipped` is the one op that is NEITHER success nor failure.
   describe('skipped (issue #1752)', () => {
     it('renders a yellow warning glyph — not a check and not a cross', () => {
