@@ -3026,7 +3026,7 @@ function filterSpecsForGroup(
  * the section header. Replaces the pre-issue #260 single flat table —
  * users now see exactly which routes belong to which API + port.
  */
-function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
+export function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
   for (const { group, server } of servers) {
     process.stdout.write(
       `\n${group.displayName}  (http://${formatAuthority(server.host, server.port)})\n`

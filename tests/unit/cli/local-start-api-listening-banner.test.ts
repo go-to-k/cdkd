@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
-import { formatServerListeningBanner } from '../../../src/cli/commands/local-start-api.ts';
+import {
+  formatServerListeningBanner,
+  printPerServerRouteTables,
+} from '../../../src/cli/commands/local-start-api.ts';
 
 /** The URL between `Server listening on ` and the two-space label separator. */
 function bannerUrl(banner: string): string {
@@ -27,5 +30,19 @@ describe('formatServerListeningBanner', () => {
     expect(formatServerListeningBanner('https', '127.0.0.1', 3000, '', 'MyApi')).toBe(
       'Server listening on https://127.0.0.1:3000  (MyApi)\n'
     );
+  });
+});
+
+describe('printPerServerRouteTables', () => {
+  it('brackets an IPv6 host in the per-API section header', () => {
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      printPerServerRouteTables([
+        { group: { displayName: 'MyApi', routes: [] }, server: { host: '::', port: 3000 } },
+      ] as never);
+      expect(writeSpy.mock.calls[0]?.[0]).toBe('\nMyApi  (http://[::]:3000)\n');
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 });
