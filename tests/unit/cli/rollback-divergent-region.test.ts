@@ -163,6 +163,25 @@ const ARMS: Arm[] = [
       ],
     },
   },
+  {
+    label: 'a failed UPDATE under --revert-failed (forced update)',
+    reaches: 'update',
+    revertFailed: true,
+    resources: { A: { physicalId: 'p', resourceType: TYPE, properties: { Value: 'old' } } },
+    segment: {
+      operations: [],
+      failedOperations: [
+        {
+          logicalId: 'A',
+          changeType: 'UPDATE',
+          resourceType: TYPE,
+          physicalId: 'p',
+          attemptedProperties: { Value: 'new' },
+          previousState: { physicalId: 'p', resourceType: TYPE, properties: { Value: 'old' } },
+        },
+      ],
+    },
+  },
 ];
 
 function install(opts: {
@@ -173,6 +192,8 @@ function install(opts: {
   /** Body region of the record at the retry save's re-read; omitted = no retry. */
   rereadBodyRegion?: string;
 }) {
+  const popRollbackJournalSegment = vi.fn().mockResolvedValue(0);
+  const deleteState = vi.fn().mockResolvedValue(undefined);
   const record = (bodyRegion: string): StackState => ({
     version: 9,
     stackName: STACK,
@@ -204,9 +225,9 @@ function install(opts: {
         segments: [structuredClone(opts.segment)],
       }),
       saveState,
-      popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+      popRollbackJournalSegment,
       setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
-      deleteState: vi.fn().mockResolvedValue(undefined),
+      deleteState,
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     },
     lockManager: {
@@ -220,7 +241,7 @@ function install(opts: {
     exportIndexStore: {},
     dispose: vi.fn(),
   });
-  return { getState, saveState };
+  return { getState, saveState, popRollbackJournalSegment, deleteState };
 }
 
 const opts = (revertFailed?: boolean) =>
@@ -291,31 +312,78 @@ describe('cdkd rollback refuses a record whose body region diverged from its key
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     expect((thrown as { code?: string } | undefined)?.code).not.toBe(STATE_REGION_DIVERGED);
     expect(awsCalls()).toBe(0);
-    // Reached the replay (the CREATE was classified already-done) and the
-    // terminal step, rather than failing early for some other reason.
-    expect(h.getState).toHaveBeenCalledTimes(1);
+    // Ran to completion — the segment was replayed and popped — rather than
+    // failing early for some other reason.
+    expect(thrown).toBeUndefined();
+    expect(h.popRollbackJournalSegment).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('cdkd rollback does not write over a record rewritten mid-run with a divergent region (go-to-k/cdkd#3370)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('declines the retry save and warns, naming the kind only', async () => {
-    const h = install({ ...ARMS[0]!, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
-    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+  /**
+   * An initial-deploy segment with TWO rolled-back CREATEs, so the run could
+   * both keep replaying after the decline and, with the record emptied, reach
+   * the terminal `deleteState` — the two things declining the save must stop.
+   */
+  const TWO_CREATES = {
+    resources: {
+      A: { physicalId: 'pa', resourceType: TYPE, properties: {} },
+      B: { physicalId: 'pb', resourceType: TYPE, properties: {} },
+    },
+    segment: {
+      initialDeploy: true,
+      operations: [
+        { logicalId: 'A', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pa' },
+        { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, physicalId: 'pb' },
+      ],
+    },
+  };
+
+  it('declines the retry save, stops the replay, keeps the journal and the record, exits partial', async () => {
+    const h = install({ ...TWO_CREATES, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     // The re-read happened (so the case reached the site under test)...
     expect(h.getState).toHaveBeenCalledTimes(2);
     // ...and only the LOST first attempt was a save: nothing wrote over the rewrite.
     expect(h.saveState, 'the retry wrote the key region over a divergent rewrite').toHaveBeenCalledTimes(1);
+    // The replay stopped after the op whose save was declined.
+    expect(replayProvider.delete, 'the replay kept going after the decline').toHaveBeenCalledTimes(1);
+    // The segment stays, so the re-run has something to replay and meets the refusal...
+    expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+    // ...and the record the save declined to overwrite is not deleted either.
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect((thrown as Error).constructor.name).toBe('PartialFailureError');
+    expect((thrown as Error).message).toContain('Rollback stopped');
+    expect((thrown as Error).message).not.toContain('interrupted');
     const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain("carries a 'region' of its own (a string)");
     expect(warned).not.toContain(BODY_REGION);
+    expect((thrown as Error).message).not.toContain(BODY_REGION);
   });
 
-  it('CONTROL: an agreeing re-read is saved over as before', async () => {
-    const h = install({ ...ARMS[0]!, bodyRegion: KEY_REGION, rereadBodyRegion: KEY_REGION });
-    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+  it('declines on the LAST op of a segment too: no pop, no deleteState', async () => {
+    // The replay never sees an interrupt here (there is no next op to stop
+    // before), so the pop and the terminal delete are guarded on their own.
+    const h = install({ ...ARMS[0]!, segment: { ...ARMS[0]!.segment, initialDeploy: true }, bodyRegion: KEY_REGION, rereadBodyRegion: BODY_REGION });
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     expect(h.getState).toHaveBeenCalledTimes(2);
-    expect(h.saveState).toHaveBeenCalledTimes(2);
+    expect(replayProvider.delete).toHaveBeenCalledTimes(1);
+    expect(h.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect((thrown as Error).message).toContain('Rollback stopped');
+  });
+
+  it('CONTROL: an agreeing re-read is saved over, the replay finishes, and the record is removed', async () => {
+    const h = install({ ...TWO_CREATES, bodyRegion: KEY_REGION, rereadBodyRegion: KEY_REGION });
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+    expect(thrown).toBeUndefined();
+    expect(h.getState).toHaveBeenCalledTimes(2);
+    // Lost first save + its retry, then the second op's save.
+    expect(h.saveState).toHaveBeenCalledTimes(3);
+    expect(replayProvider.delete).toHaveBeenCalledTimes(2);
+    expect(h.popRollbackJournalSegment).toHaveBeenCalledTimes(1);
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
   });
 });

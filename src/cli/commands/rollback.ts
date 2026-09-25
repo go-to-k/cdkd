@@ -294,9 +294,10 @@ function refuseDivergentRecordRegionForRollback(
 }
 
 /**
- * The warn-line reason for declining the retry SAVE over a record that was
- * rewritten mid-run with a divergent body region (go-to-k/cdkd#3370). Names no
- * stack — the warn it lands in is about the current run's stack already — and
+ * Why the retry SAVE declined to write over a record that was rewritten mid-run
+ * with a divergent body region (go-to-k/cdkd#3370) — rendered in that save's
+ * warn and again in the run's partial-failure exit. Names no stack — both are
+ * about the current run's stack already — and
  * prints the value's KIND only, for the reason
  * {@link refuseDivergentRecordRegionForRollback} gives.
  */
@@ -526,6 +527,14 @@ export async function rollbackCommand(
     // first operation and the `finally` releases the lock — instead of
     // killing the process with the just-written lock stranded.
     let interrupted = false;
+    // Set when the retry save declined to write over a record rewritten mid-run
+    // with a divergent body region (go-to-k/cdkd#3370). It STOPS the run like an
+    // interrupt, and also keeps the segment unpopped — which is also what keeps
+    // `state.json` in place, since the terminal `deleteState` needs an empty
+    // journal. Popping would leave the re-run nothing to replay, and that delete
+    // would remove the very record this declined to overwrite.
+    let declinedDivergentRewrite = false;
+    let declinedDivergentReason = '';
     const sigintHandler = () => {
       process.stderr.write('\nInterrupted — stopping rollback after the current operation...\n');
       interrupted = true;
@@ -742,11 +751,14 @@ export async function rollbackCommand(
             // conditional write lost), and the rewrite carries a body region
             // that is not the key's (go-to-k/cdkd#3370). Saving `next()` over
             // it would stamp the KEY's region in — deciding the very question
-            // the start-of-run refusal declines to decide. Leave it: the throw
-            // lands in the warn below, and the re-run it asks for meets that
-            // refusal.
+            // the start-of-run refusal declines to decide. Leave it, and stop:
+            // the flag halts the replay after this op, keeps the journal
+            // segment and the record, and exits partial; the throw lands in the
+            // warn below.
             if (fresh?.divergentBodyRegion !== undefined) {
-              throw new Error(divergedDuringRollbackMessage(fresh.divergentBodyRegion));
+              declinedDivergentRewrite = true;
+              declinedDivergentReason = divergedDuringRollbackMessage(fresh.divergentBodyRegion);
+              throw new Error(declinedDivergentReason);
             }
             currentEtag = await setup.stateBackend.saveState(stackName, region, next(), {
               ...(fresh?.etag !== undefined && { expectedEtag: fresh.etag }),
@@ -772,7 +784,7 @@ export async function rollbackCommand(
       let totalWarnings = 0;
       try {
         while (journal.segments.length > 0) {
-          if (interrupted) break;
+          if (interrupted || declinedDivergentRewrite) break;
           const segment = journal.segments[journal.segments.length - 1]!;
           const result = await withNestedStackContext(
             {
@@ -811,7 +823,7 @@ export async function rollbackCommand(
                     ctx,
                     {
                       afterOp: saveState,
-                      isInterrupted: () => interrupted,
+                      isInterrupted: () => interrupted || declinedDivergentRewrite,
                       // Failed-only segment: replayRollback below returns
                       // early without the STARTED/FINISHED envelope, so the
                       // failed-op replay owns it (events symmetry). For a
@@ -872,7 +884,7 @@ export async function rollbackCommand(
                   {
                     orphanLogicalIds,
                     afterOp: saveState,
-                    isInterrupted: () => interrupted,
+                    isInterrupted: () => interrupted || declinedDivergentRewrite,
                     // Pushed from INSIDE the replay, not after it returns: the
                     // `afterOp` above saves per op, so a record appended only
                     // on return would be missing from every intermediate save
@@ -889,6 +901,10 @@ export async function rollbackCommand(
           );
           totalFailures += result.failures;
           totalWarnings += result.warnings;
+          // Before the interrupt check: the replay reports the stop the flag
+          // caused as an interrupt, and this must not be relabelled as one. And
+          // before the pop, which a clean last op would otherwise reach.
+          if (declinedDivergentRewrite) break;
           if (result.interrupted) {
             interrupted = true;
             break;
@@ -902,7 +918,9 @@ export async function rollbackCommand(
           journal.segments.pop();
         }
       } finally {
-        await eventRecorder.finalize(totalFailures > 0 || interrupted ? 'FAILED' : 'SUCCEEDED');
+        await eventRecorder.finalize(
+          totalFailures > 0 || interrupted || declinedDivergentRewrite ? 'FAILED' : 'SUCCEEDED'
+        );
       }
 
       // 9. Terminal state: an initial-deploy rollback that emptied state
@@ -935,6 +953,12 @@ export async function rollbackCommand(
       }
 
       // 10. Exit codes.
+      if (declinedDivergentRewrite) {
+        throw new PartialFailureError(
+          `Rollback stopped: ${declinedDivergentReason}. Journal preserved — ` +
+            `re-run the rollback once the record's region field matches its key.`
+        );
+      }
       if (interrupted) {
         throw new PartialFailureError(
           `Rollback interrupted. Journal preserved — re-run the rollback to finish.` +
