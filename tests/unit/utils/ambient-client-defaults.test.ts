@@ -3,7 +3,7 @@
  *
  * A library caller installing `new AwsClients({ credentials })` must have every
  * SDK client cdkd builds OUTSIDE `AwsClients` sign as that identity. One case
- * per family of site: the helper itself, an SDK provider reached through the
+ * per family of site: the helper itself, SDK providers reached through the
  * provider registry, a synthesis context provider, an asset publisher, and the
  * cross-account `Fn::GetStackOutput` STS hop (source identity + cache key).
  */
@@ -40,6 +40,18 @@ vi.mock('@aws-sdk/client-ec2', async () => {
     EC2Client: recordingClient('ec2', () => ({
       Images: [{ ImageId: 'ami-1', CreationDate: '2026-01-01T00:00:00Z' }],
     })),
+  };
+});
+
+vi.mock('@aws-sdk/client-s3tables', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-s3tables')>(
+    '@aws-sdk/client-s3tables'
+  );
+  return {
+    ...actual,
+    S3TablesClient: recordingClient('s3tables', (command) =>
+      command instanceof actual.GetTableBucketCommand ? { name: 'bucket-3588' } : { tags: {} }
+    ),
   };
 });
 
@@ -189,6 +201,29 @@ describe('routed sites carry the explicit credentials', () => {
     });
     expect(clientConfigs['sfn']).toHaveLength(1);
     expect(clientConfigs['sfn']![0]).toMatchObject({ region: 'eu-west-1', credentials: EXPLICIT });
+  });
+
+  it('the S3 Tables provider, reached through the registry', async () => {
+    const clients = new AwsClients({ region: 'eu-west-1', credentials: EXPLICIT });
+    const state = await runWithStackAwsClients(clients, async () => {
+      const registry = new ProviderRegistry();
+      registerAllProviders(registry);
+      return registry
+        .getProvider('AWS::S3Tables::TableBucket')
+        .readCurrentState!(
+          'arn:aws:s3tables:eu-west-1:123456789012:bucket/bucket-3588',
+          'TableBucket',
+          'AWS::S3Tables::TableBucket'
+        );
+    });
+    // The read went through the mocked client, so the recorded config is the
+    // one that signed it.
+    expect(state).toMatchObject({ TableBucketName: 'bucket-3588' });
+    expect(clientConfigs['s3tables']).toHaveLength(1);
+    expect(clientConfigs['s3tables']![0]).toMatchObject({
+      region: 'eu-west-1',
+      credentials: EXPLICIT,
+    });
   });
 
   it('a synthesis context provider', async () => {

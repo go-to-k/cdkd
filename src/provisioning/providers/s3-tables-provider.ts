@@ -36,7 +36,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 
@@ -168,7 +168,7 @@ export class S3TablesProvider implements ResourceProvider {
   private getClient(): S3TablesClient {
     if (!this.client) {
       this.client = new S3TablesClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
