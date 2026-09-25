@@ -884,6 +884,11 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         { CreateTableDefaultPermissions: [{ Permissions: 'ALL' }] },
         /carries an entry cdkd cannot read/,
       ],
+      [
+        'a null CreateTableDefaultPermissions entry',
+        { CreateTableDefaultPermissions: [null] },
+        /carries an entry cdkd cannot read/,
+      ],
     ];
     const previous = {
       DatabaseInput: {
@@ -965,6 +970,31 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
       expect(databaseInputOf(call![0])).toStrictEqual(previous.DatabaseInput);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TargetDatabase must be an object/));
+    });
+
+    it('a replayingState update warns and retains the previous list over a null permission entry', async () => {
+      // A `null` entry used to throw a raw TypeError past the warn ladder, so
+      // a rollback revert failed with a "fix the template" remedy.
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        {
+          DatabaseInput: {
+            ...previous.DatabaseInput,
+            CreateTableDefaultPermissions: [null],
+          },
+        },
+        previous,
+        { replayingState: true }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual(previous.DatabaseInput);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/carries an entry cdkd cannot read/));
     });
 
     it('is NOT gated on a change: an unchanged malformed block is refused too', async () => {

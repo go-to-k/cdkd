@@ -2022,9 +2022,13 @@ export class GlueProvider implements ResourceProvider {
     if (entries === undefined) return undefined;
 
     for (const entry of entries) {
-      const principal = asRecord(entry['Principal']);
+      // `entries` is typed as records but is only ARRAY-checked, so an entry
+      // can be `null` or a scalar: read `Principal` off the guarded record,
+      // or a `[null]` list throws a raw TypeError past the warn ladder.
+      const record = asRecord(entry);
+      const principal = asRecord(record?.['Principal']);
       const usable =
-        asRecord(entry) !== undefined &&
+        record !== undefined &&
         (entry['Permissions'] !== undefined || entry['Principal'] !== undefined) &&
         (entry['Permissions'] === undefined || Array.isArray(entry['Permissions'])) &&
         // A `Principal` naming no sendable identifier is the empty-block defect
@@ -2038,7 +2042,7 @@ export class GlueProvider implements ResourceProvider {
           `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list. ` +
             `On an UPDATE that is a RESET: UpdateDatabase replaces DatabaseInput wholesale, so ` +
             `unless a usable previous list is retained the database falls back to the account default ` +
-            `(IAM_ALLOWED_PRINCIPALS / ALL) — fix the template value to restore the declared grants`
+            `(IAM_ALLOWED_PRINCIPALS / ALL) until a readable list restores the declared grants`
         );
         return undefined;
       }
