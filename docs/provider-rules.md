@@ -235,9 +235,10 @@ implementation. Three details are worth copying:
     rather than restating it — S3's per-config appliers run on a probe whose
     client writes nothing (issue
     [#3740](https://github.com/go-to-k/cdkd/issues/3740)). Gate the refusal
-    on the value having changed wherever an unchanged one sends nothing. One
-    arm decided before #3141 gave the revert arms a flag still warns on every
-    caller: Glue's `DatabaseInput` (#3740), which says so at its site.
+    on the value having changed wherever an unchanged one sends nothing, and
+    do NOT gate it where the value goes out on every update: Glue's
+    `UpdateDatabase` replaces `DatabaseInput` wholesale, so its malformed
+    blocks are refused whether or not they changed (#3740).
     Separately, a create-only
     value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
     `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,

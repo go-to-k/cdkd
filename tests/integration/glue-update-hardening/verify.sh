@@ -41,6 +41,9 @@
 #   9. Database `CatalogId` move (issue #3756). `CatalogId` is not createOnly
 #      on a Database, so the move diffs as an in-place UPDATE aimed at another
 #      account's catalog; a plain deploy must be REFUSED, the database intact.
+#  10. Database `DatabaseInput.TargetDatabase` malformed on a template-path
+#      update (issue #3740). It used to warn and re-send the previous block;
+#      the deploy must now be REFUSED before any Glue call, the link intact.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -124,6 +127,23 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi
+  # The ScriptBucket's auto-delete custom-resource Lambda runs on destroy and
+  # leaves its /aws/lambda/${STACK}* log group behind (not stack-managed; CFn
+  # leaves it too). Sweep it so the run is orphan-zero, refusing an empty or
+  # foreign scope, which would widen the prefix to every Lambda log group.
+  case "${STACK}" in
+    GlueUpdateHardening?*)
+      local lg
+      for lg in $(aws logs describe-log-groups \
+        --log-group-name-prefix "/aws/lambda/${STACK}" --region "${REGION}" \
+        --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
+      done
+      ;;
+    *)
+      echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
+      ;;
+  esac
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -584,6 +604,41 @@ fi
 assert_default_permissions 'ALL,DROP' 'catalog-refused'
 echo "    OK: CatalogId move refused; '${PERM_DB_NAME}' untouched (recorded CatalogId ${PERM_CATALOG_BEFORE})"
 
+# --- Phase 2e: a malformed DatabaseInput block is refused on a template-path update (#3740)
+# CDKD_TEST_DBINPUT_MALFORMED turns the resource link's TargetDatabase into a
+# string. DatabaseInput is mutable in place, so this is an UPDATE, and the
+# block is template-borne: cdkd must refuse it before any Glue call. Before the
+# fix the update WARNED, re-sent the previously applied block and exited 0, so
+# the exit code is the discriminator; the link and its state record must be
+# exactly as they were. (The warn-and-retain arm the rollback revert and
+# `drift --revert` keep is unit-tested; this template carries no other change.)
+echo "==> Phase 2e: malformed DatabaseInput.TargetDatabase on a template-path update"
+set +e
+DBINPUT_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_DBINPUT_MALFORMED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+DBINPUT_RC=$?
+set -e
+if [ "${DBINPUT_RC}" -eq 0 ]; then
+  echo "FAIL: the malformed DatabaseInput.TargetDatabase deployed on a template-path update (issue #3740)" >&2
+  printf '%s\n' "${DBINPUT_OUT}" >&2
+  exit 1
+fi
+# Two markers: the create-path refusal the message leads with, and the
+# template-path clause appended to it. A failure carrying neither is some
+# other error, not the refusal under test.
+if ! printf '%s' "${DBINPUT_OUT}" | grep -F "AWS::Glue::Database DatabaseInput.TargetDatabase must be an object" >/dev/null \
+  || ! printf '%s' "${DBINPUT_OUT}" | grep -F "Nothing was applied to Glue Database ResourceLinkDatabase; fix the template value" >/dev/null; then
+  echo "FAIL: the malformed DatabaseInput deploy failed, but not with the #3740 refusal" >&2
+  printf '%s\n' "${DBINPUT_OUT}" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.ResourceLinkDatabase.properties.DatabaseInput.TargetDatabase | type')" != "object" ]; then
+  echo "FAIL: state's ResourceLinkDatabase TargetDatabase is no longer the applied object after the refusal" >&2
+  exit 1
+fi
+assert_resource_link 'dbinput-refused'
+echo "    OK: malformed TargetDatabase refused; '${LINK_DB_NAME}' and its state record untouched"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -636,4 +691,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + clean destroy)"

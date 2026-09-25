@@ -193,6 +193,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'DynamoDBTableProvider',
       'EC2Provider',
       'ELBv2Provider',
+      'GlueProvider',
       'IAMAccessKeyProvider',
       'KinesisStreamProvider',
       'LambdaFunctionProvider',
