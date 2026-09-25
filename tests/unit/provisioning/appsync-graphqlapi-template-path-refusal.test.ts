@@ -184,6 +184,50 @@ describe('AppSync GraphQLApi malformed nested block on update: template refuses,
     });
   });
 
+  describe('a malformed nested member drops the WHOLE AdditionalAuthenticationProviders list', () => {
+    // `UpdateGraphqlApi` replaces the list, so sending the other entries (or the
+    // entry minus its malformed member) would rewrite the live providers the
+    // warning promises to leave untouched.
+    const list = [
+      { AuthenticationType: 'AWS_IAM' },
+      { AuthenticationType: 'AMAZON_COGNITO_USER_POOLS', UserPoolConfig: 'oops' },
+    ];
+    const aapOf = (): unknown =>
+      (sent(UpdateGraphqlApiCommand)[0] as UpdateGraphqlApiCommand).input
+        .additionalAuthenticationProviders;
+
+    it.each([
+      ['a rollback revert arm (replayingState)', { replayingState: true }, [{ AuthenticationType: 'AWS_IAM' }]],
+      ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }, [{ AuthenticationType: 'AWS_IAM' }]],
+      ['the template path, list UNCHANGED', undefined, list],
+    ])('on %s the list is omitted, so AppSync keeps the live one', async (_label, context, previous) => {
+      await provider.update(
+        'L',
+        'api-1',
+        TYPE,
+        { ...BASE, XrayEnabled: true, AdditionalAuthenticationProviders: list },
+        { ...BASE, XrayEnabled: false, AdditionalAuthenticationProviders: previous },
+        context
+      );
+
+      expect(sent(UpdateGraphqlApiCommand)).toHaveLength(1);
+      expect(aapOf()).toBeUndefined();
+      expect(warnText()).toMatch(/AdditionalAuthenticationProviders\[1\]\.UserPoolConfig must be an object/);
+    });
+
+    it('a usable list is still sent whole', async () => {
+      const good = [{ AuthenticationType: 'AWS_IAM' }, { AuthenticationType: 'API_KEY' }];
+      await provider.update(
+        'L',
+        'api-1',
+        TYPE,
+        { ...BASE, AdditionalAuthenticationProviders: good },
+        { ...BASE, AdditionalAuthenticationProviders: [{ AuthenticationType: 'AWS_IAM' }] }
+      );
+      expect(aapOf()).toEqual([{ authenticationType: 'AWS_IAM' }, { authenticationType: 'API_KEY' }]);
+    });
+  });
+
   it('does not refuse a REMOVED block (the absent desired side is a removal, not a malformed value)', async () => {
     await expect(
       provider.update('L', 'api-1', TYPE, { ...BASE }, { ...BASE, EnvironmentVariables: 'oops' })

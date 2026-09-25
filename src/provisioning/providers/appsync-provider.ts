@@ -706,9 +706,10 @@ export class AppSyncProvider implements ResourceProvider {
    * so each refuses exactly where its arm would warn, with the sentence a
    * template-path create throws.
    * Only a block that CHANGED from the recorded one is asked: an unchanged
-   * malformed block is not a pending operation (the arm drops it and AppSync
-   * treats the omitted member as "no change"), so refusing it would fail an
-   * update that changes something else.
+   * malformed block is not a pending operation (the arm drops the WHOLE block —
+   * for `AdditionalAuthenticationProviders` the whole list, even when only one
+   * nested member is malformed — and AppSync treats the omitted member as "no
+   * change"), so refusing it would fail an update that changes something else.
    */
   private refuseChangedMalformedGraphQLApiBlocks(
     properties: Record<string, unknown>,
@@ -1642,12 +1643,28 @@ export class AppSyncProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
-    return entries.map((entry, index) => {
+    // An entry-level or nested downgrade drops the WHOLE list, never one
+    // member of one entry: `UpdateGraphqlApi` REPLACES the list, so sending the
+    // rest would rewrite the live providers the "(leaving the live value
+    // untouched)" warning promises to keep. Returning `undefined` omits the
+    // member, which AppSync treats as "no change" (and a replay-create
+    // proceeds without the block, as its warning says).
+    let dropped = false;
+    const entryOptions: ShapeGuardOptions | undefined = options?.onUnusable
+      ? {
+          ...options,
+          onUnusable: (message: string) => {
+            dropped = true;
+            options.onUnusable?.(message);
+          },
+        }
+      : options;
+    const providers = entries.map((entry, index) => {
       const at = `AdditionalAuthenticationProviders[${index}]`;
       // `requireConfigArray` validates the CONTAINER, not its ELEMENTS — a
       // list of strings would index to `undefined` on every key and send an
       // empty provider object to AWS: the same silent drop one level down.
-      const cfn = this.asObject(entry, at, options) ?? {};
+      const cfn = this.asObject(entry, at, entryOptions) ?? {};
       const provider: AdditionalAuthenticationProvider = {};
       if (cfn['AuthenticationType'] !== undefined) {
         provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
@@ -1655,7 +1672,7 @@ export class AppSyncProvider implements ResourceProvider {
       const oidc = this.toSdkOpenIDConnectConfig(
         cfn['OpenIDConnectConfig'],
         `${at}.OpenIDConnectConfig`,
-        options
+        entryOptions
       );
       if (oidc) provider.openIDConnectConfig = oidc;
       // The additional-provider variant is AWS's CognitoUserPoolConfig, which
@@ -1663,17 +1680,18 @@ export class AppSyncProvider implements ResourceProvider {
       const pool = this.toSdkCognitoUserPoolConfig(
         cfn['UserPoolConfig'],
         `${at}.UserPoolConfig`,
-        options
+        entryOptions
       );
       if (pool) provider.userPoolConfig = pool;
       const lambda = this.toSdkLambdaAuthorizerConfig(
         cfn['LambdaAuthorizerConfig'],
         `${at}.LambdaAuthorizerConfig`,
-        options
+        entryOptions
       );
       if (lambda) provider.lambdaAuthorizerConfig = lambda;
       return provider;
     });
+    return dropped ? undefined : providers;
   }
 
   private toSdkEnhancedMetricsConfig(

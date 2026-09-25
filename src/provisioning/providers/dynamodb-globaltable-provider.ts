@@ -1769,13 +1769,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
       const changed = (key: string): boolean =>
         JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
-      const refuse = (refusal: string): never => {
+      const refuse = (refusal: string, cause?: unknown): never => {
         throw new ProvisioningError(
           `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
             `applied to the table; fix the template value`,
           resourceType,
           logicalId,
-          physicalId
+          physicalId,
+          cause instanceof Error ? cause : undefined
         );
       };
       let refusal: string | undefined;
@@ -1788,7 +1789,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
         } catch (error) {
           // `requireConfigString` throws only its own plain `Error`.
-          refuse(describeAwsFailure(error).detail);
+          refuse(describeAwsFailure(error).detail, error);
         }
       }
       // `!deepEqual` is the StreamSpecification arm's own change test. A

@@ -254,3 +254,39 @@ describe('update(): the WARN-only twin of the same refusal is masked too', () =>
     expect(warnings()).toContain(`a string "${SECRET_PLAINTEXT}"`);
   });
 });
+
+/**
+ * Issue #3740: a TEMPLATE-path update now REFUSES the malformed destination in
+ * a pre-flight (`applySubConfigDiffs` on `noWriteProbe()`), so the refusal is a
+ * THROWN message rather than a warning. The masker must reach that probe run
+ * through the update's `context`, or the thrown text carries the plaintext.
+ */
+describe('update() on the template path: the thrown pre-flight refusal masks a resolved secret (issue #3740)', () => {
+  it.each([
+    ['inventory', inventoryProps],
+    ['analytics', analyticsProps],
+  ])('masks the %s destination value in the thrown refusal', async (_label, props) => {
+    const message = await refusalFrom(() =>
+      provider.update('B', BUCKET, RESOURCE_TYPE, props(SECRET_PLAINTEXT), { BucketName: BUCKET }, {
+        maskSecrets: masker(),
+      })
+    );
+
+    expect(message).toMatch(/fix the template value$/);
+    expect(message).toContain(`a string "${SECRET_MASK}"`);
+    expect(message).not.toContain(SECRET_PLAINTEXT);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['inventory', inventoryProps],
+    ['analytics', analyticsProps],
+  ])('CONTROL (%s): with no masker the thrown refusal names the value', async (_label, props) => {
+    const message = await refusalFrom(() =>
+      provider.update('B', BUCKET, RESOURCE_TYPE, props(SECRET_PLAINTEXT), { BucketName: BUCKET })
+    );
+
+    expect(message).toMatch(/fix the template value$/);
+    expect(message).toContain(SECRET_PLAINTEXT);
+  });
+});

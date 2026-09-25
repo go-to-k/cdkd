@@ -284,4 +284,27 @@ describe('S3BucketProvider per-config appliers: template refuses, replay warns (
     expect(error).toBeInstanceOf(ProvisioningError);
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it('a NON-refusal error from the probe (an applier TypeError) propagates as it is, not as "fix the template value"', async () => {
+    // A non-array, non-iterable `MetricsConfigurations` reaches the per-id diff
+    // loop, which throws a TypeError — an applier bug, not a template refusal.
+    const error = await edit('MetricsConfigurations', { Id: 'm1' }, undefined).catch(
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).not.toMatch(/fix the template value/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('the provider holds no field noWriteProbe() does not stub or treat as inert (a new client would escape the probe)', () => {
+    // `noWriteProbe()` replaces `s3Client` and `logger` only; the two maps are
+    // read-only property metadata. A new own field — above all a second AWS
+    // client — must be added to the probe's stubbing before it lands here.
+    expect(Object.keys(new S3BucketProvider()).sort()).toEqual([
+      'handledProperties',
+      'logger',
+      's3Client',
+      'unhandledByDesign',
+    ]);
+  });
 });

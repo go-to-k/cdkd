@@ -6721,13 +6721,21 @@ export class S3BucketProvider implements ResourceProvider {
           true
         );
       } catch (error) {
+        // Only a REFUSAL is re-worded. Every refusal an applier (or the
+        // `config-shape.ts` guard it calls) raises is a plain `Error`; anything
+        // else — a `TypeError` from an applier bug, a typed cdkd error — is not
+        // a template fault, so it propagates as it is rather than telling the
+        // user to fix a template value.
+        if (!(error instanceof Error) || Object.getPrototypeOf(error) !== Error.prototype) {
+          throw error;
+        }
         throw new ProvisioningError(
-          `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
-            `bucket ${displaySafe(physicalId)}; fix the template value`,
+          `${error.message}. Nothing was applied to bucket ${displaySafe(physicalId)}; fix the ` +
+            `template value`,
           resourceType,
           logicalId,
           physicalId,
-          error instanceof Error ? error : undefined
+          error
         );
       }
     }

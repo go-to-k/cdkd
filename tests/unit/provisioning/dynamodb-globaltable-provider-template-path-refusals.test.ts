@@ -250,6 +250,24 @@ describe('DynamoDBGlobalTableProvider template-path refusals (issue #3740)', () 
     expect((error as Error).message).not.toMatch(/StreamSpecification/);
   });
 
+  it('chains the BillingMode read error as the refusal cause', async () => {
+    const error = await edit('BillingMode', '   ', 'PAY_PER_REQUEST').catch((e: unknown) => e);
+    expect((error as Error).cause).toBeInstanceOf(Error);
+    expect(((error as Error).cause as Error).message).toMatch(/BillingMode must be a non-empty string/);
+  });
+
+  it('never refuses a REMOVED BillingMode (the absent value takes the PAY_PER_REQUEST default)', async () => {
+    await expect(
+      provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, { ...baseProps }, {
+        ...baseProps,
+        BillingMode: 'PAY_PER_REQUEST',
+      })
+    ).resolves.toBeDefined();
+    expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+      /BillingMode must be/
+    );
+  });
+
   it('never refuses a REMOVED StreamSpecification or GlobalSecondaryIndexes block', async () => {
     await expect(
       provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, { ...baseProps }, {

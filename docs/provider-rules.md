@@ -239,8 +239,9 @@ implementation. Three details are worth copying:
     arm decided before #3141 gave the revert arms a flag still warns on every
     caller: Glue's `DatabaseInput` (#3740), which says so at its site.
     Separately, a create-only
-    value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` keeps the
-    warning on purpose, for the reason above. On the
+    value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
+    `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,
+    for the reason above. On the
     warn path, **pick the FALLBACK per site** (issue
     [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
     applying the CREATE DEFAULT is frequently worse than the refusal was,
