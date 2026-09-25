@@ -257,7 +257,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'GlueConnectionProvider',
   'GlueCrawlerProvider',
   'GlueJobProvider',
-  'GlueProvider',
   'GlueSecurityConfigurationProvider',
   'GlueTriggerProvider',
   'GlueWorkflowProvider',
