@@ -5816,7 +5816,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * CALLER-BLIND, decided rather than overlooked (PR review). A TEMPLATE-borne
    * `{0, 0}` warn-skips here while `create()` fails loudly on the same value,
    * which reads like the "loud failure for a quiet lie" trade the adopted-index
-   * arm below forbids. It stands for three reasons:
+   * arm below forbids. It was decided for three reasons; the first no longer
+   * holds as written (see its own bullet), the other two still do:
    *
    *  - When this was decided, no discriminator separated the callers that
    *    matter. `ResourceProvider.update` takes an optional `UpdateContext`, and

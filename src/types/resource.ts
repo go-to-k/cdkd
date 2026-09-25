@@ -977,8 +977,8 @@ export interface ResourceProvider {
    * @param logicalId Logical ID from template
    * @param resourceType CloudFormation resource type (e.g., "AWS::S3::Bucket")
    * @param properties Resource properties
-   * @param context Create-time context (optional, for back-compat). Today it
-   *   carries only `replayingState`, set by the rollback executor's
+   * @param context Create-time context (optional, for back-compat). It
+   *   carries `replayingState`, set by the rollback executor's
    *   reverse-replacement arm when `properties` come from a historical cdkd
    *   STATE record instead of the template — a provider PRE-FLIGHT REFUSAL
    *   must downgrade to a warning in that case, because the user has no
