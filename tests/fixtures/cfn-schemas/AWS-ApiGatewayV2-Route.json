@@ -22,6 +22,11 @@
   "createOnlyProperties": [
     "ApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "ApiId",
     "RouteId"

@@ -21,6 +21,26 @@
     "LayerName",
     "LicenseInfo"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CompatibleArchitectures"
+    ],
+    [
+      "CompatibleRuntimes"
+    ],
+    [
+      "Content"
+    ],
+    [
+      "Description"
+    ],
+    [
+      "LayerName"
+    ],
+    [
+      "LicenseInfo"
+    ]
+  ],
   "primaryIdentifier": [
     "LayerVersionArn"
   ],

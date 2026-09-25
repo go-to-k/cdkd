@@ -18,19 +18,24 @@
  * registry does not explicitly classify, so a createOnly change on ANY type now
  * correctly drives a replacement.
  *
- * Caching / failure semantics are identical to {@link
- * ./write-only-properties.ts} (the sibling DescribeType-backed resolver): only
- * SUCCESSFUL lookups are cached per resource type for the process (deploy)
- * lifetime — `cloudformation:DescribeType` is throttled per-account and the
- * schema cannot change mid-deploy. A FAILED lookup (missing IAM permission,
- * transient throttle / 5xx) is logged as a warning and resolves to an empty set
- * WITHOUT poisoning the cache, so the caller gracefully falls back to the
- * registry-only classification for THIS resource while a later resource of the
- * same type retries. A caller permanently without `cloudformation:DescribeType`
- * simply keeps the pre-existing registry-only behavior — no regression.
+ * Caching semantics match {@link ./write-only-properties.ts} (the sibling
+ * DescribeType-backed resolver): only SUCCESSFUL lookups are cached per
+ * resource type for the process (deploy) lifetime — `cloudformation:DescribeType`
+ * is throttled per-account and the schema cannot change mid-deploy.
+ *
+ * A FAILED lookup (missing IAM permission, a throttle outlasting its retries,
+ * a 5xx) is logged as a warning and resolves to cdkd's COMMITTED snapshot of
+ * the type's create-only paths when it has one (issue #3718,
+ * `create-only-snapshot.generated.ts`), else to an empty list — the
+ * registry-only classification. The fallback is NOT cached: a later resource
+ * of the same type retries the live lookup, and the live answer always wins
+ * when it succeeds. Before the snapshot, a failed lookup silently missed every
+ * schema-only create-only change for that resource.
  */
 
-import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import { hasNoRegistrySchema, scheduleDescribeType } from './describe-type.js';
+import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
+import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -43,10 +48,18 @@ import { getLogger } from '../utils/logger.js';
 const createOnlyPropertiesCache = new Map<string, Promise<ReadonlyArray<readonly string[]>>>();
 
 /**
+ * `promote()` of each lookup still WAITING for a DescribeType slot, so an
+ * awaited lookup of a type a prefetch already queued moves that one call to
+ * the front instead of issuing a second one (issue #3718).
+ */
+const queuedLookupPromotions = new Map<string, () => void>();
+
+/**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearCreateOnlyPropertiesCache(): void {
   createOnlyPropertiesCache.clear();
+  queuedLookupPromotions.clear();
 }
 
 /**
@@ -64,14 +77,58 @@ export function clearCreateOnlyPropertiesCache(): void {
  * consults {@link createOnlyChangeRequiresReplacement} to compare at the
  * schema's actual path granularity.
  *
- * Never throws: a DescribeType failure logs a warning and resolves to an empty
- * list (graceful fallback to the registry-only classification). Only SUCCESSFUL
- * lookups are cached per resource type for the process lifetime; a failed
- * lookup is NOT cached, so a later call for the same type retries DescribeType
- * (a transient throttle must not poison the deploy's replacement detection).
+ * Never throws: a DescribeType failure logs a warning and resolves to the
+ * committed snapshot's paths for the type, or to an empty list for a type
+ * with no snapshot (graceful fallback to the registry-only classification).
+ * Only SUCCESSFUL lookups are cached per resource type for the process
+ * lifetime; a failed lookup is NOT cached, so a later call for the same type
+ * retries DescribeType (a transient throttle must not pin the deploy to the
+ * snapshot).
+ *
+ * The call is an URGENT DescribeType: it waits only behind other urgent ones,
+ * never behind a queued {@link prefetchCreateOnlyPropertyPaths}, and awaiting
+ * a type a prefetch already queued promotes that queued call.
  */
 export function getCreateOnlyPropertyPaths(
   resourceType: string
+): Promise<ReadonlyArray<readonly string[]>> {
+  return lookupCreateOnlyPropertyPaths(resourceType, false);
+}
+
+/**
+ * Warm the cache for each of `resourceTypes` without waiting (issue #1180),
+ * as BACKGROUND DescribeType calls behind every awaited lookup (issue #3718).
+ * Duplicates and schema-less types are skipped; it never throws and never
+ * leaves an unhandled rejection.
+ */
+export function prefetchCreateOnlyPropertyPaths(resourceTypes: Iterable<string>): void {
+  for (const type of new Set(resourceTypes)) {
+    if (hasNoRegistrySchema(type)) continue;
+    // lookupCreateOnlyPropertyPaths never rejects, but a fire-and-forget
+    // call must not be the one place an unexpected rejection goes unhandled.
+    void lookupCreateOnlyPropertyPaths(type, true).catch(() => {});
+  }
+}
+
+/**
+ * The distinct resource types of a template's `Resources`, for
+ * {@link prefetchCreateOnlyPropertyPaths}. Tolerates a missing or malformed
+ * section (the prefetch must never be the thing that throws).
+ */
+export function templateResourceTypes(resources: unknown): string[] {
+  if (resources === null || typeof resources !== 'object') return [];
+  const types = new Set<string>();
+  for (const resource of Object.values(resources as Record<string, unknown>)) {
+    if (resource === null || typeof resource !== 'object') continue;
+    const type = (resource as { Type?: unknown }).Type;
+    if (typeof type === 'string') types.add(type);
+  }
+  return [...types];
+}
+
+function lookupCreateOnlyPropertyPaths(
+  resourceType: string,
+  background: boolean
 ): Promise<ReadonlyArray<readonly string[]>> {
   // Schema-less types (custom resources + the `AWS::CDK::Metadata` synth
   // sentinel) have no CloudFormation registry entry, so the lookup would
@@ -88,26 +145,53 @@ export function getCreateOnlyPropertyPaths(
   }
   const cached = createOnlyPropertiesCache.get(resourceType);
   if (cached) {
+    if (!background) queuedLookupPromotions.get(resourceType)?.();
     return cached;
   }
-  const entry = fetchCreateOnlyPropertyPaths(resourceType).catch((error) => {
-    // The lookup failed: drop the in-flight entry so a later call retries,
-    // warn (once per failure), and fall back to an empty list for this call.
-    createOnlyPropertiesCache.delete(resourceType);
-    const message = describeAwsFailure(error).detail;
-    getLogger()
-      .child('CreateOnlyProperties')
-      .warn(
-        `Failed to resolve create-only properties for ${resourceType} via ` +
-          `cloudformation:DescribeType (${message}). Falling back to the registry-only ` +
-          `replacement classification for this resource — an immutable-property change ` +
-          `may be mis-classified as an in-place update. Grant cloudformation:DescribeType ` +
-          `to enable schema-driven replacement detection.`
-      );
-    return [];
-  });
+  const scheduled = scheduleDescribeType(resourceType, { background });
+  queuedLookupPromotions.set(resourceType, scheduled.promote);
+  const entry = scheduled.promise
+    .then((response) => parseCreateOnlyResponse(resourceType, response.Schema))
+    .catch((error) => {
+      // The lookup failed: drop the in-flight entry so a later call retries
+      // live, warn (once per failure), and fall back for this call.
+      createOnlyPropertiesCache.delete(resourceType);
+      return fallBackToSnapshot(resourceType, error);
+    })
+    .finally(() => {
+      if (queuedLookupPromotions.get(resourceType) === scheduled.promote) {
+        queuedLookupPromotions.delete(resourceType);
+      }
+    });
   createOnlyPropertiesCache.set(resourceType, entry);
   return entry;
+}
+
+function fallBackToSnapshot(
+  resourceType: string,
+  error: unknown
+): ReadonlyArray<readonly string[]> {
+  const message = describeAwsFailure(error).detail;
+  const logger = getLogger().child('CreateOnlyProperties');
+  const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
+  if (snapshot) {
+    logger.warn(
+      `Failed to resolve create-only properties for ${resourceType} via ` +
+        `cloudformation:DescribeType (${message}). Falling back to cdkd's bundled schema ` +
+        `snapshot for this resource — it can lag AWS's current schema, so a property AWS ` +
+        `has since made updatable may be classified as a replacement. Grant ` +
+        `cloudformation:DescribeType to use the live schema.`
+    );
+    return snapshot;
+  }
+  logger.warn(
+    `Failed to resolve create-only properties for ${resourceType} via ` +
+      `cloudformation:DescribeType (${message}). Falling back to the registry-only ` +
+      `replacement classification for this resource — an immutable-property change ` +
+      `may be mis-classified as an in-place update. Grant cloudformation:DescribeType ` +
+      `to enable schema-driven replacement detection.`
+  );
+  return [];
 }
 
 /**
@@ -189,61 +273,28 @@ function isIntrinsicShaped(value: object): boolean {
 }
 
 /**
- * Fetch + parse the type's create-only property paths. THROWS on a
- * DescribeType failure — the caller ({@link getCreateOnlyPropertyPaths})
- * catches, warns, and declines to cache so the lookup can be retried later.
+ * Parse a DescribeType response's schema into create-only paths.
+ *
+ * A response without a Schema (e.g. a still-registering / private type, or a
+ * type with no CFn registry schema) carries no createOnlyProperties to
+ * extract; treat it as "none" without a warning — it is a successful,
+ * cacheable lookup, not a failure. A Schema that is not JSON THROWS, which the
+ * caller handles as a failed lookup.
  */
-async function fetchCreateOnlyPropertyPaths(
-  resourceType: string
-): Promise<ReadonlyArray<readonly string[]>> {
-  const logger = getLogger().child('CreateOnlyProperties');
-  // Throttle-shaped DescribeType failures are retried with backoff (issue
-  // #1236) — a throttled lookup here degrades replacement detection to the
-  // registry-only classification, and the #1182 prefetch burst made that a
-  // realistic in-deploy condition rather than a rare edge.
-  const response = await describeTypeWithThrottleRetry(resourceType);
-
-  const result: string[][] = [];
-  // A response without a Schema (e.g. a still-registering / private type, or a
-  // type with no CFn registry schema) carries no createOnlyProperties to
-  // extract; treat it as "none" without a warning — it is a successful,
-  // cacheable lookup, not a failure.
-  if (response.Schema) {
-    const parsed = JSON.parse(response.Schema) as { createOnlyProperties?: unknown };
-    const createOnly = parsed.createOnlyProperties;
-    if (Array.isArray(createOnly)) {
-      for (const path of createOnly) {
-        if (typeof path !== 'string') continue;
-        // Schema entries are JSON pointers like "/properties/Foo" or nested
-        // "/properties/Foo/Bar" — keep the FULL segment path so the diff can
-        // compare at the schema's actual granularity (issue #960).
-        if (!path.startsWith('/properties/')) continue;
-        // Empty segments are dropped: a trailing slash degrades to the
-        // (more conservative) whole-property path, and no real registry
-        // schema names a property literally "" via an RFC 6901 empty
-        // segment.
-        const segments = path
-          .slice('/properties/'.length)
-          .split('/')
-          .map(unescapeJsonPointerSegment)
-          .filter((segment) => segment.length > 0);
-        if (segments.length > 0) {
-          result.push(segments);
-        }
-      }
-    }
-  }
-
-  logger.debug(
-    `Resolved ${result.length} create-only property paths for ${resourceType}` +
-      (result.length > 0 ? `: ${result.map((p) => p.join('.')).join(', ')}` : '')
-  );
+function parseCreateOnlyResponse(
+  resourceType: string,
+  schema: string | undefined
+): ReadonlyArray<readonly string[]> {
+  const result = schema
+    ? parseCreateOnlyPropertyPointers(
+        (JSON.parse(schema) as { createOnlyProperties?: unknown }).createOnlyProperties
+      )
+    : [];
+  getLogger()
+    .child('CreateOnlyProperties')
+    .debug(
+      `Resolved ${result.length} create-only property paths for ${resourceType}` +
+        (result.length > 0 ? `: ${result.map((p) => p.join('.')).join(', ')}` : '')
+    );
   return result;
-}
-
-/**
- * Unescape an RFC 6901 JSON Pointer segment (`~1` -> `/`, `~0` -> `~`).
- */
-function unescapeJsonPointerSegment(segment: string): string {
-  return segment.replace(/~1/g, '/').replace(/~0/g, '~');
 }

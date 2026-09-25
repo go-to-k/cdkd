@@ -22,6 +22,17 @@
     "DataRedundancy",
     "LocationName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "BucketName"
+    ],
+    [
+      "DataRedundancy"
+    ],
+    [
+      "LocationName"
+    ]
+  ],
   "primaryIdentifier": [
     "BucketName"
   ],

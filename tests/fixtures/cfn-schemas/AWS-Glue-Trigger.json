@@ -19,6 +19,17 @@
     "Type",
     "WorkflowName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ],
+    [
+      "Type"
+    ],
+    [
+      "WorkflowName"
+    ]
+  ],
   "primaryIdentifier": [
     "Name"
   ],

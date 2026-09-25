@@ -21,6 +21,17 @@
     "NetworkAclId",
     "RuleNumber"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Egress"
+    ],
+    [
+      "NetworkAclId"
+    ],
+    [
+      "RuleNumber"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

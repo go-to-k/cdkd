@@ -21,6 +21,55 @@
     "PosixUser",
     "RootDirectory"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ClientToken"
+    ],
+    [
+      "CreationInfo"
+    ],
+    [
+      "CreationInfo",
+      "OwnerGid"
+    ],
+    [
+      "CreationInfo",
+      "OwnerUid"
+    ],
+    [
+      "CreationInfo",
+      "Permissions"
+    ],
+    [
+      "FileSystemId"
+    ],
+    [
+      "PosixUser"
+    ],
+    [
+      "PosixUser",
+      "Gid"
+    ],
+    [
+      "PosixUser",
+      "SecondaryGids"
+    ],
+    [
+      "PosixUser",
+      "Uid"
+    ],
+    [
+      "RootDirectory"
+    ],
+    [
+      "RootDirectory",
+      "CreationInfo"
+    ],
+    [
+      "RootDirectory",
+      "Path"
+    ]
+  ],
   "primaryIdentifier": [
     "AccessPointId"
   ],

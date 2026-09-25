@@ -18,6 +18,14 @@
     "Qualifier",
     "TargetFunctionArn"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Qualifier"
+    ],
+    [
+      "TargetFunctionArn"
+    ]
+  ],
   "primaryIdentifier": [
     "FunctionArn"
   ],

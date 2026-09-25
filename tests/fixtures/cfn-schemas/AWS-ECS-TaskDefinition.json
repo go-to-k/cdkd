@@ -44,6 +44,59 @@
     "TaskRoleArn",
     "Volumes"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ContainerDefinitions"
+    ],
+    [
+      "Cpu"
+    ],
+    [
+      "EnableFaultInjection"
+    ],
+    [
+      "EphemeralStorage"
+    ],
+    [
+      "ExecutionRoleArn"
+    ],
+    [
+      "Family"
+    ],
+    [
+      "InferenceAccelerators"
+    ],
+    [
+      "IpcMode"
+    ],
+    [
+      "Memory"
+    ],
+    [
+      "NetworkMode"
+    ],
+    [
+      "PidMode"
+    ],
+    [
+      "PlacementConstraints"
+    ],
+    [
+      "ProxyConfiguration"
+    ],
+    [
+      "RequiresCompatibilities"
+    ],
+    [
+      "RuntimePlatform"
+    ],
+    [
+      "TaskRoleArn"
+    ],
+    [
+      "Volumes"
+    ]
+  ],
   "primaryIdentifier": [
     "TaskDefinitionArn"
   ],

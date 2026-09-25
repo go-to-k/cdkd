@@ -11,6 +11,11 @@
   "createOnlyProperties": [
     "CacheSubnetGroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CacheSubnetGroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "CacheSubnetGroupName"
   ],

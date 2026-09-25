@@ -47,6 +47,10 @@ import {
 } from '../../assets/asset-redirect.js';
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
+import {
+  prefetchCreateOnlyPropertyPaths,
+  templateResourceTypes,
+} from '../../provisioning/create-only-properties.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
   malformedExportNamesWarning,
@@ -1626,6 +1630,15 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
     isNestedChild,
   } = args;
+
+  // Warm the create-only DescribeType cache for this node's types while the
+  // state read and preprocessing below run, as `cdkd deploy` does (issue
+  // #3718). Without it `calculateDiff` resolved each type inline, one resource
+  // at a time. Every node of a `--recursive` walk passes through here, so a
+  // child's types are warmed when the walk reaches it. Background and
+  // capped, never throws, and changes no answer: the diff awaits the same
+  // per-type lookup it would otherwise start itself.
+  prefetchCreateOnlyPropertyPaths(templateResourceTypes(template.Resources));
 
   const { state, unreadable, deployRefusals } = await loadStateOrEmpty(
     stackName,

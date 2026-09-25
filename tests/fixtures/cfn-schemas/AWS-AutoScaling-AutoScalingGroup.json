@@ -49,6 +49,14 @@
     "AutoScalingGroupName",
     "InstanceId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AutoScalingGroupName"
+    ],
+    [
+      "InstanceId"
+    ]
+  ],
   "primaryIdentifier": [
     "AutoScalingGroupName"
   ],

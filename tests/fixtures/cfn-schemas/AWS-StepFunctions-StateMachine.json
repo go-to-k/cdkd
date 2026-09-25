@@ -26,6 +26,14 @@
     "StateMachineName",
     "StateMachineType"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "StateMachineName"
+    ],
+    [
+      "StateMachineType"
+    ]
+  ],
   "primaryIdentifier": [
     "Arn"
   ],

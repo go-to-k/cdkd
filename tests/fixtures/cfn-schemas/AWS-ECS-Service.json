@@ -42,6 +42,20 @@
     "SchedulingStrategy",
     "ServiceName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Cluster"
+    ],
+    [
+      "Role"
+    ],
+    [
+      "SchedulingStrategy"
+    ],
+    [
+      "ServiceName"
+    ]
+  ],
   "primaryIdentifier": [
     "Cluster",
     "ServiceArn"

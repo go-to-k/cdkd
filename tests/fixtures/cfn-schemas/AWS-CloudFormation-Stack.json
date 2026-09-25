@@ -39,6 +39,11 @@
   "createOnlyProperties": [
     "StackName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "StackName"
+    ]
+  ],
   "primaryIdentifier": [
     "StackId"
   ],

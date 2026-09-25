@@ -17,6 +17,11 @@
   "createOnlyProperties": [
     "TableBucketName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "TableBucketName"
+    ]
+  ],
   "primaryIdentifier": [
     "TableBucketARN"
   ],

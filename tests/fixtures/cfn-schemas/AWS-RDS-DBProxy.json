@@ -31,6 +31,23 @@
     "TargetConnectionNetworkType",
     "VpcSubnetIds"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DBProxyName"
+    ],
+    [
+      "EndpointNetworkType"
+    ],
+    [
+      "EngineFamily"
+    ],
+    [
+      "TargetConnectionNetworkType"
+    ],
+    [
+      "VpcSubnetIds"
+    ]
+  ],
   "primaryIdentifier": [
     "DBProxyName"
   ],

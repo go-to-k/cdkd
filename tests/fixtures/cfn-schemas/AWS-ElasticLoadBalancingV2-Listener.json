@@ -20,6 +20,11 @@
   "createOnlyProperties": [
     "LoadBalancerArn"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "LoadBalancerArn"
+    ]
+  ],
   "primaryIdentifier": [
     "ListenerArn"
   ],

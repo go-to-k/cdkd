@@ -9,6 +9,7 @@
     "InternetGatewayId"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "InternetGatewayId"
   ],

@@ -13,6 +13,14 @@
     "NetworkAclId",
     "SubnetId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "NetworkAclId"
+    ],
+    [
+      "SubnetId"
+    ]
+  ],
   "primaryIdentifier": [
     "AssociationId"
   ],

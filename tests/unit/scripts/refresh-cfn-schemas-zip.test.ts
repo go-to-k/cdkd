@@ -467,6 +467,15 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
     { section: 'properties', mutate: (s) => ({ ...s, properties: { ...s.properties, B: { type: 'string' } } }) },
     { section: 'readOnlyProperties', mutate: (s) => ({ ...s, readOnlyProperties: [] }) },
     { section: 'createOnlyProperties', mutate: (s) => ({ ...s, createOnlyProperties: [] }) },
+    // A NESTED create-only pointer changes only `createOnlyPropertyPaths` —
+    // `createOnlyProperties` keeps top-level names alone (issue #3718).
+    {
+      section: 'createOnlyPropertyPaths',
+      mutate: (s) => ({
+        ...s,
+        createOnlyProperties: [...s.createOnlyProperties, '/properties/Obj/P1'],
+      }),
+    },
     { section: 'primaryIdentifier', mutate: (s) => ({ ...s, primaryIdentifier: [] }) },
     {
       section: 'nestedProperties / nestedPropertyPaths',
@@ -533,6 +542,7 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
       'properties',
       'readOnlyProperties',
       'createOnlyProperties',
+      'createOnlyPropertyPaths',
       'primaryIdentifier',
       'nestedProperties',
       'nestedPropertyPaths',
@@ -591,6 +601,7 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
       'properties',
       'readOnlyProperties',
       'createOnlyProperties',
+      'createOnlyPropertyPaths',
       'primaryIdentifier',
       'nestedProperties',
       'nestedPropertyPaths',

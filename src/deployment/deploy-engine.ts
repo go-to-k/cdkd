@@ -143,7 +143,10 @@ import {
   credentialFingerprint,
 } from '../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../state/record-keys.js';
-import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
+import {
+  prefetchCreateOnlyPropertyPaths,
+  templateResourceTypes,
+} from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import {
@@ -3344,16 +3347,14 @@ export class DeployEngine {
     // passes below already exclude `AWS::CDK::Metadata`; this makes the
     // prefetch consistent with them. `hasNoRegistrySchema` short-circuits
     // inside the resolver too, so this filter is the cheap outer guard.
-    for (const type of new Set(
-      Object.values(template.Resources)
-        .map((r) => r.Type)
-        .filter((type) => !hasNoRegistrySchema(type))
-    )) {
-      // getCreateOnlyPropertyPaths already swallows DescribeType errors, but a
-      // .catch here defends against any unexpected rejection so a fire-and-forget
-      // prefetch never surfaces as an unhandled promise rejection.
-      void getCreateOnlyPropertyPaths(type).catch(() => {});
-    }
+    //
+    // The prefetch runs as BACKGROUND DescribeType calls under the shared
+    // concurrency cap (issue #3718): an unbounded 134-type burst throttled
+    // almost half its calls, and a lookup whose retries ran out lost the
+    // live schema. The diff's own awaited lookups queue ahead of it.
+    prefetchCreateOnlyPropertyPaths(
+      templateResourceTypes(template.Resources).filter((type) => !hasNoRegistrySchema(type))
+    );
 
     // Live progress renderer: shows in-flight resources as a multi-line area
     // at the bottom of the terminal. Self-disables on non-TTY and when

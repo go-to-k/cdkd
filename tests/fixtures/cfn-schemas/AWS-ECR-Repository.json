@@ -22,6 +22,22 @@
     "EncryptionConfiguration",
     "RepositoryName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "EncryptionConfiguration"
+    ],
+    [
+      "EncryptionConfiguration",
+      "EncryptionType"
+    ],
+    [
+      "EncryptionConfiguration",
+      "KmsKey"
+    ],
+    [
+      "RepositoryName"
+    ]
+  ],
   "primaryIdentifier": [
     "RepositoryName"
   ],

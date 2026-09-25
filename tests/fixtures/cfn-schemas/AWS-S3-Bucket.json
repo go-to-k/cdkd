@@ -45,6 +45,17 @@
     "BucketNamePrefix",
     "BucketNamespace"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "BucketName"
+    ],
+    [
+      "BucketNamePrefix"
+    ],
+    [
+      "BucketNamespace"
+    ]
+  ],
   "primaryIdentifier": [
     "BucketName"
   ],

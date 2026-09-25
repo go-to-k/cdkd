@@ -27,6 +27,35 @@
     "SourceAccount",
     "SourceArn"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Action"
+    ],
+    [
+      "EventSourceToken"
+    ],
+    [
+      "FunctionName"
+    ],
+    [
+      "FunctionUrlAuthType"
+    ],
+    [
+      "InvokedViaFunctionUrl"
+    ],
+    [
+      "Principal"
+    ],
+    [
+      "PrincipalOrgID"
+    ],
+    [
+      "SourceAccount"
+    ],
+    [
+      "SourceArn"
+    ]
+  ],
   "primaryIdentifier": [
     "FunctionName",
     "Id"

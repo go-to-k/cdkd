@@ -23,6 +23,17 @@
     "Protocol",
     "TopicArn"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Endpoint"
+    ],
+    [
+      "Protocol"
+    ],
+    [
+      "TopicArn"
+    ]
+  ],
   "primaryIdentifier": [
     "Arn"
   ],

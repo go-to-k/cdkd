@@ -12,6 +12,7 @@
     "Status"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "CodeInterpreterArn"
   ],

@@ -34,6 +34,14 @@
     "ImportSourceSpecification",
     "TableName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ImportSourceSpecification"
+    ],
+    [
+      "TableName"
+    ]
+  ],
   "primaryIdentifier": [
     "TableName"
   ],

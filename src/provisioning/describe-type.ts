@@ -27,6 +27,7 @@ import {
 import { withRetry } from '../deployment/retry.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import { getAwsClients, type AwsClients } from '../utils/aws-clients.js';
+import { createConcurrencyLimiter, type ScheduledTask } from '../utils/concurrency-limiter.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -44,6 +45,31 @@ export const describeTypeRetryDelays: { sleep?: (ms: number) => Promise<void> } 
 const MAX_THROTTLE_RETRIES = 4;
 
 /**
+ * Most `DescribeType` calls in flight at once, process-wide (issue #3718).
+ *
+ * The quota behaves as a RATE limit, not a concurrency one: measured in
+ * us-east-1, a 30-call burst after idle drew no throttle, but 134 calls drew
+ * throttles at 134 in parallel (45), at 20 (95) and even one at a time (73).
+ * So no cap makes a 134-type prefetch throttle-free. What the cap buys is
+ * ordering: with at most 20 in flight, an awaited lookup (URGENT) is sent
+ * ahead of queued prefetches instead of joining the back of an unbounded
+ * burst. Measured on the same 134 types, the 5 lookups a diff awaited 300 ms
+ * after the prefetch started took 18 s before and 0.65-0.8 s with the cap, and
+ * lookups that exhausted their retries fell from 86-94 to 9-23. The price is a
+ * longer tail for the prefetch as a whole (35 s -> 53-63 s), which nothing
+ * waits on. 20 keeps enough calls overlapped to spend the burst quickly.
+ */
+export const DESCRIBE_TYPE_MAX_IN_FLIGHT = 20;
+
+/**
+ * ONE limiter for every DescribeType-backed resolver, since the throttle is
+ * per account rather than per caller. A slot is held across the throttle
+ * retries too: a throttled call backing off is exactly the moment to send
+ * fewer, not more.
+ */
+const describeTypeLimiter = createConcurrencyLimiter(DESCRIBE_TYPE_MAX_IN_FLIGHT);
+
+/**
  * Issue `DescribeType` for a resource type, retrying throttle-shaped failures
  * with exponential backoff. Any other failure (or a throttle persisting past
  * the retry budget) is thrown to the caller unchanged.
@@ -51,23 +77,45 @@ const MAX_THROTTLE_RETRIES = 4;
  * `client` defaults to the shared `AwsClients.cloudFormation`; callers that
  * carry their own injected client (`cdkd export`'s primary-identifier
  * resolution) pass it so test doubles keep intercepting.
+ *
+ * The call waits for a slot of the shared limiter
+ * ({@link DESCRIBE_TYPE_MAX_IN_FLIGHT}) as an URGENT task, ahead of any queued
+ * prefetch.
  */
 export function describeTypeWithThrottleRetry(
   resourceType: string,
   client?: AwsClients['cloudFormation']
 ): Promise<DescribeTypeCommandOutput> {
-  return withRetry(
+  return scheduleDescribeType(resourceType, { ...(client && { client }) }).promise;
+}
+
+/**
+ * {@link describeTypeWithThrottleRetry} with the scheduling handle exposed:
+ * `background: true` queues the call behind every urgent one (a speculative
+ * prefetch), and the returned `promote()` moves it to the front once a caller
+ * starts awaiting that type.
+ */
+export function scheduleDescribeType(
+  resourceType: string,
+  options: { client?: AwsClients['cloudFormation']; background?: boolean } = {}
+): ScheduledTask<DescribeTypeCommandOutput> {
+  const { client, background } = options;
+  return describeTypeLimiter.schedule(
     () =>
-      (client ?? getAwsClients().cloudFormation).send(
-        new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
+      withRetry(
+        () =>
+          (client ?? getAwsClients().cloudFormation).send(
+            new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
+          ),
+        resourceType,
+        {
+          maxRetries: MAX_THROTTLE_RETRIES,
+          isRetryable: (_message, error) => isThrottlingError(error),
+          logger: getLogger().child('DescribeType'),
+          ...(describeTypeRetryDelays.sleep ? { sleep: describeTypeRetryDelays.sleep } : {}),
+        }
       ),
-    resourceType,
-    {
-      maxRetries: MAX_THROTTLE_RETRIES,
-      isRetryable: (_message, error) => isThrottlingError(error),
-      logger: getLogger().child('DescribeType'),
-      ...(describeTypeRetryDelays.sleep ? { sleep: describeTypeRetryDelays.sleep } : {}),
-    }
+    { background: background === true }
   );
 }
 

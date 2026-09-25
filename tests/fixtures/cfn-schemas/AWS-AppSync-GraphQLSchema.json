@@ -13,6 +13,11 @@
   "createOnlyProperties": [
     "ApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

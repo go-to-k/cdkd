@@ -10,6 +10,14 @@
     "Namespace",
     "TableBucketARN"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Namespace"
+    ],
+    [
+      "TableBucketARN"
+    ]
+  ],
   "primaryIdentifier": [
     "Namespace",
     "TableBucketARN"

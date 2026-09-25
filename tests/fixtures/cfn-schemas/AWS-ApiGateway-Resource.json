@@ -15,6 +15,17 @@
     "PathPart",
     "RestApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ParentId"
+    ],
+    [
+      "PathPart"
+    ],
+    [
+      "RestApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "ResourceId",
     "RestApiId"

@@ -1634,8 +1634,11 @@ matters on an ordinary deploy and not only on the Cloud Control path.
 
 It resolves each type's **`createOnlyProperties`**, which is how `cdkd deploy`
 and `cdkd diff` decide that a property change forces a replacement. Without
-the permission that determination falls back and a replacement can be
-misclassified.
+the permission cdkd warns and uses its bundled schema snapshot for the types it
+ships one for (every type with an SDK provider). That snapshot can lag AWS, so
+a property AWS has since made updatable may still be treated as forcing a
+replacement. For any other type the determination falls back to cdkd's own
+rules, and a replacement can be misclassified as an in-place update.
 
 It also resolves each type's `writeOnlyProperties` so
 that Cloud Control API updates re-include write-only properties in every

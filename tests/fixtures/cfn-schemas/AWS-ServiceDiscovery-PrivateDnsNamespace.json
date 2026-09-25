@@ -20,6 +20,14 @@
     "Name",
     "Vpc"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ],
+    [
+      "Vpc"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

@@ -32,6 +32,11 @@
   "createOnlyProperties": [
     "ProtocolType"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ProtocolType"
+    ]
+  ],
   "primaryIdentifier": [
     "ApiId"
   ],

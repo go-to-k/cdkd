@@ -24,6 +24,14 @@
     "ApiId",
     "Name"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ],
+    [
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "DataSourceArn"
   ],

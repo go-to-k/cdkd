@@ -14,6 +14,11 @@
   "createOnlyProperties": [
     "GroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "GroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "GroupName"
   ],

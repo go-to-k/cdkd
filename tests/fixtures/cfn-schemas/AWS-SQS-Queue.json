@@ -29,6 +29,14 @@
     "FifoQueue",
     "QueueName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "FifoQueue"
+    ],
+    [
+      "QueueName"
+    ]
+  ],
   "primaryIdentifier": [
     "QueueUrl"
   ],

@@ -96,6 +96,56 @@
     "StorageEncrypted",
     "UseLatestRestorableTime"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ClusterScalabilityType"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBSubnetGroupName"
+    ],
+    [
+      "DBSystemId"
+    ],
+    [
+      "DatabaseName"
+    ],
+    [
+      "EngineMode"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "PubliclyAccessible"
+    ],
+    [
+      "RestoreToTime"
+    ],
+    [
+      "RestoreType"
+    ],
+    [
+      "SnapshotIdentifier"
+    ],
+    [
+      "SourceDBClusterIdentifier"
+    ],
+    [
+      "SourceDbClusterResourceId"
+    ],
+    [
+      "SourceRegion"
+    ],
+    [
+      "StorageEncrypted"
+    ],
+    [
+      "UseLatestRestorableTime"
+    ]
+  ],
   "primaryIdentifier": [
     "DBClusterIdentifier"
   ],

@@ -43,6 +43,20 @@
     "StartingPosition",
     "StartingPositionTimestamp"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "EventSourceArn"
+    ],
+    [
+      "SelfManagedEventSource"
+    ],
+    [
+      "StartingPosition"
+    ],
+    [
+      "StartingPositionTimestamp"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

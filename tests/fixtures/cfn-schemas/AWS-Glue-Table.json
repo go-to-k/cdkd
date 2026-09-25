@@ -17,6 +17,17 @@
     "DatabaseName",
     "Name"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CatalogId"
+    ],
+    [
+      "DatabaseName"
+    ],
+    [
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

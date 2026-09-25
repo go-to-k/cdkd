@@ -42,6 +42,38 @@
     "OutpostArn",
     "VpcId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZone"
+    ],
+    [
+      "AvailabilityZoneId"
+    ],
+    [
+      "CidrBlock"
+    ],
+    [
+      "Ipv4IpamPoolId"
+    ],
+    [
+      "Ipv4NetmaskLength"
+    ],
+    [
+      "Ipv6IpamPoolId"
+    ],
+    [
+      "Ipv6Native"
+    ],
+    [
+      "Ipv6NetmaskLength"
+    ],
+    [
+      "OutpostArn"
+    ],
+    [
+      "VpcId"
+    ]
+  ],
   "primaryIdentifier": [
     "SubnetId"
   ],
