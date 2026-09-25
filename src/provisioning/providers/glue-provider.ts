@@ -339,7 +339,7 @@ function logCatalogScopedDeleteSkip(
       `the delete targeted ${where}. If the resource lives in a different Data Catalog it ` +
       `still exists. cdkd cannot retry this delete: the state record is dropped once the ` +
       `destroy completes, so check the intended catalog (aws glue get-${kind.toLowerCase()} ` +
-      `--catalog-id <id> ...) and delete the resource there by hand.`
+      `--catalog-id '<id>' ...) and delete the resource there by hand.`
   );
 }
 

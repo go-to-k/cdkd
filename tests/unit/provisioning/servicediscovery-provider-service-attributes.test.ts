@@ -42,6 +42,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
+import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const TYPE = 'AWS::ServiceDiscovery::Service';
 
@@ -283,3 +291,71 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
     });
   });
 });
+
+// Issue #3136: the service id is AWS-minted (off the CreateService response)
+// and still routed through `pasteableAwsCommand` in BOTH manual-delete
+// commands the attributes-wiring failure can print — the interrupt handle and
+// the cleanup-failure warn.
+describe('ServiceDiscoveryProvider manual delete-service commands (issue #3136)', () => {
+  const warn = (getLogger().child('x') as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+  });
+
+  async function warnsFor(
+    serviceId: string,
+    maskSecrets?: (t: string) => string
+  ): Promise<{ interrupted: string; failed: string }> {
+    mockSend
+      .mockResolvedValueOnce({ Service: { Id: serviceId, Arn: 'arn:srv', Name: 'mysvc' } })
+      .mockRejectedValueOnce(new InterruptedWaitError('Cloud Map service Svc attributes'))
+      .mockRejectedValueOnce(new Error('DeleteService also failed'));
+    await expect(
+      new ServiceDiscoveryProvider().create(
+        'Svc',
+        TYPE,
+        { Name: 'mysvc', NamespaceId: 'ns-1', ServiceAttributes: { team: 'cdkd' } },
+        maskSecrets ? { maskSecrets } : undefined
+      )
+    ).rejects.toThrow();
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    return {
+      interrupted: lines.find((m) => m.includes('Interrupted after creating ServiceDiscovery'))!,
+      failed: lines.find((m) => m.includes('Failed to clean up partially-created ServiceDiscovery'))!,
+    };
+  }
+
+  it('renders a clean id bare in both commands', async () => {
+    const { interrupted, failed } = await warnsFor('srv-abc');
+    for (const msg of [interrupted, failed]) {
+      expect(msg).toContain('aws servicediscovery delete-service --id srv-abc');
+    }
+  });
+
+  it('shell-quotes a forged id in both commands', async () => {
+    const id = `srv-1${FORGED_QUOTE}`;
+    const { interrupted, failed } = await warnsFor(id);
+    for (const msg of [interrupted, failed]) {
+      expectQuotedAfter(msg, 'aws servicediscovery delete-service --id ', id);
+    }
+  });
+
+  it('withholds both commands for an id carrying a control byte', async () => {
+    const { interrupted, failed } = await warnsFor(`srv-1${FORGED_CTRL}`);
+    for (const msg of [interrupted, failed]) {
+      expectWithheld(msg, 'aws servicediscovery delete-service');
+    }
+  });
+
+  it('withholds both commands for an id the caller masker would change', async () => {
+    const { interrupted, failed } = await warnsFor('srv-s3cr3t', (t) =>
+      t.replaceAll('s3cr3t', '***')
+    );
+    for (const msg of [interrupted, failed]) {
+      expectWithheld(msg, 'aws servicediscovery delete-service');
+    }
+  });
+});
+

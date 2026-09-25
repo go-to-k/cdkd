@@ -1251,6 +1251,25 @@ describe('Glue delete CatalogId scoping (issue #1675)', () => {
     ).toBe(true);
   });
 
+  // Issue #3136: the warning's `aws glue get-*` synopsis quotes its `<id>`
+  // placeholder — bare, `<id>` is two shell redirections.
+  it('the unusable-CatalogId skip warning quotes its <id> placeholder', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    // An unresolved non-pseudo intrinsic: declared, but unusable.
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: { Ref: 'SomeParam' },
+    });
+
+    const warned = mockLoggerWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('aws glue get-table'))!;
+    expect(warned).toContain(`--catalog-id '<id>'`);
+    expect(warned).not.toContain('--catalog-id <id>');
+  });
+
   it('deleteDatabase forwards a literal CatalogId to DeleteDatabaseCommand', async () => {
     mockGlueSend.mockResolvedValueOnce({});
 

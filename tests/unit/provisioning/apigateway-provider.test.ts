@@ -38,6 +38,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 describe('ApiGatewayProvider', () => {
   let provider: ApiGatewayProvider;
@@ -2473,6 +2480,68 @@ describe('ApiGatewayProvider', () => {
 
         const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
         expect(names).toEqual(['PutMethodCommand', 'PutIntegrationCommand', 'DeleteMethodCommand']);
+      });
+
+      // Issue #3136: the rest api id, resource id and method are TEMPLATE
+      // values, so the manual-delete command renders through
+      // `pasteableAwsCommand` — quoted, or withheld.
+      describe('the manual delete-method command (issue #3136)', () => {
+        const warn = (getLogger().child('x') as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+
+        async function warnFor(
+          props: Record<string, unknown>,
+          maskSecrets?: (t: string) => string
+        ): Promise<string> {
+          warn.mockClear();
+          mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+          mockSend.mockRejectedValueOnce(new Error('PutIntegration boom')); // PutIntegrationCommand
+          mockSend.mockRejectedValueOnce(new Error('DeleteMethod also failed')); // cleanup
+          await expect(
+            provider.create(
+              'MyMethod',
+              resourceType,
+              {
+                RestApiId: 'api-id',
+                ResourceId: 'resource-id',
+                HttpMethod: 'POST',
+                AuthorizationType: 'NONE',
+                Integration: { Type: 'AWS_PROXY' },
+                ...props,
+              },
+              maskSecrets ? { maskSecrets } : undefined
+            )
+          ).rejects.toThrow('PutIntegration boom');
+          return warn.mock.calls
+            .map((c) => String(c[0]))
+            .find((m) => m.includes('partially-created API Gateway Method'))!;
+        }
+
+        it('renders clean ids bare', async () => {
+          expect(await warnFor({})).toContain(
+            'aws apigateway delete-method --rest-api-id api-id --resource-id resource-id --http-method POST'
+          );
+        });
+
+        it('shell-quotes a forged value in each of the three arguments', async () => {
+          expectQuotedAfter(await warnFor({ RestApiId: FORGED_QUOTE }), '--rest-api-id ', FORGED_QUOTE);
+          expectQuotedAfter(
+            await warnFor({ ResourceId: FORGED_QUOTE }),
+            '--resource-id ',
+            FORGED_QUOTE
+          );
+          expectQuotedAfter(await warnFor({ HttpMethod: FORGED_QUOTE }), '--http-method ', FORGED_QUOTE);
+        });
+
+        it('withholds the command when any one argument carries a control byte', async () => {
+          expectWithheld(await warnFor({ ResourceId: FORGED_CTRL }), 'aws apigateway delete-method');
+        });
+
+        it('withholds the command for a value the caller masker would change', async () => {
+          expectWithheld(
+            await warnFor({ RestApiId: 'api-s3cr3t' }, (t) => t.replaceAll('s3cr3t', '***')),
+            'aws apigateway delete-method'
+          );
+        });
       });
     });
 
