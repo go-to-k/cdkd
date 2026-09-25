@@ -16,6 +16,14 @@
     "DBProxyName",
     "TargetGroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DBProxyName"
+    ],
+    [
+      "TargetGroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "TargetGroupArn"
   ],

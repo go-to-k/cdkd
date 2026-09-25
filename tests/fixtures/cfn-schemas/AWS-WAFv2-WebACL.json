@@ -33,6 +33,14 @@
     "Name",
     "Scope"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ],
+    [
+      "Scope"
+    ]
+  ],
   "primaryIdentifier": [
     "Id",
     "Name",

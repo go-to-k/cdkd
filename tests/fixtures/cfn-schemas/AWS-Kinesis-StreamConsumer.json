@@ -19,6 +19,17 @@
     "StreamARN",
     "Tags"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ConsumerName"
+    ],
+    [
+      "StreamARN"
+    ],
+    [
+      "Tags"
+    ]
+  ],
   "primaryIdentifier": [
     "ConsumerARN"
   ],

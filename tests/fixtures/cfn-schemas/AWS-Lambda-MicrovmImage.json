@@ -34,6 +34,11 @@
   "createOnlyProperties": [
     "Name"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "ImageArn"
   ],

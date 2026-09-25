@@ -34,6 +34,17 @@
     "Scheme",
     "Type"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ],
+    [
+      "Scheme"
+    ],
+    [
+      "Type"
+    ]
+  ],
   "primaryIdentifier": [
     "LoadBalancerArn"
   ],

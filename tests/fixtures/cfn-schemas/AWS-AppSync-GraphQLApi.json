@@ -38,6 +38,7 @@
     "RealtimeUrl"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "Arn"
   ],

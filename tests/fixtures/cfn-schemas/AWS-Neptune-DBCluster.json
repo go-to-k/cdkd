@@ -53,6 +53,41 @@
     "StorageEncrypted",
     "UseLatestRestorableTime"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZones"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBSubnetGroupName"
+    ],
+    [
+      "GlobalClusterIdentifier"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "RestoreToTime"
+    ],
+    [
+      "RestoreType"
+    ],
+    [
+      "SnapshotIdentifier"
+    ],
+    [
+      "SourceDBClusterIdentifier"
+    ],
+    [
+      "StorageEncrypted"
+    ],
+    [
+      "UseLatestRestorableTime"
+    ]
+  ],
   "primaryIdentifier": [
     "DBClusterIdentifier"
   ],

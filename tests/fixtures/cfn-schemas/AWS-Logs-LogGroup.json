@@ -20,6 +20,11 @@
   "createOnlyProperties": [
     "LogGroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "LogGroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "LogGroupName"
   ],

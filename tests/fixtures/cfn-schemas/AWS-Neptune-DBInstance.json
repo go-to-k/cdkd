@@ -28,6 +28,23 @@
     "DBSnapshotIdentifier",
     "DBSubnetGroupName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZone"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBInstanceIdentifier"
+    ],
+    [
+      "DBSnapshotIdentifier"
+    ],
+    [
+      "DBSubnetGroupName"
+    ]
+  ],
   "primaryIdentifier": [
     "DBInstanceIdentifier"
   ],

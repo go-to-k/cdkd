@@ -13,6 +13,14 @@
     "RouteTableId",
     "SubnetId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "RouteTableId"
+    ],
+    [
+      "SubnetId"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

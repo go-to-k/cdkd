@@ -45,6 +45,17 @@
     "PackageType",
     "TenancyConfig"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "FunctionName"
+    ],
+    [
+      "PackageType"
+    ],
+    [
+      "TenancyConfig"
+    ]
+  ],
   "primaryIdentifier": [
     "FunctionName"
   ],

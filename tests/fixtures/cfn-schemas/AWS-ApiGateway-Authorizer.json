@@ -20,6 +20,11 @@
   "createOnlyProperties": [
     "RestApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "RestApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "AuthorizerId",
     "RestApiId"

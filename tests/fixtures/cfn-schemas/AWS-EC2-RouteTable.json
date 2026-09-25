@@ -12,6 +12,11 @@
   "createOnlyProperties": [
     "VpcId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "VpcId"
+    ]
+  ],
   "primaryIdentifier": [
     "RouteTableId"
   ],

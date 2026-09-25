@@ -80,6 +80,62 @@
     "SecurityGroups",
     "SubnetId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZone"
+    ],
+    [
+      "CpuOptions"
+    ],
+    [
+      "ElasticGpuSpecifications"
+    ],
+    [
+      "ElasticInferenceAccelerators"
+    ],
+    [
+      "EnclaveOptions"
+    ],
+    [
+      "HibernationOptions"
+    ],
+    [
+      "HostResourceGroupArn"
+    ],
+    [
+      "ImageId"
+    ],
+    [
+      "Ipv6AddressCount"
+    ],
+    [
+      "Ipv6Addresses"
+    ],
+    [
+      "KeyName"
+    ],
+    [
+      "LaunchTemplate"
+    ],
+    [
+      "LicenseSpecifications"
+    ],
+    [
+      "NetworkInterfaces"
+    ],
+    [
+      "PlacementGroupName"
+    ],
+    [
+      "PrivateIpAddress"
+    ],
+    [
+      "SecurityGroups"
+    ],
+    [
+      "SubnetId"
+    ]
+  ],
   "primaryIdentifier": [
     "InstanceId"
   ],

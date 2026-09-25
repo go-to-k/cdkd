@@ -21,6 +21,20 @@
     "LaunchSpecifications",
     "Name"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ClusterId"
+    ],
+    [
+      "InstanceFleetType"
+    ],
+    [
+      "LaunchSpecifications"
+    ],
+    [
+      "Name"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

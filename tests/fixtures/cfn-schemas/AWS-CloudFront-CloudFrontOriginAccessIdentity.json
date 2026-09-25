@@ -11,6 +11,7 @@
     "S3CanonicalUserId"
   ],
   "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "Id"
   ],

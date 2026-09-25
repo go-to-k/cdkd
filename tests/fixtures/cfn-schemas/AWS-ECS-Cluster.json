@@ -17,6 +17,11 @@
   "createOnlyProperties": [
     "ClusterName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ClusterName"
+    ]
+  ],
   "primaryIdentifier": [
     "ClusterName"
   ],

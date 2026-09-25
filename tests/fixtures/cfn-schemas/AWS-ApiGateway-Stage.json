@@ -22,6 +22,14 @@
     "RestApiId",
     "StageName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "RestApiId"
+    ],
+    [
+      "StageName"
+    ]
+  ],
   "primaryIdentifier": [
     "RestApiId",
     "StageName"

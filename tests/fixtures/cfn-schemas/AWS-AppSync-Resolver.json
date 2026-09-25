@@ -29,6 +29,17 @@
     "FieldName",
     "TypeName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ],
+    [
+      "FieldName"
+    ],
+    [
+      "TypeName"
+    ]
+  ],
   "primaryIdentifier": [
     "ResolverArn"
   ],

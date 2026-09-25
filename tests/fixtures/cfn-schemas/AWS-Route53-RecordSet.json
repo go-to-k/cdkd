@@ -24,6 +24,14 @@
     "HostedZoneId",
     "HostedZoneName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "HostedZoneId"
+    ],
+    [
+      "HostedZoneName"
+    ]
+  ],
   "primaryIdentifier": [
     "HostedZoneId",
     "Name",

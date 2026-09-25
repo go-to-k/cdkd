@@ -35,6 +35,26 @@
     "SubnetId",
     "VpcId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AllocationId"
+    ],
+    [
+      "AvailabilityMode"
+    ],
+    [
+      "ConnectivityType"
+    ],
+    [
+      "PrivateIpAddress"
+    ],
+    [
+      "SubnetId"
+    ],
+    [
+      "VpcId"
+    ]
+  ],
   "primaryIdentifier": [
     "NatGatewayId"
   ],

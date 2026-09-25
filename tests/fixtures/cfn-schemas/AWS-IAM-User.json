@@ -18,6 +18,11 @@
   "createOnlyProperties": [
     "UserName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "UserName"
+    ]
+  ],
   "primaryIdentifier": [
     "UserName"
   ],

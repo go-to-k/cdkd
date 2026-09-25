@@ -21,6 +21,11 @@
   "createOnlyProperties": [
     "ApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "ApiId",
     "AuthorizerId"

@@ -29,6 +29,20 @@
     "Ipv4NetmaskLength",
     "VpcEncryptionControl"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "CidrBlock"
+    ],
+    [
+      "Ipv4IpamPoolId"
+    ],
+    [
+      "Ipv4NetmaskLength"
+    ],
+    [
+      "VpcEncryptionControl"
+    ]
+  ],
   "primaryIdentifier": [
     "VpcId"
   ],

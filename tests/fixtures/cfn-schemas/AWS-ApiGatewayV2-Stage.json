@@ -19,6 +19,14 @@
     "ApiId",
     "StageName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApiId"
+    ],
+    [
+      "StageName"
+    ]
+  ],
   "primaryIdentifier": [
     "ApiId",
     "StageName"

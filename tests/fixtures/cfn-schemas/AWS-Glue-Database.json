@@ -10,6 +10,11 @@
   "createOnlyProperties": [
     "DatabaseName"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "DatabaseName"
+    ]
+  ],
   "primaryIdentifier": [
     "DatabaseName"
   ],

@@ -53,6 +53,32 @@
     "SourceDBClusterIdentifier",
     "StorageEncrypted"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "AvailabilityZones"
+    ],
+    [
+      "DBClusterIdentifier"
+    ],
+    [
+      "DBSubnetGroupName"
+    ],
+    [
+      "KmsKeyId"
+    ],
+    [
+      "MasterUsername"
+    ],
+    [
+      "SnapshotIdentifier"
+    ],
+    [
+      "SourceDBClusterIdentifier"
+    ],
+    [
+      "StorageEncrypted"
+    ]
+  ],
   "primaryIdentifier": [
     "Id"
   ],

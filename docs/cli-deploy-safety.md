@@ -338,10 +338,12 @@ which is a narrower case:
   [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked),
   so cdkd recreates the resource for you with no flag. (Where cdkd has no rule
   of its own, that verdict is read from the type's CFn schema through
-  `cloudformation:DescribeType`; without that permission cdkd warns and
-  classifies the change as in-place instead, so that property-driven
-  replacement does not happen — and where nothing rejects the in-place update,
-  the deploy can report success with the property unapplied.) A stateful type
+  `cloudformation:DescribeType`. Without that permission cdkd warns and reads
+  the verdict from its bundled schema snapshot, for the types it ships one
+  for. For any other type it classifies the change as in-place instead, so that
+  property-driven replacement does not happen — and where nothing rejects the
+  in-place update, the deploy can report success with the property
+  unapplied.) A stateful type
   is refused until `--force-stateful-recreation`, **unless** it declares
   `UpdateReplacePolicy: Retain` — that is exempt from the consent flag, because
   the old resource is orphaned rather than deleted. The flag is for the case

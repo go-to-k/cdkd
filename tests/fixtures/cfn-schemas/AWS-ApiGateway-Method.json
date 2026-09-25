@@ -22,6 +22,17 @@
     "ResourceId",
     "RestApiId"
   ],
+  "createOnlyPropertyPaths": [
+    [
+      "HttpMethod"
+    ],
+    [
+      "ResourceId"
+    ],
+    [
+      "RestApiId"
+    ]
+  ],
   "primaryIdentifier": [
     "HttpMethod",
     "ResourceId",
