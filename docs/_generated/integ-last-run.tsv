@@ -82,16 +82,12 @@ docdb-neptune	2026-09-24T22:46:12Z	PASS	1863	verify.sh	rc ok, 0 orphans (#3663)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-25T13:35:54Z	PASS	160	verify.sh	rc ok, orph clean (#3728)
 drift-revert-arrays	2026-09-25T11:38:41Z	PASS	181	verify.sh	rc 0, state clean, PR 3613 head
-drift-revert-vpc	2026-09-25T11:38:41Z	PASS	272	verify.sh	rc 0, state clean, PR 3613 head
-drift-revert	2026-09-25T13:23:17Z	PASS	160	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
-drift-revert-arrays	2026-09-25T11:38:41Z	PASS	181	verify.sh	rc 0, state clean, PR 3613 head
 drift-revert-vpc	2026-09-25T13:23:17Z	PASS	255	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-globaltable	2026-09-24T22:46:12Z	PASS	1342	verify.sh	rc ok, 0 orphans (#3663)
 dynamodb-gsi-update	2026-09-25T13:35:54Z	PASS	1258	verify.sh	rc ok, orph clean (#3728)
-dynamodb-gsi-update	2026-09-25T13:23:17Z	PASS	1253	verify.sh	rc ok, orph clean; first attempt hit read EADDRNOTAVAIL (host network) mid-UpdateTable, re-run PASS; sha 762342a2a (#3718)
 dynamodb-ondemand	2026-09-20T10:56:17Z	PASS	210	verify.sh	rc ok, orph clean; #3458 update-path restructure
 dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
 dynamodb-stream-filter	2026-09-20T10:56:17Z	PASS	56	verify.sh	rc ok, orph clean; #3458 stream branch restructure
