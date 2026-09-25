@@ -33,6 +33,11 @@
 #      the update phase flips the permission set (UpdateDatabase REPLACES
 #      DatabaseInput wholesale, so a regression ERASES it from a live
 #      database).
+#   8. Table `TableInput.Name` rename (issue #3724). The rename diffs as an
+#      in-place UPDATE and `UpdateTable` addresses the table BY the new name,
+#      so it rewrote an unmanaged table holding that name. Asserted by planting
+#      such a decoy: a plain deploy must be REFUSED with the decoy untouched,
+#      and `--replace --force-stateful-recreation` must perform the rename.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -95,12 +100,16 @@ TABLE_DB_NAME="${LOWER}-table-db"
 PIPE_TABLE_LID="PipeNamedTable"
 PIPE_TABLE_NAME="x|y"
 DECOY_TABLE_NAME="x"
+# Phase 2c: the managed table's two names (the stack lowercases them), and the
+# unmanaged decoy planted under the second one before the rename.
+RENAME_FROM="${LOWER}-rename-a"
+RENAME_TO="${LOWER}-rename-b"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   local t
-  for t in "${PIPE_TABLE_NAME}" "${DECOY_TABLE_NAME}"; do
+  for t in "${PIPE_TABLE_NAME}" "${DECOY_TABLE_NAME}" "${RENAME_TO}"; do
     aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${t}" \
       --region "${REGION}" >/dev/null 2>&1
   done
@@ -468,6 +477,74 @@ fi
 aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"
 echo "    OK: '${PIPE_TABLE_NAME}' deleted, decoy '${DECOY_TABLE_NAME}' untouched"
 
+# --- Phase 2c: a TableInput.Name rename is refused, not aimed at the decoy (#3724)
+# Only the top-level name is createOnly, so the rename diffs as an in-place
+# UPDATE, and UpdateTable addresses the table BY TableInput.Name. Before the fix
+# this deploy SUCCEEDED by rewriting the unmanaged decoy (stamping it 'managed by
+# cdkd') while state kept pointing at the old table.
+echo "==> Phase 2c: TableInput.Name rename onto an unmanaged table"
+aws glue create-table --database-name "${TABLE_DB_NAME}" --region "${REGION}" \
+  --table-input "{\"Name\":\"${RENAME_TO}\",\"Description\":\"unmanaged decoy\"}"
+DECOY_VERSION=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
+  --region "${REGION}" --query 'Table.VersionId' --output text)
+set +e
+RENAME_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+RENAME_RC=$?
+set -e
+if [ "${RENAME_RC}" -eq 0 ]; then
+  echo "FAIL: the TableInput.Name rename deployed IN PLACE (issue #3724)" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+# Two markers: the refusal's own wording, and the remedy it must name. A
+# failure carrying neither is some other error, not the refusal under test.
+# `grep >/dev/null`, not `grep -q`: under pipefail an early `-q` exit can
+# SIGPIPE the printf and fail a correct match.
+if ! printf '%s' "${RENAME_OUT}" | grep -F "TableInput.Name changed from '${RENAME_FROM}' to '${RENAME_TO}'" >/dev/null \
+  || ! printf '%s' "${RENAME_OUT}" | grep -F -- "--replace --force-stateful-recreation" >/dev/null; then
+  echo "FAIL: the rename deploy failed, but not with the #3724 refusal" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+DECOY_JSON=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
+  --region "${REGION}" --output json)
+if [ "$(printf '%s' "${DECOY_JSON}" | jq -r '.Table.Description // "<absent>"')" != "unmanaged decoy" ] \
+  || [ "$(printf '%s' "${DECOY_JSON}" | jq -r '.Table.VersionId')" != "${DECOY_VERSION}" ]; then
+  echo "FAIL: the unmanaged decoy '${RENAME_TO}' was rewritten by the refused deploy" >&2
+  printf '%s\n' "${DECOY_JSON}" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_FROM}" ]; then
+  echo "FAIL: state no longer records RenameTable as '${TABLE_DB_NAME}|${RENAME_FROM}' after the refusal" >&2
+  exit 1
+fi
+if ! aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_FROM}" --region "${REGION}" >/dev/null; then
+  echo "FAIL: the managed table '${RENAME_FROM}' is gone after the refused rename" >&2
+  exit 1
+fi
+echo "    OK: rename refused; decoy '${RENAME_TO}' untouched; '${RENAME_FROM}' still managed"
+
+# The remedy the refusal names must really rename the table.
+aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" --region "${REGION}"
+CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --replace --force-stateful-recreation --yes
+if [ "$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" --region "${REGION}" \
+  --query 'Table.Description' --output text)" != "managed by cdkd" ]; then
+  echo "FAIL: '${RENAME_TO}' is not the managed table after --replace" >&2
+  exit 1
+fi
+if ! gone_probe aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_FROM}" --region "${REGION}"; then
+  echo "FAIL: '${RENAME_FROM}' survived the --replace rename" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_TO}" ]; then
+  echo "FAIL: state does not record RenameTable as '${TABLE_DB_NAME}|${RENAME_TO}' after --replace" >&2
+  exit 1
+fi
+echo "    OK: --replace --force-stateful-recreation renamed '${RENAME_FROM}' to '${RENAME_TO}'"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -481,6 +558,7 @@ for chk in \
   "get-trigger --name ${TRIGGER_NAME}" \
   "get-workflow --name ${WORKFLOW_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
+  "get-table --database-name ${TABLE_DB_NAME} --name ${RENAME_TO}" \
   "get-database --name ${SKEWED_DB_NAME}" \
   "get-database --name ${LINK_DB_NAME}" \
   "get-database --name ${PERM_DB_NAME}"; do
@@ -519,4 +597,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + clean destroy)"

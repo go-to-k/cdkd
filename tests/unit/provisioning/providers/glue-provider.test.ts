@@ -45,6 +45,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import {
   UpdateDatabaseCommand,
+  UpdateTableCommand,
+  UpdateConnectionCommand,
+  GetTableCommand,
+  GetDatabaseCommand,
   CreateJobCommand,
   UpdateJobCommand,
   CreateWorkflowCommand,
@@ -60,6 +64,8 @@ import {
   GlueTriggerProvider,
   GlueConnectionProvider,
 } from '../../../../src/provisioning/providers/glue-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 
 describe('GlueProvider import', () => {
   let provider: GlueProvider;
@@ -486,6 +492,285 @@ describe('GlueProvider update', () => {
     const input = call![0].input as { Name: string; DatabaseInput: { Description?: string } };
     expect(input.Name).toBe('mydb');
     expect(input.DatabaseInput.Description).toBe('updated');
+  });
+});
+
+// Issue #3724: a nested-Name change diffs as an in-place UPDATE (only the
+// top-level name is createOnly), and `UpdateTable` addresses the table BY
+// `TableInput.Name` — so the update wrote to whichever table held the NEW
+// name while state kept the old id. The refusal must fire before ANY Glue
+// call, including the pre-read whose `VersionId` would ride the write.
+describe('Glue nested-Name rename refusal (issue #3724)', () => {
+  let provider: GlueProvider;
+  let connectionProvider: GlueConnectionProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+    mockGlueSend.mockImplementation((command: unknown) => {
+      if (command instanceof GetTableCommand) {
+        return Promise.resolve({ Table: { Name: 'old_t', VersionId: '7' } });
+      }
+      if (command instanceof GetDatabaseCommand) {
+        return Promise.resolve({ Database: { Name: 'olddb' } });
+      }
+      return Promise.resolve({});
+    });
+    provider = new GlueProvider();
+    connectionProvider = new GlueConnectionProvider();
+  });
+
+  const tableProps = (name: string) => ({
+    DatabaseName: 'mydb',
+    TableInput: { Name: name, TableType: 'EXTERNAL_TABLE' },
+  });
+
+  it('refuses a TableInput.Name rename with no Glue call, naming both tables and the remedy', async () => {
+    const error = await provider
+      .update('MyTable', 'mydb|old_t', 'AWS::Glue::Table', tableProps('new_t'), tableProps('old_t'))
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (error as Error).message;
+    expect(message).toContain("TableInput.Name changed from 'old_t' to 'new_t'");
+    expect(message).toContain("write to the table named 'new_t' in database 'mydb'");
+    expect(message).toContain('--replace --force-stateful-recreation');
+    expect(message).toContain('UpdateReplacePolicy: Retain');
+    expect(message).toContain("check that table before re-deploying");
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('updates the recorded table when TableInput.Name is unchanged', async () => {
+    await provider.update(
+      'MyTable',
+      'mydb|old_t',
+      'AWS::Glue::Table',
+      tableProps('old_t'),
+      tableProps('old_t')
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call![0].input).toMatchObject({
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'old_t' },
+      VersionId: '7',
+    });
+  });
+
+  it('lets a case-only TableInput.Name difference through (Glue folds table names)', async () => {
+    await provider.update(
+      'MyTable',
+      'mydb|old_t',
+      'AWS::Glue::Table',
+      tableProps('OLD_T'),
+      tableProps('old_t')
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call![0].input).toMatchObject({ DatabaseName: 'mydb', TableInput: { Name: 'OLD_T' } });
+  });
+
+  it('folds ASCII only: a non-ASCII case difference is refused', async () => {
+    await expect(
+      provider.update(
+        'MyTable',
+        'mydb|caf\u00e9',
+        'AWS::Glue::Table',
+        tableProps('CAF\u00c9'),
+        tableProps('caf\u00e9')
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-string, non-number TableInput.Name with no Glue call', async () => {
+    const error = await provider
+      .update(
+        'MyTable',
+        'mydb|old_t',
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: { 'Fn::Join': ['', ['s3cr3t-leaf']] } } },
+        tableProps('old_t')
+      )
+      .catch((e: unknown) => e);
+    // Untyped on purpose: `--replace` reacts to ResourceUpdateNotSupportedError.
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    const message = (error as Error).message;
+    expect(message).toContain('TableInput.Name is not a resolved name (an object with keys [Fn::Join])');
+    expect(message).not.toContain('--replace');
+    // Shape only: a leaf value (possibly a resolved secret) never reaches the text.
+    expect(message).not.toContain('s3cr3t-leaf');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [['a'], 'an array'],
+    [{}, 'an empty object'],
+    [true, 'a boolean'],
+  ])('describes an unresolved %j name by shape (%s)', async (name, shape) => {
+    await expect(
+      provider.update(
+        'MyTable',
+        'mydb|old_t',
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: name } },
+        tableProps('old_t')
+      )
+    ).rejects.toThrow(`TableInput.Name is not a resolved name (${shape})`);
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('compares a numeric TableInput.Name by its string form', async () => {
+    await expect(
+      provider.update(
+        'MyTable',
+        'mydb|123',
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: 124 } },
+        tableProps('123')
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    // Exponent-form numbers are refused: JS and Java spell them differently.
+    await expect(
+      provider.update(
+        'MyTable',
+        'mydb|1e-7',
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: 1e-7 } },
+        tableProps('1e-7')
+      )
+    ).rejects.toThrow('is not a resolved name (a number that is not a safe integer)');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+
+    await provider.update(
+      'MyTable',
+      'mydb|123',
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 123 } },
+      tableProps('123')
+    );
+    expect(mockGlueSend.mock.calls.some((c) => c[0] instanceof UpdateTableCommand)).toBe(true);
+  });
+
+  it('updates the recorded entity when the nested Name is ABSENT (all three types)', async () => {
+    await provider.update(
+      'MyTable',
+      'mydb|old_t',
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { TableType: 'EXTERNAL_TABLE' } },
+      tableProps('old_t')
+    );
+    await provider.update(
+      'MyDb',
+      'olddb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Description: 'd' } },
+      { DatabaseInput: { Name: 'olddb' } }
+    );
+    await connectionProvider.update(
+      'MyConn',
+      'recorded_conn',
+      'AWS::Glue::Connection',
+      { ConnectionInput: { ConnectionType: 'JDBC', ConnectionProperties: {} } },
+      { ConnectionInput: { ConnectionType: 'JDBC', ConnectionProperties: {} } }
+    );
+
+    const table = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(table![0].input).toMatchObject({ TableInput: { Name: 'old_t' } });
+    const db = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(db![0].input).toMatchObject({ Name: 'olddb', DatabaseInput: { Name: 'olddb' } });
+    const conn = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateConnectionCommand);
+    expect(conn![0].input).toMatchObject({
+      Name: 'recorded_conn',
+      ConnectionInput: { Name: 'recorded_conn' },
+    });
+  });
+
+  it('refuses a DatabaseInput.Name rename with no Glue call', async () => {
+    const error = await provider
+      .update(
+        'MyDb',
+        'olddb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'newdb' } },
+        { DatabaseInput: { Name: 'olddb' } }
+      )
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (error as Error).message;
+    expect(message).toContain("DatabaseInput.Name changed from 'olddb' to 'newdb'");
+    expect(message).toContain("UpdateDatabase would address 'olddb'");
+    expect(message).toContain('--replace --force-stateful-recreation');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('lets a case-only DatabaseInput.Name difference through (Glue folds database names)', async () => {
+    await provider.update(
+      'MyDb',
+      'olddb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'OldDb' } },
+      { DatabaseInput: { Name: 'olddb' } }
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect((call![0].input as { Name: string }).Name).toBe('olddb');
+  });
+
+  const connectionProps = (name: string) => ({
+    ConnectionInput: { Name: name, ConnectionType: 'JDBC', ConnectionProperties: {} },
+  });
+
+  it('refuses a ConnectionInput.Name rename with no Glue call, naming --replace alone', async () => {
+    const error = await connectionProvider
+      .update(
+        'MyConn',
+        'oldconn',
+        'AWS::Glue::Connection',
+        connectionProps('newconn'),
+        connectionProps('oldconn')
+      )
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (error as Error).message;
+    expect(message).toContain("ConnectionInput.Name changed from 'oldconn' to 'newconn'");
+    expect(message).toContain("UpdateConnection would address 'oldconn'");
+    expect(message).toContain('with --replace, which');
+    expect(message).not.toContain('--force-stateful-recreation');
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a case-only ConnectionInput.Name difference (no documented folding)', async () => {
+    await expect(
+      connectionProvider.update(
+        'MyConn',
+        'oldconn',
+        'AWS::Glue::Connection',
+        connectionProps('OldConn'),
+        connectionProps('oldconn')
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  it('updates the recorded connection when ConnectionInput.Name is unchanged', async () => {
+    await connectionProvider.update(
+      'MyConn',
+      'oldconn',
+      'AWS::Glue::Connection',
+      connectionProps('oldconn'),
+      connectionProps('oldconn')
+    );
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateConnectionCommand);
+    expect(call![0].input).toMatchObject({
+      Name: 'oldconn',
+      ConnectionInput: { Name: 'oldconn' },
+    });
   });
 });
 
