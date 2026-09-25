@@ -56,6 +56,7 @@ import { displaySafe } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
+import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import { SECRET_MASK } from '../deployment/secret-redaction.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
 import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
@@ -3687,7 +3688,9 @@ export class CloudControlProvider implements ResourceProvider {
    *     parse `ResourceModel` (returned as a JSON string by CC API), and
    *     return the ATTRIBUTE keys as `attributes` — see
    *     {@link maskUncertifiedModelValues} for what "attribute" means here and
-   *     why every other key comes back MASKED rather than dropped.
+   *     why every other key comes back MASKED rather than dropped. A bare id
+   *     for a type with a COMPOSITE primary identifier is first completed from
+   *     the template (`cc-import-identifier.ts`, issue #3672).
    *   - Without `knownPhysicalId`: return `null`. CC API has no efficient
    *     `aws:cdk:path`-tag lookup — `ListResources` returns identifiers
    *     only, so tag lookup would require one `GetResource` per resource
@@ -3807,11 +3810,27 @@ export class CloudControlProvider implements ResourceProvider {
       return null;
     }
 
+    // CloudFormation's physical id for a type with a COMPOSITE primary
+    // identifier is often one segment of it (`AWS::EC2::VPCCidrBlock` reports
+    // the bare association id; Cloud Control wants `<Id>|<VpcId>`), so complete
+    // it from the template before the lookup — issue #3672. The completed value
+    // is also what is RECORDED: it is the id every later Cloud Control call on
+    // this resource sends, and the shape a Cloud Control create records.
+    // Outside the `try` on purpose: a refusal must fail the import, not be read
+    // as `ResourceNotFoundException`.
+    const identifier = toCloudControlIdentifier({
+      resourceType: input.resourceType,
+      logicalId: input.logicalId,
+      physicalId: input.knownPhysicalId,
+      properties: input.properties,
+      fields: await getPrimaryIdentifierFields(input.resourceType),
+    });
+
     try {
       const resp = await this.cloudControlClient.send(
         new GetResourceCommand({
           TypeName: input.resourceType,
-          Identifier: input.knownPhysicalId,
+          Identifier: identifier,
         })
       );
 
@@ -3836,7 +3855,7 @@ export class CloudControlProvider implements ResourceProvider {
       // JSON-log lines. `asciiOnly` matches what `lock-contention-message.ts`
       // applies to the same class of value.
       const safeType = displaySafe(input.resourceType, { asciiOnly: true });
-      const safeId = displaySafe(input.knownPhysicalId, { asciiOnly: true });
+      const safeId = displaySafe(identifier, { asciiOnly: true });
       let parsedModel: Record<string, unknown> | undefined;
       const raw = resp.ResourceDescription?.Properties;
       if (typeof raw === 'string' && raw.length > 0) {
@@ -3884,13 +3903,9 @@ export class CloudControlProvider implements ResourceProvider {
       const attributes =
         parsedModel === undefined
           ? {}
-          : await this.maskUncertifiedModelValues(
-              parsedModel,
-              input.resourceType,
-              input.knownPhysicalId
-            );
+          : await this.maskUncertifiedModelValues(parsedModel, input.resourceType, identifier);
 
-      return { physicalId: input.knownPhysicalId, attributes };
+      return { physicalId: identifier, attributes };
     } catch (error) {
       // ResourceNotFoundException → null (caller marks "not found").
       // Any other error (access denied, bad TypeName, throttling) →

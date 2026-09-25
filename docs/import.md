@@ -738,6 +738,19 @@ over Cloud Control API by default — that would issue an
 `aws-cloudcontrol:ListResources` call per type, which is too expensive for
 whole-stack adoption.
 
+**Composite identifiers.** When a type's schema `primaryIdentifier` has more
+than one field, Cloud Control identifies the resource by the field values joined
+with `|` (`AWS::EC2::VPCCidrBlock` is `<Id>|<VpcId>`), and cdkd records that
+value as the physical id. CloudFormation's physical id for such a resource is
+often one field only (the bare `vpc-cidr-assoc-…` for a VPCCidrBlock). So under
+`--migrate-from-cloudformation`, or with a bare `--resource` value, cdkd builds
+the rest of the identifier from the template's own values for the other fields,
+after substituting `Ref`s to other imported resources. It needs the same
+`cloudformation:DescribeType` permission described below. When the template
+does not supply exactly the other fields as literal values, the import of that
+resource fails and names the composite to pass instead, for example
+`--resource 'VpcIpv6Cidr=<Id>|<VpcId>'`.
+
 **What lands in `attributes`.** Cloud Control's `GetResource` returns the
 resource's whole model — every readable property, not just its attributes — so
 cdkd narrows it to the type's schema-declared `readOnlyProperties`, which is

@@ -67,6 +67,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **read-only-properties.ts** - For `CloudControlProvider.import`'s attribute narrowing (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)). **The RETURN TYPE is the point of the module**: `undefined` means "could not find out" and an empty set means "declares no attributes", so returning `new Set()` on failure re-opens the disclosure.
 
+- **cc-import-identifier.ts** - Completes the bare CloudFormation id `CloudControlProvider.import()` receives into the `|`-joined Cloud Control identifier for a COMPOSITE `primaryIdentifier`, read from the live schema (issue [#3672](https://github.com/go-to-k/cdkd/issues/3672)). The completed value is also what gets RECORDED. It REFUSES rather than guesses when the template cannot supply exactly the other fields.
+
 - **slow-cc-operation-timeouts.ts** - Per-(resourceType, operation) wall-clock timeout FLOORS, and the SINGLE source for the CC poll cap and both outer deadlines, so they cannot drift.
 
 - **resource-timeout-registry.ts** - Registry of the resolved `--resource-timeout` input: per-type override > explicit global > `undefined`. **The compile-time 30m default deliberately does NOT leak in**: only an explicit user value may lift an inner waiter's floor.

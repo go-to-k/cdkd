@@ -3,13 +3,16 @@
 # End-to-end real-AWS validation that `cdkd import --migrate-from-cloudformation`
 # adopts a CDK `ec2.Vpc` completely (issue #3661): route tables, routes, the
 # internet gateway and its attachment, subnet route-table / NACL associations,
-# a NACL with entries, a NAT gateway + EIP, and an instance.
+# a NACL with entries, a NAT gateway + EIP, and an instance — plus an IPv6
+# `AWS::EC2::VPCCidrBlock`, which imports through Cloud Control (issue #3672).
 #
 # Flow:
 #   1. Build cdkd; install the fixture's pinned aws-cdk.
 #   2. `cdk deploy` the stack (the existing CloudFormation stack to migrate).
 #   3. `cdkd import --migrate-from-cloudformation --yes`; assert the summary
-#      reports `0 not found` / `0 failed` and no unresolved intrinsic.
+#      reports `0 not found` / `0 failed` and no unresolved intrinsic, and
+#      that state records the VPCCidrBlock as the Cloud Control identifier
+#      `<associationId>|<vpcId>` rather than CloudFormation's bare id.
 #   4. `cdkd deploy` with an unchanged template: nothing created or updated.
 #      Before the fix, the orphaned route tables were created a second time and
 #      the associations conflicted.
@@ -124,7 +127,18 @@ physical_of_type() {
 VPC_ID="$(physical_of_type AWS::EC2::VPC)"
 INSTANCE_ID="$(physical_of_type AWS::EC2::Instance)"
 NAT_ID="$(physical_of_type AWS::EC2::NatGateway)"
-echo "[verify] step 3 ok: vpc=${VPC_ID} instance=${INSTANCE_ID} nat=${NAT_ID}"
+CIDR_ASSOC_ID="$(physical_of_type AWS::EC2::VPCCidrBlock)"
+# An empty or `None` capture would make the state assertion and the gone-probe
+# below compare against nothing, so refuse both here.
+case "${VPC_ID}" in
+  vpc-?*) ;;
+  *) echo "[verify] FAIL: CloudFormation's VPC id is '${VPC_ID}', not a vpc- id"; exit 1 ;;
+esac
+case "${CIDR_ASSOC_ID}" in
+  vpc-cidr-assoc-?*) ;;
+  *) echo "[verify] FAIL: CloudFormation's VPCCidrBlock id is '${CIDR_ASSOC_ID}', not a vpc-cidr-assoc- id"; exit 1 ;;
+esac
+echo "[verify] step 3 ok: vpc=${VPC_ID} instance=${INSTANCE_ID} nat=${NAT_ID} cidr-assoc=${CIDR_ASSOC_ID}"
 
 echo "[verify] step 4: cdkd import --migrate-from-cloudformation"
 (cd "${TEST_DIR}" && ${CLI} import "${STACK}" \
@@ -147,7 +161,18 @@ if printf '%s' "${PLAIN_IMPORT}" | grep -q 'Failed to resolve intrinsics'; then
   echo "[verify] FAIL: the import left an unresolved intrinsic"
   exit 1
 fi
-echo "[verify] step 4 ok"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK}/state.json" --region "${REGION}" >/dev/null
+CIDR_STATE_ID="$(python3 -c '
+import json, sys
+resources = json.load(open(sys.argv[1]))["resources"]
+ids = [v["physicalId"] for v in resources.values() if v.get("resourceType") == "AWS::EC2::VPCCidrBlock"]
+print(ids[0] if len(ids) == 1 else "EXPECTED-ONE-VPCCidrBlock-GOT-%d" % len(ids))
+' "${WORK}/state.json")"
+if [ "${CIDR_STATE_ID}" != "${CIDR_ASSOC_ID}|${VPC_ID}" ]; then
+  echo "[verify] FAIL: state records the VPCCidrBlock as '${CIDR_STATE_ID}', expected '${CIDR_ASSOC_ID}|${VPC_ID}' (issue #3672)"
+  exit 1
+fi
+echo "[verify] step 4 ok: VPCCidrBlock recorded as ${CIDR_STATE_ID}"
 
 echo "[verify] step 5: cdkd deploy with an unchanged template"
 (cd "${TEST_DIR}" && ${CLI} deploy "${STACK}" \

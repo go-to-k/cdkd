@@ -13,6 +13,11 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * `restrictDefaultSecurityGroup: false` keeps a Custom Resource out of the
  * stack. Besides the EC2 types, the instance brings its IAM role and instance
  * profile, which already imported before the fix.
+ *
+ * `Ipv6Cidr` is issue #3672: an `AWS::EC2::VPCCidrBlock` has no SDK provider,
+ * so it imports through Cloud Control, whose identifier is `<Id>|<VpcId>`.
+ * CloudFormation reports only the bare `vpc-cidr-assoc-…` id, which Cloud
+ * Control's `GetResource` rejected, so the import failed for it.
  */
 export class ImportMigrateVpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -26,6 +31,11 @@ export class ImportMigrateVpcStack extends cdk.Stack {
         { name: 'Public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
         { name: 'Private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
       ],
+    });
+
+    new ec2.CfnVPCCidrBlock(this, 'Ipv6Cidr', {
+      vpcId: vpc.vpcId,
+      amazonProvidedIpv6CidrBlock: true,
     });
 
     const acl = new ec2.NetworkAcl(this, 'Acl', {
