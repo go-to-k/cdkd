@@ -24,7 +24,8 @@
  * is throttled per-account and the schema cannot change mid-deploy.
  *
  * A FAILED lookup (missing IAM permission, a throttle outlasting its retries,
- * a 5xx) is logged as a warning and resolves to cdkd's COMMITTED snapshot of
+ * a 5xx) is logged — as a warning when a caller awaits it, at debug when only
+ * a prefetch does (the awaited retry then warns once) — and resolves to cdkd's COMMITTED snapshot of
  * the type's create-only paths when it has one (issue #3718,
  * `create-only-snapshot.generated.ts`), else to an empty list — the
  * registry-only classification. The fallback is NOT cached: a later resource
@@ -234,10 +235,10 @@ function fallBackToSnapshot(
 ): ReadonlyArray<readonly string[]> {
   const message = describeAwsFailure(error).detail;
   const child = getLogger().child('CreateOnlyProperties');
-  const logger = { warn: (line: string) => (awaited ? child.warn(line) : child.debug(line)) };
+  const report = (line: string): void => (awaited ? child.warn(line) : child.debug(line));
   const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
   if (snapshot) {
-    logger.warn(
+    report(
       `Failed to resolve create-only properties for ${resourceType} via ` +
         `cloudformation:DescribeType (${message}). Falling back to cdkd's bundled schema ` +
         `snapshot for this resource — it can lag AWS's current schema, so a property AWS ` +
@@ -246,7 +247,7 @@ function fallBackToSnapshot(
     );
     return snapshot;
   }
-  logger.warn(
+  report(
     `Failed to resolve create-only properties for ${resourceType} via ` +
       `cloudformation:DescribeType (${message}). Falling back to the registry-only ` +
       `replacement classification for this resource — an immutable-property change ` +

@@ -112,8 +112,9 @@ export function describeTypeWithThrottleRetry(
  * A BACKGROUND call must never hold the process open: its request carries the
  * task's `AbortSignal`, and its throttle backoff sleeps on an UNREF'd timer
  * that the same signal cuts short, so a cancelled prefetch settles at once and
- * an uncancelled one cannot keep a finished command alive. An urgent call is
- * sent exactly as before.
+ * an uncancelled one keeps a finished command alive no longer than one
+ * in-flight round trip. An urgent call is sent exactly as before, its backoff
+ * on a REF'd timer: the command is waiting on it.
  */
 export function scheduleDescribeType(
   resourceType: string,

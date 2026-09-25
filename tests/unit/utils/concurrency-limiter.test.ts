@@ -118,6 +118,13 @@ describe('createConcurrencyLimiter', () => {
     expect(t.started).toEqual(['running', 'u1', 'u2']);
   });
 
+  it('cancel() after a background task finished on its own returns false', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    const done = limiter.schedule(() => Promise.resolve('done'), { background: true });
+    await expect(done.promise).resolves.toBe('done');
+    expect(done.cancel()).toBe(false);
+  });
+
   it('promote() after a task started is a no-op', async () => {
     const limiter = createConcurrencyLimiter(1);
     const t = manualTasks();

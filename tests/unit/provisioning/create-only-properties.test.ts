@@ -398,6 +398,9 @@ describe('cancelling a prefetch (issue #3718)', () => {
     // The queued five were dropped, never sent.
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(DESCRIBE_TYPE_MAX_IN_FLIGHT);
     expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(
+      mockLoggerDebug.mock.calls.some(([line]) => String(line).includes('Failed to resolve'))
+    ).toBe(false);
 
     // Nothing cached: a later lookup starts a fresh call and takes its answer.
     mockCloudFormationSend.mockReset();
@@ -430,17 +433,56 @@ describe('cancelling a prefetch (issue #3718)', () => {
   });
 
   it("cancelling one prefetch leaves another prefetch's calls alone", async () => {
+    const signals = new Map<string, AbortSignal>();
     const sends = deferredSends();
+    const deferred = mockCloudFormationSend.getMockImplementation()!;
+    mockCloudFormationSend.mockImplementation(
+      (command: { input: { TypeName: string } }, options?: { abortSignal?: AbortSignal }) => {
+        signals.set(command.input.TypeName, options!.abortSignal!);
+        return deferred(command);
+      }
+    );
     const child = prefetchCreateOnlyPropertyPaths(['AWS::Test::ChildOnly']);
+    // The parent names ChildOnly too, but the child already started it, so
+    // the parent does not own that call.
     const parent = prefetchCreateOnlyPropertyPaths(['AWS::Test::ParentOnly', 'AWS::Test::ChildOnly']);
     await flushMicrotasks();
 
-    child.cancel();
-    const parentAnswer = getCreateOnlyPropertyPaths('AWS::Test::ParentOnly');
-    sends.release('AWS::Test::ParentOnly');
-    expect((await parentAnswer).map((p) => p.join('.'))).toEqual(['ParentOnly']);
     parent.cancel();
+    expect(signals.get('AWS::Test::ParentOnly')!.aborted).toBe(true);
+    expect(signals.get('AWS::Test::ChildOnly')!.aborted).toBe(false);
+    const childAnswer = getCreateOnlyPropertyPaths('AWS::Test::ChildOnly');
+    sends.release('AWS::Test::ChildOnly');
+    expect((await childAnswer).map((p) => p.join('.'))).toEqual(['ChildOnly']);
+    // Joined the child's call rather than issuing a second one.
+    expect(sends.sent.filter((t) => t === 'AWS::Test::ChildOnly')).toHaveLength(1);
+    child.cancel();
     await sends.releaseAll();
+  });
+
+  it("an URGENT lookup's throttle backoff sleeps on a REF'd timer — the command is waiting on it", async () => {
+    mockCloudFormationSend
+      .mockRejectedValueOnce(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }))
+      .mockResolvedValueOnce(schemaResponse(['/properties/X']));
+    const timers: NodeJS.Timeout[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number
+    ) => {
+      const timer = realSetTimeout(fn, ms === 1000 ? 1 : ms);
+      if (ms === 1000) timers.push(timer);
+      return timer;
+    }) as typeof setTimeout);
+    try {
+      expect(describeTypeRetryDelays.sleep).toBeUndefined();
+      const result = await getCreateOnlyPropertyPaths('AWS::Test::UrgentBackoff');
+      expect(result.map((p) => p.join('.'))).toEqual(['X']);
+      expect(timers, 'the urgent backoff never started').toHaveLength(1);
+      expect(timers[0]!.hasRef()).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a background call in a throttle backoff holds no ref\'d timer, and a cancel ends it at once', async () => {
