@@ -1013,9 +1013,11 @@ describe('DeployEngine — --replace wire-through', () => {
     it('a typed rejection whose message ALSO carries the trigger phrase takes the --replace wording', async () => {
       // A provider is free to put "does not support UPDATE" in its
       // `ResourceUpdateNotSupportedError` suggestion, which rides `.message`.
-      // The classifier refuses a typed rejection (issue #3757), so only
-      // `replaceOptIn` fires — the user passed `--replace`, so that is the flag
-      // whose behaviour they are being told about.
+      // The stateful guard fires here whatever the classifier says, so this
+      // pins only the WORDING, which `replaceOptIn` selects — the user passed
+      // `--replace`, so that is the flag whose behaviour they are being told
+      // about. That the classifier refuses the typed rejection (issue #3757)
+      // is pinned by the no-`--replace` case near the top of this file.
       updateRejection = (rt, logicalId) =>
         new ResourceUpdateNotSupportedError(rt, logicalId, 'AWS does not support UPDATE for this');
       const err = await invokeProvision(
