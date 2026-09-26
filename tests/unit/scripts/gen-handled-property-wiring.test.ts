@@ -1863,7 +1863,11 @@ describe('the shipped --check command', () => {
   }, SPAWN_TIMEOUT_MS);
 
   it('--help prints usage and writes nothing', () => {
-    const proc = spawnSync(process.execPath, [SCRIPT, '--help'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const proc = spawnSync(process.execPath, [SCRIPT, '--help'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+    });
     expect(proc.status).toBe(0);
     expect(proc.stdout).toContain('Usage: node scripts/gen-handled-property-wiring.ts');
     expect(proc.stdout).toContain(ACCEPT_LOSS_FLAG);
