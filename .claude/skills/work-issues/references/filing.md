@@ -86,8 +86,8 @@ gh issue create -t 'fix(provider): ...' \
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
-ended"). Check it before writing EITHER value: a fix whose every file ANOTHER
-lane's open PR holds (§2's `gh pr list ... files`; a fork PR, its hunks) is
+ended"). Check it before writing EITHER value: a fix that must edit a file
+ANOTHER lane's open PR holds (§2's `gh pr list ... files`; a fork PR, its hunks) is
 `next` (a), never `now` (#3808).
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
