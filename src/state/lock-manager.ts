@@ -204,6 +204,24 @@ function errorDetail(error: unknown): string {
  * this, every lock acquisition against a cross-region bucket failed with
  * S3's 301 PermanentRedirect while state reads/writes succeeded).
  */
+/**
+ * Whether a lock has EXPIRED, by its `expiresAt` field — the one predicate the
+ * lock manager acquires by, exported so a reader deciding "is a live lock held"
+ * (issue #3754's nested-record judgement in `cdkd rollback`) cannot diverge.
+ *
+ * `expiresAt` reaches here through an unvalidated `as LockInfo`, so anyone who
+ * can write the state bucket chooses it. `undefined`, `'soon'`, `NaN` and
+ * `Infinity` all make a naive `Date.now() >= x` false FOREVER, which pins the
+ * stack: no acquire ever succeeds and only `force-unlock` clears it. Treating a
+ * non-finite deadline as already expired is the recoverable direction and
+ * grants no new power -- someone who can write that value could equally have
+ * deleted the object.
+ */
+export function isLockInfoExpired(lockInfo: LockInfo): boolean {
+  if (!Number.isFinite(lockInfo.expiresAt)) return true;
+  return Date.now() >= lockInfo.expiresAt;
+}
+
 export class LockManager {
   private logger = getLogger().child('LockManager');
   private s3Client: S3Client;
@@ -332,15 +350,7 @@ export class LockManager {
    * Check if a lock is expired based on its expiresAt field
    */
   private isLockExpired(lockInfo: LockInfo): boolean {
-    // `expiresAt` reaches here through an unvalidated `as LockInfo`, so anyone
-    // who can write the state bucket chooses it. `undefined`, `'soon'`, `NaN`
-    // and `Infinity` all make a naive `Date.now() >= x` false FOREVER, which
-    // pins the stack: no acquire ever succeeds and only `force-unlock` clears
-    // it. Treating a non-finite deadline as already expired is the recoverable
-    // direction and grants no new power -- someone who can write that value
-    // could equally have deleted the object.
-    if (!Number.isFinite(lockInfo.expiresAt)) return true;
-    return Date.now() >= lockInfo.expiresAt;
+    return isLockInfoExpired(lockInfo);
   }
 
   /**

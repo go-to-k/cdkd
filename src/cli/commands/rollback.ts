@@ -56,6 +56,7 @@ import {
   type LockInfo,
 } from '../../types/state.js';
 import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
+import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
@@ -1288,8 +1289,7 @@ async function judgeNestedPendingRecords(
   } catch (error) {
     return refuse(
       `cannot be judged: the journal of its parent ${safeStack(parent)} could not be read ` +
-        `(${safe(error instanceof Error ? error.message : String(error))}), so the record may ` +
-        `still be needed.`
+        `(${backendErrorText(error, parent, region)}), so the record may still be needed.`
     );
   }
   const parentRuns = new Set(
@@ -1305,10 +1305,10 @@ async function judgeNestedPendingRecords(
   } catch (error) {
     return refuse(
       `cannot be judged: the lock of the top-level stack could not be read ` +
-        `(${safe(error instanceof Error ? error.message : String(error))}).`
+        `(${backendErrorText(error, topLevel, region)}).`
     );
   }
-  if (lock && lock.expiresAt > Date.now()) {
+  if (lock && !isLockInfoExpired(lock)) {
     refuse(
       `may belong to a deploy still running: the top-level stack is locked. Retry once it is ` +
         `free.`

@@ -205,8 +205,11 @@ const EXPECTED_STACK_NAME_RENDERS = 13;
  * Went 63 -> 65 in its parent review round: the pending-record judgement
  * renders the error text of an unreadable parent journal and of an unreadable
  * top-level lock, plus the region in its refusal.
+ *
+ * Went 65 -> 63 in the next round: those two error texts render through
+ * `backendErrorText`, like every other backend error in the file.
  */
-const EXPECTED_SAFE_REFERENCES = 65;
+const EXPECTED_SAFE_REFERENCES = 63;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
@@ -2909,6 +2912,24 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     );
     expect(mockGetLockInfo).toHaveBeenCalledWith('S', 'us-east-1');
     expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES, and discards nothing, when the top-level lock cannot be READ (fail closed)', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup();
+    mockGetLockInfo.mockRejectedValue(new Error('throttled'));
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).rejects.toThrow(
+      /the lock of the top-level stack could not be read \(throttled\)/
+    );
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('a non-finite lock deadline reads as EXPIRED, the way the lock manager acquires', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup();
+    mockGetLockInfo.mockResolvedValue({ owner: 'x', timestamp: 0, expiresAt: Infinity });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).resolves.toBeUndefined();
+    expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
   });
 
   it('CONTROL: an EXPIRED top-level lock does not block the orphan cleanup', async () => {
