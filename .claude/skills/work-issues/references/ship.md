@@ -64,9 +64,12 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   as it blocks even after re-runs pass (#3664, #3748, #3767).
 - **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
   and `Could not resolve to a PullRequest` reads as a permissions problem.
-- **From the PR's own worktree, `--delete-branch` prints a bare `fatal: 'main'
-  is already used by worktree ...` and the merge SUCCEEDED anyway** — confirm
-  with `gh pr view <N> --json state` before reacting.
+- **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
+  = `MERGED` is**, read in its OWN call before anything presuming the merge (the
+  thank-you, the claim release, the pull). It lies both ways: from the PR's own
+  worktree `--delete-branch` prints `fatal: 'main' is already used by worktree
+  ...` over a SUCCESS, and a thank-you chained after a FAILED merge ("Base
+  branch was modified") had to be deleted.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
