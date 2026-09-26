@@ -29,6 +29,7 @@ import type { CloudFormationTemplate, ResourceProvider } from '../../../src/type
 import type { ResourceChange } from '../../../src/types/state.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
 type InnerError = Error & { code?: string; cause?: unknown };
@@ -82,14 +83,6 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
-/**
- * The Cloud Control "no UPDATE handler" prose, which
- * `isUpdateUnsupportedError` accepts as a top-level fallback. Reaching the
- * fallback off the REJECTION rather than off `--replace` is what keeps these
- * cases flag-free.
- */
-const CC_UNSUPPORTED = 'Resource type AWS::Glue::SecurityConfiguration does not support UPDATE action';
-
 /** A type with no data to lose, so the stateful guard never fires. */
 const TYPE = 'AWS::Glue::SecurityConfiguration';
 
@@ -111,8 +104,11 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     deleteCalls = [];
     updateProvider = {
       create: vi.fn(),
-      update: vi.fn().mockImplementation(async () => {
-        throw new Error(CC_UNSUPPORTED);
+      // The Cloud Control "no UPDATE handler" rejection. Reaching the fallback
+      // off the REJECTION rather than off `--replace` keeps these cases
+      // flag-free.
+      update: vi.fn().mockImplementation(async (logicalId: string) => {
+        throw ccUpdateUnsupportedRejection(TYPE, logicalId);
       }),
       delete: vi.fn().mockImplementation(async (_lid: string, physicalId: string) => {
         deleteCalls.push(physicalId);
