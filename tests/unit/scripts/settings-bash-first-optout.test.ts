@@ -1,8 +1,21 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
  * Fences the one settings key that decides whether this repo's file-tool hooks
@@ -33,7 +46,7 @@ import { dirname, join } from 'node:path';
  * vendor-internal: a rename, a default flip, or removal of the short-circuit
  * makes the pin a no-op while every case here stays green. The VERSION case
  * is the alarm for that (go-to-k/cdkd#2737) -- it is a REMINDER to re-run the
- * `claude -p` probe recorded in `.claude/rules/hooks.md`, not a detector, and
+ * `claude -p` probe (THE PROBE, below), not a detector, and
  * the distinction is the whole design: only running the probe can observe the
  * vendor's behavior, so what a test can do is refuse to let the measurement go
  * quietly out of date. This file also cannot see `.claude/settings.local.json`,
@@ -52,6 +65,13 @@ import { dirname, join } from 'node:path';
  * exactly the project-dir prefix plus a script path, that script must exist on
  * disk, the formatter's task must appear in COMMAND POSITION, and both matchers
  * are read through the binary's own selection rule.
+ *
+ * THE PROBE, kept here because this file is the only thing that asks for it.
+ * Flip the value in `.claude/settings.json` to `"1"` and run `claude -p` with a
+ * prompt asking whether `Do your work through the Bash tool` is in context: the
+ * `"1"` arm must answer PRESENT, and `"0"` must answer ABSENT (so does an unset
+ * baseline, which is why only the `"1"` arm discriminates). Restore `"0"`
+ * afterwards.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SETTINGS = join(repoRoot, '.claude', 'settings.json');
@@ -73,7 +93,7 @@ const PINNED_OFF = '0';
 /**
  * The Claude Code build the pin's behavior was MEASURED against, and when. Both
  * move together, and only after re-running BOTH probe arms from
- * `.claude/rules/hooks.md` -- bumping the version to clear a red without
+ * THE PROBE in this file's header -- bumping the version to clear a red without
  * re-probing is the one way to make this case worse than useless.
  */
 const PROBED_CLAUDE_VERSION = '2.1.263';
@@ -101,15 +121,92 @@ function minorOf(version: string): string {
  * all read as "no Claude Code here" and early-returned the case to green --
  * disarming it on exactly the vendor change (a reworked `--version` line) it
  * exists to notice. `CDKD_CLAUDE_BIN` is a test seam so both arms can be
- * probed.
+ * probed. WHICH binary answers is `resolveClaudeBin`'s job; `env` is a seam for
+ * the resolution cases below.
  */
-function installedClaudeVersion(): string | undefined {
-  const bin = process.env['CDKD_CLAUDE_BIN'] ?? 'claude';
+function installedClaudeVersion(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const resolved = resolveClaudeBin(env);
+  return resolved === undefined ? undefined : readClaudeVersion(resolved);
+}
+
+/**
+ * The `claude` this case must read, chosen HERE rather than by the exec search
+ * (go-to-k/cdkd#3830). Claude Code's auto-updater replaces its npm package
+ * directory wholesale, and for that window the first `claude` on PATH is a
+ * DANGLING symlink. Spawning the bare name then does not stop there: the exec
+ * search falls through to the next `claude` on PATH, so the case compared a
+ * stale second install's version -- or, with no second install, got `ENOENT`
+ * and read "absent", returning green without comparing anything.
+ *
+ * So this does NOT re-implement the exec search, whose corners (unsearchable
+ * directories, `..` folding, symlink loops, overlong segments, shebang
+ * interpreters) a copy would each have to get right. It FAILS CLOSED instead:
+ * the first PATH entry NAMED `claude` is THE Claude Code, dangling or not,
+ * and it is spawned by absolute path, where every spawn error throws. So
+ * wherever this differs from the exec search -- a directory, a non-executable
+ * file or an unsearchable directory named first, a broken interpreter -- the
+ * outcome is a loud failure naming the entry, never a later install's version
+ * and never a silent ABSENT. That is the whole contract: read the first
+ * `claude`, or say why it could not be read.
+ *
+ * "Named" means `lstat` finds anything other than ENOENT / ENOTDIR -- those
+ * two mean nothing is there, and the walk goes on. An empty segment is the
+ * current directory and a relative one is taken from it; the candidate is
+ * made absolute by prefixing the cwd, never by `path.resolve`, whose lexical
+ * `..` folding could name a directory the filesystem would not reach. An
+ * unset PATH throws: the exec search would fall back to a built-in default
+ * path, and guessing it is exactly the fall-through this avoids. `undefined`
+ * means no entry is named `claude` -- the only ABSENT.
+ * `CDKD_CLAUDE_BIN` is the explicit override and keeps its old meaning: the
+ * exec search resolves it, and `ENOENT` on it reads as absent, which is how the
+ * absent arm is probed.
+ */
+function resolveClaudeBin(env: NodeJS.ProcessEnv): ResolvedClaude | undefined {
+  const override = env['CDKD_CLAUDE_BIN'];
+  if (override !== undefined) return { bin: override, override: true };
+  const path = env['PATH'];
+  if (path === undefined) {
+    throw new Error('PATH is unset, so the first `claude` on it cannot be named.');
+  }
+  for (const segment of path.split(delimiter)) {
+    const dir = segment === '' ? '.' : segment;
+    const candidate = `${isAbsolute(dir) ? dir : `${process.cwd()}/${dir}`}/claude`;
+    try {
+      lstatSync(candidate);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+    }
+    return { bin: candidate, override: false };
+  }
+  return undefined;
+}
+
+interface ResolvedClaude {
+  bin: string;
+  /** `CDKD_CLAUDE_BIN` named it, so an `ENOENT` still reads as ABSENT. */
+  override: boolean;
+}
+
+/**
+ * `--version` of an already-resolved binary. For a PATH-resolved one EVERY
+ * spawn error throws, `ENOENT` included: the entry was named on PATH, so a
+ * missing target is an install in flux (or a dangling symlink), never an
+ * absent Claude Code -- and that also covers the target vanishing between
+ * `resolveClaudeBin` and this spawn.
+ */
+function readClaudeVersion({ bin, override }: ResolvedClaude): string | undefined {
   const res = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 30_000 });
   if (res.error) {
     const code = (res.error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return undefined;
-    throw new Error(`\`${bin} --version\` could not be run: ${code ?? res.error.message}`);
+    if (code === 'ENOENT' && override) return undefined;
+    throw new Error(
+      `\`${bin} --version\` could not be run: ${code ?? res.error.message}` +
+        (code === 'ENOENT'
+          ? '. It is the first `claude` on PATH, so an install is in progress or broken ' +
+            '-- re-run once it settles; a later PATH entry is deliberately not tried.'
+          : '')
+    );
   }
   if (res.status !== 0) {
     throw new Error(`\`${bin} --version\` exited ${res.status}: ${(res.stderr ?? '').trim()}`);
@@ -119,8 +216,8 @@ function installedClaudeVersion(): string | undefined {
   if (version === undefined) {
     throw new Error(
       `no version could be read from \`${bin} --version\` (${JSON.stringify(out)}). ` +
-        'If Claude Code reworked that line, re-run both probe arms from ' +
-        '.claude/rules/hooks.md before touching this test.',
+        'If Claude Code reworked that line, re-run both probe arms (THE PROBE, ' +
+        "in this test file's header) before touching this test.",
     );
   }
   return version;
@@ -345,11 +442,176 @@ describe('.claude/settings.json bash-first opt-out', () => {
         minorOf(installed),
         `the bash-first pin was measured against Claude Code ${PROBED_CLAUDE_VERSION} ` +
           `on ${PROBED_ON}; ${installed} is a different line. Re-run BOTH probe arms ` +
-          'from .claude/rules/hooks.md (value flipped to "1" must answer PRESENT, "0" ' +
+          "(THE PROBE, in this test file's header: value flipped to \"1\" must answer PRESENT, \"0\" " +
           'must answer ABSENT), then update PROBED_CLAUDE_VERSION and PROBED_ON ' +
           'together. Do not bump them without re-probing.',
       ).toBe(minorOf(PROBED_CLAUDE_VERSION));
     },
     60_000,
   );
+});
+
+describe('which `claude` the version case reads (go-to-k/cdkd#3830)', () => {
+  // Real files and symlinks in a scratch dir, and a PATH passed as `env` --
+  // the process's own PATH and CDKD_CLAUDE_BIN are never consulted here.
+  const scratch = mkdtempSync(join(tmpdir(), 'cdkd-claude-bin-'));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  let n = 0;
+  const dir = (): string => {
+    const d = join(scratch, `d${n++}`);
+    mkdirSync(d);
+    return d;
+  };
+  /** A directory holding an executable `claude` that prints `version`. */
+  const script = (version: string): string => {
+    const d = dir();
+    writeFileSync(join(d, 'claude'), `#!/bin/sh\necho "${version} (Claude Code)"\n`);
+    chmodSync(join(d, 'claude'), 0o755);
+    return d;
+  };
+  /** A directory whose `claude` symlinks to `target` (which need not exist). */
+  const link = (target: string): string => {
+    const d = dir();
+    symlinkSync(target, join(d, 'claude'));
+    return d;
+  };
+  const pathOf = (...dirs: string[]): NodeJS.ProcessEnv => ({ PATH: dirs.join(delimiter) });
+
+  it('a DANGLING first entry throws instead of reading a later, older install', () => {
+    const dangling = link(join(scratch, 'mid-update-target'));
+    const read = (): unknown => installedClaudeVersion(pathOf(dangling, script('1.0.3')));
+    expect(read).toThrow(/first `claude` on PATH, so an install is in progress or broken/);
+    expect(read, 'the message must name the dangling entry').toThrow(join(dangling, 'claude'));
+  });
+
+  it('a DANGLING first entry with nothing after it throws instead of reading ABSENT', () => {
+    const dangling = link(join(scratch, 'mid-update-target-2'));
+    expect(() => installedClaudeVersion(pathOf(dangling))).toThrow(/ENOENT/);
+  });
+
+  it('the first `claude` on PATH wins over a later one', () => {
+    expect(installedClaudeVersion(pathOf(script('2.1.263'), script('1.0.3')))).toBe('2.1.263');
+  });
+
+  it('no `claude` anywhere on PATH is the only ABSENT', () => {
+    expect(installedClaudeVersion(pathOf(dir(), dir()))).toBeUndefined();
+  });
+
+  it('a PATH segment that is a FILE names nothing, so the walk goes on (ENOTDIR)', () => {
+    const asFile = join(dir(), 'not-a-dir');
+    writeFileSync(asFile, '');
+    expect(installedClaudeVersion(pathOf(asFile, script('2.1.263')))).toBe('2.1.263');
+  });
+
+  it('an UNSET PATH throws rather than guessing a default search path', () => {
+    expect(() => installedClaudeVersion({})).toThrow(/PATH is unset/);
+  });
+
+  it('a target removed between resolution and spawn throws instead of reading ABSENT', () => {
+    const target = join(script('2.1.263'), 'claude');
+    const linked = link(target);
+    const resolved = resolveClaudeBin(pathOf(linked));
+    expect(resolved, 'the live symlink must resolve').toEqual({
+      bin: join(linked, 'claude'),
+      override: false,
+    });
+    expect(readClaudeVersion(resolved!), 'the premise: it answers while live').toBe('2.1.263');
+    rmSync(target);
+    expect(() => readClaudeVersion(resolved!)).toThrow(/ENOENT/);
+  });
+
+  it('a DIRECTORY or NON-EXECUTABLE first `claude` throws rather than reading a later one', () => {
+    // Fail closed: the exec search would pass these over for the later entry.
+    const asDir = dir();
+    mkdirSync(join(asDir, 'claude'));
+    const notExec = dir();
+    writeFileSync(join(notExec, 'claude'), '#!/bin/sh\necho "9.9.9 (Claude Code)"\n');
+    chmodSync(join(notExec, 'claude'), 0o644);
+    expect(() => installedClaudeVersion(pathOf(asDir, script('2.1.263')))).toThrow(/EACCES/);
+    expect(() => installedClaudeVersion(pathOf(notExec, script('2.1.263')))).toThrow(/EACCES/);
+  });
+
+  it('resolves a RELATIVE segment to an absolute path, so the spawn cannot re-search PATH', () => {
+    const dangling = link(join(scratch, 'mid-update-target-3'));
+    const segment = relative(process.cwd(), dangling);
+    expect(segment.startsWith('/'), 'the premise: the segment is relative').toBe(false);
+    const resolved = resolveClaudeBin(pathOf(segment, script('1.0.3')));
+    expect(resolved?.override).toBe(false);
+    expect(isAbsolute(resolved!.bin), 'the spawn must not re-search PATH').toBe(true);
+    expect(resolve(resolved!.bin)).toBe(join(dangling, 'claude'));
+  });
+
+  it('does not fold `..` lexically: a segment through a MISSING directory reaches nothing', () => {
+    const real = script('2.1.263');
+    const tail = `/../${relative(scratch, real)}`;
+    // Both branches: an ABSOLUTE segment, and a RELATIVE one prefixed with the cwd.
+    for (const throughMissing of [
+      `${join(scratch, 'no-such-dir')}${tail}`,
+      `${relative(process.cwd(), join(scratch, 'no-such-dir'))}${tail}`,
+    ]) {
+      expect(
+        resolve(throughMissing, 'claude'),
+        `the premise: folding WOULD reach it from ${throughMissing}`
+      ).toBe(join(real, 'claude'));
+      expect(installedClaudeVersion({ PATH: throughMissing })).toBeUndefined();
+    }
+  });
+
+  // Root searches a mode-000 directory anyway, so the refusal cannot be staged.
+  it.skipIf(process.getuid?.() === 0)(
+    'a first PATH directory it may not SEARCH throws, not reads ABSENT or a later one',
+    () => {
+      const locked = script('2.1.263');
+      chmodSync(locked, 0o000);
+      try {
+        let premise: string | undefined;
+        try {
+          lstatSync(join(locked, 'claude'));
+        } catch (err) {
+          premise = (err as NodeJS.ErrnoException).code;
+        }
+        expect(premise, 'the premise: the directory refuses the lookup').toBe('EACCES');
+        expect(() => installedClaudeVersion(pathOf(dir(), locked))).toThrow(/EACCES/);
+        expect(() => installedClaudeVersion(pathOf(locked, script('2.1.263')))).toThrow(/EACCES/);
+        // A symlink INTO it is named, so it is the one read -- and it fails.
+        expect(() =>
+          installedClaudeVersion(pathOf(link(join(locked, 'claude')), script('2.1.263')))
+        ).toThrow(/EACCES/);
+      } finally {
+        chmodSync(locked, 0o755);
+      }
+    },
+  );
+
+  it('a symlink LOOP named first throws rather than reading a later one', () => {
+    const looped = dir();
+    symlinkSync(join(looped, 'claude'), join(looped, 'claude'));
+    expect(() => installedClaudeVersion(pathOf(looped, script('2.1.263')))).toThrow(/ELOOP/);
+  });
+
+  it('reads an EMPTY segment as the current directory, as the exec search does', () => {
+    const here = script('2.1.263');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(here);
+    try {
+      expect(installedClaudeVersion({ PATH: `${delimiter}${script('1.0.3')}` })).toBe('2.1.263');
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('CDKD_CLAUDE_BIN keeps its meaning: a missing override still reads ABSENT', () => {
+    expect(
+      installedClaudeVersion({ CDKD_CLAUDE_BIN: join(scratch, 'no-such-claude') })
+    ).toBeUndefined();
+  });
+
+  it('CDKD_CLAUDE_BIN, when it answers, is read ahead of PATH', () => {
+    expect(
+      installedClaudeVersion({
+        CDKD_CLAUDE_BIN: join(script('2.1.263'), 'claude'),
+        PATH: script('1.0.3'),
+      })
+    ).toBe('2.1.263');
+  });
 });
