@@ -1,7 +1,7 @@
 // The ONE import this module takes. `aws-failure-text.ts` is itself a
 // zero-import leaf, so this keeps the module graph flat -- which matters here
 // because this file is reached from the retry path of every command.
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, isAwsAuthoredFailure } from '../utils/aws-failure-text.js';
 
 /**
  * The **IAM-propagation** subset of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
@@ -1470,10 +1470,21 @@ export function isIamPropagationError(message: string): boolean {
  * transient state conflict as a collision and delete a live function under
  * `--replace`.
  */
+/**
+ * An `…AlreadyExists` error CODE as a whole token (`EntityAlreadyExists`,
+ * `ResourceAlreadyExistsException`, `DBInstanceAlreadyExistsFault`). A bare
+ * substring matched INSIDE an identifier too (issue #3816): a logical id like
+ * `UserAlreadyExistsHandler1A2B3C4D` sits in every provider wrapper and in
+ * every cdkd-derived physical name AWS echoes, so an unrelated failure — even
+ * Lambda's PENDING-state conflict quoting the function ARN — read as a
+ * collision.
+ */
+const ALREADY_EXISTS_CODE = /\b[A-Za-z]*AlreadyExists(?:Exception|Fault)?\b/;
+
 export function isNameCollisionError(message: string): boolean {
   return (
     /(?<!\b(?:must|not|should|may|cannot)\s)already exists?\b/i.test(message) ||
-    message.includes('AlreadyExists')
+    ALREADY_EXISTS_CODE.test(message)
   );
 }
 
@@ -1541,10 +1552,13 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  *  - `name` in {@link NAME_COLLISION_ERROR_NAMES};
  *  - `ccErrorCode === 'AlreadyExists'` — the Cloud Control handler code a
  *    `CloudControlOperationFailedError` carries (the same code
- *    `cleanupFailedCreateRemnant` already trusts);
+ *    `cleanupFailedCreateRemnant` already trusts). It needs no top-level
+ *    relay: the code is AWS's, and no provider rewords a Cloud Control
+ *    failure to opt out today;
  *  - the "already exists" prose, credited only when BOTH the top-level message
- *    AND a link carrying `$metadata` (an AWS SDK exception) say it (issue
- *    #3816). The SDK half keeps a cdkd refusal quoting a template value from
+ *    AND an AWS-authored link (`isAwsAuthoredFailure`: `$fault` or an HTTP
+ *    status — bare `$metadata` is not proof, the retry middleware stamps it on
+ *    socket errors too) say it (issue #3816). The SDK half keeps a cdkd refusal quoting a template value from
  *    classifying — the verdict here is a DELETE, acted on by the `--replace`
  *    delete-first fallback and the rollback's delete-new-first arm. The
  *    top-level half keeps a provider's opt-out: one that rewords an AWS
@@ -1555,8 +1569,12 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  * (`scripts/check-provider-error-cause.ts`), which is what makes the walk reach
  * it. RESIDUAL: an AWS validation error that echoes a template value carrying
  * the phrase still classifies — the surface is a name-like field AWS quotes
- * verbatim, not any cdkd refusal. A non-`Error` throw and a plain string carry
- * no `$metadata` and never classify.
+ * verbatim, not any cdkd refusal. Deliberately NOT classified: a non-`Error`
+ * throw or a string; a Cloud Control handler reporting "already exists" under a
+ * code other than `AlreadyExists`; a custom resource's FAILED reason; and S3's
+ * `BucketAlreadyExists`, whose message carries neither form — another account
+ * holds the name, so a delete-first would destroy the old bucket and free
+ * nothing.
  */
 export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
   const topRelaysIt =
@@ -1595,16 +1613,12 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
 
     if (link.ccErrorCode === 'AlreadyExists') return true;
 
-    // `$metadata` is the SDK's own envelope (the same test
-    // `retryClassificationText`'s walk uses), so this link's text came from
-    // AWS. The `typeof` check stays: a non-string `message` would otherwise
-    // reach the regex and throw.
-    const metadata = link.$metadata;
+    // The `typeof` check stays: a non-string `message` would otherwise reach
+    // the regex and throw.
     if (
       topRelaysIt &&
-      metadata != null &&
-      typeof metadata === 'object' &&
-      !Array.isArray(metadata) &&
+      current instanceof Error &&
+      isAwsAuthoredFailure(current) &&
       typeof link.message === 'string' &&
       isNameCollisionError(link.message)
     ) {

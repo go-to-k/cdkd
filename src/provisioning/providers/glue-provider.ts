@@ -1209,9 +1209,10 @@ export class GlueProvider implements ResourceProvider {
       // CDK does not emit can keep it. So the engine's create-first collision
       // arm must not see a name collision here: its remedy, `--replace`,
       // deletes the managed table FIRST and, for a third-party holder, then
-      // collides again. Its classifier reads PROSE at depth 0 only and does not
-      // list `AlreadyExistsException` by name, so this wrapper — whose message
-      // avoids the words it matches — keeps the AWS error as `cause` safely.
+      // collides again. Its classifier credits AWS's prose only when the
+      // top-level message relays it too, and does not list
+      // `AlreadyExistsException` by name, so this wrapper — whose message avoids
+      // the words it matches — keeps the AWS error as `cause` safely.
       // No `--replace` remedy either: this wrapper is exactly what keeps the
       // engine's delete-first path from engaging, so the flag would change
       // nothing. (Interpolated names can still carry the matched words; that

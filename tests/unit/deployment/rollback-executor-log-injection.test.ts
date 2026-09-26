@@ -9,7 +9,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -944,7 +944,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // The delete-new-first note, which renders both types.
     const collide = vi
       .fn()
-      .mockRejectedValueOnce(awsSdkError('CREATE failed for Victim: Resource already exists.'))
+      .mockRejectedValueOnce(ccAlreadyExistsError('CREATE failed for Victim: Resource already exists.'))
       .mockResolvedValue({ physicalId: 'phys-recreated', attributes: {} });
     const { ctx: ctx2, lines: lines2 } = makeCtx({ create: collide, delete: del });
     await replayRollback([typeChangeOp()], newState(), 'S', ctx2);

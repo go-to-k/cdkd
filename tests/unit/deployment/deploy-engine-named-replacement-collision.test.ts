@@ -89,7 +89,9 @@ describe('DeployEngine — custom-named replacement collision', () => {
   // flag. Kept at the CONSUMER level rather than only in the matcher's own
   // unit test, because it is the consumer's behavior that regresses.
   const alreadyExistSingular = () =>
-    awsSdkError('Failed to create Lambda function Pipe: Function already exist: MyStack-Pipe');
+    new Error('Failed to create Lambda function Pipe: Function already exist: MyStack-Pipe', {
+      cause: awsSdkError('Function already exist: MyStack-Pipe'),
+    });
 
   beforeEach(() => {
     callOrder = [];

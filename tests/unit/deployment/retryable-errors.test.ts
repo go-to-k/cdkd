@@ -803,8 +803,8 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       // and deleted an entire live child stack.
       //
       // The child failure carries a NAME in the list on purpose. With only a
-      // prose message this case would pass for the WRONG reason — the depth-0
-      // gating already refuses a buried message, so the anchor would be
+      // prose message this case would pass for the WRONG reason — the SDK
+      // gate already refuses a buried non-AWS message, so the anchor would be
       // untested here and the comment above would overclaim. Measured: with the
       // anchor removed this returns true.
       const childFailure = ownedError('ChildTargetGroup', ELBV2_NAME, ELBV2_MESSAGE);
@@ -897,6 +897,58 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
       expect(isNameCollisionErrorFrom(other, 'SomeOtherBucket')).toBe(true);
     });
+  });
+
+  it('does NOT trust bare $metadata: the retry middleware stamps it on socket errors', () => {
+    const socket = Object.assign(new Error('Bucket already exists'), {
+      $metadata: { attempts: 3, totalRetryDelay: 900 },
+    });
+    const wrapped = new Error(`Failed to create resource ${LID}: ${socket.message}`, {
+      cause: socket,
+    });
+    expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(false);
+  });
+
+  it('credits a Cloud Control AlreadyExists code below a wrapper too', () => {
+    const cc = new CloudControlOperationFailedError(
+      `CREATE failed for ${LID}: taken`,
+      'AWS::Pipes::Pipe',
+      LID,
+      undefined,
+      'AlreadyExists',
+      'CREATE'
+    );
+    expect(isNameCollisionErrorFrom(new Error('outer', { cause: cc }), LID)).toBe(true);
+  });
+
+  it('does NOT read an AlreadyExists code inside a logical id (#3816)', () => {
+    // A CDK id like this sits in every provider wrapper and in the physical
+    // name AWS echoes back — here Lambda's PENDING-state conflict, which must
+    // never classify.
+    const arn = 'arn:aws:lambda:us-east-1:111122223333:function:Stack-UserAlreadyExistsHandler1A2B3C4D';
+    const pending = awsSdkError(`An update is in progress for resource: ${arn}`);
+    const wrapped = new Error(
+      `Failed to create Lambda function UserAlreadyExistsHandler1A2B3C4D: ${pending.message}`,
+      { cause: pending }
+    );
+    expect(isNameCollisionError(wrapped.message)).toBe(false);
+    expect(isNameCollisionErrorFrom(wrapped, 'UserAlreadyExistsHandler1A2B3C4D')).toBe(false);
+    // ...while the code as its own token still matches.
+    expect(isNameCollisionError('EntityAlreadyExists: Role with name r exists')).toBe(true);
+    expect(isNameCollisionError('DBInstanceAlreadyExistsFault')).toBe(true);
+  });
+
+  it("does NOT classify S3's BucketAlreadyExists, whose message states neither form", () => {
+    // Accepted narrowing: another account holds the name, so a delete-first
+    // would destroy the old bucket and free nothing.
+    const aws = awsSdkError(
+      'The requested bucket name is not available. The bucket namespace is shared by all users of the system.',
+      'BucketAlreadyExists'
+    );
+    const wrapped = new Error(`Failed to create S3 bucket ${LID}: BucketAlreadyExists. See details`, {
+      cause: aws,
+    });
+    expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(false);
   });
 
   it('does NOT classify a non-Error throw or a string, whatever its text', () => {

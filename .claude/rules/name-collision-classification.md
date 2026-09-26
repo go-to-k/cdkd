@@ -33,11 +33,14 @@ holding the error call; the string form stays for text-only callers. It walks
 the bounded `cause` chain for the error name and the Cloud Control
 `ccErrorCode === 'AlreadyExists'`:
 
-1. **The prose is read ONLY off a link carrying `$metadata`** — an AWS SDK
-   exception, never a cdkd-authored message, which can quote a template value
-   (issue [#3816](https://github.com/go-to-k/cdkd/issues/3816)). A string or
-   non-`Error` throw never classifies. Residual: an AWS error echoing a template
-   value still does.
+1. **The prose needs BOTH an AWS-authored link (`isAwsAuthoredFailure`) and a
+   top-level message relaying it** (issue
+   [#3816](https://github.com/go-to-k/cdkd/issues/3816)). The first keeps a cdkd
+   refusal quoting a template value out; the second is how a provider OPTS OUT —
+   Glue and CloudFront reword a collision delete-first cannot clear. Dropping
+   either re-opens a delete. The `AlreadyExists` code matches only as a whole
+   token, never inside a logical id. Residual: an AWS error echoing a template
+   value still classifies.
 2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
    read; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.
