@@ -103,7 +103,7 @@ verify, clean up.
    # (`kill -9 $VPID` alone reparents it to PID 1, still calling AWS). `perl`,
    # since zsh — the agent's shell — refuses `set -m` outside a terminal.
    # Its own group also outlives a harness kill of THIS call: before a re-run,
-   # `ps -g <old VPID>` must be empty.
+   # `ps -g <old VPID>` must list no process (rc=1).
    perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
