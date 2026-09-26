@@ -479,6 +479,20 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['eu-west-1']);
   });
 
+  it('the region refusal also reads the RECORD imports', async () => {
+    const h = harness({
+      state: {
+        ...childState(),
+        imports: [{ exportName: 'E', sourceStack: 'P', sourceRegion: 'ap-northeast-1' }],
+      } as unknown as StackState,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['ap-northeast-1']);
+  });
+
   it('drops an imports field the pre-run record lacked', async () => {
     const h = harness({
       state: {
