@@ -322,18 +322,22 @@ function rollbackFailureText(error: unknown): string {
 
 /**
  * The AWS rejection text quoted in the collision refusal: sanitized, every
- * whitespace RUN collapsed to one space, and capped (M8 of the
- * go-to-k/cdkd#3764 review). The refusal's labelled `To orphan it:` line comes
- * straight after this text, and `displaySafe` keeps runs of spaces, so a
- * message padded with them could wrap on screen into a lookalike row directly
- * above the genuine one — the terminal-wrap route `plainIdent` closes for a
- * stack name. Collapsing removes the padding; the cap is `displayAwsMessage`'s.
+ * run of BLANK-RENDERING characters collapsed to one space, and capped (M8 and
+ * M10 of the go-to-k/cdkd#3764 review). The refusal's labelled `To orphan it:`
+ * line comes straight after this text, and `displaySafe` keeps runs of spaces
+ * AND the invisible formatters (its header records them as a residual), so a
+ * message padded with either could wrap on screen into a lookalike row
+ * directly above the genuine one — the terminal-wrap route `plainIdent` closes
+ * for a stack name. A blank-rendering run is whitespace (`\s`, which covers
+ * U+FEFF) or U+200B-U+200D / U+2060, which `\s` does not match: a run
+ * interleaving those with spaces renders as spaces and survived a `\s`-only
+ * collapse. Collapsing removes the padding; the cap is `displayAwsMessage`'s.
  */
 function collisionText(msg: string): string {
   // The caller MASKS `msg` first: `maskSecretsInText` matches a secret's exact
   // spelling, so collapsing a whitespace run or cutting the text before it ran
   // would turn an echoed secret into a spelling the mask no longer finds.
-  return displayAwsMessage(displaySafe(msg).replace(/\s{2,}/g, ' '));
+  return displayAwsMessage(displaySafe(msg).replace(/[\s\u200b-\u200d\u2060]{2,}/g, ' '));
 }
 
 /**
@@ -4192,7 +4196,9 @@ export async function replayFailedOperations(
       }
     } catch (revertError) {
       // Issue #2031: the `--revert-failed` twin of `replaySingle`'s catch —
-      // same plaintext bag, same DEFAULT-verbosity exposure.
+      // same plaintext bag, same DEFAULT-verbosity exposure. No registered
+      // refusal is thrown on this path, so `rollbackFailureText` always takes
+      // its flat arm here; it is called for the one spelling, not for a line.
       logger.warn(
         maskSecretsInText(
           `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): ` +
