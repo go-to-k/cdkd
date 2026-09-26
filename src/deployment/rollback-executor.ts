@@ -75,7 +75,7 @@ import {
 import { getAwsClients } from '../utils/aws-clients.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { CdkdError } from '../utils/error-handler.js';
-import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { displayAwsMessage, displayIdent, displaySafe } from '../utils/display-safe.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -273,36 +273,67 @@ function safe(value: unknown): string {
   return displayIdent(value);
 }
 
-/** The codes of the two refusals that end on {@link orphanRemedy}'s labelled LINE. */
-const OWN_REMEDY_LINE_CODES: ReadonlySet<string> = new Set([
-  'ROLLBACK_REPLACEMENT_UNROUTABLE',
-  'NAMED_REPLACEMENT_COLLISION',
-]);
+/**
+ * The two refusal OBJECTS this module creates that end on
+ * {@link orphanRemedy}'s labelled LINE, registered at their throw sites by
+ * {@link ownRemedyError}.
+ *
+ * Keyed on IDENTITY, not on an error code (M7 of the go-to-k/cdkd#3764
+ * review): `NAMED_REPLACEMENT_COLLISION` is not private to this file —
+ * `deploy-engine.ts` throws it too, with the raw logical id, resource type and
+ * AWS text in the message, and a nested-stack rollback delivers that error to
+ * this module's per-op catch with its code intact. A code-keyed trust
+ * preserved that message's newlines and printed a forged `To orphan it:` row.
+ * A `WeakSet` holds no error alive and cannot be satisfied by any object this
+ * module did not register.
+ */
+const OWN_REMEDY_ERRORS = new WeakSet<Error>();
+
+/** Register an error {@link rollbackFailureText} may render per line. */
+function ownRemedyError<E extends Error>(error: E): E {
+  OWN_REMEDY_ERRORS.add(error);
+  return error;
+}
 
 /**
  * A caught rollback error's text for the per-op `Rollback failed for` line.
  *
  * Free-form text takes `displaySafe` on the WHOLE, which folds a newline into
  * a space: a newline in an AWS message is the line forgery that render exists
- * to remove (issue #3092). The two refusals in {@link OWN_REMEDY_LINE_CODES}
- * are the exception, bounded by construction: every value in them is
- * sanitized at the throw (`safe()`, `displaySafe`), so their line breaks are
- * cdkd's own, and rendering them per LINE keeps the `To orphan it:` remedy on
- * a line of its own on the terminal — the shape M1 of the go-to-k/cdkd#3764
- * review asks for — where the whole-text render folded it back into the
- * prose. Per line, not raw: should an unsanitized value ever reach one of
- * those messages, each line is still sanitized and only the break survives,
- * and the source-shape fences in `rollback-executor-log-injection.test.ts`
- * refuse the unsanitized interpolation itself.
+ * to remove (issue #3092). The exception is an error in
+ * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the two refusals this
+ * module builds are registered, and every value in them is sanitized at the
+ * throw (`safe()` for identifiers, {@link collisionText} for the AWS text), so
+ * their one line break is cdkd's own, and rendering them per LINE keeps the
+ * `To orphan it:` remedy on a line of its own on the terminal (M1 of the
+ * go-to-k/cdkd#3764 review). Each line is still sanitized. An error that
+ * merely carries the same code — `deploy-engine.ts`'s collision refusal, or a
+ * provider error — is flattened whole.
  */
 function rollbackFailureText(error: unknown): string {
-  if (error instanceof CdkdError && OWN_REMEDY_LINE_CODES.has(error.code)) {
+  if (error instanceof Error && OWN_REMEDY_ERRORS.has(error)) {
     return error.message
       .split('\n')
       .map((line) => displaySafe(line))
       .join('\n');
   }
   return displaySafe(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * The AWS rejection text quoted in the collision refusal: sanitized, every
+ * whitespace RUN collapsed to one space, and capped (M8 of the
+ * go-to-k/cdkd#3764 review). The refusal's labelled `To orphan it:` line comes
+ * straight after this text, and `displaySafe` keeps runs of spaces, so a
+ * message padded with them could wrap on screen into a lookalike row directly
+ * above the genuine one — the terminal-wrap route `plainIdent` closes for a
+ * stack name. Collapsing removes the padding; the cap is `displayAwsMessage`'s.
+ */
+function collisionText(msg: string): string {
+  // The caller MASKS `msg` first: `maskSecretsInText` matches a secret's exact
+  // spelling, so collapsing a whitespace run or cutting the text before it ran
+  // would turn an echoed secret into a spelling the mask no longer finds.
+  return displayAwsMessage(displaySafe(msg).replace(/\s{2,}/g, ' '));
 }
 
 /**
@@ -1095,14 +1126,16 @@ function unroutableReplacementError(op: CompletedOperation, reason: string): Err
   // The remedy is a labelled last line built by `orphanRemedy`, which owns
   // the gate on the id and the sentence for a withheld one.
   const remedy = orphanRemedy(op.logicalId);
-  return markNonRetryable(
-    new CdkdError(
-      `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-        `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
-        `was changed. The journal is kept: fix forward with cdkd deploy, or leave this resource ` +
-        `as it is and let the rest of the rollback proceed by re-running with the command below.` +
-        `${remedy.clause}${remedy.line}`,
-      'ROLLBACK_REPLACEMENT_UNROUTABLE'
+  return ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+          `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
+          `was changed. The journal is kept: fix forward with cdkd deploy, or leave this resource ` +
+          `as it is and let the rest of the rollback proceed by re-running with the command below.` +
+          `${remedy.clause}${remedy.line}`,
+        'ROLLBACK_REPLACEMENT_UNROUTABLE'
+      )
     )
   );
 }
@@ -3080,53 +3113,58 @@ async function replaySingle(
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
             const remedy = orphanRemedy(op.logicalId);
-            throw markNonRetryable(
-              new CdkdError(
-                // Issue #2038, and this file's stated policy two arms down:
-                // `resolveReplayProps` re-resolved the replay bag to
-                // PLAINTEXT, so the create rejection quoted below can echo a
-                // secret. Masked at CONSTRUCTION so the value never exists
-                // inside a thrown `Error` for a later reader of the chain.
-                //
-                // MEASURED UNFENCEABLE, exactly like the two sibling wraps
-                // below: removing either mask leaves the whole unit suite
-                // green, because every downstream reader masks independently
-                // and `extractDeploymentEventError` reads `message` from the
-                // top level only, so the cause's text reaches no observable
-                // surface. Defense-in-depth, not a tested behavior -- do not
-                // record it in a PR body as one.
-                maskSecretsInText(
-                  `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-                    // Both physical ids take the identifier rendering, not the
-                    // denylist the outer catch applies: this is the one message
-                    // that carries the pasted `--orphan` remedy, so a planted
-                    // `previousState.physicalId` reading `...\nTo orphan it:
-                    // cdkd rollback --orphan Victim` must show its boundary (the
-                    // sanitizing also turns its newline into a space, so the
-                    // forged label can never start a line), or it stands as a
-                    // forged remedy AHEAD of the guarded one.
-                    `the re-create of the old resource (${safe(prev.physicalId)}) collided with the ` +
-                    `name still held by the new one (${safe(current.physicalId)}), and ` +
-                    `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
-                    `not delete it to free the name. Delete the new resource yourself, or ` +
-                    `remove UpdateReplacePolicy: Retain, then re-run cdkd rollback — the ` +
-                    `journal is kept, so the revert resumes from here. To leave THIS resource ` +
-                    `alone and let the rest of the rollback proceed, re-run with the command ` +
-                    `below: one op failure stops the segment loop, so a single pinned resource ` +
-                    `otherwise halts every OLDER segment too.` +
-                    // The remedy is the message's labelled LAST line, built by
-                    // `orphanRemedy`, which owns the gate on the id and the
-                    // sentence for a withheld one; the AWS text stays in the
-                    // prose ABOVE it, so the line an operator selects is the
-                    // command alone.
-                    `${remedy.clause} Underlying collision: ${displaySafe(msg)}${remedy.line}`,
-                  secrets
-                ),
-                'NAMED_REPLACEMENT_COLLISION',
-                // The CHAIN is masked too: downstream masking only reaches a
-                // top-level message, and the cause is what carries the AWS
-                // rejection text a reader re-opens.
-                maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
+            throw ownRemedyError(
+              markNonRetryable(
+                new CdkdError(
+                  // Issue #2038, and this file's stated policy two arms down:
+                  // `resolveReplayProps` re-resolved the replay bag to
+                  // PLAINTEXT, so the create rejection quoted below can echo a
+                  // secret. Masked at CONSTRUCTION so the value never exists
+                  // inside a thrown `Error` for a later reader of the chain.
+                  //
+                  // MEASURED UNFENCEABLE, exactly like the two sibling wraps
+                  // below: removing either mask leaves the whole unit suite
+                  // green, because every downstream reader masks independently
+                  // and `extractDeploymentEventError` reads `message` from the
+                  // top level only, so the cause's text reaches no observable
+                  // surface. Defense-in-depth, not a tested behavior -- do not
+                  // record it in a PR body as one.
+                  maskSecretsInText(
+                    `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                      // Both physical ids take the identifier rendering, not the
+                      // denylist the outer catch applies: this is the one message
+                      // that carries the pasted `--orphan` remedy, so a planted
+                      // `previousState.physicalId` reading `...\nTo orphan it:
+                      // cdkd rollback --orphan Victim` must show its boundary (the
+                      // sanitizing also turns its newline into a space, so the
+                      // forged label can never start a line), or it stands as a
+                      // forged remedy AHEAD of the guarded one.
+                      `the re-create of the old resource (${safe(prev.physicalId)}) collided with the ` +
+                      `name still held by the new one (${safe(current.physicalId)}), and ` +
+                      `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
+                      `not delete it to free the name. Delete the new resource yourself, or ` +
+                      `remove UpdateReplacePolicy: Retain, then re-run cdkd rollback — the ` +
+                      `journal is kept, so the revert resumes from here. To leave THIS resource ` +
+                      `alone and let the rest of the rollback proceed, re-run with the command ` +
+                      `below: one op failure stops the segment loop, so a single pinned resource ` +
+                      `otherwise halts every OLDER segment too.` +
+                      // The remedy is the message's labelled LAST line, built by
+                      // `orphanRemedy`, which owns the gate on the id and the
+                      // sentence for a withheld one; the AWS text stays in the
+                      // prose ABOVE it, so the line an operator selects is the
+                      // command alone.
+                      `${remedy.clause} Underlying collision: ${collisionText(maskSecretsInText(msg, secrets))}${remedy.line}`,
+                    secrets
+                  ),
+                  'NAMED_REPLACEMENT_COLLISION',
+                  // The CHAIN is masked too: downstream masking only reaches a
+                  // top-level message, and the cause is what carries the AWS
+                  // rejection text a reader re-opens.
+                  maskSecretsInError(
+                    createError instanceof Error ? createError : undefined,
+                    secrets
+                  )
+                )
               )
             );
           }
