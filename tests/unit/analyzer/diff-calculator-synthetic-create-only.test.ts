@@ -402,6 +402,51 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
       expect(changeOf(changes, 'Policy', 'Description')?.requiresReplacement).toBe(true);
     });
 
+    it('asks for, and ceilings, a reader of a FRESH parameter (the nested-child seed)', async () => {
+      // A nested child's diff with nothing changed but a parameter carrying a
+      // NoEcho value supplied in this deploy (go-to-k/cdkd#3717 arm 5).
+      const state = baseState();
+      state.resources['Policy'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: { Description: '***', PolicyDocument: { Statement: [] } },
+      };
+      const template = {
+        Parameters: { Token: { Type: 'String' } },
+        Resources: {
+          Policy: {
+            Type: 'AWS::IAM::ManagedPolicy',
+            Properties: { Description: { Ref: 'Token' }, PolicyDocument: { Statement: [] } },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      const resolve = async (v: unknown): Promise<unknown> => {
+        const obj = v as Record<string, unknown> | null;
+        if (obj && obj['Ref'] === 'Token') return '***';
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          const out: Record<string, unknown> = {};
+          for (const [k, val] of Object.entries(obj)) out[k] = await resolve(val);
+          return out;
+        }
+        return v;
+      };
+      mockCloudFormationSend.mockClear();
+
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        template,
+        resolve,
+        undefined,
+        undefined,
+        new Set(['Token'])
+      );
+
+      expect(typesAsked()).toContain('AWS::IAM::ManagedPolicy');
+      const pc = changeOf(changes, 'Policy', 'Description');
+      expect(pc?.inPlacePropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+
     it('asks for a reader the updated custom resource reaches', async () => {
       const state = policyState();
       mockCloudFormationSend.mockClear();
