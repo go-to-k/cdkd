@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * the PROMPT has to present as interactive; the refusal cases set it back.
  */
 import { setStdinIsTty } from '../../stdin-tty.js';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -4808,6 +4808,112 @@ describe('cdkd import', () => {
           expect(grandSave[2].parentLogicalId).toBe('Grandchild');
           expect(grandSave[2].parentRegion).toBe('us-east-1');
           expect(Object.keys(grandSave[2].resources)).toContain('GrandchildBucket');
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('follows the RAW grandchild aws:asset:path in asset-redirect mode (go-to-k/cdkd#3450)', async () => {
+        // The rewrite walks every string in the child template, the
+        // grandchild row's `aws:asset:path` included. Indexed from the
+        // REWRITTEN template, the walk read `<TARGET>/x.json` while the deploy
+        // (index first) follows `<SRC>/x.json`. The two files hold different
+        // resources, so the grandchild's saved record says which one was read.
+        const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+        const SRC = 'cdk-hnb659fds-assets-123-us-east-1';
+        const TARGET = 'cdkd-assets-123-us-east-1';
+        mockCreateAssetRedirectResolver.mockReturnValueOnce(async () =>
+          buildAssetRedirectMap(
+            {
+              version: '38.0.0',
+              files: {
+                aaaa1111: {
+                  displayName: 'Code',
+                  source: { path: 'asset.aaaa1111', packaging: 'zip' },
+                  destinations: { d1: { bucketName: SRC, objectKey: 'k.zip' } },
+                },
+              },
+              dockerImages: {},
+            },
+            {
+              assetBucket: TARGET,
+              containerRepo: 'cdkd-container-assets-123-us-east-1',
+              assetSupportVersion: 1,
+              createdAt: '2026-07-15T00:00:00.000Z',
+            },
+            '123',
+            'us-east-1'
+          )
+        );
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-raw-'));
+        try {
+          mkdirSync(join(tmpdirPath, SRC));
+          mkdirSync(join(tmpdirPath, TARGET));
+          const leaf = (logicalId: string) =>
+            JSON.stringify({ Resources: { [logicalId]: { Type: 'AWS::S3::Bucket', Properties: {} } } });
+          writeFileSync(join(tmpdirPath, SRC, 'x.json'), leaf('FromRawPath'));
+          writeFileSync(join(tmpdirPath, TARGET, 'x.json'), leaf('FromRewrittenPath'));
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                Grandchild: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'x' },
+                  Metadata: { 'aws:asset:path': `${SRC}/x.json` },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid-c';
+          const grandchildArn = 'arn:aws:cloudformation:us-east-1:123:stack/Grandchild/uuid-g';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['Grandchild', grandchildArn]]),
+                  nested: new Map([
+                    [
+                      'Grandchild',
+                      {
+                        stackName: grandchildArn,
+                        physicalId: grandchildArn,
+                        resources: new Map([
+                          ['FromRawPath', 'raw-real'],
+                          ['FromRewrittenPath', 'rewritten-real'],
+                        ]),
+                        nested: new Map(),
+                      },
+                    ],
+                  ]),
+                },
+              ],
+            ]),
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const grandSave = mockSaveState.mock.calls.find(
+            (c) => (c as unknown[])[0] === 'P~Child~Grandchild'
+          ) as unknown as [string, string, { resources: Record<string, unknown> }];
+          expect(Object.keys(grandSave[2].resources)).toEqual(['FromRawPath']);
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
         }
