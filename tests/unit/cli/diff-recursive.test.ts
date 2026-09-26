@@ -1660,6 +1660,98 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(treeHasChanges(root)).toBe(true);
   });
 
+  describe('a condition-gated nested row (go-to-k/cdkd#3815)', () => {
+    // The child's CURRENT template turns `ChildRes` into a nested stack, a Type
+    // change the deploy refuses — but only if it reaches the child engine. A
+    // walk of the live template would report it; a DELETE subtree cannot.
+    async function diffWithCondition(
+      equals: [string, string],
+      deployed = true
+    ): Promise<DiffTreeNode> {
+      writeFileSync(join(dir, 'grand.json'), JSON.stringify({ Resources: {} }));
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: {
+            ChildRes: { Type: NESTED, Metadata: { 'aws:asset:path': 'grand.json' }, Properties: {} },
+            NewRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'n' } },
+          },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Conditions: { Gate: { 'Fn::Equals': equals } },
+        Resources: {
+          ParentRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'p1' } },
+          Child: {
+            Type: NESTED,
+            Condition: 'Gate',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: {},
+          },
+        },
+      };
+      const backend = fakeBackend(
+        deployed
+          ? {
+              Parent: st('Parent', {
+                ParentRes: res('AWS::SSM::Parameter', { Value: 'p1' }),
+                Child: res(NESTED, {}),
+              }),
+              'Parent~Child': st('Parent~Child', {
+                ChildRes: res('AWS::SSM::Parameter', { Value: 'c1' }),
+              }),
+            }
+          : { Parent: st('Parent', { ParentRes: res('AWS::SSM::Parameter', { Value: 'p1' }) }) }
+      );
+      return buildDiffTree({
+        stackName: 'Parent',
+        displayName: 'Parent',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: indexNestedChildTemplates(parentTemplate, join(dir, 'parent.json')),
+        recursive: true,
+        stateBackend: backend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+    }
+
+    it('condition false: walks the child as a DELETE subtree, never its template', async () => {
+      const root = await diffWithCondition(['a', 'b']);
+
+      expect(root.changes.get('Child')!.changeType).toBe('DELETE');
+      expect(root.children).toHaveLength(1);
+      const child = root.children[0]!;
+      expect(child.stackName).toBe('Parent~Child');
+      expect([...child.changes.entries()].map(([id, c]) => [id, c.changeType])).toEqual([
+        ['ChildRes', 'DELETE'],
+      ]);
+      expect(child.blocking).toEqual([]);
+      expect(child.children).toEqual([]);
+      expect(countBlocking(root)).toBe(0);
+    });
+
+    it('condition false, never deployed: produces no child node at all', async () => {
+      const root = await diffWithCondition(['a', 'b'], false);
+
+      expect(root.changes.has('Child')).toBe(false);
+      expect(root.children).toEqual([]);
+      expect(countBlocking(root)).toBe(0);
+    });
+
+    it('condition true (control): walks the child template and reports its Type-change refusal', async () => {
+      const root = await diffWithCondition(['a', 'a']);
+
+      expect(root.changes.get('Child')!.changeType).toBe('NO_CHANGE');
+      expect(root.children).toHaveLength(1);
+      const child = root.children[0]!;
+      expect(child.changes.get('NewRes')!.changeType).toBe('CREATE');
+      expect(child.blocking).toHaveLength(1);
+      expect(countBlocking(root)).toBe(1);
+    });
+  });
+
   it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. Lambda FunctionScalingConfig)', async () => {
     const template: CloudFormationTemplate = {
       Resources: {
@@ -1718,6 +1810,38 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     const okayChange = json.changes.find((c) => c.logicalId === 'OkayLambda');
     expect(silentDropChange?.ccApi).toEqual(['FunctionScalingConfig']);
     expect(okayChange?.ccApi).toBeUndefined();
+  });
+
+  it('routes no condition-false row through CC API: the deploy deletes it (go-to-k/cdkd#3815)', async () => {
+    const template: CloudFormationTemplate = {
+      Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
+      Resources: {
+        SilentDropLambda: {
+          Type: 'AWS::Lambda::Function',
+          Condition: 'Off',
+          Properties: {
+            FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+          },
+        },
+      },
+    };
+    const root = await buildDiffTree({
+      stackName: 'Leaf',
+      displayName: 'Leaf',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({
+        Leaf: st('Leaf', { SilentDropLambda: res('AWS::Lambda::Function', {}) }),
+      }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+
+    expect(root.changes.get('SilentDropLambda')!.changeType).toBe('DELETE');
+    expect(root.ccApiRoutes.has('SilentDropLambda')).toBe(false);
+    expect(diffTreeToJson(root).changes[0]!.ccApi).toBeUndefined();
   });
 
   it('annotates sticky-CC resources (provisionedBy: cc-api in state, no silent-drop in template) with [via CC API: sticky] — matches live-progress label + design §8', async () => {

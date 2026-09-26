@@ -656,7 +656,9 @@ The walk previews the full next deploy:
 
 - A nested child with **no state file yet** diffs as all-CREATE.
 - A nested stack **removed from the CDK code** — present in state, absent from
-  the template — diffs as all-DELETE, recursively.
+  the template — diffs as all-DELETE, recursively. So does one whose row's
+  `Condition` evaluates false: the deploy deletes it and never reads its
+  template.
 - A child whose record is **malformed** is reported on rather than aborted on,
   at every depth. A `resources` bag that is not a JSON object, and an `orphans`
   field that is present but not a list, are treated as
