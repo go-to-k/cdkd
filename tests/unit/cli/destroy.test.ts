@@ -930,7 +930,7 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
       const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
       expect(messages).toContain('refusing to fall back to every stack in state');
       if (stages.length > 0) expect(messages).toContain(note);
-      else expect(messages).not.toContain('failed to load');
+      else expect(messages).toMatch(/every stack in state\.$/m);
     }
   });
 
@@ -984,6 +984,7 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
       failedStages: [],
     });
     await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(messages).toMatch(/ensure --app \/ cdk\.json is configured\.$/m);
   });
