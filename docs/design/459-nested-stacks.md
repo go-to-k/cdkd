@@ -53,7 +53,10 @@ deploys cleanly via `cdkd deploy`. Specifically:
   semantics replace this: a child-resource failure leaves the rest of
   the child's already-completed resources alone, the user re-runs
   `cdkd deploy`. The divergence is documented in
-  `docs/state-management.md` under "Nested stacks."
+  `docs/state-management.md` under "Nested stacks." (Partly superseded by
+  [#3754](https://github.com/go-to-k/cdkd/issues/3754): when the PARENT's
+  deploy fails after a child deployed, the parent's rollback now reverts
+  the child from the child's own rollback journal.)
 - **No `cdkd local invoke` / `local start-api` / `local run-task`
   targeting changes** — the existing CDK display-path matcher already
   supports `MyStack/MyNestedStack/MyHandler` shape paths once the
@@ -333,7 +336,10 @@ The child's state is saved via the child's own DeployEngine BEFORE
 control returns to the parent. So even if the parent fails mid-flight
 AFTER a child completes, the child's state survives — re-running
 `cdkd deploy` continues from where it left off (child is `NO_CHANGE`,
-parent retries its own failed resources).
+parent retries its own failed resources). Since
+[#3754](https://github.com/go-to-k/cdkd/issues/3754) that holds only under
+`--no-rollback` (or an interrupt): the default automatic rollback reverts the
+completed child from its journal, so the re-run updates it again.
 
 ---
 
@@ -510,7 +516,9 @@ Per the issue's "Won't do" section:
 
 - Real CFn rollback-on-failure cascades. cdkd's per-resource
   partial-state-save replaces it. Documented in
-  `docs/state-management.md`.
+  `docs/state-management.md`. (Superseded for a PARENT failure by
+  [#3754](https://github.com/go-to-k/cdkd/issues/3754): the parent's rollback
+  reverts a completed child from the child's own journal.)
 
 Additions from this design:
 
@@ -575,7 +583,10 @@ unsupported), so there's nothing to migrate from.
    value as a real AWS ARN will fail with `Invalid ARN partition:
    cdkd-local`. This is intentional — the cdkd-local-prefixed value
    should never reach an AWS API.
-2. **No rollback cascade.** A child-resource failure leaves the child's
+2. **No rollback cascade.** (Partly superseded by
+   [#3754](https://github.com/go-to-k/cdkd/issues/3754): when the PARENT
+   fails after a child deployed, the parent's rollback reverts the child by
+   replaying the child's own journal for that run.) A child-resource failure leaves the child's
    already-completed resources in place (per-resource state save).
    The user re-runs `cdkd deploy` to converge. Documented under
    "Known Limitations" in AGENTS.md.

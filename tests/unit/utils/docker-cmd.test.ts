@@ -250,6 +250,34 @@ describe('formatDockerLoginError', () => {
 });
 
 
+// Issue #3515: a sensitive key NAMED `__proto__` (a JSON-parsed secret name
+// is an own key) was assigned onto a `{}` / spread-copied object, which runs
+// Object.prototype's setter: the value silently vanished from the spawn env
+// while the value-less `-e __proto__` flag stayed on the argv. The value must
+// travel through the spawn env as an own key and NEVER reach the argv.
+describe('a sensitive key named __proto__ (#3515)', () => {
+  const SECRET = 'proto-secret-value';
+
+  it('partitionSensitiveEnv keeps it as an own key of sensitiveEnv, value-less on the argv', () => {
+    const env = JSON.parse(`{"__proto__": "${SECRET}", "PLAIN": "p"}`) as Record<string, string>;
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(env, new Set(['__proto__']));
+    expect(flags).toEqual(['-e', '__proto__', '-e', 'PLAIN=p']);
+    expect(flags.join(' ')).not.toContain(SECRET);
+    expect(collisions).toEqual([]);
+    expect(Object.hasOwn(sensitiveEnv, '__proto__')).toBe(true);
+    expect(sensitiveEnv['__proto__']).toBe(SECRET);
+    expect(Object.getPrototypeOf(sensitiveEnv)).toBe(Object.prototype);
+  });
+
+  it('dockerSpawnEnvWithSensitive carries it into the child env as an own key', () => {
+    const sensitive = JSON.parse(`{"__proto__": "${SECRET}"}`) as Record<string, string>;
+    const env = dockerSpawnEnvWithSensitive(sensitive);
+    expect(Object.hasOwn(env, '__proto__')).toBe(true);
+    expect(env['__proto__']).toBe(SECRET);
+    expect(env['PATH']).toBe(process.env['PATH']);
+  });
+});
+
 describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
   it('passes an ordinary secret value through to the child env, newlines intact', () => {
     const env = dockerSpawnEnvWithSensitive({ MY_DB_PASSWORD: 'p@ss\nword' });

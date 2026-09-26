@@ -31,6 +31,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::SNS::Topic';
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123:MyTopic';
@@ -113,5 +119,50 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws sns delete-topic --topic-arn');
     expect(warnMsg).toContain(TOPIC_ARN);
+  });
+
+  describe('the recovery command names the topic ARN through pasteableAwsCommand (issue #3136)', () => {
+    async function warnFor(topicArn: string): Promise<string> {
+      mockSend.mockResolvedValueOnce({ TopicArn: topicArn }); // CreateTopicCommand
+      mockSend.mockRejectedValueOnce(new Error('SetTopicAttributes boom'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteTopic also failed'));
+      await expect(
+        provider.create('MyTopic', RESOURCE_TYPE, {
+          TopicName: 'MyTopic',
+          DataProtectionPolicy: { Name: 'test', Statement: [] },
+        })
+      ).rejects.toThrow('SetTopicAttributes boom');
+      return String(warnSpy.mock.calls[0][0]);
+    }
+
+    it('renders a clean ARN bare', async () => {
+      expect(await warnFor(TOPIC_ARN)).toContain(`aws sns delete-topic --topic-arn ${TOPIC_ARN}`);
+    });
+
+    it('shell-quotes an ARN carrying a quote', async () => {
+      const arn = `${TOPIC_ARN}${FORGED_QUOTE}`;
+      expectQuotedAfter(await warnFor(arn), 'aws sns delete-topic --topic-arn ', arn);
+    });
+
+    it('withholds the command for an ARN carrying a control byte', async () => {
+      expectWithheld(await warnFor(`${TOPIC_ARN}${FORGED_CTRL}`), 'aws sns delete-topic');
+    });
+
+    it('withholds the command for an ARN the caller masker would change', async () => {
+      mockSend.mockResolvedValueOnce({ TopicArn: `${TOPIC_ARN}-s3cr3t` });
+      mockSend.mockRejectedValueOnce(new Error('SetTopicAttributes boom'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteTopic also failed'));
+      await expect(
+        provider.create(
+          'MyTopic',
+          RESOURCE_TYPE,
+          { TopicName: 'MyTopic', DataProtectionPolicy: { Name: 'test', Statement: [] } },
+          { maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***') }
+        )
+      ).rejects.toThrow('SetTopicAttributes boom');
+      const msg = String(warnSpy.mock.calls[0][0]);
+      expectWithheld(msg, 'aws sns delete-topic');
+      expect(msg).not.toContain('s3cr3t');
+    });
   });
 });

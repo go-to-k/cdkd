@@ -46,6 +46,11 @@ function updateInput(): { SecretString?: string; Description?: string } {
   return calls[0]![0].input as { SecretString?: string; Description?: string };
 }
 
+// The warn-skip arms below are reached only on a state-borne update since
+// issue #3740 (a rollback revert arm sets `replayingState`); a template-path
+// update refuses a changed malformed block instead.
+const STATE_REPLAY = { replayingState: true } as const;
+
 /**
  * Issue #2472: the secret VALUE rides an in-place update only when its SOURCE
  * changed. Pre-fix, `update()` re-ran `generateSecretString()` on every call
@@ -106,7 +111,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = generated();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     // The UpdateSecret still goes out (other members may have changed), but
     // carries NO SecretString — `UpdateSecret`'s merge semantics then leave
@@ -124,7 +129,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
 
     vi.clearAllMocks();
     mockSend.mockResolvedValue({});
-    await provider.update('L', SECRET_ARN, TYPE, { ...generated(), GenerateSecretString: 'nope' }, generated());
+    await provider.update('L', SECRET_ARN, TYPE, { ...generated(), GenerateSecretString: 'nope' }, generated(), STATE_REPLAY);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('GenerateSecretString must be an object')
     );
@@ -143,7 +148,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = generated();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
       prev['GenerateSecretString']
@@ -170,7 +175,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = { ...generated(), GenerateSecretString: 'also-broken' };
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     expect(result.effectiveProperties).toBeDefined();
     expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
@@ -195,7 +200,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = literal();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     expect(updateInput().SecretString).toBeUndefined();
     expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
@@ -217,7 +222,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = generated();
     const next = { ...generated(), GenerateSecretString: bad };
 
-    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('GenerateSecretString must be an object')
@@ -364,7 +369,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
       const prev = generated();
       const next = withBlock(members);
 
-      const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+      const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
       expect(updateInput().SecretString).toBeUndefined();
       expect(childLogger.warn).toHaveBeenCalledWith(expect.stringMatching(message));
@@ -579,7 +584,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const prev = withBlock({ PasswordLength: 'abc' });
     const next = withBlock({ PasswordLength: null });
 
-    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev, STATE_REPLAY);
 
     expect(updateInput().SecretString).toBeUndefined();
     expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
@@ -1135,7 +1140,7 @@ describe('the minted secret value reaches nothing the engine records (#2212, run
       const v = minted(UpdateSecretCommand, 32);
       const desired = { ...gen(32), GenerateSecretString: 'bad' };
       const prev = previous();
-      const result = await provider.update('L', ARN, TYPE, desired, prev);
+      const result = await provider.update('L', ARN, TYPE, desired, prev, STATE_REPLAY);
       expect(result).toEqual(skipResult(expectedEffective()));
       expect(desired).toEqual({ Name: 'my-secret', GenerateSecretString: 'bad' });
       expect(prev).toEqual(previous());
@@ -1158,7 +1163,7 @@ describe('the minted secret value reaches nothing the engine records (#2212, run
       const v = minted(CreateSecretCommand, 32);
       const desired = { ...gen(32), GenerateSecretString: 'bad' };
       const prev = gen(32);
-      const result = await provider.update(id, ARN, TYPE, desired, prev);
+      const result = await provider.update(id, ARN, TYPE, desired, prev, STATE_REPLAY);
       expect(result).toEqual(skipResult(gen(32)));
       expect(desired).toEqual({ Name: 'my-secret', GenerateSecretString: 'bad' });
       expect(prev).toEqual(gen(32));
@@ -1166,4 +1171,87 @@ describe('the minted secret value reaches nothing the engine records (#2212, run
       expect(JSON.stringify(result)).not.toContain(v);
     }
   );
+});
+
+/**
+ * Issue #3740 (the #3728 shape): a CHANGED, malformed `GenerateSecretString`
+ * is template-borne on a template-path update and one template edit repairs
+ * it, so `update()` REFUSES it before `UpdateSecret`. The state-borne callers
+ * keep the warn-skip above, which leaves the live value untouched.
+ */
+describe('SecretsManagerSecretProvider malformed GenerateSecretString: template refuses, replay warns', () => {
+  let provider: SecretsManagerSecretProvider;
+  const block = {
+    SecretStringTemplate: '{"username":"admin"}',
+    GenerateStringKey: 'password',
+    PasswordLength: 32,
+  };
+  const bag = (generate: unknown): Record<string, unknown> => ({
+    Name: 'my-secret',
+    Description: 'app secret',
+    GenerateSecretString: generate,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    provider = new SecretsManagerSecretProvider();
+  });
+
+  it.each([
+    ['no context', undefined],
+    ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+  ])('REFUSES on a template-path update (%s), before any AWS call', async (_label, context) => {
+    for (const malformed of [{ Ref: 'GenConfig' }, { ...block, PasswordLength: 'abc' }]) {
+      mockSend.mockClear();
+      childLogger.warn.mockClear();
+      const error = await provider
+        .update('L', SECRET_ARN, TYPE, bag(malformed), bag(block), context)
+        .catch((e: unknown) => e);
+
+      expect((error as Error).message).toMatch(/^AWS::SecretsManager::Secret GenerateSecretString/);
+      expect((error as Error).message).toMatch(
+        /Nothing was applied to secret L; fix the template value$/
+      );
+      expect((error as Error).message).not.toMatch(/Failed to update secret/);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ['a rollback revert arm (replayingState)', { replayingState: true }],
+    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+  ])('keeps the warn-skip on %s', async (_label, context) => {
+    await provider.update('L', SECRET_ARN, TYPE, bag({ Ref: 'GenConfig' }), bag(block), context);
+
+    expect(updateInput().SecretString).toBeUndefined();
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('No new secret value is generated')
+    );
+  });
+
+  it('a state-borne literal refusal is not told to fix the template', async () => {
+    const error = await provider
+      .update(
+        'L',
+        SECRET_ARN,
+        TYPE,
+        { Name: 'my-secret', SecretString: 42 },
+        { Name: 'my-secret', SecretString: 'lit' },
+        { replayingState: true }
+      )
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/^Failed to update secret L: /);
+    expect((error as Error).message).not.toMatch(/fix the template value/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse an UNCHANGED malformed block on the template path (no value is sent for it)', async () => {
+    const same = bag({ Ref: 'GenConfig' });
+    await provider.update('L', SECRET_ARN, TYPE, { ...same, Description: 'x' }, same);
+
+    expect(updateInput().SecretString).toBeUndefined();
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
 });

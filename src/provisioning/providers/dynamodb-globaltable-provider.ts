@@ -1589,11 +1589,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    // Read for ONE thing today: `maskSecrets` (issue #1932 item 3, adopted here
-    // by issue #1997). The update path carries the same RESOLVED bag as
+    // Read for two things. `maskSecrets` (issue #1932 item 3, adopted here by
+    // issue #1997): the update path carries the same RESOLVED bag as
     // `create()`, so the masking requirement is identical on both — a masker on
     // one path and not the other is a fix with a hole in the shape of whichever
-    // path a given deploy takes.
+    // path a given deploy takes. And the ORIGIN of the desired bag
+    // (`replayingState` / `desiredFromAwsReadback`), which decides whether the
+    // template-path refusals below refuse or the warn arms downgrade.
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // ONE masked sink for every warning in this method (issue #1997), rather
@@ -1743,6 +1745,74 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         logicalId,
         physicalId
       );
+    }
+
+    // ─── Template-path refusals (issue #3740, the #3728 shape) ──────────
+    // Three DESIRED-side reads further down warn-and-skip a malformed value on
+    // EVERY caller: `BillingMode` (keeps the mode it compared against),
+    // `StreamSpecification` (leaves the live stream alone) and a non-array
+    // `GlobalSecondaryIndexes` (suppresses the whole GSI diff). Each runs after
+    // the tag diff, and the GSI one after the flat-field `UpdateTable` too, so
+    // a throw there would strand what was already applied. On a TEMPLATE-path
+    // update each value is template-borne and mutable in place, so it is
+    // REFUSED here, before the ACTIVE wait, the `DescribeTable` and every
+    // write. The two state-borne callers keep the warnings: the rollback
+    // executor's revert arms (`replayingState`) and `cdkd drift --revert`
+    // (`desiredFromAwsReadback`) hand a bag the user cannot edit from the
+    // template.
+    //
+    // Each is gated on the value having CHANGED from the recorded one: an
+    // unchanged malformed value is not a pending operation (the warn arms
+    // send nothing for it), so refusing it would fail a deploy that changes
+    // something else. Each asks the same predicate, key, fallback and path as
+    // its arm.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      const changed = (key: string): boolean =>
+        JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
+      const refuse = (refusal: string, cause?: unknown): never => {
+        throw new ProvisioningError(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
+            `applied to the table; fix the template value`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause instanceof Error ? cause : undefined
+        );
+      };
+      let refusal: string | undefined;
+      if (changed('BillingMode')) {
+        try {
+          requireConfigString(
+            properties['BillingMode'],
+            'PAY_PER_REQUEST',
+            'AWS::DynamoDB::GlobalTable BillingMode'
+          );
+        } catch (error) {
+          // `requireConfigString` throws only its own plain `Error`.
+          refuse(describeAwsFailure(error).detail, error);
+        }
+      }
+      // `!deepEqual` is the StreamSpecification arm's own change test. A
+      // removal (the absent desired side) needs no gate of its own:
+      // `configStringRefusal` answers `undefined` for a nullish container.
+      if (
+        refusal === undefined &&
+        !deepEqual(properties['StreamSpecification'], previousProperties['StreamSpecification'])
+      ) {
+        refusal = configStringRefusal(
+          properties['StreamSpecification'],
+          'StreamViewType',
+          'NEW_AND_OLD_IMAGES',
+          'AWS::DynamoDB::GlobalTable StreamSpecification'
+        );
+      }
+      if (refusal === undefined && changed('GlobalSecondaryIndexes')) {
+        refusal = globalSecondaryIndexesShapeDetail(
+          properties['GlobalSecondaryIndexes'],
+          maskSecrets
+        );
+      }
+      if (refusal !== undefined) refuse(refusal);
     }
 
     // Resolve the client region ONCE for the whole update — the Tags
@@ -1986,6 +2056,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // An ABSENT value keeps defaulting to PAY_PER_REQUEST, because that IS a
       // genuine template-declared flip. Only the present-but-unusable case
       // suppresses it.
+      //
+      // Reached with a malformed value only by the state-borne callers, or by
+      // a template-path update whose value is UNCHANGED from the record: a
+      // changed one is refused before any call (issue #3740, the pre-flight
+      // above the ACTIVE wait).
       let billingUnusable = false;
       const requestedBilling = requireConfigString(
         properties['BillingMode'],
@@ -2079,7 +2154,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // here an empty desired list means "the template declares no GSIs", so
       // step 6's diff would DELETE every live index. `desiredGsiUnusable`
       // therefore suppresses the GSI diff entirely: the indexes are left
-      // exactly as they are (keep-previous), never dropped.
+      // exactly as they are (keep-previous), never dropped. On a template-path
+      // update this arm is reached only with an UNCHANGED malformed block: a
+      // changed one is refused before any call (issue #3740, the pre-flight
+      // above the ACTIVE wait, sharing `globalSecondaryIndexesShapeDetail`).
       // The two sides get DIFFERENT treatment, because only one of them can be
       // recovered from AWS.
       let desiredGsiUnusable = false;
@@ -2266,7 +2344,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // The refusal is DOWNGRADED to a warning (issue #1551) because a
         // rollback replay / `drift --revert` feeds a cdkd STATE record in as
         // the desired bag, which the user cannot edit — a throw here would
-        // strand the replay. The downgrade SKIPS the block entirely rather
+        // strand the replay. A template-path update never reaches it with a
+        // malformed block: this branch runs only on a change, and the
+        // pre-flight above the ACTIVE wait refuses a changed malformed block
+        // before any call (issue #3740). The downgrade SKIPS the block entirely rather
         // than sending the `NEW_AND_OLD_IMAGES` default: defaulting would
         // silently re-point a live stream's view type (and enable a stream
         // the template never asked to enable), which is the destructive
@@ -5244,9 +5325,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // #1436 / #1420) with nowhere to land, so their drift detection was
       // silently dead for exactly the single-region case. Synthesize the
       // local entry; the sub-spec / Tags reads below work on it unchanged.
+      //
+      // A MULTI-region table needs the same synthesis (issue #3573): the
+      // `Replicas` list `DescribeTable` returns in the deploy region names the
+      // OTHER regions only (measured us-east-1 + eu-west-1, 2026-09-24), so the
+      // local entry -- and every member homed on it -- was never read back.
+      // Appended LAST, where CDK's `TableV2` renders the deploy region; the
+      // comparison does not depend on it, since `getDriftUnorderedPaths`
+      // declares `Replicas` a set. An unresolved `currentRegion` adds nothing:
+      // an entry for region `''` would name no replica.
       const sdkReplicas =
         table.Replicas && table.Replicas.length > 0
-          ? table.Replicas
+          ? currentRegion && !table.Replicas.some((r) => r.RegionName === currentRegion)
+            ? [...table.Replicas, { RegionName: currentRegion }]
+            : table.Replicas
           : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
         sdkReplicas.map(async (r) => {
@@ -5859,9 +5951,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * it is order-SIGNIFICANT (HASH before RANGE), so sorting it would silently
    * hide a real key change — the failure direction this file's sibling rules
    * call the worse one.
+   *
+   * `Replicas` is a set too (issue #3573): the registry schema declares it
+   * `insertionOrder: false` (measured via `DescribeType`, us-east-1,
+   * 2026-09-25), and each entry is keyed by `Region`. Templates disagree on
+   * where the deploy region goes -- CDK's `TableV2` renders it LAST, a
+   * hand-written `CfnGlobalTable` often FIRST -- while the readback appends it
+   * after the replicas `DescribeTable` lists, so one of the two always
+   * compared positionally unequal on a `properties` baseline. Declared
+   * LEAF-ONLY (`[]`) so the arrays inside each entry keep their own rules.
    */
   getDriftUnorderedPaths(_resourceType: string): string[] {
-    return ['AttributeDefinitions'];
+    return ['AttributeDefinitions', 'Replicas[]'];
   }
 
   /**
@@ -5975,6 +6076,68 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (stripped) result = { ...result, [listKey]: canonical };
     }
     return result;
+  }
+
+  /**
+   * Complete a LEGACY drift baseline's missing local replica (issue #3573).
+   *
+   * Before #3573, `readCurrentState` left the deploy-region entry out of
+   * `Replicas` on a multi-region table, so every `observedProperties` record a
+   * deploy captured then lacks it, while the readback now carries it. Compared
+   * as is, the first `cdkd drift` after upgrading would report `Replicas` on
+   * every untouched multi-region GlobalTable.
+   *
+   * The rule (maintainer decision on the issue: absorb at comparison time):
+   * when the BASELINE's `Replicas` has no entry for the local region, copy the
+   * READBACK's local entry into the baseline. The AWS side is untouched. State
+   * is not rewritten; the next deploy captures the new shape.
+   *
+   * Completing the baseline, rather than dropping the entry from the AWS side,
+   * is what keeps the two write paths that consume these bags safe:
+   * - `drift --revert` runs this on its DESIRED bag too (the legacy record),
+   *   so the local entry it sends equals the live one. Sent without it,
+   *   `update()` would read the local replica's tags as removed and untag
+   *   the table.
+   * - `--accept` persists the reported `awsValue`, which comes from the
+   *   untouched AWS side, so an accepted `Replicas` change heals the record to
+   *   the current shape instead of freezing the legacy one.
+   *
+   * Why it hides nothing that was visible: a current-shape baseline always
+   * has the local entry, so it is compared in full; and the local replica is
+   * the table itself, so its ABSENCE from a legacy baseline cannot be a real
+   * removal -- the one thing this suppresses is the local entry's own members,
+   * which that baseline never recorded. A replica added out of band in ANOTHER
+   * region still differs. It is per-side-inexpressible, hence the pair hook:
+   * {@link canonicalizeDriftProperties} sees one bag and cannot tell a legacy
+   * baseline from a current one.
+   *
+   * "Local" is the region this provider's own client resolves -- the same
+   * expression `readCurrentState` keys its local entry on -- so the two cannot
+   * disagree about which entry is local. A baseline or AWS side whose
+   * `Replicas` is not an array, or an unresolved region, is left untouched.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return { baseline, aws };
+    const key = 'Replicas';
+    const baselineReplicas = baseline[key];
+    const awsReplicas = aws[key];
+    if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) {
+      return { baseline, aws };
+    }
+    const localRegion = (await this.dynamoDBClient.config.region()) ?? '';
+    if (!localRegion) return { baseline, aws };
+    const isLocal = (element: unknown): boolean => asRecord(element)?.['Region'] === localRegion;
+    if (baselineReplicas.some(isLocal)) return { baseline, aws };
+    const liveLocal = awsReplicas.find(isLocal);
+    if (liveLocal === undefined) return { baseline, aws };
+    return {
+      baseline: { ...baseline, [key]: [...baselineReplicas, structuredClone(liveLocal)] },
+      aws,
+    };
   }
 
   /**
@@ -7394,6 +7557,27 @@ function pickAutoScalingCapacity(
 }
 
 /**
+ * The shape refusal for a present-but-NON-ARRAY `GlobalSecondaryIndexes`, or
+ * `undefined` when the value is absent or an array.
+ *
+ * ONE predicate for the two places that ask: {@link toSdkGlobalSecondaryIndexes}
+ * (which throws, or hands it to its replay downgrade) and `update()`'s
+ * template-path pre-flight (issue #3740), so the refusal cannot be narrower or
+ * wider than the downgrade it replaces on that path. The value is masked leaf
+ * by leaf BEFORE `JSON.stringify` escapes anything (issue #2178).
+ */
+export function globalSecondaryIndexesShapeDetail(
+  rawIndexes: unknown,
+  maskSecrets: MaskerFn = (text) => text
+): string | undefined {
+  if (rawIndexes === undefined || Array.isArray(rawIndexes)) return undefined;
+  return (
+    `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
+    `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`
+  );
+}
+
+/**
  * Translate the CFn `AWS::DynamoDB::GlobalTable` `GlobalSecondaryIndexes[]`
  * blob into the SDK's `GlobalSecondaryIndex[]` shape (Issue #1387).
  *
@@ -7463,10 +7647,8 @@ export function toSdkGlobalSecondaryIndexes(
   // indexes", while on update it would mean "delete every live index", which
   // is why `update()` suppresses its GSI diff instead of applying the result.
   // Any call site that leaves the hook undefined keeps the refusal.
-  if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
-    const shapeDetail =
-      `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-      `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`;
+  const shapeDetail = globalSecondaryIndexesShapeDetail(rawIndexes, maskSecrets);
+  if (shapeDetail !== undefined) {
     if (onUnusableIndexes) {
       onUnusableIndexes(shapeDetail);
       return [];

@@ -21,10 +21,10 @@ verify, clean up.
 
 ## Steps
 
-1. **Rebase, then build**: `git fetch origin` and rebase the branch onto current
-   `origin/main` BEFORE the run — a real-AWS run against a stale base verifies
-   code that is not what will merge, and nothing warns you. Then `vp run build`
-   so `dist/` is current.
+1. **Rebase, then build**: `git fetch origin` and rebase onto current
+   `origin/main` (merge it when a force push is denied) BEFORE the run — a
+   stale base verifies code that is not what will merge, and nothing warns you.
+   Then `vp run build` so `dist/` is current.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -56,7 +56,9 @@ verify, clean up.
    ```
 
    **Anything found → abort** with the orphan list and cleanup commands; do NOT
-   deploy on top of orphans.
+   deploy on top of orphans. **Except a `lock.json` whose `expiresAt` is in the
+   future: a LIVE peer on the same fixture** — wait, then re-scan. Expired: a
+   killed run's orphan.
 
 5. **Run the test(s)**
 
@@ -66,11 +68,10 @@ verify, clean up.
    BOTH paths.
 
    **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow branch
-   is effectively unreachable from an agent session**: the harness's
+   is unreachable from an agent session**: the harness's
    auto-approval classifier refuses a direct `cdkd deploy`, so a fixture WITHOUT
    a `verify.sh` dead-ends after dispatch. (rc=127 from `bash verify.sh` means
-   the file does not exist, and bash says so on STDERR — if that line is missing
-   you redirected stderr; read the log, not the exit code alone.) Run the
+   no such file, said on STDERR — read the log, not the rc alone.) Run the
    standard flow only when a human drives the shell.
 
    - `cd tests/integration/<test-name>/`; `npm install` if no `node_modules`.
@@ -93,12 +94,22 @@ verify, clean up.
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
                    # `> ""` is a loud failure that costs you the whole run
-   bash verify.sh > "$LOG" 2>&1 &
+   # Budget: 2x the ledger's last duration, floor 1500s — a fixed 1500s killed
+   # dynamodb-gsi-update (normal ~1300s) mid index-busy wait.
+   LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4; exit}' ../../../docs/_generated/integ-last-run.tsv)
+   case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
+   POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
+   # Own process group, so a FIRE kills verify's `node` deploy/destroy child too
+   # (`kill -9 $VPID` alone reparents it to PID 1, still calling AWS). `perl`,
+   # since zsh — the agent's shell — refuses `set -m` outside a terminal.
+   # Its own group also outlives a harness kill of THIS call: before a re-run,
+   # `ps -g <old VPID>` must list no process (rc=1).
+   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
    VPID=$!
-   # 1500s in 5s polls that end on their own: NEVER kill the watchdog — a
-   # kill orphans its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
-   ( i=0; while [ $i -lt 300 ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
-     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 $VPID; } ) &
+   # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
+   # its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
+   ( i=0; while [ $i -lt $POLLS ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
+     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 -- -$VPID; } ) &
    WPID=$!
    wait "$VPID"; RC=$?
    wait "$WPID"   # at most 5s more
@@ -138,7 +149,12 @@ verify, clean up.
 
 7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)** —
    trigger when the destroy step reported errors, OR step 6 found leftover state
-   or any resource matching the stack prefix:
+   or any resource matching the stack prefix. **Not while a PEER runs the
+   fixture** (this run failed on its lock, or a `lock.json` under the prefix has
+   a future `expiresAt`): the scan finds the peer's LIVE fixture, whose lock
+   lapses between commands. Delete nothing until no live lock remains AND the
+   prefix is unchanged for 10 minutes, then re-run step 6; what it still finds
+   is an orphan, cleaned here (#3813):
    - VPC-attached Lambda failures (commonest), **in delete order**: (1)
      hyperplane ENIs (`describe-network-interfaces --filters
      "Name=vpc-id,Values=<vpc>"` → `delete-network-interface`; re-poll `in-use`
@@ -192,10 +208,9 @@ verify, clean up.
    version constant in `src/types/state.ts` until it has run. Never set by hand.
 
    **The test-name condition is IN the block, not only in the sentence above
-   it.** Step 9's block is unconditional by design, so pasting both after any
-   clean run would flip this marker too — the exact substitution the gate exists
-   to refuse, since a destroy run exercises one binary against its own schema and
-   proves nothing about a round trip. `mise trust` for step 9's reason.
+   it.** Step 9's block is unconditional, so pasting both after any clean run
+   flips this marker too — the substitution the gate refuses, as one binary
+   against its own schema proves no round trip. `mise trust` for step 9's reason.
 
    ```bash
    mise trust
@@ -309,9 +324,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   + `local-start-api`.
 
 - **A state schema version bump → run the matching
-  `schema-v<N>-to-v<N+1>-migration` fixture.** A bump MUST be transparently
-  auto-migrated, and only a real-AWS round-trip proves it (deploy under vN → swap
-  binary → read works → next write upgrades silently → destroy clean).
+  `schema-v<N>-to-v<N+1>-migration` fixture** (step 9 says what it proves).
 
 ## Important
 
@@ -319,14 +332,14 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   planned for the same PR** — the marker is digest-bound to its src scope, so a
   post-integ review fix stales it and forces a full real-AWS re-run.
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
-  still attempt destroy to clean up partial state.
+  still attempt destroy to clean up partial state — unless it failed on a
+  peer's lock (step 7).
 - **A run blocked BEFORE its assertions is not a test failure — say which it
-  was.** (`cdkd gc` refuses while ANY stack holds a lock, account-wide by design,
-  so a parallel session's lock can stop a gc fixture before its first assertion.)
-  Record it as `FAIL` (the bar is exit-code-based) with a ledger note naming the
-  blocker and any hand-removed resources, clean up what the aborted run leaked,
-  and WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
-  take — it belongs to another session's in-flight deploy.
+  was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
+  `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
+  and any hand-removed resources, WAIT for the blocker to clear, then clean up
+  what the aborted run leaked (step 7 says when). Never
+  `cdkd force-unlock` a lock you did not take.
 - **Never report success on a successful deploy alone** — destroy must complete
   and the orphan check must pass.
 - **Do NOT restart Docker to fix a hung docker-dependent run (`local-*`, or an

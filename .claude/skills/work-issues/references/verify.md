@@ -16,8 +16,10 @@
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
 integ → marker. `git diff origin/main...HEAD --name-only` against that gate's
-`.markgate.yml` include list says what is outstanding, and a rebase alone stales
-the marker.
+`.markgate.yml` include list says what is outstanding. The gate's `hash: diff` stales
+on a rebase only when main changed a scoped file THIS branch changes too, so a
+set marker on a MERGEABLE PR needs no rebase (`markgate status`) — unless main
+changed code the fixture EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run, comment-only deltas included. Scope the
@@ -26,11 +28,10 @@ the marker.
 
 ### 8-c. The live-test tiers
 
-Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup,
-code review, and a **live-test of the changed behavior** on top of `/check`.
-Run `/check-docs` ONCE per PR, at the FINAL sha rather than per commit: it is
-the required step for SEMANTIC docs consistency, because CI covers only the
-structural checks (links, nav, tables, error strings, coverage matrices). Unit
+Run `/verify-pr`: it adds CI, docs, cleanup, review and a **live-test of the
+changed behavior** to `/check`.
+Run `/check-docs` ONCE per PR, at the FINAL sha: it is the required step for
+SEMANTIC docs consistency, because CI covers only the structural checks. Unit
 tests passing is necessary but NOT sufficient:
 
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
@@ -111,8 +112,7 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 
 - **Sweep by CLAIM, over NORMALISED text** (every TRACKED file, comment leaders
   stripped, whitespace collapsed, matched across line breaks — never
-  `git grep`), and fix the prose. A fence on it follows AGENTS.md's Tooling
-  Policy, not one falsification.
+  `git grep`), and fix the prose.
 - **A COUNT is never repaired by recounting** — delete it (preferred), fence it
   with a floor AND a cap from a test that reads the code, or attribute it as a
   dated measurement. A correction is itself a claim: RUN it, and re-derive
@@ -130,8 +130,8 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 
 **A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
 deploys and tears it down (§8-c). **UNIQUE stack names only**
-(e.g. `Cdkd<Issue>Verify`), since the account may hold the maintainer's
-production stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
+(e.g. `Cdkd<Issue>Verify`): the account may hold the maintainer's production
+stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
 

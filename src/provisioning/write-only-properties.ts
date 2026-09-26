@@ -46,10 +46,18 @@ import { getLogger } from '../utils/logger.js';
 const writeOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string>>>();
 
 /**
+ * The SETTLED successes of either lookup variant, per type. What
+ * {@link tryGetTopLevelWriteOnlyProperties} reads first: unlike the promise
+ * cache it never holds an in-flight lookup, whose failure would read as "none".
+ */
+const settledWriteOnlyProperties = new Map<string, ReadonlySet<string>>();
+
+/**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearWriteOnlyPropertiesCache(): void {
   writeOnlyPropertiesCache.clear();
+  settledWriteOnlyProperties.clear();
 }
 
 /**
@@ -76,24 +84,56 @@ export function getTopLevelWriteOnlyProperties(resourceType: string): Promise<Re
   if (cached) {
     return cached;
   }
-  const entry = fetchTopLevelWriteOnlyProperties(resourceType).catch((error) => {
-    // The lookup failed: drop the in-flight entry so a later call retries,
-    // warn (once per failure), and fall back to an empty set for this call.
-    writeOnlyPropertiesCache.delete(resourceType);
-    const message = describeAwsFailure(error).detail;
-    getLogger()
-      .child('WriteOnlyProperties')
-      .warn(
-        `Failed to resolve write-only properties for ${resourceType} via ` +
-          `cloudformation:DescribeType (${message}). Falling back to a minimal ` +
-          `update patch — write-only properties (if any) may be dropped by the ` +
-          `Cloud Control read-modify-write update. Grant cloudformation:DescribeType ` +
-          `to enable write-only property re-inclusion.`
-      );
-    return new Set<string>();
-  });
+  const entry = fetchTopLevelWriteOnlyProperties(resourceType)
+    .then((result) => {
+      settledWriteOnlyProperties.set(resourceType, result);
+      return result;
+    })
+    .catch((error) => {
+      // The lookup failed: drop the in-flight entry so a later call retries,
+      // warn (once per failure), and fall back to an empty set for this call.
+      writeOnlyPropertiesCache.delete(resourceType);
+      const message = describeAwsFailure(error).detail;
+      getLogger()
+        .child('WriteOnlyProperties')
+        .warn(
+          `Failed to resolve write-only properties for ${resourceType} via ` +
+            `cloudformation:DescribeType (${message}). Falling back to a minimal ` +
+            `update patch — write-only properties (if any) may be dropped by the ` +
+            `Cloud Control read-modify-write update. Grant cloudformation:DescribeType ` +
+            `to enable write-only property re-inclusion.`
+        );
+      return new Set<string>();
+    });
   writeOnlyPropertiesCache.set(resourceType, entry);
   return entry;
+}
+
+/**
+ * {@link getTopLevelWriteOnlyProperties} for a caller that must tell "none"
+ * from "unknown" (go-to-k/cdkd#3803): `undefined` when the lookup failed,
+ * which that function reports as an empty set. Warns nothing (the other
+ * variant's warning describes the Cloud Control update path). It reads and
+ * writes the settled successes both variants record, and caches only a
+ * success. It does not join the other variant's in-flight lookup, whose
+ * failure would read as "none".
+ */
+export async function tryGetTopLevelWriteOnlyProperties(
+  resourceType: string
+): Promise<ReadonlySet<string> | undefined> {
+  if (hasNoRegistrySchema(resourceType)) return new Set<string>();
+  const settled = settledWriteOnlyProperties.get(resourceType);
+  if (settled) return settled;
+  try {
+    const result = await fetchTopLevelWriteOnlyProperties(resourceType);
+    settledWriteOnlyProperties.set(resourceType, result);
+    if (!writeOnlyPropertiesCache.has(resourceType)) {
+      writeOnlyPropertiesCache.set(resourceType, Promise.resolve(result));
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

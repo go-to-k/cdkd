@@ -13,7 +13,9 @@ import { TemplateParser } from './template-parser.js';
 import {
   getCreateOnlyPropertyPaths,
   createOnlyChangeRequiresReplacement,
+  isIntrinsicShaped,
 } from '../provisioning/create-only-properties.js';
+import { tryGetTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
 import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
@@ -136,6 +138,18 @@ const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, readonly st
  * value supplied in this deploy) read it.
  */
 const REF_READ = '<Ref>';
+
+/**
+ * Does `value` hold an intrinsic (`Ref` / `Fn::*`, a single-key object) at any
+ * depth? The shape `create-only-properties.ts` treats as unresolved.
+ */
+function containsIntrinsic(value: unknown, seen: Set<object> = new Set()): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (!Array.isArray(value) && isIntrinsicShaped(value)) return true;
+  return Object.values(value).some((child) => containsIntrinsic(child, seen));
+}
 
 /**
  * Diff calculator for comparing desired state (template) with current state
@@ -447,7 +461,9 @@ export class DiffCalculator {
         // `ProviderRegistry.reportSilentDropDecisions` already warns about
         // those every deploy with the accurate wording.
         const droppedKeys = canonicalizeProperties
-          ? Object.keys(desiredAfterDrops).filter((key) => !(key in desiredPropsForCompare))
+          ? Object.keys(desiredAfterDrops).filter(
+              (key) => !Object.hasOwn(desiredPropsForCompare, key)
+            )
           : [];
         if (droppedKeys.length > 0) {
           this.logger.warn(
@@ -551,13 +567,23 @@ export class DiffCalculator {
     // decides whether another round is needed. It skips a path already
     // present, so the loop ends at the latest once every referencing property
     // carries a change.
+    // The schema createOnly paths both promotion passes consult for a type the
+    // registry does not classify (go-to-k/cdkd#3803), loaded once here because
+    // the passes are synchronous.
+    const syntheticCreateOnlyPaths = await this.loadSyntheticCreateOnlyPaths(
+      changes,
+      desiredTemplate,
+      rawGetAttRefs,
+      freshParameters
+    );
     do {
-      this.promoteReplacementDependents(changes, desiredTemplate);
+      this.promoteReplacementDependents(changes, desiredTemplate, syntheticCreateOnlyPaths);
     } while (
       this.promoteInPlaceAttributeDependents(
         changes,
         desiredTemplate,
         rawGetAttRefs,
+        syntheticCreateOnlyPaths,
         freshParameters
       )
     );
@@ -568,6 +594,150 @@ export class DiffCalculator {
     );
 
     return changes;
+  }
+
+  /**
+   * The CFn-schema createOnly paths for every resource type a promotion pass
+   * could query (go-to-k/cdkd#3803), loaded once here because both passes are
+   * synchronous. Only a resource REACHABLE from something that can seed a
+   * promotion is considered: an UPDATE (a replacement or an in-place update) or
+   * a fresh parameter, followed transitively along reverse reference edges. An
+   * unchanged stack therefore loads nothing and calls no `DescribeType`. Among
+   * those, only a type with a registry-unclassified property holding an
+   * intrinsic is loaded, since only such a property can be promoted and reach
+   * the schema fallback. The lookups are the ordinary diff's own
+   * (`getCreateOnlyPropertyPaths`): never throwing, cached per type, and
+   * schema-less types short-circuited.
+   */
+  private async loadSyntheticCreateOnlyPaths(
+    changes: Map<string, ResourceChange>,
+    desiredTemplate: CloudFormationTemplate,
+    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
+    freshParameters: ReadonlySet<string> | undefined
+  ): Promise<Map<string, ReadonlyArray<readonly string[]>>> {
+    const loaded = new Map<string, ReadonlyArray<readonly string[]>>();
+    const queue: string[] = [...(freshParameters ?? [])];
+    for (const [logicalId, change] of changes) {
+      if (change.changeType === 'UPDATE') queue.push(logicalId);
+    }
+    if (queue.length === 0) return loaded;
+
+    // Reverse reference edges: referenced id -> ids of the resources reading it.
+    const readersOf = new Map<string, Set<string>>();
+    const addEdge = (referencedId: string, readerId: string): void => {
+      if (referencedId === readerId) return;
+      let readers = readersOf.get(referencedId);
+      if (!readers) {
+        readers = new Set();
+        readersOf.set(referencedId, readers);
+      }
+      readers.add(readerId);
+    };
+    for (const [logicalId, resource] of Object.entries(desiredTemplate.Resources)) {
+      if (resource.Type === 'AWS::CDK::Metadata') continue;
+      for (const value of Object.values(resource.Properties ?? {})) {
+        for (const referencedId of this.parser.extractReferences(value)) {
+          addEdge(referencedId, logicalId);
+        }
+      }
+      for (const perUpstream of rawGetAttRefs.get(logicalId)?.values() ?? []) {
+        for (const referencedId of perUpstream.keys()) addEdge(referencedId, logicalId);
+      }
+    }
+
+    const reached = new Set<string>(queue);
+    while (queue.length > 0) {
+      for (const readerId of readersOf.get(queue.shift()!) ?? []) {
+        if (reached.has(readerId)) continue;
+        reached.add(readerId);
+        queue.push(readerId);
+      }
+    }
+
+    // Per type, the registry-unclassified properties holding an intrinsic.
+    const candidateKeys = new Map<string, Set<string>>();
+    for (const logicalId of reached) {
+      const change = changes.get(logicalId);
+      if (!change) continue;
+      if (change.changeType !== 'NO_CHANGE' && change.changeType !== 'UPDATE') continue;
+      for (const [key, value] of Object.entries(change.desiredProperties ?? {})) {
+        if (this.replacementRules.isClassified(change.resourceType, key)) continue;
+        if (!containsIntrinsic(value)) continue;
+        let keys = candidateKeys.get(change.resourceType);
+        if (!keys) {
+          keys = new Set();
+          candidateKeys.set(change.resourceType, keys);
+        }
+        keys.add(key);
+      }
+    }
+    const types = candidateKeys.keys();
+    await Promise.all(
+      [...types].map(async (type) => {
+        const paths = await getCreateOnlyPropertyPaths(type);
+        const keys = candidateKeys.get(type)!;
+        // A WRITE-ONLY create-only property raises no ceiling: AWS never
+        // returns it, so the engine could not confirm a fresh `NoEcho` value
+        // there and would replace a resource CloudFormation leaves alone
+        // (`AWS::DirectoryService::SimpleAD.Password`). Such a property stays
+        // an in-place update, as before. Asked only when a candidate property
+        // has a whole-property path, i.e. when a ceiling could be raised.
+        if (!paths.some((path) => path.length === 1 && keys.has(path[0]!))) {
+          loaded.set(type, paths);
+          return;
+        }
+        const writeOnly = await tryGetTopLevelWriteOnlyProperties(type);
+        if (writeOnly === undefined) {
+          // Unknown (DescribeType failed; there is no write-only snapshot):
+          // any whole-property path might be write-only, so none raises a
+          // ceiling for this type. That is `main`'s in-place behaviour, never
+          // a replacement nobody can confirm.
+          this.logger.debug(
+            `Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers`
+          );
+          loaded.set(
+            type,
+            paths.filter((path) => path.length !== 1)
+          );
+          return;
+        }
+        loaded.set(
+          type,
+          paths.filter((path) => !(path.length === 1 && writeOnly.has(path[0]!)))
+        );
+      })
+    );
+    return loaded;
+  }
+
+  /**
+   * The `requiresReplacement` of a SYNTHETIC change (a promoted reader's
+   * referencing property), which is a ceiling the engine may lower once it has
+   * resolved the value (go-to-k/cdkd#3662).
+   *
+   * The registry answers first, with `undefined` old / new values (see the
+   * replacement pass for why). Where the registry has no opinion on the
+   * property, the CFn schema decides, as in the ordinary diff
+   * (go-to-k/cdkd#3803) — but only for a WHOLE-property createOnly path. A
+   * NESTED path (`ConnectionInput.Name`) does not raise the ceiling: the engine
+   * lowers a ceiling by comparing the whole top-level value with the record, so
+   * a nested ceiling would stand whenever a MUTABLE sibling moved and replace a
+   * resource CloudFormation updates in place. A moved value under a nested
+   * create-only path stays an in-place update, as before. So does a
+   * WRITE-ONLY create-only property, which the loader leaves out.
+   */
+  private syntheticRequiresReplacement(
+    resourceType: string,
+    propKey: string,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
+  ): boolean {
+    if (this.replacementRules.requiresReplacement(resourceType, propKey, undefined, undefined)) {
+      return true;
+    }
+    if (this.replacementRules.isClassified(resourceType, propKey)) return false;
+    return (syntheticCreateOnlyPaths.get(resourceType) ?? []).some(
+      (path) => path.length === 1 && path[0] === propKey
+    );
   }
 
   /**
@@ -602,7 +772,8 @@ export class DiffCalculator {
    */
   private promoteReplacementDependents(
     changes: Map<string, ResourceChange>,
-    desiredTemplate: CloudFormationTemplate
+    desiredTemplate: CloudFormationTemplate,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
   ): void {
     // Seed queue: resources whose computed diff already requires replacement.
     const queue: string[] = [];
@@ -682,11 +853,12 @@ export class DiffCalculator {
             // on the property NAME alone and still fire correctly (the
             // immutable-property case this propagation cares about), while
             // conditional rules see no phantom delta and don't over-promote.
-            requiresReplacement: this.replacementRules.requiresReplacement(
+            // A type the registry does not classify falls back to the CFn
+            // schema's createOnly paths (go-to-k/cdkd#3803).
+            requiresReplacement: this.syntheticRequiresReplacement(
               change.resourceType,
               propKey,
-              undefined,
-              undefined
+              syntheticCreateOnlyPaths
             ),
           });
         }
@@ -777,6 +949,7 @@ export class DiffCalculator {
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>,
     freshParameters?: ReadonlySet<string>
   ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
@@ -909,12 +1082,12 @@ export class DiffCalculator {
           // resolved value turns out equal to the record, which for arms 3 and
           // 4 is the common case (the output or the handler's `Data` did not
           // move) and which a same-deploy edit elsewhere on the reader must not
-          // turn into a destroy + recreate.
-          requiresReplacement: this.replacementRules.requiresReplacement(
+          // turn into a destroy + recreate. A type the registry does not
+          // classify falls back to the CFn schema (go-to-k/cdkd#3803).
+          requiresReplacement: this.syntheticRequiresReplacement(
             change.resourceType,
             propKey,
-            undefined,
-            undefined
+            syntheticCreateOnlyPaths
           ),
           inPlacePropagated: true,
         });
@@ -1288,7 +1461,7 @@ export class DiffCalculator {
         return false; // key added OR removed
       }
       for (const key of bKeys) {
-        if (!(key in aObj)) {
+        if (!Object.hasOwn(aObj, key)) {
           return false; // New key added in template
         }
         if (!this.valuesEqual(aObj[key], bObj[key])) {

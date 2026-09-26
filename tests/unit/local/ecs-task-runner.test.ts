@@ -204,6 +204,76 @@ describe('buildDockerRunArgs', () => {
     expect(sensitiveEnv['X']).toBe('resolved-value');
   });
 
+  it('delivers a template env var named __proto__ as a -e flag (#3515)', () => {
+    // `Object.assign(finalEnv, container.environment)` used [[Set]], so an own
+    // `__proto__` key ran Object.prototype's setter and never reached argv.
+    const environment = JSON.parse('{"__proto__": "proto-value", "PLAIN": "p"}') as Record<
+      string,
+      string
+    >;
+    const c = makeContainer({ name: 'svc', environment });
+    const { args } = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: { svc: { OVR: 'o' } },
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    expect(args).toContain('__proto__=proto-value');
+    expect(args).toContain('PLAIN=p');
+    expect(args).toContain('OVR=o');
+  });
+
+  it('passes a resolved SECRET named __proto__ through the spawn env, never the argv (#3515)', () => {
+    const c = makeContainer({ name: 'svc', environment: { PLAIN: 'p' } });
+    const { args, sensitiveEnv } = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [{ name: '__proto__', value: 'proto-secret-value' }],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    // Value-less flag on the argv; the value only in the spawn env.
+    expect(args).toContain('__proto__');
+    expect(args.join(' ')).not.toContain('proto-secret-value');
+    expect(Object.hasOwn(sensitiveEnv, '__proto__')).toBe(true);
+    expect(sensitiveEnv['__proto__']).toBe('proto-secret-value');
+  });
+
+  it('applies an --env-vars override named __proto__ (#3515)', () => {
+    const c = makeContainer({ name: 'svc', environment: { PLAIN: 'p' } });
+    const overrides = JSON.parse('{"svc": {"__proto__": "from-override"}}') as Record<
+      string,
+      Record<string, string | null>
+    >;
+    const { args } = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: overrides,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    expect(args).toContain('__proto__=from-override');
+  });
+
   it('keeps AWS credential env out of argv even when set from the template (issue #2183)', () => {
     const c = makeContainer({
       name: 'svc',

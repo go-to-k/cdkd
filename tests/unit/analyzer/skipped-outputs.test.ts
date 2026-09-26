@@ -444,7 +444,7 @@ describe('referencedLogicalIds', () => {
       }),
     ]).toEqual(['RealSecret']);
     // The match is on the COMPLETE placeholder, as `resolveSub`'s own
-    // `varNameStr in variables` is. Both dotted directions:
+    // `Object.hasOwn(variables, varNameStr)` is. Both dotted directions:
     // a map declaring `A` does NOT shadow `${A.Arn}` (a real GetAtt on `A`)...
     expect([
       ...referencedLogicalIds({ Value: { 'Fn::Sub': ['${A.Arn}', { A: 'unused' }] } }),
@@ -455,7 +455,7 @@ describe('referencedLogicalIds', () => {
     ]).toEqual([]);
     // An INHERITED variable name shadows nothing: the resolver builds its own
     // map (an `Object.create(null)` since go-to-k/cdkd#2764) and tests
-    // `varNameStr in variables` against it, so nothing can arrive inherited
+    // `Object.hasOwn(variables, varNameStr)` against it, so nothing can arrive inherited
     // there — matching own keys only is what keeps a template's prototype
     // from shadowing a real reference.
     const inheritedVars = Object.create({ Shadowed: 'x' }) as Record<string, unknown>;

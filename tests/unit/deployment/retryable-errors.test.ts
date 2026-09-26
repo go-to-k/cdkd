@@ -12,11 +12,12 @@ import {
   isRecreateRetryableError,
   isRetryableTransientError,
   isUpdateUnsupportedError,
-  CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK,
   markNonRetryable,
   markRedactedCause,
   retryClassificationText,
+  markNameCollision,
 } from '../../../src/deployment/retryable-errors.js';
+import { ccUnsupportedActionError, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import {
   CdkdError,
   IntrinsicResolutionRefusalError,
@@ -26,6 +27,8 @@ import {
   StackTerminationProtectionError,
 } from '../../../src/utils/error-handler.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
+import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -769,7 +772,9 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     // before this change — the exclusion is about not adding a SECOND route.
     const real = 'A listener with the specified port already exists';
     expect(isNameCollisionError(real)).toBe(true);
-    expect(isNameCollisionErrorFrom(sdkError('DuplicateListenerException', real), LID)).toBe(true);
+    expect(
+      isNameCollisionErrorFrom(awsSdkError(real, 'DuplicateListenerException'), LID)
+    ).toBe(true);
   });
 
   it('does not credit Lambda ResourceConflictException by name', () => {
@@ -780,7 +785,7 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'The function is in Pending'), LID)
     ).toBe(false);
     expect(
-      isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'Function already exist: fn'), LID)
+      isNameCollisionErrorFrom(awsSdkError('Function already exist: fn', 'ResourceConflictException'), LID)
     ).toBe(true);
   });
 
@@ -800,8 +805,8 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       // and deleted an entire live child stack.
       //
       // The child failure carries a NAME in the list on purpose. With only a
-      // prose message this case would pass for the WRONG reason — the depth-0
-      // gating already refuses a buried message, so the anchor would be
+      // prose message this case would pass for the WRONG reason — the SDK
+      // gate already refuses a buried non-AWS message, so the anchor would be
       // untested here and the comment above would overclaim. Measured: with the
       // anchor removed this returns true.
       const childFailure = ownedError('ChildTargetGroup', ELBV2_NAME, ELBV2_MESSAGE);
@@ -826,47 +831,160 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     });
   });
 
-  describe('the MESSAGE is read at depth 0 ONLY', () => {
-    it('a collision phrase in a CAUSE does not classify, a top-level one does', () => {
-      // The widening this predicate deliberately does NOT do. Reading prose
-      // down the chain is what `retryClassificationText` refuses for a merely
-      // RETRY decision; here the verdict is a delete. Both halves pinned, so
-      // gating to depth 0 is a decision rather than an accident.
-      const buried = new Error('Failed to create resource Thing', {
+  describe('the prose needs BOTH an SDK link and a top-level relay (#3816)', () => {
+    it('credits AWS prose relayed by a provider wrapper, at depth 0 or down the chain', () => {
+      const raw = awsSdkError('Bucket already exists');
+      expect(isNameCollisionErrorFrom(raw, LID)).toBe(true);
+      const wrapped = new Error(`Failed to create S3 bucket ${LID}: ${raw.message}`, {
+        cause: raw,
+      });
+      expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(true);
+    });
+
+    it('does NOT credit a cdkd refusal quoting a template value, with no SDK link', () => {
+      // The issue's shape: an untyped `ProvisioningError` naming THIS resource,
+      // its message quoting a property value that carries the phrase.
+      const refusal = new ProvisioningError(
+        'AWS::AppSync::DataSource DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL must be a ' +
+          'number of minutes, got "x already exists" — cdkd refuses to drop it silently',
+        'AWS::AppSync::DataSource',
+        LID
+      );
+      expect(isNameCollisionError(refusal.message)).toBe(true);
+      expect(isNameCollisionErrorFrom(refusal, LID)).toBe(false);
+    });
+
+    it('does NOT credit a buried SDK collision the top level does not relay', () => {
+      // A provider's opt-out: Glue rewords an occupied table name delete-first
+      // cannot clear (#3750), so the wrapper carries no phrase.
+      const reworded = new Error("a table named 'taken' is present in database 'mydb'", {
+        cause: awsSdkError('Table already exists.', 'AlreadyExistsException'),
+      });
+      expect(isNameCollisionErrorFrom(reworded, LID)).toBe(false);
+    });
+
+    it('does NOT credit a phrase in a cause without $metadata', () => {
+      const buried = new Error('Failed to create resource Thing: Bucket already exists', {
         cause: new Error('Bucket already exists'),
       });
       expect(isNameCollisionErrorFrom(buried, LID)).toBe(false);
-      expect(isNameCollisionErrorFrom(new Error('Bucket already exists'), LID)).toBe(true);
+    });
+
+    it('credits the Cloud Control AlreadyExists handler code', () => {
+      const cc = new CloudControlOperationFailedError(
+        `CREATE failed for ${LID}: Resource of type 'AWS::Pipes::Pipe' already exists.`,
+        'AWS::Pipes::Pipe',
+        LID,
+        undefined,
+        'AlreadyExists',
+        'CREATE'
+      );
+      expect(isNameCollisionErrorFrom(cc, LID)).toBe(true);
+      // The code, not the text: the same message under another code does not.
+      const other = new CloudControlOperationFailedError(
+        cc.message,
+        'AWS::Pipes::Pipe',
+        LID,
+        undefined,
+        'InvalidRequest',
+        'CREATE'
+      );
+      expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
+    });
+
+    it('anchors the SDK prose too: a link naming another resource refuses it', () => {
+      const other = Object.assign(awsSdkError('Bucket already exists'), {
+        logicalId: 'SomeOtherBucket',
+      });
+      expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
+      expect(isNameCollisionErrorFrom(other, 'SomeOtherBucket')).toBe(true);
     });
   });
 
-  it('does NOT read .message off a non-Error object', () => {
-    // The DELETE-direction narrowing review caught. The call sites' pre-#3208
-    // arm was `err instanceof Error ? err.message : String(err)`, so a thrown
-    // plain object stringified to "[object Object]" and did NOT match. A
-    // revision that read `.message` off any object would have started matching
-    // it — widening the predicate that authorises a delete, under a comment
-    // claiming byte-identical behaviour.
-    const plain = { message: 'Bucket already exists' };
-    expect(isNameCollisionError(String(plain))).toBe(false);
-    expect(isNameCollisionErrorFrom(plain, LID)).toBe(false);
-    // ...while a real Error with the same text still matches, so the narrowing
-    // is about the SHAPE and not about the phrase.
-    expect(isNameCollisionErrorFrom(new Error(plain.message), LID)).toBe(true);
+  it('credits a provider-set markNameCollision, anchored like every other signal', () => {
+    // How a provider declares a collision AWS states without "already exists"
+    // (Route 53's CNAME-beside-a-record) now that cdkd-authored text is not read.
+    const marked = markNameCollision(
+      new ProvisioningError('Failed to create record set Rec: conflicts', 'AWS::Route53::RecordSet', LID)
+    );
+    expect(isNameCollisionErrorFrom(marked, LID)).toBe(true);
+    expect(isNameCollisionErrorFrom(marked, 'OtherRecord')).toBe(false);
+    // It survives the secret mask's clone, which is what the delete-first
+    // readers receive.
+    const masked = maskSecretsInError(marked, new Map([['Failed to create record set', '{{resolve:ssm:x}}']]));
+    expect(masked).not.toBe(marked);
+    expect(masked.message).not.toContain('Failed to create record set');
+    expect(isNameCollisionErrorFrom(masked, LID)).toBe(true);
+    // An unmarked twin with the same text is not.
+    expect(
+      isNameCollisionErrorFrom(
+        new ProvisioningError(marked.message, 'AWS::Route53::RecordSet', LID),
+        LID
+      )
+    ).toBe(false);
   });
 
-  it('preserves the call sites pre-#3208 String() arm for a non-Error throw', () => {
-    // All three sites previously classified `String(err)`; reading `.message`
-    // alone would have dropped a thrown object with only a toString.
-    const thrown = { toString: () => 'Queue already exists' };
-    expect(isNameCollisionErrorFrom(thrown, LID)).toBe(true);
+  it('does NOT trust bare $metadata: the retry middleware stamps it on socket errors', () => {
+    const socket = Object.assign(new Error('Bucket already exists'), {
+      $metadata: { attempts: 3, totalRetryDelay: 900 },
+    });
+    const wrapped = new Error(`Failed to create resource ${LID}: ${socket.message}`, {
+      cause: socket,
+    });
+    expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(false);
   });
 
-  it('is strictly additive over the string form', () => {
-    const legacy = 'Failed to create S3 bucket MyBucket: BucketAlreadyExists';
-    expect(isNameCollisionError(legacy)).toBe(true);
-    expect(isNameCollisionErrorFrom(new Error(legacy), LID)).toBe(true);
-    expect(isNameCollisionErrorFrom(legacy, LID)).toBe(true);
+  it('credits a Cloud Control AlreadyExists code below a wrapper too', () => {
+    const cc = new CloudControlOperationFailedError(
+      `CREATE failed for ${LID}: taken`,
+      'AWS::Pipes::Pipe',
+      LID,
+      undefined,
+      'AlreadyExists',
+      'CREATE'
+    );
+    expect(isNameCollisionErrorFrom(new Error('outer', { cause: cc }), LID)).toBe(true);
+  });
+
+  it('does NOT read an AlreadyExists code inside a logical id (#3816)', () => {
+    // A CDK id like this sits in every provider wrapper and in the physical
+    // name AWS echoes back — here Lambda's PENDING-state conflict, which must
+    // never classify.
+    const arn = 'arn:aws:lambda:us-east-1:111122223333:function:Stack-UserAlreadyExistsHandler1A2B3C4D';
+    const pending = awsSdkError(`An update is in progress for resource: ${arn}`);
+    const wrapped = new Error(
+      `Failed to create Lambda function UserAlreadyExistsHandler1A2B3C4D: ${pending.message}`,
+      { cause: pending }
+    );
+    expect(isNameCollisionError(wrapped.message)).toBe(false);
+    expect(isNameCollisionErrorFrom(wrapped, 'UserAlreadyExistsHandler1A2B3C4D')).toBe(false);
+    // ...while the code as its own token still matches.
+    expect(isNameCollisionError('EntityAlreadyExists: Role with name r exists')).toBe(true);
+    expect(isNameCollisionError('DBInstanceAlreadyExistsFault')).toBe(true);
+    expect(isNameCollisionError('Qev2IdcApplicationAlreadyExistsFault')).toBe(true);
+    // An unhashed id inside a name or ARN is refused on either side.
+    expect(isNameCollisionError('function:Stack-UserAlreadyExists')).toBe(false);
+    expect(isNameCollisionError('arn:aws:lambda:x:1:function:Stack-UserAlreadyExists-a1b2')).toBe(false);
+  });
+
+  it("does NOT classify S3's BucketAlreadyExists, whose message states neither form", () => {
+    // Accepted narrowing: another account holds the name, so a delete-first
+    // would destroy the old bucket and free nothing.
+    const aws = awsSdkError(
+      'The requested bucket name is not available. The bucket namespace is shared by all users of the system.',
+      'BucketAlreadyExists'
+    );
+    const wrapped = new Error(`Failed to create S3 bucket ${LID}: BucketAlreadyExists. See details`, {
+      cause: aws,
+    });
+    expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(false);
+  });
+
+  it('does NOT classify a non-Error throw or a string, whatever its text', () => {
+    // Neither can carry AWS's `$metadata`.
+    expect(isNameCollisionErrorFrom({ message: 'Bucket already exists' }, LID)).toBe(false);
+    expect(isNameCollisionErrorFrom({ toString: () => 'Queue already exists' }, LID)).toBe(false);
+    expect(isNameCollisionErrorFrom('Queue already exists', LID)).toBe(false);
   });
 
   it.each([[undefined], [null], [42], [{}], [new Error('unrelated failure')]])(
@@ -1887,34 +2005,10 @@ describe('retryClassificationText (issue #2302)', () => {
 });
 
 describe('isUpdateUnsupportedError (issue #2520)', () => {
-  // Production's byte shape, reconstructed from the two sources that build it
-  // rather than invented:
-  //   - the AWS rejection: `aws cloudcontrol update-resource --type-name
-  //     AWS::DocDB::DBCluster` answers an error whose `name` is
-  //     `UnsupportedActionException` and whose `message` is `Resource type
-  //     AWS::DocDB::DBCluster does not support UPDATE action` (measured
-  //     2026-09-04) — the NAME is NOT repeated inside the message.
-  //   - the wrapper: `CloudControlProvider.handleError` interpolates
-  //     `err.message` only, into the "not supported by Cloud Control API"
-  //     sentence, and passes the raw error as `cause`.
-  function ccUnsupportedActionError(resourceType: string): Error {
-    const raw = new Error(`Resource type ${resourceType} does not support UPDATE action`);
-    raw.name = 'UnsupportedActionException';
-    return raw;
-  }
-
-  function handleErrorWrapper(resourceType: string, logicalId: string, cause: Error): Error {
-    return new ProvisioningError(
-      `Resource type ${resourceType} is not supported by Cloud Control API and no SDK ` +
-        `provider is registered.\nPlease report this issue at ` +
-        `https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n` +
-        `Error: ${cause.message}`,
-      resourceType,
-      logicalId,
-      'pid-1',
-      cause
-    );
-  }
+  // Production's byte shape: `ccUnsupportedActionError` / `handleErrorWrapper`
+  // in `tests/unit/_cc-unsupported-action.ts`. The AWS wording the predicate
+  // no longer reads (issue #3810):
+  const PHRASE = 'does not support UPDATE';
 
   it('matches the wrapped synchronous rejection through the cause chain', () => {
     const err = handleErrorWrapper(
@@ -1932,7 +2026,7 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     const raw = new Error('Resource type AWS::DocDB::DBCluster cannot be modified');
     raw.name = 'UnsupportedActionException';
     const err = handleErrorWrapper('AWS::DocDB::DBCluster', 'MyCluster', raw);
-    expect(err.message).not.toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+    expect(err.message).not.toContain(PHRASE);
     expect(isUpdateUnsupportedError(err, 'MyCluster')).toBe(true);
   });
 
@@ -1953,21 +2047,60 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(err, 'MyCluster')).toBe(true);
   });
 
-  it('still accepts the raw AWS prose at the TOP level, including from a thrown string', () => {
-    // The pre-#2520 reach, kept: a provider that rethrows the wording flat, and
-    // one that throws a bare string (nothing in the type system stops it).
+  it('does NOT accept AWS prose flat at the top level, nor from a thrown string (issue #3810)', () => {
+    // The pre-#2520 reach, dropped: a message can quote template-chosen text,
+    // and both real shapes carry a structured field.
     expect(
       isUpdateUnsupportedError(
         new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
         'MyTable'
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isUpdateUnsupportedError(
         'Resource type AWS::DynamoDB::Table does not support UPDATE action',
         'MyTable'
       )
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('does NOT match a cdkd refusal quoting a template value that carries the phrase (issue #3810)', () => {
+    // AppSync's `toDeltaSyncTtl` shape: an untyped `ProvisioningError` naming
+    // THIS resource, so the anchor passes it; only the absent prose read keeps
+    // it from replacing the data source without `--replace`.
+    const err = new ProvisioningError(
+      'AWS::AppSync::DataSource DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL must be a ' +
+        'number of minutes (CFn types it as a string), got "does not support UPDATE" — cdkd ' +
+        'refuses to drop it silently',
+      'AWS::AppSync::DataSource',
+      'MyDs'
+    );
+    expect(err.message).toContain(PHRASE);
+    expect(isUpdateUnsupportedError(err, 'MyDs')).toBe(false);
+  });
+
+  it('does NOT match a typed ResourceUpdateNotSupportedError whose message quotes the prose (issue #3757)', () => {
+    // The typed refusal is the `--replace` opt-in trigger; its suggestion
+    // interpolates template-chosen names, which can carry the phrase.
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Glue::Table',
+      'MyTable',
+      `renaming 'x' to 'does not support UPDATE' needs --replace`
+    );
+    expect(err.message).toContain(PHRASE);
+    expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
+  });
+
+  it('does NOT match a typed ResourceUpdateNotSupportedError wrapping a named UnsupportedActionException', () => {
+    // The #3757 guard is a live fence: the constructor accepts a `cause`, and
+    // without the guard the name at depth 1 would classify it.
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Glue::Table',
+      'MyTable',
+      undefined,
+      ccUnsupportedActionError('AWS::Glue::Table')
+    );
+    expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
   });
 
   it('does NOT match the exception name quoted in a message (the unreachable half #2520 removed)', () => {
@@ -2013,18 +2146,13 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(forCreate, 'MyCluster')).toBe(false);
   });
 
-  it('applies the resource anchor to the PROSE fallback too, not only the structured arms', () => {
-    // The prose read sits INSIDE the walk, after the anchor, so the anchor
-    // governs every route into a `true`. Ordered ahead of it, the nested-stack
-    // immunity would rest on the child engine's wrapper happening to quote no
-    // AWS text — a property of another file that nothing here watches. This
-    // case is the shape that ordering decides: a top-level rejection that
-    // NAMES another resource and quotes AWS's prose.
-    const foreign = new ProvisioningError(
-      'Resource type AWS::DynamoDB::Table does not support UPDATE action',
+  it('applies the resource anchor at the TOP level, not only down the chain', () => {
+    // A top-level wrapper that NAMES another resource is refused before its
+    // cause's name is read.
+    const foreign = handleErrorWrapper(
       'AWS::DynamoDB::Table',
       'SomeOtherResource',
-      'other-pid'
+      ccUnsupportedActionError('AWS::DynamoDB::Table')
     );
     expect(isUpdateUnsupportedError(foreign, 'MyNestedStack')).toBe(false);
     // ...and the same object still classifies for the resource it names, so
@@ -2032,29 +2160,13 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(foreign, 'SomeOtherResource')).toBe(true);
   });
 
-  it('reads AWS prose at the TOP LEVEL ONLY — a cause that quotes it does not qualify', () => {
-    // The property the pre-#2520 predicate had by CONSTRUCTION (the read sat
-    // outside the walk) and which the anchored ordering turned into a
-    // conditional one (`depth === 0`). Measured unpinned: reading the prose at
-    // every depth left all 176 cases green, and that widening is exactly the
-    // destructive direction — a nested wrapper whose cause happens to quote
-    // the phrase would newly take the DELETE + CREATE fallback.
-    //
+  it('reads no prose down the chain either — a cause that quotes it does not qualify', () => {
     // Neither link carries a `logicalId`, so the anchor cannot be what
-    // produces the `false`; only the depth gate can.
+    // produces the `false`.
     const causeQuotesIt = Object.assign(new Error('the replacement could not be applied'), {
       cause: new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
     });
     expect(isUpdateUnsupportedError(causeQuotesIt, 'MyTable')).toBe(false);
-    // The control: the SAME prose at the top level does qualify, so the case
-    // above is about the depth and not about the phrase having stopped
-    // matching at all.
-    expect(
-      isUpdateUnsupportedError(
-        new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
-        'MyTable'
-      )
-    ).toBe(true);
   });
 
   it('does NOT match the Cloud Control handler code NotUpdatable', () => {
@@ -2105,7 +2217,7 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
 
     it('refuses the match when the chain names a DIFFERENT resource', () => {
       const err = nestedChainFromChild('ChildTable');
-      expect(err.message).not.toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+      expect(err.message).not.toContain(PHRASE);
       expect(isUpdateUnsupportedError(err, 'MyNestedStack')).toBe(false);
     });
 

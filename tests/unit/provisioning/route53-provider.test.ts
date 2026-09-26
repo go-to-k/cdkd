@@ -34,6 +34,12 @@ import {
   Route53Provider,
   isZoneDisabledForMutationError,
 } from '../../../src/provisioning/providers/route53-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 describe('Route53Provider', () => {
   let provider: Route53Provider;
@@ -534,6 +540,54 @@ describe('Route53Provider', () => {
           });
           expect(mockSend.mock.calls[5][0].constructor.name).toBe('DeleteHostedZoneCommand');
         } finally {
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
+        }
+      });
+
+      // Issue #3136: the hosted zone id is the `state.json`-borne physical id,
+      // so the manual-disable command in the timeout refusal (a THROWN
+      // message, persisted to the events store) routes through
+      // `pasteableAwsCommand` — quoted, or withheld.
+      it.each([
+        ['quoted', `Z1${FORGED_QUOTE}`],
+        ['withheld', `Z1${FORGED_CTRL}`],
+      ])('the accelerated-recovery timeout command is %s for a forged zone id', async (outcome, zoneId) => {
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '30';
+        let probes = 0;
+        mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+          const name = command.constructor.name;
+          if (name === 'ListQueryLoggingConfigsCommand') {
+            return Promise.resolve({ QueryLoggingConfigs: [] });
+          }
+          if (name === 'GetHostedZoneCommand') {
+            probes += 1;
+            return Promise.resolve({
+              HostedZone: {
+                Id: zoneId,
+                Features: { AcceleratedRecoveryStatus: probes === 1 ? 'ENABLED' : 'DISABLING' },
+              },
+            });
+          }
+          return Promise.resolve({});
+        });
+        try {
+          const message = await provider
+            .delete('MyZone', zoneId, 'AWS::Route53::HostedZone')
+            .then(
+              () => '',
+              (e: unknown) => String((e as Error).message)
+            );
+          expect(message).toContain('Timed out after 30ms');
+          expect(message).not.toContain('`aws route53');
+          if (outcome === 'quoted') {
+            expectQuotedAfter(message, 'aws route53 update-hosted-zone-features --hosted-zone-id ', zoneId);
+          } else {
+            expectWithheld(message, 'aws route53 update-hosted-zone-features');
+          }
+        } finally {
+          mockSend.mockReset();
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
         }

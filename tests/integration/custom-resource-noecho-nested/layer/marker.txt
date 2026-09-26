@@ -1,0 +1,1 @@
+Content of the fixture's NoEcho-reader layers (go-to-k/cdkd#3729). Never read.

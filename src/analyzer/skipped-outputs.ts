@@ -386,7 +386,7 @@ export function referencedLogicalIds(entry: TemplateOutput | undefined): Set<str
       // unrelated resource of the same name un-bind the record.
       //
       // Matched on the COMPLETE placeholder text, which is what `resolveSub`
-      // itself tests (`varNameStr in variables`, before any `Ref` / `GetAtt`
+      // itself tests (`Object.hasOwn(variables, varNameStr)`, before any `Ref` / `GetAtt`
       // fallback). Matching a leading segment instead would be wrong in both
       // directions: `${A.Arn}` with a map declaring `A` is a real `GetAtt` on
       // `A` that must still be collected, and a map declaring `A.Arn` really

@@ -29,6 +29,8 @@ import type { CloudFormationTemplate, ResourceProvider } from '../../../src/type
 import type { ResourceChange } from '../../../src/types/state.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
 type InnerError = Error & { code?: string; cause?: unknown };
@@ -82,14 +84,6 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
-/**
- * The Cloud Control "no UPDATE handler" prose, which
- * `isUpdateUnsupportedError` accepts as a top-level fallback. Reaching the
- * fallback off the REJECTION rather than off `--replace` is what keeps these
- * cases flag-free.
- */
-const CC_UNSUPPORTED = 'Resource type AWS::Glue::SecurityConfiguration does not support UPDATE action';
-
 /** A type with no data to lose, so the stateful guard never fires. */
 const TYPE = 'AWS::Glue::SecurityConfiguration';
 
@@ -111,8 +105,11 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     deleteCalls = [];
     updateProvider = {
       create: vi.fn(),
-      update: vi.fn().mockImplementation(async () => {
-        throw new Error(CC_UNSUPPORTED);
+      // The Cloud Control "no UPDATE handler" rejection. Reaching the fallback
+      // off the REJECTION rather than off `--replace` keeps these cases
+      // flag-free.
+      update: vi.fn().mockImplementation(async (logicalId: string) => {
+        throw ccUpdateUnsupportedRejection(TYPE, logicalId);
       }),
       delete: vi.fn().mockImplementation(async (_lid: string, physicalId: string) => {
         deleteCalls.push(physicalId);
@@ -374,7 +371,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       // gets the already-deleted sentence, never the "Retain pins that
       // resource in place" refusal, which would be a lie on a path that just
       // deleted the name holder.
-      createRejection = () => new Error('Security configuration already exists: MyResource');
+      createRejection = () => awsSdkError('Security configuration already exists: MyResource');
 
       const err = await invokeExpectingFailure(makeEngine());
 
@@ -385,7 +382,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     });
 
     it('leaves the Retain arm’s issue #2518 collision refusal untouched', async () => {
-      createRejection = () => new Error('Security configuration already exists: MyResource');
+      createRejection = () => awsSdkError('Security configuration already exists: MyResource');
 
       const err = await invokeExpectingFailure(makeEngine(), 'Retain');
 

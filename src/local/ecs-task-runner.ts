@@ -16,6 +16,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 import { displayAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import {
@@ -1155,8 +1156,14 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     finalEnv['AWS_SHARED_CREDENTIALS_FILE'] = opts.profileCredentialsFile.containerPath;
     finalEnv['AWS_PROFILE'] = opts.profileCredentialsFile.profileName;
   }
-  Object.assign(finalEnv, container.environment);
-  for (const s of secrets) finalEnv[s.name] = s.value;
+  // Own-key defines, not `Object.assign` / `finalEnv[k] = v` (issue #3515):
+  // these keys come from the template, and a `[[Set]]` of an own `__proto__`
+  // key runs Object.prototype's setter, so the variable never reached the
+  // container. The metadata / profile keys above are constants. A secret
+  // named `__proto__` then travels value-less on the argv and through
+  // `partitionSensitiveEnv`'s `sensitiveEnv`, which defines it as an own key.
+  for (const [k, v] of Object.entries(container.environment)) defineOwnKey(finalEnv, k, v);
+  for (const s of secrets) defineOwnKey(finalEnv, s.name, s.value);
 
   const overrides = opts.envOverrides;
   if (overrides) {
@@ -1222,7 +1229,7 @@ function applyOverrideMap(
   for (const [k, v] of Object.entries(map)) {
     if (v === null) delete acc[k];
     else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      acc[k] = String(v);
+      defineOwnKey(acc, k, String(v));
     }
   }
 }

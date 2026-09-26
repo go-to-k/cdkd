@@ -334,6 +334,107 @@ describe('applyCrossStackResolverToTask', () => {
     expect(resolver.resolveImport).not.toHaveBeenCalled();
   });
 
+  // #3515, site: applyCrossStackResolverToTask's Environment "already resolved
+  // by the sync pass" skip. `key in container.environment` answers TRUE for a
+  // name INHERITED from Object.prototype, so an env var named `constructor`
+  // whose value is a cross-stack read the sync pass dropped was skipped as
+  // "already resolved" and never resolved at all.
+  it('resolves a cross-stack Environment entry named after an Object.prototype member (#3515)', async () => {
+    const container = makeContainer('app', {
+      warnings: [`Environment 'constructor' dropped: Fn::ImportValue '...': unsupported intrinsic`],
+    });
+    const rawContainers = [
+      {
+        Name: 'app',
+        Environment: [{ Name: 'constructor', Value: { 'Fn::ImportValue': 'ProducerStack-Ctor' } }],
+      },
+    ];
+    const task = makeTask('S1', [container], rawContainers, [
+      `Container 'app': Environment 'constructor' dropped: Fn::ImportValue '...': unsupported intrinsic`,
+    ]);
+
+    const resolver = makeResolver({
+      resolveImport: vi
+        .fn()
+        .mockImplementation((name: string) =>
+          Promise.resolve(name === 'ProducerStack-Ctor' ? 'resolved-ctor-value' : undefined)
+        ),
+    });
+    const context: SubstitutionContext = { resources: {}, crossStackResolver: resolver };
+
+    await applyCrossStackResolverToTask(task, context);
+
+    expect(Object.hasOwn(container.environment, 'constructor')).toBe(true);
+    expect(container.environment['constructor']).toBe('resolved-ctor-value');
+    expect(resolver.resolveImport).toHaveBeenCalledWith('ProducerStack-Ctor');
+    expect(container.warnings).toEqual([]);
+    expect(task.warnings).toEqual([]);
+  });
+
+  // #3515 review: an env var named `__proto__`. `Object.hasOwn` lets it past
+  // the skip (correctly: it is not an own key yet), but the write that
+  // followed was a plain assignment, which ran Object.prototype's setter, so
+  // no own key was created while the "dropped" warnings were still cleared.
+  // The write is an own-key define now, so the var is actually delivered.
+  it('delivers a cross-stack Environment entry named __proto__ as an own key (#3515)', async () => {
+    const container = makeContainer('app', {
+      warnings: [`Environment '__proto__' dropped: Fn::ImportValue '...': unsupported intrinsic`],
+    });
+    const rawContainers = JSON.parse(
+      '[{"Name":"app","Environment":[{"Name":"__proto__","Value":{"Fn::ImportValue":"ProducerStack-Proto"}}]}]'
+    ) as Record<string, unknown>[];
+    const task = makeTask('S1', [container], rawContainers, [
+      `Container 'app': Environment '__proto__' dropped: Fn::ImportValue '...': unsupported intrinsic`,
+    ]);
+    const resolver = makeResolver({
+      resolveImport: vi
+        .fn()
+        .mockImplementation((name: string) =>
+          Promise.resolve(name === 'ProducerStack-Proto' ? 'resolved-proto-value' : undefined)
+        ),
+    });
+    const context: SubstitutionContext = { resources: {}, crossStackResolver: resolver };
+
+    await applyCrossStackResolverToTask(task, context);
+
+    expect(Object.hasOwn(container.environment, '__proto__')).toBe(true);
+    expect(container.environment['__proto__']).toBe('resolved-proto-value');
+    expect(Object.getPrototypeOf(container.environment)).toBe(Object.prototype);
+    expect(container.warnings).toEqual([]);
+    expect(task.warnings).toEqual([]);
+  });
+
+  // #3515, site: the same skip — control. When the sync pass DID write an OWN
+  // `constructor` key, the skip is correct: the post-pass must neither re-resolve
+  // nor overwrite it. Catches a fix that over-answers and treats every
+  // Object.prototype member name as absent. (The raw value is a cross-stack
+  // intrinsic, not a literal: a literal is skipped by the typeof arm BEFORE the
+  // membership check, so it could not tell the two apart.)
+  it('keeps an OWN `constructor` env entry the sync pass wrote, without re-resolving it (#3515 control)', async () => {
+    const container = makeContainer('app', {
+      environment: { constructor: 'sync-pass-value' },
+    });
+    const rawContainers = [
+      {
+        Name: 'app',
+        Environment: [{ Name: 'constructor', Value: { 'Fn::ImportValue': 'ProducerStack-Ctor' } }],
+      },
+    ];
+    const task = makeTask('S1', [container], rawContainers);
+
+    const resolver = makeResolver({
+      resolveImport: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve('post-pass-value-DO-NOT-USE')),
+    });
+    const context: SubstitutionContext = { resources: {}, crossStackResolver: resolver };
+
+    await applyCrossStackResolverToTask(task, context);
+
+    expect(container.environment['constructor']).toBe('sync-pass-value');
+    expect(resolver.resolveImport).not.toHaveBeenCalled();
+  });
+
   it('skips Secrets entries already present in container.secrets', async () => {
     const container = makeContainer('app', {
       secrets: [{ name: 'EXISTING', valueFrom: 'arn:aws:secretsmanager:...:existing' }],

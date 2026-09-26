@@ -43,6 +43,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
 const LB_ARN =
@@ -130,3 +136,112 @@ describe('ELBv2Provider createLoadBalancer partial-create cleanup (Issue #376)',
     expect(warnMsg).toContain(LB_ARN);
   });
 });
+
+// Issue #3136: the load balancer and target group ARNs are AWS-minted (off the
+// create response) but embed the TEMPLATE-chosen name, and both manual-delete
+// commands route them through `pasteableAwsCommand`.
+describe('ELBv2Provider partial-create manual-delete commands (issue #3136)', () => {
+  let provider: ELBv2Provider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+    provider = new ELBv2Provider();
+  });
+
+  async function lbWarn(arn: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({
+      LoadBalancers: [{ LoadBalancerArn: arn, DNSName: 'd', CanonicalHostedZoneId: 'Z', LoadBalancerName: 'MyLb' }],
+    });
+    mockSend.mockRejectedValueOnce(new Error('ModifyLBAttributes boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteLoadBalancer also failed'));
+    await expect(
+      provider.create('MyLb', RESOURCE_TYPE, {
+        Name: 'MyLb',
+        Subnets: ['subnet-aaa'],
+        LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+      })
+    ).rejects.toThrow('ModifyLBAttributes boom');
+    return String(warnSpy.mock.calls[0][0]);
+  }
+
+  async function tgWarn(arn: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ TargetGroups: [{ TargetGroupArn: arn, TargetGroupName: 'MyTg' }] });
+    mockSend.mockRejectedValueOnce(new Error('ModifyTGAttributes boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteTargetGroup also failed'));
+    await expect(
+      provider.create('MyTg', 'AWS::ElasticLoadBalancingV2::TargetGroup', {
+        Name: 'MyTg',
+        Port: 80,
+        Protocol: 'HTTP',
+        VpcId: 'vpc-aaa',
+        TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '30' }],
+      })
+    ).rejects.toThrow('ModifyTGAttributes boom');
+    return String(warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('TargetGroup')));
+  }
+
+  it.each([
+    ['LoadBalancer', lbWarn, 'aws elbv2 delete-load-balancer --load-balancer-arn ', LB_ARN],
+    [
+      'TargetGroup',
+      tgWarn,
+      'aws elbv2 delete-target-group --target-group-arn ',
+      'arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/MyTg/abc',
+    ],
+  ] as const)('%s: a clean ARN is bare; a forged one is quoted or withholds the command', async (_t, warnFor, flag, arn) => {
+    expect(await warnFor(arn)).toContain(`${flag}${arn}`);
+    warnSpy.mockReset();
+    expectQuotedAfter(await warnFor(`${arn}${FORGED_QUOTE}`), flag, `${arn}${FORGED_QUOTE}`);
+    warnSpy.mockReset();
+    expectWithheld(await warnFor(`${arn}${FORGED_CTRL}`), flag.trim());
+  });
+
+  it('withholds the target group command for an ARN the caller masker would change', async () => {
+    const arn = 'arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/MyTg-s3cr3t/abc';
+    mockSend.mockResolvedValueOnce({ TargetGroups: [{ TargetGroupArn: arn, TargetGroupName: 'MyTg' }] });
+    mockSend.mockRejectedValueOnce(new Error('ModifyTGAttributes boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteTargetGroup also failed'));
+    await expect(
+      provider.create(
+        'MyTg',
+        'AWS::ElasticLoadBalancingV2::TargetGroup',
+        {
+          Name: 'MyTg',
+          Port: 80,
+          Protocol: 'HTTP',
+          VpcId: 'vpc-aaa',
+          TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '30' }],
+        },
+        { maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***') }
+      )
+    ).rejects.toThrow('ModifyTGAttributes boom');
+    expectWithheld(
+      warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('TargetGroup'))!,
+      'aws elbv2 delete-target-group'
+    );
+  });
+
+  it('withholds the load balancer command for an ARN the caller masker would change', async () => {
+    const arn = `${LB_ARN}-s3cr3t`;
+    mockSend.mockResolvedValueOnce({
+      LoadBalancers: [{ LoadBalancerArn: arn, DNSName: 'd', CanonicalHostedZoneId: 'Z', LoadBalancerName: 'MyLb' }],
+    });
+    mockSend.mockRejectedValueOnce(new Error('ModifyLBAttributes boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteLoadBalancer also failed'));
+    await expect(
+      provider.create(
+        'MyLb',
+        RESOURCE_TYPE,
+        {
+          Name: 'MyLb',
+          Subnets: ['subnet-aaa'],
+          LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+        },
+        { maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***') }
+      )
+    ).rejects.toThrow('ModifyLBAttributes boom');
+    expectWithheld(String(warnSpy.mock.calls[0][0]), 'aws elbv2 delete-load-balancer');
+  });
+});
+

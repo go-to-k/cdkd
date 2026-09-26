@@ -58,6 +58,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -1010,8 +1011,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
                 `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
                 `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
                 `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-                `delete does not complete, remove it manually: aws servicediscovery ` +
-                `delete-service --id ${serviceId}`
+                `delete does not complete, remove it manually: ` +
+                `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
             )
           );
         }
@@ -1030,8 +1031,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
               `(${serviceId}) after ServiceAttributes wiring failure: ` +
               `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: aws servicediscovery delete-service ` +
-              `--id ${serviceId}`
+              `required before the next deploy: ` +
+              `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
           );
         }
         throw innerError;
@@ -1118,7 +1119,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     for (const [k, v] of Object.entries(newAttrs)) {
       if (oldAttrs[k] !== v) upsertAttrs[k] = v;
     }
-    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !(k in newAttrs));
+    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !Object.hasOwn(newAttrs, k));
 
     const hasServiceChange = Object.keys(serviceChange).length > 0;
     const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;

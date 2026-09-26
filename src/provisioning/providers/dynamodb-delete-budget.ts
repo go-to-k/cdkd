@@ -90,6 +90,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import type { Logger } from '../../types/config.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * The `DescribeTable` round trip each poll pays ON TOP of its sleep.
@@ -860,16 +861,23 @@ export async function compensateRemovedDeletionProtection(
       // region, which on the region-mismatch race that reaches this arm answers
       // the SAME ResourceNotFound — leading them to conclude "gone", i.e. the
       // one thing this message deliberately stops asserting.
-      const regionArg = opts.region ? ` --region ${opts.region}` : '';
+      //
+      // Both commands render through `pasteableAwsCommand` (issue #3136): the
+      // table name is the TEMPLATE-chosen / `state.json`-borne physical id, so
+      // it is sanitized and shell-quoted, and a name that cannot be printed
+      // exactly withholds the command rather than naming another table.
+      const aws = pasteableAwsCommand();
+      const regionArg = opts.region ? aws` --region ${opts.region}` : aws``;
+      const check = aws`aws dynamodb describe-table --table-name ${opts.physicalId}${regionArg}`;
+      const restore = aws`aws dynamodb update-table --table-name ${opts.physicalId}${regionArg} --deletion-protection-enabled`;
       opts.logger.warn(
         `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could not re-enable ` +
           `DeletionProtectionEnabled on ${opts.physicalId} after the delete failed — ` +
           `DynamoDB answered ResourceNotFound. That most commonly means the table is ` +
           `gone or its status is not ACTIVE, and it can also mean the table is not in ` +
           `this region or account. If it still exists, its deletion protection is OFF. ` +
-          `Check with: aws dynamodb describe-table --table-name ${opts.physicalId}` +
-          `${regionArg} and if it is there, restore it with: aws dynamodb update-table ` +
-          `--table-name ${opts.physicalId}${regionArg} --deletion-protection-enabled. ` +
+          `Check with: ${check.render()} and if it is there, restore it with: ` +
+          `${restore.render()}. ` +
           `(${detail})`
       );
       // `failed`, not `not-applicable`: the re-enable was ATTEMPTED and did not
@@ -883,8 +891,8 @@ export async function compensateRemovedDeletionProtection(
       `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could NOT re-enable ` +
         `DeletionProtectionEnabled on ${opts.physicalId} after the delete failed — ` +
         `that table is LIVE with its deletion protection still off. Restore it with: ` +
-        `aws dynamodb update-table --table-name ${opts.physicalId} ` +
-        `--deletion-protection-enabled. (${detail})`
+        `${pasteableAwsCommand()`aws dynamodb update-table --table-name ${opts.physicalId} --deletion-protection-enabled`.render()}. ` +
+        `(${detail})`
     );
     return 'failed';
   }

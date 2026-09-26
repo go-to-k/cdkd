@@ -317,9 +317,16 @@ describe('replication: the same container class, one applier over', () => {
     // on update / rollback replay — exactly the un-rollbackable failure the
     // create/replay split exists to prevent. Lifecycle and analytics both have
     // this test; replication did not until the PR review asked for it.
-    await provider.update('B', BUCKET, RESOURCE_TYPE, replicationProps({ Filter: 'logs/' }), {
-      BucketName: BUCKET,
-    });
+    // `replayingState`, the flag the rollback revert arms set: since issue
+    // #3740 a template-path update refuses this value before any call.
+    await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      replicationProps({ Filter: 'logs/' }),
+      { BucketName: BUCKET },
+      { replayingState: true }
+    );
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${REPLICATION_PATH} must be an object`)
     );
@@ -526,18 +533,22 @@ describe('replay create (`replayingState`): warn and skip instead of stranding t
 });
 
 describe('update path: warn and skip (the desired bag can be a historical state record)', () => {
-  // A template-path update, except where a row passes a context: the
-  // versioning row's warn-and-skip is a state-borne caller's arm since issue
-  // #3728 (a template-path update refuses that value before any call).
+  // Every warn-and-skip row is a state-borne caller's arm: the versioning row
+  // since issue #3728, the per-config appliers since issue #3740 (a
+  // template-path update refuses those values before any call). So the rows
+  // pass `replayingState`, the flag the rollback revert arms set; the VALID
+  // row stays a template-path update.
   async function update(
     properties: Record<string, unknown>,
     context?: Record<string, unknown>
   ): Promise<void> {
     await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET }, context);
   }
+  const replayUpdate = (properties: Record<string, unknown>): Promise<void> =>
+    update(properties, { replayingState: true });
 
   it('lifecycle: warns and does NOT send the Put', async () => {
-    await update(lifecycleProps({ ExpirationInDays: 30, Filter: 'logs/' }));
+    await replayUpdate(lifecycleProps({ ExpirationInDays: 30, Filter: 'logs/' }));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${FILTER_PATH} must be an object`)
     );
@@ -545,7 +556,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
   });
 
   it('analytics: warns on a malformed StorageClassAnalysis and does NOT send the Put', async () => {
-    await update(analyticsProps({ StorageClassAnalysis: 'nope' }));
+    await replayUpdate(analyticsProps({ StorageClassAnalysis: 'nope' }));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${SCA_PATH} must be an object`)
     );
@@ -553,7 +564,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
   });
 
   it('analytics: warns on a malformed DataExport and does NOT send the Put', async () => {
-    await update(analyticsProps({ StorageClassAnalysis: { DataExport: 42 } }));
+    await replayUpdate(analyticsProps({ StorageClassAnalysis: { DataExport: 42 } }));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${DATA_EXPORT_PATH} must be an object`)
     );
@@ -583,7 +594,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     // `undefined`, and `foldEventBridgeConfiguration` rewrote the block to
     // `{ EventBridgeEnabled: false }` — silently DISABLING a delivery the
     // template never disabled.
-    await update({
+    await replayUpdate({
       BucketName: BUCKET,
       NotificationConfiguration: { EventBridgeConfiguration: { Ref: 'EbToggle' } },
     });
@@ -598,7 +609,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     // `'nope'` / `42` fail the SHAPE test while an intrinsic passes it. Without
     // the guard the item is SENT with `OutputSchemaVersion: 'V_1'` and no
     // `Destination` -- a half-built export the template never asked for.
-    await update(analyticsProps({ StorageClassAnalysis: { DataExport: { Ref: 'Export' } } }));
+    await replayUpdate(analyticsProps({ StorageClassAnalysis: { DataExport: { Ref: 'Export' } } }));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('got an unresolved Ref intrinsic')
     );
@@ -613,7 +624,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     // update arm, which is the one a user cannot fix from the template.
     // `replicationProps` is local to the replication describe above, so the
     // shape is inlined rather than widened into shared scope.
-    await update({
+    await replayUpdate({
       BucketName: BUCKET,
       ReplicationConfiguration: {
         Role: 'arn:aws:iam::123456789012:role/repl',
@@ -637,7 +648,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     // The per-Id Put means a malformed sibling must not take the valid ones
     // down with it — the opposite of the lifecycle contract, and the reason
     // the two guards use different exits.
-    await update({
+    await replayUpdate({
       BucketName: BUCKET,
       AnalyticsConfigurations: [
         { Id: 'bad', StorageClassAnalysis: 'nope' },
@@ -659,7 +670,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     // `StorageClassAnalysisSchemaVersion` has exactly one member — but that
     // makes it MORE important to pin, since nothing else would notice if the
     // downgrade were dropped or if it started defaulting a real enum.
-    await update(
+    await replayUpdate(
       analyticsProps({
         StorageClassAnalysis: {
           DataExport: { ...VALID_DATA_EXPORT, OutputSchemaVersion: 42 },

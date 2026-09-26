@@ -271,6 +271,36 @@ describe('DLMLifecyclePolicyProvider update', () => {
     });
   });
 
+  it('untags a dropped tag whose key is `constructor` (#3515)', async () => {
+    // #3515 update() removedKeys: `k in newTags` found `constructor` on
+    // Object.prototype, so the dropped tag was never untagged.
+    routeSend({
+      UpdateLifecyclePolicyCommand: {},
+      GetLifecyclePolicyCommand: { Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } },
+      TagResourceCommand: {},
+      UntagResourceCommand: {},
+    });
+
+    await provider.update(
+      'MyPolicy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { State: 'ENABLED', Tags: [{ Key: 'keep', Value: 'v' }] },
+      {
+        State: 'ENABLED',
+        Tags: [
+          { Key: 'keep', Value: 'v' },
+          { Key: 'constructor', Value: 'x' },
+        ],
+      }
+    );
+
+    const untags = callsOf(UntagResourceCommand) as Array<{ input: Record<string, unknown> }>;
+    expect(untags.map((c) => c.input)).toEqual([
+      { ResourceArn: POLICY_ARN, TagKeys: ['constructor'] },
+    ]);
+  });
+
   it('removes ALL tags when the Tags property is dropped entirely (issue #981 regression class)', async () => {
     routeSend({
       UpdateLifecyclePolicyCommand: {},

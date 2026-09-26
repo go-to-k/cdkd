@@ -23,6 +23,7 @@
  */
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
+import type { StackState } from './state.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 
 /**
@@ -43,7 +44,14 @@ export type RollbackSegmentReason =
   // still works in the default deploy flow. The next successful deploy
   // deletes the journal, bounding how long this segment lingers. ADDITIVE
   // value, no journalVersion bump (reason is informational on read).
-  | 'auto-rollback-clean';
+  | 'auto-rollback-clean'
+  // issue #3754: a NESTED child's deploy SUCCEEDED, but its parent's deploy is
+  // still running and may yet roll back. The segment keeps the child's
+  // completed ops (possibly none) so the parent's revert of the
+  // `AWS::CloudFormation::Stack` row can replay them instead of re-deploying a
+  // template. Correlated to the parent's segment by `runId`; the root deploy
+  // deletes every descendant journal when it succeeds. ADDITIVE value.
+  | 'nested-pending-parent';
 
 /**
  * One failed deploy attempt's worth of completed operations. Segments are
@@ -81,6 +89,23 @@ export interface RollbackJournalSegment {
    * because the failed resource's remote state is unknown.
    */
   failedOperations?: FailedOperation[];
+  /**
+   * Issue #3754, `nested-pending-parent` segments only: the child's PERSISTED
+   * `outputs` (and `exportNames`) from BEFORE the child deploy that recorded
+   * the segment. Replaying the ops restores the resources; this restores what
+   * the child publishes, which the ops do not carry. Copied from the loaded
+   * state record, so it holds what `state.json` held — the same redaction.
+   * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  previousOutputs?: { outputs: Record<string, unknown>; exportNames?: string[] };
+  /**
+   * Issue #3754, `nested-pending-parent` segments only: the child's
+   * `imports` / `outputReads` from BEFORE the deploy. The replay restores them
+   * with the outputs, and adds them to the producer regions its cross-region
+   * secret refusal consults (issue #2057), since the record it replays over
+   * holds only the reads of the deploy being undone. ADDITIVE, no bump.
+   */
+  previousCrossStackReads?: Pick<StackState, 'imports' | 'outputReads'>;
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -361,6 +386,74 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
       seg['failedOperations'].forEach((op: unknown, i) =>
         refuseMalformedOperation(shownStack, `segments[${s}].failedOperations[${i}]`, op)
       );
+    }
+    // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a
+    // non-string is refused rather than left to never match (which would read
+    // as "no segment for this run" and fail the parent's revert with the
+    // wrong reason). `previousOutputs.outputs` is written into the child's
+    // `state.json` by the replay, so it must be an object.
+    if (seg['runId'] !== undefined && typeof seg['runId'] !== 'string') {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].runId must be a string when present (got ${kind(seg['runId'])}).`
+      );
+    }
+    const reads: unknown = seg['previousCrossStackReads'];
+    if (reads !== undefined) {
+      if (typeof reads !== 'object' || reads === null || Array.isArray(reads)) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].previousCrossStackReads must be an object (got ${kind(reads)}).`
+        );
+      }
+      for (const field of ['imports', 'outputReads']) {
+        const list: unknown = (reads as Record<string, unknown>)[field];
+        if (list !== undefined && !Array.isArray(list)) {
+          refuseMalformed(
+            shownStack,
+            `segments[${s}].previousCrossStackReads.${field} must be an array when present ` +
+              `(got ${kind(list)}).`
+          );
+        }
+        // Each entry is written back into the child's state.json and read for
+        // its `sourceRegion` by the replay's region refusal.
+        (Array.isArray(list) ? (list as unknown[]) : []).forEach((entry, i) => {
+          const where = `segments[${s}].previousCrossStackReads.${field}[${i}]`;
+          if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            refuseMalformed(shownStack, `${where} must be an object (got ${kind(entry)}).`);
+          }
+          const region: unknown = (entry as Record<string, unknown>)['sourceRegion'];
+          if (region !== undefined && typeof region !== 'string') {
+            refuseMalformed(
+              shownStack,
+              `${where}.sourceRegion must be a string when present (got ${kind(region)}).`
+            );
+          }
+        });
+      }
+    }
+    const prevOut: unknown = seg['previousOutputs'];
+    if (prevOut !== undefined) {
+      const outputs: unknown =
+        typeof prevOut === 'object' && prevOut !== null && !Array.isArray(prevOut)
+          ? (prevOut as Record<string, unknown>)['outputs']
+          : undefined;
+      if (typeof outputs !== 'object' || outputs === null || Array.isArray(outputs)) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].previousOutputs.outputs must be an object (got ${kind(outputs)}).`
+        );
+      }
+      const names: unknown = (prevOut as Record<string, unknown>)['exportNames'];
+      if (
+        names !== undefined &&
+        (!Array.isArray(names) || names.some((n: unknown) => typeof n !== 'string'))
+      ) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].previousOutputs.exportNames must be a string array when present.`
+        );
+      }
     }
   });
   return {

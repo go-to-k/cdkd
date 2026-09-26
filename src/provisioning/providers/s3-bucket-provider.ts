@@ -918,7 +918,7 @@ function deepSameValue(a: unknown, b: unknown): boolean {
   if (isPlainObject(a) && isPlainObject(b)) {
     const keysA = Object.keys(a);
     if (keysA.length !== Object.keys(b).length) return false;
-    return keysA.every((key) => key in b && deepSameValue(a[key], b[key]));
+    return keysA.every((key) => Object.hasOwn(b, key) && deepSameValue(a[key], b[key]));
   }
   return false;
 }
@@ -4449,6 +4449,34 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * A view of this provider whose S3 client WRITES NOTHING and whose logger is
+   * silent, for `update()`'s template-path pre-flight (issue
+   * [#3740](https://github.com/go-to-k/cdkd/issues/3740)).
+   *
+   * It exists so the pre-flight can ask the per-config appliers their OWN
+   * question instead of a restated copy of it: running
+   * {@link applySubConfigDiffs} on this view executes every predicate, in the
+   * real order and under the real diff gating, while each `send` resolves to
+   * an empty response. Safe because `s3Client` is the ONLY client this class
+   * holds and no applier reads a response field back; a new client, or an
+   * applier that consumes a response, must be stubbed here too. A fresh object
+   * per call (its prototype is `this`), so concurrent resources on this
+   * singleton never see each other's stub.
+   */
+  private noWriteProbe(): S3BucketProvider {
+    const probe = Object.create(this) as S3BucketProvider;
+    probe.s3Client = { send: async () => ({}) } as unknown as S3Client;
+    const silent = (): void => {};
+    probe.logger = Object.assign(Object.create(this.logger) as typeof this.logger, {
+      debug: silent,
+      info: silent,
+      warn: silent,
+      error: silent,
+    });
+    return probe;
+  }
+
+  /**
    * The refusal a TEMPLATE-path `update()` raises for a malformed
    * `VersioningConfiguration.Status` or `LoggingConfiguration` member, or
    * `undefined` (issue [#3728](https://github.com/go-to-k/cdkd/issues/3728)).
@@ -4794,7 +4822,9 @@ export class S3BucketProvider implements ResourceProvider {
 
   /**
    * Apply the diff between previous and new sub-configs, issuing Put / Delete
-   * SDK calls only for differing keys. Called from `update()`.
+   * SDK calls only for differing keys. Called from `update()` TWICE on a
+   * template-path update: first on {@link noWriteProbe} with `refuseUnusable`
+   * (the pre-flight, which writes nothing), then for real.
    *
    * PublicAccessBlockConfiguration and Tags stay on `applyConfiguration` /
    * `applyTagDiff`. `PublicAccessBlockConfiguration` is deliberately NOT on the
@@ -4821,9 +4851,27 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    context?: UpdateContext
+    context?: UpdateContext,
+    // `true` only from `update()`'s template-path pre-flight, which runs this
+    // method on {@link noWriteProbe} (issue #3740): the eight per-config
+    // appliers below then get NO warn callback, so each refuses exactly where
+    // it would otherwise warn-and-skip — the create-path refusal, with the
+    // same predicate, key, fallback and path, and only for the configurations
+    // this diff would actually Put.
+    refuseUnusable = false
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
+    /**
+     * The warn-and-skip callback the eight per-config appliers take on this
+     * path, or `undefined` in the pre-flight, where each of them throws
+     * instead. Reached with a malformed value only by the two state-borne
+     * callers (the rollback revert arms' `replayingState`, `cdkd drift
+     * --revert`'s `desiredFromAwsReadback`), whose bag has no template-side
+     * remedy: a template-path update refuses it first, in `update()`.
+     */
+    const applierWarn: ((message: string) => void) | undefined = refuseUnusable
+      ? undefined
+      : (m) => this.logger.warn(m);
     // The REAL masker for this call, not a decorative parameter: the
     // destination-shape refusals below quote values read straight off the
     // desired `properties` bag, which arrives RESOLVED (issue #2178).
@@ -5143,11 +5191,9 @@ export class S3BucketProvider implements ResourceProvider {
           );
           return;
         }
-        // WARN, never throw, on the update path (issue #1579) — same
-        // rationale as the analytics sibling below.
-        const applied = await this.applyLifecycleConfiguration(bucketName, cfg, (m) =>
-          this.logger.warn(m)
-        );
+        // WARN, never throw, on the state-borne update paths (issue #1579) —
+        // same rationale as the analytics sibling below.
+        const applied = await this.applyLifecycleConfiguration(bucketName, cfg, applierWarn);
         if (!applied) retainPrevious('LifecycleConfiguration');
         // Recorded only once the Put has SUCCEEDED, and only when the Put
         // actually RAN (issue #1748): a skipped Put leaves AWS holding the
@@ -5241,14 +5287,12 @@ export class S3BucketProvider implements ResourceProvider {
       previousProperties['NotificationConfiguration'] as Record<string, unknown> | undefined,
       properties['NotificationConfiguration'] as Record<string, unknown> | undefined,
       async (cfg) => {
-        // WARN, never throw, on the update path (issue #1759) — the same
-        // rationale as the lifecycle / replication siblings: a rollback and
-        // `cdkd drift --revert` both replay `update()` with a cdkd STATE record
-        // as the desired bag, so a refusal here would leave the bucket
-        // un-revertable with only a hand-edit of state.json as a remedy.
-        const applied = await this.applyNotificationConfiguration(bucketName, cfg, (m) =>
-          this.logger.warn(m)
-        );
+        // WARN, never throw, on the state-borne update paths (issue #1759) —
+        // the same rationale as the lifecycle / replication siblings: a
+        // rollback and `cdkd drift --revert` both replay `update()` with a cdkd
+        // STATE record as the desired bag, so a refusal here would leave the
+        // bucket un-revertable with only a hand-edit of state.json as a remedy.
+        const applied = await this.applyNotificationConfiguration(bucketName, cfg, applierWarn);
         // The skip unit is the WHOLE notification configuration (the Put is a
         // full replace), so AWS still holds the previously-applied one — which
         // is what state must describe (issue #1612's UPDATE answer).
@@ -5272,9 +5316,7 @@ export class S3BucketProvider implements ResourceProvider {
       previousProperties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
       properties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
       async (cfg) => {
-        const applied = await this.applyReplicationConfiguration(bucketName, cfg, (m) =>
-          this.logger.warn(m)
-        );
+        const applied = await this.applyReplicationConfiguration(bucketName, cfg, applierWarn);
         if (!applied) retainPrevious('ReplicationConfiguration');
       },
       async () => {
@@ -5294,9 +5336,7 @@ export class S3BucketProvider implements ResourceProvider {
       previousProperties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
       properties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
       async (cfg) => {
-        const applied = await this.applyObjectLockConfiguration(bucketName, cfg, (m) =>
-          this.logger.warn(m)
-        );
+        const applied = await this.applyObjectLockConfiguration(bucketName, cfg, applierWarn);
         if (!applied) retainPrevious('ObjectLockConfiguration');
       },
       async () => {
@@ -5330,12 +5370,10 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
-      // WARN, never throw, on the update path (issue #1579) — same rationale
-      // as the analytics sibling below.
+      // WARN, never throw, on the state-borne update paths (issue #1579) —
+      // same rationale as the analytics sibling below.
       async (id, cfg) => {
-        const outcome = await this.applyMetricsConfigurations(bucketName, [cfg], (m) =>
-          this.logger.warn(m)
-        );
+        const outcome = await this.applyMetricsConfigurations(bucketName, [cfg], applierWarn);
         metricsOutcomes.record(String(id), outcome);
       },
       async (id) => {
@@ -5355,15 +5393,17 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
-      // WARN, never throw, on the update path: `rollback-executor.ts` and
-      // `drift --revert` replay `update()` with a historical cdkd STATE record
-      // as the desired bag, so a refusal here would strand the resource with no
-      // template-side remedy (issue #1493 item 2).
+      // WARN, never throw, on the state-borne update paths:
+      // `rollback-executor.ts` and `drift --revert` replay `update()` with a
+      // historical cdkd STATE record as the desired bag, so a refusal here
+      // would strand the resource with no template-side remedy (issue #1493
+      // item 2). A template-path update refuses in `update()` instead, before
+      // any call (issue #3740).
       async (id, cfg) => {
         const outcome = await this.applyAnalyticsConfigurations(
           bucketName,
           [cfg],
-          (m) => this.logger.warn(m),
+          applierWarn,
           maskSecrets
         );
         analyticsOutcomes.record(String(id), outcome);
@@ -5387,11 +5427,13 @@ export class S3BucketProvider implements ResourceProvider {
         | Array<Record<string, unknown>>
         | undefined,
       properties['IntelligentTieringConfigurations'] as Array<Record<string, unknown>> | undefined,
-      // WARN, never throw, on the update path (issue #1579) — same rationale
-      // as the analytics sibling above.
+      // WARN, never throw, on the state-borne update paths (issue #1579) —
+      // same rationale as the analytics sibling above.
       async (id, cfg) => {
-        const outcome = await this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) =>
-          this.logger.warn(m)
+        const outcome = await this.applyIntelligentTieringConfigurations(
+          bucketName,
+          [cfg],
+          applierWarn
         );
         intelligentTieringOutcomes.record(String(id), outcome);
       },
@@ -5415,12 +5457,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
-      // Same update-path warn as the analytics sibling above.
+      // Same state-borne update-path warn as the analytics sibling above.
       async (id, cfg) => {
         const outcome = await this.applyInventoryConfigurations(
           bucketName,
           [cfg],
-          (m) => this.logger.warn(m),
+          applierWarn,
           maskSecrets
         );
         inventoryOutcomes.record(String(id), outcome);
@@ -6650,6 +6692,16 @@ export class S3BucketProvider implements ResourceProvider {
     // rather than at the arm, because the arms run mid-update: throwing from
     // the logging arm would leave versioning, ownership, encryption, lifecycle,
     // CORS and website already applied.
+    //
+    // The eight per-config appliers (lifecycle, notification, replication,
+    // object lock, metrics, analytics, intelligent tiering, inventory) are the
+    // same case, one step removed (issue #3740): each warn-and-skips a
+    // malformed value on every caller and runs mid-update. Their refusal is
+    // not restated here: `applySubConfigDiffs` itself runs on a probe whose S3
+    // client writes nothing, with no warn callback, so each applier throws its
+    // own create-path refusal for exactly the configurations the real run
+    // would Put — the diff's own gating decides which, so an unchanged
+    // malformed configuration is not refused either.
     if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
       const refusal = S3BucketProvider.versioningOrLoggingRefusal(properties, previousProperties);
       if (refusal !== undefined) {
@@ -6658,6 +6710,32 @@ export class S3BucketProvider implements ResourceProvider {
           resourceType,
           logicalId,
           physicalId
+        );
+      }
+      try {
+        await this.noWriteProbe().applySubConfigDiffs(
+          physicalId,
+          properties,
+          previousProperties,
+          context,
+          true
+        );
+      } catch (error) {
+        // Only a REFUSAL is re-worded. Every refusal an applier (or the
+        // `config-shape.ts` guard it calls) raises is a plain `Error`; anything
+        // else — a `TypeError` from an applier bug, a typed cdkd error — is not
+        // a template fault, so it propagates as it is rather than telling the
+        // user to fix a template value.
+        if (!(error instanceof Error) || Object.getPrototypeOf(error) !== Error.prototype) {
+          throw error;
+        }
+        throw new ProvisioningError(
+          `${error.message}. Nothing was applied to bucket ${displaySafe(physicalId)}; fix the ` +
+            `template value`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error
         );
       }
     }

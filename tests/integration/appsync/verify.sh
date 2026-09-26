@@ -15,6 +15,10 @@
 # Phases:
 #   1. baseline deploy  — every property present, each read back from AWS
 #   2. UPDATE           — every mutable property CHANGED, each re-read
+#   2b. a per-key EnvironmentVariables value the PUT cannot carry, beside an
+#       UpdateGraphqlApi change — REFUSED before any write (issue #3781)
+#   2c. the same value replayed by `cdkd rollback` from a doctored journal —
+#       WARNED, the live map kept, state recording it (issue #3781)
 #   3. REMOVAL          — the properties with an AWS reset sentinel are dropped
 #                         from the template; each must be RESET on AWS, while
 #                         EnhancedMetricsConfig stays RETAINED (so a blanket
@@ -82,6 +86,7 @@ cd "$(dirname "$0")"
 STACK="AppSyncStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 # Everything this stack owns in the bucket: state.json, lock.json,
 # rollback-journal.json and deployments/**.
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
@@ -99,6 +104,7 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1
     # The `aws s3 rm` above only wrote DELETE MARKERS. NONCURRENT-only here:
     # this also runs from the pre-run sweep and the failure traps, where a live
     # state.json may be the only record of resources still standing.
@@ -467,6 +473,106 @@ assert_eq "updated versioned DS deltaSyncConfig.baseTableTTL" "86400" \
   "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.baseTableTTL')"
 assert_eq "updated versioned DS deltaSyncConfig.deltaSyncTableTTL" "2880" \
   "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.deltaSyncTableTTL')"
+
+# --- Phase 2b: a malformed per-key env-var value on the template path (#3781) -
+# `CdkdExtra` becomes an object, and ownerContact changes in the same deploy, so
+# UpdateGraphqlApi would go out BEFORE the env-var PUT. Pre-#3781 that call
+# landed and the PUT then threw, leaving the deploy failed with the ownerContact
+# change applied. The deploy must now fail before any write.
+echo "==> Phase 2b: a malformed EnvironmentVariables value must be REFUSED before any write"
+set +e
+PHASE2B_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_ENV_MALFORMED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+PHASE2B_RC=$?
+set -e
+printf '%s\n' "${PHASE2B_OUT}"
+PHASE2B_PLAIN="$(printf '%s' "${PHASE2B_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+if [ "${PHASE2B_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2b]: the malformed EnvironmentVariables value deployed (exit 0); issue #3781 refuses it" >&2
+  exit 1
+fi
+# Two independent markers: the per-key sentence and the pre-flight's suffix.
+if ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
+   ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'fix the template value'; then
+  echo "FAIL [phase 2b]: the deploy failed, but not with the #3781 template-path refusal" >&2
+  exit 1
+fi
+# The value itself never reaches the output (a variable can hold a secret).
+if printf '%s' "${PHASE2B_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+  echo "FAIL [phase 2b]: the refusal quoted the environment-variable VALUE" >&2
+  exit 1
+fi
+echo "    [phase 2b] the malformed value was REFUSED (exit ${PHASE2B_RC})"
+assert_eq "phase 2b: ownerContact untouched (UpdateGraphqlApi never went out)" "cdkd-integ-updated" \
+  "$(api_query 'graphqlApi.ownerContact')"
+assert_eq "phase 2b: environmentVariables untouched" '{"CdkdExtra":"added","CdkdStage":"updated"}' \
+  "$(env_vars_json | jq -cS '.')"
+
+# --- Phase 2c: the same value on the REPLAY path (issue #3781) --------------
+# A state record can carry such a value only if an older cdkd wrote it or it was
+# hand-edited, so the journal is doctored: fail an ordinary env-var change (a
+# queue AWS refuses, `--no-rollback`), set the journal's previous record to the
+# malformed map, and `cdkd rollback`. The revert must WARN, send no PUT (it
+# replaces the whole map, so the usable keys alone would delete `CdkdExtra`),
+# and record the map AWS still holds.
+echo "==> Phase 2c: a REVERT replaying a malformed EnvironmentVariables value must warn and keep the live map"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_ENV_REVERT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback
+PHASE2C_RC=$?
+set -e
+if [ "${PHASE2C_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2c]: the inject-fail deploy SUCCEEDED, so there is no journal to roll back" >&2
+  exit 1
+fi
+# The env-var change must have LANDED, or the rollback has nothing to revert.
+REVERTING_ENV='{"CdkdExtra":"added","CdkdStage":"reverting"}'
+assert_eq "phase 2c: the failed deploy applied the env-var change" "${REVERTING_ENV}" \
+  "$(env_vars_json | jq -cS '.')"
+JOURNAL_FILE="$(mktemp)"
+DOCTORED_FILE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${JOURNAL_FILE}" >/dev/null
+jq '(.segments[].operations[] | select(.logicalId == "GraphQLApi" and .changeType == "UPDATE")
+  | .previousState.properties.EnvironmentVariables.CdkdExtra) = {"nested": "cdkd-integ-not-a-string"}' \
+  "${JOURNAL_FILE}" > "${DOCTORED_FILE}"
+DOCTORED_COUNT="$(jq '[.segments[].operations[] | select(.logicalId == "GraphQLApi" and .changeType == "UPDATE")
+  | .previousState.properties.EnvironmentVariables.CdkdExtra | objects] | length' "${DOCTORED_FILE}")"
+if [ "${DOCTORED_COUNT}" != "1" ]; then
+  echo "FAIL [phase 2c]: expected exactly one GraphQLApi UPDATE op to doctor, got ${DOCTORED_COUNT}" >&2
+  jq -c '[.segments[].operations[] | {logicalId, changeType}]' "${JOURNAL_FILE}" >&2
+  exit 1
+fi
+aws s3 cp "${DOCTORED_FILE}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+rm -f "${JOURNAL_FILE}" "${DOCTORED_FILE}"
+
+set +e
+PHASE2C_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+PHASE2C_ROLLBACK_RC=$?
+set -e
+printf '%s\n' "${PHASE2C_OUT}"
+if [ "${PHASE2C_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2c]: cdkd rollback exited ${PHASE2C_ROLLBACK_RC}" >&2
+  exit 1
+fi
+PHASE2C_PLAIN="$(printf '%s' "${PHASE2C_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+# Two independent markers: the per-key sentence and the keep decision.
+if ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
+   ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'leaving the live environment variables untouched'; then
+  echo "FAIL [phase 2c]: the revert did not warn and keep the live environment variables" >&2
+  exit 1
+fi
+if printf '%s' "${PHASE2C_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+  echo "FAIL [phase 2c]: the replay warning quoted the environment-variable VALUE" >&2
+  exit 1
+fi
+echo "    [phase 2c] the revert WARNED and sent no env-var PUT"
+assert_eq "phase 2c: the live map is kept whole" "${REVERTING_ENV}" "$(env_vars_json | jq -cS '.')"
+STATE_ENV="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
+  jq -cS '.resources.GraphQLApi.properties.EnvironmentVariables')" || { echo "FAIL [phase 2c]: state read failed" >&2; exit 1; }
+assert_eq "phase 2c: state records the map AWS holds" "${REVERTING_ENV}" "${STATE_ENV}"
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after the phase 2c rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 
 # --- Phase 3: REMOVAL -------------------------------------------------------
 # AppSync treats an OMITTED UpdateGraphqlApi member as "no change", so a

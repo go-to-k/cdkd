@@ -100,6 +100,7 @@ import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -994,8 +995,18 @@ export class ECSProvider implements ResourceProvider {
         // Include --cluster: a service in a non-default cluster cannot be
         // addressed without it, and the ARN alone is not documented to imply
         // the cluster. Matches the INFO hint's shape.
+        //
+        // Every command below renders through `pasteableAwsCommand` (issue
+        // #3136): the cluster is a TEMPLATE value, so it is sanitized and
+        // shell-quoted, and one that cannot be printed exactly withholds the
+        // command. The service ARN is AWS-minted but embeds the
+        // template-chosen service name, so it takes the same gate.
+        const aws = pasteableAwsCommand();
+        // A truthy NON-string reaches the tag and withholds the command:
+        // dropping `--cluster` would address the default cluster instead.
         const cleanupCluster = properties['Cluster'] as string | undefined;
-        const clusterArg = cleanupCluster ? ` --cluster ${cleanupCluster}` : '';
+        const clusterArg = cleanupCluster ? aws` --cluster ${cleanupCluster}` : aws``;
+        const listStopped = aws`aws ecs list-tasks${clusterArg} --desired-status STOPPED`;
         try {
           await client.send(
             new DeleteServiceCommand({
@@ -1009,11 +1020,11 @@ export class ECSProvider implements ResourceProvider {
           // reach for first when asking "why". Say where the evidence
           // still lives (issue #1291 item 2).
           this.logger.warn(
-            `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: aws ecs list-tasks${clusterArg} --desired-status STOPPED`
+            `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: ${listStopped.render()}`
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`
+            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`.render()}`
           );
         }
         // The SDK waiter's bare "Waiter has timed out" explains nothing.
@@ -1022,7 +1033,7 @@ export class ECSProvider implements ResourceProvider {
         // the cause chain keeps the original waiter error reachable for
         // `cdkd events` metadata extraction.
         throw new Error(
-          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): aws ecs list-tasks${clusterArg} --desired-status STOPPED, then aws ecs describe-tasks${clusterArg} --tasks <task-arn> --query 'tasks[].[stoppedReason,containers[].reason]'`,
+          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
           { cause: waitError }
         );
       }
@@ -1120,7 +1131,10 @@ export class ECSProvider implements ResourceProvider {
       return;
     }
 
-    const clusterArg = cluster ? ` --cluster ${cluster}` : '';
+    // Rendered through `pasteableAwsCommand` (issue #3136): the cluster and
+    // the service name are TEMPLATE values.
+    const aws = pasteableAwsCommand();
+    const clusterArg = cluster ? aws` --cluster ${cluster}` : aws``;
     // Mention --full-wait only when the invoking COMMAND actually declares
     // it (cdkd deploy sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
     // reaches this same code through provider.update and does NOT — the
@@ -1130,7 +1144,7 @@ export class ECSProvider implements ResourceProvider {
       process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     this.logger.info(
       `ECS service ${logicalId} accepted (not waiting for steady state${fullWaitHint}). ` +
-        `To wait manually: aws ecs wait services-stable${clusterArg} --services ${serviceRef}`
+        `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
     );
   }
 

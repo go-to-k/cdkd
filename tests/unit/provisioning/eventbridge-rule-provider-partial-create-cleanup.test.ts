@@ -31,6 +31,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::Events::Rule';
 
@@ -171,5 +177,37 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
     expect(warnSpy).toHaveBeenCalled();
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('--event-bus-name MyBus');
+  });
+
+  describe('the recovery command names the rule and bus through pasteableAwsCommand (issue #3136)', () => {
+    async function warnFor(name: string, eventBusName: string): Promise<string> {
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyBus/MyRule' });
+      mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+      mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
+      await expect(
+        provider.create('MyRule', RESOURCE_TYPE, {
+          Name: name,
+          EventBusName: eventBusName,
+          Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+        })
+      ).rejects.toThrow('PutTargets boom');
+      return String(warnSpy.mock.calls[0][0]);
+    }
+
+    it('shell-quotes a rule name and a bus name carrying a quote, in every command', async () => {
+      const msg = await warnFor(FORGED_QUOTE, `bus${FORGED_QUOTE}`);
+      expectQuotedAfter(msg, 'aws events list-targets-by-rule --rule ', FORGED_QUOTE);
+      expectQuotedAfter(msg, 'xargs aws events remove-targets --rule ', FORGED_QUOTE);
+      expectQuotedAfter(msg, 'aws events delete-rule --name ', FORGED_QUOTE);
+      expectQuotedAfter(msg, '--event-bus-name ', `bus${FORGED_QUOTE}`);
+    });
+
+    it('withholds the whole command when only the BUS carries a control byte', async () => {
+      expectWithheld(await warnFor('MyRule', `bus${FORGED_CTRL}`), 'aws events');
+    });
+
+    it('withholds the whole command for a rule name carrying a control byte', async () => {
+      expectWithheld(await warnFor(FORGED_CTRL, 'MyBus'), 'aws events');
+    });
   });
 });

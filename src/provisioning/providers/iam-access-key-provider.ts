@@ -14,7 +14,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import type { CreateContext } from '../../types/resource.js';
+import type { CreateContext, UpdateContext } from '../../types/resource.js';
 
 import type {
   ResourceProvider,
@@ -435,20 +435,33 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    * sees them change), so the only in-place change is `Status`. A template
    * that REMOVES `Status` resets to the CFn default `Active` (absent-field
    * removal semantics), so the desired status is always sent explicitly.
+   *
+   * `context` is read for the ORIGIN of the desired bag only
+   * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
+   * malformed `Status` refuses (a template-path update) or warns (a rollback
+   * revert or `cdkd drift --revert`) — issue #3740.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM access key ${logicalId}: ${physicalId}`);
 
     const userName = properties['UserName'] as string | undefined;
-    // WARN, not throw: a rollback replays through `update()` with a historical
-    // cdkd STATE record as the desired bag, so refusing here could leave a
-    // resource un-rollbackable with no template-side remedy (issue #1513).
+    // Split on the ORIGIN of the desired bag (issue #3740, the #3728 shape).
+    // On a TEMPLATE-path update a malformed `Status` is template-borne, and
+    // `Status` is the one in-place property (`UserName` / `Serial` are
+    // createOnly), so the template is where it gets fixed: REFUSE, before the
+    // only call, as `create()` does. NOT gated on the value having changed:
+    // `UpdateAccessKey` sends the status on every update, so it is always
+    // pending. The two state-borne callers keep the warning — the rollback
+    // executor's revert arms (`replayingState`) and `cdkd drift --revert`
+    // (`desiredFromAwsReadback`) — because refusing a bag the user cannot edit
+    // from the template would leave the key un-rollbackable (issue #1513).
     //
     // The warn fallback is the PREVIOUS status, not the CFn default `Active`.
     // Defaulting to `Active` on an unusable value would ENABLE a credential the
@@ -469,13 +482,32 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     // ValidationException on the very replay path this fallback exists to keep
     // alive — the old code always sent a valid `Active`.
     const previousStatus = previousProperties['Status'] === 'Inactive' ? 'Inactive' : 'Active';
-    const status = (
-      properties['Status'] === undefined
-        ? 'Active'
-        : requireConfigString(properties['Status'], previousStatus, 'AWS::IAM::AccessKey Status', {
-            onUnusable: (message) => this.logger.warn(message),
-          })
-    ) as StatusType;
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    let status: StatusType;
+    try {
+      status = (
+        properties['Status'] === undefined
+          ? 'Active'
+          : requireConfigString(
+              properties['Status'],
+              previousStatus,
+              'AWS::IAM::AccessKey Status',
+              stateBorneDesired ? { onUnusable: (message) => this.logger.warn(message) } : {}
+            )
+      ) as StatusType;
+    } catch (error) {
+      // Outside the `try` below, so the refusal is not re-labelled as an AWS
+      // update failure.
+      throw new ProvisioningError(
+        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+          `access key ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
 
     try {
       await this.iamClient.send(

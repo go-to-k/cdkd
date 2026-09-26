@@ -257,28 +257,25 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // `cdkd local invoke MyStack/Fn | jq` corrupts on a DEFAULT run. `sam local
   // invoke` routes its status lines to stderr for exactly this reason.
   //
-  // Lines are MOVED, not suppressed. TWO mechanisms this does NOT reach,
-  // both of them raw writes that never pass through cdkd's logger — so a
-  // consumer piping this command still needs `| tail -1` today:
-  //   1. the CONTAINER's own stdout, piped in by `streamLogs`
-  //      (`src/local/docker-runner.ts`) — the RIE puts START/END/REPORT and
-  //      every handler log line there
-  //      ([#2419](https://github.com/go-to-k/cdkd/issues/2419));
-  //   2. **cdk-local's own `ConsoleLogger`**, a SECOND logger module with its
-  //      own state and no reservation concept — every shim under `src/local/`
-  //      that re-exports cdk-local (`buildContainerImage`,
-  //      `buildAgentCoreCodeImage`, `downloadAndExtractS3Bundle`) emits its
-  //      `logger.info` straight to `console.info`
-  //      ([#2429](https://github.com/go-to-k/cdkd/issues/2429)). This is why
-  //      a container-image Lambda still prints `Building container image
-  //      (platform=...)` on stdout.
+  // Lines are MOVED, not suppressed. ONE mechanism this does NOT reach, a
+  // raw write that never passes through cdkd's logger — so a consumer piping
+  // this command still needs `| tail -1` for a BUILT image today:
+  // **cdk-local's own `ConsoleLogger`**, a SECOND logger module with its own
+  // state and no reservation concept — every shim under `src/local/` that
+  // re-exports cdk-local (`buildContainerImage`, `buildAgentCoreCodeImage`,
+  // `downloadAndExtractS3Bundle`) emits its `logger.info` straight to
+  // `console.info` ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+  // This is why a container-image Lambda still prints `Building container
+  // image (platform=...)` on stdout.
   //
-  // A THIRD used to be listed here and is now CLOSED, which is why the count
-  // moved: `docker pull` progress under `runDockerForeground` reached stdout
-  // through `stdio: 'inherit'` — `ecr-puller.ts` runs it UNCONDITIONALLY, so
-  // it needed no flag at all. `docker-cmd.ts` now redirects that child's fd 1
-  // to fd 2 while a reservation is held. Do not re-file it, and note that
-  // go-to-k/cdkd#2419's remaining scope is `streamLogs` alone.
+  // Two raw writers used to be listed here and are now CLOSED, both by
+  // consulting this reservation: `docker pull` progress under
+  // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
+  // fd 2), and the CONTAINER's own stdout, piped in by `streamLogs`
+  // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and
+  // every handler log line — it now joins the container's stderr on ours
+  // ([#2419](https://github.com/go-to-k/cdkd/issues/2419)). Do not re-file
+  // either.
   reserveStdoutForPayload();
 
   warnIfDeprecatedRegion(options);

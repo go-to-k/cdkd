@@ -11,9 +11,8 @@ LANE'S WORKTREE. Never two lanes' integs or merges at once.
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
   integ AFTER the flatten/rebase below (`references/verify.md` §8-b).
-- **A `SendMessage` answering "queued" has NOT been delivered** — a lane stopped
-  at merge-ready drains no queue. Re-send, and confirm delivery in the TREE
-  rather than in the reply; `Resuming agent` is no acknowledgement either.
+- **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
+  a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
 ### Flatten, then rebase
 
@@ -35,14 +34,14 @@ cat > "$MSGFILE" <<'EOF'
 <the squashed message>
 EOF
 git commit -F "$MSGFILE"
+git show --stat --format= HEAD   # lane paths ONLY, else it reverts peers: redo via reflog
 git rebase origin/main   # its OWN call, then `git status`: at most one conflict,
                          # and a regen / `commit --amend` chained after a STOPPED
                          # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
-  commit ITS output. Take upstream whole when it derives the file from the tree
-  — a fixture-tree edit alone stales `docs/cli-flag-coverage.md`.
+  commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Keep both, then run
   `vp run integ-ledger-normalize` before `git rebase --continue` and commit it.
@@ -57,17 +56,20 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   never fires. Poll `gh pr checks <N> --json name,state` (`--watch` returns at
   once when no check has APPEARED) and require that checks EXIST. It has no sha
   field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
-  poll, so a loop reading non-zero as pending outlives a green CI (the
-  go-to-k/cdkd#3512 lane). **PUSH FIRST, then run the post-rebase suite while
-  CI drains.**
-- **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
-  infers it from the CWD, which persists across Bash calls, and the resulting
-  `Could not resolve to a PullRequest` reads as a permissions problem.
-- **From the PR's own worktree, `--delete-branch` prints a bare `fatal: 'main'
-  is already used by worktree ...` and the merge SUCCEEDED anyway** — confirm
-  with `gh pr view <N> --json state` before reacting.
-- `git worktree remove` deletes the worktree, never the branch: finish with an
-  explicit `git branch -D <branch>` (`-d` refuses a squashed tip), MERGED first.
+  poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
+  then run the post-rebase suite while CI drains.**
+- **A body edit RE-RUNS four required checks** (`on: edited`), green or
+  not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
+  "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
+  as it blocks even after re-runs pass (#3664, #3748, #3767).
+- **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
+  and `Could not resolve to a PullRequest` reads as a permissions problem.
+- **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
+  = `MERGED` is**, read in its OWN call before anything presuming the merge (the
+  thank-you, the claim release, the pull). It lies both ways: from the PR's own
+  worktree `--delete-branch` prints `fatal: 'main' is already used by worktree
+  ...` over a SUCCESS, and a thank-you chained after a FAILED merge ("Base
+  branch was modified") had to be deleted.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
@@ -116,7 +118,7 @@ MAIN-CHECKOUT — run THIS block, and not the next one:
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
 git worktree prune
-git branch -D <branch>                           # -D, not -d (squash)
+git branch -D <branch>                           # -D, not -d (squash); PR MERGED first
 git worktree list                                # every worktree THIS run added is gone
 git branch --list '<your prefix>*'               # ...and so is every branch it added
 ```

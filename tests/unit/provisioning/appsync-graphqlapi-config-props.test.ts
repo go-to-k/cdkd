@@ -472,7 +472,8 @@ describe('AppSync GraphQLApi config properties (#609)', () => {
         'api-1',
         TYPE,
         { Name: 'MyApi', AuthenticationType: 'API_KEY', EnvironmentVariables: 'oops' },
-        { Name: 'MyApi', AuthenticationType: 'API_KEY', EnvironmentVariables: { STAGE: 'prod' } }
+        { Name: 'MyApi', AuthenticationType: 'API_KEY', EnvironmentVariables: { STAGE: 'prod' } },
+        { replayingState: true }
       );
       expect(
         mockSend.mock.calls.filter(

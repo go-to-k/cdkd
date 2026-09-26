@@ -36,7 +36,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
-import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 
@@ -168,7 +168,7 @@ export class S3TablesProvider implements ResourceProvider {
   private getClient(): S3TablesClient {
     if (!this.client) {
       this.client = new S3TablesClient({
-        ...awsClientDefaults(),
+        ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }
@@ -1486,7 +1486,7 @@ export class S3TablesProvider implements ResourceProvider {
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};
 
-    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
     const upserts: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
       if (prev[k] !== v) upserts[k] = v;
@@ -1616,7 +1616,7 @@ export class S3TablesProvider implements ResourceProvider {
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};
 
-    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
     const upserts: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
       if (prev[k] !== v) upserts[k] = v;

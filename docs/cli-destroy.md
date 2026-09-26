@@ -678,6 +678,38 @@ To act on the resources instead, inspect the record with `cdkd state show
 a resource map, even an empty one. Full per-command table in
 [State Management](state-management.md#when-resources-is-not-an-object).
 
+## An unreadable resource record refuses the destroy
+
+The map being an object says nothing about the records in it. A row that is
+`null`, a string, a list, or an object with no `resourceType` is read by every
+walk the destroy makes — the *Resources to be deleted* listing above the
+prompt, then the dependency graph, the implicit delete order, and the delete
+itself after the lock — and validated by none of them. A `null` row died in
+that listing with a bare `TypeError`. A `false`, `0` or `""` row was **skipped**
+by the delete loop as "not found in state", and the run then removed the record
+with that row's resource still live in AWS and success reported. Any other
+unreadable row was listed with whatever its type field held — nothing, so
+`- <id> ()`, or a non-string rendered as itself — and then, unless its own
+`DeletionPolicy` retained it, routed to a provider on that same value with a
+physical id nothing had checked, so its delete either failed on a type-lookup
+error that named the row but not what was wrong with its record, after every
+readable row not retained was deleted, or was counted done, the record removed,
+and success reported with its resource still live.
+
+`cdkd destroy` and `cdkd state destroy` refuse such a record before the prompt
+and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the rows it
+could not read, and again on the record the empty-stack path re-reads under the
+lock. A nested **child** record reached through its parent's destroy inherits
+it, as the map refusal above is inherited.
+
+The refusal offers no `cdkd state orphan` template, unlike the map refusal:
+every other row is readable, and dropping the whole record with its resources
+left standing is more than one row asks for. Inspect the record with
+`cdkd state show '<stack>' --stack-region '<region>' --json`, repair the row,
+and re-run. A row that names its type but no `physicalId` is not refused here —
+its delete fails on its own terms. Full per-command table in
+[State Management](state-management.md#when-one-resources-record-cannot-be-read).
+
 ## A malformed `outputs` map refuses the destroy
 
 `cdkd destroy` and `cdkd state destroy` refuse to delete a stack another stack

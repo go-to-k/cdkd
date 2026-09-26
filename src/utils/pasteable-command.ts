@@ -281,6 +281,30 @@ export interface PasteableCommand {
 }
 
 /**
+ * An identifier for the PROSE of a message that also carries a labelled
+ * pasteable line: the value itself when `isPasteableIdent` admits it,
+ * otherwise a description. A value with a newline, or with padding that wraps
+ * on screen, could otherwise spell a counterfeit labelled row beside the real
+ * one — the rule `.claude/rules/state-malformed-containers.md` states for
+ * naming a target beside a labelled line (go-to-k/cdkd#3328,
+ * go-to-k/cdkd#3759).
+ */
+export function plainOrDescribed(value: string, what: string): string {
+  return isPasteableIdent(value) ? value : `a ${what} that is not a plain identifier`;
+}
+
+/**
+ * {@link plainOrDescribed} for a sentence that quotes the name: `'value'` when
+ * `isPasteableIdent` admits it, otherwise the same description UNQUOTED, so the
+ * prose never reads `'a stack name that is not a plain identifier'` as if that
+ * were the name. A plain name's spelling is byte-identical to the literal
+ * `'${value}'` it replaces, which `docs/design/459-nested-stacks.md` quotes.
+ */
+export function quotedOrDescribed(value: string, what: string): string {
+  return isPasteableIdent(value) ? `'${value}'` : plainOrDescribed(value, what);
+}
+
+/**
  * True when `value` reaches the terminal as itself — sanitizing changes
  * nothing, the cap does not cut it, and it is not empty.
  *
@@ -432,7 +456,14 @@ export function withheldTargetClause(
    * review: a hardcoded verb would name the wrong command at any caller
    * building a different one, silently, with the message still well-formed.
    */
-  verb: string
+  verb: string,
+  /**
+   * Whose name the sentence is about. A message offering TWO commands passes
+   * one per hole ("The parent stack's name" / "The child stack's name"), so two
+   * withheld values do not print the same sentence twice with nothing to tell
+   * which hole each explains (go-to-k/cdkd#3759).
+   */
+  subject = "This record's name"
 ): string {
   // Keyed on the hole NAME the caller passes, which couples the two (m22 of
   // the go-to-k/cdkd#3499 review). Renaming the hole at the call site would
@@ -502,7 +533,7 @@ export function withheldTargetClause(
     }
   }
   return (
-    ` This record's name ${why} — so it is not named in the command below; ` +
+    ` ${subject} ${why} — so it is not named in the command below; ` +
     `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
     `matches.`
   );

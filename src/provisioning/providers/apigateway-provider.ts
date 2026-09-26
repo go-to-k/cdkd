@@ -49,6 +49,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
 const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
@@ -1464,7 +1465,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         }
       }
       for (const key of Object.keys(prevOverrides)) {
-        if (!(key in overrides)) {
+        // `Object.hasOwn`, not `in` (issue #2776's sweep): a key named
+        // `constructor` / `toString` answers `in` through the prototype chain,
+        // so dropping it from the template emitted no `remove` op.
+        if (!Object.hasOwn(overrides, key)) {
           patchOperations.push({
             op: 'remove',
             path: `/canarySettings/stageVariableOverrides/${key}`,
@@ -1485,7 +1489,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
     }
     for (const key of Object.keys(prevVariables)) {
-      if (!(key in variables)) {
+      // `Object.hasOwn` for the reason given at the overrides twin above.
+      if (!Object.hasOwn(variables, key)) {
         patchOperations.push({ op: 'remove', path: `/variables/${key}` });
       }
     }
@@ -1880,8 +1885,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             `Cleaned up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}) after wiring failure`
           );
         } catch (cleanupError) {
+          // All three ids are TEMPLATE values (resolved `Ref`s and the
+          // method), so the command renders through `pasteableAwsCommand`
+          // (issue #3136): quoted, or withheld when one cannot be printed
+          // exactly.
           this.logger.warn(
-            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`
+            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(context?.maskSecrets)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
           );
         }
         throw innerError;
@@ -2767,7 +2776,7 @@ function appendMapPatchOps(
   for (const [key, val] of Object.entries(next)) {
     const path = `${basePath}/${escape(key)}`;
     const stringValue = String(val);
-    if (!(key in prev)) {
+    if (!Object.hasOwn(prev, key)) {
       ops.push({ op: 'add', path, value: stringValue });
     } else if (String(prev[key]) !== stringValue) {
       ops.push({ op: 'replace', path, value: stringValue });
@@ -2776,7 +2785,7 @@ function appendMapPatchOps(
 
   // remove keys present in prev but not in next
   for (const key of Object.keys(prev)) {
-    if (!(key in next)) {
+    if (!Object.hasOwn(next, key)) {
       ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
     }
   }

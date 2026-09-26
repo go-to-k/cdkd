@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Route53 example stack
@@ -17,6 +18,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - The NameServers list read BOTH ways: through Fn::Join, and bare so the
  *   Output persists a JSON array whose element count is observable (#1873)
  * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
+ * - RecordSet renames (Name / Type / SetIdentifier) under CDKD_TEST_RENAME (#3741)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
  * drops the `Dropped` hosted-zone tag and the whole `QueryLoggingConfig`
@@ -34,6 +36,22 @@ export class Route53Stack extends cdk.Stack {
     super(scope, id, props);
 
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // The RENAME phases (issue #3741) change each part of a record's Route 53
+    // identity -- Name, Type, SetIdentifier -- so the redeploy must delete the
+    // old record rather than UPSERT the new one beside it. Modes are
+    // cumulative: `name` (a Name change, which pre-fix LEAKED the old record),
+    // then `name,swap` (a SetIdentifier and a Type change, which pre-fix Route
+    // 53 REFUSED because the new record conflicts with the old one).
+    // `unswap,inject-fail` then swaps the CNAME back to an A and fails the
+    // deploy after it, so the rollback must re-create the CNAME beside the
+    // live A -- a collision Route 53 words without "already exists".
+    const renameModes = (process.env.CDKD_TEST_RENAME ?? '').split(',');
+    const renameName = renameModes.includes('name');
+    const renameUnswap = renameModes.includes('unswap');
+    const renameSwap = renameModes.includes('swap') && !renameUnswap;
+    // The geo SetIdentifier keys on `swap` alone, so `unswap` changes only
+    // TypeSwapRecord: 2.7c then reverts exactly the one record it asserts.
+    const renameGeo = renameModes.includes('swap');
 
     // Query logging requires a log group in us-east-1 whose name starts with
     // `/aws/route53/`, plus an ACCOUNT-WIDE resource policy letting Route 53
@@ -106,7 +124,7 @@ export class Route53Stack extends cdk.Stack {
     // A Record
     new route53.ARecord(this, 'TestARecord', {
       zone,
-      recordName: 'test',
+      recordName: renameName ? 'test-renamed' : 'test',
       target: route53.RecordTarget.fromIpAddresses('192.0.2.1'),
       ttl: cdk.Duration.minutes(5),
     });
@@ -142,9 +160,29 @@ export class Route53Stack extends cdk.Stack {
       type: 'A',
       ttl: '300',
       resourceRecords: ['198.51.100.1'],
-      setIdentifier: 'geo-use1',
+      setIdentifier: renameGeo ? 'geo-use1-renamed' : 'geo-use1',
     });
     geoRecord.addPropertyOverride('GeoProximityLocation', { AWSRegion: 'us-east-1', Bias: 10 });
+
+    // Issue #3741: a TYPE change on one name. Route 53 refuses a CNAME beside
+    // any other record of the same name, so this swap only succeeds when the
+    // old A record is deleted in the same atomic batch that creates the CNAME.
+    const typeSwapRecord = new route53.CfnRecordSet(this, 'TypeSwapRecord', {
+      hostedZoneId: zone.hostedZoneId,
+      name: `swap.cdkd-test-${this.account}.internal`,
+      type: renameSwap ? 'CNAME' : 'A',
+      ttl: '300',
+      resourceRecords: renameSwap ? ['target.example.com'] : ['198.51.100.7'],
+    });
+    // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (renameModes.includes('inject-fail')) {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${cdk.Stack.of(this).stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      // After the swap, so the rollback has a completed CNAME -> A to reverse.
+      failing.addDependency(typeSwapRecord);
+    }
 
     // A CIDR collection backing the CidrRoutingConfig record below.
     // AWS::Route53::CidrCollection has NO cdkd SDK provider — it routes via

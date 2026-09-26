@@ -515,7 +515,8 @@ describe('issue #1748: lifecycle transition aliases', () => {
           ],
         },
       },
-      { BucketName: BUCKET, LifecycleConfiguration: previousLifecycle }
+      { BucketName: BUCKET, LifecycleConfiguration: previousLifecycle },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
@@ -1205,7 +1206,8 @@ describe('issue #1759: the notification EventBridge / empty-family residuals', (
           EventBridgeConfiguration: { EventBridgeEnabled: 'yes' },
         },
       },
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
@@ -1313,7 +1315,8 @@ describe('the declared-null and refusal arms of each fold', () => {
           EventBridgeConfiguration: { EventBridgeEnabled: null },
         },
       },
-      { BucketName: BUCKET }
+      { BucketName: BUCKET },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
@@ -1342,7 +1345,8 @@ describe('the declared-null and refusal arms of each fold', () => {
       BUCKET,
       RESOURCE_TYPE,
       { BucketName: BUCKET, NotificationConfiguration: { EventBridgeConfiguration: 'true' } },
-      { BucketName: BUCKET }
+      { BucketName: BUCKET },
+      { replayingState: true }
     );
 
     expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
@@ -1802,5 +1806,48 @@ describe('second-round review: falsy dates, timezone determinism, marker arms', 
     expect('Expiration' in recordedRule).toBe(false);
     expect(recordedRule['ExpirationDate']).toBe('2030-01-01T00:00:00.000Z');
     expect(at(readback, 'Rules', 0)).toEqual(recordedRule);
+  });
+});
+
+describe('go-to-k/cdkd#3515: lifecycle rule fold identity test (deepSameValue)', () => {
+  // go-to-k/cdkd#3515 (s3-bucket-provider `deepSameValue`): the object arm
+  // tested `key in b`, which answers TRUE for `__proto__` on every plain object.
+  // A JSON-parsed `Filter` carrying an own `__proto__: {}` key was then compared
+  // against `b['__proto__']` — Object.prototype, zero own keys — which read as
+  // equal to `{}`. So the rebuilt `Filter: {Prefix: ''}` the wire sends compared
+  // SAME as the declared `Filter`, and `effectiveLifecycleRule` returned the
+  // ORIGINAL rule: the template side kept a Filter the readback never emits.
+  it('folds a Filter carrying only an own __proto__ key onto the sent Filter {Prefix: ""}', () => {
+    const declaredRule = {
+      Id: 'r1',
+      Status: 'Enabled',
+      ExpirationInDays: 30,
+      Filter: JSON.parse('{"__proto__": {}}') as Record<string, unknown>,
+    };
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: { Rules: [declaredRule] },
+    });
+    const filter = at(canonical, 'LifecycleConfiguration', 'Rules', 0, 'Filter') as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(filter)).toEqual(['Prefix']);
+    expect(filter['Prefix']).toBe('');
+  });
+
+  // Negative control (#3515): an own `__proto__` key the fold leaves in place
+  // (a rule-level one is carried by the spread) is on BOTH sides of the
+  // identity test, so an already-canonical rule is returned AS IS. An own-key
+  // test that over-answers for prototype-member names reports it changed and
+  // returns the rebuilt copy instead.
+  it('returns an already-canonical rule carrying an own __proto__ key by identity', () => {
+    const declaredRule = JSON.parse(
+      '{"Id":"r1","Status":"Enabled","ExpirationInDays":30,"Filter":{"Prefix":"logs/"},"__proto__":{}}'
+    ) as Record<string, unknown>;
+    expect(Object.hasOwn(declaredRule, '__proto__')).toBe(true);
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: { Rules: [declaredRule] },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules', 0)).toBe(declaredRule);
   });
 });

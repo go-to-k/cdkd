@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
+import { FORGED_CTRL, FORGED_QUOTE } from './pasteable-aws-command-assert.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::InstanceProfile';
 
@@ -107,5 +108,26 @@ describe('IAMInstanceProfileProvider partial-create cleanup (Issue #376)', () =>
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws iam delete-instance-profile --instance-profile-name');
     expect(warnMsg).toContain('my-test-profile-xxx');
+  });
+
+  describe('the recovery commands name the profile BARE, by provenance (issue #3136)', () => {
+    // See the IAM user file: the name is the generator's `[A-Za-z0-9-]` output.
+    it.each([FORGED_QUOTE, FORGED_CTRL])('a forged InstanceProfileName reaches the commands as a plain word, and the hole is quoted', async (forged) => {
+      mockSend.mockResolvedValueOnce({
+        InstanceProfile: { Arn: 'arn:aws:iam::123:instance-profile/MyProfile' },
+      }); // CreateInstanceProfileCommand
+      mockSend.mockRejectedValueOnce(new Error('AddRoleToInstanceProfile boom')); // original
+      mockSend.mockRejectedValueOnce(new Error('DeleteInstanceProfile also failed'));
+      await expect(
+        provider.create('MyProfile', RESOURCE_TYPE, { InstanceProfileName: forged, Roles: ['role-a'] })
+      ).rejects.toThrow('AddRoleToInstanceProfile boom');
+      const msg = String(warnSpy.mock.calls[0][0]);
+      const names = [...msg.matchAll(/--instance-profile-name ([^\s)]+)/g)].map((m) => m[1]);
+      expect(names).toHaveLength(2);
+      for (const name of names) expect(name).toMatch(/^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$/);
+      // A bare `<name>` is two shell redirections.
+      expect(msg).toContain(`--role-name '<name>'`);
+      expect(msg).not.toContain('--role-name <name>');
+    });
   });
 });

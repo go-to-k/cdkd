@@ -145,4 +145,32 @@ describe('DiffCalculator narrowing announcement is LOSSY-only (#1633)', () => {
 
     expect(narrowingWarnings()).toEqual([]);
   });
+
+  // go-to-k/cdkd#3515 (diff-calculator dropped-key test): the key-set compare
+  // used `key in desiredPropsForCompare`, which answers TRUE for a declared key
+  // named after an Object.prototype member (`constructor`) through the
+  // prototype chain — so a narrowing that DROPPED it was reported as nothing
+  // dropped and the announcement was suppressed.
+  it('WARNS and names a dropped declared key named after an Object.prototype member', async () => {
+    let sawDeclaredConstructor = false;
+    const dropConstructor = (_type: string, props: Record<string, unknown>) => {
+      if (Object.hasOwn(props, 'constructor')) sawDeclaredConstructor = true;
+      const out = { ...props };
+      delete out['constructor'];
+      return out;
+    };
+    await new DiffCalculator().calculateDiff(
+      stateOf('AWS::EC2::Route', { RouteTableId: 'rtb-1' }),
+      templateOf('AWS::EC2::Route', { RouteTableId: 'rtb-1', constructor: 'x' }),
+      undefined,
+      dropConstructor
+    );
+
+    // Fence: the declared key really reached the canonicalizer, so silence is
+    // the membership test's verdict and not an upstream drop.
+    expect(sawDeclaredConstructor).toBe(true);
+    const warnings = narrowingWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('(constructor)');
+  });
 });

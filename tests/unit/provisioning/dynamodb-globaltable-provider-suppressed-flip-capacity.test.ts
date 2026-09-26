@@ -280,7 +280,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      bag('PROVISIONED', PREVIOUS_BASE)
+      bag('PROVISIONED', PREVIOUS_BASE),
+      { replayingState: true }
     );
 
     // WIRE, positive control: the provisioned half IS delivered under this mode
@@ -320,7 +321,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      bag('PAY_PER_REQUEST', PREVIOUS_BASE)
+      bag('PAY_PER_REQUEST', PREVIOUS_BASE),
+      { replayingState: true }
     );
 
     // WIRE, positive control: step 3 sends the table-level ceilings under
@@ -369,7 +371,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
         TABLE_NAME,
         RESOURCE_TYPE,
         bag('', DESIRED_BASE),
-        previous
+        previous,
+        { replayingState: true }
       );
 
       // The mode itself is DROPPED (the record never carried the key)...
@@ -395,7 +398,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      bag(undefined, PREVIOUS_BASE)
+      bag(undefined, PREVIOUS_BASE),
+      { replayingState: true }
     );
 
     // PROVISIONED kept => the on-demand half is the unsendable one.
@@ -429,7 +433,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties).toBeDefined();
@@ -464,7 +469,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['WriteOnDemandThroughputSettings']).toEqual(intrinsic);
@@ -492,7 +498,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      previous
+      previous,
+      { replayingState: true }
     );
 
     const indexes = (result.effectiveProperties?.['GlobalSecondaryIndexes'] ??
@@ -515,7 +522,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      previous
+      previous,
+      { replayingState: true }
     );
 
     // Removed, not set to `undefined` — a present-but-undefined key survives
@@ -552,7 +560,9 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       },
     ];
 
-    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, previous);
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, previous, {
+      replayingState: true,
+    });
 
     const replicas = (result.effectiveProperties?.['Replicas'] ?? []) as Array<
       Record<string, unknown>
@@ -574,7 +584,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       desired,
-      bag('PROVISIONED', PREVIOUS_BASE)
+      bag('PROVISIONED', PREVIOUS_BASE),
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['WriteOnDemandThroughputSettings']).toEqual(
@@ -630,7 +641,9 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       Replicas: [replica('eu-west-1', 70), replica('us-east-1', 40)],
     };
 
-    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, previous);
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, previous, {
+      replayingState: true,
+    });
 
     const indexes = (result.effectiveProperties?.['GlobalSecondaryIndexes'] ??
       []) as Array<Record<string, unknown>>;
@@ -671,7 +684,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       desired,
-      bag('PROVISIONED', PREVIOUS_BASE)
+      bag('PROVISIONED', PREVIOUS_BASE),
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['TableName']).toBe(TABLE_NAME);
@@ -720,7 +734,8 @@ describe('DynamoDBGlobalTableProvider suppressed-flip capacity retention (issue 
       TABLE_NAME,
       RESOURCE_TYPE,
       bag('', DESIRED_BASE),
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(previous).toEqual(previousSnapshot);

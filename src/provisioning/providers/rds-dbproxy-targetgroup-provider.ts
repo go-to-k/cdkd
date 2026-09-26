@@ -222,6 +222,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // resource un-rollbackable with no template-side remedy (issue #1513). The
     // `delete()` / `readCurrentState` reads below stay unguarded for the same
     // reason — both are state-side, never template-borne.
+    //
+    // Kept as a warning on EVERY caller, the template path included, when the
+    // #3728 split was widened (issue #3740). `TargetGroupName` is createOnly
+    // (CFn schema), so a changed value is a REPLACEMENT and never reaches
+    // `update()`: a malformed value arriving here is one the recorded target
+    // group already carries, and the only template edit that changes it
+    // replaces the resource — not a repair a refusal could point at.
     const targetGroupName = requireConfigString(
       properties['TargetGroupName'],
       'default',

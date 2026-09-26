@@ -258,6 +258,28 @@ describe('LambdaMicrovmImageProvider', () => {
       expect(tag.Tags).toEqual({ env: 'prod' });
     });
 
+    it('untags a removed tag whose Key is an Object.prototype name (constructor)', async () => {
+      // #3515 reconcileTags: `k in newMap` answered true for `constructor`
+      // through the prototype chain, so no UntagResource was sent.
+      mockSend.mockImplementation(async (cmd: unknown) =>
+        cmd instanceof GetMicrovmImageCommand ? { state: 'CREATED' } : {}
+      );
+
+      const prev = {
+        ...minimalProps(),
+        Tags: [
+          { Key: 'keep', Value: 'k' },
+          { Key: 'constructor', Value: 'old' },
+        ],
+      };
+      const next = { ...minimalProps(), Tags: [{ Key: 'keep', Value: 'k' }] };
+      await provider.update('MyImage', ARN, TYPE, next, prev);
+
+      expect(callsOfType(UntagResourceCommand).map((c) => c.input.TagKeys)).toEqual([
+        ['constructor'],
+      ]);
+    });
+
     it('clears environmentVariables when the last one is removed (sends {})', async () => {
       mockSend.mockResolvedValueOnce({}); // Update
       mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll

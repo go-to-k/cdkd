@@ -44,10 +44,8 @@ replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
 `gh pr diff`. Re-read it — no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
-says, and none in a lane prompt. Edit the body BEFORE the push: an edit
-mid-CI CANCELS the in-flight runs, and a CANCELLED required context on the
-sha blocks `gh pr merge` even after the re-runs pass — `gh run rerun` each
-cancelled run to clear it (go-to-k/cdkd#3664).
+says. Edit the body BEFORE the push: an edit re-runs required checks and
+CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file
@@ -66,13 +64,16 @@ git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the rea
 git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded path
 ```
 
-Re-run the checks, `git push --force-with-lease`.
+Re-run the checks, `git push --force-with-lease`. If the harness denies it,
+`git checkout -B <branch> origin/<branch>`, `git merge origin/main` (a ledger
+conflict: keep both, `vp run integ-ledger-normalize`, commit), push plainly:
+lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, and rebuild first**: a pre-rebase green
 attests to a tree that no longer exists, and `dist/` staleness is the usual
-failure (the `version` test reads `node dist/cli.js --version` against a
-`package.json` a `chore(release)` commit moved). **Re-run the generators too**,
-since `docs/_generated/**` derives from the TREE.
+failure (the `version` test reads `dist/` against a release commit's
+`package.json`). **Re-run the generators too**, since
+`docs/_generated/**` derives from the TREE.
 
 **A clean merge is not evidence that there was no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains
@@ -86,8 +87,7 @@ git show origin/main:<file> | grep -cF "<a distinctive phrase from YOUR change>"
 git show origin/main:<file> | grep -cF "<a distinctive phrase from THEIR change>"
 ```
 
-Do NOT reach for `git pull` — `pull.rebase` is unset, so it aborts on divergence
-(or MERGES main into your branch in this squash-only repo).
+Do NOT reach for `git pull` — `pull.rebase` is unset, so it aborts on divergence.
 
 Marker mechanics: `-F` is load-bearing (prose markers carry regex
 metacharacters); `grep -c` exits 1 on zero matches, so do not chain the two; pick

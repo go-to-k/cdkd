@@ -62,6 +62,9 @@ export class LambdaUrlAuthTypeReplayStack extends cdk.Stack {
     const url = new lambda.CfnUrl(this, 'FnUrl', {
       targetFunctionArn: target.functionArn,
       authType: 'AWS_IAM',
+      // Issue #3740: an ordinary in-place change for the replay phases to fail
+      // and roll back — the revert arm is where the AuthType warn arms live now.
+      ...(process.env.URL_STREAM === 'true' && { invokeMode: 'RESPONSE_STREAM' }),
     });
 
     if (process.env.AUTHTYPE_JUNK === 'true') {

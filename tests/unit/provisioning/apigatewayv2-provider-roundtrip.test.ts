@@ -790,6 +790,20 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
     expect(updateStageInput()!['StageVariables']).toEqual({ a: '1', b: '' });
   });
 
+  it('Stage: a dropped StageVariables key named `constructor` is still cleared (#3515)', async () => {
+    // #3515 mapWithRemovals: `key in nextMap` found `constructor` on
+    // Object.prototype, so the dropped key never got its '' sentinel.
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'StageLogical',
+      '$default',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: API_ID, StageName: '$default', StageVariables: { keep: 'k' } },
+      { ApiId: API_ID, StageName: '$default', StageVariables: { keep: 'k', constructor: 'old' } }
+    );
+    expect(updateStageInput()!['StageVariables']).toEqual({ keep: 'k', constructor: '' });
+  });
+
   it('Stage: removed Description is NOT reset (API keeps empty-string) — no SDK call', async () => {
     await provider.update(
       'StageLogical',

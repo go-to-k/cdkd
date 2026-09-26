@@ -46,7 +46,10 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
 import { maskDeep } from '../masked-retry-logger.js';
-import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
+import {
+  protectedReplacementAdvice,
+  pasteableAwsCommand,
+} from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2163,7 +2166,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           `applied the new MFA configuration, and restoring the previous one also failed ` +
           `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
           `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
-          `or check it with aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}.`
+          `or check it with ${pasteableAwsCommand()`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}`.render()}.`
       );
       this.logger.debug(
         `MFA restore failure detail for UserPool ${physicalId}: ` +

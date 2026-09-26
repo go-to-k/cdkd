@@ -219,8 +219,12 @@ repository component matches the marker's `containerRepo`. Two caveats:
 
 - The lookup is best-effort. A missing or unreadable marker falls back to the
   conventional prefix match, and without `--from-state` no marker is read at all.
-- The host test on this path is narrower than the one above — it looks for a
-  literal `.dkr.ecr.` substring — so it sees only the plain lower-case form.
+- The host test on this path is a shape test only: it accepts the labels of
+  every endpoint shape above (plain, FIPS, dual-stack) in any letter case, and
+  does not check the account, region or suffix, so it also matches a host whose
+  segments are still `${AWS::...}` placeholders. It decides only whether the
+  image is built locally; which hosts get a `docker login` is still decided by
+  the stricter check above.
 
 A miss here is a slow path, not a wrong pull: the image simply routes through the
 ECR-pull tier instead.

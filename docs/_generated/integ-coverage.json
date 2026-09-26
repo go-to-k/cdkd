@@ -616,6 +616,8 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
+        "nested-stack-rollback",
         "nested-stack-secret",
         "recreate-nested-logical-id-collision"
       ],
@@ -636,6 +638,12 @@
           "literal"
         ],
         "nested-stack-deep": [
+          "literal"
+        ],
+        "nested-stack-replace-guard": [
+          "literal"
+        ],
+        "nested-stack-rollback": [
           "literal"
         ],
         "nested-stack-secret": [
@@ -4808,11 +4816,16 @@
     {
       "resourceType": "AWS::Lambda::LayerVersion",
       "integs": [
+        "custom-resource-noecho-nested",
         "lambda",
         "lambda-layer-version-update",
         "local-invoke-layers"
       ],
       "signals": {
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
+        ],
         "lambda": [
           "l2"
         ],
@@ -5727,6 +5740,7 @@
     {
       "resourceType": "AWS::SQS::Queue",
       "integs": [
+        "appsync",
         "basic",
         "bench-cdk-sample",
         "bench-sdk",
@@ -5737,6 +5751,7 @@
         "cross-region-concurrent-stacks",
         "data-pipeline",
         "drift-revert-arrays",
+        "dynamodb-globaltable",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -5754,6 +5769,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "nested-required-preflight",
+        "nested-stack-rollback",
         "rename-refactor",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
@@ -5765,6 +5781,9 @@
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
+        "route53",
+        "s3-analytics-inventory",
+        "s3-lifecycle",
         "scheduler-custom-group",
         "secrets-dynamic-ref",
         "sns-inline-subscription",
@@ -5775,6 +5794,9 @@
         "tags-propagation"
       ],
       "signals": {
+        "appsync": [
+          "l1"
+        ],
         "basic": [
           "l1"
         ],
@@ -5806,6 +5828,9 @@
         ],
         "drift-revert-arrays": [
           "l2"
+        ],
+        "dynamodb-globaltable": [
+          "l1"
         ],
         "event-driven": [
           "l2"
@@ -5863,6 +5888,9 @@
           "l1",
           "literal"
         ],
+        "nested-stack-rollback": [
+          "l1"
+        ],
         "rename-refactor": [
           "l2",
           "literal"
@@ -5896,6 +5924,15 @@
           "l1"
         ],
         "rollback-sqs-cooldown": [
+          "l1"
+        ],
+        "route53": [
+          "l1"
+        ],
+        "s3-analytics-inventory": [
+          "l1"
+        ],
+        "s3-lifecycle": [
           "l1"
         ],
         "scheduler-custom-group": [
@@ -5997,6 +6034,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-replace-guard",
         "nested-stack-secret",
         "opensearch-domain-getatt",
         "output-never-resolved-diff",
@@ -6187,6 +6225,10 @@
         ],
         "nested-stack-deep": [
           "l2"
+        ],
+        "nested-stack-replace-guard": [
+          "l2",
+          "literal"
         ],
         "nested-stack-secret": [
           "l2",

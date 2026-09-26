@@ -90,7 +90,7 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
     const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
       ...baseProps,
       StreamSpecification: previousSpec,
-    });
+    }, { replayingState: true });
 
     // The load-bearing assertion: the exact PREVIOUS object, not the
     // malformed desired one and not the NEW_AND_OLD_IMAGES default. The
@@ -125,7 +125,8 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, StreamSpecification: '' },
-      { ...baseProps, StreamSpecification: previousSpec }
+      { ...baseProps, StreamSpecification: previousSpec },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['StreamSpecification']).toEqual(previousSpec);
@@ -158,7 +159,8 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
       TABLE_NAME,
       RESOURCE_TYPE,
       malformedDesired,
-      { ...baseProps, StreamSpecification: previousSpec }
+      { ...baseProps, StreamSpecification: previousSpec },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties).toBeDefined();
@@ -193,7 +195,8 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, StreamSpecification: '' },
-      { ...baseProps, StreamSpecification: {} }
+      { ...baseProps, StreamSpecification: {} },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['StreamSpecification']).toEqual({});
@@ -208,7 +211,8 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
       TABLE_NAME,
       RESOURCE_TYPE,
       desired,
-      previous
+      previous,
+      { replayingState: true }
     );
 
     // No previous value to retain. An explicit `undefined` would survive the
