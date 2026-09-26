@@ -12,11 +12,11 @@ import {
   isRecreateRetryableError,
   isRetryableTransientError,
   isUpdateUnsupportedError,
-  CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK,
   markNonRetryable,
   markRedactedCause,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { ccUnsupportedActionError, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import {
   CdkdError,
   IntrinsicResolutionRefusalError,
@@ -1887,34 +1887,10 @@ describe('retryClassificationText (issue #2302)', () => {
 });
 
 describe('isUpdateUnsupportedError (issue #2520)', () => {
-  // Production's byte shape, reconstructed from the two sources that build it
-  // rather than invented:
-  //   - the AWS rejection: `aws cloudcontrol update-resource --type-name
-  //     AWS::DocDB::DBCluster` answers an error whose `name` is
-  //     `UnsupportedActionException` and whose `message` is `Resource type
-  //     AWS::DocDB::DBCluster does not support UPDATE action` (measured
-  //     2026-09-04) — the NAME is NOT repeated inside the message.
-  //   - the wrapper: `CloudControlProvider.handleError` interpolates
-  //     `err.message` only, into the "not supported by Cloud Control API"
-  //     sentence, and passes the raw error as `cause`.
-  function ccUnsupportedActionError(resourceType: string): Error {
-    const raw = new Error(`Resource type ${resourceType} does not support UPDATE action`);
-    raw.name = 'UnsupportedActionException';
-    return raw;
-  }
-
-  function handleErrorWrapper(resourceType: string, logicalId: string, cause: Error): Error {
-    return new ProvisioningError(
-      `Resource type ${resourceType} is not supported by Cloud Control API and no SDK ` +
-        `provider is registered.\nPlease report this issue at ` +
-        `https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n` +
-        `Error: ${cause.message}`,
-      resourceType,
-      logicalId,
-      'pid-1',
-      cause
-    );
-  }
+  // Production's byte shape: `ccUnsupportedActionError` / `handleErrorWrapper`
+  // in `tests/unit/_cc-unsupported-action.ts`. The AWS wording the predicate
+  // no longer reads (issue #3810):
+  const PHRASE = 'does not support UPDATE';
 
   it('matches the wrapped synchronous rejection through the cause chain', () => {
     const err = handleErrorWrapper(
@@ -1932,7 +1908,7 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     const raw = new Error('Resource type AWS::DocDB::DBCluster cannot be modified');
     raw.name = 'UnsupportedActionException';
     const err = handleErrorWrapper('AWS::DocDB::DBCluster', 'MyCluster', raw);
-    expect(err.message).not.toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+    expect(err.message).not.toContain(PHRASE);
     expect(isUpdateUnsupportedError(err, 'MyCluster')).toBe(true);
   });
 
@@ -1953,21 +1929,36 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(err, 'MyCluster')).toBe(true);
   });
 
-  it('still accepts the raw AWS prose at the TOP level, including from a thrown string', () => {
-    // The pre-#2520 reach, kept: a provider that rethrows the wording flat, and
-    // one that throws a bare string (nothing in the type system stops it).
+  it('does NOT accept AWS prose flat at the top level, nor from a thrown string (issue #3810)', () => {
+    // The pre-#2520 reach, dropped: a message can quote template-chosen text,
+    // and both real shapes carry a structured field.
     expect(
       isUpdateUnsupportedError(
         new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
         'MyTable'
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isUpdateUnsupportedError(
         'Resource type AWS::DynamoDB::Table does not support UPDATE action',
         'MyTable'
       )
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('does NOT match a cdkd refusal quoting a template value that carries the phrase (issue #3810)', () => {
+    // AppSync's `toDeltaSyncTtl` shape: an untyped `ProvisioningError` naming
+    // THIS resource, so the anchor passes it; only the absent prose read keeps
+    // it from replacing the data source without `--replace`.
+    const err = new ProvisioningError(
+      'AWS::AppSync::DataSource DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL must be a ' +
+        'number of minutes (CFn types it as a string), got "does not support UPDATE" — cdkd ' +
+        'refuses to drop it silently',
+      'AWS::AppSync::DataSource',
+      'MyDs'
+    );
+    expect(err.message).toContain(PHRASE);
+    expect(isUpdateUnsupportedError(err, 'MyDs')).toBe(false);
   });
 
   it('does NOT match a typed ResourceUpdateNotSupportedError whose message quotes the prose (issue #3757)', () => {
@@ -1978,7 +1969,7 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
       'MyTable',
       `renaming 'x' to 'does not support UPDATE' needs --replace`
     );
-    expect(err.message).toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+    expect(err.message).toContain(PHRASE);
     expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
   });
 
@@ -2025,18 +2016,13 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(forCreate, 'MyCluster')).toBe(false);
   });
 
-  it('applies the resource anchor to the PROSE fallback too, not only the structured arms', () => {
-    // The prose read sits INSIDE the walk, after the anchor, so the anchor
-    // governs every route into a `true`. Ordered ahead of it, the nested-stack
-    // immunity would rest on the child engine's wrapper happening to quote no
-    // AWS text — a property of another file that nothing here watches. This
-    // case is the shape that ordering decides: a top-level rejection that
-    // NAMES another resource and quotes AWS's prose.
-    const foreign = new ProvisioningError(
-      'Resource type AWS::DynamoDB::Table does not support UPDATE action',
+  it('applies the resource anchor at the TOP level, not only down the chain', () => {
+    // A top-level wrapper that NAMES another resource is refused before its
+    // cause's name is read.
+    const foreign = handleErrorWrapper(
       'AWS::DynamoDB::Table',
       'SomeOtherResource',
-      'other-pid'
+      ccUnsupportedActionError('AWS::DynamoDB::Table')
     );
     expect(isUpdateUnsupportedError(foreign, 'MyNestedStack')).toBe(false);
     // ...and the same object still classifies for the resource it names, so
@@ -2044,29 +2030,13 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(foreign, 'SomeOtherResource')).toBe(true);
   });
 
-  it('reads AWS prose at the TOP LEVEL ONLY — a cause that quotes it does not qualify', () => {
-    // The property the pre-#2520 predicate had by CONSTRUCTION (the read sat
-    // outside the walk) and which the anchored ordering turned into a
-    // conditional one (`depth === 0`). Measured unpinned: reading the prose at
-    // every depth left all 176 cases green, and that widening is exactly the
-    // destructive direction — a nested wrapper whose cause happens to quote
-    // the phrase would newly take the DELETE + CREATE fallback.
-    //
+  it('reads no prose down the chain either — a cause that quotes it does not qualify', () => {
     // Neither link carries a `logicalId`, so the anchor cannot be what
-    // produces the `false`; only the depth gate can.
+    // produces the `false`.
     const causeQuotesIt = Object.assign(new Error('the replacement could not be applied'), {
       cause: new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
     });
     expect(isUpdateUnsupportedError(causeQuotesIt, 'MyTable')).toBe(false);
-    // The control: the SAME prose at the top level does qualify, so the case
-    // above is about the depth and not about the phrase having stopped
-    // matching at all.
-    expect(
-      isUpdateUnsupportedError(
-        new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
-        'MyTable'
-      )
-    ).toBe(true);
   });
 
   it('does NOT match the Cloud Control handler code NotUpdatable', () => {
@@ -2117,7 +2087,7 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
 
     it('refuses the match when the chain names a DIFFERENT resource', () => {
       const err = nestedChainFromChild('ChildTable');
-      expect(err.message).not.toContain(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK);
+      expect(err.message).not.toContain(PHRASE);
       expect(isUpdateUnsupportedError(err, 'MyNestedStack')).toBe(false);
     });
 

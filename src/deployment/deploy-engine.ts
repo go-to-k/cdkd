@@ -7967,8 +7967,8 @@ export class DeployEngine {
             // exception NAME (and the async `ccErrorCode`), because the
             // provider's wrapper never copies the name into its message — the
             // predicate's old `includes('UnsupportedActionException')` half
-            // therefore matched nothing cdkd produces. AWS's prose is retained
-            // as a TOP-LEVEL-only fallback.
+            // therefore matched nothing cdkd produces. AWS's prose is not read
+            // at all (issue #3810): a message can quote template-chosen text.
             //
             // `logicalId` is passed because a chain walk is otherwise WIDER
             // than the message read it replaces: a nested stack's child deploy

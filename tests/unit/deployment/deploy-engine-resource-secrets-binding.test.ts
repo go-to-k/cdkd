@@ -34,6 +34,7 @@ import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secr
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -388,9 +389,9 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
 
   it('site 6 — the UPDATE-not-supported fallback (DELETE -> CREATE)', async () => {
     primeUpdate();
-    mockProvider.update!.mockImplementation(async () => {
+    mockProvider.update!.mockImplementation(async (logicalId: string, _pid, resourceType) => {
       capture(seenUpdate);
-      throw new Error('UnsupportedActionException: this type does not support UPDATE');
+      throw ccUpdateUnsupportedRejection(resourceType, logicalId);
     });
 
     // `forceStatefulRecreation` for the same reason sites 3 and 4 pass it:

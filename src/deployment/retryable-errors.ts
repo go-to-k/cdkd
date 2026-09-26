@@ -1687,13 +1687,6 @@ export function isRecreateRetryableError(message: string): boolean {
 export const CC_UNSUPPORTED_ACTION_ERROR_NAME = 'UnsupportedActionException';
 
 /**
- * The AWS prose the update-not-supported classifier accepted before the
- * structured signal existed. Kept as a TOP-LEVEL-only fallback — see
- * {@link isUpdateUnsupportedError} for why it is not walked down the chain.
- */
-export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
-
-/**
  * True when a failed `provider.update()` for `logicalId` was rejected because
  * the resource type has no UPDATE handler at all — the signal the deploy
  * engine's update-failure fallback fires on, turning the update into a
@@ -1721,20 +1714,12 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  *    `cloud-control-provider.ts` reads the code for `AlreadyExists` /
  *    `NotFound`. No async occurrence has been MEASURED
  *    (`UnsupportedActionException` is raised synchronously by `UpdateResource`
- *    today); the arm exists so the async shape cannot silently fall through to
- *    prose, and it is pinned by unit cases built from the real error class.
+ *    today); the arm exists so the async shape is classified at all, and it is
+ *    pinned by unit cases built from the real error class.
  *    `ccOperation` is required rather than decorative precisely BECAUSE the
  *    arm is unmeasured: a CREATE or DELETE sub-operation reporting the same
  *    code says nothing about whether the type has an UPDATE handler, and
- *    reading the code alone would let it trigger a DELETE + CREATE. The
- *    narrowing is not absolute and the gap is stated rather than papered over:
- *    such a failure arriving at the TOP level still classifies if its own
- *    MESSAGE quotes AWS's prose. Unreachable today —
- *    `CloudControlOperationFailedError`'s message is built as
- *    `${operation} failed for <id>: <StatusMessage>`, so a CREATE's text
- *    cannot contain the UPDATE phrase unless AWS puts it there — and closing
- *    it would mean anchoring the prose read on the operation too, which would
- *    narrow the retained pre-#2520 reach rather than preserve it.
+ *    reading the code alone would let it trigger a DELETE + CREATE.
  *
  * ## Why the walk stops at another resource's error
  *
@@ -1751,13 +1736,16 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * stops dead at the first link that names a resource other than the one being
  * updated.
  *
- * The prose fallback is read at the TOP LEVEL ONLY, exactly as the pre-#2520
- * predicate did, and for the same asymmetry: missing the signal fails the
- * deploy (safe), matching it too broadly replaces a resource nobody asked to
- * replace (unsafe). It is read INSIDE the walk, after the anchor, so the
- * anchor governs every route into a `true` — ordered ahead of it, the
- * nested-stack immunity would rest on the child engine's wrapper happening to
- * quote no AWS text, which is a property of another file.
+ * ## Why no message is read
+ *
+ * AWS's prose (`does not support UPDATE`) is NOT a signal (issue #3810). A
+ * top-level message can quote template-chosen text — a cdkd refusal
+ * interpolating a property value, or an AWS rejection echoing its input — so a
+ * substring match replaced resources without `--replace`. Both real shapes
+ * carry a structured field: `handleError` threads the SDK exception as `cause`,
+ * and the async failure carries `ccErrorCode`. Missing the signal fails the
+ * deploy (safe); matching too broadly deletes a resource nobody asked to
+ * replace (unsafe).
  *
  * ## Codes deliberately NOT matched
  *
@@ -1773,11 +1761,10 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  */
 export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
   // A typed `ResourceUpdateNotSupportedError` is the `--replace` OPT-IN
-  // trigger, never the auto-fallback, and its message interpolates
-  // template-chosen text (a Glue rename quotes both names) that can contain
-  // the prose fallback below — which would replace without the opt-in
-  // (issue #3757). Matched by NAME: this module cannot import
-  // `error-handler.ts`, which imports it.
+  // trigger, never the auto-fallback (issue #3757). With no prose read left
+  // (issue #3810) nothing below can match it; this states the contract rather
+  // than fencing a live route. Matched by NAME: this module does not import
+  // `error-handler.ts`, which imports it, to avoid a cycle.
   if (
     (error as { name?: unknown } | null | undefined)?.name === 'ResourceUpdateNotSupportedError'
   ) {
@@ -1864,24 +1851,6 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     // failure trigger a DELETE + CREATE.
     if (link.ccErrorCode === CC_UNSUPPORTED_ACTION_ERROR_NAME && link.ccOperation === 'UPDATE') {
       return true;
-    }
-    // AWS's prose, at the TOP LEVEL ONLY — exactly the reach of the pre-#2520
-    // predicate. Walking prose deeper would WIDEN which deploys take the
-    // destructive DELETE + CREATE: a nested `ProvisioningError` whose cause
-    // happens to quote the phrase would newly qualify.
-    //
-    // Byte-identical to the read this predicate replaced in `deploy-engine.ts`,
-    // `String(error)` arm included: a provider is free to `throw 'text'`, and
-    // narrowing to `Error | string` would silently stop classifying a shape the
-    // old code did classify.
-    if (depth === 0) {
-      // Read off `current`, not the parameter: at depth 0 the two are the same
-      // object, and every other read in this body goes through the link, so
-      // keeping this one local means the `depth === 0` gate is the ONLY thing
-      // holding the top-level property rather than a second, silent one.
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- deliberate: the pre-#2520 predicate stringified whatever was thrown
-      const topMessage = current instanceof Error ? current.message : String(current);
-      if (topMessage.includes(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK)) return true;
     }
     current = link.cause;
   }
