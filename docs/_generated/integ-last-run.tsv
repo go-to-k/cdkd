@@ -73,7 +73,7 @@ deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destr
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	241	verify.sh	#3455 fix round 2: rc ok, orph clean, no CC DeleteResource for 3 volumes
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
-deployment-events	2026-09-16T07:18:21Z	PASS	38	verify.sh	go-to-k/cdkd#3216 sidecar check made live (--recursive); prefix empty, orph clean
+deployment-events	2026-09-26T00:08:31Z	PASS	40	verify.sh	rc 0, state clean, PR 3800 (run list renders real fields unchanged)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-09-21T12:33:50Z	PASS	373	verify.sh	rc ok, 15 deleted 0 errors, VPC/ENI/SG/role gone, orph clean (#3496: lambda-vpc-deps delete-dep edge keys)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
@@ -254,7 +254,7 @@ replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #26
 replacement-immutable-name	2026-09-19T18:00:07Z	PASS	109	verify.sh	rc ok, orph clean; #2668 type-change routing
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
-rollback-command	2026-09-25T13:56:10Z	PASS	186	verify.sh	rc ok, orph clean; #2776 resolveReplayProps walk (revert, reverse-replacement, --revert-failed arms), at 155a8e18d
+rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 fix round 2: rc ok, orph clean
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
