@@ -184,6 +184,11 @@ the expression.
 
 ### Scrubbing supersedes the plaintext, it does not erase it
 
+`scrub` rewrites `state.json` and the exports index, never a stack's
+`rollback-journal.json`, which holds copies of state records. A nested stack
+keeps its journal after a successful deploy until its top-level stack's deploy
+succeeds, so a value a scrub repairs can survive there until then.
+
 `scrub` rewrites `state.json` with a plain S3 `PutObject`, and `cdkd bootstrap`
 turns **versioning** on for the state bucket (it skips that step for a bucket
 that already existed, unless you pass `--force`, so confirm with

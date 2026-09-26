@@ -22,6 +22,14 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
+import {
+  NESTED_PENDING_PARENT_REASON,
+  dropSettledNestedJournals,
+  nestedChildStackName,
+  revertedNestedRowIds,
+  withNestedRevertRun,
+  type NestedRevertRun,
+} from '../../deployment/nested-child-journal.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
@@ -45,8 +53,10 @@ import {
   type StackState,
   orphansAfterRollback,
   type StackOrphanRecord,
+  type LockInfo,
 } from '../../types/state.js';
-import type { StackStateRef } from '../../state/s3-state-backend.js';
+import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
+import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
@@ -503,9 +513,19 @@ export async function rollbackCommand(
       ref = resolveSingleRegion(stackArg, refs, options.stackRegion);
     } else {
       const candidates = await findJournalCandidates(setup.stateBackend, setup.prefix);
-      const scoped = options.stackRegion
+      const inRegion = options.stackRegion
         ? candidates.filter((c) => c.region === options.stackRegion)
         : candidates;
+      // A nested child's journal is its PARENT's to replay (issue #3754): a
+      // parent's `cdkd rollback` reverts the child row from it. So a child
+      // (`<parent>~<id>`) whose parent is itself a candidate in the same region
+      // is not a separate choice to offer.
+      const scoped = inRegion.filter((c) => {
+        const cut = c.stackName.lastIndexOf('~');
+        if (cut <= 0) return true;
+        const parent = c.stackName.slice(0, cut);
+        return !inRegion.some((p) => p.stackName === parent && p.region === c.region);
+      });
       if (scoped.length === 0) {
         logger.info(
           'Nothing to roll back — no stack has a rollback journal. ' +
@@ -621,8 +641,21 @@ export async function rollbackCommand(
       // loadRollbackJournal → parseRollbackJournal; it propagates as a hard
       // error telling the user to upgrade cdkd.
       const stateData = await setup.stateBackend.getState(stackName, region);
-      const journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
-      if (!journal || journal.segments.length === 0) {
+      let journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
+      // Issue #3754: `nested-pending-parent` records, judged BEFORE the plan and
+      // the prompt, and written only after the confirmation (below).
+      const orphanedPending = journal
+        ? await judgeNestedPendingRecords(setup, stackName, region, journal.segments)
+        : 0;
+      if (journal && orphanedPending > 0) {
+        // Replayed from the in-memory journal; the S3 copy loses the same
+        // segments once the user confirms, before any pop.
+        journal = {
+          ...journal,
+          segments: journal.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
+        };
+      }
+      if (!journal || (journal.segments.length === 0 && orphanedPending === 0)) {
         throw new Error(
           `Nothing to roll back for '${safeStack(stackName)}' (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
@@ -640,6 +673,35 @@ export async function rollbackCommand(
             `and .../rollback-journal.json). ` +
             `State appears corrupted — inspect the bucket manually.`
         );
+      }
+      // Issue #3754: a nested child whose OWN deploy failed in a segment's run
+      // left its completed ops in its journal, and only `--revert-failed`
+      // replays that failed row. Without it the parent's older segments would
+      // revert the child past those ops first, and a later rollback of the
+      // child would then restore the failed run's values over the older ones.
+      // Refused up front, before any replay, so the order cannot invert.
+      if (!options.revertFailed) {
+        for (const segment of journal.segments) {
+          for (const logicalId of revertedNestedRowIds(segment.failedOperations ?? [])) {
+            const child = nestedChildStackName(stackName, logicalId);
+            const childJournal = await setup.stateBackend
+              .loadRollbackJournal(child, region)
+              .catch(() => null);
+            const unreverted = (childJournal?.segments ?? []).some(
+              (s) =>
+                s.runId === segment.runId &&
+                s.reason !== NESTED_PENDING_PARENT_REASON &&
+                s.operations.length > 0
+            );
+            if (unreverted) {
+              throw new Error(
+                `Nested stack ${safeStack(child)} failed during a deploy this journal records, and its ` +
+                  `own journal still holds that deploy's completed operations. Re-run with ` +
+                  `--revert-failed so they are reverted in order with the parent's.`
+              );
+            }
+          }
+        }
       }
       const baseState = stateData.state;
       // `cdkd rollback` replays journal segments and SAVES after each one, and
@@ -682,8 +744,9 @@ export async function rollbackCommand(
 
       // Informational role-arn note (issue #1183): the newest segment recorded
       // a role, but --role-arn was not passed this run.
-      const newestSegment = journal.segments[journal.segments.length - 1]!;
-      if (newestSegment.roleArn && !options.roleArn) {
+      // Absent when the journal held only orphaned nested records (issue #3754).
+      const newestSegment = journal.segments[journal.segments.length - 1];
+      if (newestSegment?.roleArn && !options.roleArn) {
         // `safe()`'s 255-code-point default is the WRONG cap for an ARN, and
         // this is the one site in this file holding one (issue
         // go-to-k/cdkd#3397 review). An AWS-legal role ARN reaches ~613 --
@@ -701,6 +764,12 @@ export async function rollbackCommand(
 
       // 5. Plan — newest-first, one block per segment.
       logger.info(`\nRollback plan for '${safeStack(stackName)}' (${safe(region)}):`);
+      if (orphanedPending > 0) {
+        logger.info(
+          `\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
+            `has a journal to replay them (nothing else would ever replay them).`
+        );
+      }
       // Plan preview walks a COPY of state so it does not disturb replay.
       const planStateView: Record<string, ResourceState> = { ...stateResources };
       for (let s = journal.segments.length - 1; s >= 0; s--) {
@@ -713,8 +782,21 @@ export async function rollbackCommand(
         if (segment.failedOperations && segment.failedOperations.length > 0) {
           if (options.revertFailed) {
             const failedPlan = planFailedOps(segment.failedOperations, planStateView);
-            for (const item of failedPlan)
+            for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
+              // A failed nested row's revert replays its child's journal too.
+              if (revertedNestedRowIds([item.op]).length > 0) {
+                for (const line of await previewNestedChildRevert(
+                  setup.stateBackend,
+                  nestedChildStackName(stackName, item.op.logicalId),
+                  region,
+                  segment.runId,
+                  options.skipFinalSnapshot === true
+                )) {
+                  logger.info(line);
+                }
+              }
+            }
             applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
           } else {
             for (const fop of segment.failedOperations) {
@@ -726,7 +808,23 @@ export async function rollbackCommand(
           }
         }
         const plan = planRollback(segment.operations, planStateView, orphanLogicalIds);
-        for (const item of plan) logger.info(actionLabel(item, options.skipFinalSnapshot === true));
+        for (const item of plan) {
+          logger.info(actionLabel(item, options.skipFinalSnapshot === true));
+          // Issue #3754: a nested row's revert replays its CHILD's journal, so
+          // what that replay deletes or re-creates is part of what the user
+          // confirms below.
+          if (revertedNestedRowIds([item.op]).length > 0) {
+            for (const line of await previewNestedChildRevert(
+              setup.stateBackend,
+              nestedChildStackName(stackName, item.op.logicalId),
+              region,
+              segment.runId,
+              options.skipFinalSnapshot === true
+            )) {
+              logger.info(line);
+            }
+          }
+        }
         // Apply the segment's effect to the preview so an earlier segment's
         // plan reflects the later segment's already-unwound state.
         applyPlanToPreview(plan, planStateView, options.skipFinalSnapshot === true);
@@ -739,6 +837,21 @@ export async function rollbackCommand(
           logger.info('Rollback cancelled');
           return;
         }
+      }
+
+      // Issue #3754: the orphaned nested records go now — after the
+      // confirmation, before the first pop, so the positional pops below act on
+      // the journal the plan showed.
+      if (orphanedPending > 0) {
+        const discarded = await setup.stateBackend.dropRollbackJournalSegments(
+          stackName,
+          region,
+          (s) => s.reason === NESTED_PENDING_PARENT_REASON
+        );
+        logger.info(
+          `Discarded ${discarded} record(s) of nested deploys whose parent run no longer has a ` +
+            `journal to replay them.`
+        );
       }
 
       // 6. Events recorder for this rollback run.
@@ -855,6 +968,9 @@ export async function rollbackCommand(
         while (journal.segments.length > 0) {
           if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
+          // Issue #3754: what the nested-stack rows' child replays reported
+          // (completed rows, skipped ops), read once the segment has replayed.
+          let nestedRun: NestedRevertRun | undefined;
           const result = await withNestedStackContext(
             {
               stateBackend: setup.stateBackend,
@@ -869,116 +985,126 @@ export async function rollbackCommand(
               destroyOptions: {
                 ...(options.profile && { profile: options.profile }),
                 statePrefix: options.statePrefix,
+                // A nested child's revert (issue #3754) replays its own
+                // journal through this context, so the opt-out must reach it.
+                ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               },
             },
+            // Issue #3754: a nested-stack row in this segment is reverted by
+            // replaying its child's journal segments for the SAME run.
             () =>
-              withStackName(stackName, async () => {
-                // #1198: revert the segment's FAILED in-flight op(s) first
-                // (opt-in). Their revert is independent of the completed-op
-                // replay (one op per resource per deploy), so a failed-op
-                // revert failure still lets the completed ops replay — the
-                // summed failure count keeps the segment from popping.
-                let failedOpFailures = 0;
-                let failedOpWarnings = 0;
-                if (
-                  options.revertFailed &&
-                  segment.failedOperations &&
-                  segment.failedOperations.length > 0
-                ) {
-                  const failedResult = await replayFailedOperations(
-                    segment.failedOperations,
+              withNestedRevertRun(segment.runId, (run) => {
+                nestedRun = run;
+                return withStackName(stackName, async () => {
+                  // #1198: revert the segment's FAILED in-flight op(s) first
+                  // (opt-in). Their revert is independent of the completed-op
+                  // replay (one op per resource per deploy), so a failed-op
+                  // revert failure still lets the completed ops replay — the
+                  // summed failure count keeps the segment from popping.
+                  let failedOpFailures = 0;
+                  let failedOpWarnings = 0;
+                  if (
+                    options.revertFailed &&
+                    segment.failedOperations &&
+                    segment.failedOperations.length > 0
+                  ) {
+                    const failedResult = await replayFailedOperations(
+                      segment.failedOperations,
+                      stateResources,
+                      stackName,
+                      ctx,
+                      {
+                        afterOp: saveState,
+                        isInterrupted: () => interrupted,
+                        // Failed-only segment: replayRollback below returns
+                        // early without the STARTED/FINISHED envelope, so the
+                        // failed-op replay owns it (events symmetry). For a
+                        // MIXED segment the failed-op ROLLBACK_RESOURCE_*
+                        // events land just before replayRollback's
+                        // ROLLBACK_STARTED — accepted cosmetic ordering (the
+                        // events stream is informational; the reader derives
+                        // nothing from envelope position).
+                        emitEnvelope: segment.operations.length === 0,
+                        // Same reason as the sibling replay below: `afterOp`
+                        // saves per op, so a record appended only after this
+                        // returns is absent from every intermediate save
+                        // (issue #2934).
+                        onOrphan: (record) => mintedOrphans.push(record),
+                      }
+                    );
+                    failedOpFailures = failedResult.failures;
+                    failedOpWarnings = failedResult.warnings;
+
+                    // Idempotency: persist ONLY the still-pending failed ops
+                    // (per-op strip). A handled op must never be re-issued on a
+                    // re-run — replaying `attemptedProperties` as the previous
+                    // diff side against an already-reverted resource would
+                    // generate a patch undoing changes that no longer exist
+                    // (fails on patch-based providers). Runs on the interrupt /
+                    // failure paths too so partial progress is never lost.
+                    // Best-effort: on a strip failure the re-run merely
+                    // re-attempts the revert.
+                    const remaining = failedResult.remainingFailedOps;
+                    // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
+                    // the handled ops' state rows were never saved, so stripping
+                    // them would leave the record describing work the journal no
+                    // longer carries. Kept, the re-run after the region repair
+                    // replays them against the unsaved rows and reconciles (a
+                    // failed-CREATE delete reads not-found as done).
+                    if (
+                      !declinedDivergentRewrite &&
+                      remaining.length !== segment.failedOperations.length
+                    ) {
+                      try {
+                        await setup.stateBackend.setRollbackJournalFailedOperations(
+                          stackName,
+                          region,
+                          remaining
+                        );
+                        if (remaining.length === 0) delete segment.failedOperations;
+                        else segment.failedOperations = remaining;
+                      } catch (stripError) {
+                        logger.warn(
+                          `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
+                        );
+                      }
+                    }
+                    if (failedResult.interrupted) {
+                      return {
+                        failures: failedOpFailures,
+                        warnings: failedOpWarnings,
+                        interrupted: true,
+                      };
+                    }
+                  }
+                  const replayResult = await replayRollback(
+                    segment.operations,
                     stateResources,
                     stackName,
                     ctx,
                     {
+                      orphanLogicalIds,
                       afterOp: saveState,
                       isInterrupted: () => interrupted,
-                      // Failed-only segment: replayRollback below returns
-                      // early without the STARTED/FINISHED envelope, so the
-                      // failed-op replay owns it (events symmetry). For a
-                      // MIXED segment the failed-op ROLLBACK_RESOURCE_*
-                      // events land just before replayRollback's
-                      // ROLLBACK_STARTED — accepted cosmetic ordering (the
-                      // events stream is informational; the reader derives
-                      // nothing from envelope position).
-                      emitEnvelope: segment.operations.length === 0,
-                      // Same reason as the sibling replay below: `afterOp`
-                      // saves per op, so a record appended only after this
-                      // returns is absent from every intermediate save
-                      // (issue #2934).
+                      // Pushed from INSIDE the replay, not after it returns: the
+                      // `afterOp` above saves per op, so a record appended only
+                      // on return would be missing from every intermediate save
+                      // — and a crash there loses it for good (issue #2934).
                       onOrphan: (record) => mintedOrphans.push(record),
                     }
                   );
-                  failedOpFailures = failedResult.failures;
-                  failedOpWarnings = failedResult.warnings;
-
-                  // Idempotency: persist ONLY the still-pending failed ops
-                  // (per-op strip). A handled op must never be re-issued on a
-                  // re-run — replaying `attemptedProperties` as the previous
-                  // diff side against an already-reverted resource would
-                  // generate a patch undoing changes that no longer exist
-                  // (fails on patch-based providers). Runs on the interrupt /
-                  // failure paths too so partial progress is never lost.
-                  // Best-effort: on a strip failure the re-run merely
-                  // re-attempts the revert.
-                  const remaining = failedResult.remainingFailedOps;
-                  // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
-                  // the handled ops' state rows were never saved, so stripping
-                  // them would leave the record describing work the journal no
-                  // longer carries. Kept, the re-run after the region repair
-                  // replays them against the unsaved rows and reconciles (a
-                  // failed-CREATE delete reads not-found as done).
-                  if (
-                    !declinedDivergentRewrite &&
-                    remaining.length !== segment.failedOperations.length
-                  ) {
-                    try {
-                      await setup.stateBackend.setRollbackJournalFailedOperations(
-                        stackName,
-                        region,
-                        remaining
-                      );
-                      if (remaining.length === 0) delete segment.failedOperations;
-                      else segment.failedOperations = remaining;
-                    } catch (stripError) {
-                      logger.warn(
-                        `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
-                      );
-                    }
-                  }
-                  if (failedResult.interrupted) {
-                    return {
-                      failures: failedOpFailures,
-                      warnings: failedOpWarnings,
-                      interrupted: true,
-                    };
-                  }
-                }
-                const replayResult = await replayRollback(
-                  segment.operations,
-                  stateResources,
-                  stackName,
-                  ctx,
-                  {
-                    orphanLogicalIds,
-                    afterOp: saveState,
-                    isInterrupted: () => interrupted,
-                    // Pushed from INSIDE the replay, not after it returns: the
-                    // `afterOp` above saves per op, so a record appended only
-                    // on return would be missing from every intermediate save
-                    // — and a crash there loses it for good (issue #2934).
-                    onOrphan: (record) => mintedOrphans.push(record),
-                  }
-                );
-                return {
-                  failures: replayResult.failures + failedOpFailures,
-                  warnings: replayResult.warnings + failedOpWarnings,
-                  interrupted: replayResult.interrupted,
-                };
+                  return {
+                    failures: replayResult.failures + failedOpFailures,
+                    warnings: replayResult.warnings + failedOpWarnings,
+                    interrupted: replayResult.interrupted,
+                  };
+                });
               })
           );
           totalFailures += result.failures;
-          totalWarnings += result.warnings;
+          // A nested row whose child replay skipped ops reports `partial`,
+          // which the executor counts as restored; count the skips here.
+          totalWarnings += result.warnings + (nestedRun?.warnings ?? 0);
           // Before the pop, and before the interrupt check so a Ctrl-C landing
           // in the same segment does not relabel this stop.
           if (declinedDivergentRewrite) break;
@@ -993,6 +1119,19 @@ export async function rollbackCommand(
           // Segment fully replayed — pop it (persists the shortened journal).
           await setup.stateBackend.popRollbackJournalSegment(stackName, region);
           journal.segments.pop();
+          // The nested children whose replay this segment COMPLETED are
+          // settled with it (issue #3754): drop their pending segments for the
+          // same run. Best-effort, and after the pop so a failed pop re-runs the
+          // rows against segments that are still there.
+          await dropSettledNestedJournals({
+            stateBackend: setup.stateBackend,
+            lockManager: setup.lockManager,
+            parentStackName: stackName,
+            region,
+            settled: nestedRun?.settled ?? new Map(),
+            runId: segment.runId,
+            logger,
+          });
         }
       } finally {
         await eventRecorder.finalize(
@@ -1100,6 +1239,131 @@ export async function rollbackCommand(
       stackAwsClients.destroy();
     }
     setup.dispose();
+  }
+}
+
+/**
+ * Judge a nested child's `nested-pending-parent` records (issue #3754) before
+ * anything is shown or written. Returns how many are ORPHANS to discard after
+ * the confirmation; THROWS when one may still be needed.
+ *
+ * - A record whose run the direct parent's journal still holds is LIVE: only a
+ *   rollback of the top-level stack may replay it, so the command refuses.
+ * - The parent's journal being UNREADABLE (a throttle, a newer journal version,
+ *   a malformed body) is not "no journal": the record cannot be judged, so the
+ *   command refuses rather than discard one the parent will need.
+ * - An in-flight top-level deploy writes its journal only when it fails, so its
+ *   run is invisible while it runs; a LIVE lock on the top-level stack refuses
+ *   too. (Its child deploys and reverts take this child's lock, which this
+ *   command holds, so no new record can land while it runs.)
+ * - Everything else — including a record with no run id, which no parent run
+ *   can select — is an orphan: its parent run settled without dropping it,
+ *   crashed before writing a journal, or the drop failed.
+ */
+async function judgeNestedPendingRecords(
+  setup: {
+    stateBackend: Pick<S3StateBackend, 'loadRollbackJournal'>;
+    lockManager: { getLockInfo(stack: string, region: string): Promise<LockInfo | null> };
+  },
+  stackName: string,
+  region: string,
+  segments: ReadonlyArray<{ reason: string; runId?: string }>
+): Promise<number> {
+  const pending = segments.filter((s) => s.reason === NESTED_PENDING_PARENT_REASON);
+  if (pending.length === 0) return 0;
+  const lastCut = stackName.lastIndexOf('~');
+  const parent = lastCut > 0 ? stackName.slice(0, lastCut) : undefined;
+  const topLevel = stackName.split('~')[0]!;
+  const refuse = (detail: string): never => {
+    throw new Error(
+      `The rollback journal of nested stack ${safeStack(stackName)} (${safe(region)}) holds the ` +
+        `record of a nested deploy that ${detail} Roll back the top-level stack ` +
+        `${safeStack(topLevel)} instead, or re-deploy it, which clears the record.`
+    );
+  };
+  if (parent === undefined) return pending.length;
+
+  let parentJournal: { segments: ReadonlyArray<{ runId?: string }> } | null;
+  try {
+    parentJournal = await setup.stateBackend.loadRollbackJournal(parent, region);
+  } catch (error) {
+    return refuse(
+      `cannot be judged: the journal of its parent ${safeStack(parent)} could not be read ` +
+        `(${backendErrorText(error, parent, region)}), so the record may still be needed.`
+    );
+  }
+  const parentRuns = new Set(
+    (parentJournal?.segments ?? []).flatMap((s) => (s.runId !== undefined ? [s.runId] : []))
+  );
+  if (pending.some((s) => s.runId !== undefined && parentRuns.has(s.runId))) {
+    refuse(`its parent has not settled, which only a rollback of the top-level stack may replay.`);
+  }
+
+  let lock: LockInfo | null;
+  try {
+    lock = await setup.lockManager.getLockInfo(topLevel, region);
+  } catch (error) {
+    return refuse(
+      `cannot be judged: the lock of the top-level stack could not be read ` +
+        `(${backendErrorText(error, topLevel, region)}).`
+    );
+  }
+  if (lock && !isLockInfoExpired(lock)) {
+    refuse(
+      `may belong to a deploy still running: the top-level stack is locked. Retry once it is ` +
+        `free.`
+    );
+  }
+  return pending.length;
+}
+
+/**
+ * The plan lines for a nested row's revert (issue #3754): the child's journal
+ * segments for `runId`, planned against the child's state, indented under the
+ * row. Read-only and best-effort — a preview that cannot be built says so
+ * rather than failing the command; the revert itself refuses what it cannot
+ * do.
+ */
+async function previewNestedChildRevert(
+  backend: Pick<S3StateBackend, 'getState' | 'loadRollbackJournal'>,
+  childStackName: string,
+  region: string,
+  runId: string | undefined,
+  skipFinalSnapshot: boolean
+): Promise<string[]> {
+  const shown = safeStack(childStackName);
+  if (runId === undefined) {
+    return [
+      `      (nested stack ${shown}: this segment carries no deploy run id — its revert will FAIL ` +
+        `and the segment is kept)`,
+    ];
+  }
+  try {
+    const [childState, journal] = await Promise.all([
+      backend.getState(childStackName, region),
+      backend.loadRollbackJournal(childStackName, region),
+    ]);
+    const segments = (journal?.segments ?? []).filter((s) => s.runId === runId);
+    if (!childState || segments.length === 0) {
+      return [
+        `      (nested stack ${shown}: no journal record for this run — its revert will FAIL ` +
+          `and the segment is kept)`,
+      ];
+    }
+    const view: Record<string, ResourceState> = { ...childState.state.resources };
+    const lines = [`      nested stack ${shown} replays its own journal:`];
+    for (let s = segments.length - 1; s >= 0; s--) {
+      const childPlan = planRollback(segments[s]!.operations, view, new Set<string>());
+      for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
+      applyPlanToPreview(childPlan, view, skipFinalSnapshot);
+    }
+    if (lines.length === 1) lines.push('        (nothing to undo)');
+    return lines;
+  } catch (error) {
+    return [
+      `      (nested stack ${shown}: could not preview its revert: ` +
+        `${safe(error instanceof Error ? error.message : String(error))})`,
+    ];
   }
 }
 

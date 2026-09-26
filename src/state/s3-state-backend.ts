@@ -1192,6 +1192,35 @@ export class S3StateBackend {
   }
 
   /**
+   * Remove every segment for which `drop` answers `true` (issue #3754: a
+   * nested child's segments for one parent run, once that run's rollback no
+   * longer needs them). Deletes the journal — with its noncurrent-version
+   * purge — when nothing is left, and writes nothing when nothing matched.
+   * Returns the number of segments removed.
+   */
+  async dropRollbackJournalSegments(
+    stackName: string,
+    region: string,
+    drop: (segment: RollbackJournalSegment) => boolean
+  ): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return 0;
+    const kept = journal.segments.filter((segment) => !drop(segment));
+    const removed = journal.segments.length - kept.length;
+    if (removed === 0) return 0;
+    if (kept.length === 0) {
+      await this.deleteRollbackJournal(stackName, region);
+      return removed;
+    }
+    journal.segments = kept;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return removed;
+  }
+
+  /**
    * Delete the stack's rollback journal object (idempotent). Called on the
    * deploy success path, after a clean rollback, and via {@link deleteState}
    * so `cdkd destroy` / `cdkd state destroy` sweep it too.

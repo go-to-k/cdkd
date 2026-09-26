@@ -199,6 +199,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaFunctionProvider',
       'LambdaUrlProvider',
       'LogsLogGroupProvider',
+      'NestedStackProvider',
       'Route53Provider',
       'S3BucketProvider',
       'SNSTopicProvider',
