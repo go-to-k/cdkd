@@ -18,7 +18,8 @@ Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase �
 integ → marker. `git diff origin/main...HEAD --name-only` against that gate's
 `.markgate.yml` include list says what is outstanding. The gate's `hash: diff` stales
 on a rebase only when main changed a scoped file THIS branch changes too, so a
-set marker on a MERGEABLE PR needs no rebase (`markgate status`).
+set marker on a MERGEABLE PR needs no rebase (`markgate status`) — unless main
+changed code the fixture EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run, comment-only deltas included. Scope the
@@ -27,8 +28,7 @@ set marker on a MERGEABLE PR needs no rebase (`markgate status`).
 
 ### 8-c. The live-test tiers
 
-Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup,
-code review, and a **live-test of the changed behavior** on top of `/check`.
+Run `/verify-pr`: it adds a **live-test of the changed behavior** to `/check`.
 Run `/check-docs` ONCE per PR, at the FINAL sha: it is the required step for
 SEMANTIC docs consistency, because CI covers only the structural checks. Unit
 tests passing is necessary but NOT sufficient:
@@ -129,8 +129,7 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
 
 **A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
 deploys and tears it down (§8-c). **UNIQUE stack names only**
-(e.g. `Cdkd<Issue>Verify`), since the account may hold the maintainer's
-production stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
+(`Cdkd<Issue>Verify`): the account may hold the maintainer's production stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
 
