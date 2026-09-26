@@ -188,23 +188,6 @@ function errorDetail(error: unknown): string {
 }
 
 /**
- * S3-based lock manager using conditional writes (If-None-Match)
- *
- * Implements distributed locking using S3's If-None-Match: "*" condition
- * which ensures atomic lock acquisition.
- *
- * Locks have a TTL (time-to-live). Expired locks are automatically cleaned up
- * during acquisition attempts.
- *
- * Like `S3StateBackend`, the lock manager tolerates a state bucket that
- * lives in a different AWS region from the CLI's base region: before the
- * first S3 operation it resolves the bucket's actual region via
- * `GetBucketLocation` and, if it differs from the supplied client's region,
- * builds a private replacement client for that region (issue #803 — without
- * this, every lock acquisition against a cross-region bucket failed with
- * S3's 301 PermanentRedirect while state reads/writes succeeded).
- */
-/**
  * Whether a lock has EXPIRED, by its `expiresAt` field — the one predicate the
  * lock manager acquires by, exported so a reader deciding "is a live lock held"
  * (issue #3754's nested-record judgement in `cdkd rollback`) cannot diverge.
@@ -222,6 +205,23 @@ export function isLockInfoExpired(lockInfo: LockInfo): boolean {
   return Date.now() >= lockInfo.expiresAt;
 }
 
+/**
+ * S3-based lock manager using conditional writes (If-None-Match)
+ *
+ * Implements distributed locking using S3's If-None-Match: "*" condition
+ * which ensures atomic lock acquisition.
+ *
+ * Locks have a TTL (time-to-live). Expired locks are automatically cleaned up
+ * during acquisition attempts.
+ *
+ * Like `S3StateBackend`, the lock manager tolerates a state bucket that
+ * lives in a different AWS region from the CLI's base region: before the
+ * first S3 operation it resolves the bucket's actual region via
+ * `GetBucketLocation` and, if it differs from the supplied client's region,
+ * builds a private replacement client for that region (issue #803 — without
+ * this, every lock acquisition against a cross-region bucket failed with
+ * S3's 301 PermanentRedirect while state reads/writes succeeded).
+ */
 export class LockManager {
   private logger = getLogger().child('LockManager');
   private s3Client: S3Client;
