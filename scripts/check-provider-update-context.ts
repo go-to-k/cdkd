@@ -273,7 +273,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'LambdaMicrovmImageProvider',
   'LambdaPermissionProvider',
   'NeptuneProvider',
-  'NestedStackProvider',
   'RDSDBProxyEndpointProvider',
   'RDSDBProxyProvider',
   'RDSDBProxyTargetGroupProvider',

@@ -24,6 +24,16 @@
 # BSD/macOS-portable. The script prints "[verify] PASS" only at the very end.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
@@ -36,6 +46,15 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   fi
   return 0
 }
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
@@ -172,10 +191,8 @@ if [ "${VT_2}" != "30" ] || [ "${STATE_VT_2}" != "30" ]; then
 fi
 echo "[verify] step 3 ok: the automatic rollback reverted the nested child to VisibilityTimeout=30"
 # The clean rollback settled the child's pending segment, so its journal is gone.
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: the child rollback journal survived a clean automatic rollback"
-  exit 1
-fi
+assert_gone "the child rollback journal survived a clean automatic rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}"
 
 # ---------------------------------------------------------------------------
 # PHASE 2b: --no-rollback failure, then a synth-free `cdkd rollback`
@@ -221,10 +238,8 @@ if [ "${VT_3}" != "30" ] || [ "${STATE_VT_3}" != "30" ]; then
   exit 1
 fi
 for key in "${PARENT_JOURNAL_KEY}" "${CHILD_JOURNAL_KEY}"; do
-  if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
-    echo "[verify] FAIL: ${key} survived a clean cdkd rollback"
-    exit 1
-  fi
+  assert_gone "${key} survived a clean cdkd rollback" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
 echo "[verify] step 3c ok: cdkd rollback reverted the nested child to VisibilityTimeout=30 and cleared both journals"
 
@@ -245,10 +260,8 @@ if [ "$(live_vt "${CHILD_QUEUE_URL}")" != "45" ]; then
   echo "[verify] FAIL: premise: the successful deploy did not update the child"
   exit 1
 fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: the child's pending journal survived the parent's successful deploy"
-  exit 1
-fi
+assert_gone "the child's pending journal survived the parent's successful deploy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}"
 echo "[verify] step 3d ok: no child journal after a successful deploy"
 
 # ---------------------------------------------------------------------------
@@ -265,10 +278,8 @@ if [ "${RC3}" -ne 0 ]; then
   exit 1
 fi
 for key in "${PARENT_STATE_KEY}" "${CHILD_STATE_KEY}"; do
-  if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
-    echo "[verify] FAIL: ${key} survived the destroy"
-    exit 1
-  fi
+  assert_gone "${key} survived the destroy" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
 QUEUE_GONE=false
 for _ in 1 2 3 4 5 6 7 8 9 10; do

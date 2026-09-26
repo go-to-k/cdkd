@@ -40,6 +40,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
+import type { RollbackJournalSegment } from '../types/rollback-journal.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   importableOutputs,
@@ -71,6 +72,20 @@ const MAX_NESTED_WALK_DEPTH = 32;
 /** The child state key `NestedStackProvider` derives: `<parent>~<logicalId>`. */
 export function nestedChildStackName(parentStackName: string, logicalId: string): string {
   return `${parentStackName}~${logicalId}`;
+}
+
+/**
+ * The `previousOutputs` a nested engine journals on success: what its record
+ * PUBLISHED before this deploy. Copied, never aliased — the record is mutated
+ * by the save path afterwards.
+ */
+export function nestedPreviousOutputs(
+  state: Pick<StackState, 'outputs' | 'exportNames'>
+): NonNullable<RollbackJournalSegment['previousOutputs']> {
+  return {
+    outputs: { ...(isPlainRecord(state.outputs) ? state.outputs : {}) },
+    ...(Array.isArray(state.exportNames) && { exportNames: [...state.exportNames] }),
+  };
 }
 
 /**

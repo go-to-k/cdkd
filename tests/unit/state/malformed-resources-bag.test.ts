@@ -2936,6 +2936,7 @@ const ORPHAN_READER_FILES = [
   'src/cli/commands/scrub.ts',
   'src/cli/commands/import.ts',
   'src/cli/commands/diff-recursive.ts',
+  'src/deployment/nested-child-journal.ts',
 ] as const;
 
 describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)', () => {
@@ -2958,6 +2959,9 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     'src/cli/commands/scrub.ts': 'state.orphans ?? []',
     'src/cli/commands/import.ts': 'orphansCarriedFrom(',
     'src/cli/commands/diff-recursive.ts': 'currentState.orphans?.length',
+    // Issue #3754: the nested-child revert saves the child record with the
+    // orphans its replay minted.
+    'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
   };
   const SPELLINGS = [
     'refuseMalformedOrphans(',
@@ -3069,6 +3073,8 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     'src/cli/commands/scrub.ts': 'record.state.properties',
     // The adoption PREVIEW, which dereferences each surviving row's `state`.
     'src/cli/commands/diff-recursive.ts': 'options.previewOrphanAdoption(',
+    // The merge that keys on each row's `logicalId` (issue #3754).
+    'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
   };
   /**
    * Both dispositions plus the narrow predicate, because the fence must accept

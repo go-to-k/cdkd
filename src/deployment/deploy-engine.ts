@@ -198,6 +198,7 @@ import type { RollbackJournalSegment } from '../types/rollback-journal.js';
 import {
   NESTED_PENDING_PARENT_REASON,
   dropNestedChildJournals,
+  nestedPreviousOutputs,
   withNestedRevertRun,
 } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
@@ -5627,14 +5628,7 @@ export class DeployEngine {
         [],
         NESTED_PENDING_PARENT_REASON,
         initialDeploy,
-        {
-          previousOutputs: {
-            outputs: { ...(previousState.outputs ?? {}) },
-            ...(Array.isArray(previousState.exportNames) && {
-              exportNames: [...previousState.exportNames],
-            }),
-          },
-        }
+        { previousOutputs: nestedPreviousOutputs(previousState) }
       );
       return;
     }
