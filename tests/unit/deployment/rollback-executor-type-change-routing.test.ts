@@ -33,6 +33,7 @@ import {
   applyDefaultNameForFallback,
   withStackName,
 } from '../../../src/provisioning/resource-name.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /** The bag a Cloud Control create of `type` receives for a nameless record. */
 function applyDefaultNameForFallbackUnderStack(
@@ -445,7 +446,7 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
     const { ctx, providerFor } = makeCtx();
     providerFor(OLD_TYPE)
       .create.mockRejectedValueOnce(
-        new Error(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
+        awsSdkError(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
       )
       .mockResolvedValue({ physicalId: RECREATED_OLD_ID, attributes: {} });
     const state: Record<string, ResourceState> = { Thing: newRecord() };

@@ -30,13 +30,16 @@ holder was just deleted.
 
 Issue [#3208](https://github.com/go-to-k/cdkd/issues/3208). What the sites
 holding the error call; the string form stays for text-only callers. It walks
-the bounded `cause` chain for the error name:
+the bounded `cause` chain for the error name and the Cloud Control
+`ccErrorCode === 'AlreadyExists'`:
 
-1. **The message is read at depth 0 ONLY, and only off a real `Error`.**
-   Dropping `instanceof Error` makes a thrown `{ message: 'X already exists' }`
-   match; with the check it stringifies to `[object Object]` and does not.
-2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of both
-   reads; a link naming another resource returns `false` at once. It compares
+1. **The prose is read ONLY off a link carrying `$metadata`** — an AWS SDK
+   exception, never a cdkd-authored message, which can quote a template value
+   (issue [#3816](https://github.com/go-to-k/cdkd/issues/3816)). A string or
+   non-`Error` throw never classifies. Residual: an AWS error echoing a template
+   value still does.
+2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
+   read; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.
 
 It reaches the SDK error only if providers thread the caught value as `cause` —

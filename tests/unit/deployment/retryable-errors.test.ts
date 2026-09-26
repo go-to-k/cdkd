@@ -26,6 +26,7 @@ import {
   StackTerminationProtectionError,
 } from '../../../src/utils/error-handler.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -769,7 +770,9 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     // before this change — the exclusion is about not adding a SECOND route.
     const real = 'A listener with the specified port already exists';
     expect(isNameCollisionError(real)).toBe(true);
-    expect(isNameCollisionErrorFrom(sdkError('DuplicateListenerException', real), LID)).toBe(true);
+    expect(
+      isNameCollisionErrorFrom(awsSdkError(real, 'DuplicateListenerException'), LID)
+    ).toBe(true);
   });
 
   it('does not credit Lambda ResourceConflictException by name', () => {
@@ -780,7 +783,7 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'The function is in Pending'), LID)
     ).toBe(false);
     expect(
-      isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'Function already exist: fn'), LID)
+      isNameCollisionErrorFrom(awsSdkError('Function already exist: fn', 'ResourceConflictException'), LID)
     ).toBe(true);
   });
 
@@ -826,47 +829,81 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     });
   });
 
-  describe('the MESSAGE is read at depth 0 ONLY', () => {
-    it('a collision phrase in a CAUSE does not classify, a top-level one does', () => {
-      // The widening this predicate deliberately does NOT do. Reading prose
-      // down the chain is what `retryClassificationText` refuses for a merely
-      // RETRY decision; here the verdict is a delete. Both halves pinned, so
-      // gating to depth 0 is a decision rather than an accident.
-      const buried = new Error('Failed to create resource Thing', {
+  describe('the prose needs BOTH an SDK link and a top-level relay (#3816)', () => {
+    it('credits AWS prose relayed by a provider wrapper, at depth 0 or down the chain', () => {
+      const raw = awsSdkError('Bucket already exists');
+      expect(isNameCollisionErrorFrom(raw, LID)).toBe(true);
+      const wrapped = new Error(`Failed to create S3 bucket ${LID}: ${raw.message}`, {
+        cause: raw,
+      });
+      expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(true);
+    });
+
+    it('does NOT credit a cdkd refusal quoting a template value, with no SDK link', () => {
+      // The issue's shape: an untyped `ProvisioningError` naming THIS resource,
+      // its message quoting a property value that carries the phrase.
+      const refusal = new ProvisioningError(
+        'AWS::AppSync::DataSource DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL must be a ' +
+          'number of minutes, got "x already exists" — cdkd refuses to drop it silently',
+        'AWS::AppSync::DataSource',
+        LID
+      );
+      expect(isNameCollisionError(refusal.message)).toBe(true);
+      expect(isNameCollisionErrorFrom(refusal, LID)).toBe(false);
+    });
+
+    it('does NOT credit a buried SDK collision the top level does not relay', () => {
+      // A provider's opt-out: Glue rewords an occupied table name delete-first
+      // cannot clear (#3750), so the wrapper carries no phrase.
+      const reworded = new Error("a table named 'taken' is present in database 'mydb'", {
+        cause: awsSdkError('Table already exists.', 'AlreadyExistsException'),
+      });
+      expect(isNameCollisionErrorFrom(reworded, LID)).toBe(false);
+    });
+
+    it('does NOT credit a phrase in a cause without $metadata', () => {
+      const buried = new Error('Failed to create resource Thing: Bucket already exists', {
         cause: new Error('Bucket already exists'),
       });
       expect(isNameCollisionErrorFrom(buried, LID)).toBe(false);
-      expect(isNameCollisionErrorFrom(new Error('Bucket already exists'), LID)).toBe(true);
+    });
+
+    it('credits the Cloud Control AlreadyExists handler code', () => {
+      const cc = new CloudControlOperationFailedError(
+        `CREATE failed for ${LID}: Resource of type 'AWS::Pipes::Pipe' already exists.`,
+        'AWS::Pipes::Pipe',
+        LID,
+        undefined,
+        'AlreadyExists',
+        'CREATE'
+      );
+      expect(isNameCollisionErrorFrom(cc, LID)).toBe(true);
+      // The code, not the text: the same message under another code does not.
+      const other = new CloudControlOperationFailedError(
+        cc.message,
+        'AWS::Pipes::Pipe',
+        LID,
+        undefined,
+        'InvalidRequest',
+        'CREATE'
+      );
+      expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
+    });
+
+    it('anchors the SDK prose too: a link naming another resource refuses it', () => {
+      const other = Object.assign(awsSdkError('Bucket already exists'), {
+        logicalId: 'SomeOtherBucket',
+      });
+      expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
+      expect(isNameCollisionErrorFrom(other, 'SomeOtherBucket')).toBe(true);
     });
   });
 
-  it('does NOT read .message off a non-Error object', () => {
-    // The DELETE-direction narrowing review caught. The call sites' pre-#3208
-    // arm was `err instanceof Error ? err.message : String(err)`, so a thrown
-    // plain object stringified to "[object Object]" and did NOT match. A
-    // revision that read `.message` off any object would have started matching
-    // it — widening the predicate that authorises a delete, under a comment
-    // claiming byte-identical behaviour.
-    const plain = { message: 'Bucket already exists' };
-    expect(isNameCollisionError(String(plain))).toBe(false);
-    expect(isNameCollisionErrorFrom(plain, LID)).toBe(false);
-    // ...while a real Error with the same text still matches, so the narrowing
-    // is about the SHAPE and not about the phrase.
-    expect(isNameCollisionErrorFrom(new Error(plain.message), LID)).toBe(true);
-  });
-
-  it('preserves the call sites pre-#3208 String() arm for a non-Error throw', () => {
-    // All three sites previously classified `String(err)`; reading `.message`
-    // alone would have dropped a thrown object with only a toString.
-    const thrown = { toString: () => 'Queue already exists' };
-    expect(isNameCollisionErrorFrom(thrown, LID)).toBe(true);
-  });
-
-  it('is strictly additive over the string form', () => {
-    const legacy = 'Failed to create S3 bucket MyBucket: BucketAlreadyExists';
-    expect(isNameCollisionError(legacy)).toBe(true);
-    expect(isNameCollisionErrorFrom(new Error(legacy), LID)).toBe(true);
-    expect(isNameCollisionErrorFrom(legacy, LID)).toBe(true);
+  it('does NOT classify a non-Error throw or a string, whatever its text', () => {
+    // Neither can carry AWS's `$metadata`.
+    expect(isNameCollisionErrorFrom({ message: 'Bucket already exists' }, LID)).toBe(false);
+    expect(isNameCollisionErrorFrom({ toString: () => 'Queue already exists' }, LID)).toBe(false);
+    expect(isNameCollisionErrorFrom('Queue already exists', LID)).toBe(false);
   });
 
   it.each([[undefined], [null], [42], [{}], [new Error('unrelated failure')]])(

@@ -6,6 +6,7 @@ import {
 } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -112,9 +113,7 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
   const STACK = 'MyStack';
 
   const alreadyExists = (name: string) =>
-    new Error(
-      `CREATE failed for Pipe: Resource of type '${TYPE}' with identifier '${name}' already exists.`
-    );
+    ccAlreadyExistsError(`CREATE failed for Pipe: Resource of type '${TYPE}' with identifier '${name}' already exists.`);
 
   beforeEach(() => {
     createFailures = [];

@@ -1535,64 +1535,51 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
  * message — which is the only way to see an exception NAME (issue #3208).
  *
- * Providers wrap an AWS failure as `Failed to create X: ${err.message}`, so the
- * name is dropped before any caller could match it. This walks the bounded
- * `cause` chain (the same {@link MAX_CAUSE_CHAIN_DEPTH} as every other
- * classifier in this file), checking each link's `name` against
- * {@link NAME_COLLISION_ERROR_NAMES} and each link's `message` through
- * {@link isNameCollisionError}. A provider is required to thread the caught
- * value as `cause` (`scripts/check-provider-error-cause.ts` enforces it across
- * `src/provisioning/providers/**`), which is what makes the walk reach the SDK
- * error at all.
+ * Walks the bounded `cause` chain (the same {@link MAX_CAUSE_CHAIN_DEPTH} as
+ * every other classifier in this file). Three signals, each read off a link:
  *
- * Prefer this at any site holding the error object. The string form stays for
- * callers that genuinely have only text, and its behaviour is unchanged — this
- * is strictly additive, so nothing that matched before stops matching.
+ *  - `name` in {@link NAME_COLLISION_ERROR_NAMES};
+ *  - `ccErrorCode === 'AlreadyExists'` — the Cloud Control handler code a
+ *    `CloudControlOperationFailedError` carries (the same code
+ *    `cleanupFailedCreateRemnant` already trusts);
+ *  - the "already exists" prose, credited only when BOTH the top-level message
+ *    AND a link carrying `$metadata` (an AWS SDK exception) say it (issue
+ *    #3816). The SDK half keeps a cdkd refusal quoting a template value from
+ *    classifying — the verdict here is a DELETE, acted on by the `--replace`
+ *    delete-first fallback and the rollback's delete-new-first arm. The
+ *    top-level half keeps a provider's opt-out: one that rewords an AWS
+ *    collision it knows delete-first cannot clear (Glue's occupied table
+ *    name, #3750) stays unclassified.
+ *
+ * Providers must thread the caught SDK error as `cause`
+ * (`scripts/check-provider-error-cause.ts`), which is what makes the walk reach
+ * it. RESIDUAL: an AWS validation error that echoes a template value carrying
+ * the phrase still classifies — the surface is a name-like field AWS quotes
+ * verbatim, not any cdkd refusal. A non-`Error` throw and a plain string carry
+ * no `$metadata` and never classify.
  */
-/**
- * `String(value)` that cannot itself throw — a thrown `Object.create(null)` has
- * no `toString`. Preserves the call sites' pre-#3208 `String(createError)` arm
- * for a non-`Error` throw, which reading `.message` alone would have dropped.
- */
-function stringifyForMatch(value: unknown): string {
-  try {
-    return String(value);
-  } catch {
-    return '';
-  }
-}
-
 export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
-  // Hoisted, not left to fall out of the loop: a string skips the object body,
-  // so reading it after the walk made a top-level string work while a string
-  // `cause` at depth >= 1 stayed invisible — an asymmetry with no reason.
-  if (typeof error === 'string') return isNameCollisionError(error);
-
+  const topRelaysIt =
+    error instanceof Error &&
+    typeof error.message === 'string' &&
+    isNameCollisionError(error.message);
   let current: unknown = error;
   for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     const link = current as {
       name?: unknown;
       message?: unknown;
       logicalId?: unknown;
+      ccErrorCode?: unknown;
+      $metadata?: unknown;
       cause?: unknown;
     };
 
-    // The ANCHOR runs FIRST at every depth, ahead of both reads — the same
+    // The ANCHOR runs FIRST at every depth, ahead of every read — the same
     // ordering, and for the same reason, as `isUpdateUnsupportedError`: a
     // rejection that NAMES ANOTHER RESOURCE must not classify this one by any
-    // route, and ordering a read ahead of it would leave that property resting
-    // on whichever wrapper happens to quote no AWS text.
-    //
-    // It is a GENERAL fence, not a fix for one measured chain. An earlier
-    // revision of this comment justified it with a specific nested-stack path —
-    // a child's `ProvisioningError` reaching the parent's chain — and review
-    // measured that FALSE: `NestedStackProvider` throws a fresh `Error` with no
-    // `cause` at all (zero `cause:` in that file), so a child provider error
-    // does not reach the parent's chain today. The justification was wrong; the
-    // fence is not. What it buys is that ANY chained sub-resource error — from
-    // that provider if it ever threads a cause, or from any other wrapper — is
-    // refused, and the cost of being wrong here is a DELETE at two of the four
-    // call sites.
+    // route. It is a GENERAL fence: `NestedStackProvider` throws a fresh
+    // `Error` with no `cause`, so no child provider error reaches the parent's
+    // chain today, and the fence keeps it that way if one ever does.
     //
     // RESIDUAL, stated because the sibling states it and the cost is WORSE
     // here: the anchor compares logical IDS, so a CHILD resource whose logical
@@ -1606,27 +1593,22 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
 
     if (typeof link.name === 'string' && NAME_COLLISION_ERROR_NAMES.has(link.name)) return true;
 
-    // The MESSAGE is read at depth 0 ONLY. Reading prose down the chain is a
-    // far larger widening than #3208 asked for, it buys nothing here (the
-    // measured ELBv2 error has no cause at all), and it is the read this file
-    // already refuses to make unconditionally — see `retryClassificationText`,
-    // which gates it behind an explicit marker for a merely RETRY decision.
-    // Here the verdict is a delete.
-    //
-    // The `instanceof Error` half is what makes this genuinely IDENTICAL to the
-    // call sites' pre-#3208 `err instanceof Error ? err.message : String(err)`.
-    // Review caught the first revision reading `.message` off ANY object: a
-    // thrown `{ message: 'X already exists' }` used to stringify to
-    // `[object Object]` and NOT match, and would have started matching — a
-    // widening in the DELETE direction, under a comment claiming the opposite.
-    // The `typeof` check stays too: a non-string `message` on a real `Error`
-    // would otherwise reach `includes` and throw.
-    if (depth === 0) {
-      const text =
-        error instanceof Error && typeof link.message === 'string'
-          ? link.message
-          : stringifyForMatch(error);
-      if (isNameCollisionError(text)) return true;
+    if (link.ccErrorCode === 'AlreadyExists') return true;
+
+    // `$metadata` is the SDK's own envelope (the same test
+    // `retryClassificationText`'s walk uses), so this link's text came from
+    // AWS. The `typeof` check stays: a non-string `message` would otherwise
+    // reach the regex and throw.
+    const metadata = link.$metadata;
+    if (
+      topRelaysIt &&
+      metadata != null &&
+      typeof metadata === 'object' &&
+      !Array.isArray(metadata) &&
+      typeof link.message === 'string' &&
+      isNameCollisionError(link.message)
+    ) {
+      return true;
     }
 
     current = link.cause;
