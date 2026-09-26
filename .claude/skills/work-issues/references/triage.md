@@ -22,15 +22,12 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
-**The `backfill-type` exclusion keeps legacy per-type slices off the shortlist**
-(go-to-k/cdkd#2949): a slice is no decision triage can make, and its
-`created_at` moves with the coverage map, so §3-0's quarantine and rule 7's
-ranking would read it wrong.
+**The `backfill-type` exclusion is load-bearing** (go-to-k/cdkd#2949): a
+slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
 
 To WORK the campaign, take the umbrella deliberately (`gh issue list --label
-backfill-umbrella`) and wire the type you intend to. Write `Refs`, never
-`Closes`: it stays open for the other types, and the row disappears when the
-coverage map says this one is done. §4's claim comment still applies.
+backfill-umbrella`), wire one type, and write `Refs` (`filing.md` §5-f); §4's
+claim comment still applies.
 
 ## 2. Map the collision landscape
 
@@ -97,12 +94,15 @@ not-yet-true and WRONG look identical from the title. Grep the asserted SYMBOL,
 not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol,
 so resolve its EFFECT — what on `origin/main` already produces it
 (go-to-k/cdkd#2286). On an empty grep, `gh pr list --state all --search <symbol>`
-separates "premise wrong" from "premise on an unmerged branch".
+separates "premise wrong" from "premise on an unmerged branch". A fix choosing
+accept / refuse / replace / update has a CFn premise too: `aws cloudformation
+describe-type --type RESOURCE --type-name <T> --query Schema` (`required`,
+`createOnlyProperties`), else a throwaway change set, BEFORE design (#3769).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
 **Skip every issue created less than 60 minutes ago** — the same span §2 calls a
-LIVE lane, and the filer is usually a lane still running.
+LIVE lane.
 
 ```bash
 CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' +%Y-%m-%dT%H:%M:%SZ)

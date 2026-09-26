@@ -17,8 +17,7 @@ every site? A residue is `next` only on external input
 loaded) — then file an umbrella naming every site, and say which this lane DID
 close. **NOT external input**: an umbrella already owning the population, "a
 different shape", a scope-creep trip, or a file shared with another code path
-(one an OPEN PR holds IS (a)) — each is a SEPARATE PR, still `now` (three
-#3515 rows, done in-run).
+(one an OPEN PR holds IS (a)) — each is a SEPARATE PR, still `now`.
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
 (go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
@@ -89,13 +88,13 @@ gh issue create -t 'fix(provider): ...' \
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
-ended"), and check it yourself before writing `next`.
+ended"). Check it before writing EITHER value: the fix's file in §2's
+`gh pr list ... files` is `next` (a), never `now` (#3808).
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`
 in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
-with NO body. CI applies the matching `severity:*` / `effort:*` label from the
-body.
+with NO body.
 
 **Not a filing threshold** (§10-0: unfiled is worse than filed) — only WHERE
 it is written changes.
