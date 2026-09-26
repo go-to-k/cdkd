@@ -5,7 +5,7 @@ import {
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, displayStackName } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
@@ -745,7 +745,7 @@ export async function runDestroyForStack(
       // stack end, so the first Ctrl-C would produce no feedback at all.
       try {
         process.stderr.write(
-          `\nInterrupt received - finishing the state cleanup for ${stackName} ` +
+          `\nInterrupt received - finishing the state cleanup for ${displayStackName(stackName)} ` +
             `(press Ctrl-C again to force-quit)\n`
         );
       } catch {

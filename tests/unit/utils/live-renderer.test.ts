@@ -76,6 +76,27 @@ describe('LiveRenderer', () => {
     r.stop();
   });
 
+  it('draws a planted label and stack name without their control bytes (issue #3811)', () => {
+    // On destroy the label's logical id / type and the stack name come from S3
+    // state; the redraw region is where a cursor escape best hides a line.
+    const stream = new FakeStream();
+    const r = makeRenderer(stream);
+    r.start();
+    const planted = 'X\x1b[2J\r\nY\u2028\u202e';
+    withStackName(`S1${planted}`, () => r.addTask('A', `Deleting A${planted} (T${planted})`));
+    withStackName('S2', () => r.addTask('B', 'Deleting B'));
+    withStackName('S2', () => r.updateTaskLabel('B', `Deleting B${planted}`));
+    const lastDraw = stream.chunks[stream.chunks.length - 1] ?? '';
+    r.stop();
+
+    expect(lastDraw).toContain('[S1X');
+    expect(lastDraw).toContain('Deleting AX');
+    expect(lastDraw).toContain('Deleting BX');
+    for (const bad of ['\x1b', '\r', '\u2028', '\u202e']) expect(lastDraw).not.toContain(bad);
+    // One line per task: no planted line break survives.
+    expect(lastDraw.split('\n').filter(Boolean)).toHaveLength(2);
+  });
+
   it('removeTask redraws without the removed label', () => {
     const stream = new FakeStream();
     const r = makeRenderer(stream);
