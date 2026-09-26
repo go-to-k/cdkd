@@ -47,7 +47,6 @@ class ListParameterChild extends cdk.NestedStack {
       });
     param('Select', cdk.Fn.select(1, subnetIds.valueAsList));
     param('Join', cdk.Fn.join('|', subnetIds.valueAsList));
-    param('Sub', cdk.Fn.sub('subnets=${SubnetIds}'));
     param('CsvSelect', cdk.Fn.select(1, subnetIdsCsv.valueAsList));
     param('CsvJoin', cdk.Fn.join('|', subnetIdsCsv.valueAsList));
   }
@@ -81,8 +80,8 @@ export class ListParametersStack extends cdk.Stack {
         })
     );
     // The space after each comma is load-bearing: the list coercion trims every
-    // member, a raw string would not, so `Fn::Sub` only tells the two apart
-    // when the input carries padding.
+    // member, so without it `Fn::Select` would read ` subnet-...` with a
+    // leading space and the DBSubnetGroup would receive padded ids.
     const joined = cdk.Fn.join(
       ', ',
       subnets.map((s) => s.ref)

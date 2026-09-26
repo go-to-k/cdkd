@@ -9,12 +9,14 @@
 #   Phase 1 (deploy)   - a bare `Ref SubnetIds` reaches the RDS DBSubnetGroup's
 #                        `SubnetIds` as a list AWS accepts (the wire shape no
 #                        unit test can settle); `Fn::Select` and `Fn::Join` over
-#                        it deploy and render the right values; `Fn::Sub`
-#                        renders `subnets=<a>,<b>`; the CommaDelimitedList
-#                        control renders identically.
+#                        it deploy and render the right values; the
+#                        CommaDelimitedList control renders identically.
 #   Phase 2 (refusal)  - a separate stack whose `Fn::Split` reads a List<...>
 #                        parameter is REFUSED, and creates nothing.
-#   Phase 3 (destroy)  - every resource and state file is gone.
+#   Phase 3 (destroy)  - every resource, state file and lock file is gone.
+#
+# No `Fn::Sub` arm: CloudFormation refuses `${ListParam}` inside `Fn::Sub`, so a
+# live assertion would pin a leniency cdkd should not have (#3809).
 
 set -euo pipefail
 
@@ -64,9 +66,12 @@ PROBE_STATE_KEY="cdkd/${PROBE_STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Must match lib/list-parameters-stack.ts.
 PARAM_PREFIX="/cdkd-integ/list-parameters"
-PARAMS="select join sub csvselect csvjoin split"
+PARAMS="select join csvselect csvjoin split"
 SUBNET_GROUP="cdkd-integ-list-parameters"
 VPC_TAG="cdkd-integ-list-parameters"
+# Set once this run's deploy is read back, so cleanup only ever deletes the VPC
+# THIS run created; a tag sweep would also take an overlapping run's VPC.
+VPC_ID=""
 
 strip_ansi() { sed -e $'s/\033\\[[0-9;]*m//g'; }
 
@@ -87,19 +92,16 @@ cleanup() {
     done
     aws rds delete-db-subnet-group --db-subnet-group-name "${SUBNET_GROUP}" \
       --region "${REGION}" >/dev/null 2>&1
-    case "${VPC_TAG:-}" in
-      cdkd-integ-list-?*)
-        for vpc in $(aws ec2 describe-vpcs --region "${REGION}" \
-          --filters "Name=tag:Name,Values=${VPC_TAG}" --query 'Vpcs[].VpcId' --output text); do
-          for sn in $(aws ec2 describe-subnets --region "${REGION}" \
-            --filters "Name=vpc-id,Values=${vpc}" --query 'Subnets[].SubnetId' --output text); do
-            aws ec2 delete-subnet --subnet-id "${sn}" --region "${REGION}"
-          done
-          aws ec2 delete-vpc --vpc-id "${vpc}" --region "${REGION}"
+    case "${VPC_ID:-}" in
+      vpc-?*)
+        for sn in $(aws ec2 describe-subnets --region "${REGION}" \
+          --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[].SubnetId' --output text); do
+          aws ec2 delete-subnet --subnet-id "${sn}" --region "${REGION}"
         done
+        aws ec2 delete-vpc --vpc-id "${VPC_ID}" --region "${REGION}"
         ;;
       *)
-        echo "WARN: teardown sweep refused -- VPC_TAG '${VPC_TAG:-}' is not this fixture's tag" >&2
+        echo "WARN: teardown sweep refused -- no VPC id recorded for this run ('${VPC_ID:-}')" >&2
         ;;
     esac
   )
@@ -170,8 +172,6 @@ echo "PASS: a bare Ref to List<AWS::EC2::Subnet::Id> reached RDS as a two-elemen
 
 expect_param select "${SUBNET_B}" "Fn::Select over the List<> parameter"
 expect_param join "${SUBNET_A}|${SUBNET_B}" "Fn::Join over the List<> parameter"
-# The parent passes "<a>, <b>"; a string-typed reading would keep the space.
-expect_param sub "subnets=${SUBNET_A},${SUBNET_B}" "Fn::Sub over the List<> parameter"
 expect_param csvselect "${SUBNET_B}" "CommaDelimitedList control, Fn::Select"
 expect_param csvjoin "${SUBNET_A}|${SUBNET_B}" "CommaDelimitedList control, Fn::Join"
 
@@ -192,14 +192,14 @@ fi
 # not read as "the refusal did not happen".
 if ! printf '%s' "${probe_out}" | grep -qF 'is ALREADY a list'; then
   if printf '%s' "${probe_out}" | grep -qF 'Fn::Split:'; then
-    echo "FAIL: an Fn::Split error was printed but its wording drifted -- update this fixture" >&2
+    echo "FAIL: an Fn::Split error other than the list refusal was printed (refusal branch gone, or its wording drifted)" >&2
   else
     echo "FAIL: the deploy failed (rc=${rc}) for a reason other than the Fn::Split refusal" >&2
   fi
   exit 1
 fi
-if ! printf '%s' "${probe_out}" | grep -qF 'List<AWS::EC2::Subnet::Id>'; then
-  echo "FAIL: the refusal does not name the list-typed parameter remedy" >&2
+if ! printf '%s' "${probe_out}" | grep -qF '(from Ref SubnetIds)'; then
+  echo "FAIL: the refusal does not name the parameter it refused (from Ref SubnetIds)" >&2
   exit 1
 fi
 echo "PASS: Fn::Split over a List<> parameter was refused (rc=${rc})"
@@ -232,8 +232,12 @@ for sn in "${SUBNET_A}" "${SUBNET_B}"; do
 done
 assert_gone "VPC ${VPC_ID} still exists after destroy" \
   aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
-for key in "${STATE_KEY}" "${CHILD_STATE_KEY}" "${PROBE_STATE_KEY}"; do
-  assert_gone "state file ${key} still exists after destroy" \
+# lock.json too: the refused probe deploy is the path most likely to leak a
+# lock, and it writes no state, so the conditional destroy above never runs.
+for key in "${STATE_KEY}" "${CHILD_STATE_KEY}" "${PROBE_STATE_KEY}" \
+  "${STATE_KEY%state.json}lock.json" "${CHILD_STATE_KEY%state.json}lock.json" \
+  "${PROBE_STATE_KEY%state.json}lock.json"; do
+  assert_gone "state/lock file ${key} still exists after destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
 
