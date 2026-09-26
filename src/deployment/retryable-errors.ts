@@ -1547,6 +1547,27 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
   'DuplicateTrustStoreNameException',
 ]);
 
+const NAME_COLLISION_MARKER = Symbol.for('cdkd.nameCollision');
+
+/**
+ * Declare a provider-built error a NAME collision (#3812 x #3816). For a
+ * refusal whose AWS text states the conflict without "already exists" (Route
+ * 53's CNAME-beside-a-record), a provider that has recognised it STRUCTURALLY
+ * says so here rather than in prose: `isNameCollisionErrorFrom` no longer
+ * credits cdkd-authored text, which can quote a template value. A
+ * non-enumerable own symbol, like `markNonRetryable`'s, so it survives
+ * `maskSecretsInError`'s clone and never serializes.
+ */
+export function markNameCollision<E extends Error>(error: E): E {
+  if (!Object.isExtensible(error)) return error;
+  Object.defineProperty(error, NAME_COLLISION_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
+}
+
 /**
  * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
  * message — which is the only way to see an exception NAME (issue #3208).
@@ -1555,6 +1576,7 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  * every other classifier in this file). Three signals, each read off a link:
  *
  *  - `name` in {@link NAME_COLLISION_ERROR_NAMES};
+ *  - a provider's `markNameCollision` on a link;
  *  - `ccErrorCode === 'AlreadyExists'` — the Cloud Control handler code a
  *    `CloudControlOperationFailedError` carries (the same code
  *    `cleanupFailedCreateRemnant` already trusts). It needs no top-level
@@ -1618,6 +1640,8 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
     if (typeof link.name === 'string' && NAME_COLLISION_ERROR_NAMES.has(link.name)) return true;
 
     if (link.ccErrorCode === 'AlreadyExists') return true;
+
+    if ((link as Record<symbol, unknown>)[NAME_COLLISION_MARKER] === true) return true;
 
     // The `typeof` check stays: a non-string `message` would otherwise reach
     // the regex and throw.

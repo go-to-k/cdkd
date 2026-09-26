@@ -15,6 +15,7 @@ import {
   markNonRetryable,
   markRedactedCause,
   retryClassificationText,
+  markNameCollision,
 } from '../../../src/deployment/retryable-errors.js';
 import { ccUnsupportedActionError, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import {
@@ -27,6 +28,7 @@ import {
 } from '../../../src/utils/error-handler.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -897,6 +899,29 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
       expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
       expect(isNameCollisionErrorFrom(other, 'SomeOtherBucket')).toBe(true);
     });
+  });
+
+  it('credits a provider-set markNameCollision, anchored like every other signal', () => {
+    // How a provider declares a collision AWS states without "already exists"
+    // (Route 53's CNAME-beside-a-record) now that cdkd-authored text is not read.
+    const marked = markNameCollision(
+      new ProvisioningError('Failed to create record set Rec: conflicts', 'AWS::Route53::RecordSet', LID)
+    );
+    expect(isNameCollisionErrorFrom(marked, LID)).toBe(true);
+    expect(isNameCollisionErrorFrom(marked, 'OtherRecord')).toBe(false);
+    // It survives the secret mask's clone, which is what the delete-first
+    // readers receive.
+    const masked = maskSecretsInError(marked, new Map([['Failed to create record set', '{{resolve:ssm:x}}']]));
+    expect(masked).not.toBe(marked);
+    expect(masked.message).not.toContain('Failed to create record set');
+    expect(isNameCollisionErrorFrom(masked, LID)).toBe(true);
+    // An unmarked twin with the same text is not.
+    expect(
+      isNameCollisionErrorFrom(
+        new ProvisioningError(marked.message, 'AWS::Route53::RecordSet', LID),
+        LID
+      )
+    ).toBe(false);
   });
 
   it('does NOT trust bare $metadata: the retry middleware stamps it on socket errors', () => {
