@@ -16,8 +16,8 @@ that would make `cdkd deploy` refuse to start (`DeployRefusalPreviewError`, on
 `buildDiffTree` walks each `AWS::CloudFormation::Stack` row to the child
 template and its state at
 `cdkd/<parent>~<childId>/<region>/state.json`. Children are the **union**
-of template nested rows (CREATE/UPDATE) and state-only rows (DELETE, diffed
-against an empty template).
+of CONDITION-PRUNED template nested rows (CREATE/UPDATE) and state-only rows
+(DELETE, diffed against an empty template).
 
 **It refuses a nested template already on the root-to-node path** — a REFUSAL,
 not a depth cap, since a cyclic assembly has no correct diff; keyed on the
