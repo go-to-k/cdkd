@@ -184,20 +184,20 @@ launchtemplate-asg-inplace	2026-09-24T22:46:12Z	PASS	82	verify.sh	rc ok, 0 orpha
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-09-24T13:18:12Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke	2026-09-25T11:37:16Z	PASS	70	verify.sh	rc ok, docker sweep clean, 0 orphans; sha 7f3ebd731 (#3202)
-local-invoke-agentcore	2026-09-24T15:26:43Z	PASS	115	verify.sh	rc ok, docker clean (#3652 engine-only containment)
-local-invoke-agentcore-from-state	2026-09-24T13:25:51Z	PASS	91	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-buildkit	2026-09-24T13:15:21Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-container	2026-09-25T05:52:32Z	PASS	23	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
-local-invoke-dotnet	2026-09-24T13:37:22Z	PASS	50	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-from-cfn-stack	2026-09-24T13:33:28Z	PASS	110	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-from-cfn-stack-multi-stack	2026-09-24T13:35:38Z	PASS	130	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-from-state	2026-09-25T18:24:47Z	PASS	85	verify.sh	rc ok, orph clean, docker sweep clean; #3515 docker-runner shares partitionSensitiveEnv / dockerSpawnEnvWithSensitive, tree acbd47b90
-local-invoke-java	2026-09-24T13:36:32Z	PASS	45	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-layers	2026-09-24T13:20:03Z	PASS	20	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-provided	2026-09-24T13:20:38Z	PASS	35	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-python	2026-09-24T13:21:29Z	PASS	51	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke-ruby	2026-09-24T13:22:19Z	PASS	50	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
+local-invoke	2026-09-26T00:27:28Z	PASS	40	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-agentcore	2026-09-26T00:06:20Z	PASS	125	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-agentcore-from-state	2026-09-26T00:09:21Z	PASS	85	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-buildkit	2026-09-26T00:24:47Z	PASS	35	verify.sh	rc ok on rerun, docker clean; first attempt hit an RIE Go-runtime crash under amd64 emulation on arm64 (fatal error: found pointer to free object), unrelated; #2419 PR 3804
+local-invoke-container	2026-09-26T00:08:25Z	PASS	35	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-dotnet	2026-09-26T00:21:13Z	PASS	45	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-from-cfn-stack	2026-09-26T00:12:36Z	PASS	105	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-from-cfn-stack-multi-stack	2026-09-26T00:14:21Z	PASS	136	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-from-state	2026-09-26T00:10:46Z	PASS	110	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-java	2026-09-26T00:20:38Z	PASS	35	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-layers	2026-09-26T00:09:00Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-provided	2026-09-26T00:19:48Z	PASS	50	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-python	2026-09-26T00:16:52Z	PASS	120	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-ruby	2026-09-26T00:18:52Z	PASS	55	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-run-task	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-run-task-awsvpc	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-run-task-cdkd-assets	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
@@ -206,10 +206,10 @@ local-run-task-multi-container	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, doc
 local-start-agentcore	2026-09-24T15:26:58Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb	2026-09-24T15:27:48Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb-from-state	2026-09-25T05:52:32Z	PASS	187	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
-local-start-api	2026-09-25T05:52:32Z	PASS	19	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
-local-start-api-container	2026-09-24T15:24:47Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
-local-start-api-rest-v1-non-proxy	2026-09-24T13:18:27Z	PASS	15	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-start-api-websocket	2026-09-24T13:38:27Z	FAIL	65	verify.sh	amd64 RIE SIGSEGV under emulation (wirep: already in go); same failure on origin/main at cdk-local 0.149.2 -- pre-existing/environmental, not #3654
+local-start-api	2026-09-26T00:21:58Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-start-api-container	2026-09-26T00:22:18Z	PASS	15	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-start-api-rest-v1-non-proxy	2026-09-26T00:22:33Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-start-api-websocket	2026-09-26T00:22:54Z	PASS	105	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-start-cloudfront	2026-09-24T15:31:24Z	PASS	10	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-service	2026-09-25T05:52:32Z	PASS	91	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
 local-start-service-watch-fast	2026-09-24T15:31:14Z	PASS	205	verify.sh	rc ok, docker clean (#3652 engine-only containment)

@@ -35,9 +35,11 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  *    they must keep writing to stdout, byte-exact, while `emitResult`'s own
  *    HTTP >= 400 `logger.warn` goes to stderr exactly once.
  *
- * NOT covered, because a different mechanism produces it: the CONTAINER's own
- * stdout, which `streamLogs` (`src/local/docker-runner.ts`) pipes straight
- * into ours — [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+ * The CONTAINER's own stdout, which `streamLogs` (`src/local/docker-runner.ts`)
+ * pipes into ours, is a raw child-process pipe the logger cannot route; since
+ * [#2419](https://github.com/go-to-k/cdkd/issues/2419) it follows the
+ * reservation instead. Its case drives the REAL `streamLogs` against a fake
+ * `docker` binary (`tests/unit/_fake-docker-logs.ts`).
  */
 
 const mocks = vi.hoisted(() => ({
@@ -136,6 +138,12 @@ import {
   reserveStdoutForPayload,
 } from '../../../src/utils/logger.js';
 import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
+import {
+  CONTAINER_STDERR_TOKEN,
+  CONTAINER_STDOUT_TOKEN,
+  installFakeDockerLogs,
+  waitForContainerOutput,
+} from '../_fake-docker-logs.js';
 
 const CHATTER = 'Bundling asset AgentStack/EchoAgent/Code/Stage...';
 /** A non-ECR image tag, so `resolveAgentCoreImage` takes the plain `pullImage` arm. */
@@ -193,6 +201,9 @@ function makeAgentStack(): StackInfo {
   } as unknown as StackInfo;
 }
 
+/** The in-flight capture's two buffers, for a mock that must wait on delivery. */
+let live: { out: string[]; err: string[] } | undefined;
+
 /**
  * Capture fd-1 / fd-2 into one ordered transcript while `body` runs. Shared by
  * the command case and the emitter cases so both measure the same way.
@@ -200,6 +211,7 @@ function makeAgentStack(): StackInfo {
 async function capture(body: () => Promise<void> | void): Promise<Streams> {
   const out: string[] = [];
   const err: string[] = [];
+  live = { out, err };
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
   process.stdout.write = ((chunk: string | Uint8Array): boolean => {
@@ -229,6 +241,7 @@ async function capture(body: () => Promise<void> | void): Promise<Streams> {
     for (const spy of consoleSpies) spy.mockRestore();
     process.stdout.write = origOut;
     process.stderr.write = origErr;
+    live = undefined;
   }
   return { stdout: out.join(''), stderr: err.join(''), error };
 }
@@ -403,6 +416,42 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(stdout).not.toContain(line);
     }
   });
+
+  /**
+   * Issue #2419. An agent container's stdout is piped into ours by
+   * `streamLogs` — a raw write the logger never sees. The REAL `streamLogs`
+   * runs against a fake `docker` binary, and the agent call waits until the
+   * fake container's output has been DELIVERED (to either stream) before
+   * answering, so the assertion is about routing, not timing.
+   */
+  it.skipIf(process.platform === 'win32')(
+    "moves the agent container's own stdout to stderr, response alone on stdout",
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.streamLogs.mockImplementation(actual.streamLogs);
+      mocks.invokeAgentCore.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
+      });
+      const fake = installFakeDockerLogs();
+      let streams: Streams;
+      try {
+        streams = await runAgentCore(['AgentStack:EchoAgent', '--no-pull']);
+      } finally {
+        fake.restore();
+      }
+      const { stdout, stderr, error } = streams;
+
+      expect(error).toBeUndefined();
+      expect(stdout).toBe(`${AGENT_PAYLOAD}\n`);
+      expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-agentcore-lane2410`);
+      expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
+    }
+  );
 
   /**
    * The REAL chunk sink. `onChunk` is a `process.stdout.write(text)` closure

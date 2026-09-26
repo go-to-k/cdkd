@@ -82,11 +82,12 @@ cdkd state list | while read -r ref; do echo "found state for: $ref"; done
 cdkd local invoke MyStack/Handler --event e.json | tail -1 | jq .body
 ```
 
-The `tail -1` on the last line is not decoration. Two things on
-`cdkd local invoke` and `cdkd local invoke-agentcore` still reach stdout
-without passing through cdkd's logger, so on those two commands the payload is
-the **last** stdout line rather than the whole stream — see "Known
-limitations" below. The other three commands need no such qualifier.
+The `tail -1` on the last line is not decoration. For a target cdkd builds
+as a container image, one thing on `cdkd local invoke` and
+`cdkd local invoke-agentcore` still reaches stdout without passing through
+cdkd's logger, so there the payload is the **last** stdout line rather than
+the whole stream — see "Known limitations" below. The other three commands
+need no such qualifier.
 
 ### Which commands reserve stdout, and which do not
 
@@ -142,17 +143,16 @@ returns.
 
 ### Known limitations
 
-Two things on `cdkd local invoke` and `cdkd local invoke-agentcore` reach stdout
-without passing through cdkd's logger, so take the **last** line
-(`cdkd local invoke ... | tail -1 | jq`):
+One thing on `cdkd local invoke` and `cdkd local invoke-agentcore` reaches
+stdout without passing through cdkd's logger, so take the **last** line
+(`cdkd local invoke ... | tail -1 | jq`) when it applies: **the container-image
+build path.** For a container-image Lambda, and for an AgentCore runtime cdkd
+builds, `Building container image (platform=...)` and `Skipping docker build
+...` print on stdout rather than stderr.
 
-1. **The container's own stdout.** The Lambda runtime emulator puts `START` /
-   `END` / `REPORT` *and* every handler log line — `console.error` included —
-   on the container's stdout, so any handler that prints lands ahead of the
-   response.
-2. **The container-image build path.** For a container-image Lambda,
-   `Building container image (platform=...)` and `Skipping docker build ...`
-   print on stdout rather than stderr.
+The container's own stdout is not on that list: the Lambda runtime emulator's
+`START` / `END` / `REPORT` lines and every handler log line go to stderr on
+these two commands.
 
 ## `--region` / `AWS_REGION` (every command)
 
