@@ -185,13 +185,9 @@ the expression.
 ### Scrubbing supersedes the plaintext, it does not erase it
 
 `scrub` rewrites `state.json` and the exports index, never a stack's
-`rollback-journal.json`. A journal holds copies of state records, and a nested
-stack keeps one after a successful deploy until its top-level stack's deploy
-succeeds (it also carries the child's outputs, copied from `state.json`). So a
-plaintext value that a scrub repairs in a record can survive in that journal
-until it is cleared: the next successful deploy of the top-level stack deletes
-every nested journal under it and purges their old versions, and a rollback that
-reverts the nested stack drops the record it replayed.
+`rollback-journal.json`, which holds copies of state records. A nested stack
+keeps its journal after a successful deploy until its top-level stack's deploy
+succeeds, so a value a scrub repairs can survive there until then.
 
 `scrub` rewrites `state.json` with a plain S3 `PutObject`, and `cdkd bootstrap`
 turns **versioning** on for the state bucket (it skips that step for a bucket

@@ -360,7 +360,10 @@ export class NestedStackProvider implements ResourceProvider {
    * replay another run's changes over a live child.
    *
    * Returns no `attributes`: the rollback executor restores this row's
-   * previous record wholesale, previous `Outputs.<Key>` included.
+   * previous record wholesale, previous `Outputs.<Key>` included. When the
+   * child replay skipped an op, the result is `partial`: the executor then
+   * reports the row as restored with a remainder instead of cleanly (the
+   * drivers count the skips as warnings through the run scope).
    */
   private async revertFromChildJournal(
     ctx: NestedStackProviderContext,
@@ -381,14 +384,22 @@ export class NestedStackProvider implements ResourceProvider {
     this.logger.info(
       `Reverting nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}) from its rollback journal`
     );
-    await revertNestedChildFromJournal({
+    const { warnings } = await revertNestedChildFromJournal({
       ctx,
       logicalId,
       childStackName,
       region: ctx.parentRegion,
-      runId: run.runId,
+      run,
       logger: this.logger,
     });
+    if (warnings > 0) {
+      return {
+        physicalId,
+        wasReplaced: false,
+        outcome: 'partial',
+        reason: `nested stack ${displaySafe(childStackName)} skipped ${warnings} operation(s) of its revert`,
+      };
+    }
     return { physicalId, wasReplaced: false };
   }
 

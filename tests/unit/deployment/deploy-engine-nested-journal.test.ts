@@ -108,9 +108,10 @@ function build(opts: {
         ? Promise.reject(new Error(`boom ${logicalId}`))
         : Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
     ),
-    update: vi.fn().mockImplementation((logicalId: string) =>
-      Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false })
-    ),
+    update: vi.fn().mockImplementation((logicalId: string, _p: string, type: string) => {
+      settleLikeNestedProvider(logicalId, type);
+      return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
+    }),
     delete: vi.fn().mockResolvedValue(undefined),
   };
   const currentState: StackState = {
@@ -190,6 +191,15 @@ function build(opts: {
     REGION
   );
   return { engine, backend, provider };
+}
+
+/**
+ * What `NestedStackProvider` does when it reverts a nested row inside a
+ * rollback scope and the child replay completes: register the row as settled.
+ */
+function settleLikeNestedProvider(logicalId: string, type: string): void {
+  const run = getNestedRevertRun();
+  if (run && type === NESTED) run.settled.set(logicalId, new Map());
 }
 
 function templateOf(ids: string[]): CloudFormationTemplate {
@@ -316,15 +326,16 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       levels: [['Child'], ['B']],
     });
     const seenRuns: unknown[] = [];
-    provider.update.mockImplementation((logicalId: string) => {
-      seenRuns.push(getNestedRevertRun());
+    provider.update.mockImplementation((logicalId: string, _p: string, type: string) => {
+      seenRuns.push(getNestedRevertRun()?.runId ?? 'no scope');
+      settleLikeNestedProvider(logicalId, type);
       return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
     });
 
     await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
 
     // Forward update outside any scope, the revert INSIDE this run's.
-    expect(seenRuns).toEqual([undefined, { runId: RUN }]);
+    expect(seenRuns).toEqual(['no scope', RUN]);
     expect(backend.dropRollbackJournalSegments).toHaveBeenCalledOnce();
     const [child, region, drop] = backend.dropRollbackJournalSegments.mock.calls[0]!;
     expect([child, region]).toEqual([`${STACK}~Child`, REGION]);
@@ -368,8 +379,9 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     });
     let reverted = false;
     let failedOnce = false;
-    provider.update.mockImplementation((logicalId: string) => {
+    provider.update.mockImplementation((logicalId: string, _p: string, type: string) => {
       if (provider.update.mock.calls.length === 2) reverted = true;
+      settleLikeNestedProvider(logicalId, type);
       return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
     });
     // The FIRST save after the revert (the post-rollback save) conflicts; its
@@ -457,14 +469,14 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
           resources: Record<string, ResourceState>,
           stack: string,
           prev: StackState
-        ) => Promise<{ revertedNestedRows: string[] }>;
+        ) => Promise<{ settledNested: Map<string, unknown>; warnings: number }>;
       }
     ).performRollback.bind(engine);
 
     // The row is absent from state, so the executor SKIPS its revert.
     const skipped = await perform([op], {}, STACK, previous);
     expect(provider.update).not.toHaveBeenCalled();
-    expect(skipped.revertedNestedRows).toEqual([]);
+    expect([...skipped.settledNested.keys()]).toEqual([]);
 
     // CONTROL: present, so the revert runs and the row counts.
     const ran = await perform(
@@ -474,7 +486,49 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       previous
     );
     expect(provider.update).toHaveBeenCalledOnce();
-    expect(ran.revertedNestedRows).toEqual(['Child']);
+    expect([...ran.settledNested.keys()]).toEqual(['Child']);
+  });
+
+  it('performRollback counts a child replay skip as a warning and settles nothing for it', async () => {
+    const { engine, provider } = build({ nested: false, changes: new Map(), resources: {} });
+    provider.update.mockImplementation(() => {
+      // What NestedStackProvider does when its child replay skipped 3 ops.
+      getNestedRevertRun()!.warnings += 3;
+      return Promise.resolve({
+        physicalId: 'phys-Child',
+        wasReplaced: false,
+        outcome: 'partial',
+        reason: 'nested stack Parent~Child skipped 3 operation(s) of its revert',
+      });
+    });
+    const perform = (
+      engine as unknown as {
+        performRollback: (
+          ops: unknown[],
+          resources: Record<string, ResourceState>,
+          stack: string,
+          prev: StackState
+        ) => Promise<{ settledNested: Map<string, unknown>; warnings: number }>;
+      }
+    ).performRollback.bind(engine);
+
+    const result = await perform(
+      [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: 'phys-Child',
+          previousState: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } },
+        },
+      ],
+      { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'new' } } },
+      STACK,
+      { version: 8, stackName: STACK, region: REGION, resources: {}, outputs: {}, lastModified: 0 } as StackState
+    );
+
+    expect(result.warnings).toBe(3);
+    expect(result.settledNested.size).toBe(0);
   });
 
   it('a NESTED engine that succeeds leaves its own nested children journals alone', async () => {
@@ -512,6 +566,32 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     await engine.deploy(STACK, templateOf(['Q']));
 
     expect(logs.info.some((l) => l.includes('A previous deploy of'))).toBe(false);
+  });
+
+  it('a NESTED engine failed-only note says the TOP-LEVEL deploy clears it', async () => {
+    for (const nested of [true, false]) {
+      logs.info.length = 0;
+      const { engine } = build({
+        nested,
+        changes: new Map(),
+        resources: { Q: record('Q') },
+        journal: {
+          segments: [
+            {
+              reason: 'auto-rollback-clean',
+              operations: [],
+              failedOperations: [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE' } as never],
+            },
+          ],
+        },
+      });
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      const note = logs.info.find((l) => l.includes('automatically rolled back')) ?? '';
+      expect(note.includes('a successful deploy of the top-level stack clears this note')).toBe(nested);
+      expect(note.includes('(a successful deploy clears this note)')).toBe(!nested);
+    }
   });
 
   it('CONTROL: a failure segment beside it still prints the note', async () => {

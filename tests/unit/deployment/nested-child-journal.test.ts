@@ -28,6 +28,8 @@ const replay = vi.hoisted(() => ({
   failuresFor: new Set<string>(),
   warningsFor: new Set<string>(),
   orphanFor: new Set<string>(),
+  /** Runs inside the replay, with the scope the replay was bound in. */
+  duringReplay: undefined as ((inner: NestedRevertRun) => void) | undefined,
   readNested: (() => undefined) as () =>
     | { parentStackName: string; nestedTemplates?: unknown }
     | undefined,
@@ -47,6 +49,7 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
       ctx: Record<string, unknown>,
       options: { afterOp?: () => Promise<void>; onOrphan?: (record: unknown) => void }
     ) => {
+      replay.duringReplay?.(replay.readRun() as NestedRevertRun);
       const nested = replay.readNested();
       replay.calls.push({
         ops: ops.map((o) => o.logicalId),
@@ -87,6 +90,8 @@ import {
   nestedPendingSnapshot,
   revertNestedChildFromJournal,
   revertedNestedRowIds,
+  type NestedRevertRun,
+  type SettledNestedRows,
 } from '../../../src/deployment/nested-child-journal.js';
 import { getCurrentNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
 import { getCurrentStackName } from '../../../src/provisioning/resource-name.js';
@@ -163,16 +168,20 @@ function harness(opts: {
     ...opts.ctxExtra,
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const run = (runId: string | undefined) =>
-    revertNestedChildFromJournal({
+  // The scope the provider hands in: what the parent driver reads afterwards.
+  const scope: NestedRevertRun = { runId: undefined, settled: new Map(), warnings: 0 };
+  const run = (runId: string | undefined) => {
+    (scope as { runId: string | undefined }).runId = runId;
+    return revertNestedChildFromJournal({
       ctx: ctx as never,
       logicalId: 'Child',
       childStackName: CHILD,
       region: REGION,
-      runId,
+      run: scope,
       logger: logger as never,
     });
-  return { stateBackend, lockManager, exportIndexStore, run, logger };
+  };
+  return { stateBackend, lockManager, exportIndexStore, run, logger, scope };
 }
 
 beforeEach(() => {
@@ -180,6 +189,7 @@ beforeEach(() => {
   replay.failuresFor.clear();
   replay.warningsFor.clear();
   replay.orphanFor.clear();
+  replay.duringReplay = undefined;
 });
 
 describe('revertNestedChildFromJournal (#3754)', () => {
@@ -209,7 +219,7 @@ describe('revertNestedChildFromJournal (#3754)', () => {
       nestedParent: CHILD,
       // A revert never deploys a template.
       nestedTemplates: undefined,
-      run: { runId: 'run-1' },
+      run: expect.objectContaining({ runId: 'run-1' }),
       // `generateResourceName` reads it: a replayed re-create must mint the
       // name the forward create did.
       stackScope: CHILD,
@@ -246,7 +256,7 @@ describe('revertNestedChildFromJournal (#3754)', () => {
   it('an EMPTY segment for the run is a successful no-op, not a refusal', async () => {
     const h = harness({ segments: [seg('run-1', [])] });
 
-    await expect(h.run('run-1')).resolves.toBeUndefined();
+    await expect(h.run('run-1')).resolves.toEqual({ warnings: 0 });
     expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
   });
 
@@ -261,7 +271,9 @@ describe('revertNestedChildFromJournal (#3754)', () => {
   it('REFUSES when there is no child journal at all', async () => {
     const h = harness({ segments: null });
 
-    await expect(h.run('run-1')).rejects.toThrow(/NOT \(fully\) reverted/);
+    await expect(h.run('run-1')).rejects.toThrow(/holds no segment for this deploy run/);
+    expect(replay.calls).toHaveLength(0);
+    expect(h.lockManager.releaseLock).toHaveBeenCalledWith(CHILD, REGION);
   });
 
   it('REFUSES when the child state is missing', async () => {
@@ -300,12 +312,12 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(order).toEqual(['acquire', 'load', 'release']);
   });
 
-  it('runId-less segments match a runId-less run and nothing else', async () => {
-    const h = harness({ segments: [seg(undefined, ['NoRun']), seg('run-1', ['WithRun'])] });
+  it('REFUSES a run with no id, before taking the lock (a runId-less segment matches every other one)', async () => {
+    const h = harness({ segments: [seg(undefined, ['NoRun'])] });
 
-    await h.run(undefined);
-
-    expect(replay.calls.map((c) => c.ops)).toEqual([['NoRun']]);
+    await expect(h.run(undefined)).rejects.toThrow(/carries no deploy run id/);
+    expect(replay.calls).toHaveLength(0);
+    expect(h.lockManager.acquireLockWithRetry).not.toHaveBeenCalled();
   });
 });
 
@@ -522,8 +534,75 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     const h = harness({ segments: [seg('r', ['Q'])] });
     h.lockManager.releaseLock.mockRejectedValue(new Error('gone'));
 
-    await expect(h.run('r')).resolves.toBeUndefined();
+    await expect(h.run('r')).resolves.toEqual({ warnings: 0 });
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to release the lock'));
+  });
+
+  it('a COMPLETED replay registers the row as settled, with the grandchildren its replay completed', async () => {
+    const h = harness({ segments: [seg('r', ['Q'])] });
+    // What a grandchild revert inside the child's replay does.
+    replay.duringReplay = (inner) => inner.settled.set('Grand', new Map());
+
+    await expect(h.run('r')).resolves.toEqual({ warnings: 0 });
+
+    expect([...h.scope.settled.keys()]).toEqual(['Child']);
+    expect([...h.scope.settled.get('Child')!.keys()]).toEqual(['Grand']);
+    expect(h.scope.warnings).toBe(0);
+  });
+
+  it('a replay that SKIPPED an op returns the count, adds it to the scope and does NOT settle the row', async () => {
+    replay.warningsFor.add('Q');
+    const h = harness({ segments: [seg('r', ['Q'])] });
+
+    await expect(h.run('r')).resolves.toEqual({ warnings: 1 });
+
+    expect(h.scope.settled.size).toBe(0);
+    expect(h.scope.warnings).toBe(1);
+  });
+
+  it('a grandchild skip inside the child replay counts toward the child', async () => {
+    const h = harness({ segments: [seg('r', ['Q'])] });
+    replay.duringReplay = (inner) => {
+      inner.warnings += 2;
+    };
+
+    await expect(h.run('r')).resolves.toEqual({ warnings: 2 });
+    expect(h.scope.settled.size).toBe(0);
+  });
+
+  it('a replay that FAILED restores neither outputs nor reads, and publishes nothing', async () => {
+    replay.failuresFor.add('Q');
+    const h = harness({
+      segments: [
+        seg('r', ['Q'], {
+          previousOutputs: { outputs: { QueueUrl: 'pre-run' }, exportNames: ['OldExport'] },
+          previousCrossStackReads: { imports: [] } as never,
+        }),
+      ],
+    });
+
+    await expect(h.run('r')).rejects.toThrow(/failed to revert/);
+
+    for (const call of h.stateBackend.saveState.mock.calls) {
+      const saved = call[2] as StackState;
+      expect(saved.outputs).toEqual({ QueueUrl: 'new-url' });
+      expect(saved.exportNames).toEqual(['NewExport']);
+    }
+    expect(h.exportIndexStore.updateForStack).not.toHaveBeenCalled();
+    expect(h.scope.settled.size).toBe(0);
+  });
+
+  it('the per-op saves during the replay carry the CURRENT outputs; only the final save restores', async () => {
+    const h = harness({
+      segments: [seg('r', ['Q'], { previousOutputs: { outputs: { QueueUrl: 'pre-run' } } })],
+    });
+
+    await h.run('r');
+
+    const outputs = h.stateBackend.saveState.mock.calls.map(
+      (c) => (c[2] as StackState).outputs
+    );
+    expect(outputs).toEqual([{ QueueUrl: 'new-url' }, { QueueUrl: 'pre-run' }]);
   });
 
   it('reports ops the replay skipped with a warning', async () => {
@@ -591,12 +670,22 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
       Child: { resourceType: 'AWS::CloudFormation::Stack' },
       NotNested: { resourceType: 'AWS::SQS::Queue' },
     };
-    return { stateBackend, logger, resources, order };
+    const lockManager = {
+      acquireLockWithRetry: vi.fn(async (name: string) => {
+        order.push(`lock ${name}`);
+        return true;
+      }),
+      releaseLock: vi.fn(async (name: string) => {
+        order.push(`unlock ${name}`);
+      }),
+    };
+    return { stateBackend, logger, resources, order, lockManager };
   }
 
   const sweep = (t: ReturnType<typeof tree>, resources: unknown = t.resources) =>
     dropNestedChildJournals({
       stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
       parentStackName: 'Root',
       region: REGION,
       resources: resources as never,
@@ -608,8 +697,16 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
 
     await sweep(t);
 
-    // A journal that no longer parses is deleted too, with its version purge.
-    expect(t.order).toEqual(['delete Root~Child~Grand', 'delete Root~Child']);
+    // A journal that no longer parses is deleted too, with its version purge,
+    // each under its OWN stack's lock (a direct child rollback holds only it).
+    expect(t.order).toEqual([
+      'lock Root~Child~Grand',
+      'delete Root~Child~Grand',
+      'unlock Root~Child~Grand',
+      'lock Root~Child',
+      'delete Root~Child',
+      'unlock Root~Child',
+    ]);
     expect(t.stateBackend.loadRollbackJournal).not.toHaveBeenCalled();
     expect(t.logger.warn).not.toHaveBeenCalled();
   });
@@ -623,7 +720,10 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     ).resolves.toBeUndefined();
 
     expect(t.logger.warn).toHaveBeenCalledOnce();
-    expect(t.order).toEqual(['delete Root~Child', 'delete Root~Second']);
+    expect(t.order.filter((e) => e.startsWith('delete'))).toEqual([
+      'delete Root~Child',
+      'delete Root~Second',
+    ]);
   });
 
   it('a failed delete warns and carries on', async () => {
@@ -648,7 +748,21 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     await sweep(t);
 
     expect(t.stateBackend.getState).toHaveBeenCalledOnce();
-    expect(t.order).toEqual(['delete Root~Child']);
+    expect(t.order.filter((e) => e.startsWith('delete'))).toEqual(['delete Root~Child']);
+  });
+
+  it('a child lock that cannot be taken leaves that journal for the next sweep', async () => {
+    const t = tree();
+    t.lockManager.acquireLockWithRetry.mockImplementation(async (name: string) => {
+      if (name === 'Root~Child') throw new Error('locked by a direct rollback');
+      return true;
+    });
+
+    await sweep(t);
+
+    expect(t.order).toContain('delete Root~Child~Grand');
+    expect(t.order).not.toContain('delete Root~Child');
+    expect(t.logger.warn).toHaveBeenCalledOnce();
   });
 
   it('stops at the depth bound when every level names itself as the child', async () => {
@@ -665,18 +779,10 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
 });
 
 describe('dropSettledNestedJournals — after a settled rollback (#3754)', () => {
-  const stackOp = (logicalId: string) => ({
-    logicalId,
-    resourceType: 'AWS::CloudFormation::Stack',
-    changeType: 'UPDATE',
-  });
-
   function backend(journals: Record<string, RollbackJournalSegment[]>) {
     const kept: Record<string, RollbackJournalSegment[]> = {};
+    const locks: string[] = [];
     const stateBackend = {
-      loadRollbackJournal: vi.fn(async (name: string) =>
-        journals[name] ? { segments: journals[name] } : null
-      ),
       dropRollbackJournalSegments: vi.fn(
         async (name: string, _region: string, drop: (s: RollbackJournalSegment) => boolean) => {
           const all = journals[name] ?? [];
@@ -685,16 +791,31 @@ describe('dropSettledNestedJournals — after a settled rollback (#3754)', () =>
         }
       ),
     };
-    return { stateBackend, kept, logger: { debug: vi.fn(), warn: vi.fn() } };
+    const lockManager = {
+      acquireLockWithRetry: vi.fn(async (name: string) => {
+        locks.push(name);
+        return true;
+      }),
+      releaseLock: vi.fn(async () => undefined),
+    };
+    return { stateBackend, lockManager, kept, locks, logger: { debug: vi.fn(), warn: vi.fn() } };
   }
 
-  const settle = (b: ReturnType<typeof backend>, ids: string[], runId = 'r') =>
+  const tree = (entries: Array<[string, SettledNestedRows?]>): SettledNestedRows =>
+    new Map(entries.map(([id, below]) => [id, below ?? new Map()]));
+
+  const settle = (
+    b: ReturnType<typeof backend>,
+    settled: SettledNestedRows,
+    opts: { runId: string | undefined } = { runId: 'r' }
+  ) =>
     dropSettledNestedJournals({
       stateBackend: b.stateBackend as never,
+      lockManager: b.lockManager as never,
       parentStackName: 'Root',
       region: REGION,
-      revertedLogicalIds: ids,
-      runId,
+      settled,
+      runId: opts.runId,
       logger: b.logger,
     });
 
@@ -707,46 +828,55 @@ describe('dropSettledNestedJournals — after a settled rollback (#3754)', () =>
       ],
     });
 
-    await settle(b, ['Child']);
+    await settle(b, tree([['Child']]));
 
     expect(b.kept['Root~Child']!.map((s) => [s.runId, s.reason])).toEqual([
       ['r', 'no-rollback-failure'],
       ['older', 'nested-pending-parent'],
     ]);
+    // Under the child's own lock.
+    expect(b.locks).toEqual(['Root~Child']);
   });
 
-  it('touches ONLY the children whose rows were reverted', async () => {
+  it('touches nothing when no child replay completed', async () => {
     const b = backend({ 'Root~Failed': [seg('r', [], { reason: 'auto-rollback-clean' })] });
 
-    await settle(b, []);
+    await settle(b, tree([]));
 
-    expect(b.stateBackend.loadRollbackJournal).not.toHaveBeenCalled();
     expect(b.stateBackend.dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
-  it('recurses into the grandchildren the child replay reverted, and only those', async () => {
+  it('recurses ONLY into the grandchildren the child replay completed, deepest first', async () => {
     const b = backend({
-      'Root~Child': [
-        {
-          ...seg('r', []),
-          operations: [stackOp('Grand'), { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE' }],
-        } as RollbackJournalSegment,
-      ],
+      'Root~Child': [seg('r', [])],
       'Root~Child~Grand': [seg('r', ['X'])],
-      'Root~Child~Q': [seg('r', ['Y'])],
+      'Root~Child~Skipped': [seg('r', ['Y'])],
     });
 
-    await settle(b, ['Child']);
+    await settle(b, tree([['Child', tree([['Grand']])]]));
 
     expect(b.kept['Root~Child~Grand']).toEqual([]);
-    expect(b.stateBackend.loadRollbackJournal.mock.calls.map((c) => c[0])).not.toContain('Root~Child~Q');
+    expect(b.kept['Root~Child']).toEqual([]);
+    // `Skipped` is a nested row the child replay did NOT complete.
+    expect(b.stateBackend.dropRollbackJournalSegments.mock.calls.map((c) => c[0])).toEqual([
+      'Root~Child~Grand',
+      'Root~Child',
+    ]);
+  });
+
+  it('a runId-less run drops nothing', async () => {
+    const b = backend({ 'Root~Child': [seg(undefined, ['Q'])] });
+
+    await settle(b, tree([['Child']]), { runId: undefined });
+
+    expect(b.stateBackend.dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
   it('a backend failure warns and carries on', async () => {
     const b = backend({ 'Root~B': [seg('r', ['Q'])] });
-    b.stateBackend.loadRollbackJournal.mockRejectedValueOnce(new Error('throttled'));
+    b.stateBackend.dropRollbackJournalSegments.mockRejectedValueOnce(new Error('throttled'));
 
-    await settle(b, ['A', 'B']);
+    await settle(b, tree([['A'], ['B']]));
 
     expect(b.logger.warn).toHaveBeenCalledOnce();
     expect(b.kept['Root~B']).toEqual([]);

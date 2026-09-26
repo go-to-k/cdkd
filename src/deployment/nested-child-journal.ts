@@ -38,6 +38,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
+import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
@@ -111,20 +112,45 @@ export function revertedNestedRowIds(
 }
 
 /**
- * The parent run a rollback is replaying. `runId` may legitimately be
- * `undefined` (a deploy wired with no event recorder writes runId-less
- * segments, and those match each other); the SCOPE being absent is the
- * different case — no rollback driver bound it.
+ * The nested rows whose child replay COMPLETED in a scope — no op failed and
+ * none was skipped — each mapped to the grandchildren ITS replay completed.
+ * Only these have pending segments a settled rollback may drop: a row the
+ * replay skipped never reached the provider, and a child replay that skipped
+ * an op stays retryable.
+ */
+export type SettledNestedRows = Map<string, SettledNestedRows>;
+
+/**
+ * The parent run a rollback is replaying, plus what the child reverts inside
+ * it reported. `runId` is `undefined` when the deploy had no event recorder;
+ * a revert refuses that (a runId-less segment would match every other one).
+ * The SCOPE being absent is the other case — no rollback driver bound it.
  */
 export interface NestedRevertRun {
-  runId: string | undefined;
+  readonly runId: string | undefined;
+  /** Filled by each child revert that completed in this scope. */
+  readonly settled: SettledNestedRows;
+  /**
+   * Ops the child replays in this scope skipped with a warning. The drivers
+   * add it to their own warning count, since the executor counts a nested
+   * row's `partial` outcome as a success.
+   */
+  warnings: number;
 }
 
 const revertRunStorage = new AsyncLocalStorage<NestedRevertRun>();
 
-/** Bind the parent run being replayed around a `replayRollback` call. */
-export function withNestedRevertRun<T>(runId: string | undefined, fn: () => T): T {
-  return revertRunStorage.run({ runId }, fn);
+/**
+ * Bind the parent run being replayed around a `replayRollback` call. `fn`
+ * receives the scope, so the driver can read what the child reverts reported
+ * once the replay returns.
+ */
+export function withNestedRevertRun<T>(
+  runId: string | undefined,
+  fn: (run: NestedRevertRun) => T
+): T {
+  const run: NestedRevertRun = { runId, settled: new Map(), warnings: 0 };
+  return revertRunStorage.run(run, () => fn(run));
 }
 
 /** The run bound by {@link withNestedRevertRun}, or `undefined` outside one. */
@@ -152,12 +178,13 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  *
  * Best-effort and never throws: the deploy that calls it already succeeded,
  * and a journal left behind is inert to every parent revert (they select by
- * run) until the next successful root deploy sweeps it. No child lock is
- * taken: every writer of a nested child's journal runs under the ROOT stack's
- * lock, which the caller holds.
+ * run) until the next successful root deploy sweeps it. Each delete takes the
+ * CHILD's lock: a direct `cdkd rollback <parent>~<child>` holds only that one,
+ * and a lock that cannot be taken leaves the journal for the next sweep.
  */
 export async function dropNestedChildJournals(args: {
   stateBackend: S3StateBackend;
+  lockManager: JournalLock;
   parentStackName: string;
   region: string;
   resources: Record<string, ResourceState> | undefined;
@@ -195,7 +222,9 @@ export async function dropNestedChildJournals(args: {
     // Outside the state read's `try`: a child whose state.json cannot be read
     // (so its descendants cannot be walked) still has its OWN journal deleted.
     try {
-      await stateBackend.deleteRollbackJournal(child, region);
+      await withChildLock(args.lockManager, child, region, logger, () =>
+        stateBackend.deleteRollbackJournal(child, region)
+      );
       logger.debug(`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
     } catch (error) {
       warnUncleared(logger, child, error);
@@ -205,25 +234,27 @@ export async function dropNestedChildJournals(args: {
 
 /**
  * Drop the `nested-pending-parent` segments of run `runId` from the children
- * whose rows a settled rollback actually REVERTED (`revertedLogicalIds`, from
- * {@link revertedNestedRowIds}), and, recursively, from the grandchildren those
- * children's replays reverted.
+ * in `settled` — the rows whose child replay COMPLETED in the rollback being
+ * settled (see {@link SettledNestedRows}) — and, recursively, from the
+ * grandchildren each of those replays completed.
  *
- * Deliberately narrow on both axes. A child row the rollback did NOT revert — a
- * nested deploy that itself FAILED is a failed row, never replayed — keeps its
- * journal: its own failure segment is what `cdkd rollback <parent>~<child>`
- * (and `--revert-failed`) needs. And only PENDING segments go: a child's own
- * failure segment of the same run is not the parent's to consume.
+ * Deliberately narrow. A child row the rollback did not revert (a failed
+ * nested deploy is a failed row, and a skipped revert never reached the
+ * provider) keeps its journal, and so does a child whose replay skipped an op.
+ * Only PENDING segments go: a child's own failure segment of the same run is
+ * what `cdkd rollback <parent>~<child>` (and `--revert-failed`) needs.
  *
  * Call it only once the rollback is SETTLED (its state saved, its own segment
  * popped or re-recorded), so a rollback that cannot persist still finds these
- * segments when it is re-run. Best-effort and never throws.
+ * segments when it is re-run. A runId-less run drops nothing. Best-effort and
+ * never throws; each drop takes the child's lock.
  */
 export async function dropSettledNestedJournals(args: {
   stateBackend: S3StateBackend;
+  lockManager: JournalLock;
   parentStackName: string;
   region: string;
-  revertedLogicalIds: Iterable<string>;
+  settled: SettledNestedRows;
   runId: string | undefined;
   logger: Pick<Logger, 'debug' | 'warn'>;
   /** Internal: how deep the walk already is. */
@@ -231,26 +262,24 @@ export async function dropSettledNestedJournals(args: {
 }): Promise<void> {
   const { stateBackend, parentStackName, region, runId, logger } = args;
   const depth = args.depth ?? 0;
+  if (runId === undefined) return;
   if (depthExceeded(depth, parentStackName, logger)) return;
   const isSettled = (segment: RollbackJournalSegment): boolean =>
     segment.runId === runId && segment.reason === NESTED_PENDING_PARENT_REASON;
-  for (const logicalId of new Set(args.revertedLogicalIds)) {
+  for (const [logicalId, grandchildren] of args.settled) {
     const child = nestedChildStackName(parentStackName, logicalId);
+    if (grandchildren.size > 0) {
+      await dropSettledNestedJournals({
+        ...args,
+        parentStackName: child,
+        settled: grandchildren,
+        depth: depth + 1,
+      });
+    }
     try {
-      const journal = await stateBackend.loadRollbackJournal(child, region);
-      if (!journal) continue;
-      const grandchildren = journal.segments
-        .filter(isSettled)
-        .flatMap((segment) => revertedNestedRowIds(segment.operations));
-      if (grandchildren.length > 0) {
-        await dropSettledNestedJournals({
-          ...args,
-          parentStackName: child,
-          revertedLogicalIds: grandchildren,
-          depth: depth + 1,
-        });
-      }
-      const removed = await stateBackend.dropRollbackJournalSegments(child, region, isSettled);
+      const removed = await withChildLock(args.lockManager, child, region, logger, () =>
+        stateBackend.dropRollbackJournalSegments(child, region, isSettled)
+      );
       if (removed > 0) {
         logger.debug(
           `Dropped ${removed} settled rollback journal segment(s) of ${displaySafe(child)}`
@@ -259,6 +288,29 @@ export async function dropSettledNestedJournals(args: {
     } catch (error) {
       warnUncleared(logger, child, error);
     }
+  }
+}
+
+/** The part of `LockManager` the journal maintenance needs. */
+export type JournalLock = Pick<LockManager, 'acquireLockWithRetry' | 'releaseLock'>;
+
+/** Run `fn` holding `child`'s lock; the release never throws out. */
+async function withChildLock<T>(
+  lockManager: JournalLock,
+  child: string,
+  region: string,
+  logger: Pick<Logger, 'warn'>,
+  fn: () => Promise<T>
+): Promise<T> {
+  await lockManager.acquireLockWithRetry(child, region, undefined, 'rollback');
+  try {
+    return await fn();
+  } finally {
+    await lockManager.releaseLock(child, region).catch((error: unknown) => {
+      logger.warn(
+        `Failed to release the lock of nested stack ${displayIdent(child)}: ${errorText(error)}`
+      );
+    });
   }
 }
 
@@ -298,21 +350,27 @@ function warnUncleared(logger: Pick<Logger, 'warn'>, child: string, error: unkno
  * since nothing here reads one.
  *
  * THROWS, so the caller's row revert FAILS rather than reporting a restore
- * that did not happen, when: there is no child state; the child journal holds
- * no segment for the run (it was never retained — a journal written by an
- * older cdkd — or it was removed by hand or by a direct `cdkd rollback` of the
- * child); or any replayed op failed. The replayed segments are kept either
- * way; their parent's driver drops them once its segment is settled.
+ * that did not happen, when: the run has no id; there is no child state; the
+ * child journal holds no segment for the run (it was never retained — a
+ * journal written by an older cdkd — or it was removed by hand); or any
+ * replayed op failed. The child's outputs and reads are restored, and its
+ * exports republished, only when no op failed.
+ *
+ * Returns how many ops the replay (grandchildren included) SKIPPED with a
+ * warning. Zero registers this row in `run.settled`, so the settled rollback
+ * may drop its pending segments; anything else is added to `run.warnings`
+ * and the segments stay, retryable. The segments are never dropped here.
  */
 export async function revertNestedChildFromJournal(args: {
   ctx: NestedStackProviderContext;
   logicalId: string;
   childStackName: string;
   region: string;
-  runId: string | undefined;
+  run: NestedRevertRun;
   logger: Logger;
-}): Promise<void> {
-  const { ctx, logicalId, childStackName, region, runId, logger } = args;
+}): Promise<{ warnings: number }> {
+  const { ctx, logicalId, childStackName, region, run, logger } = args;
+  const runId = run.runId;
   const shownChild = displayIdent(childStackName);
   const refuse = (detail: string): never => {
     throw markNonRetryable(
@@ -324,6 +382,12 @@ export async function revertNestedChildFromJournal(args: {
       )
     );
   };
+
+  // A runId-less segment matches every other runId-less one, so a run with no
+  // id cannot select "the segments of this deploy".
+  if (runId === undefined) {
+    refuse('the rollback carries no deploy run id to select its journal segments by.');
+  }
 
   await ctx.lockManager.acquireLockWithRetry(childStackName, region, undefined, 'rollback');
   try {
@@ -356,6 +420,11 @@ export async function revertNestedChildFromJournal(args: {
     const restoredReads = segments.find((s) => s.previousCrossStackReads)?.previousCrossStackReads;
     let currentEtag = stateData!.etag;
     let persisted = false;
+    // Off during the replay: the per-op saves record the resources only, and
+    // the outputs / reads are restored only once no op has failed — otherwise
+    // consumers would read the pre-run exports over resources that still hold
+    // the failed deploy's configuration.
+    let restoring = false;
     // `skippedOutputs` is dropped for the reason `cdkd rollback`'s own save
     // drops it: the replay can change what an output reads.
     const { skippedOutputs: _dropped, ...carried } = base;
@@ -365,12 +434,14 @@ export async function revertNestedChildFromJournal(args: {
       region,
       resources: { ...stateResources },
       ...orphansAfterRollback(base, mintedOrphans),
-      ...(restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
-      ...(restoredReads && {
-        ...(restoredReads.imports && { imports: [...restoredReads.imports] }),
-        ...(restoredReads.outputReads && { outputReads: [...restoredReads.outputReads] }),
-      }),
-      ...(restoredOutputs?.exportNames && { exportNames: [...restoredOutputs.exportNames] }),
+      ...(restoring && restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
+      ...(restoring &&
+        restoredReads && {
+          ...(restoredReads.imports && { imports: [...restoredReads.imports] }),
+          ...(restoredReads.outputReads && { outputReads: [...restoredReads.outputReads] }),
+        }),
+      ...(restoring &&
+        restoredOutputs?.exportNames && { exportNames: [...restoredOutputs.exportNames] }),
       lastModified: Date.now(),
     });
     // A restored field the snapshot does NOT carry must leave the record with
@@ -378,6 +449,7 @@ export async function revertNestedChildFromJournal(args: {
     // record did not hold is the undone deploy's, not the child's.
     const nextState = (): StackState => {
       const state = next();
+      if (!restoring) return state;
       if (restoredOutputs && !restoredOutputs.exportNames) delete state.exportNames;
       if (restoredReads && !restoredReads.imports) delete state.imports;
       if (restoredReads && !restoredReads.outputReads) delete state.outputReads;
@@ -438,25 +510,33 @@ export async function revertNestedChildFromJournal(args: {
 
     let failures = 0;
     let warnings = 0;
+    // The grandchildren THIS replay completed, merged over its segments.
+    const settledBelow: SettledNestedRows = new Map();
     for (let s = segments.length - 1; s >= 0; s--) {
       const segment = segments[s]!;
       const result = await withNestedStackContext(childCtx, () =>
         withStackName(childStackName, () =>
-          withNestedRevertRun(runId, () =>
-            replayRollback(segment.operations, stateResources, childStackName, execCtx, {
-              afterOp: save,
-              onOrphan: (record) => mintedOrphans.push(record),
-            })
-          )
+          withNestedRevertRun(runId, async (inner) => {
+            const replayed = await replayRollback(
+              segment.operations,
+              stateResources,
+              childStackName,
+              execCtx,
+              { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
+            );
+            for (const [id, below] of inner.settled) settledBelow.set(id, below);
+            return { ...replayed, warnings: replayed.warnings + inner.warnings };
+          })
         )
       );
       failures += result.failures;
       warnings += result.warnings;
     }
+    restoring = failures === 0;
     await save();
     // Only what was PERSISTED is published: the index must not serve outputs
     // the child's record does not hold.
-    if (persisted && restoredOutputs && ctx.exportIndexStore) {
+    if (restoring && persisted && restoredOutputs && ctx.exportIndexStore) {
       await ctx.exportIndexStore.updateForStack(
         childStackName,
         region,
@@ -472,6 +552,9 @@ export async function revertNestedChildFromJournal(args: {
     if (failures > 0) {
       refuse(`${failures} of its operation(s) failed to revert (see the warnings above).`);
     }
+    if (warnings > 0) run.warnings += warnings;
+    else run.settled.set(logicalId, settledBelow);
+    return { warnings };
   } finally {
     await ctx.lockManager.releaseLock(childStackName, region).catch((error: unknown) => {
       logger.warn(`Failed to release the lock of nested stack ${shownChild}: ${errorText(error)}`);

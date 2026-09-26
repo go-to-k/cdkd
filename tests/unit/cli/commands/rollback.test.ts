@@ -2489,8 +2489,11 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     const { getNestedRevertRun } = await import('../../../../src/deployment/nested-child-journal.js');
     const seenRuns: unknown[] = [];
     replayProvider.update.mockReset();
-    replayProvider.update.mockImplementation(async () => {
-      seenRuns.push(getNestedRevertRun());
+    replayProvider.update.mockImplementation(async (logicalId: string) => {
+      const run = getNestedRevertRun();
+      seenRuns.push(run?.runId);
+      // What NestedStackProvider does when the child replay completes.
+      run?.settled.set(logicalId, new Map());
       return { physicalId: 'arn:child', wasReplaced: false };
     });
     const dropRollbackJournalSegments = vi.fn().mockResolvedValue(1);
@@ -2518,7 +2521,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
 
     // Newest segment first, each nested row revert carrying ITS segment's run.
-    expect(seenRuns).toEqual([{ runId: 'r2' }, { runId: 'r1' }]);
+    expect(seenRuns).toEqual(['r2', 'r1']);
     expect(dropRollbackJournalSegments).toHaveBeenCalledTimes(2);
     const predicates = dropRollbackJournalSegments.mock.calls.map(
       (c) => [c[0], c[2]] as [string, (s: { runId?: string; reason?: string }) => boolean]
@@ -2753,20 +2756,35 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
   });
 
-  it('CONTROL: the same journal proceeds with --revert-failed', async () => {
+  it('CONTROL: the same journal proceeds with --revert-failed, and the reverted failed row settles its child', async () => {
+    const { getNestedRevertRun } = await import('../../../../src/deployment/nested-child-journal.js');
     replayProvider.update.mockReset();
-    replayProvider.update.mockResolvedValue({ physicalId: 'arn:child', wasReplaced: false });
+    replayProvider.update.mockImplementation(async (logicalId: string) => {
+      getNestedRevertRun()?.settled.set(logicalId, new Map());
+      return { physicalId: 'arn:child', wasReplaced: false };
+    });
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(0);
     installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
       loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
         name === 'S' ? parentJournalWith([failedChildSegment()]) : childFailureJournal
       ),
-      ...({ dropRollbackJournalSegments: vi.fn().mockResolvedValue(0) } as object),
+      ...({ dropRollbackJournalSegments } as object),
     });
 
     await expect(rollbackCommand('S', { ...baseOpts, revertFailed: true })).resolves.toBeUndefined();
     expect(replayProvider.update).toHaveBeenCalled();
+    // The failed row's child replay completed: its pending segments of the run go.
+    expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
+    const [child, , drop] = dropRollbackJournalSegments.mock.calls[0]!;
+    expect(child).toBe('S~Child');
+    expect(
+      (drop as (s: { runId?: string; reason?: string }) => boolean)({ runId: 'rB', reason: 'nested-pending-parent' })
+    ).toBe(true);
+    expect(
+      (drop as (s: { runId?: string; reason?: string }) => boolean)({ runId: 'rB', reason: 'no-rollback-failure' })
+    ).toBe(false);
   });
 
   it('CONTROL: a failed child segment of ANOTHER run does not trip the refusal', async () => {
@@ -2813,21 +2831,128 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
   });
 
-  it('the pending refusal says to RE-DEPLOY when the parent has no journal to roll back', async () => {
+  it('DISCARDS an orphaned pending record (its parent has no journal) and says there is nothing left', async () => {
+    let childSegments: unknown[] = [...childJournal.segments];
+    const dropRollbackJournalSegments = vi.fn(
+      async (_n: string, _r: string, drop: (s: { reason: string }) => boolean) => {
+        const before = childSegments.length;
+        childSegments = childSegments.filter((seg) => !drop(seg as { reason: string }));
+        return before - childSegments.length;
+      }
+    );
     installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S~Child', region: 'us-east-1' }]),
       getState: vi.fn().mockResolvedValue({ ...parentState, state: { ...parentState.state, stackName: 'S~Child' } }),
       loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
-        name === 'S~Child' ? childJournal : null
+        name === 'S~Child' ? { ...childJournal, segments: childSegments } : null
       ),
+      ...({ dropRollbackJournalSegments } as object),
     });
 
-    const err = (await rollbackCommand('S~Child', { ...baseOpts }).then(
-      () => new Error('expected a refusal'),
-      (e: unknown) => e
-    )) as Error;
-    expect(err.message).toMatch(/Re-deploy the top-level stack/);
-    expect(err.message).not.toMatch(/Roll back the parent stack/);
+    await expect(rollbackCommand('S~Child', { ...baseOpts })).rejects.toThrow(/Nothing to roll back/);
+    expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
+    expect(childSegments).toEqual([]);
+  });
+
+  it('an orphaned pending record no longer blocks the child OWN failure segment', async () => {
+    replayProvider.delete.mockClear();
+    let childSegments: unknown[] = [
+      { runId: 'rGone', timestamp: 1, reason: 'nested-pending-parent', initialDeploy: false, operations: [] },
+      {
+        runId: 'rMine',
+        timestamp: 2,
+        reason: 'no-rollback-failure',
+        initialDeploy: false,
+        operations: [{ logicalId: 'Bucket', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'b' }],
+      },
+    ];
+    const dropRollbackJournalSegments = vi.fn(
+      async (_n: string, _r: string, drop: (s: { reason: string }) => boolean) => {
+        const before = childSegments.length;
+        childSegments = childSegments.filter((seg) => !drop(seg as { reason: string }));
+        return before - childSegments.length;
+      }
+    );
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S~Child', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          ...parentState.state,
+          stackName: 'S~Child',
+          resources: { Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] } },
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S~Child'
+          ? { ...childJournal, segments: childSegments }
+          : // The parent's journal exists but no longer holds the orphan's run.
+            parentJournalWith([{ runId: 'rOther', timestamp: 3, reason: 'no-rollback-failure', initialDeploy: false, operations: [] }])
+      ),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+
+    await expect(rollbackCommand('S~Child', { ...baseOpts })).resolves.toBeUndefined();
+    expect(replayProvider.delete).toHaveBeenCalled();
+    expect(dropRollbackJournalSegments.mock.calls[0]![0]).toBe('S~Child');
+  });
+
+  it('a skipped op in a nested child replay is counted (exit 2) and settles nothing', async () => {
+    const { getNestedRevertRun } = await import('../../../../src/deployment/nested-child-journal.js');
+    replayProvider.update.mockReset();
+    replayProvider.update.mockImplementation(async () => {
+      getNestedRevertRun()!.warnings += 1;
+      return {
+        physicalId: 'arn:child',
+        wasReplaced: false,
+        outcome: 'partial',
+        reason: 'nested stack S~Child skipped 1 operation(s) of its revert',
+      };
+    });
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(0);
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? parentJournalWith([
+              { runId: 'r1', timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp('old')] },
+            ])
+          : childJournal
+      ),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+
+    await expect(rollbackCommand('S', { ...baseOpts })).rejects.toThrow(
+      /1 skipped\/unrecoverable operation/
+    );
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('a failed POP settles no child segment (the drop runs only after it)', async () => {
+    const { getNestedRevertRun } = await import('../../../../src/deployment/nested-child-journal.js');
+    replayProvider.update.mockReset();
+    replayProvider.update.mockImplementation(async (logicalId: string) => {
+      getNestedRevertRun()?.settled.set(logicalId, new Map());
+      return { physicalId: 'arn:child', wasReplaced: false };
+    });
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(1);
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? parentJournalWith([
+              { runId: 'r1', timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp('old')] },
+            ])
+          : childJournal
+      ),
+      popRollbackJournalSegment: vi.fn().mockRejectedValue(new Error('S3 down')),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+
+    await expect(rollbackCommand('S', { ...baseOpts })).rejects.toThrow();
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
   it('a nested row whose revert the replay SKIPPED settles no child segment', async () => {

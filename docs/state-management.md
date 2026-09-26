@@ -81,8 +81,9 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
       └── {Region}/
           ├── lock.json               # Exclusive lock information (region-scoped)
           ├── state.json              # Resource state (region-scoped)
-          └── rollback-journal.json   # Transient — present only between a failed
-                                      #   deploy and its `cdkd rollback`
+          └── rollback-journal.json   # Transient — between a failed deploy and its
+                                      #   `cdkd rollback`; for a nested stack, also
+                                      #   until its top-level deploy succeeds
 s3://{STATE_BUCKET}/cdkd-bootstrap/
   └── {Region}.json          # Asset-storage bootstrap marker
 s3://{STATE_BUCKET}/custom-resource-responses/
@@ -167,9 +168,14 @@ object is deleted on the next **successful deploy**, after a **clean
 automatic rollback** settles it to a failed-only segment instead of
 deleting it (`operations: []` plus the failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
-default deploy flow too. It carries
+default deploy flow too. A **nested stack** (`{Parent}~{Child}`) differs:
+its successful deploy appends a `nested-pending-parent` segment instead of
+deleting the journal, and the journal is deleted when its **top-level** stack's
+deploy succeeds; the parent's rollback replays it to revert the child (see
+[cdkd rollback](cli-rollback.md#known-limitations)). It carries
 resolved properties, the **same sensitivity class as `state.json`** (no new
-secret-exposure class). Every writer holds the stack lock, so no optimistic
+secret-exposure class). Every writer holds the lock of the stack whose journal
+it writes — for a nested child's journal, the child's lock — so no optimistic
 locking is needed.
 
 **Deleting the journal purges its noncurrent versions too**, on every one of

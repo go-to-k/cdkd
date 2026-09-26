@@ -20,7 +20,11 @@ import type { NestedStackProviderContext } from '../../../src/provisioning/neste
 import type { StackState } from '../../../src/types/state.js';
 
 const engines = vi.hoisted(() => ({ constructed: 0, deployed: [] as string[] }));
-const reverts = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, error: undefined as Error | undefined }));
+const reverts = vi.hoisted(() => ({
+  calls: [] as Array<Record<string, unknown>>,
+  error: undefined as Error | undefined,
+  warnings: 0,
+}));
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation(() => {
@@ -41,6 +45,7 @@ vi.mock('../../../src/deployment/nested-child-journal.js', async (importOriginal
     revertNestedChildFromJournal: vi.fn(async (args: Record<string, unknown>) => {
       reverts.calls.push(args);
       if (reverts.error) throw reverts.error;
+      return { warnings: reverts.warnings };
     }),
   };
 });
@@ -92,6 +97,7 @@ beforeEach(() => {
   engines.deployed.length = 0;
   reverts.calls.length = 0;
   reverts.error = undefined;
+  reverts.warnings = 0;
 });
 
 describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
@@ -110,7 +116,7 @@ describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
       logicalId: 'Child',
       childStackName: 'Parent~Child',
       region: 'us-east-1',
-      runId: 'run-9',
+      run: expect.objectContaining({ runId: 'run-9' }),
     });
     expect(result).toEqual({ physicalId: ARN, wasReplaced: false });
   });
@@ -176,7 +182,25 @@ describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
     ).rejects.toThrow(/Cannot revert nested stack/);
   });
 
-  it('a runId-less run is forwarded as undefined, not refused', async () => {
+  it('a child replay that SKIPPED ops makes the row PARTIAL, naming the child and the count', async () => {
+    reverts.warnings = 2;
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(context(true), () =>
+      withNestedRevertRun('run-9', () =>
+        provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, { replayingState: true })
+      )
+    );
+
+    expect(result).toEqual({
+      physicalId: ARN,
+      wasReplaced: false,
+      outcome: 'partial',
+      reason: 'nested stack Parent~Child skipped 2 operation(s) of its revert',
+    });
+  });
+
+  it('a runId-less run is forwarded to the journal replay (which refuses it)', async () => {
     const provider = new NestedStackProvider();
 
     await withNestedStackContext(context(true), () =>
@@ -185,6 +209,6 @@ describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
       )
     );
 
-    expect(reverts.calls[0]).toMatchObject({ runId: undefined });
+    expect(reverts.calls[0]).toMatchObject({ run: expect.objectContaining({ runId: undefined }) });
   });
 });

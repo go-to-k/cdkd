@@ -200,8 +200,8 @@ import {
   dropNestedChildJournals,
   dropSettledNestedJournals,
   nestedPendingSnapshot,
-  revertedNestedRowIds,
   withNestedRevertRun,
+  type SettledNestedRows,
 } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
@@ -3864,7 +3864,13 @@ export class DeployEngine {
             failedOnly
               ? `A previous deploy of '${stackName}' failed and was automatically rolled back. ` +
                   `The failed resource may be partially applied — revert it, or continue ` +
-                  `deploying to fix forward (a successful deploy clears this note).` +
+                  `deploying to fix forward (${
+                    // Issue #3754: a nested child's journal is cleared by its
+                    // TOP-LEVEL stack's success, not by its own.
+                    this.options.parentStackInfo
+                      ? 'a successful deploy of the top-level stack clears this note'
+                      : 'a successful deploy clears this note'
+                  }).` +
                   `\nRevert it with: ${
                     pasteableCommand('cdkd rollback', [
                       { value: stackName, hole: 'stack' },
@@ -5112,7 +5118,7 @@ export class DeployEngine {
       let rollbackOrphans: StackOrphanRecord[] = [];
       // The nested rows the automatic rollback actually reverted (issue
       // #3754): only their children's pending segments are settled with it.
-      let rollbackRevertedNested: string[] = [];
+      let rollbackSettledNested: SettledNestedRows = new Map();
 
       // On SIGINT, skip rollback — just save partial state, record a rollback
       // journal segment so the interrupted deploy is REVERTIBLE (not just
@@ -5184,7 +5190,7 @@ export class DeployEngine {
         // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
         // and neither can see `rollbackResult`.
         rollbackOrphans = rollbackResult.orphaned;
-        rollbackRevertedNested = rollbackResult.revertedNestedRows;
+        rollbackSettledNested = rollbackResult.settledNested;
       }
 
       // Save state after rollback (reflects rolled-back resource state).
@@ -5231,7 +5237,7 @@ export class DeployEngine {
         if (autoRollbackClean) {
           await this.settleNestedChildrenAfterCleanRollback(
             stackName,
-            rollbackRevertedNested,
+            rollbackSettledNested,
             await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
           );
         }
@@ -5276,7 +5282,7 @@ export class DeployEngine {
           if (autoRollbackClean) {
             await this.settleNestedChildrenAfterCleanRollback(
               stackName,
-              rollbackRevertedNested,
+              rollbackSettledNested,
               await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
             );
           }
@@ -5587,27 +5593,25 @@ export class DeployEngine {
     warnings: number;
     orphaned: StackOrphanRecord[];
     /**
-     * Issue #3754: the nested-stack rows this replay actually REVERTED — an op
-     * that was skipped (already done, absent, mismatched) is not among them.
+     * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
+     * failure, no skip), with the grandchildren each completed. A row the
+     * replay skipped never reached the provider, so it is not among them.
      */
-    revertedNestedRows: string[];
+    settledNested: SettledNestedRows;
   }> {
     // Issue #3754: a nested-stack row reverted here replays its child's
     // journal segments for THIS run, which `NestedStackProvider` reads from
-    // the scope.
+    // the scope, and reports back into it.
     const runId = this.options.eventRecorder?.runId;
-    const mutated = new Set<string>();
-    const result = await withNestedRevertRun(runId, () =>
-      replayRollback(
+    const { result, run } = await withNestedRevertRun(runId, async (scope) => ({
+      result: await replayRollback(
         completedOperations,
         stateResources,
         stackName,
-        this.rollbackExecutorContext(previousState),
-        // `afterOp` fires only once an op has CHANGED something, so a row the
-        // replay skipped (already done, mismatched) never counts as reverted.
-        { afterOp: (logicalId) => void mutated.add(logicalId) }
-      )
-    );
+        this.rollbackExecutorContext(previousState)
+      ),
+      run: scope,
+    }));
 
     // `orphaned` is relayed rather than persisted here: this method holds no
     // state save. Its caller merges it into the post-rollback record (issue
@@ -5616,11 +5620,11 @@ export class DeployEngine {
     // record closes.
     return {
       failures: result.failures,
-      warnings: result.warnings,
+      // A child replay's skips surface on its row as a `partial` outcome,
+      // which the executor does not count; the scope does.
+      warnings: result.warnings + run.warnings,
       orphaned: result.orphaned,
-      revertedNestedRows: revertedNestedRowIds(
-        completedOperations.filter((op) => mutated.has(op.logicalId))
-      ),
+      settledNested: run.settled,
     };
   }
 
@@ -5659,6 +5663,7 @@ export class DeployEngine {
       this.deleteRollbackJournalBestEffort(stackName),
       dropNestedChildJournals({
         stateBackend: this.stateBackend,
+        lockManager: this.lockManager,
         parentStackName: stackName,
         region: this.stackRegion,
         resources: finalResources,
@@ -5762,15 +5767,16 @@ export class DeployEngine {
    */
   private async settleNestedChildrenAfterCleanRollback(
     stackName: string,
-    revertedNestedRows: string[],
+    settledNested: SettledNestedRows,
     settled: boolean
   ): Promise<void> {
     if (!settled) return;
     await dropSettledNestedJournals({
       stateBackend: this.stateBackend,
+      lockManager: this.lockManager,
       parentStackName: stackName,
       region: this.stackRegion,
-      revertedLogicalIds: revertedNestedRows,
+      settled: settledNested,
       runId: this.options.eventRecorder?.runId,
       logger: this.logger,
     });
