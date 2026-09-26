@@ -538,6 +538,8 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
     );
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    // A plain name renders bare: `displayStackName` quotes only a non-plain one.
+    expect(String(readlineQuestion.mock.calls[0]?.[0])).toContain('destroy stack TestStack and');
     expect(readlineClose).toHaveBeenCalled();
     expect(result.cancelled).toBe(false);
     expect(result.deletedCount).toBe(1);
