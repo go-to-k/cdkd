@@ -140,6 +140,43 @@ const REF_READ = '<Ref>';
 /**
  * Diff calculator for comparing desired state (template) with current state
  */
+/**
+ * Does `value` hold an intrinsic (`Ref` / `Fn::*`, a single-key object) at any
+ * depth? The shape `create-only-properties.ts` treats as unresolved.
+ */
+function containsIntrinsic(value: unknown, seen: Set<object> = new Set()): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (containsIntrinsicAtTop(value)) return true;
+  return Object.values(value).some((child) => containsIntrinsic(child, seen));
+}
+
+/**
+ * Does the template value under the nested createOnly `segments` hold an
+ * intrinsic (go-to-k/cdkd#3803)? An intrinsic met ON the way down, or a `*`
+ * segment, counts: what it produces may land at the path. A missing branch or
+ * a scalar does not: nothing there can carry a moving value.
+ */
+function subPathHoldsIntrinsic(value: unknown, segments: readonly string[]): boolean {
+  let current: unknown = value;
+  for (const segment of segments) {
+    if (current === null || typeof current !== 'object') return false;
+    if (containsIntrinsicAtTop(current)) return true;
+    if (segment === '*' || Array.isArray(current)) return containsIntrinsic(current);
+    current = Object.hasOwn(current, segment)
+      ? (current as Record<string, unknown>)[segment]
+      : undefined;
+  }
+  return containsIntrinsic(current);
+}
+
+function containsIntrinsicAtTop(value: object): boolean {
+  if (Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
+}
+
 export class DiffCalculator {
   private logger = getLogger().child('DiffCalculator');
   private replacementRules = new ReplacementRulesRegistry();
@@ -553,13 +590,18 @@ export class DiffCalculator {
     // decides whether another round is needed. It skips a path already
     // present, so the loop ends at the latest once every referencing property
     // carries a change.
+    // The schema createOnly paths both promotion passes consult for a type the
+    // registry does not classify (go-to-k/cdkd#3803), loaded once here because
+    // the passes are synchronous.
+    const syntheticCreateOnlyPaths = await this.loadSyntheticCreateOnlyPaths(changes);
     do {
-      this.promoteReplacementDependents(changes, desiredTemplate);
+      this.promoteReplacementDependents(changes, desiredTemplate, syntheticCreateOnlyPaths);
     } while (
       this.promoteInPlaceAttributeDependents(
         changes,
         desiredTemplate,
         rawGetAttRefs,
+        syntheticCreateOnlyPaths,
         freshParameters
       )
     );
@@ -570,6 +612,70 @@ export class DiffCalculator {
     );
 
     return changes;
+  }
+
+  /**
+   * The CFn-schema createOnly paths for every resource type a promotion pass
+   * could need them for (go-to-k/cdkd#3803): a NO_CHANGE / UPDATE resource
+   * with a property the registry does not classify whose template value holds
+   * an intrinsic (only such a property can read a value that moves). The
+   * lookups are the ordinary diff's own (`getCreateOnlyPropertyPaths`), which
+   * never throw, cache per type, and short-circuit schema-less types.
+   */
+  private async loadSyntheticCreateOnlyPaths(
+    changes: Map<string, ResourceChange>
+  ): Promise<Map<string, ReadonlyArray<readonly string[]>>> {
+    const types = new Set<string>();
+    for (const change of changes.values()) {
+      if (change.changeType !== 'NO_CHANGE' && change.changeType !== 'UPDATE') continue;
+      if (types.has(change.resourceType)) continue;
+      for (const [key, value] of Object.entries(change.desiredProperties ?? {})) {
+        if (this.replacementRules.isClassified(change.resourceType, key)) continue;
+        if (!containsIntrinsic(value)) continue;
+        types.add(change.resourceType);
+        break;
+      }
+    }
+    const loaded = new Map<string, ReadonlyArray<readonly string[]>>();
+    await Promise.all(
+      [...types].map(async (type) => {
+        loaded.set(type, await getCreateOnlyPropertyPaths(type));
+      })
+    );
+    return loaded;
+  }
+
+  /**
+   * The `requiresReplacement` of a SYNTHETIC change (a promoted reader's
+   * referencing property), which is a ceiling the engine may lower once it has
+   * resolved the value (go-to-k/cdkd#3662).
+   *
+   * The registry answers first, with `undefined` old / new values (see the
+   * replacement pass for why). Where the registry has no opinion on the
+   * property, the CFn schema's createOnly paths decide, as in the ordinary
+   * diff (go-to-k/cdkd#3803):
+   *  - a whole-property path (`['Description']`) is a replacement;
+   *  - a NESTED path counts only when the template value under it holds an
+   *    intrinsic, since only a read there can carry the moving value. A
+   *    reference in a mutable sibling of a create-only sub-path leaves the
+   *    reader updatable in place, as CloudFormation would.
+   */
+  private syntheticRequiresReplacement(
+    resourceType: string,
+    propKey: string,
+    desiredValue: unknown,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
+  ): boolean {
+    if (this.replacementRules.requiresReplacement(resourceType, propKey, undefined, undefined)) {
+      return true;
+    }
+    if (this.replacementRules.isClassified(resourceType, propKey)) return false;
+    for (const path of syntheticCreateOnlyPaths.get(resourceType) ?? []) {
+      if (path[0] !== propKey) continue;
+      if (path.length === 1) return true;
+      if (subPathHoldsIntrinsic(desiredValue, path.slice(1))) return true;
+    }
+    return false;
   }
 
   /**
@@ -604,7 +710,8 @@ export class DiffCalculator {
    */
   private promoteReplacementDependents(
     changes: Map<string, ResourceChange>,
-    desiredTemplate: CloudFormationTemplate
+    desiredTemplate: CloudFormationTemplate,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
   ): void {
     // Seed queue: resources whose computed diff already requires replacement.
     const queue: string[] = [];
@@ -684,11 +791,13 @@ export class DiffCalculator {
             // on the property NAME alone and still fire correctly (the
             // immutable-property case this propagation cares about), while
             // conditional rules see no phantom delta and don't over-promote.
-            requiresReplacement: this.replacementRules.requiresReplacement(
+            // A type the registry does not classify falls back to the CFn
+            // schema's createOnly paths (go-to-k/cdkd#3803).
+            requiresReplacement: this.syntheticRequiresReplacement(
               change.resourceType,
               propKey,
-              undefined,
-              undefined
+              newValue,
+              syntheticCreateOnlyPaths
             ),
           });
         }
@@ -779,6 +888,7 @@ export class DiffCalculator {
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>,
     freshParameters?: ReadonlySet<string>
   ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
@@ -911,12 +1021,13 @@ export class DiffCalculator {
           // resolved value turns out equal to the record, which for arms 3 and
           // 4 is the common case (the output or the handler's `Data` did not
           // move) and which a same-deploy edit elsewhere on the reader must not
-          // turn into a destroy + recreate.
-          requiresReplacement: this.replacementRules.requiresReplacement(
+          // turn into a destroy + recreate. A type the registry does not
+          // classify falls back to the CFn schema (go-to-k/cdkd#3803).
+          requiresReplacement: this.syntheticRequiresReplacement(
             change.resourceType,
             propKey,
-            undefined,
-            undefined
+            change.desiredProperties?.[propKey],
+            syntheticCreateOnlyPaths
           ),
           inPlacePropagated: true,
         });

@@ -308,6 +308,168 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
   });
   /**
+   * go-to-k/cdkd#3803: a reader whose type is OUTSIDE the replacement registry
+   * gets its create-only ceiling from the CFn schema, and the engine's lowering
+   * keeps that from causing a needless replacement.
+   */
+  describe('a create-only reader outside the replacement registry', () => {
+    function policyTemplate(document: string): CloudFormationTemplate {
+      return {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::IAM::ManagedPolicy',
+            Properties: {
+              Description: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+              PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: document }] },
+            },
+          },
+        },
+      };
+    }
+
+    beforeEach(() => {
+      const state = priorState();
+      const recorded = {
+        Description: 'topic-a',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    });
+
+    it('is not replaced when the value did not move, and another property changed', async () => {
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s2'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is skipped when the value did not move and nothing else changed', async () => {
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is REPLACED when the value moved (it used to be sent to update())', async () => {
+      crReturns('topic-b');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      const creates = callsFor(provider.create, 'Reader');
+      expect(creates).toHaveLength(1);
+      expect((creates[0]![2] as Record<string, unknown>)['Description']).toBe('topic-b');
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+    });
+
+    describe('a stateful type (AWS::RDS::DBInstance.MasterUsername)', () => {
+      function dbTemplate(): CloudFormationTemplate {
+        return {
+          Resources: {
+            Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+            Reader: {
+              Type: 'AWS::RDS::DBInstance',
+              Properties: {
+                MasterUsername: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+                DBInstanceClass: 'db.t3.small',
+              },
+            },
+          },
+        };
+      }
+
+      beforeEach(() => {
+        const state = priorState();
+        const recorded = { MasterUsername: 'topic-a', DBInstanceClass: 'db.t3.micro' };
+        state.resources['Reader'] = {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: recorded,
+          observedProperties: recorded,
+          attributes: {},
+          dependencies: ['Cr'],
+        };
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      });
+
+      it('is updated in place, no STATEFUL_REPLACE_BLOCKED, when the value did not move', async () => {
+        crReturns('topic-a');
+
+        await makeEngine().deploy(STACK, dbTemplate());
+
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      });
+
+      it('stops at STATEFUL_REPLACE_BLOCKED when the value moved', async () => {
+        crReturns('topic-b');
+
+        const error = await makeEngine()
+          .deploy(STACK, dbTemplate())
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+
+        const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+        expect(cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+        expect(cause?.message).toContain('MasterUsername');
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      });
+    });
+
+    it('is not replaced when a fresh NoEcho value is confirmed on AWS (the #3729 readback)', async () => {
+      const state = priorState();
+      state.resources['Cr']!.attributes = { TopicName: '***' };
+      const recorded = {
+        Description: '***',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? {
+                physicalId,
+                wasReplaced: false,
+                attributes: { TopicName: 'noecho-description' },
+                noEchoAttributes: true,
+              }
+            : { physicalId, wasReplaced: false }
+        )
+      );
+      provider.readCurrentState.mockResolvedValue({ Description: 'noecho-description' });
+
+      await makeEngine({ captureObservedState: false }).deploy(STACK, policyTemplate('s1'));
+
+      expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+    });
+  });
+
+  /**
    * go-to-k/cdkd#3729: a create-only path holding a `NoEcho` value supplied in
    * THIS deploy. Its record is `***`, so the record cannot say whether the value
    * moved; the engine reads the reader back from AWS and lowers the ceiling
