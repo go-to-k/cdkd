@@ -2699,7 +2699,10 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
 
       await rollbackCommand('S', { ...baseOpts, ...(skip && { skipFinalSnapshot: true }) });
 
-      const destroyOptions = nestedCtx.last?.['destroyOptions'] as Record<string, unknown>;
+      // Read through a fresh binding: control-flow narrowing kept the reset
+      // above's `undefined` type on the hoisted holder.
+      const seen = nestedCtx as { last: Record<string, unknown> | undefined };
+      const destroyOptions = seen.last?.['destroyOptions'] as Record<string, unknown>;
       expect(destroyOptions['skipFinalSnapshot'] === true).toBe(skip);
     }
   });
