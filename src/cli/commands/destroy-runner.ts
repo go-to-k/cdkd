@@ -5,7 +5,7 @@ import {
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, displayStackName } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
@@ -745,7 +745,7 @@ export async function runDestroyForStack(
       // stack end, so the first Ctrl-C would produce no feedback at all.
       try {
         process.stderr.write(
-          `\nInterrupt received - finishing the state cleanup for ${stackName} ` +
+          `\nInterrupt received - finishing the state cleanup for ${displayStackName(stackName)} ` +
             `(press Ctrl-C again to force-quit)\n`
         );
       } catch {
@@ -840,7 +840,7 @@ export async function runDestroyForStack(
         // records would otherwise read `0 resource(s)`, which contradicts the
         // refusal it is explaining.
         throw new Error(
-          `Stack '${stackName}' (${regionForState}) was empty when this run started but ` +
+          `Stack ${displayStackName(stackName)} (${displaySafe(regionForState)}) was empty when this run started but ` +
             `now has ${recheckResources} resource(s) and ${recheckOrphans} rollback-orphaned ` +
             `resource(s) — another cdkd process wrote to it. Re-run the destroy to act on ` +
             `the current state.`
@@ -1048,7 +1048,7 @@ export async function runDestroyForStack(
     // confirmed the cascade), so a cascading destroy is unaffected.
     if (process.stdin.isTTY !== true) {
       throw new CdkdError(
-        `The destroy confirmation prompt for stack "${stackName}" cannot run in a ` +
+        `The destroy confirmation prompt for stack ${displayStackName(stackName)} cannot run in a ` +
           'non-interactive environment. Pass --yes / -y to confirm the destroy ' +
           '(cdkd destroy also accepts -f / --force), or run the command from a real ' +
           'terminal.',
@@ -1060,9 +1060,9 @@ export async function runDestroyForStack(
       output: process.stdout,
     });
     const prompt = ctx.removeProtection
-      ? `\nAbout to destroy ${resourceCount} resources from stack "${stackName}", ` +
+      ? `\nAbout to destroy ${resourceCount} resources from stack ${displayStackName(stackName)}, ` +
         `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
-      : `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `;
+      : `\nAre you sure you want to destroy stack ${displayStackName(stackName)} and delete all ${resourceCount} resources? (Y/n): `;
     const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();
@@ -1274,7 +1274,7 @@ export async function runDestroyForStack(
     // outside the `try` would leak the listener and the cross-region globals,
     // the same two leaks this fix closes everywhere else (same reasoning as
     // `renderer.start()` below).
-    logger.info(`\nAcquiring lock for stack ${stackName}...`);
+    logger.info(`\nAcquiring lock for stack ${displayStackName(stackName)}...`);
     // Check the boolean return (issue #2161): `acquireLock` returns `false`
     // WITHOUT throwing when a live foreign lock is held, and the discarding
     // call this replaced treated that as success — so `destroy` ran against a
@@ -1645,7 +1645,7 @@ export async function runDestroyForStack(
         // resource in state" behavior for users who haven't redeployed yet.
         if (shouldRetainResource(resource.deletionPolicy)) {
           logger.info(
-            `  ⊘ ${logicalId} (${resource.resourceType}) retained — DeletionPolicy: ${resource.deletionPolicy}`
+            `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
           );
           result.retainedCount++;
           ctx.eventRecorder?.record({
@@ -1857,7 +1857,7 @@ export async function runDestroyForStack(
                 );
                 renderer.printAbove(() => {
                   logger.warn(
-                    `${logicalId} (${resource.resourceType}) has been deleting for ${minutes}m — still waiting`
+                    `${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) has been deleting for ${minutes}m — still waiting`
                   );
                 });
               },

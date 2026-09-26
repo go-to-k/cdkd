@@ -76,13 +76,15 @@ reference dangling.
 
 | Prompt | Raised by | Skipped by |
 | --- | --- | --- |
-| Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy '<stack>'`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
+| Per-stack (`Are you sure you want to destroy stack X ...`) | `cdkd destroy '<stack>'`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
 | Per-stack, same prompt | `cdkd state destroy '<stack>'` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
 | Batch — one prompt for the whole batch, asked before anything is touched | `cdkd state destroy --all` | `-y` / `--yes` |
 
 Under `--remove-protection` the per-stack prompt names the protected resources
-(`About to destroy N resources from stack "X", REMOVING DELETION PROTECTION on
-K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`.
+(`About to destroy N resources from stack X, REMOVING DELETION PROTECTION on
+K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`. A
+stack name that is not a plain identifier is shown JSON-quoted with its control
+characters removed.
 
 Nested-stack children are destroyed as part of their parent's cascade and never
 prompt separately. `cdkd state destroy --all`'s per-stack prompts are skipped
