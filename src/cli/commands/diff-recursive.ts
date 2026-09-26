@@ -640,6 +640,13 @@ export interface StackDiffResult {
    * stack holds no orphan records or no preview was supplied.
    */
   unreadableOrphans: string[];
+  /**
+   * The template this diff ran against: condition-false rows pruned, as the
+   * deploy engine prunes them. A caller walking this node's resources after
+   * the diff reads THIS, not the raw template, or it treats a row the deploy
+   * DELETEs as live (go-to-k/cdkd#3815).
+   */
+  effectiveTemplate: CloudFormationTemplate;
 }
 
 /**
@@ -1429,6 +1436,7 @@ export async function computeStackDiff(
     blocking,
     unreadableOrphans,
     deployRefusals,
+    effectiveTemplate,
   };
 }
 
@@ -1765,6 +1773,7 @@ export async function buildDiffTree(args: {
     blocking,
     unreadableOrphans,
     deployRefusals: adoptedDeployRefusals,
+    effectiveTemplate,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
@@ -1775,7 +1784,7 @@ export async function buildDiffTree(args: {
     Object.keys(adoptedRecords).length > 0
       ? { ...state, resources: { ...state.resources, ...adoptedRecords } }
       : state;
-  const ccApiRoutes = collectCcApiRoutes(template, stateAfterAdoption, changes);
+  const ccApiRoutes = collectCcApiRoutes(effectiveTemplate, stateAfterAdoption, changes);
   const node: DiffTreeNode = {
     stackName,
     displayName,
@@ -1794,8 +1803,10 @@ export async function buildDiffTree(args: {
   if (!recursive) return node;
 
   // Template-present children, in template order (CREATE / UPDATE / present).
+  // A condition-false row is absent here, so a child still in state falls
+  // through to the state-only DELETE loop below.
   const templateChildIds = new Set<string>();
-  for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
+  for (const [logicalId, resource] of Object.entries(effectiveTemplate.Resources ?? {})) {
     if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     templateChildIds.add(logicalId);
     const childTemplatePath = nestedTemplates[logicalId];
@@ -1881,7 +1892,7 @@ export async function buildDiffTree(args: {
     // leaving the child preview degraded for a reason nothing prints.
     const childParameters = await resolveChildStackParameters(
       resource,
-      template,
+      effectiveTemplate,
       stateAfterAdoption,
       region,
       stackName,
