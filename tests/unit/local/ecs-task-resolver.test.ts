@@ -1969,6 +1969,90 @@ describe('custom-named cdkd asset repo classification (issue #1025)', () => {
     expect(r.containers[0]!.image.kind).toBe('cdk-asset');
   });
 
+  // Issue #1846: the host test behind the marker-named repo match used to be the
+  // case-sensitive substring `.dkr.ecr.`, so every FIPS / dual-stack form and an
+  // upper-cased host missed the local asset path and fell through to an ECR pull.
+  describe('every ECR host form reaches the marker-named repo match (issue #1846)', () => {
+    it.each([
+      ['FIPS', '123456789012.dkr.ecr-fips.us-east-1.amazonaws.com'],
+      ['dual-stack', '123456789012.dkr-ecr.us-east-1.on.aws'],
+      ['dual-stack FIPS', '123456789012.dkr-ecr-fips.us-gov-west-1.on.aws'],
+      ['upper-cased plain', '123456789012.DKR.ECR.US-EAST-1.AMAZONAWS.COM'],
+      ['China partition plain', '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn'],
+    ])('classifies the %s host form as cdk-asset with the marker context', (_label, host) => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({ image: `${host}/my-custom-repo:abc1234567` }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], { cdkAssetContainerRepo: 'my-custom-repo' });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('cdk-asset');
+      if (img.kind === 'cdk-asset') expect(img.assetHash).toBe('abc1234567');
+      expect(detectEcsImageResolutionNeeds(stack).needsAssetRepoMarker).toBe(true);
+    });
+
+    it('keeps tolerating an unresolved dual-stack placeholder host', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({
+          image: {
+            'Fn::Sub': '${AWS::AccountId}.dkr-ecr.${AWS::Region}.on.aws/my-custom-repo:abcdef1234567890',
+          },
+        }),
+      });
+      expect(detectEcsImageResolutionNeeds(stack).needsAssetRepoMarker).toBe(true);
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: pseudo,
+        cdkAssetContainerRepo: 'my-custom-repo',
+      });
+      expect(r.containers[0]!.image).toEqual({ kind: 'cdk-asset', assetHash: 'abcdef1234567890' });
+    });
+
+    it('classifies a dual-stack RepositoryUri from state through the second site (classifyResolvedImage)', () => {
+      const stack = buildStack('S1', {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] } }),
+      });
+      const stateResources: Record<string, ResourceState> = {
+        MyRepo: {
+          physicalId: 'my-custom-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: { RepositoryUri: '123456789012.dkr-ecr.us-east-1.on.aws/my-custom-repo' },
+          dependencies: [],
+        },
+      };
+      const withMarker = resolveEcsTaskTarget('TD', [stack], {
+        stateResources,
+        cdkAssetContainerRepo: 'my-custom-repo',
+      });
+      expect(withMarker.containers[0]!.image.kind).toBe('cdk-asset');
+      const withoutMarker = resolveEcsTaskTarget('TD', [stack], { stateResources });
+      expect(withoutMarker.containers[0]!.image).toMatchObject({ kind: 'ecr', region: 'us-east-1' });
+    });
+
+    it('still pulls a FIPS host as ecr when the repo is not the marker-named one', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({
+          image: '123456789012.dkr.ecr-fips.us-east-1.amazonaws.com/my-custom-repo:abc1234567',
+        }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], { cdkAssetContainerRepo: 'some-other-repo' });
+      expect(r.containers[0]!.image).toMatchObject({ kind: 'ecr', region: 'us-east-1' });
+    });
+
+    it.each([
+      ['a label glued to a longer label', '123456789012.xdkr-ecr.us-east-1.on.aws'],
+      ['an underscore spelling', '123456789012.dkr_ecr.us-east-1.amazonaws.com'],
+      ['a non-ECR registry', 'registry.example.com'],
+    ])('does NOT treat %s as an ECR host', (_label, host) => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({ image: `${host}/my-custom-repo:abc1234567` }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], { cdkAssetContainerRepo: 'my-custom-repo' });
+      expect(r.containers[0]!.image.kind).toBe('public');
+      expect(detectEcsImageResolutionNeeds(stack).needsAssetRepoMarker).toBe(false);
+    });
+  });
+
   describe('detectEcsImageResolutionNeeds.needsAssetRepoMarker', () => {
     it('flags a non-conventional ECR image (concrete host)', () => {
       const stack = buildStack('S1', {

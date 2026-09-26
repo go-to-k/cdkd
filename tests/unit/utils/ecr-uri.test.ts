@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   ECR_REGISTRY_HOST_FORMS,
+  hasEcrRegistryHostLabels,
   looksLikeEcrHostWithForeignSuffix,
   parseEcrRegistryHost,
 } from '../../../src/utils/ecr-uri.js';
@@ -630,5 +631,42 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
     ])('%s', (_label, imageUri) => {
       expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: false });
     });
+  });
+});
+
+describe('hasEcrRegistryHostLabels (issue #1846)', () => {
+  // Driven off the table, so a row added there is covered here without an edit.
+  it.each(ECR_REGISTRY_HOST_FORMS.map((form) => [form.labels]))(
+    'accepts the %s label run in a concrete, upper-cased and placeholder host',
+    (labels) => {
+      const suffix = labels.startsWith('dkr-ecr') ? 'on.aws' : 'amazonaws.com';
+      expect(hasEcrRegistryHostLabels(`123456789012.${labels}.us-east-1.${suffix}`)).toBe(true);
+      expect(
+        hasEcrRegistryHostLabels(`123456789012.${labels.toUpperCase()}.US-EAST-1.${suffix}`)
+      ).toBe(true);
+      expect(
+        hasEcrRegistryHostLabels('${AWS::AccountId}.' + labels + '.${AWS::Region}.${AWS::URLSuffix}')
+      ).toBe(true);
+    }
+  );
+
+  it.each([
+    ['China partition plain form', '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn'],
+    ['mixed-case FIPS labels', '123456789012.Dkr.Ecr-Fips.us-gov-west-1.amazonaws.com'],
+  ])('accepts a %s', (_label, host) => {
+    expect(hasEcrRegistryHostLabels(host)).toBe(true);
+  });
+
+  it.each([
+    ['a Docker Hub host', 'docker.io'],
+    ['the public ECR gallery', 'public.ecr.aws'],
+    ['labels without a leading dot', '123456789012dkr.ecr.us-east-1.amazonaws.com'],
+    ['labels glued to a longer label', '123456789012.xdkr-ecr.us-east-1.on.aws'],
+    ['labels without a trailing dot', '123456789012.dkr.ecrfips.us-east-1.amazonaws.com'],
+    ['an underscore spelling', '123456789012.dkr_ecr.us-east-1.amazonaws.com'],
+    // The `i` flag without `u` does not fold U+212A (Kelvin sign) onto `k`.
+    ['a Kelvin-sign label', '123456789012.d\u212Ar.ecr.us-east-1.amazonaws.com'],
+  ])('refuses %s', (_label, host) => {
+    expect(hasEcrRegistryHostLabels(host)).toBe(false);
   });
 });
