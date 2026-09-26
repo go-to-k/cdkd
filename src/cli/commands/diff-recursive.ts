@@ -2511,7 +2511,17 @@ export function renderChangeLines(
         );
         if (change.propertyChanges && change.propertyChanges.length > 0) {
           for (const propChange of change.propertyChanges) {
-            const requiresReplace = propChange.requiresReplacement ? ' [requires replacement]' : '';
+            // A synthetic change's `requiresReplacement` is a CEILING the deploy
+            // lowers when the resolved value did not move (go-to-k/cdkd#3662,
+            // #3803), so the preview must not state it as a verdict.
+            const isCeiling =
+              propChange.requiresReplacement &&
+              (propChange.inPlacePropagated === true || propChange.replacementPropagated === true);
+            const requiresReplace = isCeiling
+              ? ' [may require replacement]'
+              : propChange.requiresReplacement
+                ? ' [requires replacement]'
+                : '';
             // Issue #807: a propagated change shows old=<resolved value> /
             // new=<unresolved intrinsic> because the property's template
             // value did not change — only the physical ID / ARN it

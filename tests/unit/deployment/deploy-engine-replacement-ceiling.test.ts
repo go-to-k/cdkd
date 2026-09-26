@@ -464,6 +464,48 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
     });
 
+    it('reads an equal create-only object recorded in another key order as unmoved', async () => {
+      // `KeySchema` is create-only on a stateful table. The record spells each
+      // element's keys in the reverse order of the template: equal values, so
+      // no replacement (and no STATEFUL_REPLACE_BLOCKED).
+      const state = priorState();
+      const recorded = {
+        TableName: 'orders',
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [{ KeyType: 'HASH', AttributeName: 'topic-a' }],
+      };
+      state.resources['Reader'] = {
+        physicalId: 'orders',
+        resourceType: 'AWS::DynamoDB::Table',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::DynamoDB::Table',
+            Properties: {
+              TableName: 'orders',
+              BillingMode: 'PROVISIONED',
+              KeySchema: [
+                { AttributeName: { 'Fn::GetAtt': ['Cr', 'TopicName'] }, KeyType: 'HASH' },
+              ],
+            },
+          },
+        },
+      });
+
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+    });
+
     describe('a stateful type (AWS::RDS::DBInstance.MasterUsername)', () => {
       function dbTemplate(): CloudFormationTemplate {
         return {
@@ -610,7 +652,8 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       expect(creates).toHaveLength(1);
       expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(SECRET);
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
-      expect(debugLines()).toContain(
+      // At WARN: this is what turns the update into a replacement.
+      expect(logger['warn']!.mock.calls.map((c) => String(c[0]))).toContain(
         `Reader.TopicName carries a NoEcho value that AWS could not confirm unchanged (${reason}): replacement kept.`
       );
     }
@@ -919,6 +962,29 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
         expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
         expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
         expect(callsFor(provider.delete, 'Reader')).toHaveLength(0);
+      });
+
+      it('skips it when the record spells the same bag in another key order', async () => {
+        arrange('HASH', 'partition-key-secret');
+        const state = (
+          (await (stateBackend.getState as unknown as () => Promise<{ state: StackState }>)()) as {
+            state: StackState;
+          }
+        ).state;
+        state.resources['Reader']!.properties = {
+          KeySchema: [{ KeyType: 'HASH', AttributeName: '***' }],
+          BillingMode: 'PAY_PER_REQUEST',
+          TableName: 'orders',
+        };
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+
+        await run();
+
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+        expect(debugLines()).toContain(
+          'Skipping Reader: AWS already holds every NoEcho value it carries, and nothing else changed'
+        );
       });
 
       it('stops at STATEFUL_REPLACE_BLOCKED when AWS holds a different value at the masked leaf', async () => {

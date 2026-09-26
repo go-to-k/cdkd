@@ -15,6 +15,7 @@ import {
   createOnlyChangeRequiresReplacement,
   isIntrinsicShaped,
 } from '../provisioning/create-only-properties.js';
+import { getTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
 import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
@@ -653,22 +654,43 @@ export class DiffCalculator {
       }
     }
 
-    const types = new Set<string>();
+    // Per type, the registry-unclassified properties holding an intrinsic.
+    const candidateKeys = new Map<string, Set<string>>();
     for (const logicalId of reached) {
       const change = changes.get(logicalId);
       if (!change) continue;
       if (change.changeType !== 'NO_CHANGE' && change.changeType !== 'UPDATE') continue;
-      if (types.has(change.resourceType)) continue;
       for (const [key, value] of Object.entries(change.desiredProperties ?? {})) {
         if (this.replacementRules.isClassified(change.resourceType, key)) continue;
         if (!containsIntrinsic(value)) continue;
-        types.add(change.resourceType);
-        break;
+        let keys = candidateKeys.get(change.resourceType);
+        if (!keys) {
+          keys = new Set();
+          candidateKeys.set(change.resourceType, keys);
+        }
+        keys.add(key);
       }
     }
+    const types = candidateKeys.keys();
     await Promise.all(
       [...types].map(async (type) => {
-        loaded.set(type, await getCreateOnlyPropertyPaths(type));
+        const paths = await getCreateOnlyPropertyPaths(type);
+        const keys = candidateKeys.get(type)!;
+        // A WRITE-ONLY create-only property raises no ceiling: AWS never
+        // returns it, so the engine could not confirm a fresh `NoEcho` value
+        // there and would replace a resource CloudFormation leaves alone
+        // (`AWS::DirectoryService::SimpleAD.Password`). Such a property stays
+        // an in-place update, as before. Asked only when a candidate property
+        // has a whole-property path, i.e. when a ceiling could be raised.
+        if (!paths.some((path) => path.length === 1 && keys.has(path[0]!))) {
+          loaded.set(type, paths);
+          return;
+        }
+        const writeOnly = await getTopLevelWriteOnlyProperties(type);
+        loaded.set(
+          type,
+          paths.filter((path) => !(path.length === 1 && writeOnly.has(path[0]!)))
+        );
       })
     );
     return loaded;
@@ -687,7 +709,8 @@ export class DiffCalculator {
    * lowers a ceiling by comparing the whole top-level value with the record, so
    * a nested ceiling would stand whenever a MUTABLE sibling moved and replace a
    * resource CloudFormation updates in place. A moved value under a nested
-   * create-only path stays an in-place update, as before.
+   * create-only path stays an in-place update, as before. So does a
+   * WRITE-ONLY create-only property, which the loader leaves out.
    */
   private syntheticRequiresReplacement(
     resourceType: string,

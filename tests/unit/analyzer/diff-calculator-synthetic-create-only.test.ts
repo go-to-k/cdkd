@@ -232,6 +232,71 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     expect(pc?.requiresReplacement).toBe(false);
   });
 
+  describe('a WRITE-ONLY create-only property raises no ceiling', () => {
+    // AWS never returns a write-only property, so the engine could not confirm
+    // a fresh NoEcho value there and would replace a resource CloudFormation
+    // leaves alone. The schema here is served by a successful DescribeType.
+    const SIMPLE_AD = 'AWS::DirectoryService::SimpleAD';
+
+    async function simpleAdDiff(): Promise<Map<string, { propertyChanges?: PropertyChange[] }>> {
+      mockCloudFormationSend.mockImplementation(((command: { input?: { TypeName?: string } }) =>
+        command.input?.TypeName === SIMPLE_AD
+          ? Promise.resolve({
+              Schema: JSON.stringify({
+                createOnlyProperties: ['/properties/Password', '/properties/Name'],
+                writeOnlyProperties: ['/properties/Password'],
+              }),
+            })
+          : Promise.reject(
+              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+                name: 'AccessDeniedException',
+                $metadata: { httpStatusCode: 403 },
+              })
+            )) as never);
+      try {
+        const state = crState();
+        state.resources['Ad'] = {
+          physicalId: 'd-1',
+          resourceType: SIMPLE_AD,
+          properties: { Password: 'text-a', Name: 'text-a', Size: 'Small' },
+        };
+        const template: CloudFormationTemplate = {
+          Resources: {
+            Cr: cr('b'),
+            Ad: {
+              Type: SIMPLE_AD,
+              Properties: {
+                Password: { 'Fn::GetAtt': ['Cr', 'Text'] },
+                Name: { 'Fn::GetAtt': ['Cr', 'Text'] },
+                Size: 'Small',
+              },
+            },
+          },
+        };
+        return await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+      } finally {
+        mockCloudFormationSend.mockReset();
+        mockCloudFormationSend.mockImplementation(() =>
+          Promise.reject(
+            Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+              name: 'AccessDeniedException',
+              $metadata: { httpStatusCode: 403 },
+            })
+          )
+        );
+      }
+    }
+
+    it('keeps the write-only Password in place, and still ceilings the readable Name (the control)', async () => {
+      const changes = await simpleAdDiff();
+
+      const password = changeOf(changes, 'Ad', 'Password');
+      expect(password?.inPlacePropagated).toBe(true);
+      expect(password?.requiresReplacement).toBe(false);
+      expect(changeOf(changes, 'Ad', 'Name')?.requiresReplacement).toBe(true);
+    });
+  });
+
   describe('a NESTED createOnly path (AWS::Glue::Connection ConnectionInput.Name)', () => {
     // The engine lowers a ceiling by comparing the WHOLE top-level value with
     // the record, so a nested ceiling would stand whenever a mutable sibling
