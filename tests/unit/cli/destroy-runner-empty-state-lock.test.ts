@@ -245,7 +245,7 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
   it('renders a planted stack name inert in the first-SIGINT notice (issue #3811)', async () => {
     // The stack name is an S3 key segment with no charset check, so the notice
     // written straight to stderr must not carry its control bytes.
-    const planted = 'Evil\x1b[2J\r\nStack\u2028\u202e';
+    const planted = 'Evil\x1b[2J\r\nStack\u2028\u202e\u200b';
     const h = makeCtx({ acquired: true, recheck: null });
     const writes: string[] = [];
     const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string) => {
@@ -257,13 +257,19 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
       return true;
     });
 
-    await runDestroyForStack(planted, { ...emptyState(), stackName: planted }, h.ctx);
-    writeSpy.mockRestore();
+    try {
+      await runDestroyForStack(planted, { ...emptyState(), stackName: planted }, h.ctx);
+    } finally {
+      writeSpy.mockRestore();
+    }
 
     const notice = writes.find((w) => w.includes('finishing the state cleanup'));
     expect(notice, 'the first-SIGINT notice was not written').toBeDefined();
     expect(notice).toContain('Evil');
-    for (const bad of ['\x1b', '\r', '\u2028', '\u202e']) expect(notice).not.toContain(bad);
+    // U+200B survives `displaySafe`, so it pins the `displayStackName` choice.
+    for (const bad of ['\x1b', '\r', '\u2028', '\u202e', '\u200b']) {
+      expect(notice).not.toContain(bad);
+    }
     // The only line breaks are the notice's own leading and trailing ones.
     expect(notice!.trim()).not.toContain('\n');
   });

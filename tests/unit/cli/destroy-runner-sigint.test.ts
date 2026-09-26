@@ -544,6 +544,37 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
     expect(mockProviderDelete).toHaveBeenCalledTimes(1);
   });
 
+  it('renders a planted stack name inert in both prompts and the refusal (issue #3811)', async () => {
+    // The name is an S3 key segment; the prompt is the line the operator
+    // approves the delete on, so a planted escape must not rewrite it.
+    // U+200B survives `displaySafe`, so it pins the `displayStackName` choice.
+    const planted = 'Evil\x1b[2J\r\nStack\u2028\u202e\u200b';
+    const bad = ['\x1b', '\r', '\n', '\u2028', '\u202e', '\u200b'];
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    for (const removeProtection of [false, true]) {
+      readlineQuestion.mockClear();
+      await runDestroyForStack(planted, makeState({ A: res() }), {
+        ...makeConfirmCtx(false),
+        removeProtection,
+      });
+      const prompt = String(readlineQuestion.mock.calls[0]?.[0]);
+      expect(prompt).toContain('"Evil [2J  Stack"');
+      // The prompt's own leading newline is the only one allowed.
+      for (const b of bad) expect(prompt.slice(1)).not.toContain(b);
+    }
+
+    setStdinIsTty(undefined);
+    const error = await runDestroyForStack(
+      planted,
+      makeState({ A: res() }),
+      makeConfirmCtx(false)
+    ).catch((e: unknown) => e);
+    const message = (error as Error).message;
+    expect(message).toContain('"Evil [2J  Stack"');
+    for (const b of bad) expect(message).not.toContain(b);
+  });
+
   it('a TTY user answering "n" still cancels, and destroys nothing', async () => {
     // The other half of the negative control: the guard must not have eaten
     // the DECLINE path on its way past. A refusal-shaped `cancelled` and a

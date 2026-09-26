@@ -83,18 +83,38 @@ describe('LiveRenderer', () => {
     const r = makeRenderer(stream);
     r.start();
     const planted = 'X\x1b[2J\r\nY\u2028\u202e';
-    withStackName(`S1${planted}`, () => r.addTask('A', `Deleting A${planted} (T${planted})`));
+    // U+200B survives `displaySafe`, so it pins `displayStackName` on the prefix.
+    withStackName(`S1${planted}\u200b`, () => r.addTask('A', `Deleting A${planted} (T${planted})`));
     withStackName('S2', () => r.addTask('B', 'Deleting B'));
     withStackName('S2', () => r.updateTaskLabel('B', `Deleting B${planted}`));
     const lastDraw = stream.chunks[stream.chunks.length - 1] ?? '';
     r.stop();
 
-    expect(lastDraw).toContain('[S1X');
+    expect(lastDraw).toContain('["S1X [2J  Y"]');
+    expect(lastDraw).not.toContain('\u200b');
     expect(lastDraw).toContain('Deleting AX');
     expect(lastDraw).toContain('Deleting BX');
     for (const bad of ['\x1b', '\r', '\u2028', '\u202e']) expect(lastDraw).not.toContain(bad);
     // One line per task: no planted line break survives.
     expect(lastDraw.split('\n').filter(Boolean)).toHaveLength(2);
+  });
+
+  it('draws ordinary labels and stack names byte-identically', () => {
+    const stream = new FakeStream();
+    const r = makeRenderer(stream);
+    r.start();
+    withStackName('Parent~Child', () => r.addTask('A', 'Deleting A (AWS::S3::Bucket) [CC API]'));
+    withStackName('Other', () => r.addTask('B', 'Creating B'));
+    withStackName('Other', () =>
+      r.updateTaskLabel('B', 'Creating B [taking longer than expected, 3m+]')
+    );
+    const lastDraw = stream.chunks[stream.chunks.length - 1] ?? '';
+    r.stop();
+
+    expect(lastDraw.replace(/\(\d+\.\ds\)/g, '(Ns)').replace(/^  \S /gm, '  * ')).toBe(
+      '  * [Parent~Child] Deleting A (AWS::S3::Bucket) [CC API] (Ns)\n' +
+        '  * [Other] Creating B [taking longer than expected, 3m+] (Ns)\n'
+    );
   });
 
   it('removeTask redraws without the removed label', () => {

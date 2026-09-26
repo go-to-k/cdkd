@@ -18,7 +18,7 @@
  */
 
 import { getCurrentStackName } from '../provisioning/resource-name.js';
-import { displaySafe } from './display-safe.js';
+import { displaySafe, displayStackName } from './display-safe.js';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const FRAME_INTERVAL_MS = 80;
@@ -182,7 +182,8 @@ export class LiveRenderer {
       // Sanitized here, where every caller's label and stack name converge:
       // on destroy both come from S3 state, and this is the redraw region,
       // where a planted cursor-movement escape best hides what is happening.
-      const prefix = showStackPrefix && task.stackName ? `[${displaySafe(task.stackName)}] ` : '';
+      const prefix =
+        showStackPrefix && task.stackName ? `[${displayStackName(task.stackName)}] ` : '';
       const raw = `  ${frame} ${prefix}${displaySafe(task.label)} (${elapsed}s)`;
       lines.push(this.truncate(raw, cols));
     }

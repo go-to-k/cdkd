@@ -1048,7 +1048,7 @@ export async function runDestroyForStack(
     // confirmed the cascade), so a cascading destroy is unaffected.
     if (process.stdin.isTTY !== true) {
       throw new CdkdError(
-        `The destroy confirmation prompt for stack "${stackName}" cannot run in a ` +
+        `The destroy confirmation prompt for stack ${displayStackName(stackName)} cannot run in a ` +
           'non-interactive environment. Pass --yes / -y to confirm the destroy ' +
           '(cdkd destroy also accepts -f / --force), or run the command from a real ' +
           'terminal.',
@@ -1060,9 +1060,9 @@ export async function runDestroyForStack(
       output: process.stdout,
     });
     const prompt = ctx.removeProtection
-      ? `\nAbout to destroy ${resourceCount} resources from stack "${stackName}", ` +
+      ? `\nAbout to destroy ${resourceCount} resources from stack ${displayStackName(stackName)}, ` +
         `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
-      : `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `;
+      : `\nAre you sure you want to destroy stack ${displayStackName(stackName)} and delete all ${resourceCount} resources? (Y/n): `;
     const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();
