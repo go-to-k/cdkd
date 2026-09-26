@@ -276,6 +276,9 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
     writeFileSync(join(bin, verb), '#!/bin/sh\nexit 0\n', 'utf8');
     chmodSync(join(bin, verb), 0o755);
   }
+  // Saved and restored rather than cleared, so a nested call leaves the
+  // outer one's isolation in place.
+  const outer = stubBin;
   stubBin = bin;
   try {
     for (const decoy of DECOYS) writeFileSync(join(dir, decoy), DECOY_CONTENT, 'utf8');
@@ -297,7 +300,7 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
     }
     return fn(dir);
   } finally {
-    stubBin = undefined;
+    stubBin = outer;
     rmSync(root, { recursive: true, force: true });
   }
 }

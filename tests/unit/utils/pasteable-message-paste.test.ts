@@ -312,6 +312,25 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     });
   });
 
+  it('a nested withPasteDir leaves the outer call isolated, even when the inner one throws', () => {
+    withPasteDir((outer) => {
+      expect(() =>
+        withPasteDir(() => {
+          throw new Error('inner failure');
+        })
+      ).toThrow('inner failure');
+      withPasteDir((inner) => {
+        expect(filesTouchedBy('true', inner)).toEqual([]);
+      });
+      // Still inside the outer isolation: the runner does not refuse, and the
+      // stub is still first on PATH for the outer directory.
+      expect(filesTouchedBy('true', outer)).toEqual([]);
+      expect(
+        filesTouchedBy('[ "$(type -P cdkd)" -ef "$HOME/../bin/cdkd" ] && touch OWNED', outer)
+      ).toEqual(['OWNED']);
+    });
+  });
+
   it('records what displayIdent costs in a pasted span — it is a DISPLAY boundary, not a shell one', () => {
     // `displayIdent` JSON-quotes, and JSON quotes stop neither COMMAND
     // SUBSTITUTION nor the parity flip. Inside a command that is a defect I

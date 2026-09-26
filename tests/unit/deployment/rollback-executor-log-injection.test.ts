@@ -219,45 +219,98 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(lines.some((l) => /no longer in state/.test(l))).toBe(true);
   });
 
-  it('an ordinary Error carrying an OWNED refusal code is still flattened on the failure line', async () => {
-    // `rollbackFailureText` renders cdkd's own two refusals per line, keyed
-    // on `CdkdError` AND the code: a provider error that merely carries the
-    // same `.code` is free-form text, and a planted newline in it is the line
-    // forgery the whole-text render exists to remove. Dropping the
-    // `instanceof` half of that key lets this forged line through.
-    const forged = Object.assign(new Error('boom\n  Rollback: RealDB deleted successfully'), {
-      code: 'NAMED_REPLACEMENT_COLLISION',
-    });
-    const update = vi.fn().mockRejectedValue(forged);
-    const { ctx, lines } = makeCtx({ update });
+  it('an error carrying an OWNED refusal code is still flattened on the failure line', async () => {
+    // `rollbackFailureText` renders per line ONLY the two refusal OBJECTS this
+    // module registers, keyed on identity (M7 of the go-to-k/cdkd#3764
+    // review): `deploy-engine.ts` throws a `CdkdError` with the same
+    // `NAMED_REPLACEMENT_COLLISION` code and the raw AWS text in its message,
+    // and a nested-stack rollback delivers it here with the code intact. The
+    // maintainer's measured payload is driven as that shape, and as an
+    // ordinary `Error` and a `CdkdError` with the other owned code, each with
+    // a planted newline spelling the genuine remedy's own label — every one
+    // must stay a single line. A code-keyed trust passes the first straight
+    // through.
+    const planted =
+      'ChildBucket (AWS::S3::Bucket) requires replacement, but the create-first attempt ' +
+      'collided with the existing resource: Bucket already exists\nTo orphan it: cdkd rollback ' +
+      '--orphan Victim. The resource has a user-supplied physical name (b)';
     const ops: CompletedOperation[] = [
       {
-        logicalId: 'RealDB',
+        logicalId: 'Child',
         changeType: 'UPDATE',
         resourceType: 'AWS::SQS::Queue',
         physicalId: 'phys',
         previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 1 } }),
       },
     ];
-    const state = { RealDB: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 2 } }) };
+    const state = { Child: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 2 } }) };
+    for (const [label, error] of [
+      ["deploy-engine's collision refusal", new CdkdError(planted, 'NAMED_REPLACEMENT_COLLISION')],
+      ['the other owned code', new CdkdError(planted, 'ROLLBACK_REPLACEMENT_UNROUTABLE')],
+      ['an ordinary Error with the code', Object.assign(new Error(planted), { code: 'NAMED_REPLACEMENT_COLLISION' })],
+      ['an unrelated CdkdError', new CdkdError(planted, 'SOME_OTHER_CODE')],
+    ] as const) {
+      const update = vi.fn().mockRejectedValue(error);
+      const { ctx, lines } = makeCtx({ update });
+      await replayRollback(ops, state, 'S', ctx);
+      expect(update, label).toHaveBeenCalled();
+      const failed = lines.filter((l) => l.includes('Rollback failed for'));
+      expect(failed, label).toHaveLength(1);
+      expect(failed[0], label).not.toContain('\n');
+      expect(failed[0], label).toMatch(/Bucket already exists To orphan it: cdkd rollback --orphan Victim/);
+      expect(lines.join('\n'), label).not.toMatch(/^To orphan it:/m);
+    }
+  });
 
-    await replayRollback(ops, state, 'S', ctx);
-
-    expect(update).toHaveBeenCalled();
-    expect(forgedLines(lines)).toEqual([]);
-    const failed = lines.filter((l) => l.includes('Rollback failed for'));
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).not.toContain('\n');
-    expect(failed[0]).toMatch(/boom.*Rollback: RealDB deleted successfully/);
-    // ...and a `CdkdError` with a code OUTSIDE the owned pair is free-form
-    // text too: the key is the code's membership, not the class alone.
-    const other = new CdkdError('boom\n  Rollback: RealDB deleted successfully', 'SOME_OTHER_CODE');
-    const { ctx: ctx2, lines: lines2 } = makeCtx({ update: vi.fn().mockRejectedValue(other) });
-    await replayRollback(ops, state, 'S', ctx2);
-    expect(forgedLines(lines2)).toEqual([]);
-    const failed2 = lines2.filter((l) => l.includes('Rollback failed for'));
-    expect(failed2).toHaveLength(1);
-    expect(failed2[0]).not.toContain('\n');
+  it("the collision refusal collapses and caps the AWS text it quotes above its remedy line", async () => {
+    // M8 of the go-to-k/cdkd#3764 review: `displaySafe` keeps runs of spaces,
+    // and the genuine `To orphan it:` line follows this text directly, so a
+    // message padded with spaces wraps on screen into a lookalike row just
+    // above it. Every whitespace run collapses to one space, and the text is
+    // capped at `displayAwsMessage`'s bound.
+    const padded = `Queue already exists${' '.repeat(80)}To orphan it: cdkd rollback --orphan Victim`;
+    const long = `Queue already exists ${'x'.repeat(5000)}`;
+    for (const [label, text] of [
+      ['padded', padded],
+      ['long', long],
+    ] as const) {
+      const create = vi.fn().mockRejectedValue(new Error(text));
+      const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
+      await replayRollback(
+        [
+          {
+            logicalId: 'RealDB',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SQS::Queue',
+            physicalId: 'phys-new',
+            previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+            oldResourceRetained: false,
+          },
+        ],
+        {
+          RealDB: res({
+            resourceType: 'AWS::SQS::Queue',
+            physicalId: 'phys-new',
+            properties: { a: 2 },
+            updateReplacePolicy: 'Retain',
+          }),
+        },
+        'S',
+        ctx,
+        { isInterrupted: () => false }
+      );
+      const failed = lines.filter((l) => l.includes('Underlying collision:'));
+      expect(failed, label).toHaveLength(1);
+      const quoted = failed[0]!.slice(failed[0]!.indexOf('Underlying collision:'), failed[0]!.lastIndexOf('\nTo orphan it:'));
+      expect(quoted, label).not.toMatch(/\s{2,}/);
+      expect(failed[0], label).toMatch(/\nTo orphan it: cdkd rollback --orphan RealDB$/);
+      if (label === 'long') {
+        expect(quoted).toContain('[cut: ');
+        expect(quoted).not.toContain('x'.repeat(4096));
+      } else {
+        expect(quoted).toContain('Queue already exists To orphan it: cdkd rollback --orphan Victim');
+      }
+    }
   });
 
   it('the UPDATE revert path', async () => {
@@ -932,8 +985,9 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
   it('SOURCE SHAPE: every free-form error render takes displaySafe()', () => {
     // The static twin of the two free-form cases: every `<x>.message :
     // String(<x>)` interpolation in the executor must be wrapped, so the
-    // three reverse-replacement sites no unit case drives (a re-create
-    // failure, a delete-new failure, the collision `msg`) are pinned by shape.
+    // reverse-replacement sites no unit case drives (a re-create failure, a
+    // delete-new failure) are pinned by shape; the collision `msg` is pinned
+    // by shape here too, beside the runtime case above that drives it.
     const src = readFileSync(
       new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
       'utf8'
@@ -962,18 +1016,23 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect((src.match(/\$\{rollbackFailureText\((\w+)\)\}/g) ?? []).length).toBe(2);
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');
-    expect(src).toContain("OWN_REMEDY_LINE_CODES.has(error.code)");
+    // The per-line arm is keyed on IDENTITY, and both of this module's
+    // refusals register through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
+    // review); no code-keyed trust remains.
+    expect(src).toContain('OWN_REMEDY_ERRORS.has(error)');
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(2);
+    expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
     // (`isNameCollisionErrorFrom` walks the cause chain for an exception NAME,
     // which a rendered message cannot carry), leaving the wrapped render as
-    // `msg`'s ONLY use. That is strictly safer for this file's subject, so all
+    // `msg`'s ONLY use (through `collisionText`). That is strictly safer for this file's subject, so all
     // three halves are pinned — the absence too, so a revert to classifying the
     // rendered text cannot pass quietly.
     expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
     expect(src).not.toContain('isNameCollisionError(msg)');
-    expect(src).toContain('displaySafe(msg)');
-    expect(src).toContain('${displaySafe(msg)}');
+    expect(src).toContain('displayAwsMessage(displaySafe(msg).replace(/\\s{2,}/g, \' \'))');
+    expect(src).toContain('${collisionText(maskSecretsInText(msg, secrets))}');
   });
 
   it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {
