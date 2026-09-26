@@ -127,6 +127,12 @@ These are surfaced in the plan rather than applied silently.
   instance) need those objects to still exist, which is what `cdkd gc`'s
   retention window protects.
 - A rolled-back CREATE's **`DeletionPolicy`** governs its delete — see below.
+- A **nested stack** row is reverted by replaying the child stack's own
+  journal segments recorded under the same deploy run, so it works without
+  the CDK app. A nested child whose journal holds no segment for that run
+  (written by an older cdkd, or removed by a direct `cdkd rollback` of the
+  child) fails the row, and the journal is kept for a re-run. The child's
+  own failed operation is not reverted by `--revert-failed` on the parent.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The

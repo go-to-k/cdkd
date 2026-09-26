@@ -575,7 +575,10 @@ unsupported), so there's nothing to migrate from.
    value as a real AWS ARN will fail with `Invalid ARN partition:
    cdkd-local`. This is intentional — the cdkd-local-prefixed value
    should never reach an AWS API.
-2. **No rollback cascade.** A child-resource failure leaves the child's
+2. **No rollback cascade.** (Partly superseded by
+   [#3754](https://github.com/go-to-k/cdkd/issues/3754): when the PARENT
+   fails after a child deployed, the parent's rollback reverts the child by
+   replaying the child's own journal for that run.) A child-resource failure leaves the child's
    already-completed resources in place (per-resource state save).
    The user re-runs `cdkd deploy` to converge. Documented under
    "Known Limitations" in AGENTS.md.
