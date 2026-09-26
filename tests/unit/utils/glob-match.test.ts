@@ -13,6 +13,7 @@
  *   says why).
  */
 import { describe, it, expect } from 'vite-plus/test';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 import { globMatches } from '../../../src/utils/glob-match.js';
 import { PATHOLOGICAL_PATTERN, REGEXP_REFUSED, withoutRegExp } from '../_without-regexp.js';
@@ -60,7 +61,9 @@ describe('globMatches', () => {
     expect(subjects.length).toBe(1365);
     expect(matched).toBeGreaterThan(10_000);
     expect(refused).toBeGreaterThan(1_000_000);
-  });
+    // ~1.86M comparisons: 1.3s alone, 5.7s once in a contended full suite, so
+    // not under Vitest's 5s default (go-to-k/cdkd#3607).
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it.each([
     // [pattern, subject the old expansion READ AS REGEX, literal subject]

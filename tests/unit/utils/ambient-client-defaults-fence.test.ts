@@ -42,6 +42,7 @@ import {
   sdkClientIdentifiers,
   sdkClientNamespaces,
 } from '../../../scripts/check-aws-client-defaults.ts';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -293,12 +294,23 @@ describe('awsClientDefaults()-only client construction fence (#3588)', () => {
       for (const file of Object.keys(ALLOWED)) expect(bareFiles, file).toContain(file);
     });
 
+    // The two probes below swap ONE file's text. They reuse the tree walk above
+    // and reclassify only that file, rather than walking all of `src/` again per
+    // case (go-to-k/cdkd#3607): the walk is what ran into Vitest's 5 s default
+    // whenever another suite shared the machine. Equivalent by construction —
+    // `scanSrc({ file, text })` yields the same sites for every other file,
+    // since `classifySites` reads nothing but its own (file, text).
+    const withOverride = (file: string, text: string): Site[] => [
+      ...scan.filter((site) => site.file !== file),
+      ...classifySites(file, text),
+    ];
+
     it('reports a routed REAL site reverted to awsClientDefaults()', () => {
       const file = 'src/provisioning/providers/glue-provider.ts';
       const original = readFileSync(join(repoRoot, file), 'utf8');
       const reverted = original.replace('...ambientClientDefaults(),', '...awsClientDefaults(),');
       expect(reverted, 'the anchor moved — re-point this probe').not.toBe(original);
-      const { unexplained } = violations(scanSrc({ file, text: reverted }));
+      const { unexplained } = violations(withOverride(file, reverted));
       expect(unexplained.map((entry) => entry.split(':')[0])).toEqual([file]);
     });
 
@@ -310,7 +322,35 @@ describe('awsClientDefaults()-only client construction fence (#3588)', () => {
         '...awsClientDefaults()'
       );
       expect(reverted, 'the anchor moved — re-point this probe').not.toBe(original);
-      expect(violations(scanSrc({ file, text: reverted })).unexplained).toHaveLength(1);
+      expect(violations(withOverride(file, reverted)).unexplained).toHaveLength(1);
     });
+
+    it('the one-file override agrees with a full re-walk of that override', () => {
+      // Pins that `withOverride` yields exactly what these probes computed before
+      // go-to-k/cdkd#3607 — a full `scanSrc` walk carrying the same override —
+      // so a later `scanSrc` that carries state ACROSS files, which the one-file
+      // shortcut cannot see, turns this red. It does NOT pin that `classifySites`
+      // reads only its arguments: both paths read the same files from disk, so a
+      // `classifySites` that read another file would agree here too. That half
+      // rests on its code, which takes (file, text) and touches nothing else.
+      const file = 'src/utils/role-arn.ts';
+      const original = readFileSync(join(repoRoot, file), 'utf8');
+      const reverted = original.replace(
+        '...clientDefaultsFor(sourceConfig)',
+        '...awsClientDefaults()'
+      );
+      expect(reverted, 'the anchor moved — re-point this probe').not.toBe(original);
+      const key = (site: Site): string => `${site.file}:${site.line}:${site.verdict}`;
+      // The override must reach the result, or the comparison below is between
+      // two unmodified walks.
+      expect(
+        withOverride(file, reverted).filter(
+          (site) => site.file === file && site.verdict === 'bare-defaults'
+        )
+      ).toHaveLength(1);
+      expect(withOverride(file, reverted).map(key).sort()).toEqual(
+        scanSrc({ file, text: reverted }).map(key).sort()
+      );
+    }, CONTENDED_CASE_TIMEOUT_MS);
   });
 });
