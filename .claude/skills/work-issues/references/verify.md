@@ -16,7 +16,7 @@
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
 integ → marker. `git diff origin/main...HEAD --name-only` against that gate's
-`.markgate.yml` include list says what is outstanding. Its `hash: diff` stales
+`.markgate.yml` include list says what is outstanding. The gate's `hash: diff` stales
 on a rebase only when main changed a scoped file THIS branch changes too, so a
 set marker on a MERGEABLE PR needs no rebase (`markgate status`).
 

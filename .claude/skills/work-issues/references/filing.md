@@ -2,8 +2,6 @@
 
 ## 5-f. Filing what you find mid-lane
 
-§5's sweep decides what a finding IS; this, where it LANDS.
-
 **A finding about the TOOLING is a ROW in `docs/tooling-backlog.md`, not an
 issue** — hooks, gates, `.claude/rules/**`, `.claude/skills/**`, CI fences and
 the integ harness are unreachable from the CLI; build a fence only on a SECOND
@@ -17,7 +15,7 @@ every site? A residue is `next` only on external input
 loaded) — then file an umbrella naming every site, and say which this lane DID
 close. **NOT external input**: an umbrella already owning the population, "a
 different shape", a scope-creep trip, or a file shared with another code path
-(one an OPEN PR holds IS (a)) — each is a SEPARATE PR, still `now`.
+(one another lane's OPEN PR holds IS (a)) — each is a SEPARATE PR, still `now`.
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
 (go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
@@ -88,8 +86,9 @@ gh issue create -t 'fix(provider): ...' \
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
-ended"). Check it before writing EITHER value: the fix's file in §2's
-`gh pr list ... files` is `next` (a), never `now` (#3808).
+ended"). Check it before writing EITHER value: a fix whose every file ANOTHER
+lane's open PR holds (§2's `gh pr list ... files`; a fork PR, its hunks) is
+`next` (a), never `now` (#3808).
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`

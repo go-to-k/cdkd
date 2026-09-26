@@ -25,8 +25,8 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 **The `backfill-type` exclusion is load-bearing** (go-to-k/cdkd#2949): a
 slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
 
-To WORK the campaign, take the umbrella deliberately (`gh issue list --label
-backfill-umbrella`), wire one type, and write `Refs` (`filing.md` §5-f); §4's
+To WORK the campaign, take the umbrella (`gh issue list --label
+backfill-umbrella`), wire one type, write `Refs` (`filing.md` §5-f); §4's
 claim comment still applies.
 
 ## 2. Map the collision landscape
@@ -95,9 +95,10 @@ not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol
 so resolve its EFFECT — what on `origin/main` already produces it
 (go-to-k/cdkd#2286). On an empty grep, `gh pr list --state all --search <symbol>`
 separates "premise wrong" from "premise on an unmerged branch". A fix choosing
-accept / refuse / replace / update has a CFn premise too: `aws cloudformation
+accept / refuse / replace / update has a CFn premise: `aws cloudformation
 describe-type --type RESOURCE --type-name <T> --query Schema` (`required`,
-`createOnlyProperties`), else a throwaway change set, BEFORE design (#3769).
+`createOnlyProperties`), else a throwaway change set (delete its stack after),
+BEFORE design (#3769).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
