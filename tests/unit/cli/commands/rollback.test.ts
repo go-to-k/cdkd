@@ -326,6 +326,29 @@ describe('rollbackCommand', () => {
     await expect(rollbackCommand(undefined, { ...baseOpts })).rejects.toThrow(/Multiple stacks/);
   });
 
+  it('no arg: a nested child journal whose parent also has one is not a separate candidate (#3754)', async () => {
+    const backend = installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        'cdkd/A/us-east-1/rollback-journal.json',
+        'cdkd/A~Child/us-east-1/rollback-journal.json',
+      ]),
+    });
+    // Resolves to `A` alone, so it proceeds to A's journal load instead of
+    // refusing with the multi-candidate list.
+    await expect(rollbackCommand(undefined, { ...baseOpts })).rejects.toThrow(/Nothing to roll back for/);
+    expect(backend.loadRollbackJournal).toHaveBeenCalledWith('A', 'us-east-1');
+  });
+
+  it('CONTROL: an ORPHANED nested child journal (no parent candidate) is still offered', async () => {
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        'cdkd/B/us-east-1/rollback-journal.json',
+        'cdkd/A~Child/us-east-1/rollback-journal.json',
+      ]),
+    });
+    await expect(rollbackCommand(undefined, { ...baseOpts })).rejects.toThrow(/Multiple stacks/);
+  });
+
   it('named stack with no journal → throws nothing-to-roll-back', async () => {
     installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),

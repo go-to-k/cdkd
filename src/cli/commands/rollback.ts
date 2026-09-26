@@ -507,9 +507,19 @@ export async function rollbackCommand(
       ref = resolveSingleRegion(stackArg, refs, options.stackRegion);
     } else {
       const candidates = await findJournalCandidates(setup.stateBackend, setup.prefix);
-      const scoped = options.stackRegion
+      const inRegion = options.stackRegion
         ? candidates.filter((c) => c.region === options.stackRegion)
         : candidates;
+      // A nested child's journal is its PARENT's to replay (issue #3754): a
+      // parent's `cdkd rollback` reverts the child row from it. So a child
+      // (`<parent>~<id>`) whose parent is itself a candidate in the same region
+      // is not a separate choice to offer.
+      const scoped = inRegion.filter((c) => {
+        const cut = c.stackName.lastIndexOf('~');
+        if (cut <= 0) return true;
+        const parent = c.stackName.slice(0, cut);
+        return !inRegion.some((p) => p.stackName === parent && p.region === c.region);
+      });
       if (scoped.length === 0) {
         logger.info(
           'Nothing to roll back — no stack has a rollback journal. ' +
