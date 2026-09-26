@@ -840,7 +840,7 @@ export async function runDestroyForStack(
         // records would otherwise read `0 resource(s)`, which contradicts the
         // refusal it is explaining.
         throw new Error(
-          `Stack '${stackName}' (${regionForState}) was empty when this run started but ` +
+          `Stack ${displayStackName(stackName)} (${displaySafe(regionForState)}) was empty when this run started but ` +
             `now has ${recheckResources} resource(s) and ${recheckOrphans} rollback-orphaned ` +
             `resource(s) — another cdkd process wrote to it. Re-run the destroy to act on ` +
             `the current state.`
@@ -1274,7 +1274,7 @@ export async function runDestroyForStack(
     // outside the `try` would leak the listener and the cross-region globals,
     // the same two leaks this fix closes everywhere else (same reasoning as
     // `renderer.start()` below).
-    logger.info(`\nAcquiring lock for stack ${stackName}...`);
+    logger.info(`\nAcquiring lock for stack ${displayStackName(stackName)}...`);
     // Check the boolean return (issue #2161): `acquireLock` returns `false`
     // WITHOUT throwing when a live foreign lock is held, and the discarding
     // call this replaced treated that as success — so `destroy` ran against a
@@ -1645,7 +1645,7 @@ export async function runDestroyForStack(
         // resource in state" behavior for users who haven't redeployed yet.
         if (shouldRetainResource(resource.deletionPolicy)) {
           logger.info(
-            `  ⊘ ${logicalId} (${resource.resourceType}) retained — DeletionPolicy: ${resource.deletionPolicy}`
+            `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
           );
           result.retainedCount++;
           ctx.eventRecorder?.record({
@@ -1857,7 +1857,7 @@ export async function runDestroyForStack(
                 );
                 renderer.printAbove(() => {
                   logger.warn(
-                    `${logicalId} (${resource.resourceType}) has been deleting for ${minutes}m — still waiting`
+                    `${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) has been deleting for ${minutes}m — still waiting`
                   );
                 });
               },

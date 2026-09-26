@@ -9,10 +9,11 @@ import type {
   DeploymentEventRecorder,
 } from '../../../src/types/deployment-events.js';
 
+const logInfo = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
-    info: vi.fn(),
+    info: logInfo,
     warn: vi.fn(),
     error: vi.fn(),
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -184,6 +185,39 @@ describe('runDestroyForStack - #808 deployment events', () => {
     expect(retained.logicalId).toBe('Table');
     expect(retained.resourceType).toBe('AWS::DynamoDB::Table');
     expect(retained.provisionedBy).toBe('sdk');
+  });
+
+  it('renders a planted retained resource and stack name inert (issue #3811)', async () => {
+    // The retained line is printed above the live area, where a planted
+    // cursor escape could erase the lines before it.
+    const planted = 'X\x1b[1A\x1b[2K\r\n\u202e';
+    const provider = { delete: vi.fn().mockResolvedValue(undefined) };
+    const state = makeState({
+      [`Table${planted}`]: {
+        physicalId: 'phys-table',
+        resourceType: `AWS::DynamoDB::Table${planted}`,
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+        deletionPolicy: 'Retain',
+      },
+    });
+
+    await runDestroyForStack(
+      `S${planted}`,
+      state,
+      makeContext({ provider, recorder: new CollectingRecorder() })
+    );
+
+    const lines = logInfo.mock.calls.map((c) => String(c[0]));
+    const retained = lines.find((l) => l.includes('retained'));
+    const acquiring = lines.find((l) => l.includes('Acquiring lock for stack'));
+    expect(retained).toContain('TableX');
+    expect(acquiring).toContain('"SX');
+    for (const line of [retained!, acquiring!.trimStart()]) {
+      for (const bad of ['\x1b', '\r', '\n', '\u202e']) expect(line).not.toContain(bad);
+    }
   });
 
   it('treats an already-gone resource as a successful delete (RESOURCE_SUCCEEDED)', async () => {

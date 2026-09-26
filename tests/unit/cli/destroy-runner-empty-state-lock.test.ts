@@ -185,6 +185,25 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(h.releaseLock).toHaveBeenCalledWith('TestStack', REGION);
   });
 
+  it('renders a planted stack name inert in the no-longer-empty refusal (issue #3811)', async () => {
+    const planted = 'Evil\x1b[2J\r\nStack\u202e\u200b';
+    const h = makeCtx({
+      acquired: true,
+      recheck: {
+        state: { ...emptyState(), resources: { Param: populatedResource() } },
+        etag: '"e"',
+      } as Awaited<ReturnType<S3StateBackend['getState']>>,
+    });
+
+    const message = await runDestroyForStack(planted, emptyState(), h.ctx).catch(
+      (e: Error) => e.message
+    );
+    expect(message).toContain('Stack "Evil [2J  Stack" (us-east-1) was empty');
+    for (const bad of ['\x1b', '\r', '\n', '\u202e', '\u200b']) {
+      expect(message).not.toContain(bad);
+    }
+  });
+
   it('reads the state back for the same stack and region it locked', async () => {
     const h = makeCtx({ acquired: true, recheck: null });
     await runDestroyForStack('TestStack', emptyState(), h.ctx);
