@@ -254,7 +254,6 @@ interface Token {
 }
 
 interface Resolved {
-  readonly target: Command;
   readonly path: string;
   readonly max: number;
   readonly operands: string[];
@@ -373,7 +372,7 @@ function countOperands(root: Command, tokens: Token[]): Resolved | string {
     operands.push(t.text);
   }
   const path = chain.map((c) => c.name()).join(' ');
-  return { target: cmd, path, max: maxOperands(cmd), operands };
+  return { path, max: maxOperands(cmd), operands };
 }
 
 interface ArgFunction {
