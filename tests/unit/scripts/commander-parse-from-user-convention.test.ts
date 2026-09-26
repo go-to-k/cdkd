@@ -601,7 +601,7 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(sitesWhere((c) => c.s.receiver.via === 'direct'), 'direct receiver').toBeGreaterThan(30);
     expect(sitesWhere((c) => c.s.receiver.via === 'helper'), 'helper receiver').toBeGreaterThan(5);
     expect(sitesWhere((c) => c.s.receiver.via === 'chained'), 'chained receiver').toBeGreaterThan(1);
-    expect(unresolved.length, unresolved.join('\n')).toBeLessThan(sitesWhere(() => true) / 5);
+    expect(unresolved.length, unresolved.join('\n')).toBeLessThan(sitesWhere(() => true) / 8);
   });
 
   it('counts a surplus operand, including one behind a non-node runtime prefix', () => {
@@ -667,6 +667,18 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(expandSite(source, at, 'args', headers)).toEqual([
       { tokens: [{ kind: 'spread', text: 'args' }] },
     ]);
+    // The helper is the last named function and calls no factory itself, so
+    // only its body bound keeps the scan off the file's later factory call.
+    const trailing = [
+      'function tree(): Command {',
+      "  return new Command('x');",
+      '}',
+      'const cmd = tree();',
+      'cmd',
+      'const later = createDeployCommand();',
+    ].join('\n');
+    const recvAt = trailing.indexOf('\ncmd\n') + 4;
+    expect(resolveReceiver(trailing, trailing.slice(0, recvAt), functionHeaders(trailing))).toBeUndefined();
     const typed = 'let cmd: Command;\nconst other = createDeployCommand();\ncmd = x;\ncmd';
     expect(resolveReceiver(typed, typed, functionHeaders(typed))).toBeUndefined();
   });
