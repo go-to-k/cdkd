@@ -108,7 +108,7 @@ efs-immutable-replacement	2026-09-26T01:04:14Z	PASS	85	verify.sh	rc ok, orph cle
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 efs-standalone	2026-09-24T23:20:39Z	PASS	165	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
-elbv2-same-name-replacement	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
+elbv2-same-name-replacement	2026-09-26T02:40:00Z	PASS	75	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 emr-cluster	2026-09-24T22:46:12Z	PASS	765	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
@@ -169,7 +169,7 @@ lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 stalen
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
 lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc ok, 0 orph
-lambda-durable-replacement	2026-08-12T03:07:25Z	PASS	300	verify.sh	#1636 re-run after rebase onto #1641; generated-name refusal + --replace fallback, 2 del/0 err
+lambda-durable-replacement	2026-09-26T02:40:00Z	PASS	100	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean (rerun; first attempt timed out waiting for Lambda to release the name after delete-first, origin/main passed the same run)
 lambda-env-removal	2026-08-10T11:50:46Z	PASS	62	verify.sh	0810 P0/P1 sweep b1; nested-map-key env removal, 3 phases, orph clean
 lambda-esm-self-managed-kafka	2026-08-09T04:24:56Z	PASS	215	verify.sh	#1384 enum key + state-spelling inverse asserted; destroy 5 deleted, 0 errors, 0 orphans
 lambda-event-invoke-config-update	2026-09-25T20:11:20Z	PASS	86	verify.sh	rc ok, orph clean (#3740 final sha)
@@ -251,7 +251,7 @@ redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b1
 remove-protection	2026-09-25T19:22:55Z	PASS	1312	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
-replacement-immutable-name	2026-09-19T18:00:07Z	PASS	109	verify.sh	rc ok, orph clean; #2668 type-change routing
+replacement-immutable-name	2026-09-26T02:40:00Z	PASS	116	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
 rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800
@@ -259,10 +259,10 @@ rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph
 rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 fix round 2: rc ok, orph clean
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph clean; #2668 type-change routing
-rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
+rollback-replay-cc-generated-name	2026-09-26T02:40:00Z	PASS	160	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 rollback-replay-effective-props	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
-rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
-route53	2026-09-26T02:12:23Z	PASS	436	verify.sh	rc ok, orph clean (#3741 final sha)
+rollback-sqs-cooldown	2026-09-26T02:40:00Z	PASS	175	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
+route53	2026-09-26T03:20:00Z	PASS	451	verify.sh	maintainer merge-gate run of PR #3825 (restoring main after #3812 x #3822); rc ok, orph clean, #3741 CNAME rollback via the marker
 s3-analytics-inventory	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
