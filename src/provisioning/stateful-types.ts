@@ -687,7 +687,7 @@ export function isStatefulRecreateTargetSync(
  *   - property-driven replacement (an immutable / createOnly property changed
  *     in the template) — fires on a plain `cdkd deploy`, no flag;
  *   - the update-failure fallback's Cloud Control trigger (an
- *     `UnsupportedActionException` / "does not support UPDATE" rejection) —
+ *     `UnsupportedActionException` rejection) —
  *     also no flag (issue [#2514]);
  *   - the same fallback's `--replace` trigger (an SDK provider's typed
  *     `ResourceUpdateNotSupportedError`).

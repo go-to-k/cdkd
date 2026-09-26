@@ -1372,8 +1372,15 @@ tell, so:
 - a consumer that is itself a custom resource has its OWN handler invoked
   again, with whatever side effects that handler has;
 - a consumer holding the value in a property that cannot change in place is
-  replaced, because cdkd keeps only the mask and cannot compare the new value
-  with the old one.
+  read back from AWS first, because cdkd keeps only the mask and cannot compare
+  the new value with the old one. If AWS already holds exactly the new value
+  there, the consumer is not replaced: it is updated in place when something
+  else about it changed, and left alone when nothing did. The readback is
+  compared in memory and never stored, so nothing derived from the value lands
+  in state. The consumer is still REPLACED (or, for a stateful type, the deploy
+  stops and asks for `--force-stateful-recreation`) whenever the readback cannot
+  confirm the value: AWS holds a different one, the property is write-only so
+  AWS never returns it, the resource type has no readback, or the read fails.
 
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no
@@ -1428,6 +1435,17 @@ EMBEDS the attribute inside a longer string (`Fn::Sub` / `Fn::Join` around the
 `Fn::GetAtt`) persists that string with the value still in it, because an
 inline `***` would be indistinguishable from a literal `***` and nothing
 downstream could recognise it.
+
+The same holds for a value used as a NAME. A resource's physical id is what
+cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
+create-only name (`QueueName`, `TableName`, a parameter `Name`) is therefore
+stored in the clear as that resource's physical id. So is every attribute AWS
+builds around the name, such as a queue URL or an ARN (an attribute equal to
+the whole value is still masked), and so is any other resource's property or
+output that reads one of those, and any command output that shows a physical
+id. CloudFormation behaves the same way: `DescribeStackResources`
+returns the physical id in the clear, whatever `NoEcho` said. Use `NoEcho`
+values as values, never as names.
 
 #### physicalId Format
 

@@ -1,0 +1,7 @@
+- **A create-only reader of a `NoEcho` custom-resource value is no longer replaced when the handler returned the same value (issue [#3729](https://github.com/go-to-k/cdkd/issues/3729); docs bound for issue [#3801](https://github.com/go-to-k/cdkd/issues/3801))** -- `src/deployment/deploy-engine.ts`, `src/deployment/secret-redaction.ts` (`freshNoEchoLeafPositions`), unit tests, `tests/integration/custom-resource-noecho-nested`, `docs/{state-management,cli-diff,cli-deploy-tuning,architecture}.md`.
+  - **Before.** The record holds `***`, so on every handler re-run such a reader was replaced, and a stateful one stopped at `STATEFUL_REPLACE_BLOCKED`. This happened for a same-stack reader, a nested child's parameter reader, and a recovered cross-stack consumer.
+  - **Now.** cdkd reads the reader back from AWS, passing the masked record, and keeps it when AWS holds exactly that value. It is updated in place if something else changed, and skipped if nothing did.
+  - **Every uncertainty still replaces:** no readback, a write-only property, a failed or slow read, or a different value.
+  - **Nothing is stored.** The readback is never stored, and it is not gated by `--no-capture-observed-state`. There is no schema change: a stored salted hash would let a state reader confirm guesses of a low-entropy value.
+  - **New docs bound.** A `NoEcho` value used as a resource NAME is stored in the clear as the physical id, as CloudFormation shows it.
+  - **Residual:** issue [#3803](https://github.com/go-to-k/cdkd/issues/3803).

@@ -4812,11 +4812,16 @@
     {
       "resourceType": "AWS::Lambda::LayerVersion",
       "integs": [
+        "custom-resource-noecho-nested",
         "lambda",
         "lambda-layer-version-update",
         "local-invoke-layers"
       ],
       "signals": {
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
+        ],
         "lambda": [
           "l2"
         ],
@@ -5771,6 +5776,7 @@
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
+        "route53",
         "s3-analytics-inventory",
         "s3-lifecycle",
         "scheduler-custom-group",
@@ -5910,6 +5916,9 @@
           "l1"
         ],
         "rollback-sqs-cooldown": [
+          "l1"
+        ],
+        "route53": [
           "l1"
         ],
         "s3-analytics-inventory": [
