@@ -163,7 +163,7 @@ intrinsics-torture-2	2026-09-24T00:57:33Z	PASS	54	verify.sh	PR #3579; rc ok, des
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-09-25T13:23:17Z	PASS	95	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-26T03:07:53Z	PASS	105	verify.sh	rc ok, orph clean (#3803 PR #3818 final)
+lambda	2026-09-26T05:21:55Z	PASS	139	verify.sh	go-to-k/cdkd#3764 head 00bde983c: 9 deleted, 0 errors, events swept
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -300,7 +300,7 @@ sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9;
 sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixture armed with a Fn::GetAtt Arn Output + attributes.Arn assertions, phase 1 under --strict-getatt; both followed the phase-2 replacement (GUID changed). destroy 3 deleted 0 errors, 0 orphans (only deployments/ history remains, by design)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
-ssm-secure-dynamic-ref	2026-09-25T18:33:42Z	PASS	155	verify.sh	go-to-k/cdkd#3764 head 172c0fae1: 0 surviving object versions
+ssm-secure-dynamic-ref	2026-09-26T05:24:49Z	PASS	156	verify.sh	go-to-k/cdkd#3764 head 00bde983c: 0 surviving object versions
 stack-lock-renewal	2026-09-25T22:24:46Z	PASS	511	verify.sh	rc ok, orph clean; force-unlock path (#3027 PR #3796)
 stage-assets	2026-09-25T09:36:54Z	PASS	75	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 stale-attribute-heal	2026-09-19T20:26:58Z	PASS	62	verify.sh	first run; rc ok, orph clean; red at phase 4 on the pre-#1852 engine
