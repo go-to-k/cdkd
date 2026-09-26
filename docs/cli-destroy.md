@@ -60,7 +60,10 @@ When the app defines a single stack, no name is needed.
 
 `--all` targets every stack in the current CDK app. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a
-consumer stack is destroyed before the producers it reads from.
+consumer stack is destroyed before the producers it reads from. When the app
+synthesizes but yields no stacks, for example because every stack sits under a
+Stage that failed to load, `--all` is refused. It does not fall back to every
+stack in the state bucket.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
