@@ -96,9 +96,9 @@ verify, clean up.
                    # `> ""` is a loud failure that costs you the whole run
    # Budget: 2x the ledger's last duration, floor 1500s — a fixed 1500s killed
    # dynamodb-gsi-update (normal ~1300s) mid index-busy wait.
-   LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4}' ../../../docs/_generated/integ-last-run.tsv)
+   LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4; exit}' ../../../docs/_generated/integ-last-run.tsv)
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
-   POLLS=$(( LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
+   POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
    # Own process group, so a FIRE kills verify's `node` deploy/destroy child too
    # (`kill -9 $VPID` alone reparents it to PID 1, still calling AWS). `perl`,
    # since zsh — the agent's shell — refuses `set -m` outside a terminal.
