@@ -936,6 +936,10 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     // ...while the code as its own token still matches.
     expect(isNameCollisionError('EntityAlreadyExists: Role with name r exists')).toBe(true);
     expect(isNameCollisionError('DBInstanceAlreadyExistsFault')).toBe(true);
+    expect(isNameCollisionError('Qev2IdcApplicationAlreadyExistsFault')).toBe(true);
+    // An unhashed id inside a name or ARN is refused on either side.
+    expect(isNameCollisionError('function:Stack-UserAlreadyExists')).toBe(false);
+    expect(isNameCollisionError('arn:aws:lambda:x:1:function:Stack-UserAlreadyExists-a1b2')).toBe(false);
   });
 
   it("does NOT classify S3's BucketAlreadyExists, whose message states neither form", () => {

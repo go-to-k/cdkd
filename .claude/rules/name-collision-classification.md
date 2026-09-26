@@ -39,8 +39,8 @@ the bounded `cause` chain for the error name and the Cloud Control
    refusal quoting a template value out; the second is how a provider OPTS OUT —
    Glue and CloudFront reword a collision delete-first cannot clear. Dropping
    either re-opens a delete. The `AlreadyExists` code matches only as a whole
-   token, never inside a logical id. Residual: an AWS error echoing a template
-   value still classifies.
+   token outside a name or ARN (not after `-` `:` `/`, not before `-`).
+   Residual: an AWS error echoing a template value still classifies.
 2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
    read; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.

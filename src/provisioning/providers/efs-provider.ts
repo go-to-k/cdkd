@@ -1138,8 +1138,8 @@ export class EFSProvider implements ResourceProvider {
    * than cosmetic. `DeployEngine`'s replacement path classifies a failed
    * create-first attempt with `isNameCollisionErrorFrom`, which credits
    * `already exists` / `AlreadyExists` only when the TOP-LEVEL message relays
-   * it -- and the raw AWS conflict carries both. A token collision misread as a physical-NAME
-   * collision is not a cosmetic mistake: under `UpdateReplacePolicy: Retain` it
+   * it -- and the raw AWS conflict carries both. A token collision misread as
+   * a physical-NAME collision is not a cosmetic mistake: under `UpdateReplacePolicy: Retain` it
    * produces advice about renaming a resource that has no name, and under
    * `--replace` it falls back to delete-first, which DELETES the old access
    * point and then re-creates with the same still-unreleased token -- colliding

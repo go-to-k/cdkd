@@ -1425,6 +1425,22 @@ export function isIamPropagationError(message: string): boolean {
 }
 
 /**
+ * An `…AlreadyExists` error CODE as a whole token (`EntityAlreadyExists`,
+ * `ResourceAlreadyExistsException`, `DBInstanceAlreadyExistsFault`). The
+ * singular `…AlreadyExist` stays unmatched (see below); the one real code
+ * spelled so, `SubscriptionAlreadyExistFault`, states the collision in prose.
+ * A bare substring matched INSIDE an
+ * identifier too (issue #3816): a logical id like `UserAlreadyExistsHandler…`
+ * sits in every provider wrapper and in every cdkd-derived physical name AWS
+ * echoes, so an unrelated failure — even Lambda's PENDING-state conflict
+ * quoting the function ARN — read as a collision. A token right after `-`, `:`
+ * or `/`, or right before `-`, is part of a name or ARN and is refused.
+ * RESIDUAL: an unhashed logical id ENDING in the token, relayed after a space
+ * by a provider wrapper, still matches there.
+ */
+const ALREADY_EXISTS_CODE = /(?<![-:/])\b[A-Za-z0-9]*AlreadyExists(?:Exception|Fault)?\b(?!-)/;
+
+/**
  * Match the "already exists" name-collision signature raised when a create
  * targets a physical name still held by another resource (or by the same
  * name's not-yet-released tombstone after an async delete).
@@ -1470,17 +1486,6 @@ export function isIamPropagationError(message: string): boolean {
  * transient state conflict as a collision and delete a live function under
  * `--replace`.
  */
-/**
- * An `…AlreadyExists` error CODE as a whole token (`EntityAlreadyExists`,
- * `ResourceAlreadyExistsException`, `DBInstanceAlreadyExistsFault`). A bare
- * substring matched INSIDE an identifier too (issue #3816): a logical id like
- * `UserAlreadyExistsHandler1A2B3C4D` sits in every provider wrapper and in
- * every cdkd-derived physical name AWS echoes, so an unrelated failure — even
- * Lambda's PENDING-state conflict quoting the function ARN — read as a
- * collision.
- */
-const ALREADY_EXISTS_CODE = /\b[A-Za-z]*AlreadyExists(?:Exception|Fault)?\b/;
-
 export function isNameCollisionError(message: string): boolean {
   return (
     /(?<!\b(?:must|not|should|may|cannot)\s)already exists?\b/i.test(message) ||
@@ -1558,8 +1563,9 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  *  - the "already exists" prose, credited only when BOTH the top-level message
  *    AND an AWS-authored link (`isAwsAuthoredFailure`: `$fault` or an HTTP
  *    status — bare `$metadata` is not proof, the retry middleware stamps it on
- *    socket errors too) say it (issue #3816). The SDK half keeps a cdkd refusal quoting a template value from
- *    classifying — the verdict here is a DELETE, acted on by the `--replace`
+ *    socket errors too) say it (issue #3816). The SDK half keeps a cdkd
+ *    refusal quoting a template value from classifying — the verdict here is
+ *    a DELETE, acted on by the `--replace`
  *    delete-first fallback and the rollback's delete-new-first arm. The
  *    top-level half keeps a provider's opt-out: one that rewords an AWS
  *    collision it knows delete-first cannot clear (Glue's occupied table
