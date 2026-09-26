@@ -2420,23 +2420,23 @@ describe('reportDriftBaselineGaps', () => {
       for (const region of ['--all', 'r'.repeat(129)]) {
         const line = render('S', region, true).find((m) => m.includes('Inspect it with:'))!;
         expect(line, region).toMatch(
-          /hole in the command below stands for [^\n]*Inspect it with: cdkd state show S --stack-region '<region>' --json$/
+          /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show S --stack-region '<region>' --json$/
         );
       }
       // ...and for a withheld STACK NAME with an ordinary region, so the
       // explanation keys on any hole, not on the region's alone.
       const stackHole = render('--all', 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
       expect(stackHole).toMatch(
-        /hole in the command below stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
       );
       // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
       // exactness alone would have named it shell-quoted (M2 of the
       // go-to-k/cdkd#3764 review).
       const plainHole = render("It's Stack", 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
       expect(plainHole).toMatch(
-        /hole in the command below stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
       );
-      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command below');
+      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command at the end of this line');
     });
   }, 120_000);
 
@@ -3037,7 +3037,7 @@ describe('reportDriftBaselineGaps', () => {
       .map((c) => String(c[0]))
       .find((m) => m.includes('cdkd state show'));
     expect(inspect).toBeDefined();
-    expect(inspect).toContain("A quoted '<...>' hole in the command below stands for");
+    expect(inspect).toContain("A quoted '<...>' hole in the command at the end of this line stands for");
     expect(inspect).not.toContain('curl');
     // The command must be the WHOLE tail after `Inspect it with: ` — LAST and
     // UNWRAPPED, the contract `lock-contention-message.ts` states. A

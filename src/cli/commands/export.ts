@@ -5867,7 +5867,7 @@ export function reportDriftBaselineGaps(
         // nearest, and prose after the command is what a paste picks up.
         (inspect.exact
           ? ''
-          : `A quoted '<...>' hole in the command below stands for a value cdkd could not ` +
+          : `A quoted '<...>' hole in the command at the end of this line stands for a value cdkd could not ` +
             `print safely; fill it from 'cdkd state list --long'. `) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s

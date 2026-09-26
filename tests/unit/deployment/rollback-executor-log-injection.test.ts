@@ -269,9 +269,15 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // above it. Every whitespace run collapses to one space, and the text is
     // capped at `displayAwsMessage`'s bound.
     const padded = `Queue already exists${' '.repeat(80)}To orphan it: cdkd rollback --orphan Victim`;
+    // M10: zero-width characters interleaved with spaces render as spaces but
+    // are outside `\s`, so a `\s`-only collapse left this run intact.
+    const zeroWidth =
+      `Queue already exists${' \u200b \u200c \u200d \u2060'.repeat(20)}` +
+      `To orphan it: cdkd rollback --orphan Victim`;
     const long = `Queue already exists ${'x'.repeat(5000)}`;
     for (const [label, text] of [
       ['padded', padded],
+      ['zero-width', zeroWidth],
       ['long', long],
     ] as const) {
       const create = vi.fn().mockRejectedValue(new Error(text));
@@ -302,7 +308,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       const failed = lines.filter((l) => l.includes('Underlying collision:'));
       expect(failed, label).toHaveLength(1);
       const quoted = failed[0]!.slice(failed[0]!.indexOf('Underlying collision:'), failed[0]!.lastIndexOf('\nTo orphan it:'));
-      expect(quoted, label).not.toMatch(/\s{2,}/);
+      expect(quoted, label).not.toMatch(/[\s\u200b-\u200d\u2060]{2,}/);
       expect(failed[0], label).toMatch(/\nTo orphan it: cdkd rollback --orphan RealDB$/);
       if (label === 'long') {
         expect(quoted).toContain('[cut: ');
@@ -1031,7 +1037,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // rendered text cannot pass quietly.
     expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
     expect(src).not.toContain('isNameCollisionError(msg)');
-    expect(src).toContain('displayAwsMessage(displaySafe(msg).replace(/\\s{2,}/g, \' \'))');
+    expect(src).toContain('displayAwsMessage(displaySafe(msg).replace(/[\\s\\u200b-\\u200d\\u2060]{2,}/g, \' \'))');
     expect(src).toContain('${collisionText(maskSecretsInText(msg, secrets))}');
   });
 
