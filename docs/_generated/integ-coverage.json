@@ -617,6 +617,7 @@
         "nested-stack-3level",
         "nested-stack-deep",
         "nested-stack-replace-guard",
+        "nested-stack-rollback",
         "nested-stack-secret",
         "recreate-nested-logical-id-collision"
       ],
@@ -640,6 +641,9 @@
           "literal"
         ],
         "nested-stack-replace-guard": [
+          "literal"
+        ],
+        "nested-stack-rollback": [
           "literal"
         ],
         "nested-stack-secret": [
@@ -5765,6 +5769,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "nested-required-preflight",
+        "nested-stack-rollback",
         "rename-refactor",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
@@ -5882,6 +5887,9 @@
         "nested-required-preflight": [
           "l1",
           "literal"
+        ],
+        "nested-stack-rollback": [
+          "l1"
         ],
         "rename-refactor": [
           "l2",

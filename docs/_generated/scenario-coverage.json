@@ -1710,6 +1710,11 @@
       "scenarios": []
     },
     {
+      "name": "nested-stack-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nested-stack-secret",
       "annotated": true,
       "scenarios": [
@@ -3050,6 +3055,7 @@
     "nested-stack",
     "nested-stack-deep",
     "nested-stack-replace-guard",
+    "nested-stack-rollback",
     "nodejs-function",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
