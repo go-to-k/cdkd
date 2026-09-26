@@ -12,9 +12,14 @@ import type {
   ResourceDeleteResult,
   ResourceUpdateResult,
   DeleteContext,
+  UpdateContext,
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  getNestedRevertRun,
+  revertNestedChildFromJournal,
+} from '../../deployment/nested-child-journal.js';
 import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
 import {
   refuseMalformedNestedChildOutputs,
@@ -269,9 +274,24 @@ export class NestedStackProvider implements ResourceProvider {
     physicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const ctx = this.requireContext();
+
+    // Issue #3754: a ROLLBACK revert of this row. The desired bag is the
+    // row's previous state record, but the child's previous state is not in
+    // it — and re-deploying `ctx.nestedTemplates[logicalId]`, the CURRENT
+    // synth, over the child's just-saved state diffs NO_CHANGE, so the revert
+    // reported the row restored while the child kept the failed deploy's
+    // configuration. Replay the child's own journal for the run being rolled
+    // back instead. Ahead of `requireDeployContext`: this path reads no
+    // template, so standalone `cdkd rollback` (a destroy-mode context) can
+    // take it too.
+    if (context?.replayingState === true) {
+      return this.revertFromChildJournal(ctx, logicalId, physicalId);
+    }
+
     this.requireDeployContext(ctx, 'update');
 
     const childTemplatePath = ctx.nestedTemplates![logicalId];
@@ -325,6 +345,46 @@ export class NestedStackProvider implements ResourceProvider {
         noEchoAttributeNames: updatedOutputs.noEchoAttributeNames,
       }),
     };
+  }
+
+  /**
+   * The rollback arm of {@link update} (issue #3754): replay the child's
+   * journal segments for the parent run being rolled back. The run comes from
+   * {@link getNestedRevertRun}, bound by both rollback drivers; its ABSENCE is
+   * refused rather than guessed, because selecting segments without it could
+   * replay another run's changes over a live child.
+   *
+   * Returns no `attributes`: the rollback executor restores this row's
+   * previous record wholesale, previous `Outputs.<Key>` included.
+   */
+  private async revertFromChildJournal(
+    ctx: NestedStackProviderContext,
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
+    const run = getNestedRevertRun();
+    if (!run) {
+      throw markNonRetryable(
+        new Error(
+          `Cannot revert nested stack ${displayStackName(childStackName)}: the revert was requested ` +
+            `outside a rollback run, so there is no deploy run to select its journal segments by. ` +
+            `The child was NOT reverted.`
+        )
+      );
+    }
+    this.logger.info(
+      `Reverting nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}) from its rollback journal`
+    );
+    await revertNestedChildFromJournal({
+      ctx,
+      logicalId,
+      childStackName,
+      region: ctx.parentRegion,
+      runId: run.runId,
+      logger: this.logger,
+    });
+    return { physicalId, wasReplaced: false };
   }
 
   async delete(

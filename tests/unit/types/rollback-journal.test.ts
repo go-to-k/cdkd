@@ -467,3 +467,39 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(() => parseRollbackJournal(body, 'S')).toThrow(/is malformed: segments\[0\]\.operations\[0\]\.logicalId/);
   });
 });
+
+describe('parseRollbackJournal — the nested-child fields (issue #3754)', () => {
+  const body = (segment: Record<string, unknown>): string =>
+    JSON.stringify({
+      journalVersion: ROLLBACK_JOURNAL_VERSION,
+      stackName: 'P~C',
+      region: 'us-east-1',
+      segments: [{ timestamp: 0, reason: 'nested-pending-parent', initialDeploy: false, operations: [], ...segment }],
+    });
+
+  it('round-trips a pending segment with its previous outputs', () => {
+    const segment = {
+      runId: 'r',
+      previousOutputs: { outputs: { Url: 'u' }, exportNames: ['E'] },
+    };
+    expect(parseRollbackJournal(body(segment), 'P~C').segments[0]).toMatchObject(segment);
+  });
+
+  it('refuses a non-string runId, which a nested revert selects segments by', () => {
+    expect(() => parseRollbackJournal(body({ runId: 7 }), 'P~C')).toThrow(
+      /segments\[0\]\.runId must be a string when present \(got number\)/
+    );
+  });
+
+  it('refuses previousOutputs whose outputs is not an object, and a non-string exportNames', () => {
+    expect(() => parseRollbackJournal(body({ previousOutputs: { outputs: 'x' } }), 'P~C')).toThrow(
+      /previousOutputs\.outputs must be an object \(got string\)/
+    );
+    expect(() => parseRollbackJournal(body({ previousOutputs: [] }), 'P~C')).toThrow(
+      /previousOutputs\.outputs must be an object \(got undefined\)/
+    );
+    expect(() =>
+      parseRollbackJournal(body({ previousOutputs: { outputs: {}, exportNames: [1] } }), 'P~C')
+    ).toThrow(/previousOutputs\.exportNames must be a string array/);
+  });
+});

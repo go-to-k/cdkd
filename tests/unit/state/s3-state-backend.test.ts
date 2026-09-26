@@ -2110,6 +2110,51 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     expect(body.segments[0].reason).toBe('interrupted');
   });
 
+  describe('dropRollbackJournalSegments (issue #3754)', () => {
+    const byRun = (runId: string) => ({ ...segment('nested-pending-parent' as never), runId });
+
+    it('rewrites the journal without the dropped segments, keeping the rest in order', async () => {
+      const three = {
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [byRun('a'), byRun('b'), byRun('a')],
+      };
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(three) }); // load
+      s3Client.send.mockResolvedValueOnce({}); // put
+      const removed = await backend.dropRollbackJournalSegments('S', 'us-east-1', (s) => s.runId === 'a');
+      expect(removed).toBe(2);
+      const put = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+      expect(put.input.Key).toBe(journalKey);
+      expect(JSON.parse(put.input.Body as string).segments.map((s: { runId: string }) => s.runId)).toEqual(['b']);
+    });
+
+    it('deletes the journal when every segment is dropped', async () => {
+      const one = { journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [byRun('a')] };
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(one) }); // load
+      s3Client.send.mockResolvedValue({}); // delete + version purge
+      const removed = await backend.dropRollbackJournalSegments('S', 'us-east-1', () => true);
+      expect(removed).toBe(1);
+      const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
+      expect(cmds.some((cmd: unknown) => cmd instanceof DeleteObjectCommand)).toBe(true);
+      expect(cmds.some((cmd: unknown) => cmd instanceof PutObjectCommand)).toBe(false);
+    });
+
+    it('writes nothing when no segment matches, or no journal exists', async () => {
+      const one = { journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [byRun('b')] };
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(one) }); // load
+      expect(await backend.dropRollbackJournalSegments('S', 'us-east-1', (s) => s.runId === 'a')).toBe(0);
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+      expect(await backend.dropRollbackJournalSegments('S', 'us-east-1', () => true)).toBe(0);
+      const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
+      expect(
+        cmds.some((cmd: unknown) => cmd instanceof PutObjectCommand || cmd instanceof DeleteObjectCommand)
+      ).toBe(false);
+    });
+  });
+
   it('deleteRollbackJournal tolerates a missing journal', async () => {
     s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
     await expect(backend.deleteRollbackJournal('S', 'us-east-1')).resolves.toBeUndefined();

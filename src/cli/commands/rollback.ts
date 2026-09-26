@@ -22,6 +22,10 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
+import {
+  dropNestedChildJournals,
+  withNestedRevertRun,
+} from '../../deployment/nested-child-journal.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
@@ -869,113 +873,120 @@ export async function rollbackCommand(
               destroyOptions: {
                 ...(options.profile && { profile: options.profile }),
                 statePrefix: options.statePrefix,
+                // A nested child's revert (issue #3754) replays its own
+                // journal through this context, so the opt-out must reach it.
+                ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               },
             },
+            // Issue #3754: a nested-stack row in this segment is reverted by
+            // replaying its child's journal segments for the SAME run.
             () =>
-              withStackName(stackName, async () => {
-                // #1198: revert the segment's FAILED in-flight op(s) first
-                // (opt-in). Their revert is independent of the completed-op
-                // replay (one op per resource per deploy), so a failed-op
-                // revert failure still lets the completed ops replay — the
-                // summed failure count keeps the segment from popping.
-                let failedOpFailures = 0;
-                let failedOpWarnings = 0;
-                if (
-                  options.revertFailed &&
-                  segment.failedOperations &&
-                  segment.failedOperations.length > 0
-                ) {
-                  const failedResult = await replayFailedOperations(
-                    segment.failedOperations,
+              withNestedRevertRun(segment.runId, () =>
+                withStackName(stackName, async () => {
+                  // #1198: revert the segment's FAILED in-flight op(s) first
+                  // (opt-in). Their revert is independent of the completed-op
+                  // replay (one op per resource per deploy), so a failed-op
+                  // revert failure still lets the completed ops replay — the
+                  // summed failure count keeps the segment from popping.
+                  let failedOpFailures = 0;
+                  let failedOpWarnings = 0;
+                  if (
+                    options.revertFailed &&
+                    segment.failedOperations &&
+                    segment.failedOperations.length > 0
+                  ) {
+                    const failedResult = await replayFailedOperations(
+                      segment.failedOperations,
+                      stateResources,
+                      stackName,
+                      ctx,
+                      {
+                        afterOp: saveState,
+                        isInterrupted: () => interrupted,
+                        // Failed-only segment: replayRollback below returns
+                        // early without the STARTED/FINISHED envelope, so the
+                        // failed-op replay owns it (events symmetry). For a
+                        // MIXED segment the failed-op ROLLBACK_RESOURCE_*
+                        // events land just before replayRollback's
+                        // ROLLBACK_STARTED — accepted cosmetic ordering (the
+                        // events stream is informational; the reader derives
+                        // nothing from envelope position).
+                        emitEnvelope: segment.operations.length === 0,
+                        // Same reason as the sibling replay below: `afterOp`
+                        // saves per op, so a record appended only after this
+                        // returns is absent from every intermediate save
+                        // (issue #2934).
+                        onOrphan: (record) => mintedOrphans.push(record),
+                      }
+                    );
+                    failedOpFailures = failedResult.failures;
+                    failedOpWarnings = failedResult.warnings;
+
+                    // Idempotency: persist ONLY the still-pending failed ops
+                    // (per-op strip). A handled op must never be re-issued on a
+                    // re-run — replaying `attemptedProperties` as the previous
+                    // diff side against an already-reverted resource would
+                    // generate a patch undoing changes that no longer exist
+                    // (fails on patch-based providers). Runs on the interrupt /
+                    // failure paths too so partial progress is never lost.
+                    // Best-effort: on a strip failure the re-run merely
+                    // re-attempts the revert.
+                    const remaining = failedResult.remainingFailedOps;
+                    // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
+                    // the handled ops' state rows were never saved, so stripping
+                    // them would leave the record describing work the journal no
+                    // longer carries. Kept, the re-run after the region repair
+                    // replays them against the unsaved rows and reconciles (a
+                    // failed-CREATE delete reads not-found as done).
+                    if (
+                      !declinedDivergentRewrite &&
+                      remaining.length !== segment.failedOperations.length
+                    ) {
+                      try {
+                        await setup.stateBackend.setRollbackJournalFailedOperations(
+                          stackName,
+                          region,
+                          remaining
+                        );
+                        if (remaining.length === 0) delete segment.failedOperations;
+                        else segment.failedOperations = remaining;
+                      } catch (stripError) {
+                        logger.warn(
+                          `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
+                        );
+                      }
+                    }
+                    if (failedResult.interrupted) {
+                      return {
+                        failures: failedOpFailures,
+                        warnings: failedOpWarnings,
+                        interrupted: true,
+                      };
+                    }
+                  }
+                  const replayResult = await replayRollback(
+                    segment.operations,
                     stateResources,
                     stackName,
                     ctx,
                     {
+                      orphanLogicalIds,
                       afterOp: saveState,
                       isInterrupted: () => interrupted,
-                      // Failed-only segment: replayRollback below returns
-                      // early without the STARTED/FINISHED envelope, so the
-                      // failed-op replay owns it (events symmetry). For a
-                      // MIXED segment the failed-op ROLLBACK_RESOURCE_*
-                      // events land just before replayRollback's
-                      // ROLLBACK_STARTED — accepted cosmetic ordering (the
-                      // events stream is informational; the reader derives
-                      // nothing from envelope position).
-                      emitEnvelope: segment.operations.length === 0,
-                      // Same reason as the sibling replay below: `afterOp`
-                      // saves per op, so a record appended only after this
-                      // returns is absent from every intermediate save
-                      // (issue #2934).
+                      // Pushed from INSIDE the replay, not after it returns: the
+                      // `afterOp` above saves per op, so a record appended only
+                      // on return would be missing from every intermediate save
+                      // — and a crash there loses it for good (issue #2934).
                       onOrphan: (record) => mintedOrphans.push(record),
                     }
                   );
-                  failedOpFailures = failedResult.failures;
-                  failedOpWarnings = failedResult.warnings;
-
-                  // Idempotency: persist ONLY the still-pending failed ops
-                  // (per-op strip). A handled op must never be re-issued on a
-                  // re-run — replaying `attemptedProperties` as the previous
-                  // diff side against an already-reverted resource would
-                  // generate a patch undoing changes that no longer exist
-                  // (fails on patch-based providers). Runs on the interrupt /
-                  // failure paths too so partial progress is never lost.
-                  // Best-effort: on a strip failure the re-run merely
-                  // re-attempts the revert.
-                  const remaining = failedResult.remainingFailedOps;
-                  // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
-                  // the handled ops' state rows were never saved, so stripping
-                  // them would leave the record describing work the journal no
-                  // longer carries. Kept, the re-run after the region repair
-                  // replays them against the unsaved rows and reconciles (a
-                  // failed-CREATE delete reads not-found as done).
-                  if (
-                    !declinedDivergentRewrite &&
-                    remaining.length !== segment.failedOperations.length
-                  ) {
-                    try {
-                      await setup.stateBackend.setRollbackJournalFailedOperations(
-                        stackName,
-                        region,
-                        remaining
-                      );
-                      if (remaining.length === 0) delete segment.failedOperations;
-                      else segment.failedOperations = remaining;
-                    } catch (stripError) {
-                      logger.warn(
-                        `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
-                      );
-                    }
-                  }
-                  if (failedResult.interrupted) {
-                    return {
-                      failures: failedOpFailures,
-                      warnings: failedOpWarnings,
-                      interrupted: true,
-                    };
-                  }
-                }
-                const replayResult = await replayRollback(
-                  segment.operations,
-                  stateResources,
-                  stackName,
-                  ctx,
-                  {
-                    orphanLogicalIds,
-                    afterOp: saveState,
-                    isInterrupted: () => interrupted,
-                    // Pushed from INSIDE the replay, not after it returns: the
-                    // `afterOp` above saves per op, so a record appended only
-                    // on return would be missing from every intermediate save
-                    // — and a crash there loses it for good (issue #2934).
-                    onOrphan: (record) => mintedOrphans.push(record),
-                  }
-                );
-                return {
-                  failures: replayResult.failures + failedOpFailures,
-                  warnings: replayResult.warnings + failedOpWarnings,
-                  interrupted: replayResult.interrupted,
-                };
-              })
+                  return {
+                    failures: replayResult.failures + failedOpFailures,
+                    warnings: replayResult.warnings + failedOpWarnings,
+                    interrupted: replayResult.interrupted,
+                  };
+                })
+              )
           );
           totalFailures += result.failures;
           totalWarnings += result.warnings;
@@ -993,6 +1004,16 @@ export async function rollbackCommand(
           // Segment fully replayed — pop it (persists the shortened journal).
           await setup.stateBackend.popRollbackJournalSegment(stackName, region);
           journal.segments.pop();
+          // The children this segment reverted are settled with it (issue
+          // #3754): drop their segments for the same run. Best-effort.
+          await dropNestedChildJournals({
+            stateBackend: setup.stateBackend,
+            parentStackName: stackName,
+            region,
+            resources: stateResources,
+            logger,
+            run: { runId: segment.runId },
+          });
         }
       } finally {
         await eventRecorder.finalize(

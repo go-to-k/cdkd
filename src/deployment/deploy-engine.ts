@@ -195,6 +195,11 @@ import {
 } from './rollback-executor.js';
 import { getCdkdVersion } from '../state/deployment-events-store.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+import {
+  NESTED_PENDING_PARENT_REASON,
+  dropNestedChildJournals,
+  withNestedRevertRun,
+} from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
 
@@ -3833,7 +3838,14 @@ export class DeployEngine {
       // still supported). Best-effort — a journal read failure must not
       // block the deploy.
       try {
-        const journal = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        // A nested child's `nested-pending-parent` segments record a deploy
+        // that SUCCEEDED while its parent's was still running (issue #3754);
+        // they are its parent's to replay, not a failure to report here.
+        const journal = loaded && {
+          ...loaded,
+          segments: loaded.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
+        };
         if (journal && journal.segments.length > 0) {
           // A journal whose every segment carries no completed ops is the
           // failed-only shape kept after a CLEAN automatic rollback (issue
@@ -4481,7 +4493,13 @@ export class DeployEngine {
         // with hasChanges=false — without this delete the journal (and its
         // "previous deploy failed" note) would linger indefinitely.
         if (!this.options.dryRun) {
-          await this.deleteRollbackJournalBestEffort(stackName);
+          await this.settleJournalAfterSuccess(
+            stackName,
+            [],
+            currentState,
+            currentState.resources,
+            currentEtag === undefined
+          );
         }
 
         return {
@@ -4545,7 +4563,11 @@ export class DeployEngine {
       const progress = { current: 0, total: totalOperations };
 
       // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
-      const { state: newState, actualCounts } = await this.executeDeployment(
+      const {
+        state: newState,
+        actualCounts,
+        completedOperations,
+      } = await this.executeDeployment(
         effectiveTemplate,
         currentState,
         changes,
@@ -4619,7 +4641,13 @@ export class DeployEngine {
       // we are about to delete (spurious "a previous deploy failed" note)
       // or race the exports-index read-modify-write.
       await Promise.all([
-        this.deleteRollbackJournalBestEffort(stackName),
+        this.settleJournalAfterSuccess(
+          stackName,
+          completedOperations,
+          currentState,
+          newState.resources,
+          currentEtag === undefined
+        ),
         this.exportIndexStore
           ? this.exportIndexStore.updateForStack(
               stackName,
@@ -4727,6 +4755,8 @@ export class DeployEngine {
   ): Promise<{
     state: StackState;
     actualCounts: ProvisionCounts;
+    /** Issue #3754: journaled by a NESTED engine on success. */
+    completedOperations: CompletedOperation[];
   }> {
     const concurrency = this.options.concurrency!;
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
@@ -5345,6 +5375,7 @@ export class DeployEngine {
         lastModified: Date.now(),
       },
       actualCounts,
+      completedOperations,
     };
   }
 
@@ -5537,18 +5568,86 @@ export class DeployEngine {
      */
     previousState: StackState
   ): Promise<{ failures: number; warnings: number; orphaned: StackOrphanRecord[] }> {
-    const result = await replayRollback(
-      completedOperations,
-      stateResources,
-      stackName,
-      this.rollbackExecutorContext(previousState)
+    // Issue #3754: a nested-stack row reverted here replays its child's
+    // journal segments for THIS run, which `NestedStackProvider` reads from
+    // the scope.
+    const runId = this.options.eventRecorder?.runId;
+    const result = await withNestedRevertRun(runId, () =>
+      replayRollback(
+        completedOperations,
+        stateResources,
+        stackName,
+        this.rollbackExecutorContext(previousState)
+      )
     );
+    // A clean replay settled every reverted child: drop their segments for
+    // this run so nothing replayable outlives the rollback that consumed it.
+    if (result.failures === 0) {
+      await dropNestedChildJournals({
+        stateBackend: this.stateBackend,
+        parentStackName: stackName,
+        region: this.stackRegion,
+        resources: stateResources,
+        logger: this.logger,
+        run: { runId },
+      });
+    }
     // `orphaned` is relayed rather than persisted here: this method holds no
     // state save. Its caller merges it into the post-rollback record (issue
     // #2934), which is the ONLY save on this path — dropping it there makes a
     // live, billing AWS resource untrackable and re-opens the deploy loop the
     // record closes.
     return { failures: result.failures, warnings: result.warnings, orphaned: result.orphaned };
+  }
+
+  /**
+   * The journal on a SUCCESSFUL deploy (issue #3754 split the one answer in
+   * two).
+   *
+   * - A NESTED engine keeps its journal and appends a `nested-pending-parent`
+   *   segment: its parent's deploy is still running, and if it fails, the
+   *   revert of this child's row replays exactly these ops. The previous
+   *   outputs ride along because the ops do not restore them. Older segments
+   *   are kept too, since an older parent segment may still name them.
+   * - The ROOT engine deletes its own journal (issue #1183: the baseline
+   *   moved) and every descendant's, which is the same statement made for the
+   *   whole tree — and it sweeps anything a crashed run left behind.
+   */
+  private async settleJournalAfterSuccess(
+    stackName: string,
+    completedOperations: CompletedOperation[],
+    previousState: StackState,
+    finalResources: Record<string, ResourceState>,
+    initialDeploy: boolean
+  ): Promise<void> {
+    if (this.options.parentStackInfo) {
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        [],
+        NESTED_PENDING_PARENT_REASON,
+        initialDeploy,
+        {
+          previousOutputs: {
+            outputs: { ...(previousState.outputs ?? {}) },
+            ...(Array.isArray(previousState.exportNames) && {
+              exportNames: [...previousState.exportNames],
+            }),
+          },
+        }
+      );
+      return;
+    }
+    await Promise.all([
+      this.deleteRollbackJournalBestEffort(stackName),
+      dropNestedChildJournals({
+        stateBackend: this.stateBackend,
+        parentStackName: stackName,
+        region: this.stackRegion,
+        resources: finalResources,
+        logger: this.logger,
+      }),
+    ]);
   }
 
   /**
@@ -5673,13 +5772,22 @@ export class DeployEngine {
     completedOperations: CompletedOperation[],
     failedOperations: FailedOperation[],
     reason: RollbackJournalSegment['reason'],
-    initialDeploy: boolean
+    initialDeploy: boolean,
+    /**
+     * Issue #3754: a nested child's success segment is written even when EMPTY
+     * — its presence is what tells the parent's revert that the child had
+     * nothing to undo, as opposed to having no record at all — and carries the
+     * child's pre-deploy outputs.
+     */
+    nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs'>
   ): Promise<void> {
     // A segment with no operations carries nothing to revert — skip it so a
     // failure before any resource completed does not create an empty journal.
     // A failed op alone (#1198) IS worth journaling: `cdkd rollback
     // --revert-failed` can act on it even with zero completed ops.
-    if (completedOperations.length === 0 && failedOperations.length === 0) return;
+    if (!nestedPending && completedOperations.length === 0 && failedOperations.length === 0) {
+      return;
+    }
     // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
     // carry resolved / attempted properties and previous-state snapshots read
     // from the in-memory working map, which is NOT run through the state save
@@ -5698,6 +5806,7 @@ export class DeployEngine {
         cdkdVersion: getCdkdVersion(),
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
+        ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);

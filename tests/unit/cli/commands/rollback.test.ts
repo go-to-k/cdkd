@@ -2411,3 +2411,141 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(line).toContain(WITHHELD);
   });
 });
+
+describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
+  it('reverts each nested row inside its segment run, and drops the child segments of that run after the pop', async () => {
+    const { getNestedRevertRun } = await import(
+      '../../../../src/deployment/nested-child-journal.js'
+    );
+    const seenRuns: unknown[] = [];
+    replayProvider.update.mockReset();
+    replayProvider.update.mockImplementation(async () => {
+      seenRuns.push(getNestedRevertRun());
+      return { physicalId: 'arn:child', wasReplaced: false };
+    });
+    const nestedRecord = {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { TemplateURL: 'new' },
+      attributes: {},
+      dependencies: [],
+    };
+    const updateOp = {
+      logicalId: 'Child',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::CloudFormation::Stack',
+      physicalId: 'arn:child',
+      previousState: { ...nestedRecord, properties: { TemplateURL: 'old' } },
+    };
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(1);
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? {
+              state: {
+                version: 8,
+                stackName: 'S',
+                region: 'us-east-1',
+                resources: { Child: nestedRecord },
+                outputs: {},
+                lastModified: 1,
+              },
+              etag: 'e0',
+            }
+          : null
+      ),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          // A DIFFERENT previous record per segment, so the older one is not
+          // classified as already done once the newer one restored its own.
+          {
+            runId: 'r1',
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [
+              { ...updateOp, previousState: { ...nestedRecord, properties: { TemplateURL: 'oldest' } } },
+            ],
+          },
+          { runId: 'r2', timestamp: 2, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp] },
+        ],
+      }),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+
+    await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
+
+    // Newest segment first, each nested row revert carrying ITS segment's run.
+    expect(seenRuns).toEqual([{ runId: 'r2' }, { runId: 'r1' }]);
+    expect(dropRollbackJournalSegments).toHaveBeenCalledTimes(2);
+    const predicates = dropRollbackJournalSegments.mock.calls.map(
+      (c) => [c[0], c[2]] as [string, (s: { runId?: string }) => boolean]
+    );
+    expect(predicates.map(([name]) => name)).toEqual(['S~Child', 'S~Child']);
+    expect(predicates[0]![1]({ runId: 'r2' })).toBe(true);
+    expect(predicates[0]![1]({ runId: 'r1' })).toBe(false);
+    expect(predicates[1]![1]({ runId: 'r1' })).toBe(true);
+  });
+
+  it('a failed nested revert keeps the segment AND the child segments', async () => {
+    replayProvider.update.mockReset();
+    replayProvider.update.mockRejectedValue(new Error('Cannot revert nested stack S~Child'));
+    const nestedRecord = {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes: {},
+      dependencies: [],
+    };
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(1);
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? {
+              state: {
+                version: 8,
+                stackName: 'S',
+                region: 'us-east-1',
+                resources: { Child: nestedRecord },
+                outputs: {},
+                lastModified: 1,
+              },
+              etag: 'e0',
+            }
+          : null
+      ),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            runId: 'r1',
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: 'Child',
+                changeType: 'UPDATE',
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'arn:child',
+                previousState: { ...nestedRecord, properties: { TemplateURL: 'old' } },
+              },
+            ],
+          },
+        ],
+      }),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+
+    await expect(rollbackCommand('S', { ...baseOpts })).rejects.toBeInstanceOf(PartialFailureError);
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+});
