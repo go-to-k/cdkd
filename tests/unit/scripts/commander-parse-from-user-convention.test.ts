@@ -444,8 +444,8 @@ interface AritySite {
   readonly where: string;
   readonly factory: string;
   readonly tokens: Token[];
-  /** Tokens substituted from a call of the enclosing function. */
-  readonly viaCall: boolean;
+  /** Line of the enclosing function's call the tokens were substituted from. */
+  readonly callLine?: number;
 }
 
 /**
@@ -458,15 +458,15 @@ function expandSite(
   at: number,
   arg: string,
   headers: ArgFunction[]
-): { tokens: Token[]; viaCall: boolean }[] {
+): { tokens: Token[]; callLine?: number }[] {
   const constants = stringConstants(source);
   const token = (e: string) => toToken(e, constants);
   const elements = arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`];
   const fn = headers.filter((h) => h.headerAt < at).at(-1);
   const usesParam = (e: string) => fn?.params.includes(e.replace(/^\.\.\./, '')) === true;
-  if (!fn || !elements.some(usesParam)) return [{ tokens: elements.map(token), viaCall: false }];
+  if (!fn || !elements.some(usesParam)) return [{ tokens: elements.map(token) }];
 
-  const variants: { tokens: Token[]; viaCall: boolean }[] = [];
+  const variants: { tokens: Token[]; callLine: number }[] = [];
   for (const call of source.matchAll(new RegExp(`\\b${fn.name}\\s*\\(`, 'g'))) {
     if (call.index === fn.headerAt || source.slice(fn.headerAt, call.index).trim().endsWith('function')) {
       continue;
@@ -485,7 +485,7 @@ function expandSite(
       else if (given.startsWith('[')) tokens.push(...splitTopLevel(given.slice(1, -1)).map(token));
       else tokens.push({ kind: 'spread', text: given });
     }
-    variants.push({ tokens, viaCall: true });
+    variants.push({ tokens, callLine: source.slice(0, call.index).split('\n').length });
   }
   return variants;
 }
@@ -550,8 +550,8 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     // A floor per shape the resolver claims: a literal array at the site, a
     // wrapper argument substituted from its call sites, and a group receiver
     // descended to a subcommand. An aggregate floor would hide one dead shape.
-    expect(new Set(counted.filter(({ s }) => !s.viaCall).map(({ s }) => s.where)).size).toBeGreaterThan(30);
-    expect(new Set(counted.filter(({ s }) => s.viaCall).map(({ s }) => s.where)).size).toBeGreaterThan(30);
+    expect(new Set(counted.filter(({ s }) => s.callLine === undefined).map(({ s }) => s.where)).size).toBeGreaterThan(30);
+    expect(new Set(counted.filter(({ s }) => s.callLine !== undefined).map(({ s }) => s.where)).size).toBeGreaterThan(30);
     expect(counted.filter(({ r }) => r.path.includes(" ")).length).toBeGreaterThan(100);
     expect(unresolved.length).toBeLessThan(counted.length / 20);
   });
@@ -586,7 +586,7 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
           { kind: 'lit', text: 'TD' },
           { kind: 'lit', text: 'Extra' },
         ],
-        viaCall: true,
+        callLine: 5,
       },
     ]);
   });
@@ -594,7 +594,7 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
   it("no from: 'user' parse passes more operands than its target declares", () => {
     const over = resolved.flatMap(({ s, r }) =>
       typeof r !== 'string' && r.operands.length > r.max
-        ? [`${s.where}: '${r.path}' accepts ${r.max}, got [${r.operands.join(', ')}]`]
+        ? [`${s.where}${s.callLine === undefined ? '' : ` (called at line ${s.callLine})`}: '${r.path}' accepts ${r.max}, got [${r.operands.join(', ')}]`]
         : []
     );
     expect(
