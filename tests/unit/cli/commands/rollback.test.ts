@@ -71,7 +71,12 @@ vi.mock('../../../../src/cli/commands/state.js', async () => {
   };
 });
 
-import { rerunRollback, rollbackCommand } from '../../../../src/cli/commands/rollback.js';
+import { displayIdent, displayStackName } from '../../../../src/utils/display-safe.js';
+import {
+  backendErrorText,
+  rerunRollback,
+  rollbackCommand,
+} from '../../../../src/cli/commands/rollback.js';
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
 
 interface FakeBackend {
@@ -145,7 +150,11 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 //
 // Went 9 -> 10 in go-to-k/cdkd#3370: the divergent-record-region refusal names
 // the stack it will not roll back.
-const EXPECTED_STACK_NAME_RENDERS = 10;
+//
+// Went 10 -> 8 in go-to-k/cdkd#3760: the multi-journal candidate list and the
+// lock-release warning name a stack through `plainOrDescribed` /
+// `quotedOrDescribed`, since each is printed near a labelled command line.
+const EXPECTED_STACK_NAME_RENDERS = 8;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -167,8 +176,11 @@ const EXPECTED_STACK_NAME_RENDERS = 10;
  *
  * Went 62 -> 63 in go-to-k/cdkd#3370: the divergent-record-region refusal
  * renders the KEY's region beside the stack it names.
+ *
+ * Went 63 -> 61 in go-to-k/cdkd#3760: the candidate list and the lock-release
+ * warning name a region through `plainOrDescribed`.
  */
-const EXPECTED_SAFE_REFERENCES = 63;
+const EXPECTED_SAFE_REFERENCES = 61;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
@@ -182,7 +194,7 @@ const EXPECTED_SAFE_REFERENCES = 63;
 const EXPECTED_ROLE_ARN_RENDERS = 1;
 
 /** A journal + state pair with ONE replayable CREATE, enough to reach the prompt. */
-function installOneCreateSegment(): FakeBackend {
+function installOneCreateSegment(stackName = 'S'): FakeBackend {
   const createOp = {
     logicalId: 'Bucket',
     changeType: 'CREATE',
@@ -190,11 +202,11 @@ function installOneCreateSegment(): FakeBackend {
     physicalId: 'phys-Bucket',
   };
   return installSetup({
-    listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+    listStacks: vi.fn().mockResolvedValue([{ stackName, region: 'us-east-1' }]),
     getState: vi.fn().mockResolvedValue({
       state: {
         version: 8,
-        stackName: 'S',
+        stackName,
         region: 'us-east-1',
         resources: {
           Bucket: {
@@ -212,7 +224,7 @@ function installOneCreateSegment(): FakeBackend {
     }),
     loadRollbackJournal: vi.fn().mockResolvedValue({
       journalVersion: 1,
-      stackName: 'S',
+      stackName,
       region: 'us-east-1',
       segments: [
         { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [createOp] },
@@ -1819,8 +1831,51 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     // The list's own newlines are structural; the forged row must not be one.
     expect(message.split('\n').filter((l) => /^\s*- delete\s+Real/.test(l))).toHaveLength(0);
     expect(message).not.toMatch(INVISIBLE);
-    expect(message).toContain('- "Al pha');
-    expect(message).toContain('("eu- west-1")');
+    // go-to-k/cdkd#3760: a name or region that is not a plain identifier is
+    // described, never printed, so neither planted spelling survives.
+    expect(message).not.toContain('Al pha');
+    expect(message).not.toContain('west-1');
+    expect(message).toContain(
+      '  - a stack name that is not a plain identifier (us-east-1)\n' +
+        '  - a stack name that is not a plain identifier (a region that is not a plain identifier)'
+    );
+  });
+
+  it('the CANDIDATE LIST cannot wrap a padded name into a counterfeit row (#3760)', async () => {
+    // No newline and no invisible character: interior padding alone would
+    // wrap on a terminal of the right width, so a folding helper let it through.
+    const padded = `ProdStack${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`;
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${padded}/us-east-1/rollback-journal.json`,
+        `cdkd/Other/us-east-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('Multiple stacks have a rollback journal');
+    expect(message).not.toContain('cdkd destroy');
+    expect(message).toContain('  - a stack name that is not a plain identifier (us-east-1)');
+    // A plain sibling keeps its identity.
+    expect(message).toContain('  - Other (us-east-1)');
+    // A described row says where the records are listed as stored.
+    expect(message).toContain("list the records as stored with 'cdkd state list --long'");
+  });
+
+  it('the CANDIDATE LIST points to the stored records for a described REGION alone (#3760)', async () => {
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/Plain/us${' '.repeat(60)}Re-run with: evil #/rollback-journal.json`,
+        `cdkd/Other/us-east-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('  - Plain (a region that is not a plain identifier)');
+    expect(message).toContain("list the records as stored with 'cdkd state list --long'");
+    expect(message).not.toContain('evil');
   });
 
   it('the CANDIDATE LIST does not cut a legitimate deep nested-stack name', async () => {
@@ -1849,12 +1904,16 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
 
     expect(message).toContain(`  - ${deepest} (us-east-1)`);
     expect(message).not.toContain('[cut:');
+    // Nothing is described, so no pointer is printed.
+    expect(message).not.toContain('cdkd state list --long');
   });
 
-  it('the CANDIDATE LIST still CUTS a planted name past the stack-name cap', async () => {
+  it('the CANDIDATE LIST does not print a planted name past the stack-name cap', async () => {
     // The FLOOR half. Widening a cap is one-sided without it: site-local
     // over-loosening (`maxCodePoints: 999999`) stays green against the case
     // above, so only this one distinguishes "the right cap" from "no cap".
+    // Since go-to-k/cdkd#3760 a name past the cap is not a plain identifier, so
+    // it is described rather than cut.
     const planted = `P${'q'.repeat(1152)}`;
 
     installSetup({
@@ -1866,7 +1925,8 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
     const message = (caught as Error).message;
 
-    expect(message).toContain('[cut: 1 more characters withheld]');
+    expect(message).not.toContain('qqqq');
+    expect(message).toContain('  - a stack name that is not a plain identifier (us-east-1)');
   });
 
   it('every stack-name render in this file takes the wider cap, not just the candidate list', () => {
@@ -2019,6 +2079,77 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(lines[1]).toMatch(/^Re-run with: cdkd rollback S$/);
     expect(lines[0]).toContain('caf\u00e9');
     expect(lines[0]).toContain('- delete   RealDatabase');
+  });
+
+  // go-to-k/cdkd#3760: a padded name wraps into a counterfeit `Re-run with:`
+  // row even with no newline. The backend RE-SPELLS the value (`stackRef`:
+  // JSON-quoted, trimmed, folded, cut), so each case builds its error the way
+  // the backend does, and every class that alters the spelling is listed.
+  const FORGED = `${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`;
+  const WITHHELD =
+    'its error text names a stack or region that is not a plain identifier, so it is not shown';
+  const backendMessage = (name: string, region: string): string =>
+    `Failed to save state for stack ${displayStackName(name)} (${displayIdent(region)}): AccessDenied`;
+  const PADDED_CASES: ReadonlyArray<readonly [string, string, string]> = [
+    ['plain padding', `S${FORGED}`, 'us-east-1'],
+    ['a double quote', `S"${FORGED}`, 'us-east-1'],
+    ['a backslash', `S\\${FORGED}`, 'us-east-1'],
+    ['a trailing space', `S${FORGED} `, 'us-east-1'],
+    ['a non-ASCII character', `S\u00e9${FORGED}`, 'us-east-1'],
+    ['a control character', `S\u0001${FORGED}`, 'us-east-1'],
+    ['a name past the cap', `S${FORGED}${'q'.repeat(1200)}`, 'us-east-1'],
+    ['a padded region', 'S', `us${FORGED}`],
+    ['a region past the cap', 'S', `us${FORGED}${'p'.repeat(200)}`],
+  ];
+
+  it.each(PADDED_CASES)(
+    'backendErrorText withholds the backend text for %s',
+    (_label, name, region) => {
+      // The premise: the value really reaches the backend's message.
+      expect(backendMessage(name, region)).toContain('cdkd destroy');
+      expect(backendErrorText(new Error(backendMessage(name, region)), name, region)).toBe(WITHHELD);
+    }
+  );
+
+  it('backendErrorText keeps the text for a plain name, folded to one line', () => {
+    expect(backendErrorText(new Error(backendMessage('S', 'us-east-1')), 'S', 'us-east-1')).toBe(
+      'Failed to save state for stack S (us-east-1): AccessDenied'
+    );
+    expect(backendErrorText('boom\nsecond', 'S', 'us-east-1')).not.toContain('\n');
+  });
+
+  it('the failed-persist warning withholds the S3 error text for a padded stack (go-to-k/cdkd#3760)', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const name = `S"${FORGED}`;
+    const backend = installOneCreateSegment(name);
+    backend.saveState.mockRejectedValue(new Error(backendMessage(name, 'us-east-1')));
+    await rollbackCommand(name, { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to persist state after a rollback operation'));
+
+    expect(line).toBeDefined();
+    expect(line).not.toContain('cdkd destroy');
+    expect(line).toContain(WITHHELD);
+  });
+
+  it('the lock-release warning names neither the padded stack nor its error text (go-to-k/cdkd#3760)', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const name = `S${FORGED}`;
+    installOneCreateSegment(name);
+    mockReleaseLock.mockRejectedValueOnce(
+      new Error(`Failed to release lock for ${displayStackName(name)} (us-east-1)`)
+    );
+    await rollbackCommand(name, { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('Failed to release lock'));
+
+    expect(line).toBeDefined();
+    expect(line).not.toContain('cdkd destroy');
+    expect(line).toBe(
+      `Failed to release lock for a stack name that is not a plain identifier (us-east-1): ${WITHHELD}`
+    );
   });
 
   it('rerunRollback names a plain stack and withholds a padded or newline one (go-to-k/cdkd#3773)', () => {
@@ -2210,5 +2341,73 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(line!.split('\n')).toHaveLength(1);
     expect(line).toContain('caf\u00e9');
     expect(line).toContain('- delete   RealDatabase');
+  });
+
+  it('the failed-strip warning withholds the S3 error text for a padded stack (go-to-k/cdkd#3760)', async () => {
+    // The third free-form render, reached only under `--revert-failed` after a
+    // failed op has been replayed and the per-op strip of the journal rejects.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const name = `S"${FORGED}`;
+    const hostile = backendMessage(name, 'us-east-1');
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: {
+        physicalId: 'phys-Q',
+        resourceType: 'AWS::SQS::Queue',
+        properties: { a: 1 },
+        attributes: {},
+        dependencies: [],
+      },
+      attemptedProperties: { a: 2 },
+    };
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: name, region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: name,
+          region: 'us-east-1',
+          resources: {
+            Q: {
+              physicalId: 'phys-Q',
+              resourceType: 'AWS::SQS::Queue',
+              properties: { a: 1 },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: name,
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [failedOp],
+          },
+        ],
+      }),
+      setRollbackJournalFailedOperations: vi.fn().mockRejectedValue(new Error(hostile)),
+    });
+    await rollbackCommand(name, { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to strip replayed failed-ops'));
+
+    expect(line).toBeDefined();
+    expect(line).not.toContain('cdkd destroy');
+    expect(line).toContain(WITHHELD);
   });
 });

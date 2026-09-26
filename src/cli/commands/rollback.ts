@@ -1,5 +1,10 @@
 import { Command, Option } from 'commander';
-import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+import {
+  pasteableCommand,
+  plainOrDescribed,
+  quotedOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import {
   commonOptions,
   stateOptions,
@@ -45,6 +50,7 @@ import type { StackStateRef } from '../../state/s3-state-backend.js';
 import {
   displayIdent,
   displaySafe,
+  isPasteableIdent,
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
@@ -70,6 +76,22 @@ export function rerunRollback(stackName: string): string {
     withheldTargetClause(rerun, 'stack', 'cdkd rollback', "This stack's name") +
     `\nRe-run with: ${rerun.command}`
   );
+}
+
+/**
+ * The error text of a state-backend or lock call, for a warning printed in the
+ * run that ends in {@link rerunRollback}'s labelled line. The backend's message
+ * names the stack and region, both taken from a journal S3 key, and it
+ * RE-SPELLS them (quoted, folded, cut), so a substitution on the raw value
+ * cannot find them. When either is not a plain identifier the text is withheld
+ * whole: its padding could otherwise wrap on screen into a counterfeit
+ * `Re-run with:` row above the real one (go-to-k/cdkd#3760).
+ */
+export function backendErrorText(error: unknown, stackName: string, region: string): string {
+  if (!isPasteableIdent(stackName) || !isPasteableIdent(region)) {
+    return 'its error text names a stack or region that is not a plain identifier, so it is not shown';
+  }
+  return displaySafe(error instanceof Error ? error.message : String(error));
 }
 
 interface RollbackOptions {
@@ -188,7 +210,7 @@ function snapshotNote(
  *
  * Scope is answered by grepping BOTH `safe(` and `safeStack(` -- the latter is
  * not matched by the former, and a sentence naming only one understates the
- * population by twelve.
+ * population.
  */
 function safe(value: unknown): string {
   return displayIdent(value);
@@ -210,8 +232,8 @@ function safe(value: unknown): string {
  *
  * It is a NAMED helper rather than a `maxCodePoints` argument repeated per
  * site, because a per-site spelling of exactly this rule is what issue #3164
- * exists to stop: the first cut of that fix widened ONE of this file's twelve
- * stack-name renders and left eleven cut. Every value that is NOT a stack name --
+ * exists to stop: the first cut of that fix widened ONE of this file's
+ * stack-name renders and left the rest cut. Every value that is NOT a stack name --
  * a region (at most 25 characters), a logical id, a resource type, a change
  * type -- keeps `safe()` and its tighter default.
  */
@@ -492,14 +514,29 @@ export async function rollbackCommand(
         return;
       }
       if (scoped.length > 1) {
-        // `safeStack` for the name, `safe` for the region -- the same split
-        // every stack-name render in this file takes. These rows are what the
-        // user picks a `cdkd rollback <stack>` argument from.
+        // These rows are what the user picks a `cdkd rollback <stack>` argument
+        // from, beside a quoted command template. Both values come from journal
+        // S3 keys, so each is named only when it is a plain identifier: padding
+        // that wraps on screen could otherwise spell a counterfeit labelled row
+        // (go-to-k/cdkd#3760). A real stack name and region always are.
         const list = scoped
-          .map((c) => `  - ${safeStack(c.stackName)} (${safe(c.region)})`)
+          .map(
+            (c) =>
+              `  - ${plainOrDescribed(c.stackName, 'stack name')} ` +
+              `(${plainOrDescribed(c.region ?? '', 'region')})`
+          )
           .join('\n');
+        // A described row cannot be told apart from another, so say where the
+        // records are listed as stored.
+        const described = scoped.some(
+          (c) => !isPasteableIdent(c.stackName) || !isPasteableIdent(c.region ?? '')
+        )
+          ? `A row whose stack name or region is not a plain identifier is described, not named; ` +
+            `list the records as stored with 'cdkd state list --long'.\n`
+          : '';
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +
+            described +
             `Re-run 'cdkd rollback <stack>' (add --stack-region if the same name spans regions).`
         );
       }
@@ -799,7 +836,7 @@ export async function rollbackCommand(
               return;
             }
             logger.warn(
-              `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
+              `Failed to persist state after a rollback operation: ${backendErrorText(retryError, stackName, region)}. ` +
                 `The resource was reverted in AWS; re-run the rollback to reconcile state.` +
                 // `displayIdent` (what `safeStack` applies) bounds a JSON string,
                 // not a shell word, so the name went on a trailing labelled line
@@ -905,7 +942,7 @@ export async function rollbackCommand(
                       else segment.failedOperations = remaining;
                     } catch (stripError) {
                       logger.warn(
-                        `Failed to strip replayed failed-ops from the journal: ${displaySafe(stripError instanceof Error ? stripError.message : String(stripError))}`
+                        `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
                       );
                     }
                   }
@@ -1047,7 +1084,7 @@ export async function rollbackCommand(
       try {
         await setup.lockManager.releaseLock(stackName, region).catch((err) => {
           logger.warn(
-            `Failed to release lock for '${safeStack(stackName)}' (${safe(region)}): ${displaySafe(err instanceof Error ? err.message : String(err))}`
+            `Failed to release lock for ${quotedOrDescribed(stackName, 'stack name')} (${plainOrDescribed(region, 'region')}): ${backendErrorText(err, stackName, region)}`
           );
         });
       } finally {

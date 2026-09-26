@@ -1,5 +1,9 @@
 import { Command, Option } from 'commander';
-import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+import {
+  pasteableCommand,
+  plainOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import {
   commonOptions,
   deprecatedRegionOption,
@@ -52,6 +56,19 @@ import { UNRENDERABLE } from '../../state/lock-contention-message.js';
  * `red(x)` would strip cdkd's OWN ANSI and leave the row uncolored.
  */
 const safeId = (value: unknown): string => displaySafe(value, { asciiOnly: true });
+
+/**
+ * {@link safeId} for a run-list field printed above the labelled
+ * `Read one run's events with:` footer: the value only when it is ONE bounded
+ * token, else `fallback`. Every field it serves is a single token when cdkd
+ * wrote it, and a value carrying spaces or padding could wrap on screen into a
+ * counterfeit labelled row above the real one (go-to-k/cdkd#3760).
+ */
+const RUN_LIST_TOKEN = /^[!-~]{1,64}$/;
+const runListToken = (value: unknown, fallback: string): string => {
+  const rendered = safeId(value);
+  return RUN_LIST_TOKEN.test(rendered) ? rendered : fallback;
+};
 
 /** Free-prose counterpart of {@link safeId}. See that helper's block comment. */
 const safeText = (value: unknown): string => displaySafe(value);
@@ -464,21 +481,24 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
  * Issue #2438: every `run.*` field here comes back out of
  * `deployments/index.json` via a plain `JSON.parse`, so its declared type is a
  * claim about the writer, not about the bytes on disk — each one goes through
- * {@link safeId}. `result` is sanitised BEFORE the colour decision so the
+ * {@link runListToken}, and the header's stack and region through
+ * `plainOrDescribed` (go-to-k/cdkd#3760). `result` is sanitised BEFORE the colour decision so the
  * colour matches the text the user actually sees.
  */
 function printRunList(stackName: string, region: string, runs: DeploymentRunSummary[]): void {
   const logger = getLogger();
-  const safeStack = safeId(stackName) || UNRENDERABLE;
+  // Named only when a plain identifier: this header sits above the labelled
+  // footer below (go-to-k/cdkd#3760).
   logger.info(
-    `${bold('Deployment runs for')} ${cyan(safeStack)} ${gray(`(${safeId(region) || UNRENDERABLE})`)}`
+    `${bold('Deployment runs for')} ${cyan(plainOrDescribed(stackName, 'stack name'))} ` +
+      gray(`(${plainOrDescribed(region, 'region')})`)
   );
   if (runs.length === 0) {
     logger.info(gray('  (no runs recorded)'));
     return;
   }
   for (const run of runs) {
-    const result = safeId(run.result) || UNRENDERABLE;
+    const result = runListToken(run.result, UNRENDERABLE);
     const resultColored =
       result === 'SUCCEEDED'
         ? green(result)
@@ -491,7 +511,7 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
           ? gray(result)
           : red(result);
     logger.info(
-      `  ${cyan(safeId(run.runId) || UNRENDERABLE)}  ${safeId(run.command) || UNRENDERABLE}  ` +
+      `  ${cyan(runListToken(run.runId, UNRENDERABLE))}  ${runListToken(run.command, UNRENDERABLE)}  ` +
         `${resultColored}  ` +
         // These two keep `'?'` for BOTH the absent and the sanitised-away
         // case, deliberately. `summarizeRunFromJsonl` writes `''` here when
@@ -501,12 +521,12 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
         // error line has; generalising that distinction is what review found
         // re-making a false claim on a new input class every round, so it now
         // lives at exactly one site. Recorded in docs/deployment-events.md.
-        `${gray(safeId(run.startedAt) || '?')} -> ${gray(safeId(run.finishedAt) || '?')}  ` +
-        `${gray(`cdkd ${safeId(run.cdkdVersion) || UNRENDERABLE}`)}  ` +
+        `${gray(runListToken(run.startedAt, '?'))} -> ${gray(runListToken(run.finishedAt, '?'))}  ` +
+        `${gray(`cdkd ${runListToken(run.cdkdVersion, UNRENDERABLE)}`)}  ` +
         `${gray(`${safeCount(run.eventCount)} events`)}`
     );
   }
-  // The RAW `stackName`, not `safeStack`: the gate's whole test is sanitized
+  // The RAW `stackName`, not a sanitized spelling: the gate's whole test is sanitized
   // === raw, so handing it an already-sanitized value compares two sanitized
   // spellings and passes for anything. A name sanitizing would ALTER prints as
   // a hole here rather than in its altered spelling, which would address a
