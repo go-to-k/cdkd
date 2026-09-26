@@ -65,6 +65,9 @@ export const NESTED_PENDING_PARENT_REASON = 'nested-pending-parent' as const;
 
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
+/** See {@link dropNestedChildJournals}: a backstop, far past any real tree. */
+const MAX_NESTED_WALK_DEPTH = 32;
+
 /** The child state key `NestedStackProvider` derives: `<parent>~<logicalId>`. */
 export function nestedChildStackName(parentStackName: string, logicalId: string): string {
   return `${parentStackName}~${logicalId}`;
@@ -123,19 +126,40 @@ export async function dropNestedChildJournals(args: {
   resources: Record<string, ResourceState> | undefined;
   logger: Pick<Logger, 'debug' | 'warn'>;
   run?: NestedRevertRun;
+  /** Internal: how deep the walk already is. */
+  depth?: number;
 }): Promise<void> {
   const { stateBackend, parentStackName, region, resources, logger, run } = args;
+  const depth = args.depth ?? 0;
   if (!isPlainRecord(resources)) return;
+  // Every level lengthens the key (`<parent>~<id>`), so a real tree ends where
+  // a child has no state. The bound is for a record that names ITSELF again
+  // (a hand-edited or planted state), which would otherwise walk forever.
+  if (depth >= MAX_NESTED_WALK_DEPTH) {
+    logger.warn(
+      `Stopped clearing nested rollback journals below ${displayIdent(parentStackName)}: ` +
+        `the nesting is deeper than ${MAX_NESTED_WALK_DEPTH} levels.`
+    );
+    return;
+  }
   for (const [logicalId, record] of Object.entries(resources)) {
     if (!isPlainRecord(record) || record['resourceType'] !== NESTED_STACK_TYPE) continue;
     const child = nestedChildStackName(parentStackName, logicalId);
     try {
       const data = await stateBackend.getState(child, region);
-      if (data && isPlainRecord(data.state) && isPlainRecord(data.state.resources)) {
+      // Recurse only into a record that IS this child's: one whose body names
+      // another stack is not evidence of what `<child>` contains.
+      if (
+        data &&
+        isPlainRecord(data.state) &&
+        isPlainRecord(data.state.resources) &&
+        (data.state.stackName === undefined || data.state.stackName === child)
+      ) {
         await dropNestedChildJournals({
           ...args,
           parentStackName: child,
           resources: data.state.resources,
+          depth: depth + 1,
         });
       }
       if (run) {

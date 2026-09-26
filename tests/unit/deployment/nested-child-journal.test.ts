@@ -365,6 +365,45 @@ describe('dropNestedChildJournals (#3754)', () => {
     expect(t.order).toContain('delete Root~Second');
   });
 
+  it('does not recurse into a record whose body names ANOTHER stack', async () => {
+    // A backend answering every key with the parent's own record (a planted
+    // state, or a test double) would otherwise walk `Root~Child~Child~...`
+    // until the heap ran out.
+    const t = tree();
+    t.stateBackend.getState.mockResolvedValue({
+      state: { stackName: 'Root', resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } } },
+    } as never);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+    });
+
+    expect(t.stateBackend.getState).toHaveBeenCalledOnce();
+    expect(t.order).toEqual(['delete Root~Child']);
+  });
+
+  it('stops at the depth bound when every level names itself as the child', async () => {
+    const t = tree();
+    t.stateBackend.getState.mockImplementation(async (name: string) => ({
+      state: { stackName: name, resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } } },
+    }));
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+    });
+
+    expect(t.stateBackend.getState).toHaveBeenCalledTimes(32);
+    expect(t.logger.warn).toHaveBeenCalledWith(expect.stringContaining('deeper than 32 levels'));
+  });
+
   it('skips a child with no journal instead of issuing a delete', async () => {
     const t = tree();
     t.stateBackend.loadRollbackJournal.mockResolvedValue(null as never);
