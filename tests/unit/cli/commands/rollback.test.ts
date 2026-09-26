@@ -107,10 +107,13 @@ interface FakeBackend {
  */
 let mockAcquireLockWithRetry: ReturnType<typeof vi.fn>;
 let mockReleaseLock: ReturnType<typeof vi.fn>;
+/** The top-level lock the nested pending-record judgement reads (issue #3754). */
+let mockGetLockInfo: ReturnType<typeof vi.fn>;
 
 function installSetup(backend: Partial<FakeBackend>): FakeBackend {
   mockAcquireLockWithRetry = vi.fn().mockResolvedValue(undefined);
   mockReleaseLock = vi.fn().mockResolvedValue(undefined);
+  mockGetLockInfo = vi.fn().mockResolvedValue(null);
   const full: FakeBackend = {
     listStacks: vi.fn().mockResolvedValue([]),
     listRawKeys: vi.fn().mockResolvedValue([]),
@@ -128,6 +131,7 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
     lockManager: {
       acquireLockWithRetry: mockAcquireLockWithRetry,
       releaseLock: mockReleaseLock,
+      getLockInfo: mockGetLockInfo,
     },
     awsClients: {},
     region: 'us-east-1',
@@ -165,7 +169,11 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 //
 // Went 11 -> 12 in the same issue's review round: the refusal of a plain
 // rollback over a failed nested child names that child.
-const EXPECTED_STACK_NAME_RENDERS = 12;
+//
+// Went 12 -> 13 in the parent review round: the pending-record refusal names
+// the stack, the parent whose journal it could not read, and the top-level
+// stack to roll back (one render more than the parent-only wording).
+const EXPECTED_STACK_NAME_RENDERS = 13;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -193,8 +201,12 @@ const EXPECTED_STACK_NAME_RENDERS = 12;
  *
  * Went 61 -> 63 in go-to-k/cdkd#3754: the nested-pending refusal renders the
  * region, and the nested plan preview renders a failed read's error text.
+ *
+ * Went 63 -> 65 in its parent review round: the pending-record judgement
+ * renders the error text of an unreadable parent journal and of an unreadable
+ * top-level lock, plus the region in its refusal.
  */
-const EXPECTED_SAFE_REFERENCES = 63;
+const EXPECTED_SAFE_REFERENCES = 65;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
@@ -2615,7 +2627,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     });
 
     await expect(rollbackCommand('S~Child', { ...baseOpts })).rejects.toThrow(
-      /its parent has not settled[\s\S]*Roll back the parent stack/
+      /its parent has not settled[\s\S]*Roll back the top-level stack S instead/
     );
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect(backend.saveState).not.toHaveBeenCalled();
@@ -2831,7 +2843,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
   });
 
-  it('DISCARDS an orphaned pending record (its parent has no journal) and says there is nothing left', async () => {
+  it('DISCARDS an orphaned pending record (its parent has no journal) after the confirmation, as a successful cleanup', async () => {
     let childSegments: unknown[] = [...childJournal.segments];
     const dropRollbackJournalSegments = vi.fn(
       async (_n: string, _r: string, drop: (s: { reason: string }) => boolean) => {
@@ -2849,9 +2861,103 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
       ...({ dropRollbackJournalSegments } as object),
     });
 
-    await expect(rollbackCommand('S~Child', { ...baseOpts })).rejects.toThrow(/Nothing to roll back/);
+    // A journal holding only orphans is a cleanup, reported as success.
+    await expect(rollbackCommand('S~Child', { ...baseOpts })).resolves.toBeUndefined();
     expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
     expect(childSegments).toEqual([]);
+    // Inside this stack's own lock: acquired before the drop, released after.
+    const dropAt = dropRollbackJournalSegments.mock.invocationCallOrder[0]!;
+    expect(mockAcquireLockWithRetry.mock.invocationCallOrder[0]!).toBeLessThan(dropAt);
+    expect(mockReleaseLock.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(dropAt);
+  });
+
+  const orphanSetup = (overrides: {
+    parentJournal?: () => Promise<unknown>;
+    childSegments?: unknown[];
+  } = {}) => {
+    const dropRollbackJournalSegments = vi.fn().mockResolvedValue(1);
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S~A~B', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({ ...parentState, state: { ...parentState.state, stackName: 'S~A~B' } }),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) => {
+        if (name === 'S~A~B') return { ...childJournal, segments: overrides.childSegments ?? childJournal.segments };
+        if (name === 'S~A') return overrides.parentJournal ? overrides.parentJournal() : null;
+        return null;
+      }),
+      ...({ dropRollbackJournalSegments } as object),
+    });
+    return { backend, dropRollbackJournalSegments };
+  };
+
+  it('REFUSES, and discards nothing, when the parent journal cannot be READ', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup({
+      parentJournal: () => Promise.reject(new Error('journalVersion 9 is newer')),
+    });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).rejects.toThrow(
+      /cannot be judged: the journal of its parent S~A could not be read[\s\S]*Roll back the top-level stack S instead/
+    );
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES, and discards nothing, while the TOP-LEVEL stack holds a live lock (a deploy may be running)', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup();
+    mockGetLockInfo.mockResolvedValue({ owner: 'ci', timestamp: Date.now(), expiresAt: Date.now() + 60_000 });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).rejects.toThrow(
+      /the top-level stack is locked/
+    );
+    expect(mockGetLockInfo).toHaveBeenCalledWith('S', 'us-east-1');
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: an EXPIRED top-level lock does not block the orphan cleanup', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup();
+    mockGetLockInfo.mockResolvedValue({ owner: 'ci', timestamp: 0, expiresAt: Date.now() - 1 });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).resolves.toBeUndefined();
+    expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
+  });
+
+  it('a live-record refusal names the TOP-LEVEL stack, not the direct parent', async () => {
+    orphanSetup({
+      parentJournal: async () => ({ ...childJournal, stackName: 'S~A' }),
+    });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).rejects.toThrow(
+      /Roll back the top-level stack S instead/
+    );
+  });
+
+  it('a run-less pending record is an orphan even when the parent HAS a journal', async () => {
+    const { dropRollbackJournalSegments } = orphanSetup({
+      childSegments: [{ timestamp: 1, reason: 'nested-pending-parent', initialDeploy: false, operations: [] }],
+      parentJournal: async () => ({ ...childJournal, stackName: 'S~A' }),
+    });
+
+    await expect(rollbackCommand('S~A~B', { ...baseOpts })).resolves.toBeUndefined();
+    expect(dropRollbackJournalSegments).toHaveBeenCalledOnce();
+  });
+
+  it('declining the confirmation discards NOTHING, and the plan listed the discard', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+    const originalIsTTY = process.stdin.isTTY;
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValueOnce('n');
+    const { dropRollbackJournalSegments } = orphanSetup();
+
+    try {
+      await rollbackCommand('S~A~B', { ...baseOpts, force: false, yes: false });
+    } finally {
+      setStdinIsTty(originalIsTTY);
+    }
+
+    expect(dropRollbackJournalSegments).not.toHaveBeenCalled();
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('Discard 2 record(s) of nested deploys'))).toBe(true);
+    expect(lines).toContain('Rollback cancelled');
   });
 
   it('an orphaned pending record no longer blocks the child OWN failure segment', async () => {

@@ -116,7 +116,7 @@ export function revertedNestedRowIds(
  * none was skipped — each mapped to the grandchildren ITS replay completed.
  * Only these have pending segments a settled rollback may drop: a row the
  * replay skipped never reached the provider, and a child replay that skipped
- * an op stays retryable.
+ * an op leaves its record for inspection.
  */
 export type SettledNestedRows = Map<string, SettledNestedRows>;
 
@@ -240,7 +240,8 @@ export async function dropNestedChildJournals(args: {
  *
  * Deliberately narrow. A child row the rollback did not revert (a failed
  * nested deploy is a failed row, and a skipped revert never reached the
- * provider) keeps its journal, and so does a child whose replay skipped an op.
+ * provider) keeps its journal, and a child whose replay skipped an op keeps
+ * its record for inspection.
  * Only PENDING segments go: a child's own failure segment of the same run is
  * what `cdkd rollback <parent>~<child>` (and `--revert-failed`) needs.
  *
@@ -359,7 +360,10 @@ function warnUncleared(logger: Pick<Logger, 'warn'>, child: string, error: unkno
  * Returns how many ops the replay (grandchildren included) SKIPPED with a
  * warning. Zero registers this row in `run.settled`, so the settled rollback
  * may drop its pending segments; anything else is added to `run.warnings`
- * and the segments stay, retryable. The segments are never dropped here.
+ * and the segments are left for inspection. (Not for a re-run: the parent's
+ * segment is popped all the same, so the record becomes an orphan that the
+ * next direct rollback of the child discards, or the next successful
+ * top-level deploy deletes.) The segments are never dropped here.
  */
 export async function revertNestedChildFromJournal(args: {
   ctx: NestedStackProviderContext;

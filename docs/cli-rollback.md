@@ -139,8 +139,11 @@ These are surfaced in the plan rather than applied silently.
     operations. `--revert-failed` replays them in order; the child's failed
     resource then needs `cdkd rollback <parent>~<child> --revert-failed`.
   - **A direct rollback of the child** is refused while its parent's journal
-    still holds the run, naming the parent. A record whose run the parent no
-    longer holds is discarded, so it cannot block the child's own rollback.
+    still holds the run, while that journal cannot be read, or while the
+    top-level stack is locked by a running deploy; the message names the
+    top-level stack to roll back. A record whose run the parent no longer
+    holds is listed in the plan and discarded after you confirm, so it cannot
+    block the child's own rollback.
   - Run without a stack name, `cdkd rollback` does not offer a child's
     journal separately when its parent has one.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the

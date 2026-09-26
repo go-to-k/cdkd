@@ -53,6 +53,7 @@ import {
   type StackState,
   orphansAfterRollback,
   type StackOrphanRecord,
+  type LockInfo,
 } from '../../types/state.js';
 import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
 import {
@@ -640,53 +641,20 @@ export async function rollbackCommand(
       // error telling the user to upgrade cdkd.
       const stateData = await setup.stateBackend.getState(stackName, region);
       let journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
-      // Issue #3754: a `nested-pending-parent` segment records a nested
-      // child's deploy that SUCCEEDED inside a parent deploy. While the
-      // parent's journal still holds that run, only the parent's rollback may
-      // replay it: replayed here it would roll the child back under a parent
-      // record that still describes the new configuration. Refused before any
-      // replay, and for the whole journal, since popping is positional.
-      //
-      // A pending segment whose run the parent's journal NO LONGER holds is an
-      // orphan (its parent run settled without dropping it, crashed before
-      // writing a journal, or the drop failed). Nothing will ever replay it, and
-      // left in place it would block this command for the child's own
-      // failures, so it is discarded here, under this stack's lock.
-      if (journal?.segments.some((s) => s.reason === NESTED_PENDING_PARENT_REASON)) {
-        const cut = stackName.lastIndexOf('~');
-        const parent = cut > 0 ? stackName.slice(0, cut) : undefined;
-        const parentJournal =
-          parent !== undefined
-            ? await setup.stateBackend.loadRollbackJournal(parent, region).catch(() => null)
-            : null;
-        const parentRuns = new Set(
-          (parentJournal?.segments ?? []).flatMap((s) => (s.runId !== undefined ? [s.runId] : []))
-        );
-        const isPending = (s: { reason: string }): boolean =>
-          s.reason === NESTED_PENDING_PARENT_REASON;
-        const live = journal.segments.some(
-          (s) => isPending(s) && s.runId !== undefined && parentRuns.has(s.runId)
-        );
-        if (live && parent !== undefined) {
-          throw new Error(
-            `The rollback journal of nested stack ${safeStack(stackName)} (${safe(region)}) holds the ` +
-              `record of a nested deploy that its parent has not settled, which only the parent's ` +
-              `rollback may replay. Roll back the parent stack ${safeStack(parent)} instead, or ` +
-              `re-deploy it, which clears the record.`
-          );
-        }
-        const discarded = await setup.stateBackend.dropRollbackJournalSegments(
-          stackName,
-          region,
-          isPending
-        );
-        logger.info(
-          `Discarded ${discarded} record(s) of nested deploys whose parent run no longer has a ` +
-            `journal to replay them.`
-        );
-        journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
+      // Issue #3754: `nested-pending-parent` records, judged BEFORE the plan and
+      // the prompt, and written only after the confirmation (below).
+      const orphanedPending = journal
+        ? await judgeNestedPendingRecords(setup, stackName, region, journal.segments)
+        : 0;
+      if (journal && orphanedPending > 0) {
+        // Replayed from the in-memory journal; the S3 copy loses the same
+        // segments once the user confirms, before any pop.
+        journal = {
+          ...journal,
+          segments: journal.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
+        };
       }
-      if (!journal || journal.segments.length === 0) {
+      if (!journal || (journal.segments.length === 0 && orphanedPending === 0)) {
         throw new Error(
           `Nothing to roll back for '${safeStack(stackName)}' (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
@@ -775,8 +743,9 @@ export async function rollbackCommand(
 
       // Informational role-arn note (issue #1183): the newest segment recorded
       // a role, but --role-arn was not passed this run.
-      const newestSegment = journal.segments[journal.segments.length - 1]!;
-      if (newestSegment.roleArn && !options.roleArn) {
+      // Absent when the journal held only orphaned nested records (issue #3754).
+      const newestSegment = journal.segments[journal.segments.length - 1];
+      if (newestSegment?.roleArn && !options.roleArn) {
         // `safe()`'s 255-code-point default is the WRONG cap for an ARN, and
         // this is the one site in this file holding one (issue
         // go-to-k/cdkd#3397 review). An AWS-legal role ARN reaches ~613 --
@@ -794,6 +763,12 @@ export async function rollbackCommand(
 
       // 5. Plan — newest-first, one block per segment.
       logger.info(`\nRollback plan for '${safeStack(stackName)}' (${safe(region)}):`);
+      if (orphanedPending > 0) {
+        logger.info(
+          `\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
+            `has a journal to replay them (nothing else would ever replay them).`
+        );
+      }
       // Plan preview walks a COPY of state so it does not disturb replay.
       const planStateView: Record<string, ResourceState> = { ...stateResources };
       for (let s = journal.segments.length - 1; s >= 0; s--) {
@@ -861,6 +836,21 @@ export async function rollbackCommand(
           logger.info('Rollback cancelled');
           return;
         }
+      }
+
+      // Issue #3754: the orphaned nested records go now — after the
+      // confirmation, before the first pop, so the positional pops below act on
+      // the journal the plan showed.
+      if (orphanedPending > 0) {
+        const discarded = await setup.stateBackend.dropRollbackJournalSegments(
+          stackName,
+          region,
+          (s) => s.reason === NESTED_PENDING_PARENT_REASON
+        );
+        logger.info(
+          `Discarded ${discarded} record(s) of nested deploys whose parent run no longer has a ` +
+            `journal to replay them.`
+        );
       }
 
       // 6. Events recorder for this rollback run.
@@ -1249,6 +1239,82 @@ export async function rollbackCommand(
     }
     setup.dispose();
   }
+}
+
+/**
+ * Judge a nested child's `nested-pending-parent` records (issue #3754) before
+ * anything is shown or written. Returns how many are ORPHANS to discard after
+ * the confirmation; THROWS when one may still be needed.
+ *
+ * - A record whose run the direct parent's journal still holds is LIVE: only a
+ *   rollback of the top-level stack may replay it, so the command refuses.
+ * - The parent's journal being UNREADABLE (a throttle, a newer journal version,
+ *   a malformed body) is not "no journal": the record cannot be judged, so the
+ *   command refuses rather than discard one the parent will need.
+ * - An in-flight top-level deploy writes its journal only when it fails, so its
+ *   run is invisible while it runs; a LIVE lock on the top-level stack refuses
+ *   too. (Its child deploys and reverts take this child's lock, which this
+ *   command holds, so no new record can land while it runs.)
+ * - Everything else — including a record with no run id, which no parent run
+ *   can select — is an orphan: its parent run settled without dropping it,
+ *   crashed before writing a journal, or the drop failed.
+ */
+async function judgeNestedPendingRecords(
+  setup: {
+    stateBackend: Pick<S3StateBackend, 'loadRollbackJournal'>;
+    lockManager: { getLockInfo(stack: string, region: string): Promise<LockInfo | null> };
+  },
+  stackName: string,
+  region: string,
+  segments: ReadonlyArray<{ reason: string; runId?: string }>
+): Promise<number> {
+  const pending = segments.filter((s) => s.reason === NESTED_PENDING_PARENT_REASON);
+  if (pending.length === 0) return 0;
+  const lastCut = stackName.lastIndexOf('~');
+  const parent = lastCut > 0 ? stackName.slice(0, lastCut) : undefined;
+  const topLevel = stackName.split('~')[0]!;
+  const refuse = (detail: string): never => {
+    throw new Error(
+      `The rollback journal of nested stack ${safeStack(stackName)} (${safe(region)}) holds the ` +
+        `record of a nested deploy that ${detail} Roll back the top-level stack ` +
+        `${safeStack(topLevel)} instead, or re-deploy it, which clears the record.`
+    );
+  };
+  if (parent === undefined) return pending.length;
+
+  let parentJournal: { segments: ReadonlyArray<{ runId?: string }> } | null;
+  try {
+    parentJournal = await setup.stateBackend.loadRollbackJournal(parent, region);
+  } catch (error) {
+    return refuse(
+      `cannot be judged: the journal of its parent ${safeStack(parent)} could not be read ` +
+        `(${safe(error instanceof Error ? error.message : String(error))}), so the record may ` +
+        `still be needed.`
+    );
+  }
+  const parentRuns = new Set(
+    (parentJournal?.segments ?? []).flatMap((s) => (s.runId !== undefined ? [s.runId] : []))
+  );
+  if (pending.some((s) => s.runId !== undefined && parentRuns.has(s.runId))) {
+    refuse(`its parent has not settled, which only a rollback of the top-level stack may replay.`);
+  }
+
+  let lock: LockInfo | null;
+  try {
+    lock = await setup.lockManager.getLockInfo(topLevel, region);
+  } catch (error) {
+    return refuse(
+      `cannot be judged: the lock of the top-level stack could not be read ` +
+        `(${safe(error instanceof Error ? error.message : String(error))}).`
+    );
+  }
+  if (lock && lock.expiresAt > Date.now()) {
+    refuse(
+      `may belong to a deploy still running: the top-level stack is locked. Retry once it is ` +
+        `free.`
+    );
+  }
+  return pending.length;
 }
 
 /**
