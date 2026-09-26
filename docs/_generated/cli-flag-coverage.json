@@ -62,7 +62,8 @@
       "flag": "--app",
       "integs": [
         "intrinsics-torture-2",
-        "nested-stack-deep"
+        "nested-stack-deep",
+        "stage-assets"
       ]
     },
     {

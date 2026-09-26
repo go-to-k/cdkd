@@ -30,6 +30,8 @@
 #      future CDK change that flattens it turns this into a loud failure
 #      rather than a silently vacuous run.
 #   3. invoke both Lambdas and assert their DISTINCT markers.
+#   3b. hide the Stage's manifest.json and assert destroy names the Stage and
+#      leaves the stack in state (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -278,6 +280,36 @@ if [ "${IMAGE_MARKER}" != "stage-docker-asset" ]; then
   exit 1
 fi
 echo "    OK: both markers correct"
+
+# --- Phase 2b: destroy while the Stage fails to load names the Stage --------
+# Hiding the Stage's own manifest.json is the one Stage failure the assembly
+# reader tolerates: the stack drops out of the synthesized app, so the
+# selection comes back empty. destroy must name the Stage rather than answer a
+# bare "No matching stacks found in state" (go-to-k/cdkd#3507), and must not
+# touch the stack, which is still in state. `--app cdk.out` reads the Phase 0
+# assembly instead of re-synthesizing over the hidden file.
+echo "==> Phase 2b: destroy with the Stage manifest hidden names the Stage"
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+HIDDEN_OUT=$(node "${LOCAL_DIST}" destroy "${STACK_PATH}" --app cdk.out \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -ne 0 ]; then
+  echo "FAIL: destroy with the Stage hidden exited ${HIDDEN_RC}, expected 0 (nothing selected)" >&2
+  exit 1
+fi
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No matching stacks found in state. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: destroy did not name the Stage that failed to load" >&2
+  exit 1
+fi
+if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null; then
+  echo "FAIL: state file gone after a destroy that selected nothing" >&2
+  exit 1
+fi
+echo "    OK: Stage named, stack left in place"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"
