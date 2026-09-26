@@ -198,7 +198,9 @@ import type { RollbackJournalSegment } from '../types/rollback-journal.js';
 import {
   NESTED_PENDING_PARENT_REASON,
   dropNestedChildJournals,
-  nestedPreviousOutputs,
+  dropSettledNestedJournals,
+  nestedPendingSnapshot,
+  revertedNestedRowIds,
   withNestedRevertRun,
 } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
@@ -5223,7 +5225,11 @@ export class DeployEngine {
         // partial / failed rollback keeps the full segment so `cdkd
         // rollback` can resume.
         if (autoRollbackClean) {
-          await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
+          await this.settleNestedChildrenAfterCleanRollback(
+            stackName,
+            completedOperations,
+            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+          );
         }
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
@@ -5264,7 +5270,11 @@ export class DeployEngine {
           );
           this.logger.debug('State saved after deployment failure (retry succeeded)');
           if (autoRollbackClean) {
-            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
+            await this.settleNestedChildrenAfterCleanRollback(
+              stackName,
+              completedOperations,
+              await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+            );
           }
         } catch (retryError) {
           this.logger.warn(
@@ -5581,18 +5591,7 @@ export class DeployEngine {
         this.rollbackExecutorContext(previousState)
       )
     );
-    // A clean replay settled every reverted child: drop their segments for
-    // this run so nothing replayable outlives the rollback that consumed it.
-    if (result.failures === 0) {
-      await dropNestedChildJournals({
-        stateBackend: this.stateBackend,
-        parentStackName: stackName,
-        region: this.stackRegion,
-        resources: stateResources,
-        logger: this.logger,
-        run: { runId },
-      });
-    }
+
     // `orphaned` is relayed rather than persisted here: this method holds no
     // state save. Its caller merges it into the post-rollback record (issue
     // #2934), which is the ONLY save on this path — dropping it there makes a
@@ -5628,7 +5627,7 @@ export class DeployEngine {
         [],
         NESTED_PENDING_PARENT_REASON,
         initialDeploy,
-        { previousOutputs: nestedPreviousOutputs(previousState) }
+        nestedPendingSnapshot(previousState)
       );
       return;
     }
@@ -5680,12 +5679,16 @@ export class DeployEngine {
    * Best-effort like every journal write: a pop failure warns and leaves the
    * full segment in place (the pre-#1208 partial-rollback shape — replay is
    * idempotent, so a later `cdkd rollback` is still safe).
+   *
+   * Returns whether this attempt's segment was popped, i.e. whether a later
+   * `cdkd rollback` can still re-run it (issue #3754 gates dropping the
+   * reverted children's segments on this).
    */
   private async settleJournalAfterCleanRollback(
     stackName: string,
     failedOperations: FailedOperation[],
     initialDeploy: boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (failedOperations.length === 0) {
       try {
         await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
@@ -5693,8 +5696,9 @@ export class DeployEngine {
         this.logger.debug(
           `Failed to pop the rollback journal segment after the clean rollback: ${err instanceof Error ? err.message : String(err)}`
         );
+        return false;
       }
-      return;
+      return true;
     }
     try {
       await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
@@ -5703,7 +5707,7 @@ export class DeployEngine {
         `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
           `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
       );
-      return;
+      return false;
     }
     await this.writeRollbackJournalSegment(
       stackName,
@@ -5722,6 +5726,30 @@ export class DeployEngine {
           ]).command
         }`
     );
+    return true;
+  }
+
+  /**
+   * Issue #3754: once a clean automatic rollback is SETTLED — its state saved
+   * and its segment popped — the nested children it reverted no longer need
+   * their pending segments for this run. Gated on `settled` because a rollback
+   * whose save or pop failed is re-run by `cdkd rollback`, which replays the
+   * same rows and must find them.
+   */
+  private async settleNestedChildrenAfterCleanRollback(
+    stackName: string,
+    completedOperations: CompletedOperation[],
+    settled: boolean
+  ): Promise<void> {
+    if (!settled) return;
+    await dropSettledNestedJournals({
+      stateBackend: this.stateBackend,
+      parentStackName: stackName,
+      region: this.stackRegion,
+      revertedLogicalIds: revertedNestedRowIds(completedOperations),
+      runId: this.options.eventRecorder?.runId,
+      logger: this.logger,
+    });
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
@@ -5773,7 +5801,7 @@ export class DeployEngine {
      * nothing to undo, as opposed to having no record at all — and carries the
      * child's pre-deploy outputs.
      */
-    nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs'>
+    nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'>
   ): Promise<void> {
     // A segment with no operations carries nothing to revert — skip it so a
     // failure before any resource completed does not create an empty journal.
@@ -5801,6 +5829,9 @@ export class DeployEngine {
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
         ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
+        ...(nestedPending?.previousCrossStackReads && {
+          previousCrossStackReads: nestedPending.previousCrossStackReads,
+        }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);

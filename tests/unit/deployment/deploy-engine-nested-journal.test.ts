@@ -64,6 +64,17 @@ function record(logicalId: string, resourceType = TYPE): ResourceState {
   };
 }
 
+function updateNestedChange(logicalId: string): ResourceChange {
+  return {
+    logicalId,
+    changeType: 'UPDATE',
+    resourceType: NESTED,
+    currentProperties: { TemplateURL: 'old' },
+    desiredProperties: { TemplateURL: 'new' },
+    propertyChanges: [{ path: 'TemplateURL', oldValue: 'old', newValue: 'new' }],
+  } as unknown as ResourceChange;
+}
+
 function createChange(logicalId: string): ResourceChange {
   return {
     logicalId,
@@ -96,7 +107,9 @@ function build(opts: {
         ? Promise.reject(new Error(`boom ${logicalId}`))
         : Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
     ),
-    update: vi.fn(),
+    update: vi.fn().mockImplementation((logicalId: string) =>
+      Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false })
+    ),
     delete: vi.fn().mockResolvedValue(undefined),
   };
   const currentState: StackState = {
@@ -123,7 +136,11 @@ function build(opts: {
     loadRollbackJournal: vi
       .fn()
       .mockImplementation((name: string) =>
-        Promise.resolve(name === STACK ? (opts.journal ?? null) : { segments: [{ runId: RUN }] })
+        Promise.resolve(
+          name === STACK
+            ? (opts.journal ?? null)
+            : { segments: [{ runId: RUN, reason: 'nested-pending-parent', operations: [] }] }
+        )
       ),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     dropRollbackJournalSegments: vi.fn().mockResolvedValue(1),
@@ -265,54 +282,107 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     ]);
   });
 
-  it('the automatic rollback runs inside the run scope and drops the children segments for that run', async () => {
+  it('the automatic rollback runs inside the run scope, and a SETTLED one drops the reverted child pending segments', async () => {
     const { engine, backend, provider } = build({
       nested: false,
       changes: new Map([
-        ['A', createChange('A')],
+        ['Child', updateNestedChange('Child')],
         ['B', createChange('B')],
       ]),
-      resources: { Child: record('Child', NESTED) },
+      resources: {
+        Child: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } },
+        // A nested row this deploy did NOT touch: its journal is not ours.
+        Other: record('Other', NESTED),
+      },
       failCreateOf: 'B',
-      levels: [['A'], ['B']],
+      levels: [['Child'], ['B']],
     });
     const seenRuns: unknown[] = [];
-    provider.delete.mockImplementation(() => {
+    provider.update.mockImplementation((logicalId: string) => {
       seenRuns.push(getNestedRevertRun());
-      return Promise.resolve(undefined);
+      return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
     });
 
-    await expect(engine.deploy(STACK, templateOf(['A', 'B']))).rejects.toThrow();
+    await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
 
-    // A was rolled back (deleted) INSIDE the scope, carrying this run's id.
-    expect(provider.delete).toHaveBeenCalledOnce();
-    expect(seenRuns).toEqual([{ runId: RUN }]);
-    // ...and the clean replay settled the nested child: only THIS run's
-    // segments are dropped.
+    // Forward update outside any scope, the revert INSIDE this run's.
+    expect(seenRuns).toEqual([undefined, { runId: RUN }]);
     expect(backend.dropRollbackJournalSegments).toHaveBeenCalledOnce();
     const [child, region, drop] = backend.dropRollbackJournalSegments.mock.calls[0]!;
     expect([child, region]).toEqual([`${STACK}~Child`, REGION]);
-    expect((drop as (s: { runId?: string }) => boolean)({ runId: RUN })).toBe(true);
-    expect((drop as (s: { runId?: string }) => boolean)({ runId: 'other-run' })).toBe(false);
+    const d = drop as (s: { runId?: string; reason?: string }) => boolean;
+    expect(d({ runId: RUN, reason: 'nested-pending-parent' })).toBe(true);
+    expect(d({ runId: 'other-run', reason: 'nested-pending-parent' })).toBe(false);
+    // A child's own failure segment of the same run is not the parent's.
+    expect(d({ runId: RUN, reason: 'no-rollback-failure' })).toBe(false);
+  });
+
+  it('a rollback whose post-rollback save FAILED keeps the child segments for the re-run', async () => {
+    const { engine, backend } = build({
+      nested: false,
+      changes: new Map([
+        ['Child', updateNestedChange('Child')],
+        ['B', createChange('B')],
+      ]),
+      resources: { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } } },
+      failCreateOf: 'B',
+      levels: [['Child'], ['B']],
+    });
+    // Every save after the forward update fails: the partial saves, the
+    // post-rollback save and its retry.
+    backend.saveState.mockResolvedValueOnce('etag-1').mockRejectedValue(new Error('S3 down'));
+
+    await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
+
+    expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
   it('a partial rollback keeps the children segments for a re-run', async () => {
     const { engine, backend, provider } = build({
       nested: false,
       changes: new Map([
-        ['A', createChange('A')],
+        ['Child', updateNestedChange('Child')],
         ['B', createChange('B')],
       ]),
-      resources: { Child: record('Child', NESTED) },
+      resources: { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } } },
       failCreateOf: 'B',
-      levels: [['A'], ['B']],
+      levels: [['Child'], ['B']],
     });
-    provider.delete.mockRejectedValue(new Error('delete failed'));
+    let calls = 0;
+    provider.update.mockImplementation(() =>
+      ++calls === 1
+        ? Promise.resolve({ physicalId: 'phys-Child', wasReplaced: false })
+        : Promise.reject(new Error('revert failed'))
+    );
 
-    await expect(engine.deploy(STACK, templateOf(['A', 'B']))).rejects.toThrow();
+    await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
 
-    expect(provider.delete).toHaveBeenCalled();
+    expect(calls).toBe(2);
     expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('a NESTED engine that succeeds leaves its own nested children journals alone', async () => {
+    // Only the ROOT sweeps: a grandchild's pending segment must survive until
+    // the top-level deploy succeeds, or a later parent failure cannot revert it.
+    const { engine, backend } = build({
+      nested: true,
+      changes: new Map([['Q', createChange('Q')]]),
+      resources: { Grand: record('Grand', NESTED) },
+      childState: {
+        version: 8,
+        stackName: `${STACK}~Grand`,
+        region: REGION,
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+      },
+    });
+
+    await engine.deploy(STACK, templateOf(['Q']));
+
+    expect(backend.deleteRollbackJournal).not.toHaveBeenCalled();
+    expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
+    expect(backend.appendRollbackJournalSegment).toHaveBeenCalledOnce();
   });
 
   it('a journal holding only nested-pending-parent segments prints no "previous deploy failed" note', async () => {

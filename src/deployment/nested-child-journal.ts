@@ -75,17 +75,39 @@ export function nestedChildStackName(parentStackName: string, logicalId: string)
 }
 
 /**
- * The `previousOutputs` a nested engine journals on success: what its record
- * PUBLISHED before this deploy. Copied, never aliased — the record is mutated
- * by the save path afterwards.
+ * What a nested engine journals on success beside its ops: what its record
+ * PUBLISHED (`outputs` / `exportNames`) and what it READ across stacks
+ * (`imports` / `outputReads`) before this deploy. The ops restore resources;
+ * these restore the rest of the record, and the reads also feed the replay's
+ * cross-region secret refusal (issue #2057), which would otherwise see only
+ * the reads of the deploy being undone. Copied, never aliased.
  */
-export function nestedPreviousOutputs(
-  state: Pick<StackState, 'outputs' | 'exportNames'>
-): NonNullable<RollbackJournalSegment['previousOutputs']> {
+export function nestedPendingSnapshot(
+  state: Pick<StackState, 'outputs' | 'exportNames' | 'imports' | 'outputReads'>
+): Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'> {
   return {
-    outputs: { ...(isPlainRecord(state.outputs) ? state.outputs : {}) },
-    ...(Array.isArray(state.exportNames) && { exportNames: [...state.exportNames] }),
+    previousOutputs: {
+      outputs: { ...(isPlainRecord(state.outputs) ? state.outputs : {}) },
+      ...(Array.isArray(state.exportNames) && { exportNames: [...state.exportNames] }),
+    },
+    previousCrossStackReads: {
+      ...(Array.isArray(state.imports) && { imports: [...state.imports] }),
+      ...(Array.isArray(state.outputReads) && { outputReads: [...state.outputReads] }),
+    },
   };
+}
+
+/**
+ * The nested-stack rows a replay of `ops` reverts IN PLACE: the
+ * `AWS::CloudFormation::Stack` UPDATEs. A CREATE's revert destroys the child,
+ * whose journal goes with its state, and a DELETE is not restorable.
+ */
+export function revertedNestedRowIds(
+  ops: ReadonlyArray<{ logicalId: string; resourceType: string; changeType: string }>
+): string[] {
+  return ops
+    .filter((op) => op.resourceType === NESTED_STACK_TYPE && op.changeType === 'UPDATE')
+    .map((op) => op.logicalId);
 }
 
 /**
@@ -119,20 +141,20 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Delete, or narrow, the rollback journals of every nested descendant of
- * `resources`. With `run` absent every descendant journal is deleted (the root
- * succeeded); with `run` given only that run's segments are removed (its
- * rollback settled). Depth-first, so a grandchild is handled before the child
- * whose state named it.
+ * Delete the rollback journal of every nested descendant of `resources`, the
+ * ROOT deploy having succeeded: the tree's baseline moved, exactly as a lone
+ * stack's success drops its whole journal. Depth-first.
  *
- * Best-effort and never throws: the deploy or rollback that calls it has
- * already succeeded, and a journal left behind is inert — a later revert only
- * selects segments by run, and the next successful root deploy sweeps it.
- * A child whose state record is missing or unreadable is skipped (its journal,
- * if any, is left for that sweep).
+ * The delete is unconditional — no load first — so a journal that no longer
+ * parses (a newer `journalVersion`, a planted body) is removed too, and the
+ * noncurrent-version purge `deleteRollbackJournal` carries runs even when no
+ * current object is left.
  *
- * No child lock is taken: every writer of a nested child's journal runs under
- * the ROOT stack's lock (the child deploy, its replay), which the caller holds.
+ * Best-effort and never throws: the deploy that calls it already succeeded,
+ * and a journal left behind is inert to every parent revert (they select by
+ * run) until the next successful root deploy sweeps it. No child lock is
+ * taken: every writer of a nested child's journal runs under the ROOT stack's
+ * lock, which the caller holds.
  */
 export async function dropNestedChildJournals(args: {
   stateBackend: S3StateBackend;
@@ -140,23 +162,13 @@ export async function dropNestedChildJournals(args: {
   region: string;
   resources: Record<string, ResourceState> | undefined;
   logger: Pick<Logger, 'debug' | 'warn'>;
-  run?: NestedRevertRun;
   /** Internal: how deep the walk already is. */
   depth?: number;
 }): Promise<void> {
-  const { stateBackend, parentStackName, region, resources, logger, run } = args;
+  const { stateBackend, parentStackName, region, resources, logger } = args;
   const depth = args.depth ?? 0;
   if (!isPlainRecord(resources)) return;
-  // Every level lengthens the key (`<parent>~<id>`), so a real tree ends where
-  // a child has no state. The bound is for a record that names ITSELF again
-  // (a hand-edited or planted state), which would otherwise walk forever.
-  if (depth >= MAX_NESTED_WALK_DEPTH) {
-    logger.warn(
-      `Stopped clearing nested rollback journals below ${displayIdent(parentStackName)}: ` +
-        `the nesting is deeper than ${MAX_NESTED_WALK_DEPTH} levels.`
-    );
-    return;
-  }
+  if (depthExceeded(depth, parentStackName, logger)) return;
   for (const [logicalId, record] of Object.entries(resources)) {
     if (!isPlainRecord(record) || record['resourceType'] !== NESTED_STACK_TYPE) continue;
     const child = nestedChildStackName(parentStackName, logicalId);
@@ -177,29 +189,97 @@ export async function dropNestedChildJournals(args: {
           depth: depth + 1,
         });
       }
-      if (run) {
-        const removed = await stateBackend.dropRollbackJournalSegments(
-          child,
-          region,
-          (segment) => segment.runId === run.runId
-        );
-        if (removed > 0) {
-          logger.debug(
-            `Dropped ${removed} settled rollback journal segment(s) of ${displaySafe(child)}`
-          );
-        }
-      } else if (await stateBackend.loadRollbackJournal(child, region)) {
-        await stateBackend.deleteRollbackJournal(child, region);
-        logger.debug(`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
-      }
+      await stateBackend.deleteRollbackJournal(child, region);
+      logger.debug(`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
     } catch (error) {
-      logger.warn(
-        `Could not clear the rollback journal of nested stack ${displayIdent(child)}: ${errorText(error)}. ` +
-          `It is inert (a revert selects segments by run) and the next successful deploy of the ` +
-          `top-level stack removes it.`
-      );
+      warnUncleared(logger, child, error);
     }
   }
+}
+
+/**
+ * Drop the `nested-pending-parent` segments of run `runId` from the children
+ * whose rows a settled rollback actually REVERTED (`revertedLogicalIds`, from
+ * {@link revertedNestedRowIds}), and, recursively, from the grandchildren those
+ * children's replays reverted.
+ *
+ * Deliberately narrow on both axes. A child row the rollback did NOT revert — a
+ * nested deploy that itself FAILED is a failed row, never replayed — keeps its
+ * journal: its own failure segment is what `cdkd rollback <parent>~<child>`
+ * (and `--revert-failed`) needs. And only PENDING segments go: a child's own
+ * failure segment of the same run is not the parent's to consume.
+ *
+ * Call it only once the rollback is SETTLED (its state saved, its own segment
+ * popped or re-recorded), so a rollback that cannot persist still finds these
+ * segments when it is re-run. Best-effort and never throws.
+ */
+export async function dropSettledNestedJournals(args: {
+  stateBackend: S3StateBackend;
+  parentStackName: string;
+  region: string;
+  revertedLogicalIds: Iterable<string>;
+  runId: string | undefined;
+  logger: Pick<Logger, 'debug' | 'warn'>;
+  /** Internal: how deep the walk already is. */
+  depth?: number;
+}): Promise<void> {
+  const { stateBackend, parentStackName, region, runId, logger } = args;
+  const depth = args.depth ?? 0;
+  if (depthExceeded(depth, parentStackName, logger)) return;
+  const isSettled = (segment: RollbackJournalSegment): boolean =>
+    segment.runId === runId && segment.reason === NESTED_PENDING_PARENT_REASON;
+  for (const logicalId of new Set(args.revertedLogicalIds)) {
+    const child = nestedChildStackName(parentStackName, logicalId);
+    try {
+      const journal = await stateBackend.loadRollbackJournal(child, region);
+      if (!journal) continue;
+      const grandchildren = journal.segments
+        .filter(isSettled)
+        .flatMap((segment) => revertedNestedRowIds(segment.operations));
+      if (grandchildren.length > 0) {
+        await dropSettledNestedJournals({
+          ...args,
+          parentStackName: child,
+          revertedLogicalIds: grandchildren,
+          depth: depth + 1,
+        });
+      }
+      const removed = await stateBackend.dropRollbackJournalSegments(child, region, isSettled);
+      if (removed > 0) {
+        logger.debug(
+          `Dropped ${removed} settled rollback journal segment(s) of ${displaySafe(child)}`
+        );
+      }
+    } catch (error) {
+      warnUncleared(logger, child, error);
+    }
+  }
+}
+
+/**
+ * Every level lengthens the key (`<parent>~<id>`), so a real tree ends where a
+ * child has no state. The bound is for a record that names ITSELF again (a
+ * hand-edited or planted state), which would otherwise walk forever.
+ */
+function depthExceeded(
+  depth: number,
+  parentStackName: string,
+  logger: Pick<Logger, 'warn'>
+): boolean {
+  if (depth < MAX_NESTED_WALK_DEPTH) return false;
+  logger.warn(
+    `Stopped clearing nested rollback journals below ${displayIdent(parentStackName)}: ` +
+      `the nesting is deeper than ${MAX_NESTED_WALK_DEPTH} levels.`
+  );
+  return true;
+}
+
+function warnUncleared(logger: Pick<Logger, 'warn'>, child: string, error: unknown): void {
+  logger.warn(
+    `Could not clear the rollback journal of nested stack ${displayIdent(child)}: ${errorText(error)}. ` +
+      `It is inert to every parent revert (they select segments by run) and the next ` +
+      `successful deploy of the top-level stack removes it.`
+  );
 }
 
 /**
@@ -233,7 +313,8 @@ export async function revertNestedChildFromJournal(args: {
       new Error(
         `Cannot revert nested stack ${shownChild} (row ${displayIdent(logicalId)}): ${detail} ` +
           `The child was NOT (fully) reverted and may still hold the failed deploy's configuration. ` +
-          `Inspect it with 'cdkd state show', then re-deploy the parent to converge.`
+          `Inspect it with 'cdkd state show'; re-run the rollback once the cause is fixed (its ` +
+          `journal is kept), or re-deploy the parent to converge.`
       )
     );
   };
@@ -261,8 +342,13 @@ export async function revertNestedChildFromJournal(args: {
 
     const stateResources: Record<string, ResourceState> = { ...base.resources };
     const mintedOrphans: StackOrphanRecord[] = [];
-    let restoredOutputs: { outputs: Record<string, unknown>; exportNames?: string[] } | undefined;
+    // Newest-first replay, so the OLDEST segment's snapshots are the child
+    // before this run touched it.
+    const oldest = segments[0]!;
+    const restoredOutputs = oldest.previousOutputs;
+    const restoredReads = oldest.previousCrossStackReads;
     let currentEtag = stateData!.etag;
+    let persisted = false;
     // `skippedOutputs` is dropped for the reason `cdkd rollback`'s own save
     // drops it: the replay can change what an output reads.
     const { skippedOutputs: _dropped, ...carried } = base;
@@ -272,25 +358,40 @@ export async function revertNestedChildFromJournal(args: {
       region,
       resources: { ...stateResources },
       ...orphansAfterRollback(base, mintedOrphans),
-      ...(restoredOutputs && {
-        outputs: { ...restoredOutputs.outputs },
-        ...(restoredOutputs.exportNames && { exportNames: [...restoredOutputs.exportNames] }),
+      ...(restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
+      ...(restoredReads && {
+        ...(restoredReads.imports && { imports: [...restoredReads.imports] }),
+        ...(restoredReads.outputReads && { outputReads: [...restoredReads.outputReads] }),
       }),
+      ...(restoredOutputs?.exportNames && { exportNames: [...restoredOutputs.exportNames] }),
       lastModified: Date.now(),
     });
+    // A restored field the snapshot does NOT carry must leave the record with
+    // it: outputs and `exportNames` travel together, and a read the pre-run
+    // record did not hold is the undone deploy's, not the child's.
+    const nextState = (): StackState => {
+      const state = next();
+      if (restoredOutputs && !restoredOutputs.exportNames) delete state.exportNames;
+      if (restoredReads && !restoredReads.imports) delete state.imports;
+      if (restoredReads && !restoredReads.outputReads) delete state.outputReads;
+      return state;
+    };
     // Best-effort, mirroring `cdkd rollback`: the AWS revert already happened,
     // so a failed save is a warning, not a failed revert.
     const save = async (): Promise<void> => {
+      persisted = false;
       try {
-        currentEtag = await ctx.stateBackend.saveState(childStackName, region, next(), {
+        currentEtag = await ctx.stateBackend.saveState(childStackName, region, nextState(), {
           ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
         });
+        persisted = true;
       } catch {
         try {
           const fresh = await ctx.stateBackend.getState(childStackName, region);
-          currentEtag = await ctx.stateBackend.saveState(childStackName, region, next(), {
+          currentEtag = await ctx.stateBackend.saveState(childStackName, region, nextState(), {
             ...(fresh?.etag !== undefined && { expectedEtag: fresh.etag }),
           });
+          persisted = true;
         } catch (retryError) {
           logger.warn(
             `Failed to persist the state of nested stack ${shownChild} after reverting it: ` +
@@ -310,7 +411,13 @@ export async function revertNestedChildFromJournal(args: {
       finalSnapshotClients: ctx.options?.finalSnapshotClients,
       skipFinalSnapshot:
         ctx.options?.skipFinalSnapshot === true || ctx.destroyOptions?.skipFinalSnapshot === true,
-      importedProducerRegions: producerRegionsFromState(base),
+      // The UNION of the record and the pre-run reads: `base` was saved by the
+      // deploy being undone and holds only ITS reads, while the replay restores
+      // values the pre-run reads produced (issue #2057's refusal needs them).
+      importedProducerRegions: producerRegionsFromState({
+        imports: [...(base.imports ?? []), ...(restoredReads?.imports ?? [])],
+        outputReads: [...(base.outputReads ?? []), ...(restoredReads?.outputReads ?? [])],
+      }),
     };
     // The child is the "parent" of its own rows: a grandchild row reverted by
     // this replay derives `<child>~<Grandchild>` from here. No templates — a
@@ -323,6 +430,7 @@ export async function revertNestedChildFromJournal(args: {
     };
 
     let failures = 0;
+    let warnings = 0;
     for (let s = segments.length - 1; s >= 0; s--) {
       const segment = segments[s]!;
       const result = await withNestedStackContext(childCtx, () =>
@@ -336,13 +444,23 @@ export async function revertNestedChildFromJournal(args: {
         )
       );
       failures += result.failures;
-      // Newest-first, so the OLDEST segment's snapshot is the one left
-      // standing: that is the child before this run touched it.
-      if (segment.previousOutputs) restoredOutputs = segment.previousOutputs;
+      warnings += result.warnings;
     }
     await save();
-    if (restoredOutputs && ctx.exportIndexStore) {
-      await ctx.exportIndexStore.updateForStack(childStackName, region, importableOutputs(next()));
+    // Only what was PERSISTED is published: the index must not serve outputs
+    // the child's record does not hold.
+    if (persisted && restoredOutputs && ctx.exportIndexStore) {
+      await ctx.exportIndexStore.updateForStack(
+        childStackName,
+        region,
+        importableOutputs(nextState())
+      );
+    }
+    if (warnings > 0) {
+      logger.warn(
+        `Nested stack ${shownChild}: ${warnings} operation(s) were skipped with a warning during ` +
+          `its revert (see above); they may need attention by hand.`
+      );
     }
     if (failures > 0) {
       refuse(`${failures} of its operation(s) failed to revert (see the warnings above).`);

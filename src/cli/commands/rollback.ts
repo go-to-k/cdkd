@@ -23,7 +23,10 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import {
-  dropNestedChildJournals,
+  NESTED_PENDING_PARENT_REASON,
+  dropSettledNestedJournals,
+  nestedChildStackName,
+  revertedNestedRowIds,
   withNestedRevertRun,
 } from '../../deployment/nested-child-journal.js';
 import { withStackName } from '../../provisioning/resource-name.js';
@@ -50,7 +53,7 @@ import {
   orphansAfterRollback,
   type StackOrphanRecord,
 } from '../../types/state.js';
-import type { StackStateRef } from '../../state/s3-state-backend.js';
+import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
 import {
   displayIdent,
   displaySafe,
@@ -655,6 +658,24 @@ export async function rollbackCommand(
             `State appears corrupted — inspect the bucket manually.`
         );
       }
+      // Issue #3754: a `nested-pending-parent` segment records a nested
+      // child's deploy that SUCCEEDED inside a parent deploy that has not
+      // settled. It is the PARENT's to replay, when it reverts this child's row;
+      // replayed here it would roll the child back under a parent record that
+      // still describes the new configuration. Refused before any replay, and
+      // for the whole journal, since popping is positional.
+      if (journal.segments.some((s) => s.reason === NESTED_PENDING_PARENT_REASON)) {
+        const cut = stackName.lastIndexOf('~');
+        const parent = cut > 0 ? stackName.slice(0, cut) : undefined;
+        throw new Error(
+          `The rollback journal of nested stack ${safeStack(stackName)} (${safe(region)}) holds the ` +
+            `record of a nested deploy that its parent has not settled, which only the parent's ` +
+            `rollback may replay. ` +
+            (parent !== undefined
+              ? `Roll back the parent stack ${safeStack(parent)} instead, or re-deploy it, which clears the record.`
+              : `Re-deploy the top-level stack, which clears the record.`)
+        );
+      }
       const baseState = stateData.state;
       // `cdkd rollback` replays journal segments and SAVES after each one, and
       // a spread of a null bag yields `{}` silently -- so without this the
@@ -740,7 +761,23 @@ export async function rollbackCommand(
           }
         }
         const plan = planRollback(segment.operations, planStateView, orphanLogicalIds);
-        for (const item of plan) logger.info(actionLabel(item, options.skipFinalSnapshot === true));
+        for (const item of plan) {
+          logger.info(actionLabel(item, options.skipFinalSnapshot === true));
+          // Issue #3754: a nested row's revert replays its CHILD's journal, so
+          // what that replay deletes or re-creates is part of what the user
+          // confirms below.
+          if (revertedNestedRowIds([item.op]).length > 0) {
+            for (const line of await previewNestedChildRevert(
+              setup.stateBackend,
+              nestedChildStackName(stackName, item.op.logicalId),
+              region,
+              segment.runId,
+              options.skipFinalSnapshot === true
+            )) {
+              logger.info(line);
+            }
+          }
+        }
         // Apply the segment's effect to the preview so an earlier segment's
         // plan reflects the later segment's already-unwound state.
         applyPlanToPreview(plan, planStateView, options.skipFinalSnapshot === true);
@@ -869,6 +906,12 @@ export async function rollbackCommand(
         while (journal.segments.length > 0) {
           if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
+          // Captured BEFORE the replay: the failed-op strip below rewrites
+          // `segment.failedOperations` as it goes.
+          const replayedOps = [
+            ...segment.operations,
+            ...(options.revertFailed ? (segment.failedOperations ?? []) : []),
+          ];
           const result = await withNestedStackContext(
             {
               stateBackend: setup.stateBackend,
@@ -1014,15 +1057,17 @@ export async function rollbackCommand(
           // Segment fully replayed — pop it (persists the shortened journal).
           await setup.stateBackend.popRollbackJournalSegment(stackName, region);
           journal.segments.pop();
-          // The children this segment reverted are settled with it (issue
-          // #3754): drop their segments for the same run. Best-effort.
-          await dropNestedChildJournals({
+          // The nested children this segment REVERTED are settled with it
+          // (issue #3754): drop their pending segments for the same run.
+          // Best-effort, and after the pop so a failed pop re-runs the rows
+          // against segments that are still there.
+          await dropSettledNestedJournals({
             stateBackend: setup.stateBackend,
             parentStackName: stackName,
             region,
-            resources: stateResources,
+            revertedLogicalIds: revertedNestedRowIds(replayedOps),
+            runId: segment.runId,
             logger,
-            run: { runId: segment.runId },
           });
         }
       } finally {
@@ -1131,6 +1176,50 @@ export async function rollbackCommand(
       stackAwsClients.destroy();
     }
     setup.dispose();
+  }
+}
+
+/**
+ * The plan lines for a nested row's revert (issue #3754): the child's journal
+ * segments for `runId`, planned against the child's state, indented under the
+ * row. Read-only and best-effort — a preview that cannot be built says so
+ * rather than failing the command; the revert itself refuses what it cannot
+ * do.
+ */
+async function previewNestedChildRevert(
+  backend: Pick<S3StateBackend, 'getState' | 'loadRollbackJournal'>,
+  childStackName: string,
+  region: string,
+  runId: string | undefined,
+  skipFinalSnapshot: boolean
+): Promise<string[]> {
+  const shown = safeStack(childStackName);
+  try {
+    const [childState, journal] = await Promise.all([
+      backend.getState(childStackName, region),
+      backend.loadRollbackJournal(childStackName, region),
+    ]);
+    const segments = (journal?.segments ?? []).filter((s) => s.runId === runId);
+    if (!childState || segments.length === 0) {
+      return [
+        `      (nested stack ${shown}: no journal record for this run — its revert will FAIL ` +
+          `and the segment is kept)`,
+      ];
+    }
+    const view: Record<string, ResourceState> = { ...childState.state.resources };
+    const lines = [`      nested stack ${shown} replays its own journal:`];
+    for (let s = segments.length - 1; s >= 0; s--) {
+      const childPlan = planRollback(segments[s]!.operations, view, new Set<string>());
+      for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
+      applyPlanToPreview(childPlan, view, skipFinalSnapshot);
+    }
+    if (lines.length === 1) lines.push('        (nothing to undo)');
+    return lines;
+  } catch (error) {
+    return [
+      `      (nested stack ${shown}: could not preview its revert: ` +
+        `${safe(error instanceof Error ? error.message : String(error))})`,
+    ];
   }
 }
 

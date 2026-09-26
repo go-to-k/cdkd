@@ -23,6 +23,7 @@
  */
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
+import type { StackState } from './state.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 
 /**
@@ -97,6 +98,14 @@ export interface RollbackJournalSegment {
    * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
    */
   previousOutputs?: { outputs: Record<string, unknown>; exportNames?: string[] };
+  /**
+   * Issue #3754, `nested-pending-parent` segments only: the child's
+   * `imports` / `outputReads` from BEFORE the deploy. The replay restores them
+   * with the outputs, and adds them to the producer regions its cross-region
+   * secret refusal consults (issue #2057), since the record it replays over
+   * holds only the reads of the deploy being undone. ADDITIVE, no bump.
+   */
+  previousCrossStackReads?: Pick<StackState, 'imports' | 'outputReads'>;
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -388,6 +397,25 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
         shownStack,
         `segments[${s}].runId must be a string when present (got ${kind(seg['runId'])}).`
       );
+    }
+    const reads: unknown = seg['previousCrossStackReads'];
+    if (reads !== undefined) {
+      if (typeof reads !== 'object' || reads === null || Array.isArray(reads)) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].previousCrossStackReads must be an object (got ${kind(reads)}).`
+        );
+      }
+      for (const field of ['imports', 'outputReads']) {
+        const list: unknown = (reads as Record<string, unknown>)[field];
+        if (list !== undefined && !Array.isArray(list)) {
+          refuseMalformed(
+            shownStack,
+            `segments[${s}].previousCrossStackReads.${field} must be an array when present ` +
+              `(got ${kind(list)}).`
+          );
+        }
+      }
     }
     const prevOut: unknown = seg['previousOutputs'];
     if (prevOut !== undefined) {

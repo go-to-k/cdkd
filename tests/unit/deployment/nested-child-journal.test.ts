@@ -23,8 +23,11 @@ const replay = vi.hoisted(() => ({
     nestedTemplates: unknown;
     run: unknown;
     stackScope: string | undefined;
+    ctx: Record<string, unknown>;
   }>,
   failuresFor: new Set<string>(),
+  warningsFor: new Set<string>(),
+  orphanFor: new Set<string>(),
   readNested: (() => undefined) as () =>
     | { parentStackName: string; nestedTemplates?: unknown }
     | undefined,
@@ -41,8 +44,8 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
       ops: Array<{ logicalId: string }>,
       stateResources: Record<string, unknown>,
       stackName: string,
-      _ctx: unknown,
-      options: { afterOp?: () => Promise<void> }
+      ctx: Record<string, unknown>,
+      options: { afterOp?: () => Promise<void>; onOrphan?: (record: unknown) => void }
     ) => {
       const nested = replay.readNested();
       replay.calls.push({
@@ -52,13 +55,22 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
         nestedTemplates: nested?.nestedTemplates,
         run: replay.readRun(),
         stackScope: replay.readStackName(),
+        ctx,
       });
       for (const op of ops) {
-        stateResources[op.logicalId] = { reverted: true };
+        if (replay.orphanFor.has(op.logicalId)) {
+          // What the real executor does for a Retain'd rolled-back CREATE:
+          // drop the resource from state and mint an orphan record.
+          delete stateResources[op.logicalId];
+          options.onOrphan?.({ logicalId: op.logicalId, state: { physicalId: 'kept' } });
+        } else {
+          stateResources[op.logicalId] = { reverted: true };
+        }
         await options.afterOp?.();
       }
       const failures = ops.filter((o) => replay.failuresFor.has(o.logicalId)).length;
-      return { failures, warnings: 0, interrupted: false, orphaned: [] };
+      const warnings = ops.filter((o) => replay.warningsFor.has(o.logicalId)).length;
+      return { failures, warnings, interrupted: false, orphaned: [] };
     }
   ),
 }));
@@ -70,8 +82,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   dropNestedChildJournals,
+  dropSettledNestedJournals,
   getNestedRevertRun,
+  nestedPendingSnapshot,
   revertNestedChildFromJournal,
+  revertedNestedRowIds,
 } from '../../../src/deployment/nested-child-journal.js';
 import { getCurrentNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
 import { getCurrentStackName } from '../../../src/provisioning/resource-name.js';
@@ -106,11 +121,24 @@ function seg(runId: string | undefined, ops: string[], extra: Partial<RollbackJo
   } as RollbackJournalSegment;
 }
 
-function harness(opts: { state?: StackState | null; segments?: RollbackJournalSegment[] | null }) {
+function harness(opts: {
+  state?: StackState | null;
+  segments?: RollbackJournalSegment[] | null;
+  divergentBodyRegion?: string;
+  ctxExtra?: Record<string, unknown>;
+}) {
   const stateBackend = {
-    getState: vi
-      .fn()
-      .mockResolvedValue(opts.state === null ? null : { state: opts.state ?? childState(), etag: 'e1' }),
+    getState: vi.fn().mockResolvedValue(
+      opts.state === null
+        ? null
+        : {
+            state: opts.state ?? childState(),
+            etag: 'e1',
+            ...(opts.divergentBodyRegion !== undefined && {
+              divergentBodyRegion: opts.divergentBodyRegion,
+            }),
+          }
+    ),
     loadRollbackJournal: vi
       .fn()
       .mockResolvedValue(opts.segments === null ? null : { segments: opts.segments ?? [] }),
@@ -132,6 +160,7 @@ function harness(opts: { state?: StackState | null; segments?: RollbackJournalSe
     stateBucket: 'b',
     exportIndexStore,
     nestedTemplates: { Child: '/tmp/child.json' },
+    ...opts.ctxExtra,
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const run = (runId: string | undefined) =>
@@ -149,6 +178,8 @@ function harness(opts: { state?: StackState | null; segments?: RollbackJournalSe
 beforeEach(() => {
   replay.calls.length = 0;
   replay.failuresFor.clear();
+  replay.warningsFor.clear();
+  replay.orphanFor.clear();
 });
 
 describe('revertNestedChildFromJournal (#3754)', () => {
@@ -278,7 +309,194 @@ describe('revertNestedChildFromJournal (#3754)', () => {
   });
 });
 
-describe('dropNestedChildJournals (#3754)', () => {
+describe('revertNestedChildFromJournal — review round (#3754)', () => {
+  it('threads --skip-final-snapshot to the child replay from EITHER entry point', async () => {
+    for (const extra of [
+      { options: { skipFinalSnapshot: true } },
+      { destroyOptions: { skipFinalSnapshot: true } },
+    ]) {
+      replay.calls.length = 0;
+      await harness({ segments: [seg('r', ['Q'])], ctxExtra: extra }).run('r');
+      expect(replay.calls[0]!.ctx['skipFinalSnapshot']).toBe(true);
+    }
+    replay.calls.length = 0;
+    await harness({ segments: [seg('r', ['Q'])] }).run('r');
+    expect(replay.calls[0]!.ctx['skipFinalSnapshot']).toBe(false);
+  });
+
+  it('refuses a secret region-lessly re-resolved across regions: the PRE-RUN reads feed the refusal', async () => {
+    // The record was saved by the deploy being undone, which no longer reads
+    // across regions; the replay restores values the pre-run read produced.
+    const h = harness({
+      segments: [
+        seg('r', ['Q'], {
+          previousCrossStackReads: {
+            imports: [{ exportName: 'E', sourceStack: 'Producer', sourceRegion: 'us-west-2' }],
+          } as never,
+        }),
+      ],
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['us-west-2']);
+  });
+
+  it('restores the pre-run cross-stack reads, and drops a read field the pre-run record lacked', async () => {
+    const state = {
+      ...childState(),
+      imports: [{ exportName: 'NewE', sourceStack: 'P', sourceRegion: 'us-east-1' }],
+      outputReads: [{ stackName: 'P', outputName: 'O', sourceRegion: 'us-east-1' }],
+    } as unknown as StackState;
+    const oldImports = [{ exportName: 'OldE', sourceStack: 'P', sourceRegion: 'us-east-1' }];
+    const h = harness({
+      state,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: { imports: oldImports } as never })],
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.imports).toEqual(oldImports);
+    expect(saved).not.toHaveProperty('outputReads');
+  });
+
+  it('drops exportNames when the restored outputs came from a record without them', async () => {
+    const h = harness({
+      segments: [seg('r', ['Q'], { previousOutputs: { outputs: { QueueUrl: 'old' } } })],
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs).toEqual({ QueueUrl: 'old' });
+    expect(saved).not.toHaveProperty('exportNames');
+  });
+
+  it('publishes the RESTORED exports to the index', async () => {
+    const h = harness({
+      segments: [
+        seg('r', ['Q'], {
+          previousOutputs: { outputs: { QueueUrl: 'old', OldExport: 'old' }, exportNames: ['OldExport'] },
+        }),
+      ],
+    });
+
+    await h.run('r');
+
+    const [name, region, published] = h.exportIndexStore.updateForStack.mock.calls[0]!;
+    expect([name, region]).toEqual([CHILD, REGION]);
+    expect(published).toEqual({ OldExport: 'old' });
+  });
+
+  it('does NOT publish to the index when the child record could not be saved', async () => {
+    const h = harness({
+      segments: [seg('r', ['Q'], { previousOutputs: { outputs: { A: 'old' }, exportNames: [] } })],
+    });
+    h.stateBackend.saveState.mockRejectedValue(new Error('S3 down'));
+
+    await h.run('r');
+
+    expect(h.exportIndexStore.updateForStack).not.toHaveBeenCalled();
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to persist the state'));
+  });
+
+  it('persists the orphan a Retain rolled-back CREATE mints in the child', async () => {
+    replay.orphanFor.add('Kept');
+    const h = harness({ segments: [seg('r', ['Kept'])] });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.orphans?.map((o) => o.logicalId)).toEqual(['Kept']);
+  });
+
+  it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {
+    const h = harness({ segments: [seg('r', ['Q'])], divergentBodyRegion: 'eu-west-1' });
+
+    await expect(h.run('r')).rejects.toThrow(/region field disagrees/);
+    expect(replay.calls).toHaveLength(0);
+  });
+
+  it('retries a conflicting save once with the fresh ETag', async () => {
+    const h = harness({ segments: [seg('r', ['Q'])] });
+    h.stateBackend.saveState.mockRejectedValueOnce(new Error('412')).mockResolvedValue('e9');
+
+    await h.run('r');
+
+    const calls = h.stateBackend.saveState.mock.calls;
+    expect(calls[0]![3]).toEqual({ expectedEtag: 'e1' });
+    expect(calls[1]![3]).toEqual({ expectedEtag: 'e1' }); // the re-read record's ETag
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('saves the child state BEFORE refusing a failed replay', async () => {
+    replay.failuresFor.add('Q');
+    const h = harness({ segments: [seg('r', ['Q', 'Ok'])] });
+
+    await expect(h.run('r')).rejects.toThrow(/failed to revert/);
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources).toMatchObject({ Ok: { reverted: true } });
+  });
+
+  it('drops skippedOutputs from the saved record', async () => {
+    const h = harness({
+      state: { ...childState(), skippedOutputs: { X: 'digest' } } as unknown as StackState,
+      segments: [seg('r', ['Q'])],
+    });
+
+    await h.run('r');
+
+    expect(h.stateBackend.saveState.mock.calls.at(-1)![2]).not.toHaveProperty('skippedOutputs');
+  });
+
+  it('a lock release failure only warns', async () => {
+    const h = harness({ segments: [seg('r', ['Q'])] });
+    h.lockManager.releaseLock.mockRejectedValue(new Error('gone'));
+
+    await expect(h.run('r')).resolves.toBeUndefined();
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to release the lock'));
+  });
+
+  it('reports ops the replay skipped with a warning', async () => {
+    replay.warningsFor.add('Q');
+    const h = harness({ segments: [seg('r', ['Q'])] });
+
+    await h.run('r');
+
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining('1 operation(s) were skipped'));
+  });
+});
+
+describe('nestedPendingSnapshot / revertedNestedRowIds (#3754)', () => {
+  it('copies outputs, exportNames, imports and outputReads — and only what the record holds', () => {
+    const state = {
+      outputs: { A: 1 },
+      exportNames: ['E'],
+      imports: [{ exportName: 'I' }],
+    } as unknown as StackState;
+    const snap = nestedPendingSnapshot(state);
+    expect(snap).toEqual({
+      previousOutputs: { outputs: { A: 1 }, exportNames: ['E'] },
+      previousCrossStackReads: { imports: [{ exportName: 'I' }] },
+    });
+    (state.outputs as Record<string, unknown>)['A'] = 2;
+    expect(snap.previousOutputs!.outputs['A']).toBe(1);
+  });
+
+  it('names only the nested-stack UPDATE rows', () => {
+    expect(
+      revertedNestedRowIds([
+        { logicalId: 'Up', resourceType: 'AWS::CloudFormation::Stack', changeType: 'UPDATE' },
+        { logicalId: 'New', resourceType: 'AWS::CloudFormation::Stack', changeType: 'CREATE' },
+        { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE' },
+      ])
+    ).toEqual(['Up']);
+  });
+});
+
+describe('dropNestedChildJournals — the root sweep (#3754)', () => {
   function tree() {
     const states: Record<string, unknown> = {
       'Root~Child': {
@@ -294,13 +512,11 @@ describe('dropNestedChildJournals (#3754)', () => {
     const order: string[] = [];
     const stateBackend = {
       getState: vi.fn(async (name: string) => states[name] ?? null),
-      loadRollbackJournal: vi.fn(async () => ({ segments: [{}] })),
+      loadRollbackJournal: vi.fn(async () => {
+        throw new Error('the sweep must not parse the journal');
+      }),
       deleteRollbackJournal: vi.fn(async (name: string) => {
         order.push(`delete ${name}`);
-      }),
-      dropRollbackJournalSegments: vi.fn(async (name: string, _region: string, _drop: unknown) => {
-        order.push(`drop ${name}`);
-        return 1;
       }),
     };
     const logger = { debug: vi.fn(), warn: vi.fn() };
@@ -311,40 +527,24 @@ describe('dropNestedChildJournals (#3754)', () => {
     return { stateBackend, logger, resources, order };
   }
 
-  it('with no run, deletes every descendant journal depth-first', async () => {
-    const t = tree();
-
-    await dropNestedChildJournals({
+  const sweep = (t: ReturnType<typeof tree>, resources: unknown = t.resources) =>
+    dropNestedChildJournals({
       stateBackend: t.stateBackend as never,
       parentStackName: 'Root',
       region: REGION,
-      resources: t.resources as never,
+      resources: resources as never,
       logger: t.logger,
     });
 
+  it('deletes every descendant journal depth-first, WITHOUT parsing it first', async () => {
+    const t = tree();
+
+    await sweep(t);
+
+    // A journal that no longer parses is deleted too, with its version purge.
     expect(t.order).toEqual(['delete Root~Child~Grand', 'delete Root~Child']);
-    expect(t.stateBackend.dropRollbackJournalSegments).not.toHaveBeenCalled();
-  });
-
-  it('with a run, drops only that run segments', async () => {
-    const t = tree();
-
-    await dropNestedChildJournals({
-      stateBackend: t.stateBackend as never,
-      parentStackName: 'Root',
-      region: REGION,
-      resources: t.resources as never,
-      logger: t.logger,
-      run: { runId: 'run-1' },
-    });
-
-    expect(t.order).toEqual(['drop Root~Child~Grand', 'drop Root~Child']);
-    const predicate = t.stateBackend.dropRollbackJournalSegments.mock.calls[0]![2] as (s: {
-      runId?: string;
-    }) => boolean;
-    expect(predicate({ runId: 'run-1' })).toBe(true);
-    expect(predicate({ runId: 'run-2' })).toBe(false);
-    expect(t.stateBackend.deleteRollbackJournal).not.toHaveBeenCalled();
+    expect(t.stateBackend.loadRollbackJournal).not.toHaveBeenCalled();
+    expect(t.logger.warn).not.toHaveBeenCalled();
   });
 
   it('a backend failure warns and carries on to the next child', async () => {
@@ -352,13 +552,7 @@ describe('dropNestedChildJournals (#3754)', () => {
     t.stateBackend.getState.mockRejectedValueOnce(new Error('throttled'));
 
     await expect(
-      dropNestedChildJournals({
-        stateBackend: t.stateBackend as never,
-        parentStackName: 'Root',
-        region: REGION,
-        resources: { ...t.resources, Second: { resourceType: 'AWS::CloudFormation::Stack' } } as never,
-        logger: t.logger,
-      })
+      sweep(t, { ...t.resources, Second: { resourceType: 'AWS::CloudFormation::Stack' } })
     ).resolves.toBeUndefined();
 
     expect(t.logger.warn).toHaveBeenCalledOnce();
@@ -374,13 +568,7 @@ describe('dropNestedChildJournals (#3754)', () => {
       state: { stackName: 'Root', resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } } },
     } as never);
 
-    await dropNestedChildJournals({
-      stateBackend: t.stateBackend as never,
-      parentStackName: 'Root',
-      region: REGION,
-      resources: t.resources as never,
-      logger: t.logger,
-    });
+    await sweep(t);
 
     expect(t.stateBackend.getState).toHaveBeenCalledOnce();
     expect(t.order).toEqual(['delete Root~Child']);
@@ -392,30 +580,98 @@ describe('dropNestedChildJournals (#3754)', () => {
       state: { stackName: name, resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } } },
     }));
 
-    await dropNestedChildJournals({
-      stateBackend: t.stateBackend as never,
-      parentStackName: 'Root',
-      region: REGION,
-      resources: t.resources as never,
-      logger: t.logger,
-    });
+    await sweep(t);
 
     expect(t.stateBackend.getState).toHaveBeenCalledTimes(32);
     expect(t.logger.warn).toHaveBeenCalledWith(expect.stringContaining('deeper than 32 levels'));
   });
+});
 
-  it('skips a child with no journal instead of issuing a delete', async () => {
-    const t = tree();
-    t.stateBackend.loadRollbackJournal.mockResolvedValue(null as never);
+describe('dropSettledNestedJournals — after a settled rollback (#3754)', () => {
+  const stackOp = (logicalId: string) => ({
+    logicalId,
+    resourceType: 'AWS::CloudFormation::Stack',
+    changeType: 'UPDATE',
+  });
 
-    await dropNestedChildJournals({
-      stateBackend: t.stateBackend as never,
+  function backend(journals: Record<string, RollbackJournalSegment[]>) {
+    const kept: Record<string, RollbackJournalSegment[]> = {};
+    const stateBackend = {
+      loadRollbackJournal: vi.fn(async (name: string) =>
+        journals[name] ? { segments: journals[name] } : null
+      ),
+      dropRollbackJournalSegments: vi.fn(
+        async (name: string, _region: string, drop: (s: RollbackJournalSegment) => boolean) => {
+          const all = journals[name] ?? [];
+          kept[name] = all.filter((s) => !drop(s));
+          return all.length - kept[name].length;
+        }
+      ),
+    };
+    return { stateBackend, kept, logger: { debug: vi.fn(), warn: vi.fn() } };
+  }
+
+  const settle = (b: ReturnType<typeof backend>, ids: string[], runId = 'r') =>
+    dropSettledNestedJournals({
+      stateBackend: b.stateBackend as never,
       parentStackName: 'Root',
       region: REGION,
-      resources: t.resources as never,
-      logger: t.logger,
+      revertedLogicalIds: ids,
+      runId,
+      logger: b.logger,
     });
 
-    expect(t.stateBackend.deleteRollbackJournal).not.toHaveBeenCalled();
+  it('drops the PENDING segments of the run, and keeps the child own failure segment of the same run', async () => {
+    const b = backend({
+      'Root~Child': [
+        seg('r', ['Q']),
+        seg('r', ['Q'], { reason: 'no-rollback-failure' }),
+        seg('older', ['Q']),
+      ],
+    });
+
+    await settle(b, ['Child']);
+
+    expect(b.kept['Root~Child']!.map((s) => [s.runId, s.reason])).toEqual([
+      ['r', 'no-rollback-failure'],
+      ['older', 'nested-pending-parent'],
+    ]);
+  });
+
+  it('touches ONLY the children whose rows were reverted', async () => {
+    const b = backend({ 'Root~Failed': [seg('r', [], { reason: 'auto-rollback-clean' })] });
+
+    await settle(b, []);
+
+    expect(b.stateBackend.loadRollbackJournal).not.toHaveBeenCalled();
+    expect(b.stateBackend.dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('recurses into the grandchildren the child replay reverted, and only those', async () => {
+    const b = backend({
+      'Root~Child': [
+        {
+          ...seg('r', []),
+          operations: [stackOp('Grand'), { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE' }],
+        } as RollbackJournalSegment,
+      ],
+      'Root~Child~Grand': [seg('r', ['X'])],
+      'Root~Child~Q': [seg('r', ['Y'])],
+    });
+
+    await settle(b, ['Child']);
+
+    expect(b.kept['Root~Child~Grand']).toEqual([]);
+    expect(b.stateBackend.loadRollbackJournal.mock.calls.map((c) => c[0])).not.toContain('Root~Child~Q');
+  });
+
+  it('a backend failure warns and carries on', async () => {
+    const b = backend({ 'Root~B': [seg('r', ['Q'])] });
+    b.stateBackend.loadRollbackJournal.mockRejectedValueOnce(new Error('throttled'));
+
+    await settle(b, ['A', 'B']);
+
+    expect(b.logger.warn).toHaveBeenCalledOnce();
+    expect(b.kept['Root~B']).toEqual([]);
   });
 });
