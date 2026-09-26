@@ -1534,13 +1534,15 @@ async function resolveChildStackParameters(
  * Build the diff tree for one stack and (when `recursive`) every nested
  * `AWS::CloudFormation::Stack` descendant.
  *
- * Children come from the **union** of the template's nested-stack rows and
- * the state's nested-stack rows so the tree previews the full next deploy:
+ * Children come from the **union** of the condition-pruned template's
+ * nested-stack rows and the state's nested-stack rows so the tree previews
+ * the full next deploy:
  *
  *  - In template (present / CREATE / UPDATE): recurse via the child's synth
  *    template + child state. A child with no state file diffs against an
  *    empty state → all CREATE (the "nested child not deployed yet" case).
- *  - In state but NOT in template (removed from CDK code → DELETE): recurse
+ *  - In state but NOT in the pruned template (removed from CDK code, or its
+ *    row's `Condition` evaluates false → DELETE): recurse
  *    via the child's state diffed against an empty template → all DELETE,
  *    descending into state-listed grandchildren the same way. This mirrors
  *    `cdkd deploy <parent>` cascade-deleting a removed nested stack.
@@ -1922,7 +1924,8 @@ export async function buildDiffTree(args: {
     );
   }
 
-  // State-only children (removed from the template → recursive DELETE).
+  // State-only children (removed from the template, or condition-false →
+  // recursive DELETE).
   for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;

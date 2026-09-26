@@ -1664,7 +1664,10 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     // The child's CURRENT template turns `ChildRes` into a nested stack, a Type
     // change the deploy refuses — but only if it reaches the child engine. A
     // walk of the live template would report it; a DELETE subtree cannot.
-    async function diffWithCondition(equals: [string, string]): Promise<DiffTreeNode> {
+    async function diffWithCondition(
+      equals: [string, string],
+      deployed = true
+    ): Promise<DiffTreeNode> {
       writeFileSync(join(dir, 'grand.json'), JSON.stringify({ Resources: {} }));
       const childPath = join(dir, 'child.json');
       writeFileSync(
@@ -1688,15 +1691,19 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
           },
         },
       };
-      const backend = fakeBackend({
-        Parent: st('Parent', {
-          ParentRes: res('AWS::SSM::Parameter', { Value: 'p1' }),
-          Child: res(NESTED, {}),
-        }),
-        'Parent~Child': st('Parent~Child', {
-          ChildRes: res('AWS::SSM::Parameter', { Value: 'c1' }),
-        }),
-      });
+      const backend = fakeBackend(
+        deployed
+          ? {
+              Parent: st('Parent', {
+                ParentRes: res('AWS::SSM::Parameter', { Value: 'p1' }),
+                Child: res(NESTED, {}),
+              }),
+              'Parent~Child': st('Parent~Child', {
+                ChildRes: res('AWS::SSM::Parameter', { Value: 'c1' }),
+              }),
+            }
+          : { Parent: st('Parent', { ParentRes: res('AWS::SSM::Parameter', { Value: 'p1' }) }) }
+      );
       return buildDiffTree({
         stackName: 'Parent',
         displayName: 'Parent',
@@ -1722,6 +1729,14 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       ]);
       expect(child.blocking).toEqual([]);
       expect(child.children).toEqual([]);
+      expect(countBlocking(root)).toBe(0);
+    });
+
+    it('condition false, never deployed: produces no child node at all', async () => {
+      const root = await diffWithCondition(['a', 'b'], false);
+
+      expect(root.changes.has('Child')).toBe(false);
+      expect(root.children).toEqual([]);
       expect(countBlocking(root)).toBe(0);
     });
 
