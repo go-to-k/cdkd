@@ -13,6 +13,11 @@
 #            child update really ran, the rollback reached the Child row, and
 #            the LIVE child queue is back at VisibilityTimeout=30 with the
 #            child's state record agreeing.
+#   PHASE 2b: CHILD_VT=60 + INJECT_FAIL under --no-rollback leaves the child at
+#            60 with both journals; a synth-free `cdkd rollback` reverts the
+#            child to 30 from its journal and clears both journals.
+#   PHASE 2c: a successful deploy (CHILD_VT=45) leaves no child journal: the
+#            root's success sweeps it.
 #   PHASE 3: destroy clean; parent AND `<Parent>~Child` state prefixes gone,
 #            the child queue gone.
 #
@@ -49,6 +54,8 @@ fi
 
 PARENT_STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
+PARENT_JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+CHILD_JOURNAL_KEY="cdkd/${CHILD_STACK}/${REGION}/rollback-journal.json"
 LOG_DIR="$(mktemp -d)"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET} logs=${LOG_DIR}"
 
@@ -164,6 +171,85 @@ if [ "${VT_2}" != "30" ] || [ "${STATE_VT_2}" != "30" ]; then
   exit 1
 fi
 echo "[verify] step 3 ok: the automatic rollback reverted the nested child to VisibilityTimeout=30"
+# The clean rollback settled the child's pending segment, so its journal is gone.
+if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: the child rollback journal survived a clean automatic rollback"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# PHASE 2b: --no-rollback failure, then a synth-free `cdkd rollback`
+# ---------------------------------------------------------------------------
+echo "[verify] step 3b: deploy CHILD_VT=60 + INJECT_FAIL --no-rollback (child updated, nothing reverted)"
+set +e
+CHILD_VT=60 INJECT_FAIL=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback \
+  > "${LOG_DIR}/deploy2b.log" 2>&1
+RC2B=$?
+set -e
+if [ "${RC2B}" -eq 0 ]; then
+  echo "[verify] FAIL: the --no-rollback INJECT_FAIL deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+VT_2B="$(live_vt "${CHILD_QUEUE_URL}")"
+if [ "${VT_2B}" != "60" ]; then
+  sed 's/^/  /' "${LOG_DIR}/deploy2b.log"
+  echo "[verify] FAIL: premise: the --no-rollback deploy left the child at '${VT_2B}' (expected 60)"
+  exit 1
+fi
+for key in "${PARENT_JOURNAL_KEY}" "${CHILD_JOURNAL_KEY}"; do
+  if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
+    echo "[verify] FAIL: premise: ${key} is missing after the --no-rollback failure"
+    exit 1
+  fi
+done
+
+echo "[verify] step 3c: cdkd rollback (no synth) reverts the nested child from its journal"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback.log" 2>&1
+RCRB=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/rollback.log"
+if [ "${RCRB}" -ne 0 ]; then
+  echo "[verify] FAIL: cdkd rollback exited ${RCRB}"
+  exit 1
+fi
+CHILD_BODY_3="$(read_state "${CHILD_STATE_KEY}")"
+STATE_VT_3="$(printf '%s' "${CHILD_BODY_3}" | jq -r '.resources.ChildQueue.properties.VisibilityTimeout | tostring')"
+VT_3="$(live_vt "${CHILD_QUEUE_URL}")"
+if [ "${VT_3}" != "30" ] || [ "${STATE_VT_3}" != "30" ]; then
+  echo "[verify] FAIL: cdkd rollback did not revert the nested child (live=${VT_3}, state=${STATE_VT_3}, expected 30)"
+  exit 1
+fi
+for key in "${PARENT_JOURNAL_KEY}" "${CHILD_JOURNAL_KEY}"; do
+  if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
+    echo "[verify] FAIL: ${key} survived a clean cdkd rollback"
+    exit 1
+  fi
+done
+echo "[verify] step 3c ok: cdkd rollback reverted the nested child to VisibilityTimeout=30 and cleared both journals"
+
+# ---------------------------------------------------------------------------
+# PHASE 2c: a successful deploy leaves no child journal behind
+# ---------------------------------------------------------------------------
+echo "[verify] step 3d: successful deploy CHILD_VT=45 (the root sweeps the child journal)"
+set +e
+CHILD_VT=45 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/deploy3.log" 2>&1
+RC3D=$?
+set -e
+if [ "${RC3D}" -ne 0 ]; then
+  sed 's/^/  /' "${LOG_DIR}/deploy3.log"
+  echo "[verify] FAIL: the successful CHILD_VT=45 deploy exited ${RC3D}"
+  exit 1
+fi
+if [ "$(live_vt "${CHILD_QUEUE_URL}")" != "45" ]; then
+  echo "[verify] FAIL: premise: the successful deploy did not update the child"
+  exit 1
+fi
+if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: the child's pending journal survived the parent's successful deploy"
+  exit 1
+fi
+echo "[verify] step 3d ok: no child journal after a successful deploy"
 
 # ---------------------------------------------------------------------------
 # PHASE 3
