@@ -2793,7 +2793,10 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
       ),
     });
 
-    const err = await rollbackCommand('S~Child', { ...baseOpts }).catch((e: unknown) => e as Error);
+    const err = (await rollbackCommand('S~Child', { ...baseOpts }).then(
+      () => new Error('expected a refusal'),
+      (e: unknown) => e
+    )) as Error;
     expect(err.message).toMatch(/Re-deploy the top-level stack/);
     expect(err.message).not.toMatch(/Roll back the parent stack/);
   });
