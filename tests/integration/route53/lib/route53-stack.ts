@@ -49,6 +49,9 @@ export class Route53Stack extends cdk.Stack {
     const renameName = renameModes.includes('name');
     const renameUnswap = renameModes.includes('unswap');
     const renameSwap = renameModes.includes('swap') && !renameUnswap;
+    // The geo SetIdentifier keys on `swap` alone, so `unswap` changes only
+    // TypeSwapRecord: 2.7c then reverts exactly the one record it asserts.
+    const renameGeo = renameModes.includes('swap');
 
     // Query logging requires a log group in us-east-1 whose name starts with
     // `/aws/route53/`, plus an ACCOUNT-WIDE resource policy letting Route 53
@@ -157,7 +160,7 @@ export class Route53Stack extends cdk.Stack {
       type: 'A',
       ttl: '300',
       resourceRecords: ['198.51.100.1'],
-      setIdentifier: renameSwap ? 'geo-use1-renamed' : 'geo-use1',
+      setIdentifier: renameGeo ? 'geo-use1-renamed' : 'geo-use1',
     });
     geoRecord.addPropertyOverride('GeoProximityLocation', { AWSRegion: 'us-east-1', Bias: 10 });
 
