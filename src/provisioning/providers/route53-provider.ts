@@ -28,6 +28,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markNameCollision } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
@@ -233,9 +234,8 @@ export function isCnameConflictRefusal(error: unknown): boolean {
 
 /**
  * Appended to a create failure `isCnameConflictRefusal` recognises, so the
- * wrapped message states the collision the way the name-collision classifier
- * (which reads a wrapped provider error's own message) is written to see.
- * True as prose: a record with the same DNS name is what holds the name.
+ * wrapped message states the collision in words. The classifier reads the
+ * `markNameCollision` marker the same site sets, not this text (#3816).
  */
 const CNAME_CONFLICT_COLLISION_NOTE =
   ' (a record with the same DNS name already exists in the hosted zone)';
@@ -1173,14 +1173,16 @@ export class Route53Provider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const cnameConflict = isCnameConflictRefusal(error);
+      const wrapped = new ProvisioningError(
         `Failed to create record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
-          (isCnameConflictRefusal(error) ? CNAME_CONFLICT_COLLISION_NOTE : ''),
+          (cnameConflict ? CNAME_CONFLICT_COLLISION_NOTE : ''),
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      throw cnameConflict ? markNameCollision(wrapped) : wrapped;
     }
   }
 

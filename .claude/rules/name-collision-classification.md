@@ -41,6 +41,9 @@ the bounded `cause` chain for the error name and the Cloud Control
    either re-opens a delete. The `AlreadyExists` code matches only as a whole
    token outside a name or ARN (not after `-` `:` `/`, not before `-`).
    Residual: an AWS error echoing a template value still classifies.
+   A provider that recognises a collision AWS words WITHOUT "already exists"
+   declares it with `markNameCollision` on its wrapper (Route 53's CNAME
+   conflict), never by appending the phrase — cdkd-authored text is not read.
 2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
    read; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.

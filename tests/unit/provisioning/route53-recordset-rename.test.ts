@@ -475,8 +475,13 @@ const CNAME_BESIDE_A = `[RRSet of type CNAME with DNS name y.${ZONE_NAME} is not
 const A_BESIDE_CNAME = `[RRSet of type A with DNS name x.${ZONE_NAME} is not permitted because a conflicting RRSet of type CNAME with the same DNS name already exists in zone ${ZONE_NAME}]`;
 const DUPLICATE = `[Tried to create resource record set [name='x.${ZONE_NAME}', type='CNAME'] but it already exists]`;
 
+// AWS-authored, as the SDK delivers it: the collision classifier credits
+// prose only off such a link (#3816).
 function batchRefusal(message: string): Error {
-  return Object.assign(new Error(message), { name: 'InvalidChangeBatch' });
+  return Object.assign(new Error(message), {
+    name: 'InvalidChangeBatch',
+    $metadata: { httpStatusCode: 400 },
+  });
 }
 
 describe('Route53Provider create classifies Route 53 name conflicts as collisions (issue #3741)', () => {
