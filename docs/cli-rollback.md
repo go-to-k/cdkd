@@ -132,14 +132,19 @@ These are surfaced in the plan rather than applied silently.
   the CDK app; the plan lists what that replay will do under the row. A
   nested child whose journal holds no segment for that run (written by an
   older cdkd, or removed by hand) fails the row, and the journal is kept for
-  a re-run. A nested child whose own deploy FAILED is not reverted by its
-  parent's rollback: its journal is kept, so roll it back with
-  `cdkd rollback <parent>~<child>` (with `--revert-failed` for the failed
-  resource). A child's journal that still holds a record its parent has not
-  settled is refused by a direct `cdkd rollback` of the child, which names
-  the parent to roll back instead. Run without a stack name, `cdkd rollback`
-  does not offer a nested child's journal separately when its parent has
-  one.
+  a re-run. A nested child whose own deploy FAILED is a failed row of its
+  parent: a plain rollback of the parent does not revert it, and refuses
+  when the child's journal still holds completed operations from that deploy
+  (reverting the parent's older deploys first would put the child back in
+  the wrong order). Pass `--revert-failed`: the parent then replays the
+  child's completed operations for that deploy, in order. The child's own
+  failed resource is reverted by `cdkd rollback <parent>~<child>
+  --revert-failed` afterwards. A child's journal that still holds a record
+  its parent has not settled is refused by a direct `cdkd rollback` of the
+  child, which names the parent to roll back, or says to re-deploy the
+  top-level stack when the parent has no journal. Run without a stack name,
+  `cdkd rollback` does not offer a nested child's journal separately when its
+  parent has one.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The

@@ -96,6 +96,7 @@ function build(opts: {
   changes: Map<string, ResourceChange>;
   resources: Record<string, ResourceState>;
   outputs?: Record<string, unknown>;
+  extraState?: Partial<StackState>;
   journal?: { segments: Partial<RollbackJournalSegment>[] } | null;
   childState?: StackState | null;
   failCreateOf?: string;
@@ -119,6 +120,7 @@ function build(opts: {
     resources: opts.resources,
     outputs: opts.outputs ?? {},
     lastModified: Date.now(),
+    ...opts.extraState,
   };
   const backend = {
     getState: vi.fn().mockImplementation((name: string) =>
@@ -221,6 +223,22 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       previousOutputs: { outputs: { QueueUrl: 'old-url' } },
     });
     expect((segment as RollbackJournalSegment).operations.map((o) => o.logicalId)).toEqual(['Q']);
+  });
+
+  it('the pending segment carries the PRE-deploy cross-stack reads', async () => {
+    const imports = [{ exportName: 'E', sourceStack: 'Producer', sourceRegion: 'us-west-2' }];
+    const outputReads = [{ stackName: 'Producer', outputName: 'O', sourceRegion: 'us-west-2' }];
+    const { engine, backend } = build({
+      nested: true,
+      changes: new Map([['Q', createChange('Q')]]),
+      resources: {},
+      extraState: { imports, outputReads } as unknown as Partial<StackState>,
+    });
+
+    await engine.deploy(STACK, templateOf(['Q']));
+
+    const segment = backend.appendRollbackJournalSegment.mock.calls[0]![2] as RollbackJournalSegment;
+    expect(segment.previousCrossStackReads).toEqual({ imports, outputReads });
   });
 
   it('a NESTED engine with NO changes still appends an EMPTY pending segment', async () => {
@@ -335,6 +353,39 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
 
     expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
+  it('the post-rollback save RETRY path settles the reverted child too', async () => {
+    const { engine, backend, provider } = build({
+      nested: false,
+      changes: new Map([
+        ['Child', updateNestedChange('Child')],
+        ['B', createChange('B')],
+      ]),
+      resources: { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } } },
+      failCreateOf: 'B',
+      levels: [['Child'], ['B']],
+    });
+    let reverted = false;
+    let failedOnce = false;
+    provider.update.mockImplementation((logicalId: string) => {
+      if (provider.update.mock.calls.length === 2) reverted = true;
+      return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
+    });
+    // The FIRST save after the revert (the post-rollback save) conflicts; its
+    // retry and everything else succeeds.
+    backend.saveState.mockImplementation(() => {
+      if (reverted && !failedOnce) {
+        failedOnce = true;
+        return Promise.reject(new Error('412'));
+      }
+      return Promise.resolve('etag-x');
+    });
+
+    await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
+
+    expect(failedOnce).toBe(true);
+    expect(backend.dropRollbackJournalSegments).toHaveBeenCalledOnce();
   });
 
   it('a rollback whose journal POP failed keeps the child segments for the re-run', async () => {

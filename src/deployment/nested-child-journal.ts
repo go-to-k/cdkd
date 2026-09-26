@@ -189,6 +189,12 @@ export async function dropNestedChildJournals(args: {
           depth: depth + 1,
         });
       }
+    } catch (error) {
+      warnUncleared(logger, child, error);
+    }
+    // Outside the state read's `try`: a child whose state.json cannot be read
+    // (so its descendants cannot be walked) still has its OWN journal deleted.
+    try {
       await stateBackend.deleteRollbackJournal(child, region);
       logger.debug(`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
     } catch (error) {
@@ -342,11 +348,12 @@ export async function revertNestedChildFromJournal(args: {
 
     const stateResources: Record<string, ResourceState> = { ...base.resources };
     const mintedOrphans: StackOrphanRecord[] = [];
-    // Newest-first replay, so the OLDEST segment's snapshots are the child
-    // before this run touched it.
-    const oldest = segments[0]!;
-    const restoredOutputs = oldest.previousOutputs;
-    const restoredReads = oldest.previousCrossStackReads;
+    // The OLDEST segment of the run that CARRIES a snapshot is the child
+    // before this run touched it. Not `segments[0]` blindly: in a run where the
+    // child failed and rolled itself back before a later attempt succeeded,
+    // the oldest segment is its own failure segment, which carries none.
+    const restoredOutputs = segments.find((s) => s.previousOutputs)?.previousOutputs;
+    const restoredReads = segments.find((s) => s.previousCrossStackReads)?.previousCrossStackReads;
     let currentEtag = stateData!.etag;
     let persisted = false;
     // `skippedOutputs` is dropped for the reason `cdkd rollback`'s own save

@@ -415,6 +415,21 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
               `(got ${kind(list)}).`
           );
         }
+        // Each entry is written back into the child's state.json and read for
+        // its `sourceRegion` by the replay's region refusal.
+        (Array.isArray(list) ? (list as unknown[]) : []).forEach((entry, i) => {
+          const where = `segments[${s}].previousCrossStackReads.${field}[${i}]`;
+          if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            refuseMalformed(shownStack, `${where} must be an object (got ${kind(entry)}).`);
+          }
+          const region: unknown = (entry as Record<string, unknown>)['sourceRegion'];
+          if (region !== undefined && typeof region !== 'string') {
+            refuseMalformed(
+              shownStack,
+              `${where}.sourceRegion must be a string when present (got ${kind(region)}).`
+            );
+          }
+        });
       }
     }
     const prevOut: unknown = seg['previousOutputs'];

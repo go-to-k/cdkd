@@ -505,6 +505,15 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     expect(() =>
       parseRollbackJournal(body({ previousCrossStackReads: { outputReads: 1 } }), 'P~C')
     ).toThrow(/previousCrossStackReads\.outputReads must be an array when present/);
+    expect(() =>
+      parseRollbackJournal(body({ previousCrossStackReads: { imports: [null] } }), 'P~C')
+    ).toThrow(/previousCrossStackReads\.imports\[0\] must be an object \(got null\)/);
+    expect(() =>
+      parseRollbackJournal(
+        body({ previousCrossStackReads: { outputReads: [{ sourceRegion: 7 }] } }),
+        'P~C'
+      )
+    ).toThrow(/outputReads\[0\]\.sourceRegion must be a string when present \(got number\)/);
   });
 
   it('refuses previousOutputs whose outputs is not an object, and a non-string exportNames', () => {

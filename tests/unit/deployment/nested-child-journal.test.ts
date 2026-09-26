@@ -418,26 +418,79 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     expect(replay.calls).toHaveLength(0);
   });
 
-  it('retries a conflicting save once with the fresh ETag', async () => {
+  it('retries a conflicting save once with the RE-READ record ETag', async () => {
     const h = harness({ segments: [seg('r', ['Q'])] });
+    h.stateBackend.getState
+      .mockResolvedValueOnce({ state: childState(), etag: 'e1' })
+      .mockResolvedValue({ state: childState(), etag: 'e5' });
     h.stateBackend.saveState.mockRejectedValueOnce(new Error('412')).mockResolvedValue('e9');
 
     await h.run('r');
 
     const calls = h.stateBackend.saveState.mock.calls;
     expect(calls[0]![3]).toEqual({ expectedEtag: 'e1' });
-    expect(calls[1]![3]).toEqual({ expectedEtag: 'e1' }); // the re-read record's ETag
+    expect(calls[1]![3]).toEqual({ expectedEtag: 'e5' });
+    // ...and the saves after it chain on the ETag the retry returned.
+    expect(calls[2]![3]).toEqual({ expectedEtag: 'e9' });
     expect(h.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('saves the child state BEFORE refusing a failed replay', async () => {
+  it('saves the child state once more after the replay, BEFORE refusing a failed one', async () => {
     replay.failuresFor.add('Q');
     const h = harness({ segments: [seg('r', ['Q', 'Ok'])] });
 
     await expect(h.run('r')).rejects.toThrow(/failed to revert/);
 
+    // One save per replayed op (the mock's `afterOp`), plus the final save.
+    expect(h.stateBackend.saveState).toHaveBeenCalledTimes(3);
+  });
+
+  it('restores the snapshots of the oldest segment that CARRIES one, past a snapshot-less failure segment', async () => {
+    const h = harness({
+      segments: [
+        // The child failed and rolled itself back first in this run...
+        seg('r', [], { reason: 'auto-rollback-clean' }),
+        // ...then a later attempt succeeded.
+        seg('r', ['Q'], {
+          previousOutputs: { outputs: { QueueUrl: 'pre-run' }, exportNames: [] },
+          previousCrossStackReads: { imports: [] } as never,
+        }),
+      ],
+    });
+
+    await h.run('r');
+
     const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
-    expect(saved.resources).toMatchObject({ Ok: { reverted: true } });
+    expect(saved.outputs).toEqual({ QueueUrl: 'pre-run' });
+    expect(saved.imports).toEqual([]);
+  });
+
+  it('the region refusal also reads the RECORD reads, not only the pre-run ones', async () => {
+    const h = harness({
+      state: {
+        ...childState(),
+        outputReads: [{ stackName: 'P', outputName: 'O', sourceRegion: 'eu-west-1' }],
+      } as unknown as StackState,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['eu-west-1']);
+  });
+
+  it('drops an imports field the pre-run record lacked', async () => {
+    const h = harness({
+      state: {
+        ...childState(),
+        imports: [{ exportName: 'NewE', sourceStack: 'P', sourceRegion: 'us-east-1' }],
+      } as unknown as StackState,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+    });
+
+    await h.run('r');
+
+    expect(h.stateBackend.saveState.mock.calls.at(-1)![2]).not.toHaveProperty('imports');
   });
 
   it('drops skippedOutputs from the saved record', async () => {
@@ -547,16 +600,26 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     expect(t.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('a backend failure warns and carries on to the next child', async () => {
+  it('an unreadable child state still gets that child OWN journal deleted, and the walk carries on', async () => {
     const t = tree();
-    t.stateBackend.getState.mockRejectedValueOnce(new Error('throttled'));
+    t.stateBackend.getState.mockRejectedValueOnce(new Error('unparseable state.json'));
 
     await expect(
       sweep(t, { ...t.resources, Second: { resourceType: 'AWS::CloudFormation::Stack' } })
     ).resolves.toBeUndefined();
 
     expect(t.logger.warn).toHaveBeenCalledOnce();
-    expect(t.order).toContain('delete Root~Second');
+    expect(t.order).toEqual(['delete Root~Child', 'delete Root~Second']);
+  });
+
+  it('a failed delete warns and carries on', async () => {
+    const t = tree();
+    t.stateBackend.deleteRollbackJournal.mockRejectedValueOnce(new Error('AccessDenied'));
+
+    await sweep(t);
+
+    expect(t.logger.warn).toHaveBeenCalledOnce();
+    expect(t.stateBackend.deleteRollbackJournal).toHaveBeenCalledTimes(2);
   });
 
   it('does not recurse into a record whose body names ANOTHER stack', async () => {

@@ -5110,6 +5110,9 @@ export class DeployEngine {
       // spread nothing and a stack that never orphaned keeps a byte-identical
       // record.
       let rollbackOrphans: StackOrphanRecord[] = [];
+      // The rows the automatic rollback actually changed (issue #3754): only
+      // their nested children's pending segments are settled with it.
+      let rollbackMutated = new Set<string>();
 
       // On SIGINT, skip rollback — just save partial state, record a rollback
       // journal segment so the interrupted deploy is REVERTIBLE (not just
@@ -5181,6 +5184,7 @@ export class DeployEngine {
         // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
         // and neither can see `rollbackResult`.
         rollbackOrphans = rollbackResult.orphaned;
+        rollbackMutated = rollbackResult.mutated;
       }
 
       // Save state after rollback (reflects rolled-back resource state).
@@ -5227,7 +5231,7 @@ export class DeployEngine {
         if (autoRollbackClean) {
           await this.settleNestedChildrenAfterCleanRollback(
             stackName,
-            completedOperations,
+            completedOperations.filter((op) => rollbackMutated.has(op.logicalId)),
             await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
           );
         }
@@ -5272,7 +5276,7 @@ export class DeployEngine {
           if (autoRollbackClean) {
             await this.settleNestedChildrenAfterCleanRollback(
               stackName,
-              completedOperations,
+              completedOperations.filter((op) => rollbackMutated.has(op.logicalId)),
               await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
             );
           }
@@ -5578,17 +5582,27 @@ export class DeployEngine {
      * automatic-rollback arm is this method's only caller.
      */
     previousState: StackState
-  ): Promise<{ failures: number; warnings: number; orphaned: StackOrphanRecord[] }> {
+  ): Promise<{
+    failures: number;
+    warnings: number;
+    orphaned: StackOrphanRecord[];
+    /** Issue #3754: the rows this replay actually changed (skips excluded). */
+    mutated: Set<string>;
+  }> {
     // Issue #3754: a nested-stack row reverted here replays its child's
     // journal segments for THIS run, which `NestedStackProvider` reads from
     // the scope.
     const runId = this.options.eventRecorder?.runId;
+    const mutated = new Set<string>();
     const result = await withNestedRevertRun(runId, () =>
       replayRollback(
         completedOperations,
         stateResources,
         stackName,
-        this.rollbackExecutorContext(previousState)
+        this.rollbackExecutorContext(previousState),
+        // `afterOp` fires only once an op has CHANGED something, so a row the
+        // replay skipped (already done, mismatched) never counts as reverted.
+        { afterOp: (logicalId) => void mutated.add(logicalId) }
       )
     );
 
@@ -5597,7 +5611,12 @@ export class DeployEngine {
     // #2934), which is the ONLY save on this path — dropping it there makes a
     // live, billing AWS resource untrackable and re-opens the deploy loop the
     // record closes.
-    return { failures: result.failures, warnings: result.warnings, orphaned: result.orphaned };
+    return {
+      failures: result.failures,
+      warnings: result.warnings,
+      orphaned: result.orphaned,
+      mutated,
+    };
   }
 
   /**

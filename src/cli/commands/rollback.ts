@@ -667,14 +667,49 @@ export async function rollbackCommand(
       if (journal.segments.some((s) => s.reason === NESTED_PENDING_PARENT_REASON)) {
         const cut = stackName.lastIndexOf('~');
         const parent = cut > 0 ? stackName.slice(0, cut) : undefined;
+        // Only name the parent's rollback when the parent HAS a journal to
+        // roll back: after a crash it has none, and re-deploying is the way.
+        const parentJournal =
+          parent !== undefined
+            ? await setup.stateBackend.loadRollbackJournal(parent, region).catch(() => null)
+            : null;
         throw new Error(
           `The rollback journal of nested stack ${safeStack(stackName)} (${safe(region)}) holds the ` +
             `record of a nested deploy that its parent has not settled, which only the parent's ` +
             `rollback may replay. ` +
-            (parent !== undefined
+            (parent !== undefined && parentJournal && parentJournal.segments.length > 0
               ? `Roll back the parent stack ${safeStack(parent)} instead, or re-deploy it, which clears the record.`
               : `Re-deploy the top-level stack, which clears the record.`)
         );
+      }
+      // Issue #3754: a nested child whose OWN deploy failed in a segment's run
+      // left its completed ops in its journal, and only `--revert-failed`
+      // replays that failed row. Without it the parent's older segments would
+      // revert the child past those ops first, and a later rollback of the
+      // child would then restore the failed run's values over the older ones.
+      // Refused up front, before any replay, so the order cannot invert.
+      if (!options.revertFailed) {
+        for (const segment of journal.segments) {
+          for (const logicalId of revertedNestedRowIds(segment.failedOperations ?? [])) {
+            const child = nestedChildStackName(stackName, logicalId);
+            const childJournal = await setup.stateBackend
+              .loadRollbackJournal(child, region)
+              .catch(() => null);
+            const unreverted = (childJournal?.segments ?? []).some(
+              (s) =>
+                s.runId === segment.runId &&
+                s.reason !== NESTED_PENDING_PARENT_REASON &&
+                s.operations.length > 0
+            );
+            if (unreverted) {
+              throw new Error(
+                `Nested stack ${safeStack(child)} failed during a deploy this journal records, and its ` +
+                  `own journal still holds that deploy's completed operations. Re-run with ` +
+                  `--revert-failed so they are reverted in order with the parent's.`
+              );
+            }
+          }
+        }
       }
       const baseState = stateData.state;
       // `cdkd rollback` replays journal segments and SAVES after each one, and
@@ -748,8 +783,21 @@ export async function rollbackCommand(
         if (segment.failedOperations && segment.failedOperations.length > 0) {
           if (options.revertFailed) {
             const failedPlan = planFailedOps(segment.failedOperations, planStateView);
-            for (const item of failedPlan)
+            for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
+              // A failed nested row's revert replays its child's journal too.
+              if (revertedNestedRowIds([item.op]).length > 0) {
+                for (const line of await previewNestedChildRevert(
+                  setup.stateBackend,
+                  nestedChildStackName(stackName, item.op.logicalId),
+                  region,
+                  segment.runId,
+                  options.skipFinalSnapshot === true
+                )) {
+                  logger.info(line);
+                }
+              }
+            }
             applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
           } else {
             for (const fop of segment.failedOperations) {
@@ -898,6 +946,13 @@ export async function rollbackCommand(
         }
       };
 
+      // Issue #3754: the rows each segment's replay actually changed.
+      const mutatedThisSegment = new Set<string>();
+      const recordAndSave = async (logicalId: string): Promise<void> => {
+        mutatedThisSegment.add(logicalId);
+        await saveState();
+      };
+
       // 8. Replay segments strictly newest-first; pop each after a clean run.
       const oldestInitialDeploy = journal.segments[0]?.initialDeploy === true;
       let totalFailures = 0;
@@ -907,7 +962,10 @@ export async function rollbackCommand(
           if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
           // Captured BEFORE the replay: the failed-op strip below rewrites
-          // `segment.failedOperations` as it goes.
+          // `segment.failedOperations` as it goes. Filtered after it to the
+          // rows an op actually CHANGED (`afterOp` fires only then), so a
+          // nested row the replay skipped settles no child segment.
+          mutatedThisSegment.clear();
           const replayedOps = [
             ...segment.operations,
             ...(options.revertFailed ? (segment.failedOperations ?? []) : []),
@@ -954,7 +1012,7 @@ export async function rollbackCommand(
                       stackName,
                       ctx,
                       {
-                        afterOp: saveState,
+                        afterOp: recordAndSave,
                         isInterrupted: () => interrupted,
                         // Failed-only segment: replayRollback below returns
                         // early without the STARTED/FINISHED envelope, so the
@@ -1024,7 +1082,7 @@ export async function rollbackCommand(
                     ctx,
                     {
                       orphanLogicalIds,
-                      afterOp: saveState,
+                      afterOp: recordAndSave,
                       isInterrupted: () => interrupted,
                       // Pushed from INSIDE the replay, not after it returns: the
                       // `afterOp` above saves per op, so a record appended only
@@ -1065,7 +1123,9 @@ export async function rollbackCommand(
             stateBackend: setup.stateBackend,
             parentStackName: stackName,
             region,
-            revertedLogicalIds: revertedNestedRowIds(replayedOps),
+            revertedLogicalIds: revertedNestedRowIds(
+              replayedOps.filter((op) => mutatedThisSegment.has(op.logicalId))
+            ),
             runId: segment.runId,
             logger,
           });
