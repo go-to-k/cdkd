@@ -13,12 +13,12 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **24**
-- Nested CFn key paths audited: **1222**
+- Nested CFn key paths audited: **1223**
 - Same spelling in SDK model: **1131**
 - Explicitly handled in provider: **70**
 - Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
-- **No SDK member (blocks CI): 0**
+- **No SDK member (blocks CI): 1**
 - Write-evidence pass — fresh-object targets audited: **15**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **148**
@@ -28,9 +28,13 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **0**
 
-## Divergences
+## Divergences — BLOCKS CI
 
-None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
+Each key below is templated by CFn but never reaches AWS: either it maps to no SDK member at all, or (for a fresh-object target) the SDK member exists and the provider never writes it. Add the CFn->SDK conversion to the provider (naming the CFn spelling, and WRITING the SDK member), or add a `NESTED_KEY_ALLOW_LIST` entry with a rationale in scripts/gen-nested-key-coverage.ts.
+
+| Resource type | CFn nested key / path | Bucket | SDK detail |
+| --- | --- | --- | --- |
+| `AWS::Lambda::EventSourceMapping` | `SelfManagedKafkaEventSourceConfig.ConsumptionMode` | no-sdk-member | — |
 
 ## Allow-listed pass-throughs
 
@@ -216,7 +220,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::SecurityConfiguration` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 9 | 0 |
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
-| `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 37 | 6 |
+| `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 193 | 15 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |
 

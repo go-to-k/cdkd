@@ -1,12 +1,12 @@
 {
   "summary": {
     "targetCount": 24,
-    "nestedKeyCount": 1222,
+    "nestedKeyCount": 1223,
     "sameSpelling": 1131,
     "providerHandled": 70,
     "allowListed": 21,
     "caseDivergence": 0,
-    "noSdkMember": 0,
+    "noSdkMember": 1,
     "noWriteEvidence": 0,
     "freshObjectTargets": 15,
     "shapeClean": 148,
@@ -7252,7 +7252,7 @@
       "sdkClientPackage": "@aws-sdk/client-lambda",
       "keyStyle": "exact",
       "freshObjectMapper": false,
-      "nestedKeyCount": 37,
+      "nestedKeyCount": 38,
       "entries": [
         {
           "resourceType": "AWS::Lambda::EventSourceMapping",
@@ -7428,6 +7428,13 @@
           "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
           "terminalKey": "ConsumerGroupId",
           "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.ConsumptionMode",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "ConsumptionMode",
+          "bucket": "no-sdk-member"
         },
         {
           "resourceType": "AWS::Lambda::EventSourceMapping",
