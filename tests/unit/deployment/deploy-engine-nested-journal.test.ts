@@ -433,6 +433,50 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
+  it('performRollback reports a nested row as reverted only when its revert RAN, not when it was skipped', async () => {
+    const { engine, provider } = build({ nested: false, changes: new Map(), resources: {} });
+    const op = {
+      logicalId: 'Child',
+      changeType: 'UPDATE',
+      resourceType: NESTED,
+      physicalId: 'phys-Child',
+      previousState: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } },
+    };
+    const previous = {
+      version: 8,
+      stackName: STACK,
+      region: REGION,
+      resources: {},
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const perform = (
+      engine as unknown as {
+        performRollback: (
+          ops: unknown[],
+          resources: Record<string, ResourceState>,
+          stack: string,
+          prev: StackState
+        ) => Promise<{ revertedNestedRows: string[] }>;
+      }
+    ).performRollback.bind(engine);
+
+    // The row is absent from state, so the executor SKIPS its revert.
+    const skipped = await perform([op], {}, STACK, previous);
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(skipped.revertedNestedRows).toEqual([]);
+
+    // CONTROL: present, so the revert runs and the row counts.
+    const ran = await perform(
+      [op],
+      { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'new' } } },
+      STACK,
+      previous
+    );
+    expect(provider.update).toHaveBeenCalledOnce();
+    expect(ran.revertedNestedRows).toEqual(['Child']);
+  });
+
   it('a NESTED engine that succeeds leaves its own nested children journals alone', async () => {
     // Only the ROOT sweeps: a grandchild's pending segment must survive until
     // the top-level deploy succeeds, or a later parent failure cannot revert it.
