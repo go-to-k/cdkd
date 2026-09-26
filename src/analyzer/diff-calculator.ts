@@ -15,7 +15,7 @@ import {
   createOnlyChangeRequiresReplacement,
   isIntrinsicShaped,
 } from '../provisioning/create-only-properties.js';
-import { getTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
+import { tryGetTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
 import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
@@ -686,7 +686,21 @@ export class DiffCalculator {
           loaded.set(type, paths);
           return;
         }
-        const writeOnly = await getTopLevelWriteOnlyProperties(type);
+        const writeOnly = await tryGetTopLevelWriteOnlyProperties(type);
+        if (writeOnly === undefined) {
+          // Unknown (DescribeType failed; there is no write-only snapshot):
+          // any whole-property path might be write-only, so none raises a
+          // ceiling for this type. That is `main`'s in-place behaviour, never
+          // a replacement nobody can confirm.
+          this.logger.debug(
+            `Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers`
+          );
+          loaded.set(
+            type,
+            paths.filter((path) => path.length !== 1)
+          );
+          return;
+        }
         loaded.set(
           type,
           paths.filter((path) => !(path.length === 1 && writeOnly.has(path[0]!)))

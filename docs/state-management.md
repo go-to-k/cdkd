@@ -1382,8 +1382,10 @@ tell, so:
   confirm the value: AWS holds a different one, the resource type has no
   readback, or the read fails. The deploy log says which, as a warning. A
   write-only property, which AWS never returns, is replaced only on the few
-  resource types cdkd's own replacement rules name. On any other type, a
-  write-only property is updated in place and is never read back.
+  resource types cdkd's own replacement rules name. On any other type, it is
+  updated in place and never read back. So is any property of a type whose
+  write-only list cdkd cannot look up, for example when
+  `cloudformation:DescribeType` is denied.
 
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no

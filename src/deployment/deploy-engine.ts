@@ -6880,7 +6880,7 @@ export class DeployEngine {
         if (
           !typeChanged &&
           !suppliesFreshMaskOnlyValue &&
-          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
+          keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side

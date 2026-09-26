@@ -7,17 +7,28 @@ import { describe, it, expect, vi } from 'vite-plus/test';
  * the registry alone, so such a property was classified in-place and a moved
  * value was sent to `update()`.
  *
- * `DescribeType` is mocked to FAIL, so the committed schema snapshot answers,
- * exactly as it does for the ordinary diff in the other analyzer suites.
+ * `DescribeType` answers from the committed schema snapshot, with no write-only
+ * properties, unless a case says otherwise: the fallback needs a SUCCESSFUL
+ * write-only lookup, since an unknown write-only list raises no ceiling.
  */
-const mockCloudFormationSend = vi.fn(() =>
+const denied = (): Promise<never> =>
   Promise.reject(
     Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
       name: 'AccessDeniedException',
       $metadata: { httpStatusCode: 403, requestId: 'test-request-id' },
     })
-  )
-);
+  );
+const fromSnapshot = (command: { input?: { TypeName?: string } }): Promise<unknown> => {
+  const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
+  if (paths === undefined) return denied();
+  return Promise.resolve({
+    Schema: JSON.stringify({
+      createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
+      writeOnlyProperties: [],
+    }),
+  });
+};
+const mockCloudFormationSend = vi.fn(fromSnapshot);
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -26,6 +37,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { PropertyChange, StackState } from '../../../src/types/state.js';
 
@@ -239,7 +252,7 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     const SIMPLE_AD = 'AWS::DirectoryService::SimpleAD';
 
     async function simpleAdDiff(): Promise<Map<string, { propertyChanges?: PropertyChange[] }>> {
-      mockCloudFormationSend.mockImplementation(((command: { input?: { TypeName?: string } }) =>
+      mockCloudFormationSend.mockImplementation((command: { input?: { TypeName?: string } }) =>
         command.input?.TypeName === SIMPLE_AD
           ? Promise.resolve({
               Schema: JSON.stringify({
@@ -247,12 +260,8 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
                 writeOnlyProperties: ['/properties/Password'],
               }),
             })
-          : Promise.reject(
-              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
-                name: 'AccessDeniedException',
-                $metadata: { httpStatusCode: 403 },
-              })
-            )) as never);
+          : fromSnapshot(command)
+      );
       try {
         const state = crState();
         state.resources['Ad'] = {
@@ -275,15 +284,7 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
         };
         return await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
       } finally {
-        mockCloudFormationSend.mockReset();
-        mockCloudFormationSend.mockImplementation(() =>
-          Promise.reject(
-            Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
-              name: 'AccessDeniedException',
-              $metadata: { httpStatusCode: 403 },
-            })
-          )
-        );
+        mockCloudFormationSend.mockImplementation(fromSnapshot);
       }
     }
 
@@ -295,6 +296,42 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
       expect(password?.requiresReplacement).toBe(false);
       expect(changeOf(changes, 'Ad', 'Name')?.requiresReplacement).toBe(true);
     });
+  });
+
+  it('raises no ceiling when the write-only list cannot be looked up (fail closed)', async () => {
+    // DescribeType denied: create-only paths still come from the snapshot,
+    // but whether `Description` is write-only is unknown, so no ceiling.
+    clearWriteOnlyPropertiesCache();
+    mockCloudFormationSend.mockImplementation(() => denied());
+    try {
+      const state = crState();
+      state.resources['Policy'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: { Description: 'text-a', PolicyDocument: { Statement: [] } },
+      };
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        {
+          Resources: {
+            Cr: cr('b'),
+            Policy: {
+              Type: 'AWS::IAM::ManagedPolicy',
+              Properties: {
+                Description: { 'Fn::GetAtt': ['Cr', 'Text'] },
+                PolicyDocument: { Statement: [] },
+              },
+            },
+          },
+        },
+        makeResolver(state)
+      );
+      const pc = changeOf(changes, 'Policy', 'Description');
+      expect(pc?.inPlacePropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(false);
+    } finally {
+      mockCloudFormationSend.mockImplementation(fromSnapshot);
+    }
   });
 
   describe('a NESTED createOnly path (AWS::Glue::Connection ConnectionInput.Name)', () => {

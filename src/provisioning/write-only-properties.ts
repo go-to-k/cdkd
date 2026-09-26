@@ -97,6 +97,29 @@ export function getTopLevelWriteOnlyProperties(resourceType: string): Promise<Re
 }
 
 /**
+ * {@link getTopLevelWriteOnlyProperties} for a caller that must tell "none"
+ * from "unknown" (go-to-k/cdkd#3803): `undefined` when the lookup failed,
+ * which that function reports as an empty set. Warns nothing (the other
+ * variant's warning describes the Cloud Control update path), and caches only
+ * a success, sharing the cache with the other variant. It does not join the
+ * other variant's in-flight lookup, whose failure would read as "none".
+ */
+export async function tryGetTopLevelWriteOnlyProperties(
+  resourceType: string
+): Promise<ReadonlySet<string> | undefined> {
+  if (hasNoRegistrySchema(resourceType)) return new Set<string>();
+  try {
+    const result = await fetchTopLevelWriteOnlyProperties(resourceType);
+    if (!writeOnlyPropertiesCache.has(resourceType)) {
+      writeOnlyPropertiesCache.set(resourceType, Promise.resolve(result));
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Fetch + parse the type's write-only properties. THROWS on a DescribeType
  * failure — the caller (`getTopLevelWriteOnlyProperties`) catches, warns, and
  * declines to cache so the lookup can be retried later.

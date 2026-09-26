@@ -47,21 +47,38 @@ const renderer = {
 };
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
-vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({
-    cloudFormation: {
-      send: vi.fn(() =>
-        Promise.reject(
-          Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
-            name: 'AccessDeniedException',
-            $metadata: { httpStatusCode: 403 },
-          })
-        )
-      ),
-    },
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
-  }),
-}));
+// DescribeType answers from the committed schema snapshot with no write-only
+// properties (go-to-k/cdkd#3803: the synthetic create-only fallback needs a
+// successful write-only lookup; an unknown list raises no ceiling).
+vi.mock('../../../src/utils/aws-clients.js', async () => {
+  const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
+    '../../../src/provisioning/create-only-snapshot.generated.js'
+  );
+  return {
+    getAwsClients: () => ({
+      cloudFormation: {
+        send: vi.fn((command: { input?: { TypeName?: string } }) => {
+          const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
+          if (paths === undefined) {
+            return Promise.reject(
+              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+                name: 'AccessDeniedException',
+                $metadata: { httpStatusCode: 403 },
+              })
+            );
+          }
+          return Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
+              writeOnlyProperties: [],
+            }),
+          });
+        }),
+      },
+      sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    }),
+  };
+});
 
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
@@ -355,6 +372,25 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     });
 
     it('is skipped when the value did not move and nothing else changed', async () => {
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is skipped when the record spells the same bag in another key order', async () => {
+      const state = (
+        (await (stateBackend.getState as unknown as () => Promise<{ state: StackState }>)()) as {
+          state: StackState;
+        }
+      ).state;
+      state.resources['Reader']!.properties = {
+        PolicyDocument: { Statement: [{ Sid: 's1' }], Version: '2012-10-17' },
+        Description: 'topic-a',
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
       crReturns('topic-a');
 
       await makeEngine().deploy(STACK, policyTemplate('s1'));
