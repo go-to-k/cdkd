@@ -5,6 +5,7 @@ import {
   carriesFreshNoEchoValue,
   carriesSecretMask,
   embedsFreshNoEchoValue,
+  freshNoEchoLeafPositions,
   recordFreshNoEchoValuesIn,
   clearRecoverableMaskedOutputs,
   maskSecretsInText,
@@ -248,6 +249,74 @@ describe('mask-only redaction channel (issue #2274)', () => {
       recordFreshNoEchoValuesIn(NOECHO, secrets);
       expect(embedsFreshNoEchoValue(`#!/bin/sh\nTOKEN=${NOECHO}\n`, secrets)).toBe(true);
       expect(embedsFreshNoEchoValue('no token here', secrets)).toBe(false);
+    });
+  });
+
+  describe('freshNoEchoLeafPositions (go-to-k/cdkd#3729)', () => {
+    // The positions the engine asks AWS about for a create-only property whose
+    // record is `***`. The same predicate as carriesFreshNoEchoValue, so the
+    // two can never disagree about which leaves are fresh.
+    it('names each fresh whole leaf by its path, with the plaintext found there', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn({ Value: NOECHO }, secrets);
+
+      expect(freshNoEchoLeafPositions(NOECHO, secrets)).toEqual([{ path: [], plaintext: NOECHO }]);
+      expect(
+        freshNoEchoLeafPositions(
+          { Plain: 'x', Keys: [{ Name: NOECHO, Kind: 'HASH' }, 'y', NOECHO] },
+          secrets
+        )
+      ).toEqual([
+        { path: ['Keys', 0, 'Name'], plaintext: NOECHO },
+        { path: ['Keys', 2], plaintext: NOECHO },
+      ]);
+    });
+
+    it('agrees with carriesFreshNoEchoValue on every population it refuses', () => {
+      const derived: RecordedSecretValues = new Map();
+      recordMaskOnlyValue(derived, NOECHO);
+      const expression: RecordedSecretValues = new Map([[DYNREF_PLAINTEXT, DYNREF_EXPR]]);
+      recordFreshNoEchoValuesIn(DYNREF_PLAINTEXT, expression);
+      const fresh: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, fresh);
+      const excluded: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn({ Token: NOECHO }, excluded, new Set([NOECHO]));
+
+      const cases: Array<[unknown, RecordedSecretValues]> = [
+        [{ Value: NOECHO }, derived],
+        [{ Value: DYNREF_PLAINTEXT }, expression],
+        [{ Value: SECRET_MASK }, fresh],
+        [{ Value: `prefix-${NOECHO}` }, fresh],
+        [{ Value: NOECHO }, excluded],
+        [{ Value: NOECHO }, new Map(fresh)],
+      ];
+      for (const [bag, secrets] of cases) {
+        expect(freshNoEchoLeafPositions(bag, secrets)).toEqual([]);
+        expect(carriesFreshNoEchoValue(bag, secrets)).toBe(false);
+      }
+    });
+
+    it('names every position of a container shared by two paths', () => {
+      // A position left out would go unchecked against AWS.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const shared = { Name: NOECHO };
+
+      expect(freshNoEchoLeafPositions({ A: shared, B: [shared] }, secrets)).toEqual([
+        { path: ['A', 'Name'], plaintext: NOECHO },
+        { path: ['B', 0, 'Name'], plaintext: NOECHO },
+      ]);
+    });
+
+    it('terminates on a cycle, naming the leaf once', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const cyclic: Record<string, unknown> = { Value: NOECHO };
+      cyclic['self'] = cyclic;
+
+      expect(freshNoEchoLeafPositions(cyclic, secrets)).toEqual([
+        { path: ['Value'], plaintext: NOECHO },
+      ]);
     });
   });
 
