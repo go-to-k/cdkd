@@ -318,6 +318,25 @@ describe('DeployEngine — --replace wire-through', () => {
     expect(callOrder).toEqual(['update']);
   });
 
+  it('without --replace a typed rejection quoting "does not support UPDATE" still propagates (issue #3757)', async () => {
+    // The suggestion interpolates template-chosen text; before the fix the
+    // prose fallback read it as the Cloud Control auto-fallback and replaced
+    // the resource without the opt-in.
+    updateRejection = (rt, logicalId) =>
+      new ResourceUpdateNotSupportedError(
+        rt,
+        logicalId,
+        `renaming to 'does not support UPDATE' requires --replace`
+      );
+    const err = await invokeProvision(makeEngine({}), 'AWS::Glue::SecurityConfiguration').then(
+      () => null,
+      (e) => e as Error & { cause?: unknown }
+    );
+    expect(err).not.toBeNull();
+    expect(err!.cause).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(callOrder).toEqual(['update']);
+  });
+
   it('replace=true on a STATEFUL type is blocked without --force-stateful-recreation', async () => {
     const engine = makeEngine({ replace: true });
     const err = await invokeProvision(engine, 'AWS::DynamoDB::Table').then(
@@ -992,11 +1011,13 @@ describe('DeployEngine — --replace wire-through', () => {
     });
 
     it('a typed rejection whose message ALSO carries the trigger phrase takes the --replace wording', async () => {
-      // Both triggers true at once: a provider is free to put "does not
-      // support UPDATE" in its `ResourceUpdateNotSupportedError` suggestion,
-      // which rides `.message`. `replaceOptIn` is the discriminator, and it is
-      // the right one — the user passed `--replace`, so that is the flag whose
-      // behaviour they are being told about.
+      // A provider is free to put "does not support UPDATE" in its
+      // `ResourceUpdateNotSupportedError` suggestion, which rides `.message`.
+      // The stateful guard fires here whatever the classifier says, so this
+      // pins only the WORDING, which `replaceOptIn` selects — the user passed
+      // `--replace`, so that is the flag whose behaviour they are being told
+      // about. That the classifier refuses the typed rejection (issue #3757)
+      // is pinned by the no-`--replace` case near the top of this file.
       updateRejection = (rt, logicalId) =>
         new ResourceUpdateNotSupportedError(rt, logicalId, 'AWS does not support UPDATE for this');
       const err = await invokeProvision(

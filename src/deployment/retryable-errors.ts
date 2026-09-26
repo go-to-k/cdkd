@@ -1772,6 +1772,17 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * deleting the resource.
  */
 export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
+  // A typed `ResourceUpdateNotSupportedError` is the `--replace` OPT-IN
+  // trigger, never the auto-fallback, and its message interpolates
+  // template-chosen text (a Glue rename quotes both names) that can contain
+  // the prose fallback below — which would replace without the opt-in
+  // (issue #3757). Matched by NAME: this module cannot import
+  // `error-handler.ts`, which imports it.
+  if (
+    (error as { name?: unknown } | null | undefined)?.name === 'ResourceUpdateNotSupportedError'
+  ) {
+    return false;
+  }
   let current: unknown = error;
   for (
     let depth = 0;
