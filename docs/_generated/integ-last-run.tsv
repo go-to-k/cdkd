@@ -132,8 +132,8 @@ full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness r
 gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, site 6 (bootstrap marker). RUN IN eu-west-1, not us-east-1: the fixture correctly refuses a region whose bootstrap marker is not its own, and us-east-1 / ap-northeast-1 / us-west-2 all carry one. Premise 9 marker rows before teardown, then 1 row and 0 noncurrent; control 4 noncurrent lock.json versions survive. 0 errors, 0 orphans, no docker residue.
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-glue-securityconfig-replace	2026-09-25T20:09:32Z	PASS	50	verify.sh	rc ok, orph clean (#3136 PR #3793)
-glue-update-hardening	2026-09-25T22:05:00Z	PASS	190	verify.sh	rc ok, orph clean (#3740 glue arm, final sha)
+glue-securityconfig-replace	2026-09-26T00:30:00Z	PASS	55	verify.sh	maintainer merge-gate rerun of PR #3774; rc ok, orph clean
+glue-update-hardening	2026-09-26T00:30:00Z	PASS	180	verify.sh	maintainer merge-gate rerun of PR #3774; rc ok, orph clean
 iam-access-key	2026-09-25T20:11:20Z	PASS	85	verify.sh	rc ok, orph clean (#3740 final sha)
 iam-managed-policy	2026-09-25T19:22:55Z	PASS	35	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
