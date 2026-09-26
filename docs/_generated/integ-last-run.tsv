@@ -104,7 +104,7 @@ ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24
 ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
-efs-immutable-replacement	2026-09-25T13:49:20Z	PASS	70	verify.sh	rc ok, orph clean; sha 0c502fe99 (#3718, post-rebase)
+efs-immutable-replacement	2026-09-26T01:04:14Z	PASS	85	verify.sh	rc ok, orph clean (#3750 PR #3807)
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 efs-standalone	2026-09-24T23:20:39Z	PASS	165	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
@@ -133,7 +133,7 @@ gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, s
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 glue-securityconfig-replace	2026-09-26T00:30:00Z	PASS	55	verify.sh	maintainer merge-gate rerun of PR #3774; rc ok, orph clean
-glue-update-hardening	2026-09-26T00:30:00Z	PASS	180	verify.sh	maintainer merge-gate rerun of PR #3774; rc ok, orph clean
+glue-update-hardening	2026-09-26T01:04:14Z	PASS	191	verify.sh	rc ok, orph clean (#3750 PR #3807)
 iam-access-key	2026-09-25T20:11:20Z	PASS	85	verify.sh	rc ok, orph clean (#3740 final sha)
 iam-managed-policy	2026-09-25T19:22:55Z	PASS	35	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean

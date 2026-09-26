@@ -658,15 +658,23 @@ a DELETE + CREATE, the same replacement path the Cloud Control
 `UnsupportedActionException` auto-fallback already uses, and matching what
 CloudFormation would do.
 
-A rename through a nested name takes the same path. None of `TableInput.Name`
-(`AWS::Glue::Table`), `DatabaseInput.Name` (`AWS::Glue::Database`) or
-`ConnectionInput.Name` (`AWS::Glue::Connection`) is create-only, so a change
-diffs as an in-place UPDATE, which the provider refuses: `UpdateTable`
-addresses a table by its new name, so the update would rewrite a different
-table. A table or database is stateful, so its rename also needs
-`--force-stateful-recreation`. The replacement deletes the old resource before
-it creates the renamed one (unless `UpdateReplacePolicy: Retain` keeps it), so
-if a resource with the new name exists, the create fails after the delete.
+Glue names live nested inside an input block, and a rename through one follows
+CloudFormation:
+
+| Change | Plan | To apply it |
+| --- | --- | --- |
+| `TableInput.Name` (`AWS::Glue::Table`) | Replacement | `--force-stateful-recreation` (a table is stateful) |
+| `ConnectionInput.Name` (`AWS::Glue::Connection`) | Replacement | nothing extra |
+| `DatabaseInput.Name` (`AWS::Glue::Database`) | Update, refused by the provider | `--replace --force-stateful-recreation` |
+
+A table name differing only in letter case is the same table (Glue folds table
+names to lowercase), so it updates in place. The replacement creates the
+renamed resource before deleting the old one, so if another table already holds
+the new name, the create fails and nothing is deleted; pick a free name. Do
+not answer that failure with `--replace`, which deletes the old resource first
+and then collides with the same holder again. Renaming a database through
+`DatabaseInput.Name` fails in CloudFormation too; cdkd refuses it before any
+AWS call, because the update would leave the state naming the old database.
 
 A `CatalogId` change on a Glue database is refused the same way: `CatalogId`
 is not create-only there, and the update would address the same-named
