@@ -3716,13 +3716,15 @@ async function runAccept(
           // (`--revert` can fix it, `--accept` cannot).
           const refusal = acceptRefusalReason(change, outcome.maskedPaths);
           if (refusal !== undefined) {
-            // The command is never INSIDE the sentence -- a pasted prose
-            // `'...'` span ran the value it carried (go-to-k/cdkd#3363). It
-            // rides a labelled line when both identifiers clear
-            // `revertCommandLine`'s gate, and the prose names no command at
-            // all when they do not. The block still carries the property path
-            // and the resource type, which is why the command is on its own
-            // line rather than in the sentence.
+            // A command carrying an interpolated TARGET is never inside the
+            // sentence -- a pasted prose `'...'` span ran the value it carried
+            // (go-to-k/cdkd#3363). It rides a labelled line when both
+            // identifiers clear `revertCommandLine`'s gate. When they do not,
+            // the labelled line is not printed and the prose names the command
+            // only as the fixed literal `'cdkd drift --revert' for this stack`,
+            // which interpolates nothing. The block still carries the property
+            // path and the resource type, which is why the targeted command is
+            // on its own line rather than in the sentence.
             const revert = revertCommandLine(report.stackName, report.region);
             logger.warn(
               `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
@@ -6648,8 +6650,9 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
  * Withheld means NOT PRINTED rather than printed with a hole: both blocks
  * already display the stack name, so a hole beside it invites the operator to
  * fill it from a name the block shows — the misdirection the criterion
- * forbids. The prose keeps its own `for this stack` wording in that case,
- * which names no command to paste.
+ * forbids. The prose keeps its own `for this stack` wording in that case:
+ * it still names the command, as the fixed literal `'cdkd drift --revert'`,
+ * but no TARGET, so nothing in it came from the record.
  *
  * `exact` is not consulted: `isPasteableIdent` is strictly stronger on every
  * arm of the gate — it starts at an alphanumeric so is never option-shaped,
