@@ -9,6 +9,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -568,7 +569,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // zero-width space. The remedy for the hostile one must not print an id
     // that pastes as the legitimate resource. Reached through the
     // name-collision refusal of a reverse-replacement.
-    const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
     const hostile = '\u200bRealDB';
     // The same message renders the OLD physical id, also journal-sourced. A
@@ -610,7 +611,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // `~user` and `=x` are plain identifiers -- `safe()` is the identity on
     // them -- and the user's shell expands both before cdkd sees them. The
     // paste gate is CloudFormation's own logical-id charset, not identity.
-    const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
     const ids = ['~RealDB', '=RealDB', 'Real-DB'];
     const ops: CompletedOperation[] = ids.map((id) => ({
@@ -645,7 +646,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // the same way, so the op reaches the collision path with state keyed
     // `'123'` -- and the remedy would read `--orphan 123`, a command that
     // pastes but names nothing.
-    const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
     const ops: CompletedOperation[] = [
       {
@@ -757,7 +758,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     });
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockRejectedValue(transient);
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, lines } = makeCtx({ create, delete: del });
@@ -943,7 +944,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // The delete-new-first note, which renders both types.
     const collide = vi
       .fn()
-      .mockRejectedValueOnce(new Error('CREATE failed for Victim: Resource already exists.'))
+      .mockRejectedValueOnce(ccAlreadyExistsError('CREATE failed for Victim: Resource already exists.'))
       .mockResolvedValue({ physicalId: 'phys-recreated', attributes: {} });
     const { ctx: ctx2, lines: lines2 } = makeCtx({ create: collide, delete: del });
     await replayRollback([typeChangeOp()], newState(), 'S', ctx2);

@@ -22,6 +22,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import type { ResourceDeleteResult } from '../../../src/types/resource.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -170,7 +171,7 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
     const del = vi.fn().mockResolvedValue(SKIP);
     const create = vi
       .fn()
-      .mockRejectedValue(new Error("Resource of type 'AWS::S3::Bucket' already exists."));
+      .mockRejectedValue(awsSdkError("Resource of type 'AWS::S3::Bucket' already exists."));
     const { ctx } = makeCtx({ delete: del, create });
     const prev = res({ physicalId: 'old-b', properties: { a: 1 } });
     const ops: CompletedOperation[] = [

@@ -15,6 +15,7 @@ import {
 import type { ResourceState } from '../../../src/types/state.js';
 import { withRetry } from '../../../src/deployment/retry.js';
 import { createPreDeleteFinalSnapshot } from '../../../src/provisioning/final-snapshot.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 // Single-attempt pass-through for withRetry so the reverse-replacement
 // collision-retry tests do not sleep through the real 2-10s backoff schedule.
@@ -878,7 +879,7 @@ describe('replayRollback', () => {
   it('reverse-replacement name collision: deletes new first, persists the gap, retries create', async () => {
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockResolvedValue({ physicalId: 'phys-old' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
@@ -934,7 +935,7 @@ describe('replayRollback', () => {
     });
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockRejectedValueOnce(raw);
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
@@ -982,7 +983,7 @@ describe('replayRollback', () => {
     // would leave the bug alive for exactly the collision case.
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockResolvedValue({ physicalId: 'phys-old' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
@@ -1238,7 +1239,7 @@ describe('replayRollback', () => {
   it('reverse-replacement delete-new-first retry accepts BOTH collision and cooldown (issue #1206)', async () => {
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockResolvedValue({ physicalId: 'phys-old' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
@@ -1284,7 +1285,7 @@ describe('replayRollback', () => {
     // The delete-new-first fallback already deleted the new resource; the
     // re-create keeps colliding (withRetry is a single-attempt pass-through
     // in this file) — worst case: resource gone from AWS AND state.
-    const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
     const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
@@ -1422,7 +1423,7 @@ describe('replayRollback', () => {
     // report too, or the arm that runs on a name collision keeps the void.
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(awsSdkError('Queue already exists'))
       .mockResolvedValue({ physicalId: 'phys-old', effectiveProperties: { a: 1, fixed: true } });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
@@ -1501,7 +1502,7 @@ describe('replayRollback', () => {
     // is already gone). The #1247 guard must NOT fire on this path.
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Resource already exists'))
+      .mockRejectedValueOnce(awsSdkError('Resource already exists'))
       .mockResolvedValue({ physicalId: 'phys-new' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });

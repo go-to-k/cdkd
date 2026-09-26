@@ -26,6 +26,7 @@ import type {
 } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
+import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -479,10 +480,8 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       // so the re-create would collide again.
       (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue(SKIP);
       createFailures = [
-        new Error(
-          `CREATE failed for MyResource: Resource of type '${TYPE}' with identifier ` +
-            `'api1|Query|field' already exists.`
-        ),
+        ccAlreadyExistsError(`CREATE failed for MyResource: Resource of type '${TYPE}' with identifier ` +
+            `'api1|Query|field' already exists.`),
       ];
 
       const failure = await failureOf(

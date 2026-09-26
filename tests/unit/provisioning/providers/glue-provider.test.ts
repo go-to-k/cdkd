@@ -1068,7 +1068,7 @@ describe('Glue CreateTable name collision (issue #3750)', () => {
     expect(message).not.toContain('--replace');
     expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(false);
     // The AWS error stays in the chain for the retry classifiers; the
-    // collision classifier reads prose at depth 0 only.
+    // collision classifier credits its prose only when the top level relays it.
     expect((error as Error).cause).toBe(aws);
     expect(isMarkedNonRetryable(error)).toBe(true);
   });

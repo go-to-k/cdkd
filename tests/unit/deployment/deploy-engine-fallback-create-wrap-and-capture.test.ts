@@ -30,6 +30,7 @@ import type { ResourceChange } from '../../../src/types/state.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
 type InnerError = Error & { code?: string; cause?: unknown };
@@ -370,7 +371,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       // gets the already-deleted sentence, never the "Retain pins that
       // resource in place" refusal, which would be a lie on a path that just
       // deleted the name holder.
-      createRejection = () => new Error('Security configuration already exists: MyResource');
+      createRejection = () => awsSdkError('Security configuration already exists: MyResource');
 
       const err = await invokeExpectingFailure(makeEngine());
 
@@ -381,7 +382,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     });
 
     it('leaves the Retain arm’s issue #2518 collision refusal untouched', async () => {
-      createRejection = () => new Error('Security configuration already exists: MyResource');
+      createRejection = () => awsSdkError('Security configuration already exists: MyResource');
 
       const err = await invokeExpectingFailure(makeEngine(), 'Retain');
 

@@ -35,6 +35,7 @@ import {
   applyDefaultNameForFallback,
   withStackName,
 } from '../../../src/provisioning/resource-name.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({}),
@@ -158,7 +159,7 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     let seen = 0;
     const create = vi.fn(async (_id: string, _type: string, props: Record<string, unknown>) => {
       bags.push(props);
-      if (seen++ === 0) throw new Error(COLLISION_MESSAGE);
+      if (seen++ === 0) throw awsSdkError(COLLISION_MESSAGE);
       return { physicalId: 'old-q', attributes: {} };
     });
     const del = vi.fn().mockResolvedValue(undefined);

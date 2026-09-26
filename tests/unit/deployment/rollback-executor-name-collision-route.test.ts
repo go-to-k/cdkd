@@ -154,3 +154,27 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
     });
   });
 });
+
+describe('a cdkd refusal quoting a template value does not reach delete-new-first (#3816)', () => {
+  it('fails the op without deleting the new resource', () => {
+    // A provider refusal naming THIS resource whose message interpolates a
+    // property value carrying the phrase. It has no AWS `$metadata` link, so it
+    // is not a collision; before #3816 the depth-0 prose read deleted the live
+    // NEW resource here and re-created into the same refusal.
+    const create = vi.fn(async () => {
+      throw Object.assign(
+        new Error('Tg HealthCheckPath must start with "/", got "x already exists" — cdkd refuses'),
+        { logicalId: 'Tg' }
+      );
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeCtx({ create, delete: del });
+    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+
+    return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
+      expect(result.failures).toBe(1);
+      expect(del).not.toHaveBeenCalled();
+      expect(state['Tg']?.physicalId).toBe('arn-new');
+    });
+  });
+});

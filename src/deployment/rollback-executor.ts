@@ -2021,7 +2021,7 @@ async function updateWithRollbackRetry(
  *    property-driven create-first at `deploy-engine.ts:3745`, which calls
  *    `this.withRetry(...)` on its OWN — one default-schedule loop, no outer
  *    custom-classifier loop at all — and whose catch then reads
- *    `isNameCollisionError` to reach the delete-first fallback. Arm 1 is that
+ *    `isNameCollisionErrorFrom` to reach the delete-first fallback. Arm 1 is that
  *    shape PLUS the outer SQS-cooldown loop issue #1206 added, so it is the
  *    SUM of both precedents.
  *
