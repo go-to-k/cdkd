@@ -1989,6 +1989,23 @@ describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', (
     expect(result).toEqual([]);
   });
 
+  it('evaluates the Fn::Equals-over-Fn::Join "no notification ARNs" idiom to TRUE', async () => {
+    // With the Ref a string, the inner Fn::Join threw and `evaluateConditions`
+    // downgraded the condition to false; it now matches CloudFormation.
+    const conditions = await resolver.evaluateConditions({
+      ...context,
+      template: {
+        Resources: {},
+        Conditions: {
+          NoArns: {
+            'Fn::Equals': [{ 'Fn::Join': ['', { Ref: 'AWS::NotificationARNs' }] }, ''],
+          },
+        },
+      } as never,
+    });
+    expect(conditions['NoArns']).toBe(true);
+  });
+
   it('renders Fn::Join over Ref AWS::NotificationARNs as an empty string, as CloudFormation does', async () => {
     // Measured: CloudFormation renders `n=` for this template. Before #3809
     // the Ref was '' and Fn::Join refused it as "resolved to string".

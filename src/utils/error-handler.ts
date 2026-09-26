@@ -249,7 +249,7 @@ function formatDuration(ms: number): string {
  *    `physicalId` is not a string
  *    ([#3576](https://github.com/go-to-k/cdkd/issues/3576)), which both `Ref`
  *    and `Fn::GetAtt` reach, and so both `${...}` forms; and
- *    `refuseSubListValue`, raised BY `resolveSub` itself for a `${...}` or a
+ *    `subListRefusal`, raised BY `resolveSub` itself for a `${...}` or a
  *    variable-map value that resolves to a list
  *    ([#3809](https://github.com/go-to-k/cdkd/issues/3809)).
  * 2. NOT reachable from it, and thrown as this class only so that "deliberate

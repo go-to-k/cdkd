@@ -236,6 +236,25 @@ describe('a List<AWS::...> parameter resolves to a LIST end to end', () => {
     ).toBe('ids=subnet-a,subnet-b,subnet-c');
   });
 
+  it('a literal-array or EMPTY-list variable-map value is refused, and the count reads right', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = await buildContext();
+    const literal = await refusalOf(resolver, { 'Fn::Sub': ['v', { L: ['a', 'b'] }] }, context);
+    expect((literal as Error).message).toContain(
+      'Fn::Sub: the variable-map value L resolves to a list (an array of 2 items)'
+    );
+    const empty = await refusalOf(
+      resolver,
+      { 'Fn::Sub': ['v', { E: { Ref: 'AWS::NotificationARNs' } }] },
+      context
+    );
+    expect((empty as Error).message).toContain(
+      'Fn::Sub: the variable-map value E resolves to a list (an array of 0 items)'
+    );
+    const one = await refusalOf(resolver, { 'Fn::Sub': ['v', { O: ['a'] }] }, context);
+    expect((one as Error).message).toContain('(an array of 1 item)');
+  });
+
   it('a list-valued Fn::GetAtt placeholder is REFUSED rather than comma-joined', async () => {
     // CloudFormation fails the resource with "variable
     // Vpc.CidrBlockAssociations in Fn::Sub expression does not resolve to a

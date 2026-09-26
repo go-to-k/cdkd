@@ -7708,13 +7708,23 @@ export class IntrinsicFunctionResolver {
    * function that returns a string"). `String()` over the array used to render
    * `a,b` instead, so cdkd deployed a template CloudFormation refuses.
    *
+   * RETURNS the refusal rather than throwing it: `resolveSub` keeps the FIRST
+   * one and throws only after every variable and placeholder has resolved and
+   * the final dynamic-reference pass has run, so a `{{resolve:...}}` behind
+   * the list still records its needle (the go-to-k/cdkd#3218 class, which
+   * `cdkd scrub` depends on).
+   *
    * `subject` names template-controlled text, so it is masked here, once.
-   * Marked non-retryable at the throw: no retry changes a template.
+   * Marked non-retryable: no retry changes a template.
    */
-  private refuseSubListValue(subject: string, value: unknown, context: ResolverContext): void {
-    if (!Array.isArray(value)) return;
+  private subListRefusal(
+    subject: string,
+    value: unknown,
+    context: ResolverContext
+  ): IntrinsicResolutionRefusalError | undefined {
+    if (!Array.isArray(value)) return undefined;
     const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
-    throw markNonRetryable(
+    return markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Fn::Sub: ${this.displayMasked(subject, context)} resolves to a list (an array of ${count}), ` +
           `not a string. CloudFormation rejects this template too, because every Fn::Sub ` +
@@ -7782,6 +7792,9 @@ export class IntrinsicFunctionResolver {
       string,
       DynamicReferencePass
     >;
+    // The FIRST list refusal (issue #3809), thrown only once the walk is done
+    // -- see `subListRefusal`.
+    let listRefusal: IntrinsicResolutionRefusalError | undefined;
 
     // The TEMPLATE must be a string on both forms (issue #2776), checked before
     // the variable map below. CloudFormation takes only a literal string there,
@@ -7854,7 +7867,11 @@ export class IntrinsicFunctionResolver {
               : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
           // Refused whether or not the template names it: CloudFormation
           // validates every value of the map (issue #3809).
-          this.refuseSubListValue(`the variable-map value ${key}`, variables[key], context);
+          listRefusal ??= this.subListRefusal(
+            `the variable-map value ${key}`,
+            variables[key],
+            context
+          );
         }
       }
     } else {
@@ -7926,31 +7943,42 @@ export class IntrinsicFunctionResolver {
         // Check if it's a pseudo parameter. `AWS::NotificationARNs` is a LIST
         // one, refused like any other list (issue #3809).
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
-        this.refuseSubListValue(`the variable \${${varNameStr}}`, pseudoValue, context);
-        if (pseudoValue !== undefined) {
+        const pseudoRefusal = this.subListRefusal(
+          `the variable \${${varNameStr}}`,
+          pseudoValue,
+          context
+        );
+        listRefusal ??= pseudoRefusal;
+        if (pseudoRefusal) {
+          replacement = match[0];
+        } else if (pseudoValue !== undefined) {
           replacement = String(pseudoValue);
         } else {
           // Try to resolve as Ref
           try {
             const value = await this.resolveRef(varNameStr, context);
-            this.refuseSubListValue(`the variable \${${varNameStr}}`, value, context);
-            replacement = String(value);
-            twinReplacement = this.productLogTwin(value, context);
+            const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
+            listRefusal ??= refusal;
+            replacement = refusal ? match[0] : String(value);
+            if (!refusal) twinReplacement = this.productLogTwin(value, context);
           } catch (refError) {
-            // A DELIBERATE refusal is the final answer on both arms below
-            // (issue #1740): the list refusal above (#3809), or
-            // `lookupResourceRecord`'s malformed-record one (#3576). Re-raised
-            // ahead of the GetAtt fallback so neither is retried as
-            // `${Name.Attr}` and laundered there. A bare re-throw: the refusal
-            // was masked at its own throw.
+            // A DELIBERATE refusal (`lookupResourceRecord`'s malformed-record
+            // one, #3576) is the final answer on both arms below (issue #1740),
+            // re-raised ahead of the GetAtt fallback. A bare re-throw: the
+            // refusal was masked at its own throw.
             if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
             // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
             if (varNameStr.includes('.')) {
               try {
                 const value = await this.resolveGetAtt(varNameStr, context);
-                this.refuseSubListValue(`the variable \${${varNameStr}}`, value, context);
-                replacement = String(value);
-                twinReplacement = this.productLogTwin(value, context);
+                const refusal = this.subListRefusal(
+                  `the variable \${${varNameStr}}`,
+                  value,
+                  context
+                );
+                listRefusal ??= refusal;
+                replacement = refusal ? match[0] : String(value);
+                if (!refusal) twinReplacement = this.productLogTwin(value, context);
               } catch (getAttError) {
                 // A DELIBERATE refusal is re-raised, never laundered into a
                 // literal `${...}` (issue #1740). Only a genuine miss — or an
@@ -8053,6 +8081,8 @@ export class IntrinsicFunctionResolver {
       substitutions.push(...substituted.substitutions);
       complete &&= substituted.complete;
     }
+    // After the final pass, so every reference in the template has recorded.
+    if (listRefusal) throw listRefusal;
     this.recordLeafResolution(context, source, { input, output: result, substitutions, complete });
     this.rememberLogTwin(context, result, twin);
     this.logger.debug(
