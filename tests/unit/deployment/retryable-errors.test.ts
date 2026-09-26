@@ -1973,6 +1973,18 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
   });
 
+  it('does NOT match a typed ResourceUpdateNotSupportedError wrapping a named UnsupportedActionException', () => {
+    // The #3757 guard is a live fence: the constructor accepts a `cause`, and
+    // without the guard the name at depth 1 would classify it.
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Glue::Table',
+      'MyTable',
+      undefined,
+      ccUnsupportedActionError('AWS::Glue::Table')
+    );
+    expect(isUpdateUnsupportedError(err, 'MyTable')).toBe(false);
+  });
+
   it('does NOT match the exception name quoted in a message (the unreachable half #2520 removed)', () => {
     // The predicate this replaced accepted
     // `msg.includes('UnsupportedActionException')`. Nothing cdkd produces puts

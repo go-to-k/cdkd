@@ -8137,9 +8137,9 @@ export class DeployEngine {
                     //
                     // Safe to chain now that the refusal is marked:
                     // `isMarkedNonRetryable` is consulted before any chain-text
-                    // classification, and `ccUnsupported` reads the exception
-                    // NAME down the chain plus a top-level message only — a
-                    // refusal that quotes neither cannot re-fire the fallback.
+                    // classification, and `ccUnsupported` reads only the
+                    // exception NAME and `ccErrorCode` down the chain, never a
+                    // message (issue #3810).
                     updateError instanceof Error ? updateError : undefined
                   )
                 );

@@ -1,8 +1,10 @@
 /**
- * Production's object graph for a Cloud Control "this type has no UPDATE
- * handler" rejection — the only shape `isUpdateUnsupportedError` accepts since
- * issue [go-to-k/cdkd#3810](https://github.com/go-to-k/cdkd/issues/3810)
- * stopped reading AWS's prose.
+ * Production's object graph for a synchronous Cloud Control "this type has no
+ * UPDATE handler" rejection. Since issue
+ * [go-to-k/cdkd#3810](https://github.com/go-to-k/cdkd/issues/3810)
+ * `isUpdateUnsupportedError` reads no prose, so this shape (or the async
+ * `CloudControlOperationFailedError` carrying `ccErrorCode`) is what reaches
+ * the replacement fallback.
  *
  * Reconstructed from the two sources that build it rather than invented:
  *   - the AWS rejection: `aws cloudcontrol update-resource --type-name

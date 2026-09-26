@@ -1761,10 +1761,11 @@ export const CC_UNSUPPORTED_ACTION_ERROR_NAME = 'UnsupportedActionException';
  */
 export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
   // A typed `ResourceUpdateNotSupportedError` is the `--replace` OPT-IN
-  // trigger, never the auto-fallback (issue #3757). With no prose read left
-  // (issue #3810) nothing below can match it; this states the contract rather
-  // than fencing a live route. Matched by NAME: this module does not import
-  // `error-handler.ts`, which imports it, to avoid a cycle.
+  // trigger, never the auto-fallback (issue #3757). Still a live fence: its
+  // constructor accepts a `cause`, so a typed refusal wrapping a named
+  // `UnsupportedActionException` would otherwise match at depth 1. Matched by
+  // NAME: this module does not import `error-handler.ts`, which imports it, to
+  // avoid a cycle.
   if (
     (error as { name?: unknown } | null | undefined)?.name === 'ResourceUpdateNotSupportedError'
   ) {
@@ -1783,12 +1784,9 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
       logicalId?: unknown;
       cause?: unknown;
     };
-    // The anchor runs FIRST at every depth, the prose check included. Ordering
-    // the prose read ahead of it would leave the nested-stack immunity
-    // INCIDENTAL — resting on the child engine's wrapper happening to quote no
-    // AWS text (`Failed to update resource <id>`), a property of another file
-    // that no fence here watches. Anchored first, a rejection that names
-    // another resource cannot classify this one by ANY route.
+    // The anchor runs FIRST at every depth, ahead of both structured reads, so
+    // a rejection that names another resource cannot classify this one by ANY
+    // route — a nested stack's child rejection included.
     //
     // RESIDUAL, stated rather than left to be rediscovered: the anchor
     // compares logical IDS, so a CHILD resource whose logical id EQUALS the

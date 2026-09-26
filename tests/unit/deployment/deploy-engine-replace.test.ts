@@ -20,7 +20,7 @@
  *   - replace=true + stateful type WITH forceStatefulRecreation → replaced.
  *
  * The same `catch` block has a SECOND trigger — the Cloud Control
- * "does not support UPDATE" auto-fallback, which needs no flag to reach the
+ * `UnsupportedActionException` auto-fallback, which needs no flag to reach the
  * replacement — and since issue #2514 it consults the same stateful guard. Its
  * own describe block at the bottom of this file covers both polarities.
  */
@@ -38,7 +38,7 @@ import {
   isUpdateUnsupportedError,
 } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import { handleErrorWrapper } from '../_cc-unsupported-action.js';
+import { ccUpdateUnsupportedRejection, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -87,13 +87,12 @@ describe('DeployEngine — --replace wire-through', () => {
   /**
    * How the mocked `update()` rejects. Default: the typed
    * `ResourceUpdateNotSupportedError` an SDK provider raises (the `--replace`
-   * trigger). The Cloud-Control arm's tests swap in a plain `Error` carrying
-   * the wording the engine substring-matches, which is what makes the OTHER
+   * trigger). The Cloud-Control arm's tests swap in `handleError`'s wrapper
+   * over a named `UnsupportedActionException`, which is what makes the OTHER
    * trigger (`ccUnsupported`) fire — see the `#2514` describe below.
    */
-  // Returns `unknown`, not `Error`: the engine reads the rejection through
-  // `updateError instanceof Error ? … : String(updateError)` and chains it only
-  // when it IS an `Error`, so a provider throwing a bare string has to be
+  // Returns `unknown`, not `Error`: the engine chains the rejection only when
+  // it IS an `Error`, so a provider throwing a non-Error value has to be
   // expressible here to pin either branch.
   let updateRejection: (resourceType: string, logicalId: string) => unknown;
 
@@ -397,39 +396,16 @@ describe('DeployEngine — --replace wire-through', () => {
     // `ProvisioningError`, interpolating `err.message` only and passing the
     // raw error as `cause`.
     //
-    // Fixture 1 is that full production object graph: the wrapper AND its
-    // cause. It is what makes the STRUCTURED read load-bearing — the wrapper's
-    // own message carries no name, so only the cause link can supply it.
-    // The flat prose a provider could rethrow is REFUSED since issue #3810 —
-    // a message can quote template-chosen text — and is pinned separately
-    // below.
+    // `ccUpdateUnsupportedRejection` builds that full production object graph:
+    // the wrapper AND its cause. The wrapper's own message carries no name, so
+    // only the cause link can supply it. The flat prose a provider could
+    // rethrow is REFUSED since issue #3810 — a message can quote
+    // template-chosen text — and is pinned separately below.
     //
     // The shape that is deliberately GONE is the exception name quoted inside
     // a message (`Error: UnsupportedActionException: ...`): the pre-#2520
     // predicate accepted it, nothing cdkd produces emits it, and its negative
     // is pinned in `tests/unit/deployment/retryable-errors.test.ts`.
-    const CC_UNSUPPORTED_REJECTIONS: ReadonlyArray<readonly [string, () => unknown]> = [
-      [
-        "production's object graph: handleError's wrapper over the named cause",
-        () => {
-          const raw = new Error(
-            'Resource type AWS::DynamoDB::Table does not support UPDATE action'
-          );
-          raw.name = 'UnsupportedActionException';
-          return new ProvisioningError(
-            'Resource type AWS::DynamoDB::Table is not supported by Cloud Control API and no ' +
-              'SDK provider is registered.\nPlease report this issue at ' +
-              'https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n' +
-              `Error: ${raw.message}`,
-            'AWS::DynamoDB::Table',
-            'MyResource',
-            'old-pid',
-            raw
-          );
-        },
-      ],
-    ];
-
     // The production object graph around `message`: a raw
     // `UnsupportedActionException` wrapped by `handleError`.
     function rejectWith(message: string): void {
@@ -475,9 +451,8 @@ describe('DeployEngine — --replace wire-through', () => {
       expect(callOrder).toEqual(['update']);
     });
 
-    for (const [label, makeRejection] of CC_UNSUPPORTED_REJECTIONS) {
-      it(`blocks a STATEFUL type with no flags at all — ${label}`, async () => {
-        updateRejection = makeRejection;
+      it("blocks a STATEFUL type with no flags at all — production's object graph", async () => {
+        updateRejection = (rt, logicalId) => ccUpdateUnsupportedRejection(rt, logicalId, 'old-pid');
         // Neither --replace nor --force-stateful-recreation: exactly the plain
         // `cdkd deploy` that used to DELETE + CREATE a DynamoDB table.
         const engine = makeEngine({});
@@ -494,7 +469,6 @@ describe('DeployEngine — --replace wire-through', () => {
         expect(provider.create).not.toHaveBeenCalled();
         expect(callOrder).toEqual(['update']);
       });
-    }
 
     it('blocks an S3 bucket conservatively (no mid-deploy object-count probe)', async () => {
       rejectWith('Resource type AWS::S3::Bucket does not support UPDATE action');
@@ -548,13 +522,6 @@ describe('DeployEngine — --replace wire-through', () => {
       );
       expect(ccErr!.cause?.message).toMatch(/cannot be updated in place by the provisioning layer/);
       expect(ccErr!.cause?.message).not.toMatch(/--replace/);
-      // And the message must not satisfy the very predicate that routed us
-      // here: `ccUnsupported` substring-matches the update error's message, so
-      // a message containing either trigger phrase would re-fire the fallback
-      // if it were ever re-thrown through an update. Neither substring, both
-      // spelled out — a future reword back to "does not support UPDATE" reds.
-      expect(ccErr!.cause?.message).not.toContain('does not support UPDATE');
-      expect(ccErr!.cause?.message).not.toContain('UnsupportedActionException');
 
       callOrder = [];
       updateRejection = (rt, logicalId) => new ResourceUpdateNotSupportedError(rt, logicalId);
@@ -1436,6 +1403,22 @@ describe('DeployEngine — --replace wire-through', () => {
         expect(err).not.toBeNull();
         expect(provider.delete).not.toHaveBeenCalled();
         expect(callOrder).toEqual(['update']);
+      });
+
+      it('a NAMED non-Error object still reaches the guard, and chains no cause', async () => {
+        // A thrown plain object carrying the exception name passes the
+        // structured read. Asserted so the engine's `instanceof Error` ternary
+        // cannot quietly become `updateError as Error` and put a non-Error on
+        // `cause`, where `formatError` would read `.message` off it.
+        updateRejection = () => ({ name: 'UnsupportedActionException' });
+        const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table').then(
+          () => null,
+          (e) => e as Error & { cause?: { code?: string; cause?: unknown } }
+        );
+        expect(err).not.toBeNull();
+        expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+        expect(err!.cause?.cause).toBeUndefined();
+        expect(provider.delete).not.toHaveBeenCalled();
       });
     });
   });
