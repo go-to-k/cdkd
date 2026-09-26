@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { PropertyChange, StackState } from '../../../src/types/state.js';
 
@@ -416,6 +417,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     it('asks nothing on an unchanged stack', async () => {
       const state = policyState();
       mockCloudFormationSend.mockClear();
+      // A cached answer would make the call count say nothing.
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
 
       await new DiffCalculator().calculateDiff(
         state,
@@ -438,6 +442,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     it('does not ask for a reader no changed resource reaches', async () => {
       const state = policyState();
       mockCloudFormationSend.mockClear();
+      // A cached answer would make the call count say nothing.
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
 
       await new DiffCalculator().calculateDiff(
         state,
@@ -481,6 +488,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
         },
       };
       mockCloudFormationSend.mockClear();
+      // A cached answer would make the call count say nothing.
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
 
       const changes = await new DiffCalculator().calculateDiff(
         state,
@@ -533,6 +543,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
         return v;
       };
       mockCloudFormationSend.mockClear();
+      // A cached answer would make the call count say nothing.
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
 
       const changes = await new DiffCalculator().calculateDiff(
         state,
@@ -552,6 +565,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     it('asks for a reader the updated custom resource reaches', async () => {
       const state = policyState();
       mockCloudFormationSend.mockClear();
+      // A cached answer would make the call count say nothing.
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
 
       await new DiffCalculator().calculateDiff(
         state,
