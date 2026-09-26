@@ -262,7 +262,7 @@ rollback-replacement-retain	2026-09-19T18:00:07Z	PASS	65	verify.sh	rc ok, orph c
 rollback-replay-cc-generated-name	2026-09-25T09:51:48Z	PASS	146	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 rollback-replay-effective-props	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 rollback-sqs-cooldown	2026-09-19T18:00:07Z	PASS	161	verify.sh	rc ok, orph clean; #2668 type-change routing
-route53	2026-09-26T01:00:21Z	PASS	341	verify.sh	#3741 final sha, rename phases 2.7a/2.7b; rc ok, orph clean; pre-fix RED at 2.7a
+route53	2026-09-26T01:45:23Z	PASS	481	verify.sh	#3741 final sha, rename 2.7a/b + rollback 2.7c; rc ok, orph clean; M1-reverted RED at 2.7c
 s3-analytics-inventory	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
