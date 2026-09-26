@@ -1954,8 +1954,8 @@ describe('IntrinsicFunctionResolver - Fn::Sub ${!Literal} escape', () => {
 
 describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
   // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
-  // always an empty list, which a bare Ref resolves to ''. Inside Fn::Sub it
-  // is REFUSED (issue #3809): CloudFormation rejects the template with
+  // always an empty list, which a bare Ref resolves to (`[]`, issue #3809;
+  // it used to be ''). Inside Fn::Sub it is REFUSED: CloudFormation rejects the template with
   // "variable AWS::NotificationARNs in Fn::Sub expression does not resolve to
   // a string" (measured by a CreateStack A/B). Before #3809 cdkd rendered ''.
   let resolver: IntrinsicFunctionResolver;
@@ -1984,9 +1984,19 @@ describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', (
     );
   });
 
-  it('resolves a bare Ref: AWS::NotificationARNs to an empty string', async () => {
+  it('resolves a bare Ref: AWS::NotificationARNs to an empty LIST', async () => {
     const result = await resolver.resolve({ Ref: 'AWS::NotificationARNs' }, context);
-    expect(result).toBe('');
+    expect(result).toEqual([]);
+  });
+
+  it('renders Fn::Join over Ref AWS::NotificationARNs as an empty string, as CloudFormation does', async () => {
+    // Measured: CloudFormation renders `n=` for this template. Before #3809
+    // the Ref was '' and Fn::Join refused it as "resolved to string".
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['', ['n=', { 'Fn::Join': [',', { Ref: 'AWS::NotificationARNs' }] }]] },
+      context
+    );
+    expect(result).toBe('n=');
   });
 });
 

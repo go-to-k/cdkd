@@ -7923,14 +7923,10 @@ export class IntrinsicFunctionResolver {
           : this.productLogTwin(variables[varNameStr], context);
         if (Object.hasOwn(variablePasses, varNameStr)) pass = variablePasses[varNameStr];
       } else {
-        // `AWS::NotificationARNs` is a LIST pseudo parameter, which
-        // `resolvePseudoParameter` renders as '' (cdkd sets no notification
-        // ARNs); CloudFormation rejects it inside `Fn::Sub` (issue #3809).
-        if (varNameStr === 'AWS::NotificationARNs') {
-          this.refuseSubListValue(`the variable \${${varNameStr}}`, [], context);
-        }
-        // Check if it's a pseudo parameter
+        // Check if it's a pseudo parameter. `AWS::NotificationARNs` is a LIST
+        // one, refused like any other list (issue #3809).
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
+        this.refuseSubListValue(`the variable \${${varNameStr}}`, pseudoValue, context);
         if (pseudoValue !== undefined) {
           replacement = String(pseudoValue);
         } else {
@@ -11018,7 +11014,7 @@ export class IntrinsicFunctionResolver {
   private async resolvePseudoParameter(
     name: string,
     context?: ResolverContext
-  ): Promise<string | symbol | undefined> {
+  ): Promise<string | string[] | symbol | undefined> {
     switch (name) {
       case 'AWS::Region': {
         const accountInfo = await getAccountInfo(this.resolverRegion);
@@ -11073,10 +11069,11 @@ export class IntrinsicFunctionResolver {
       case 'AWS::NotificationARNs':
         // cdkd has no stack-notification-ARN concept — a cdkd deploy never
         // sets SNS notification ARNs on a stack — so the list is always
-        // empty, returned as '' (not undefined) for a bare `Ref`. Inside
-        // `Fn::Sub` CloudFormation REJECTS it as a list, and `resolveSub`
-        // refuses it before reaching here (issue #3809).
-        return '';
+        // empty. Returned as an EMPTY LIST, as CloudFormation resolves it (issue #3809): an
+        // `Fn::Join` over it renders '' there, and inside `Fn::Sub` it is
+        // rejected as a list, which `resolveSub` mirrors. It used to be '',
+        // on which `Fn::Join` failed with "resolved to string".
+        return [];
 
       case 'AWS::NoValue':
         // Return special symbol to indicate property should be omitted

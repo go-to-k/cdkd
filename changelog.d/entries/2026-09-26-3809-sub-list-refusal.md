@@ -2,4 +2,5 @@
   - A `${X}` that resolves to a list used to be comma-joined into the result. It now fails the deploy before any write, with a non-retryable error that names the variable and points to `Fn::Join`. This applies to a `List<...>` or `CommaDelimitedList` parameter, a list-valued `Fn::GetAtt`, and `AWS::NotificationARNs`, which used to render as `''`.
   - A variable-map value that resolves to a list is refused too, even when the template never names it.
   - CloudFormation rejects each of these shapes. It fails `CreateStack` with "variable X in Fn::Sub expression does not resolve to a string" or "every value of the context object of every Fn::Sub object must be a string", checked against real CloudFormation.
+  - `Ref AWS::NotificationARNs` now resolves to an empty list rather than `''`, so `Fn::Join` over it renders `''` as CloudFormation does. It used to fail with "resolved to string".
   - A bare `Ref` to a list parameter and `Fn::Join` over one are unchanged.
