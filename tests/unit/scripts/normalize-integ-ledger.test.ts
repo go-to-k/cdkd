@@ -10,6 +10,8 @@ import {
   normalizeLedger,
   findDuplicateTests,
   findOutOfOrderTests,
+  findFutureRows,
+  FUTURE_TOLERANCE_S,
   LEDGER_PATH,
 } from '../../../scripts/normalize-integ-ledger.js';
 
@@ -266,7 +268,37 @@ describe('diagnostics', () => {
   });
 });
 
+describe('findFutureRows', () => {
+  const NOW = '2026-09-25T07:29:00Z';
+
+  it('flags a row past the tolerance (the hand-written 08:20Z at 07:29Z) and names it', () => {
+    const { rows } = parseLedger(file(row('a', '2026-09-25T07:00:00Z'), row('b', '2026-09-25T08:20:00Z')));
+    expect(findFutureRows(rows, NOW).map((r) => r.test)).toEqual(['b']);
+  });
+
+  it(`accepts a row exactly ${FUTURE_TOLERANCE_S}s ahead and refuses one a second later`, () => {
+    const { rows } = parseLedger(file(row('edge', '2026-09-25T07:34:00Z'), row('over', '2026-09-25T07:34:01Z')));
+    expect(findFutureRows(rows, NOW).map((r) => r.test)).toEqual(['over']);
+  });
+
+  it('carries the tolerance across a day boundary', () => {
+    const { rows } = parseLedger(file(row('a', '2026-10-01T00:04:59Z'), row('b', '2026-10-01T00:05:01Z')));
+    expect(findFutureRows(rows, '2026-09-30T23:59:59Z').map((r) => r.test)).toEqual(['b']);
+  });
+});
+
 describe('CLI', () => {
+  it('refuses a future-dated row WITHOUT writing, in both modes, so the real row survives', () => {
+    const input = file(row('t', '2999-01-01T00:00:00Z', 'future'), row('t', '2026-01-01T00:00:00Z', 'real'));
+    for (const args of [[], ['--check']]) {
+      const r = runCli(input, args);
+      expect(r.status).toBe(1);
+      expect(r.content).toBe(input); // untouched: `real` is not deleted
+      expect(r.stderr).toMatch(/future-dated last_run_iso \(line 3 t 2999-01-01T00:00:00Z\)/);
+      expect(r.stderr.trim().split('\n')).toHaveLength(1);
+    }
+  }, 60_000);
+
   const unsorted = file(row('b', '2026-01-01T00:00:00Z'), row('a', '2026-01-01T00:00:00Z'));
 
   it('--check exits 0 without writing when the file is already normalized', () => {

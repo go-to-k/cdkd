@@ -94,12 +94,20 @@ verify, clean up.
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
                    # `> ""` is a loud failure that costs you the whole run
-   bash verify.sh > "$LOG" 2>&1 &
+   # Budget: 2x the ledger's last duration, floor 1500s — a fixed 1500s killed
+   # dynamodb-gsi-update (normal ~1300s) mid index-busy wait.
+   LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4}' ../../../docs/_generated/integ-last-run.tsv)
+   case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
+   POLLS=$(( LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
+   # Own process group, so a FIRE kills verify's `node` deploy/destroy child too
+   # (`kill -9 $VPID` alone reparents it to PID 1, still calling AWS). `perl`,
+   # since zsh — the agent's shell — refuses `set -m` outside a terminal.
+   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
    VPID=$!
-   # 1500s in 5s polls that end on their own: NEVER kill the watchdog — a
-   # kill orphans its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
-   ( i=0; while [ $i -lt 300 ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
-     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 $VPID; } ) &
+   # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
+   # its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
+   ( i=0; while [ $i -lt $POLLS ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
+     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 -- -$VPID; } ) &
    WPID=$!
    wait "$VPID"; RC=$?
    wait "$WPID"   # at most 5s more

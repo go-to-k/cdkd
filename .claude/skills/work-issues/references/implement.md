@@ -64,6 +64,10 @@ done                                                               # RIGHT
 - A fix round owes the same sweep, over the CODE not the diff's files:
   `grep -rn "<field / helper / message changed>" src/ tests/integration/` —
   `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
+  A change that REFUSES what it used to accept (warn → refuse) also greps the
+  property through `tests/integration/*/{lib,verify.sh}` before claiming "no
+  fixture impact": fixtures deploy malformed values ON PURPOSE (4 failed on
+  go-to-k/cdkd#3780).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
