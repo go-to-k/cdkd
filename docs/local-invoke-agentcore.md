@@ -236,14 +236,18 @@ build behaviour applies to
 
 ## Output streams
 
-Everything cdkd's own logger prints goes to **stderr**; stdout carries the
-agent's response. Stdout is not payload-only — the container's own stdout and
-the shared container-build logger also reach it — so the response is the **last
-line** on stdout rather than the only one:
+Everything cdkd's own logger prints goes to **stderr**, and so does the agent
+container's own output; stdout carries the agent's response. Stdout is not
+payload-only when cdkd builds the agent's image — the shared container-build
+logger also reaches it — so the response is the **last line** on stdout rather
+than the only one:
 
 ```bash
 cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
 ```
+
+`progress.log` also receives the agent container's own log lines, so anything
+the agent prints lands in that file.
 
 The full account of what reaches stdout is in [`cdkd local
 invoke`](local-invoke.md#output-streams), which shares the same reservation.

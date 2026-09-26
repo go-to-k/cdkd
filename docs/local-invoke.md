@@ -497,26 +497,26 @@ debug output — is written to stderr, the way `sam local invoke` does it. A
 terminal shows the same thing it always did, and `2>&1` restores a single-stream
 view.
 
-**Stdout is not payload-only, so pipe through `tail -1`.** Two things reach
-stdout besides the response, neither routed by cdkd's logger:
+**The container's own output goes to stderr too.** The Lambda runtime
+emulator puts `START` / `END` / `REPORT` and every handler log line —
+`console.error` included — on the container's stdout; cdkd streams it to
+stderr on these two commands, beside the container's stderr, so a handler that
+prints does not land ahead of the response. `docker pull` progress is
+redirected the same way.
 
-| Source | What lands on stdout |
-| --- | --- |
-| The container's own stdout | The runtime emulator puts `START` / `END` / `REPORT` and every handler log line there — `console.error` included — so any handler that prints lands ahead of the response. |
-| The container-image build path | For a container-image Lambda, `Building container image (platform=...)` and `Skipping docker build ...` print on stdout rather than stderr. |
-
-`docker pull` progress does not: while a command holds the stdout reservation,
-the child process's fd 1 is redirected to fd 2.
+**One source still reaches stdout, so pipe a container-image target through
+`tail -1`.** For a container-image Lambda, and for an AgentCore runtime cdkd
+builds, `Building container image (platform=...)` and `Skipping docker build
+...` print on stdout rather than stderr.
 
 ```bash
-# The response payload is always the LAST line on stdout.
-cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
+cdkd local invoke MyStack/Handler --event event.json | jq .body       # ZIP Lambda: stdout is the payload
+cdkd local invoke MyStack/ImageFn --event event.json | tail -1 | jq . # container image: take the last line
 cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
 ```
 
-A ZIP Lambda whose handler prints nothing hits neither source, so `cdkd local
-invoke MyStack/Handler | jq` does work there — it is just not a guarantee that
-holds for every target.
+A `2>` redirect also captures the handler's own log lines, so anything the
+handler prints lands in that file.
 
 [`cdkd local start-api`](local-start-api.md), [`cdkd local
 run-task`](local-run-task.md) and [`cdkd local
