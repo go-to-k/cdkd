@@ -886,6 +886,54 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
     expect(infoText()).toContain(`No matching stacks found in state. ${note}`);
   });
 
+  it('hedges the Stage when the pattern does not target it', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['Nope*', '--yes']);
+
+    expect(infoText()).toContain(`No matching stacks found in state. Possibly unrelated: ${note}`);
+  });
+
+  it('keeps the bare message when synth fails, so no Stage can be named', async () => {
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['MyStage/MyStack', '--yes']);
+
+    expect(infoSpy.mock.calls.map((c) => c[0])).toContain('No matching stacks found in state');
+  });
+
+  it('refuses --all over an app that synthesized no stacks instead of taking every stack in state', async () => {
+    for (const stages of [failedStages, []]) {
+      errorSpy.mockClear();
+      exitSpy.mockClear();
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [],
+        failedStages: stages,
+      });
+      mockListStacks.mockResolvedValue([
+        { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+        { stackName: 'SomeOtherApp', region: 'us-east-1' },
+      ]);
+
+      await expect(runDestroy(['--all', '--yes'])).rejects.toThrow('process.exit-mock');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(messages).toContain('refusing to fall back to every stack in state');
+      if (stages.length > 0) expect(messages).toContain(note);
+      else expect(messages).not.toContain('failed to load');
+    }
+  });
+
   it('names the Stage on the no-pattern arm when the only deployed stack sat under it', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},
@@ -910,6 +958,7 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
     mockListStacks.mockResolvedValue([{ stackName: 'MyStage-MyStack', region: 'us-east-1' }]);
 
     await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(messages).toContain(`ensure --app / cdk.json is configured. ${note}`);
   });
