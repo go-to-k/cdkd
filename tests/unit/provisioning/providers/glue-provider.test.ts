@@ -56,6 +56,7 @@ import {
   StopCrawlerCommand,
   CrawlerRunningException,
   EntityNotFoundException,
+  AlreadyExistsException,
 } from '@aws-sdk/client-glue';
 import {
   GlueProvider,
@@ -66,7 +67,10 @@ import {
   GlueConnectionProvider,
 } from '../../../../src/provisioning/providers/glue-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
-import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  isNameCollisionErrorFrom,
+} from '../../../../src/deployment/retryable-errors.js';
 
 describe('GlueProvider import', () => {
   let provider: GlueProvider;
@@ -1034,6 +1038,54 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
   });
 });
 
+// Issue #3750: a Table rename is now a create-first REPLACEMENT, so a table
+// already holding the new name surfaces as a CreateTable AlreadyExistsException.
+// It must NOT read as a name collision to the engine, whose remedy (`--replace`)
+// would delete the managed table first and then collide with the holder again.
+describe('Glue CreateTable name collision (issue #3750)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+  });
+
+  it('reports an occupied table name without the collision signal the engine reads', async () => {
+    const aws = new AlreadyExistsException({ message: 'Table already exists.', $metadata: {} });
+    mockGlueSend.mockRejectedValueOnce(aws);
+
+    const error = await new GlueProvider()
+      .create('MyTable', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        TableInput: { Name: 'taken' },
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain("a table named 'taken' is present in database 'mydb'");
+    expect(message).toContain('revert the change that planned it');
+    // The engine never takes its delete-first path for this error, so a
+    // --replace remedy would loop: none is offered.
+    expect(message).not.toContain('--replace');
+    expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(false);
+    // The AWS error stays in the chain for the retry classifiers; the
+    // collision classifier credits its prose only when the top level relays it.
+    expect((error as Error).cause).toBe(aws);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('keeps any other CreateTable failure wrapped with its cause', async () => {
+    const aws = new Error('Access denied');
+    mockGlueSend.mockRejectedValueOnce(aws);
+
+    const error = await new GlueProvider()
+      .create('MyTable', 'AWS::Glue::Table', { DatabaseName: 'mydb', TableInput: { Name: 't' } })
+      .catch((e: unknown) => e);
+
+    expect((error as Error).message).toContain('Failed to create Glue Table MyTable: Access denied');
+    expect((error as Error).cause).toBe(aws);
+  });
+});
+
 // Issue #1675: every Glue DELETE whose API accepts `CatalogId` must forward it
 // out of the properties bag. Omitting it silently targets this account's
 // DEFAULT Data Catalog, so a resource in a non-default catalog answers
@@ -1249,6 +1301,25 @@ describe('Glue delete CatalogId scoping (issue #1675)', () => {
           call[0].includes('Glue Table mydb|my_table does not exist in Data Catalog 999999999999')
       )
     ).toBe(true);
+  });
+
+  // Issue #3136: the warning's `aws glue get-*` synopsis quotes its `<id>`
+  // placeholder — bare, `<id>` is two shell redirections.
+  it('the unusable-CatalogId skip warning quotes its <id> placeholder', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    // An unresolved non-pseudo intrinsic: declared, but unusable.
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: { Ref: 'SomeParam' },
+    });
+
+    const warned = mockLoggerWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('aws glue get-table'))!;
+    expect(warned).toContain(`--catalog-id '<id>'`);
+    expect(warned).not.toContain('--catalog-id <id>');
   });
 
   it('deleteDatabase forwards a literal CatalogId to DeleteDatabaseCommand', async () => {

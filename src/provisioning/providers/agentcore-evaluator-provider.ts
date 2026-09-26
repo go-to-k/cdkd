@@ -280,7 +280,7 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     const nextTags = cfnTagListToMap(nextTagsRaw);
     const previousTags = cfnTagListToMap(previousTagsRaw);
 
-    const removedKeys = Object.keys(previousTags).filter((key) => !(key in nextTags));
+    const removedKeys = Object.keys(previousTags).filter((key) => !Object.hasOwn(nextTags, key));
     const upserts: Record<string, string> = {};
     for (const [key, value] of Object.entries(nextTags)) {
       if (previousTags[key] !== value) {

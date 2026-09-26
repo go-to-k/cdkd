@@ -1490,7 +1490,10 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
             Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: malformed } },
           },
         },
-        { BucketName: BUCKET_NAME }
+        { BucketName: BUCKET_NAME },
+        // A state-borne update: since issue #3740 a template-path update
+        // refuses the same value before any call.
+        { replayingState: true }
       );
       expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(0);
       expect(childLogger.warn).toHaveBeenCalledWith(
@@ -1522,7 +1525,8 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
           },
         },
       },
-      { BucketName: BUCKET_NAME }
+      { BucketName: BUCKET_NAME },
+      { replayingState: true }
     );
     expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(0);
     expect(childLogger.warn).toHaveBeenCalledWith(

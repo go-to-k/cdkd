@@ -1,6 +1,10 @@
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Shared pieces of the custom-resource-noecho-nested fixture: ONE inline
@@ -66,7 +70,7 @@ export function valueResource(
   scope: Construct,
   id: string,
   handler: lambda.IFunction,
-  props: { prefix: string; seed: string; noEcho: boolean; idFromSeed?: boolean }
+  props: { prefix: string; seed: string; noEcho: boolean; idFromSeed?: boolean; nonce?: string }
 ): cdk.CustomResource {
   return new cdk.CustomResource(scope, id, {
     serviceToken: handler.functionArn,
@@ -75,6 +79,46 @@ export function valueResource(
       Seed: props.seed,
       Sensitive: props.noEcho ? 'true' : 'false',
       ...(props.idFromSeed === true && { IdFromSeed: 'true' }),
+      // The handler ignores it: flipping it re-runs the handler, which then
+      // returns the SAME value (verify.sh phase 7, go-to-k/cdkd#3729).
+      ...(props.nonce !== undefined && { Nonce: props.nonce }),
     },
   });
+}
+
+/**
+ * The nonce the two NoEcho CRs with a create-only layer reader carry. Phase 7
+ * (`CDKD_TEST_UPDATE=...,nonce`) flips it, so their handlers re-run and return
+ * the same token.
+ */
+export function noEchoNonce(): string {
+  const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
+  return modes.includes('nonce') ? 'n1' : 'n0';
+}
+
+/**
+ * A layer version whose `Description`, a CREATE-ONLY property, holds a NoEcho
+ * value as a WHOLE leaf (go-to-k/cdkd#3729). The record stores `***`, so when
+ * the CR re-runs cdkd cannot tell from state whether the value moved. It reads
+ * the layer back from AWS, and replaces it only when AWS holds a different
+ * description. A layer version is immutable on AWS, so the replacement shows
+ * as a new version ARN.
+ *
+ * Not a NAME property on purpose: a NoEcho value used as a name becomes the
+ * physical id, which is never masked, and the whole-blob greps would fail on
+ * that documented bound rather than on this feature.
+ */
+export function noEchoLayer(
+  scope: Construct,
+  id: string,
+  layerVersionName: string,
+  description: string
+): lambda.LayerVersion {
+  const layer = new lambda.LayerVersion(scope, id, {
+    layerVersionName,
+    code: lambda.Code.fromAsset(path.join(__dirname, '..', 'layer')),
+    description,
+  });
+  (layer.node.defaultChild as cdk.CfnResource).overrideLogicalId(id);
+  return layer;
 }

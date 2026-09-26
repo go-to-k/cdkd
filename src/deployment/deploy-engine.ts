@@ -69,13 +69,21 @@ import {
   inheritedParameterExpression,
   carriesSecretMask,
   carriesFreshNoEchoValue,
+  freshNoEchoLeafPositions,
   recordMaskOnlyValuesIn,
   recordRecoverableMaskedOutput,
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
+  type FreshNoEchoLeaf,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
+import {
+  isMaskedBaselineRecaptureCandidate,
+  persistedTokenResolverContext,
+  recaptureMaskedBaseline,
+  resolveRecordSecrets,
+} from './masked-baseline-recapture.js';
 import type {
   CloudFormationTemplate,
   CreateContext,
@@ -187,6 +195,14 @@ import {
 } from './rollback-executor.js';
 import { getCdkdVersion } from '../state/deployment-events-store.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+import {
+  NESTED_PENDING_PARENT_REASON,
+  dropNestedChildJournals,
+  dropSettledNestedJournals,
+  nestedPendingSnapshot,
+  withNestedRevertRun,
+  type SettledNestedRows,
+} from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
 
@@ -906,6 +922,72 @@ function isReplacementCeiling(pc: PropertyChange): boolean {
 }
 
 /**
+ * `JSON.stringify` with every object's keys in sorted order, arrays kept
+ * positional: the equality the replacement-ceiling lowering and the
+ * post-readback skip compare with (go-to-k/cdkd#3803 review). The diff raised
+ * the ceiling through `DiffCalculator.valuesEqual`, which ignores key order,
+ * and a template and a `JSON.parse`d record can spell the same create-only
+ * object in different orders; an order-sensitive compare there read an equal
+ * value as moved and replaced the resource.
+ */
+function keyOrderFreeJson(value: unknown): string {
+  return JSON.stringify(value, (_key, node: unknown) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return node;
+    // Null prototype, so a `__proto__` key stays an own key.
+    const sorted = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(node).sort()) {
+      sorted[key] = (node as Record<string, unknown>)[key];
+    }
+    return sorted;
+  });
+}
+
+/**
+ * Why a create-only path carrying a fresh `NoEcho` value kept its replacement
+ * ceiling (go-to-k/cdkd#3729), or `held` when AWS confirmed it may be lowered.
+ * The class is all a log line says: never a value, never an error's text.
+ *
+ *  - `not-readable` — no provider readback for the record's route, the
+ *    readback returned nothing, or it did not report the property at all;
+ *  - `read-failed` — the readback threw, or outlived its cap;
+ *  - `differs` — the property was read, and some fresh position does not hold
+ *    exactly this value (a different string, a non-string, an array that does
+ *    not reach that index).
+ */
+type FreshNoEchoCeilingVerdict = 'held' | 'not-readable' | 'read-failed' | 'differs';
+
+/** The result of reading a reader back once for its fresh-`NoEcho` ceilings. */
+type FreshNoEchoReadback =
+  | { live: Record<string, unknown> }
+  | { failure: 'not-readable' | 'read-failed' };
+
+/**
+ * Does `live` hold every fresh leaf's plaintext at that leaf's position, with
+ * strict string equality (go-to-k/cdkd#3729)? `live` is the readback's value for
+ * one top-level property; each leaf's path is relative to it. ALL must hold.
+ * Anything this walk cannot follow counts as a difference: a missing key, an
+ * index past the end of an array, a container where a string should be. That
+ * is the direction that keeps the replacement, which is today's behaviour.
+ */
+function liveHoldsFreshLeaves(live: unknown, leaves: readonly FreshNoEchoLeaf[]): boolean {
+  for (const leaf of leaves) {
+    let node: unknown = live;
+    for (const segment of leaf.path) {
+      if (typeof segment === 'number') {
+        if (!Array.isArray(node) || segment >= node.length) return false;
+        node = node[segment];
+        continue;
+      }
+      if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+      if (!Object.prototype.hasOwnProperty.call(node, segment)) return false;
+      node = (node as Record<string, unknown>)[segment];
+    }
+    if (typeof node !== 'string' || node !== leaf.plaintext) return false;
+  }
+  return true;
+}
+
+/**
  * Structural equality for resolved Outputs maps (issue #875).
  *
  * Output values are intrinsic-resolved primitives or nested objects/arrays
@@ -1122,6 +1204,23 @@ export class DeployEngine {
    */
   private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
     new Map();
+  /**
+   * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
+   * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
+   * than a constant only so a test can shorten it.
+   */
+  private noEchoCeilingReadbackTimeoutMs = 30_000;
+  /**
+   * The bags a masked-baseline re-capture produced (issue #3595). Each is the
+   * PREVIOUS baseline with some masks replaced, already redacted, so
+   * `drainObservedCaptures` installs it as it is rather than marking it as a
+   * fresh readback. Keyed by the bag's identity, and mapped to the PREVIOUS
+   * baseline it was built from: the drain installs it only while the record
+   * still holds that very baseline, so a record this deploy rebuilt (an UPDATE
+   * or a replacement whose provider takes no capture of its own) never
+   * receives a bag describing the resource it replaced.
+   */
+  private recapturedBaselines = new WeakMap<object, object>();
   private stateBackend: S3StateBackend;
   private lockManager: LockManager;
   private dagBuilder: DagBuilder;
@@ -2871,6 +2970,88 @@ export class DeployEngine {
   }
 
   /**
+   * Read a reader back from AWS to decide the replacement ceiling of a
+   * create-only property that carries a `NoEcho` value supplied in THIS deploy
+   * (go-to-k/cdkd#3729). The record holds only `***` there, so it cannot say
+   * whether the value moved; AWS can.
+   *
+   * What makes it safe:
+   *  - It hands the provider the RECORD's `properties`, where the value is
+   *    `***`, never the resolved bag. A provider that echoes its `properties`
+   *    argument for a field AWS does not return therefore reports `***`, which
+   *    never equals the value. The deploy-time observed capture passes the
+   *    resolved bag; this read must not take that call shape.
+   *  - The provider is routed by the RECORD (its type and `provisionedBy`), as
+   *    the deploy-start refresh does: the question is what the EXISTING
+   *    resource holds. A `cc-api` record reads through Cloud Control.
+   *  - The readback stays in this call. It is never installed as
+   *    `observedProperties`, never joins `observedCaptureTasks`, and is dropped
+   *    once compared. It is not gated on `--no-capture-observed-state`, which
+   *    is about the persisted drift baseline, and this read persists nothing.
+   *  - A throw of any kind, or a read outliving its cap, is `read-failed`. The
+   *    error is masked with the resource's bag, and only its `name` is logged,
+   *    never its message, which could echo the value.
+   */
+  private async readReaderForFreshNoEchoCeiling(
+    logicalId: string,
+    currentResource: ResourceState,
+    secrets: RecordedSecretValues
+  ): Promise<FreshNoEchoReadback> {
+    let provider: ResourceProvider;
+    try {
+      provider = this.providerRegistry.getProviderFor({
+        resourceType: currentResource.resourceType,
+        provisionedBy: currentResource.provisionedBy,
+      }).provider;
+    } catch {
+      return { failure: 'not-readable' };
+    }
+    const readCurrentState = provider.readCurrentState?.bind(provider);
+    if (readCurrentState === undefined) return { failure: 'not-readable' };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const live = await Promise.race([
+        Promise.resolve().then(() =>
+          readCurrentState(
+            currentResource.physicalId,
+            logicalId,
+            currentResource.resourceType,
+            currentResource.properties
+          )
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('readback timed out')),
+            this.noEchoCeilingReadbackTimeoutMs
+          );
+        }),
+      ]);
+      if (live === undefined || live === null || typeof live !== 'object') {
+        return { failure: 'not-readable' };
+      }
+      return { live };
+    } catch (error: unknown) {
+      // `maskSecretsInError` masks `message` / `stack` / `cause`, not `name`:
+      // only an identifier-shaped name is printed. Guarded, so an error whose
+      // getters throw still reads as `read-failed` rather than escaping.
+      let errorClass = 'Error';
+      try {
+        const masked = maskSecretsInError(error, secrets);
+        const name = masked instanceof Error ? masked.name : typeof masked;
+        if (typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(name)) errorClass = name;
+      } catch {
+        // keep 'Error'
+      }
+      this.logger.debug(
+        `Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
+      );
+      return { failure: 'read-failed' };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Kick off `provider.readCurrentState` for a freshly-created/updated
    * resource without blocking the deploy critical path. The promise
    * lands in `observedCaptureTasks` keyed by `logicalId`; the deploy's
@@ -2894,6 +3075,10 @@ export class DeployEngine {
     context?: import('../types/resource.js').ReadCurrentStateContext
   ): void {
     if (this.options.captureObservedState !== true) return;
+    // A capture that cannot run still SUPERSEDES the deploy-start refresh task
+    // for this id (issue #3595 review): the record was just rebuilt, and a
+    // readback of what it replaced must not be installed over it.
+    this.observedCaptureTasks.delete(logicalId);
     if (!provider.readCurrentState) return;
 
     const promise = provider
@@ -2918,19 +3103,29 @@ export class DeployEngine {
    * failed deploy's partial state is already inconsistent, and waiting
    * on potentially many in-flight reads would slow down the rollback
    * itself.
+   *
+   * Returns how many baselines it installed, so the no-change path saves only
+   * when one landed: a masked-baseline re-capture (issue #3595) that refuses
+   * resolves to `undefined` on every deploy for a position that stays
+   * uncertifiable, and must not rewrite an unchanged `state.json` each time.
    */
   private async drainObservedCaptures(
     stateResources: Record<string, ResourceState>
-  ): Promise<void> {
-    if (this.observedCaptureTasks.size === 0) return;
+  ): Promise<number> {
+    if (this.observedCaptureTasks.size === 0) return 0;
     const entries = Array.from(this.observedCaptureTasks.entries());
     this.observedCaptureTasks.clear();
     const resolved = await Promise.all(entries.map(([, p]) => p));
+    let installed = 0;
     for (let i = 0; i < entries.length; i++) {
       const logicalId = entries[i]![0];
       const observed = resolved[i];
       const target = stateResources[logicalId];
+      const recapturedFrom =
+        observed === undefined ? undefined : this.recapturedBaselines.get(observed);
+      if (recapturedFrom !== undefined && target?.observedProperties !== recapturedFrom) continue;
       if (target && observed !== undefined) {
+        installed++;
         // Issue #2516: the readback is THIS pass's own, taken from the
         // resource it just wrote, so the object is marked same-generation
         // before it is installed — the persist choke point walks this bag
@@ -2965,13 +3160,27 @@ export class DeployEngine {
         // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
         // that constant claims the generation itself -- which is why the
         // test does not reuse the persist path's own rules.
-        target.observedProperties = markSameGenerationBag({ ...observed });
+        // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
+        // is the previous baseline with some masks replaced by the record's own
+        // expressions, not a readback this pass took, so it must not claim the
+        // generation. The persist choke point then re-scrubs it with the
+        // readback rules, which add no mask to a bag holding no plaintext.
+        // NO TEST FENCES THIS, and the reason is structural: marked, the bag
+        // would take the fail-closed rules instead, and those only mask a
+        // string at a position they cannot pair that is neither a reference
+        // nor a literal the record spells. The re-capture's own precondition
+        // already refused any such baseline, so the two answers agree on every
+        // bag that reaches here.
+        target.observedProperties =
+          recapturedFrom !== undefined ? observed : markSameGenerationBag({ ...observed });
         // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
         // rather than an omission (issue #2944). An explicit `delete` was
         // written at this line first and is UNREACHABLE: the only two ways a
         // bag reaches it are the deploy-start auto-refresh, which never
         // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
-        // skips them), and a post-CREATE / post-UPDATE / post-replacement
+        // skips them, and its masked-baseline re-capture takes only a record
+        // that HAS a baseline, which a marked one never does), and a
+        // post-CREATE / post-UPDATE / post-replacement
         // capture, whose record `provisionResource` has already REBUILT from
         // the template — dropping the field with it. So the clearing mechanism
         // is the rebuild, and the contract a test can hold is "a real CREATE /
@@ -2990,6 +3199,7 @@ export class DeployEngine {
         // readback, so nothing there earns a baseline the import declined.
       }
     }
+    return installed;
   }
 
   /**
@@ -3179,7 +3389,8 @@ export class DeployEngine {
    * manual `cdkd state refresh-observed` command.
    */
   private kickOffAutoRefreshObservedProperties(
-    stateResources: Record<string, ResourceState>
+    stateResources: Record<string, ResourceState>,
+    crossStackReads: Pick<StackState, 'imports' | 'outputReads'>
   ): void {
     if (this.options.captureObservedState !== true) return;
     // Dry run does not fire this observed-state read (no AWS side-effect runs
@@ -3192,8 +3403,14 @@ export class DeployEngine {
       logicalId: string;
       resource: ResourceState;
     }> = [];
+    // Issue #3595: records whose baseline holds a #2852 fail-closed mask. See
+    // `masked-baseline-recapture.ts` for what may change and what may not.
+    const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
     for (const [logicalId, resource] of Object.entries(stateResources)) {
-      if (resource.observedProperties !== undefined) continue;
+      if (resource.observedProperties !== undefined) {
+        if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
+        continue;
+      }
       // Schema v10+ (issue #2944). `observedProperties === undefined` is
       // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
       // with no `readCurrentState` — where refilling is exactly this method's
@@ -3227,7 +3444,7 @@ export class DeployEngine {
         `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
       );
     }
-    if (candidates.length === 0) return;
+    if (candidates.length === 0 && masked.length === 0) return;
 
     // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
     // fully loaded from the previous deploy — sibling AWS::IAM::Policy
@@ -3315,6 +3532,111 @@ export class DeployEngine {
         `cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
       );
     }
+
+    // The CONSUMER's cross-region evidence for the re-capture's resolution. Read
+    // only when a masked record needs it, and a record list that cannot be read
+    // (a hand-edited `imports` element) skips the re-capture rather than
+    // resolving without the evidence: an absent list would verdict every
+    // region-less reference `local`.
+    let producerRegions: readonly string[] = [];
+    if (masked.length > 0) {
+      try {
+        producerRegions = producerRegionsFromState(crossStackReads);
+      } catch {
+        this.logger.debug(
+          `Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
+        );
+        masked.length = 0;
+      }
+    }
+    for (const { logicalId, resource } of masked) {
+      let provider: ResourceProvider;
+      try {
+        // Routed on the record's `provisionedBy`, as the loop above is.
+        provider = this.providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
+      } catch {
+        continue;
+      }
+      if (!provider.readCurrentState) continue;
+      const siblings = { ...allSiblings };
+      delete siblings[logicalId];
+      this.kickOffMaskedBaselineRecapture(provider, logicalId, resource, producerRegions, {
+        siblings,
+      });
+    }
+  }
+
+  /**
+   * Re-capture ONE record's fail-closed-masked baseline (issue #3595).
+   *
+   * Resolves the record's own `properties` references into a map of its own —
+   * never into `perResourceSecrets`: a populated entry there would move the
+   * persist choke point's observed walk off the fail-closed rules for this
+   * record. Then reads the resource back and hands both to
+   * `recaptureMaskedBaseline`, which changes masked positions only. Every
+   * refusal (a reference that does not resolve, a readback that fails, a
+   * baseline the fresh readback does not reproduce) resolves the task to
+   * `undefined`, which leaves the old baseline in place.
+   *
+   * Fire-and-forget like every other capture: drained before the final save,
+   * latest-wins against a later CREATE / UPDATE capture of the same id.
+   */
+  private kickOffMaskedBaselineRecapture(
+    provider: ResourceProvider,
+    logicalId: string,
+    resource: ResourceState,
+    producerRegions: readonly string[],
+    context: import('../types/resource.js').ReadCurrentStateContext
+  ): void {
+    const previous = resource.observedProperties;
+    const readCurrentState = provider.readCurrentState?.bind(provider);
+    if (previous === undefined || readCurrentState === undefined) return;
+    const properties = resource.properties ?? {};
+    const task = (async (): Promise<Record<string, unknown> | undefined> => {
+      const secrets = await resolveRecordSecrets(properties, (token, own) =>
+        this.resolver.resolveDynamicReferences(
+          token,
+          // The CONSUMER's cross-region evidence rides it, so a region-less
+          // reference this stack may have read from another region refuses
+          // (`ambiguous`) instead of resolving against a same-named secret here.
+          persistedTokenResolverContext(own, producerRegions)
+        )
+      );
+      if (secrets === undefined || secrets.size === 0) {
+        // The CLASS only: never a reference, a value or an error's text.
+        this.logger.debug(
+          `Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
+        );
+        return undefined;
+      }
+      const readback = await readCurrentState(
+        resource.physicalId,
+        logicalId,
+        resource.resourceType,
+        properties,
+        context
+      );
+      if (readback === undefined) return undefined;
+      const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
+      if (recaptured === undefined) {
+        this.logger.debug(
+          `Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
+        );
+        return undefined;
+      }
+      this.recapturedBaselines.set(recaptured, previous);
+      this.logger.debug(`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`);
+      return recaptured;
+    })().catch(() => {
+      this.logger.debug(
+        `Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
+      );
+      return undefined;
+    });
+    this.observedCaptureTasks.set(logicalId, task);
   }
 
   private async doDeploy(
@@ -3519,7 +3841,14 @@ export class DeployEngine {
       // still supported). Best-effort — a journal read failure must not
       // block the deploy.
       try {
-        const journal = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        // A nested child's `nested-pending-parent` segments record a deploy
+        // that SUCCEEDED while its parent's was still running (issue #3754);
+        // they are its parent's to replay, not a failure to report here.
+        const journal = loaded && {
+          ...loaded,
+          segments: loaded.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
+        };
         if (journal && journal.segments.length > 0) {
           // A journal whose every segment carries no completed ops is the
           // failed-only shape kept after a CLEAN automatic rollback (issue
@@ -3535,7 +3864,13 @@ export class DeployEngine {
             failedOnly
               ? `A previous deploy of '${stackName}' failed and was automatically rolled back. ` +
                   `The failed resource may be partially applied — revert it, or continue ` +
-                  `deploying to fix forward (a successful deploy clears this note).` +
+                  `deploying to fix forward (${
+                    // Issue #3754: a nested child's journal is cleared by its
+                    // TOP-LEVEL stack's success, not by its own.
+                    this.options.parentStackInfo
+                      ? 'a successful deploy of the top-level stack clears this note'
+                      : 'a successful deploy clears this note'
+                  }).` +
                   `\nRevert it with: ${
                     pasteableCommand('cdkd rollback', [
                       { value: stackName, hole: 'stack' },
@@ -3569,7 +3904,7 @@ export class DeployEngine {
       // `currentState.resources`. Closes the upgrade UX gap left by
       // v3 schema: the manual `cdkd state refresh-observed` command
       // remains for non-deploy refresh.
-      this.kickOffAutoRefreshObservedProperties(currentState.resources);
+      this.kickOffAutoRefreshObservedProperties(currentState.resources, currentState);
 
       // 2. Template parsing is handled by DagBuilder (dependency analysis) and
       // IntrinsicResolver (intrinsic function resolution) in later steps
@@ -3903,10 +4238,7 @@ export class DeployEngine {
           // decided (issue #2771): it is the one await between the outputs pass
           // and the save, and a secret a released outputs-pass part records
           // during it must be visible to the save-time check below.
-          const observedRefresh = this.observedCaptureTasks.size > 0;
-          if (observedRefresh) {
-            await this.drainObservedCaptures(currentState.resources);
-          }
+          const observedRefresh = (await this.drainObservedCaptures(currentState.resources)) > 0;
 
           // resolveOutputs stores `undefined` for any output it could not
           // resolve (warned about there when the resolver threw, silently when
@@ -4170,7 +4502,13 @@ export class DeployEngine {
         // with hasChanges=false — without this delete the journal (and its
         // "previous deploy failed" note) would linger indefinitely.
         if (!this.options.dryRun) {
-          await this.deleteRollbackJournalBestEffort(stackName);
+          await this.settleJournalAfterSuccess(
+            stackName,
+            [],
+            currentState,
+            currentState.resources,
+            currentEtag === undefined
+          );
         }
 
         return {
@@ -4234,7 +4572,11 @@ export class DeployEngine {
       const progress = { current: 0, total: totalOperations };
 
       // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
-      const { state: newState, actualCounts } = await this.executeDeployment(
+      const {
+        state: newState,
+        actualCounts,
+        completedOperations,
+      } = await this.executeDeployment(
         effectiveTemplate,
         currentState,
         changes,
@@ -4308,7 +4650,13 @@ export class DeployEngine {
       // we are about to delete (spurious "a previous deploy failed" note)
       // or race the exports-index read-modify-write.
       await Promise.all([
-        this.deleteRollbackJournalBestEffort(stackName),
+        this.settleJournalAfterSuccess(
+          stackName,
+          completedOperations,
+          currentState,
+          newState.resources,
+          currentEtag === undefined
+        ),
         this.exportIndexStore
           ? this.exportIndexStore.updateForStack(
               stackName,
@@ -4416,6 +4764,8 @@ export class DeployEngine {
   ): Promise<{
     state: StackState;
     actualCounts: ProvisionCounts;
+    /** Issue #3754: journaled by a NESTED engine on success. */
+    completedOperations: CompletedOperation[];
   }> {
     const concurrency = this.options.concurrency!;
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
@@ -4766,6 +5116,9 @@ export class DeployEngine {
       // spread nothing and a stack that never orphaned keeps a byte-identical
       // record.
       let rollbackOrphans: StackOrphanRecord[] = [];
+      // The nested rows the automatic rollback actually reverted (issue
+      // #3754): only their children's pending segments are settled with it.
+      let rollbackSettledNested: SettledNestedRows = new Map();
 
       // On SIGINT, skip rollback — just save partial state, record a rollback
       // journal segment so the interrupted deploy is REVERTIBLE (not just
@@ -4837,6 +5190,7 @@ export class DeployEngine {
         // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
         // and neither can see `rollbackResult`.
         rollbackOrphans = rollbackResult.orphaned;
+        rollbackSettledNested = rollbackResult.settledNested;
       }
 
       // Save state after rollback (reflects rolled-back resource state).
@@ -4881,7 +5235,11 @@ export class DeployEngine {
         // partial / failed rollback keeps the full segment so `cdkd
         // rollback` can resume.
         if (autoRollbackClean) {
-          await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
+          await this.settleNestedChildrenAfterCleanRollback(
+            stackName,
+            rollbackSettledNested,
+            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+          );
         }
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
@@ -4922,7 +5280,11 @@ export class DeployEngine {
           );
           this.logger.debug('State saved after deployment failure (retry succeeded)');
           if (autoRollbackClean) {
-            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
+            await this.settleNestedChildrenAfterCleanRollback(
+              stackName,
+              rollbackSettledNested,
+              await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+            );
           }
         } catch (retryError) {
           this.logger.warn(
@@ -5034,6 +5396,7 @@ export class DeployEngine {
         lastModified: Date.now(),
       },
       actualCounts,
+      completedOperations,
     };
   }
 
@@ -5225,19 +5588,88 @@ export class DeployEngine {
      * automatic-rollback arm is this method's only caller.
      */
     previousState: StackState
-  ): Promise<{ failures: number; warnings: number; orphaned: StackOrphanRecord[] }> {
-    const result = await replayRollback(
-      completedOperations,
-      stateResources,
-      stackName,
-      this.rollbackExecutorContext(previousState)
-    );
+  ): Promise<{
+    failures: number;
+    warnings: number;
+    orphaned: StackOrphanRecord[];
+    /**
+     * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
+     * failure, no skip), with the grandchildren each completed. A row the
+     * replay skipped never reached the provider, so it is not among them.
+     */
+    settledNested: SettledNestedRows;
+  }> {
+    // Issue #3754: a nested-stack row reverted here replays its child's
+    // journal segments for THIS run, which `NestedStackProvider` reads from
+    // the scope, and reports back into it.
+    const runId = this.options.eventRecorder?.runId;
+    const { result, run } = await withNestedRevertRun(runId, async (scope) => ({
+      result: await replayRollback(
+        completedOperations,
+        stateResources,
+        stackName,
+        this.rollbackExecutorContext(previousState)
+      ),
+      run: scope,
+    }));
+
     // `orphaned` is relayed rather than persisted here: this method holds no
     // state save. Its caller merges it into the post-rollback record (issue
     // #2934), which is the ONLY save on this path — dropping it there makes a
     // live, billing AWS resource untrackable and re-opens the deploy loop the
     // record closes.
-    return { failures: result.failures, warnings: result.warnings, orphaned: result.orphaned };
+    return {
+      failures: result.failures,
+      // A child replay's skips surface on its row as a `partial` outcome,
+      // which the executor does not count; the scope does.
+      warnings: result.warnings + run.warnings,
+      orphaned: result.orphaned,
+      settledNested: run.settled,
+    };
+  }
+
+  /**
+   * The journal on a SUCCESSFUL deploy (issue #3754 split the one answer in
+   * two).
+   *
+   * - A NESTED engine keeps its journal and appends a `nested-pending-parent`
+   *   segment: its parent's deploy is still running, and if it fails, the
+   *   revert of this child's row replays exactly these ops. The previous
+   *   outputs ride along because the ops do not restore them. Older segments
+   *   are kept too, since an older parent segment may still name them.
+   * - The ROOT engine deletes its own journal (issue #1183: the baseline
+   *   moved) and every descendant's, which is the same statement made for the
+   *   whole tree — and it sweeps anything a crashed run left behind.
+   */
+  private async settleJournalAfterSuccess(
+    stackName: string,
+    completedOperations: CompletedOperation[],
+    previousState: StackState,
+    finalResources: Record<string, ResourceState>,
+    initialDeploy: boolean
+  ): Promise<void> {
+    if (this.options.parentStackInfo) {
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        [],
+        NESTED_PENDING_PARENT_REASON,
+        initialDeploy,
+        nestedPendingSnapshot(previousState)
+      );
+      return;
+    }
+    await Promise.all([
+      this.deleteRollbackJournalBestEffort(stackName),
+      dropNestedChildJournals({
+        stateBackend: this.stateBackend,
+        lockManager: this.lockManager,
+        parentStackName: stackName,
+        region: this.stackRegion,
+        resources: finalResources,
+        logger: this.logger,
+      }),
+    ]);
   }
 
   /**
@@ -5276,12 +5708,16 @@ export class DeployEngine {
    * Best-effort like every journal write: a pop failure warns and leaves the
    * full segment in place (the pre-#1208 partial-rollback shape — replay is
    * idempotent, so a later `cdkd rollback` is still safe).
+   *
+   * Returns whether this attempt's segment was popped, i.e. whether a later
+   * `cdkd rollback` can still re-run it (issue #3754 gates dropping the
+   * reverted children's segments on this).
    */
   private async settleJournalAfterCleanRollback(
     stackName: string,
     failedOperations: FailedOperation[],
     initialDeploy: boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (failedOperations.length === 0) {
       try {
         await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
@@ -5289,8 +5725,9 @@ export class DeployEngine {
         this.logger.debug(
           `Failed to pop the rollback journal segment after the clean rollback: ${err instanceof Error ? err.message : String(err)}`
         );
+        return false;
       }
-      return;
+      return true;
     }
     try {
       await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
@@ -5299,7 +5736,7 @@ export class DeployEngine {
         `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
           `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
       );
-      return;
+      return false;
     }
     await this.writeRollbackJournalSegment(
       stackName,
@@ -5318,6 +5755,31 @@ export class DeployEngine {
           ]).command
         }`
     );
+    return true;
+  }
+
+  /**
+   * Issue #3754: once a clean automatic rollback is SETTLED — its state saved
+   * and its segment popped — the nested children it reverted no longer need
+   * their pending segments for this run. Gated on `settled` because a rollback
+   * whose save or pop failed is re-run by `cdkd rollback`, which replays the
+   * same rows and must find them.
+   */
+  private async settleNestedChildrenAfterCleanRollback(
+    stackName: string,
+    settledNested: SettledNestedRows,
+    settled: boolean
+  ): Promise<void> {
+    if (!settled) return;
+    await dropSettledNestedJournals({
+      stateBackend: this.stateBackend,
+      lockManager: this.lockManager,
+      parentStackName: stackName,
+      region: this.stackRegion,
+      settled: settledNested,
+      runId: this.options.eventRecorder?.runId,
+      logger: this.logger,
+    });
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
@@ -5362,13 +5824,22 @@ export class DeployEngine {
     completedOperations: CompletedOperation[],
     failedOperations: FailedOperation[],
     reason: RollbackJournalSegment['reason'],
-    initialDeploy: boolean
+    initialDeploy: boolean,
+    /**
+     * Issue #3754: a nested child's success segment is written even when EMPTY
+     * — its presence is what tells the parent's revert that the child had
+     * nothing to undo, as opposed to having no record at all — and carries the
+     * child's pre-deploy outputs.
+     */
+    nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'>
   ): Promise<void> {
     // A segment with no operations carries nothing to revert — skip it so a
     // failure before any resource completed does not create an empty journal.
     // A failed op alone (#1198) IS worth journaling: `cdkd rollback
     // --revert-failed` can act on it even with zero completed ops.
-    if (completedOperations.length === 0 && failedOperations.length === 0) return;
+    if (!nestedPending && completedOperations.length === 0 && failedOperations.length === 0) {
+      return;
+    }
     // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
     // carry resolved / attempted properties and previous-state snapshots read
     // from the in-memory working map, which is NOT run through the state save
@@ -5387,6 +5858,10 @@ export class DeployEngine {
         cdkdVersion: getCdkdVersion(),
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
+        ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
+        ...(nestedPending?.previousCrossStackReads && {
+          previousCrossStackReads: nestedPending.previousCrossStackReads,
+        }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);
@@ -6524,10 +6999,11 @@ export class DeployEngine {
         // mask-only class also holds DERIVED needles (`Fn::Base64` over a
         // `{{resolve:...}}` input), and counting those updated such a resource
         // on every deploy. The cost is a redundant update when the handler
-        // returned the same value, and a redundant REPLACEMENT where the
-        // value sits in a create-only property: the record holds only the
-        // mask, so there is nothing to compare the value with (a stored value
-        // fingerprint would close that: go-to-k/cdkd#3729).
+        // returned the same value: the record holds only the mask, so there is
+        // nothing here to compare the value with. A create-only property is the
+        // exception, where the cost would be a REPLACEMENT: the ceiling block
+        // below reads the resource back from AWS to decide that one
+        // (go-to-k/cdkd#3729).
         const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
@@ -6544,31 +7020,38 @@ export class DeployEngine {
                 currentResource.properties
               )
             : desiredForSkipCheck;
+        // The metadata-only arm both no-change skips share: refresh the record's
+        // template attributes and call no provider.
+        const applyAttributeOnlyUpdate = (
+          attributeChanges: NonNullable<typeof change.attributeChanges>
+        ): void => {
+          const attrSummary = attributeChanges
+            .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
+            .join(', ');
+          this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+          stateResources[logicalId] = {
+            ...currentResource,
+            ...this.extractTemplateAttributes(template, logicalId),
+          };
+          if (counts) counts.updated++;
+          if (progress) progress.current++;
+          const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
+          this.logger.info(
+            `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
+          );
+        };
         if (
           !typeChanged &&
           !suppliesFreshMaskOnlyValue &&
-          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
+          keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
           // property change. There is no per-resource AWS API for those —
           // refresh cdkd state alone and skip the provider call.
           if (change.attributeChanges && change.attributeChanges.length > 0) {
-            const attrSummary = change.attributeChanges
-              .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
-              .join(', ');
-            this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
-            stateResources[logicalId] = {
-              ...currentResource,
-              ...this.extractTemplateAttributes(template, logicalId),
-            };
-            if (counts) counts.updated++;
-            if (progress) progress.current++;
-            const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-            renderer.removeTask(logicalId);
-            this.logger.info(
-              `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
-            );
+            applyAttributeOnlyUpdate(change.attributeChanges);
             break;
           }
           this.logger.debug(
@@ -6609,19 +7092,132 @@ export class DeployEngine {
         // NOTHING else moving; once another property changes, an unmoved value
         // would have destroyed and re-created the resource. The resolved value
         // is in hand now, so a path whose redacted value equals the record is
-        // lowered to an in-place change. A path carrying a `NoEcho` value
-        // supplied in this deploy cannot be compared (its record is the mask)
-        // and keeps the ceiling — a redundant replacement when the value did
-        // not in fact move, tracked in go-to-k/cdkd#3729 (value fingerprint).
-        if (change.propertyChanges?.some((pc) => isReplacementCeiling(pc)) === true) {
-          change.propertyChanges = change.propertyChanges.map((pc) => {
-            if (!isReplacementCeiling(pc)) return pc;
-            if (carriesFreshNoEchoValue(resolvedProps[pc.path], updateSecrets)) return pc;
+        // lowered to an in-place change.
+        //
+        // A path carrying a `NoEcho` value supplied in this deploy needs a
+        // second witness (go-to-k/cdkd#3729). Its record holds `***`, and the
+        // mask identifies nothing, so equal redacted values say only that the
+        // OTHER leaves did not move. The resource is read back from AWS (once,
+        // however many such paths it has), and the ceiling is lowered only when
+        // AWS holds exactly this value at every fresh position. Nothing
+        // derived from the value is stored, so there is nothing in state to
+        // guess against. Every case the readback cannot confirm keeps the
+        // replacement: no readback for the type, a write-only property, a
+        // failed or slow read, or a different value.
+        //
+        // The same witness answers one change that is NOT a ceiling: a
+        // create-only path the diff called changed only because it compared a
+        // fresh `NoEcho` plaintext with the recorded `***`. A consumer's
+        // `Fn::ImportValue` of a masked output this process recovered is that
+        // shape. Such a path enters this block only when it holds a fresh leaf
+        // AND its redacted value equals the record, so a real edit anywhere
+        // else in it keeps the replacement exactly as before.
+        // The paths whose fresh `NoEcho` leaves AWS confirmed, for the skip
+        // below the block.
+        const noEchoHeldPaths = new Set<string>();
+        if (change.propertyChanges?.some((pc) => pc.requiresReplacement) === true) {
+          let readback: Promise<FreshNoEchoReadback> | undefined;
+          const lowered: PropertyChange[] = [];
+          for (const pc of change.propertyChanges) {
+            if (!pc.requiresReplacement) {
+              lowered.push(pc);
+              continue;
+            }
+            const freshLeaves = freshNoEchoLeafPositions(resolvedProps[pc.path], updateSecrets);
+            if (!isReplacementCeiling(pc) && freshLeaves.length === 0) {
+              lowered.push(pc);
+              continue;
+            }
+            // The non-NoEcho half first, unchanged: a moved leaf keeps the
+            // replacement whatever AWS holds at the masked ones.
             const moved =
-              JSON.stringify(desiredForSkipCheckAsWritten[pc.path]) !==
-              JSON.stringify(currentPropsAsWritten[pc.path]);
-            return moved ? pc : { ...pc, requiresReplacement: false };
-          });
+              keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
+              keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+            if (moved) {
+              lowered.push(pc);
+              continue;
+            }
+            if (freshLeaves.length > 0) {
+              // A Type change replaces anyway, and the record's provider
+              // describes the OLD type: no read, and nothing to report.
+              if (typeChanged) {
+                lowered.push(pc);
+                continue;
+              }
+              readback ??= this.readReaderForFreshNoEchoCeiling(
+                logicalId,
+                currentResource,
+                updateSecrets
+              );
+              const read = await readback;
+              let verdict: FreshNoEchoCeilingVerdict;
+              if ('failure' in read) {
+                verdict = read.failure;
+              } else if (!Object.prototype.hasOwnProperty.call(read.live, pc.path)) {
+                verdict = 'not-readable';
+              } else {
+                verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves)
+                  ? 'held'
+                  : 'differs';
+              }
+              if (verdict !== 'held') {
+                // WARN, not debug: this is what turns the update into a
+                // replacement, and a `Replacing` label must never be
+                // unexplained. The id, the path and the class only.
+                this.logger.warn(
+                  `${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
+                );
+                lowered.push(pc);
+                continue;
+              }
+              this.logger.debug(
+                `${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
+              );
+              noEchoHeldPaths.add(pc.path);
+            }
+            lowered.push({ ...pc, requiresReplacement: false });
+          }
+          change.propertyChanges = lowered;
+        }
+
+        // The no-change skip above could not trust the mask. Once AWS has
+        // confirmed every fresh `NoEcho` leaf the bag carries, and every other
+        // leaf equals the record, there is nothing to send, so the same skip
+        // applies here. Without it the provider would be called with an
+        // unchanged bag: a redundant update, or, for a type with no update API
+        // (`AWS::Lambda::LayerVersion`), a refusal the update-failure fallback
+        // turns back into the replacement this block just avoided. A fresh
+        // leaf outside a confirmed path (an updatable property nobody read
+        // back) keeps the update, as before (go-to-k/cdkd#3729).
+        //
+        // A `--recreate-via-*` target is never skipped here: before this skip
+        // existed a fresh value always reached the recreate below, and a named
+        // recreate must not be dropped because a value turned out unchanged.
+        // An attribute-only change (`DeletionPolicy`, ...) takes the same
+        // metadata arm as the skip above, for the same no-update-API reason.
+        if (
+          noEchoHeldPaths.size > 0 &&
+          !typeChanged &&
+          this.recreateDirectionFor(stackName, logicalId) === undefined &&
+          keyOrderFreeJson(desiredForSkipCheckAsWritten) ===
+            keyOrderFreeJson(currentPropsAsWritten) &&
+          Object.entries(resolvedProps).every(
+            ([key, value]) =>
+              noEchoHeldPaths.has(key) ||
+              freshNoEchoLeafPositions(value, updateSecrets).length === 0
+          )
+        ) {
+          this.logger.debug(
+            `Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
+          );
+          // Nothing was attempted, as on the skip above the refusal.
+          this.attemptedResolvedProps.delete(logicalId);
+          if (change.attributeChanges && change.attributeChanges.length > 0) {
+            applyAttributeOnlyUpdate(change.attributeChanges);
+            break;
+          }
+          if (counts) counts.skipped++;
+          break;
         }
 
         // Check if this update requires resource replacement (immutable property changed)
@@ -6664,8 +7260,8 @@ export class DeployEngine {
         const needsReplacement = propertyDrivenReplacement || recreateFlagged;
 
         // The label `provisionResource` chose left ceilings out; one that
-        // stood (the value moved, or it is a fresh `NoEcho` value that cannot
-        // be compared) turns this into a replacement, so say so.
+        // stood (the value moved, or it is a fresh `NoEcho` value AWS could
+        // not confirm unchanged) turns this into a replacement, so say so.
         const liveLabel = this.liveTaskLabels.get(logicalId);
         if (needsReplacement && liveLabel !== undefined && !liveLabel.replacing) {
           const routing = this.peekRoutingForLabel(
@@ -6683,6 +7279,25 @@ export class DeployEngine {
             ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
           });
           // Keep a slow-resource warning the deadline wrapper already added.
+          renderer.updateTaskLabel(logicalId, `${label}${liveLabel.warnSuffix ?? ''}`);
+        } else if (!needsReplacement && liveLabel !== undefined && liveLabel.replacing) {
+          // The other direction (go-to-k/cdkd#3729): a create-only change the
+          // label counted as a replacement was lowered above, because AWS
+          // already holds the fresh `NoEcho` value there.
+          const routing = this.peekRoutingForLabel(
+            change,
+            currentResource,
+            stackName,
+            logicalId,
+            false,
+            this.recreateDirectionFor(stackName, logicalId)
+          );
+          const label = `Updating ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
+          this.liveTaskLabels.set(logicalId, {
+            label,
+            replacing: false,
+            ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
+          });
           renderer.updateTaskLabel(logicalId, `${label}${liveLabel.warnSuffix ?? ''}`);
         }
 
@@ -7422,6 +8037,26 @@ export class DeployEngine {
                   this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                 )
               : resolvedProps;
+          // The previous side the provider diffs against, with each create-only
+          // path AWS confirmed holding its fresh `NoEcho` value set to the
+          // value being sent (go-to-k/cdkd#3729). The record holds `***` there,
+          // and a provider comparing `***` with the plaintext would see a
+          // create-only change: ACM and IAM ManagedPolicy re-create inside
+          // their own `update()` (bypassing `UpdateReplacePolicy: Retain` and
+          // the stateful guard), and Cloud Control would patch a create-only
+          // path. In memory only: nothing persists this bag, and the provider's
+          // masker already holds the value as a needle.
+          const previousForUpdate =
+            noEchoHeldPaths.size === 0
+              ? currentPropsAsWritten
+              : {
+                  ...currentPropsAsWritten,
+                  ...Object.fromEntries(
+                    [...noEchoHeldPaths]
+                      .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
+                      .map((path) => [path, updateProps[path]])
+                  ),
+                };
 
           let result;
           let resultProvisionedBy = updateDecision.provisionedBy;
@@ -7474,8 +8109,9 @@ export class DeployEngine {
                     // `CloudControlProvider.update` diffs this into a JSON
                     // Patch, so a key the SDK route never wrote must be absent
                     // here or the patch omits it and the auto-route sends
-                    // nothing for it.
-                    currentPropsAsWritten,
+                    // nothing for it. `previousForUpdate` differs from it only
+                    // at confirmed NoEcho paths (go-to-k/cdkd#3729).
+                    previousForUpdate,
                     // The UPDATE twin of the CREATE call's masker (issue #1932
                     // item 3): same resolved bag, same exposure, so the contract
                     // is applied on both or it has a hole in the shape of
@@ -7520,8 +8156,8 @@ export class DeployEngine {
             // exception NAME (and the async `ccErrorCode`), because the
             // provider's wrapper never copies the name into its message — the
             // predicate's old `includes('UnsupportedActionException')` half
-            // therefore matched nothing cdkd produces. AWS's prose is retained
-            // as a TOP-LEVEL-only fallback.
+            // therefore matched nothing cdkd produces. AWS's prose is not read
+            // at all (issue #3810): a message can quote template-chosen text.
             //
             // `logicalId` is passed because a chain walk is otherwise WIDER
             // than the message read it replaces: a nested stack's child deploy
@@ -7690,9 +8326,9 @@ export class DeployEngine {
                     //
                     // Safe to chain now that the refusal is marked:
                     // `isMarkedNonRetryable` is consulted before any chain-text
-                    // classification, and `ccUnsupported` reads the exception
-                    // NAME down the chain plus a top-level message only — a
-                    // refusal that quotes neither cannot re-fire the fallback.
+                    // classification, and `ccUnsupported` reads only the
+                    // exception NAME and `ccErrorCode` down the chain, never a
+                    // message (issue #3810).
                     updateError instanceof Error ? updateError : undefined
                   )
                 );

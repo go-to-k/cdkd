@@ -7,6 +7,7 @@ import {
 } from '../../../src/provisioning/property-coverage.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 
 // Logger silenced — keep test output clean.
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -439,9 +440,9 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
 
     it('the update-failure REPLACEMENT FALLBACK records only what was written', async () => {
       mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
-      mockProvider.update.mockRejectedValue(
-        new Error('UnsupportedActionException: resource does not support UPDATE')
-      );
+      mockProvider.update.mockImplementation(async (logicalId: string, _pid, resourceType) => {
+        throw ccUpdateUnsupportedRejection(resourceType, logicalId);
+      });
       mockProvider.create.mockResolvedValue({ physicalId: `${PHYSICAL_ID}-2`, attributes: {} });
       mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
 

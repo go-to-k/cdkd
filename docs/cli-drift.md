@@ -58,7 +58,7 @@ those the comparator falls back to `properties`, the user-templated intent.
 The difference matters: the observed baseline is what makes a console-side
 change to a key you never templated surface as drift, while the fallback only
 catches changes to keys you did template. Run
-[`cdkd state refresh-observed <stack>`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
+[`cdkd state refresh-observed '<stack>'`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
 populate an observed baseline in place.
 
 The comparator only looks at keys present in cdkd state. AWS-managed fields
@@ -119,7 +119,7 @@ A **clean** verdict never means anything except compared-and-matched.
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
-| `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — deploy a change to the resource, which re-captures the baseline. |
+| `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
 | `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or its whole `resources` map is not a JSON object. cdkd drops the row (or reads the map as empty) so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. An unreadable map is reported as one entry whose `logicalId` is `(resources map)`. | Yes — repair or re-import the record. |
 
 The `baselineRefused` cause is recorded on the state record, which means it only
@@ -274,7 +274,7 @@ including a decrypted secret — as one side of a drift row that nothing could
 mask, because a refused record spells no `{{resolve:...}}` for the redaction to
 key on. Successful resources are in sync; re-run `cdkd drift '<stacks...>'`
 to see what is left, then either `cdkd drift '<stacks...>' --revert` for the
-recoverable failures or `cdkd deploy <stack> --replace` for the
+recoverable failures or `cdkd deploy '<stack>' --replace` for the
 update-not-supported ones. (That is the partial-failure message's own spelling:
 a QUOTED placeholder, because the `[stacks...]` that `cdkd drift --help` prints
 is a bracket expression when pasted — it matches one character from
@@ -449,12 +449,26 @@ populations differ — a mask written for the reasons listed above exists
 which is exactly when `--revert` has no live value it may safely copy. So expect
 it to refuse the whole resource here more often than for a `NoEcho` value.
 
-The fix is a deploy that actually creates or updates that resource, after which
-the baseline is captured from a template cdkd can position against. A plain
-`cdkd deploy` that finds nothing to change does **not** clear it: the
-**automatic refresh** cdkd runs at the start of a deploy only fills in a
-*missing* baseline, and a mask is not missing. A create or update rewrites the
-baseline unconditionally, which is why it is the remedy.
+The fix is a `cdkd deploy`, and it does not have to change anything. At the
+start of every deploy, the **automatic refresh** also looks at each resource
+whose baseline holds such a mask. It resolves the secret references in that
+resource's own recorded properties, reads the resource back, and replaces a
+mask with the reference when the value AWS holds there is exactly what the
+reference resolves to. It leaves the baseline alone when:
+
+- any of those references fails to resolve, or two of them resolve to the same
+  value;
+- the resource no longer reads back as its baseline records — something else
+  about it changed, and replacing the baseline would hide that drift.
+
+Every position that is not masked stays as it was, so a re-capture never takes
+in a change `cdkd drift` should still report. A position it cannot certify
+keeps its mask and keeps reporting as not compared — most often a secret that
+was **rotated** after the resource was last deployed, since AWS still holds the
+old value and the reference now resolves to the new one. A deploy that creates
+or updates the resource captures the whole baseline again, which clears that
+case too. `cdkd state refresh-observed` resolves nothing, so it writes the
+masks back.
 
 The last shape in the list — a record whose properties hold a raw `Fn::Join` /
 `Fn::Sub` **object** — has a second consequence of its own: when such a record
@@ -607,7 +621,7 @@ on that fallback, so it reports `drift unknown`.
 > identified by a **composite, `|`-delimited physical id** rather than a
 > single scalar. That composite is what `cdkd state show` /
 > `cdkd state resources` print and what
-> `cdkd import --resource <logicalId>=<physicalId>` expects — quote it on a
+> `cdkd import --resource '<logicalId>=<physicalId>'` expects — quote it on a
 > shell command line. The per-type format table is in
 > [State Management](state-management.md#composite-pipe-delimited-physicalids).
 
@@ -677,7 +691,7 @@ list produces a well-formed-looking map keyed `0`, `1`, … rather than failing,
 which would persist rows for resources that do not exist and erase the only
 evidence the record was broken. So both refuse instead, naming the stack, the
 region and the offending logical ids, before the lock is acquired and before
-anything is written. Inspect the record with `cdkd state show <stack> --json`.
+anything is written. Inspect the record with `cdkd state show '<stack>' --json`.
 
 ### `--accept` (state ← AWS)
 
@@ -773,7 +787,7 @@ under `--dry-run`. A Glue Iceberg table's `table_type` / `metadata_location`,
 and the roughly eighteen untemplated attributes an ELBv2 load balancer
 reports, survive the revert instead of being reset.
 
-Run **`cdkd state refresh-observed <stack>`**, or redeploy, if you want them
+Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
 reverted too. Either populates `observedProperties`, after which the baseline
 IS a deploy-time AWS snapshot, an out-of-band addition is genuinely
 identifiable and IS stripped, and the notice stops firing.

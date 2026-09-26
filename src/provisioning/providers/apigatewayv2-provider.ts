@@ -2678,7 +2678,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const prevMap = (previous ?? {}) as Record<string, string>;
     const merged: Record<string, string> = { ...nextMap };
     for (const key of Object.keys(prevMap)) {
-      if (!(key in nextMap)) merged[key] = '';
+      if (!Object.hasOwn(nextMap, key)) merged[key] = '';
     }
     return merged;
   }

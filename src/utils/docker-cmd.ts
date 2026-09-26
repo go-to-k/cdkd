@@ -3,6 +3,7 @@ import { inspect } from 'node:util';
 import { displayIdent } from './display-safe.js';
 import { getLogger, isStdoutReservedForPayload } from './logger.js';
 import { escapeRegExp } from './regexp.js';
+import { defineOwnKey } from './own-keys.js';
 
 /**
  * Shared helpers for invoking the docker-compatible CLI binary across cdkd.
@@ -790,7 +791,11 @@ export function partitionSensitiveEnv(
       continue;
     }
     flags.push('-e', k);
-    sensitiveEnv[k] = v;
+    // Own-key define (issue #3515): a secret NAMED `__proto__` assigned onto
+    // this `{}` literal ran Object.prototype's setter, so its value vanished
+    // from the spawn env while the value-less `-e __proto__` stayed on the
+    // argv. The value still never reaches the argv either way.
+    defineOwnKey(sensitiveEnv, k, v);
   }
   return { flags, sensitiveEnv, collisions };
 }
@@ -829,7 +834,9 @@ export function dockerSpawnEnvWithSensitive(
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const [k, v] of Object.entries(sensitiveEnv)) {
     if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) continue;
-    env[k] = v;
+    // Own-key define for the reason given in `partitionSensitiveEnv` (issue
+    // #3515). Node's spawn serialises an own `__proto__` env key like any other.
+    defineOwnKey(env as Record<string, unknown>, k, v);
   }
   return env;
 }

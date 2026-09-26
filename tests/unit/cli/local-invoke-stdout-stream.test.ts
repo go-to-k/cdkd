@@ -29,10 +29,13 @@ import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
  * `logger.info` output plus the `AppExecutor` child-logger re-emission — never
  * a literal invented here.
  *
- * NOT covered, because a different mechanism produces it: the CONTAINER's own
- * stdout, which `streamLogs` (`src/local/docker-runner.ts`) pipes straight
- * into ours. The reservation cannot reach a raw child-process pipe; that is
- * [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+ * The CONTAINER's own stdout, which `streamLogs` (`src/local/docker-runner.ts`)
+ * pipes into ours, is a raw child-process pipe the logger cannot route; since
+ * [#2419](https://github.com/go-to-k/cdkd/issues/2419) it follows the
+ * reservation instead. Its case drives the REAL `streamLogs` against a fake
+ * `docker` binary (`tests/unit/_fake-docker-logs.ts`), so what it proves is
+ * the wiring: the command holds the reservation while the container's output
+ * flows.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -110,6 +113,12 @@ vi.mock('../../../src/local/rie-client.js', async (importOriginal) => {
 });
 
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
+import {
+  CONTAINER_STDERR_TOKEN,
+  CONTAINER_STDOUT_TOKEN,
+  installFakeDockerLogs,
+  waitForContainerOutput,
+} from '../_fake-docker-logs.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
 import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
@@ -154,9 +163,13 @@ interface Streams {
   error: unknown;
 }
 
+/** The in-flight run's two buffers, for a mock that must wait on delivery. */
+let live: { out: string[]; err: string[] } | undefined;
+
 async function runInvoke(args: string[]): Promise<Streams> {
   const out: string[] = [];
   const err: string[] = [];
+  live = { out, err };
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
   process.stdout.write = ((chunk: string | Uint8Array): boolean => {
@@ -189,6 +202,7 @@ async function runInvoke(args: string[]): Promise<Streams> {
     for (const spy of consoleSpies) spy.mockRestore();
     process.stdout.write = origOut;
     process.stderr.write = origErr;
+    live = undefined;
   }
   return { stdout: out.join(''), stderr: err.join(''), error };
 }
@@ -331,4 +345,43 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     expect(stderr.split(warnNeedle).length - 1).toBe(1);
     expect(stdout).not.toContain(warnNeedle);
   });
+  /**
+   * Issue #2419. The Lambda RIE puts `START` / `END` / `REPORT` and every
+   * handler log line on the CONTAINER's stdout, and `streamLogs` pipes that
+   * into ours — a raw write the logger never sees. Here the REAL `streamLogs`
+   * runs against a fake `docker` binary, and the RIE call waits until the fake
+   * container's output has actually been DELIVERED (to either stream) before
+   * returning the response, so the assertion is about routing, not timing.
+   * Reverting the routing puts the container token ahead of the payload.
+   */
+  it.skipIf(process.platform === 'win32')(
+    "moves the container's own stdout to stderr, payload alone on stdout",
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.streamLogs.mockImplementation(actual.streamLogs);
+      mocks.invokeRie.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        return { payload: JSON.parse(PAYLOAD), raw: PAYLOAD };
+      });
+      const fake = installFakeDockerLogs();
+      let streams: Streams;
+      try {
+        streams = await runInvoke(['LocalStack/EchoHandler', '--no-pull']);
+      } finally {
+        fake.restore();
+      }
+      const { stdout, stderr, error } = streams;
+
+      expect(error).toBeUndefined();
+      expect(stdout).toBe(`${PAYLOAD}\n`);
+      // MOVED, not dropped: the container id reached `docker logs -f`, and
+      // both of the container's streams are on ours-stderr.
+      expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-local-lane2410`);
+      expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
+    }
+  );
 });

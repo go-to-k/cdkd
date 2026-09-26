@@ -32,6 +32,7 @@ import {
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
 import { IAM_PROPAGATION_INITIAL_DELAY_MS } from '../../../src/deployment/retry.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /**
  * One record per `withRetry` invocation, tagged by which loop it is and
@@ -175,7 +176,7 @@ describe('acceptance item 2 — MEASURED: what the inner default classifier matc
   // its budget before the delete-new-first fallback could fire.
   it('the inner classifier does NOT match a name collision, so the fallback is untouched', () => {
     expect(isNameCollisionError(COLLISION_MESSAGE)).toBe(true);
-    expect(isRetryableTransientError(new Error(COLLISION_MESSAGE), COLLISION_MESSAGE)).toBe(false);
+    expect(isRetryableTransientError(awsSdkError(COLLISION_MESSAGE), COLLISION_MESSAGE)).toBe(false);
   });
 
   it('the inner classifier DOES match the SQS cooldown (the generic table carries "wait 60 seconds")', () => {
@@ -261,7 +262,7 @@ describe('reverse-replacement replay-CREATE retries IAM propagation (#2032)', ()
     const create = vi.fn(async () => {
       calls.push('create');
       seen++;
-      if (seen === 1) throw new Error(COLLISION_MESSAGE);
+      if (seen === 1) throw awsSdkError(COLLISION_MESSAGE);
       // Attempts 2-4 are the propagation window on the post-delete re-create.
       if (seen <= 4) throw new Error(PROPAGATION_MESSAGE);
       return { physicalId: 'old-fn', attributes: {} };
@@ -292,7 +293,7 @@ describe('the inner wrapper must not swallow the name-collision fallback (#2032 
     let seen = 0;
     const create = vi.fn(async () => {
       calls.push('create');
-      if (seen++ === 0) throw new Error(COLLISION_MESSAGE);
+      if (seen++ === 0) throw awsSdkError(COLLISION_MESSAGE);
       return { physicalId: 'old-fn', attributes: {} };
     });
     const del = vi.fn(async () => {
@@ -393,7 +394,7 @@ describe('a disableOuterRetry provider is single-shot on BOTH loops (#2032)', ()
     let seen = 0;
     const create = vi.fn(async () => {
       calls.push('create');
-      if (seen++ === 0) throw new Error(COLLISION_MESSAGE);
+      if (seen++ === 0) throw awsSdkError(COLLISION_MESSAGE);
       return { physicalId: 'old-fn', attributes: {} };
     });
     const del = vi.fn(async () => {

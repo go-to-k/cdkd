@@ -416,9 +416,9 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
 
   // ---------------- InventoryConfigurations schedule ----------------
 
-  // On the TEMPLATE path: the inventory arm is not split by issue #3728 (it
-  // is one of the arms #3740 tracks), so it still warns on every caller, and
-  // these cases pin that for a template-path update.
+  // On a state replay: since issue #3740 the inventory arm's warnings are the
+  // state-borne callers' only (a template-path update refuses the same values
+  // before any call), so the warn rows use the `replayingState` update.
   describe('inventory ScheduleFrequency / Schedule.Frequency', () => {
     const inventoryItem = (extra: Record<string, unknown>) => ({
       Id: 'inv1',
@@ -431,7 +431,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
     it('falls through to Schedule.Frequency when the FIRST source is malformed', async () => {
       // The third downgrade shape. The second source is a value the template
       // also declares, so it is a real answer — unlike inventing a cadence.
-      await templateUpdate(
+      await update(
         {
           ...base,
           InventoryConfigurations: [
@@ -457,7 +457,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
       // absent container as "usable" let the fall-through land on
       // `readConfigString`'s own Weekly default and silently re-cadence a live
       // inventory report — the substitution the guard exists to refuse.
-      await templateUpdate(
+      await update(
         { ...base, InventoryConfigurations: [inventoryItem({ ScheduleFrequency: {} })] },
         base
       );
@@ -472,7 +472,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
       // LIVE inventory report. The skip unit is one configuration item,
       // matching the `IncludedObjectVersions` guard in the same applier (the
       // Put is per-Id).
-      await templateUpdate(
+      await update(
         {
           ...base,
           InventoryConfigurations: [inventoryItem({ ScheduleFrequency: {}, Schedule: 'Daily' })],

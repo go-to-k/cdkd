@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 
 // Logger silenced — keep test output clean.
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -309,9 +310,9 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
       // here would couple this test to that policy instead of to the literal
       // under test.
       mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
-      mockProvider.update.mockRejectedValue(
-        new Error('UnsupportedActionException: resource does not support UPDATE')
-      );
+      mockProvider.update.mockImplementation(async (logicalId: string, _pid, resourceType) => {
+        throw ccUpdateUnsupportedRejection(resourceType, logicalId);
+      });
       mockProvider.create.mockResolvedValue({
         physicalId: 'rtb-1|10.0.0.0/24',
         attributes: {},

@@ -30,13 +30,22 @@ holder was just deleted.
 
 Issue [#3208](https://github.com/go-to-k/cdkd/issues/3208). What the sites
 holding the error call; the string form stays for text-only callers. It walks
-the bounded `cause` chain for the error name:
+the bounded `cause` chain for the error name and the Cloud Control
+`ccErrorCode === 'AlreadyExists'`:
 
-1. **The message is read at depth 0 ONLY, and only off a real `Error`.**
-   Dropping `instanceof Error` makes a thrown `{ message: 'X already exists' }`
-   match; with the check it stringifies to `[object Object]` and does not.
-2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of both
-   reads; a link naming another resource returns `false` at once. It compares
+1. **The prose needs BOTH an AWS-authored link (`isAwsAuthoredFailure`) and a
+   top-level message relaying it** (issue
+   [#3816](https://github.com/go-to-k/cdkd/issues/3816)). The first keeps a cdkd
+   refusal quoting a template value out; the second is how a provider OPTS OUT —
+   Glue and CloudFront reword a collision delete-first cannot clear. Dropping
+   either re-opens a delete. The `AlreadyExists` code matches only as a whole
+   token outside a name or ARN (not after `-` `:` `/`, not before `-`).
+   Residual: an AWS error echoing a template value still classifies.
+   A provider that recognises a collision AWS words WITHOUT "already exists"
+   declares it with `markNameCollision` on its wrapper (Route 53's CNAME
+   conflict); `isNameCollisionErrorFrom` does not read an appended phrase.
+2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
+   read; a link naming another resource returns `false` at once. It compares
    logical IDs, so a child sharing the parent stack's id still passes.
 
 It reaches the SDK error only if providers thread the caught value as `cause` —

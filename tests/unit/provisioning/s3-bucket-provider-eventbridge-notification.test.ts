@@ -225,7 +225,9 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       //
       // The skip unit is the WHOLE notification configuration, because
       // `PutBucketNotificationConfiguration` is a full replace: skipping one
-      // family would silently DELETE every other one from AWS.
+      // family would silently DELETE every other one from AWS. A state-borne
+      // update (`replayingState`, the revert arms' flag) warns and skips; since
+      // issue #3740 a template-path update refuses the value before any call.
       await provider.update(
         'L',
         BUCKET_NAME,
@@ -239,7 +241,8 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
             ],
           },
         },
-        { BucketName: BUCKET_NAME }
+        { BucketName: BUCKET_NAME },
+        { replayingState: true }
       );
       expect(
         mockSend.mock.calls

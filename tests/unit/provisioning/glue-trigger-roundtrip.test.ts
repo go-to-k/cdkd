@@ -275,6 +275,35 @@ describe('GlueTriggerProvider', () => {
     });
   });
 
+  // #3515 — glue-provider.ts GlueTriggerProvider.applyTagDiff (~L5234) removal loop
+  it('update() removes a dropped tag keyed `constructor` via UntagResource (own-key membership, #3515)', async () => {
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof GetTriggerCommand) {
+        return Promise.resolve({ Trigger: { Name: 'my-trigger', State: 'DEACTIVATED' } });
+      }
+      return Promise.resolve({});
+    });
+
+    await provider.update(
+      'L',
+      'my-trigger',
+      'AWS::Glue::Trigger',
+      { Tags: [{ Key: 'keep', Value: 'k' }] },
+      {
+        Tags: [
+          { Key: 'keep', Value: 'k' },
+          { Key: 'constructor', Value: 'c' },
+        ],
+      }
+    );
+
+    const removed = mockSend.mock.calls
+      .filter((c) => c[0] instanceof UntagResourceCommand)
+      .map((c) => (c[0] as UntagResourceCommand).input.TagsToRemove);
+    expect(removed).toEqual([['constructor']]);
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof TagResourceCommand)).toHaveLength(0);
+  });
+
   it('delete() calls DeleteTrigger', async () => {
     await provider.delete('L', 'my-trigger', 'AWS::Glue::Trigger', undefined, {
       expectedRegion: 'us-east-1',

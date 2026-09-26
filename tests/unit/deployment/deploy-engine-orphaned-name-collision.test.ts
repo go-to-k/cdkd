@@ -4,6 +4,7 @@ import { withStackName } from '../../../src/provisioning/resource-name.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ChangeType, ResourceChange } from '../../../src/types/state.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 // Hoisted so the cases can read what was LOGGED. The advice is a log line, not
 // a thrown message -- the AWS sentence has to stay verbatim in the throw for
@@ -75,7 +76,11 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       `Failed to create IAM role ${logicalId}: Role with name ${physicalId ?? '?'} already exists.`,
       TYPE,
       logicalId,
-      physicalId
+      physicalId,
+      awsSdkError(
+        `Role with name ${physicalId ?? '?'} already exists.`,
+        'EntityAlreadyExistsException'
+      )
     );
 
   beforeEach(() => {

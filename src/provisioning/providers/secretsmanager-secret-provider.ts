@@ -35,6 +35,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -398,15 +399,45 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
   /**
    * Update a Secrets Manager secret
+   *
+   * `context` is read for the ORIGIN of the desired bag only
+   * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
+   * changed, malformed `GenerateSecretString` refuses (a template-path update)
+   * or warn-skips (a rollback revert) — issue #3740.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating secret ${logicalId}: ${physicalId}`);
+
+    // Decided BEFORE the `try` below, so a template-path refusal from
+    // `changedSecretValue` is not re-labelled as an AWS update failure, and
+    // before the only write (`UpdateSecret`).
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    let changedValue: { value: string | undefined; skippedGenerate: boolean };
+    try {
+      changedValue = this.changedSecretValue(properties, previousProperties, stateBorneDesired);
+    } catch (error) {
+      // A state-borne bag can still throw here (the literal `SecretString`
+      // shape refusal runs on every caller), and its remedy is not a template
+      // edit — so only the template path is told to fix the template.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ProvisioningError(
+        stateBorneDesired
+          ? `Failed to update secret ${logicalId}: ${message}`
+          : `${message}. Nothing was applied to secret ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
 
     try {
       // The secret VALUE is sent only when its SOURCE changed (issue #2472).
@@ -422,10 +453,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // comparison against `previousProperties` below is that semantics.
       // `UpdateSecret` has merge semantics, so omitting `SecretString` leaves
       // the current version untouched.
-      const { value: secretString, skippedGenerate } = this.changedSecretValue(
-        properties,
-        previousProperties
-      );
+      const { value: secretString, skippedGenerate } = changedValue;
 
       const updateParams: import('@aws-sdk/client-secrets-manager').UpdateSecretCommandInput = {
         SecretId: physicalId,
@@ -795,7 +823,11 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    */
   private changedSecretValue(
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // The desired bag is a cdkd STATE record (a rollback revert arm, or
+    // `cdkd drift --revert`), so a malformed `GenerateSecretString` warn-skips;
+    // `false` (a template-path update) makes it THROW instead — issue #3740.
+    stateBorneDesired: boolean
   ): { value: string | undefined; skippedGenerate: boolean } {
     const rawGenerate = properties['GenerateSecretString'];
     // `!= null`, NOT truthiness: a FALSY malformed container (`''`, `0`) would
@@ -810,13 +842,18 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         isDeepStrictEqual(asJson(this.asPersisted(generateConfig)), asJson(previous));
       if (unchanged) return { value: undefined, skippedGenerate: false };
       // A malformed container SKIPS the value rather than throwing (issue
-      // #3048). `update()` is reached by the rollback executor's revert arms
-      // with a cdkd STATE record as the desired bag, which the user cannot
-      // edit from the template — so a throw here leaves the secret
-      // un-rollbackable (the #1544 hazard). `cdkd drift --revert` is NOT a
+      // #3048) — on the STATE-BORNE paths. `update()` is reached by the
+      // rollback executor's revert arms with a cdkd STATE record as the desired
+      // bag, which the user cannot edit from the template — so a throw there
+      // leaves the secret un-rollbackable (the #1544 hazard). A TEMPLATE-path
+      // update (`stateBorneDesired === false`) REFUSES instead (issue #3740):
+      // the block is template-borne, it changed (the `unchanged` return above
+      // ran first), and one template edit repairs it; `update()` turns the
+      // throw into a "nothing was applied" refusal before any call. `cdkd drift --revert` is NOT a
       // caller of this arm: its bag is seeded from the AWS readback plus the
       // DRIFTED keys only, and `getDriftUnknownPaths` keeps this key out of
-      // the comparison, so the block never rides a revert.
+      // the comparison, so the block never rides a revert (the flag still
+      // takes the downgrade, defensively, like every other state-borne bag).
       //
       // The downgrade is a SKIP and NOT `onUnusable`, because at this site
       // proceeding is the harm: `generateSecretString` reads every member off
@@ -843,13 +880,14 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
           `${m} No new secret value is generated; the secret keeps the value AWS ` +
             `currently holds.`
         );
+      const downgrade = stateBorneDesired ? { onUnusable: skip } : {};
       const usable = requireConfigObject(
         generateConfig,
         'AWS::SecretsManager::Secret GenerateSecretString',
-        { onUnusable: skip }
+        downgrade
       );
       const generated =
-        usable === undefined ? undefined : this.generateSecretString(usable, { onUnusable: skip });
+        usable === undefined ? undefined : this.generateSecretString(usable, downgrade);
       return generated === undefined
         ? { value: undefined, skippedGenerate: true }
         : { value: generated, skippedGenerate: false };

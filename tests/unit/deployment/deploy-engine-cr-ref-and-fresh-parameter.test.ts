@@ -424,3 +424,88 @@ describe('DeployEngine - a nested child reader of a NoEcho parameter the parent 
     expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
   });
 });
+
+/**
+ * go-to-k/cdkd#3729 on the #3717 path: the child reader holds the re-minted
+ * parameter in a CREATE-ONLY property. Its record is `***`, so the child engine
+ * reads the reader back from AWS and replaces it only when AWS holds a
+ * different value.
+ */
+describe('DeployEngine - a nested child create-only reader of a NoEcho parameter (go-to-k/cdkd#3729)', () => {
+  const STACK = 'Parent~Child';
+  const V2 = 'noecho-token-value-v2';
+
+  function run(live: Record<string, unknown>): Promise<Provider> {
+    const reader = { TopicName: '***', DisplayName: 'd1' };
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: REGION,
+      stackName: STACK,
+      outputs: {},
+      lastModified: 0,
+      resources: {
+        Reader: {
+          physicalId: 'arn:aws:sns:us-east-1:123456789012:t',
+          resourceType: 'AWS::SNS::Topic',
+          properties: reader,
+          observedProperties: reader,
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    const p: Provider = {
+      create: vi.fn((logicalId: string) => Promise.resolve({ physicalId: `${logicalId}-new` })),
+      delete: vi.fn().mockResolvedValue(undefined),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn().mockResolvedValue(live),
+      update: vi.fn((_id: string, physicalId: string) =>
+        Promise.resolve({ physicalId, wasReplaced: false })
+      ),
+    };
+    const stateBackend = {
+      getState: vi.fn().mockResolvedValue({ state, etag: 'e' }),
+      saveState: vi.fn().mockResolvedValue('e2'),
+    };
+    const template = {
+      Parameters: { Token: { Type: 'String' } },
+      Resources: {
+        Reader: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { Ref: 'Token' }, DisplayName: 'd2' },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const inherited: RecordedSecretValues = new Map();
+    recordFreshNoEchoValuesIn(V2, inherited);
+    return makeEngine(p, stateBackend, {
+      parameters: { Token: V2 },
+      inheritedSecrets: inherited,
+      captureObservedState: false,
+    })
+      .deploy(STACK, template)
+      .then(() => p);
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('updates the reader in place when AWS already holds the re-minted value', async () => {
+    const provider = await run({ TopicName: V2, DisplayName: 'd1' });
+
+    expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
+    expect((provider.readCurrentState.mock.calls[0]![3] as Record<string, unknown>)['TopicName']).toBe(
+      '***'
+    );
+    expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+    expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+  });
+
+  it('replaces the reader when AWS holds a different value (the control)', async () => {
+    const provider = await run({ TopicName: 'noecho-token-value-v1', DisplayName: 'd1' });
+
+    const creates = callsFor(provider.create, 'Reader');
+    expect(creates).toHaveLength(1);
+    expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(V2);
+    expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+  });
+});

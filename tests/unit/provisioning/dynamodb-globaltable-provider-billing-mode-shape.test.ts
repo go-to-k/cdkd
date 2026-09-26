@@ -329,7 +329,8 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, BillingMode: null },
-        { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST' },
+        { replayingState: true }
       )
     ).resolves.toBeDefined();
 
@@ -375,7 +376,8 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, BillingMode: null },
-      { ...baseProps, BillingMode: 'PROVISIONED' }
+      { ...baseProps, BillingMode: 'PROVISIONED' },
+      { replayingState: true }
     );
 
     const billingUpdates = mockSend.mock.calls

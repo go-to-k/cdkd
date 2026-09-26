@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
 /**
@@ -49,7 +50,8 @@ export class S3AnalyticsInventoryStack extends cdk.Stack {
     // never whether a configuration exists — this fixture only ever updates,
     // so no declaration disappears between steps (the #1543 mode-gating trap).
     const updateMode = process.env['CDKD_TEST_UPDATE'] ?? '';
-    const updated = updateMode === 'true';
+    // `true` (phase 5) or the `updated` token (phase 2b, beside `inject-fail`).
+    const updated = updateMode === 'true' || updateMode.split(',').includes('updated');
 
     // Issue #1670: the warn-and-SUBSTITUTE mode. Three fields the provider
     // reads through `readSubstitutedConfigString` are blanked — a BLANK STRING
@@ -171,6 +173,20 @@ export class S3AnalyticsInventoryStack extends cdk.Stack {
     // The destination policy must exist BEFORE the source bucket's
     // configurations are PUT, or S3 rejects them.
     sourceBucket.addResourceDependency(reportPolicy);
+
+    // Phase 2b (issue #3740): fail the deploy AFTER the source bucket's update
+    // lands, so `cdkd rollback` drives the REVERT arm — the replay path that
+    // still warns and SUBSTITUTES a malformed value (the template path refuses
+    // it since #3740). AWS rejects a `MessageRetentionPeriod` of 9999999, so
+    // this queue is never created and never outlives its step (the recipe the
+    // `rollback-command` fixture uses).
+    if (updateMode.split(',').includes('inject-fail')) {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${this.stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      failing.addDependency(sourceBucket);
+    }
 
     // Issue #1718 item 1: a DECLARED-but-EMPTY lifecycle / CORS collection on
     // the CREATE path. `applyAllSubConfigsForCreate` skips the Put for it — the

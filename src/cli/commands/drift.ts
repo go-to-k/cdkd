@@ -174,8 +174,9 @@ export type NotComparedCause =
    * The observed baseline holds an issue #2852 fail-closed mask at a position
    * the recording pass could not certify, and the ONLY difference found there
    * is that mask (go-to-k/cdkd#3595). Everything else about the resource was
-   * compared. Exit 2 like `refused`: a deploy that changes the resource
-   * re-captures the baseline, so it is clearable.
+   * compared. Exit 2 like `refused`, because it is clearable: a deploy that
+   * changes the resource re-captures the baseline, and a no-change deploy
+   * replaces each such mask its record's own references can certify.
    */
   | 'uncertifiedBaseline'
   /**
@@ -2236,15 +2237,20 @@ function acceptRefusalReason(
     // than asserting one mechanism.
     //
     // The remedy names what ACTUALLY re-captures the baseline (issue #3595): a
-    // bare "re-deploy" read as though any deploy would, and a no-change deploy
-    // re-captures nothing here. A `NoEcho` value additionally needs its handler
-    // to run again, which only an update of the custom resource itself does.
+    // bare "re-deploy" read as though any deploy would. A no-change deploy
+    // replaces a mask only under the re-capture's two conditions
+    // (`masked-baseline-recapture.ts`), and this arm is reached when something
+    // at the position DIFFERS, which is exactly when the first one fails. A
+    // `NoEcho` value additionally needs its handler to run again, which only an
+    // update of the custom resource itself does.
     return (
       'cdkd does not know the value that belongs at this position — the baseline holds only the ' +
       'redaction mask, so accepting would write AWS-held plaintext over a deliberate redaction. ' +
-      'A `cdkd deploy` that CHANGES this resource re-captures the baseline (a deploy that changes ' +
-      'nothing does not); where the value came from a `NoEcho` custom resource, that custom ' +
-      'resource must update too, so its handler supplies the value again'
+      'A `cdkd deploy` that CHANGES this resource re-captures the baseline. A deploy that changes ' +
+      'nothing replaces the mask only when the resource still reads back as its baseline records ' +
+      "and the resource's own secret reference resolves to the value AWS holds there; where the " +
+      'value came from a `NoEcho` custom resource, that custom resource must update too, so its ' +
+      'handler supplies the value again'
     );
   }
   return (
@@ -3081,7 +3087,19 @@ async function runDriftForStack(
               ),
             }
           : protocolNormalized;
-        const changes = calculateResourceDrift(canonicalized.baseline, canonicalized.aws, {
+        // Issue #3573: the provider's PAIR canonicalizer, for a rule that reads
+        // one side to decide the other -- a readback shape change absorbed only
+        // against a baseline written in the legacy shape. After the per-side
+        // pass, so it sees the same bags the comparator will. `runRevert`
+        // applies it to its desired bag as well.
+        const paired = provider.canonicalizeDriftPair
+          ? await provider.canonicalizeDriftPair(
+              resource.resourceType,
+              canonicalized.baseline,
+              canonicalized.aws
+            )
+          : canonicalized;
+        const changes = calculateResourceDrift(paired.baseline, paired.aws, {
           ignorePaths: observedIgnorePaths.length
             ? [...ignorePaths, ...observedIgnorePaths]
             : ignorePaths,
@@ -5877,6 +5895,21 @@ async function runRevert(
         // stripped. See `mergeUntemplatedValue`.
         let newProperties: Record<string, unknown>;
         try {
+          // Issue #3573: the desired bag IS the recorded baseline, so it gets
+          // the same pair pass detection compared through, against the raw
+          // readback the overlay takes as its previous side. A legacy record
+          // missing a member the readback now carries is completed from that
+          // readback; sent without it, `update()` would read the member as
+          // REMOVED. Identity for a provider without the hook.
+          if (provider.canonicalizeDriftPair) {
+            desiredProperties = (
+              await provider.canonicalizeDriftPair(
+                outcome.resourceType,
+                desiredProperties,
+                outcome.awsProperties
+              )
+            ).baseline;
+          }
           const overlaid = buildRevertNewProperties(
             outcome.changes,
             desiredProperties,

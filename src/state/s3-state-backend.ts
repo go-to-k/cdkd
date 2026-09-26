@@ -47,6 +47,18 @@ import {
 } from './s3-noncurrent-version-purge.js';
 
 /**
+ * An error's text for a state message: the ASCII allowlist, and
+ * `UNRENDERABLE` for nothing left. S3's error text ECHOES the key, which embeds
+ * the stack name, so a message that guarded the name would otherwise let the
+ * same bytes back in through its last interpolation (issue #3027).
+ */
+function errorDetail(error: unknown): string {
+  return (
+    displaySafe(error instanceof Error ? error.message : error, { asciiOnly: true }) || UNRENDERABLE
+  );
+}
+
+/**
  * Identifier of a state record. The legacy layout (`version: 1`) didn't have
  * region in the S3 key, so reads from the legacy key carry `region:
  * undefined`.
@@ -411,10 +423,10 @@ export class S3StateBackend {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
 
-    // Every log line and refusal IN THIS METHOD takes the guard; the rest of
-    // the file's raw-`stackName` sites are deploy / destroy paths with their
-    // own reachability, tracked as issue #3027. Hoisted above the `try` because
-    // the catch and the legacy-fallback branch below need them too.
+    // Every log line and refusal in this method takes the guard, as every
+    // other stack-name render in the file does since issue #3027. Hoisted above
+    // the `try` because the catch and the legacy-fallback branch below need
+    // them too.
     const shownStackName = this.displayName(stackName);
     const shownRegionName = displayIdent(region);
 
@@ -468,12 +480,8 @@ export class S3StateBackend {
         if (error instanceof StateError) throw error;
         // The ASCII allowlist. `parseStateBody`'s own `StateError` is
         // rethrown above, so what reaches here is an AWS / stream failure.
-        const detail =
-          displaySafe(error instanceof Error ? error.message : String(error), {
-            asciiOnly: true,
-          }) || UNRENDERABLE;
         throw new StateError(
-          `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${detail}`,
+          `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${errorDetail(error)}`,
           error instanceof Error ? error : undefined
         );
       }
@@ -541,7 +549,7 @@ export class S3StateBackend {
 
     try {
       this.logger.debug(
-        `Saving state: ${stackName} (${region})${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
+        `Saving state: ${this.stackRef(stackName, region)}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
       const bodyString = JSON.stringify(body, null, 2);
@@ -561,10 +569,12 @@ export class S3StateBackend {
 
       if (!response.ETag) {
         throw new StateError(
-          `No ETag returned after saving state for stack '${stackName}' (${region})`
+          `No ETag returned after saving state for stack ${this.stackRef(stackName, region)}`
         );
       }
-      this.logger.debug(`State saved: ${stackName} (${region}), new ETag: ${response.ETag}`);
+      this.logger.debug(
+        `State saved: ${this.stackRef(stackName, region)}, new ETag: ${response.ETag}`
+      );
 
       // Migration tail: best-effort delete of the legacy key. We don't fail
       // the save if this errors — the new key is the source of truth and a
@@ -579,12 +589,12 @@ export class S3StateBackend {
             })
           );
           this.logger.info(
-            `Migrated state for stack '${stackName}' to region-scoped layout (${region})`
+            `Migrated state for stack ${this.displayName(stackName)} to region-scoped layout (${displayIdent(region)})`
           );
         } catch (deleteError) {
           this.logger.warn(
-            `Migrated stack '${stackName}' to new key, but failed to delete legacy key: ` +
-              `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+            `Migrated stack ${this.displayName(stackName)} to new key, but failed to delete legacy key: ` +
+              `${errorDetail(deleteError)}`
           );
         }
       }
@@ -603,7 +613,7 @@ export class S3StateBackend {
         operation: 'PutObject',
       });
       throw new StateError(
-        `Failed to save state for stack '${stackName}' (${region}): ${normalized.message}`,
+        `Failed to save state for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}`,
         normalized
       );
     }
@@ -619,7 +629,7 @@ export class S3StateBackend {
   async deleteState(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
     try {
-      this.logger.debug(`Deleting state: ${stackName} (${region})`);
+      this.logger.debug(`Deleting state: ${this.stackRef(stackName, region)}`);
 
       await this.s3Client.send(
         new DeleteObjectCommand({
@@ -662,17 +672,17 @@ export class S3StateBackend {
             Key: this.getLegacyStateKey(stackName),
           })
         );
-        this.logger.debug(`Deleted legacy state for stack: ${stackName}`);
+        this.logger.debug(`Deleted legacy state for stack: ${this.displayName(stackName)}`);
       }
 
-      this.logger.debug(`State deleted: ${stackName} (${region})`);
+      this.logger.debug(`State deleted: ${this.stackRef(stackName, region)}`);
     } catch (error) {
       const normalized = normalizeAwsError(error, {
         bucket: this.config.bucket,
         operation: 'DeleteObject',
       });
       throw new StateError(
-        `Failed to delete state for stack '${stackName}' (${region}): ${normalized.message}`,
+        `Failed to delete state for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}`,
         normalized
       );
     } finally {
@@ -751,7 +761,7 @@ export class S3StateBackend {
       throw new StateError(
         `Failed to delete legacy state for stack ` +
           `${displayStackName(stackName)}: ` +
-          `${normalized.message}`,
+          `${errorDetail(normalized)}`,
         normalized
       );
     }
@@ -969,9 +979,11 @@ export class S3StateBackend {
           ]
             .filter((f) => f !== undefined)
             .join(', ');
+          // Both keys embed a stack name (`{prefix}/{stack}/...`), so both
+          // take the identifier guard (issue #3027).
           this.logger.debug(
-            `listRawObjects: dropping an entry under '${keyPrefix}' ` +
-              `(key: ${obj.Key ?? '<none>'}) — ListObjectsV2 returned no ${missing}`
+            `listRawObjects: dropping an entry under ${displayIdent(keyPrefix, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} ` +
+              `(key: ${obj.Key === undefined ? '<none>' : displayIdent(decodeListingKey(obj.Key) ?? obj.Key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}) — ListObjectsV2 returned no ${missing}`
           );
           continue;
         }
@@ -1017,7 +1029,16 @@ export class S3StateBackend {
         })
       );
       for (const err of response.Errors ?? []) {
-        failures.push(`${err.Key ?? '<unknown>'} (${err.Code ?? 'Error'}: ${err.Message ?? ''})`);
+        // The key embeds a stack name and S3 supplies the code and message, so
+        // all three are guarded before they reach a thrown message (issue #3027).
+        const shownKey =
+          err.Key === undefined
+            ? '<unknown>'
+            : displayIdent(err.Key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+        failures.push(
+          `${shownKey} (${displaySafe(err.Code ?? 'Error', { asciiOnly: true }) || UNRENDERABLE}: ` +
+            `${displaySafe(err.Message ?? '', { asciiOnly: true })})`
+        );
       }
     }
     if (failures.length > 0) {
@@ -1077,8 +1098,7 @@ export class S3StateBackend {
           `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
           `survive and remain readable via GetObject with a VersionId${describing}. Grant ` +
           `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
-          `key(s) by hand. Underlying error: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `key(s) by hand. Underlying error: ${errorDetail(error)}`
       );
     }
   }
@@ -1172,6 +1192,35 @@ export class S3StateBackend {
   }
 
   /**
+   * Remove every segment for which `drop` answers `true` (issue #3754: a
+   * nested child's segments for one parent run, once that run's rollback no
+   * longer needs them). Deletes the journal — with its noncurrent-version
+   * purge — when nothing is left, and writes nothing when nothing matched.
+   * Returns the number of segments removed.
+   */
+  async dropRollbackJournalSegments(
+    stackName: string,
+    region: string,
+    drop: (segment: RollbackJournalSegment) => boolean
+  ): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return 0;
+    const kept = journal.segments.filter((segment) => !drop(segment));
+    const removed = journal.segments.length - kept.length;
+    if (removed === 0) return 0;
+    if (kept.length === 0) {
+      await this.deleteRollbackJournal(stackName, region);
+      return removed;
+    }
+    journal.segments = kept;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return removed;
+  }
+
+  /**
    * Delete the stack's rollback journal object (idempotent). Called on the
    * deploy success path, after a clean rollback, and via {@link deleteState}
    * so `cdkd destroy` / `cdkd state destroy` sweep it too.
@@ -1223,7 +1272,7 @@ export class S3StateBackend {
       // delete leaves a marker as current and every body still readable).
       if (!isNoSuchKey(error) && (error as { name?: string }).name !== 'NotFound') {
         this.logger.warn(
-          `Failed to delete rollback journal for '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`
+          `Failed to delete rollback journal for ${this.stackRef(stackName, region)}: ${errorDetail(error)}`
         );
       }
     }
@@ -1272,6 +1321,17 @@ export class S3StateBackend {
     // Bare when plain, otherwise one JSON string: callers write NO quotes of
     // their own around it (go-to-k/cdkd#3617).
     return displayStackName(stackName);
+  }
+
+  /**
+   * The `stack (region)` descriptor, both halves guarded. The write and delete
+   * paths (`saveState`, `deleteState`, the rollback journal) take it as well as
+   * the read paths: `cdkd state destroy` hands `deleteState` a pair
+   * `listStacks` read out of S3 key segments, and nothing here can tell that
+   * caller from one passing a name the user typed (issue #3027).
+   */
+  private stackRef(stackName: string, region: string): string {
+    return `${this.displayName(stackName)} (${displayIdent(region)})`;
   }
 
   /**
@@ -1578,12 +1638,8 @@ export class S3StateBackend {
       // Same guard as the new-key path above, and reachable from the same
       // command: `getState` falls back here, so a `state show` on a legacy
       // record takes this refusal (issue #3003).
-      const detail =
-        displaySafe(error instanceof Error ? error.message : String(error), {
-          asciiOnly: true,
-        }) || UNRENDERABLE;
       throw new StateError(
-        `Failed to get legacy state for stack ${this.displayName(stackName)}: ${detail}`,
+        `Failed to get legacy state for stack ${this.displayName(stackName)}: ${errorDetail(error)}`,
         error instanceof Error ? error : undefined
       );
     }

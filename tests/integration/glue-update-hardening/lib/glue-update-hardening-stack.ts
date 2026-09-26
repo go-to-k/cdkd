@@ -39,9 +39,13 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     the update path is covered with a second distinct payload.
  *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
  *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
- *  8. A Glue Table `TableInput.Name` rename (issue #3724) is refused rather
- *     than written onto the table holding the new name; CDKD_TEST_RENAME
- *     flips the name, and `--replace --force-stateful-recreation` renames it.
+ *  8. A Glue Table `TableInput.Name` rename (issues #3724, #3750) is a
+ *     replacement, never a write onto the table holding the new name;
+ *     CDKD_TEST_RENAME flips the name, and `--force-stateful-recreation`
+ *     performs it.
+ * 10. A malformed `DatabaseInput.TargetDatabase` on a template-path update
+ *     (issue #3740) is refused before any Glue call, the link intact;
+ *     CDKD_TEST_DBINPUT_MALFORMED sets it.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -197,12 +201,11 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     });
     skewedTable.addDependency(tableDb);
 
-    // 8. A `TableInput.Name` rename (issue #3724). Only the TOP-LEVEL name is
-    //    createOnly, so the rename diffs as an in-place UPDATE, and
-    //    `UpdateTable` addresses the table BY `TableInput.Name` — it rewrote
-    //    whichever table held the NEW name. CDKD_TEST_RENAME flips the name;
-    //    verify.sh plants an unmanaged decoy under it first. The description
-    //    is what an overwrite would stamp onto that decoy.
+    // 8. A `TableInput.Name` rename (issues #3724, #3750) is a REPLACEMENT, as
+    //    in CloudFormation; an in-place `UpdateTable` once rewrote whichever
+    //    table held the NEW name. CDKD_TEST_RENAME flips the name; verify.sh
+    //    plants an unmanaged decoy under it first. The description is what an
+    //    overwrite would stamp onto that decoy.
     const renameSuffix = process.env.CDKD_TEST_RENAME === 'true' ? 'b' : 'a';
     const renameTable = new glue.CfnTable(this, 'RenameTable', {
       catalogId: this.account,
@@ -240,6 +243,15 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
     linkDb.addDependency(tableDb);
+    // 10. CDKD_TEST_DBINPUT_MALFORMED=true replaces the link's TargetDatabase
+    //     with a string (issue #3740). `DatabaseInput` is mutable in place, so
+    //     the change diffs as an UPDATE, and a template-path update must REFUSE
+    //     the malformed block before any Glue call. Before the fix it warned,
+    //     retained the previous block and reported success. An escape-hatch
+    //     override, because the L1 types reject the shape at synth.
+    if (process.env.CDKD_TEST_DBINPUT_MALFORMED === 'true') {
+      linkDb.addPropertyOverride('DatabaseInput.TargetDatabase', 'not-a-block');
+    }
 
     // `CreateTableDefaultPermissions` on its own database. CDKD_TEST_UPDATE
     // flips the granted permission set so the UPDATE path is covered with a

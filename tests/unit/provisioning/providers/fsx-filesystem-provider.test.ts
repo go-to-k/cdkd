@@ -298,6 +298,52 @@ describe('FSxFileSystemProvider create', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  // #3515, site: create()'s supported-FileSystemType guard. `type in
+  // VARIANT_CONFIG_KEY` answers TRUE for a name INHERITED from Object.prototype,
+  // so 'constructor' / 'toString' passed the "cdkd implements this variant"
+  // check and went on to send CreateFileSystem. The routes are primed with a
+  // success so a guard that lets the name through fails at the assertions
+  // below, not at an unrouted command.
+  it.each(['constructor', 'toString'])(
+    'rejects FileSystemType %s (an Object.prototype member name) before any SDK call (#3515)',
+    async (fileSystemType) => {
+      routeSend({
+        CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+
+      const err = await newProvider()
+        .create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS, FileSystemType: fileSystemType })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain(
+        `FileSystemType '${fileSystemType}' is not supported by cdkd`
+      );
+      expect(callsOf(CreateFileSystemCommand)).toHaveLength(0);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  // #3515, site: the same guard — control. A SUPPORTED type (an own key of
+  // VARIANT_CONFIG_KEY) must still pass it and reach CreateFileSystem, so a fix
+  // that over-refuses (e.g. treats every name as absent) is caught. No
+  // Object.prototype member name is an own key of VARIANT_CONFIG_KEY, so this
+  // is the only "present" branch the guard has.
+  it('still lets a supported FileSystemType (LUSTRE) through the guard to CreateFileSystem (#3515 control)', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS });
+
+    expect(result.physicalId).toBe(FS_ID);
+    const creates = callsOf(CreateFileSystemCommand);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]!.input['FileSystemType']).toBe('LUSTRE');
+  });
+
   it('throws and best-effort deletes the file system when creation goes FAILED', async () => {
     routeSend({
       CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },

@@ -270,7 +270,8 @@ describe('DynamoDBTableProvider junk previous BillingMode (issue #1552)', () => 
       TABLE_NAME,
       'AWS::DynamoDB::Table',
       { ...baseProps, BillingMode: null },
-      { ...baseProps, BillingMode: '' }
+      { ...baseProps, BillingMode: '' },
+      { replayingState: true }
     );
 
     // Both sides junk: the baseline is AWS's mode and the desired falls back

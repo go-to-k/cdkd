@@ -2003,6 +2003,85 @@ describe('a CONDITION-SUPPRESSED output cannot refuse the stack (issue #2133 rev
   });
 });
 
+describe('an output NAMED after an Object.prototype member is still suppressed (issue #3515)', () => {
+  // #3515, site: `isOutputSuppressed` (scrub.ts), read by BOTH `canRefuse`
+  // call sites — the output Value pre-pass and the Export.Name pre-pass.
+  // `name in stateOutputs` answers TRUE for a name INHERITED from
+  // Object.prototype, so a condition-suppressed output named `constructor`
+  // (which wrote NO `state.outputs` key) read as "the deploy wrote it" and
+  // kept the refusal armed: one unresolvable prod-only read refused the whole
+  // stack. The consumer state below is a plain object literal, as a parsed
+  // state file is, so `constructor` is inherited, never own.
+  const SUPPRESSED = { IsProd: { 'Fn::Equals': ['a', 'b'] } };
+  const VALUE_SITE_OUTPUT = {
+    Condition: 'IsProd',
+    Value: { 'Fn::ImportValue': 'ProdOnlyExport' },
+  };
+  const NAME_SITE_OUTPUT = {
+    Condition: 'IsProd',
+    Value: 'public-value',
+    Export: { Name: { 'Fn::ImportValue': 'ProdOnlyExport' } },
+  };
+
+  it('Value site: a suppressed output named `constructor` does not refuse (#3515)', async () => {
+    useProducerOutputs(undefined);
+
+    const res = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      { conditions: SUPPRESSED, outputs: { constructor: VALUE_SITE_OUTPUT } }
+    ).catch((e: unknown) => e);
+
+    expect((res as { code?: string }).code).toBeUndefined();
+    expect((res as { recordsChanged: number }).recordsChanged).toBe(1);
+  });
+
+  it('Export.Name site: a suppressed output named `constructor` does not refuse (#3515)', async () => {
+    useProducerOutputs(undefined);
+
+    const res = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      { conditions: SUPPRESSED, outputs: { constructor: NAME_SITE_OUTPUT } }
+    ).catch((e: unknown) => e);
+
+    expect((res as { code?: string }).code).toBeUndefined();
+    expect((res as { recordsChanged: number }).recordsChanged).toBe(1);
+  });
+
+  // #3515, same sites — controls. When `state.outputs` carries an OWN
+  // `constructor` key the deploy DID write the output, so state overrules the
+  // condition and the refusal stays armed. Catches a fix that over-answers and
+  // treats every Object.prototype member name as absent.
+  it('Value site: an output named `constructor` the deploy DID write still refuses (#3515 control)', async () => {
+    useProducerOutputs(undefined);
+    consumerState = makeConsumerState(
+      { MasterUserPassword: PLAINTEXT, MasterUsername: PLAINTEXT },
+      { constructor: 'written-by-deploy' }
+    );
+
+    const err = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      { conditions: SUPPRESSED, outputs: { constructor: VALUE_SITE_OUTPUT } }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
+
+  it('Export.Name site: an output named `constructor` the deploy DID write still refuses (#3515 control)', async () => {
+    useProducerOutputs(undefined);
+    consumerState = makeConsumerState(
+      { MasterUserPassword: PLAINTEXT, MasterUsername: PLAINTEXT },
+      { constructor: 'written-by-deploy' }
+    );
+
+    const err = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      { conditions: SUPPRESSED, outputs: { constructor: NAME_SITE_OUTPUT } }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
+});
+
 describe('scrub --all orders producers before consumers (issue #2133 review)', () => {
   const stackOf = (
     stackName: string,

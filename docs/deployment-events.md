@@ -186,6 +186,17 @@ second one: an earlier revision generalised the present-versus-consumed
 distinction across the whole renderer and each review round found it making the
 same false claim on a different input class.
 
+The run listing also prints each field only as ONE token of at most 64
+printable characters, because the listing sits above the
+`Read one run's events with:` line an operator copies. A stored value with
+spaces in it could wrap on screen into a counterfeit copy of that line, so a
+field that is not one token renders as `<unrenderable>`, or `?` for the two
+timestamps, exactly as a field sanitising consumed would. The header names the
+stack and region only when each is a plain identifier, and otherwise reads
+`a stack name that is not a plain identifier` / `a region that is not a plain
+identifier`. Every value cdkd writes itself passes, so an ordinary listing is
+unchanged.
+
 `--json` / `--format json` is deliberately **not** sanitised: it is a
 machine-consumed payload whose contract is byte-fidelity with the store, and a
 substitution inside a value would corrupt what tooling reads back.

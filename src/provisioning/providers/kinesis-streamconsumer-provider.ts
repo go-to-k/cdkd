@@ -416,7 +416,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     }
     const tagsToRemove: string[] = [];
     for (const k of Object.keys(oldMap)) {
-      if (!(k in newMap)) tagsToRemove.push(k);
+      if (!Object.hasOwn(newMap, k)) tagsToRemove.push(k);
     }
 
     if (tagsToRemove.length > 0) {

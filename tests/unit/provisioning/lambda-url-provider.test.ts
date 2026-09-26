@@ -265,7 +265,8 @@ describe('LambdaUrlProvider', () => {
         'my-fn',
         'AWS::Lambda::Url',
         { TargetFunctionArn: 'my-fn', AuthType: null, InvokeMode: 'RESPONSE_STREAM' },
-        { TargetFunctionArn: 'my-fn', AuthType: 'AWS_IAM', InvokeMode: 'BUFFERED' }
+        { TargetFunctionArn: 'my-fn', AuthType: 'AWS_IAM', InvokeMode: 'BUFFERED' },
+        { replayingState: true }
       );
 
       const updateCall = mockSend.mock.calls.find(

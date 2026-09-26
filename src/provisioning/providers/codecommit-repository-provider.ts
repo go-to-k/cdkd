@@ -424,7 +424,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         if (repoArn) {
           // Untag keys present in the old set but absent from the new set.
           // `newTags === undefined` is treated as "remove all old tags".
-          const removedKeys = Object.keys(oldTagMap).filter((k) => !(k in newTagMap));
+          const removedKeys = Object.keys(oldTagMap).filter((k) => !Object.hasOwn(newTagMap, k));
           if (removedKeys.length > 0) {
             await this.getClient().send(
               new UntagResourceCommand({ resourceArn: repoArn, tagKeys: removedKeys })

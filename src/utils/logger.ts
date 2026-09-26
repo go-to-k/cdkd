@@ -104,20 +104,22 @@ export function releaseStdoutForPayload(): void {
  *
  * Production callers exist, and the carve-out is narrow enough to state: a
  * writer that does NOT go through {@link ConsoleLogger} and therefore cannot
- * be routed by {@link ConsoleLogger.emit}. Today both live in
+ * be routed by {@link ConsoleLogger.emit}. Two live in
  * `src/utils/docker-cmd.ts` — `spawnStreaming`, which mirrors a child's
  * stdout live under `--verbose`, and `spawnForeground`, which hands the
- * child our fd 1 outright. Issue
+ * child our fd 1 outright; issue
  * [#2410](https://github.com/go-to-k/cdkd/issues/2410) routed both to stderr
- * while a command holds the reservation.
+ * while a command holds the reservation. The third is `streamLogs` in
+ * `src/local/docker-runner.ts`, which pipes a CONTAINER's stdout into ours:
+ * issue [#2419](https://github.com/go-to-k/cdkd/issues/2419) routed it the
+ * same way. Its per-caller split falls out of the reservation itself — the
+ * payload commands (`local invoke` / `local invoke-agentcore`) reserve, while
+ * the long-running servers behind `container-pool.ts`, whose stdout IS the
+ * human log surface, reserve nothing.
  *
- * The class is NOT closed, and saying so is the point: `streamLogs` in
- * `src/local/docker-runner.ts` is a third member — it pipes the CONTAINER's
- * stdout into ours on `cdkd local invoke` — and is deliberately NOT
- * converted, because unlike docker's own diagnostics a container's stdout
- * may BE what the user wants on that stream. That needs a per-caller
- * contract decision and a real-Docker integ round, tracked as
- * [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+ * What remains outside this predicate's reach is cdk-local's OWN
+ * `ConsoleLogger` ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), a
+ * second logger module with no reservation concept.
  *
  * That is the ONLY shape this predicate is for. A COMMAND must never branch
  * on it — a command's own prose already flows through the logger, so

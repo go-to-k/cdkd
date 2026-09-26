@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { crHandler, valueResource } from './shared.ts';
+import { crHandler, noEchoLayer, noEchoNonce, valueResource } from './shared.ts';
 
 export const NOECHO_EXPORT_NAME = 'CdkdCrNoEchoNestedToken';
 export const PLAIN_EXPORT_NAME = 'CdkdCrNoEchoNestedPlain';
@@ -12,6 +12,7 @@ export const PLAIN_EXPORT_NAME = 'CdkdCrNoEchoNestedPlain';
  *
  * covers: AWS::CloudFormation::CustomResource
  * covers: AWS::Lambda::Function
+ * covers: AWS::Lambda::LayerVersion
  * covers: AWS::SSM::Parameter
  *
  * Its persisted `state.outputs` and the shared exports index hold `***` for
@@ -33,6 +34,7 @@ export class ImportProducerStack extends cdk.Stack {
       prefix: 'noecho-producer-token',
       seed: modes.includes('producer-seed') ? 'updated' : 'integ',
       noEcho: true,
+      nonce: noEchoNonce(),
     });
     const plainCr = valueResource(this, 'ProducerPlainCr', handler, {
       prefix: 'plain-producer-value',
@@ -48,6 +50,16 @@ export class ImportProducerStack extends cdk.Stack {
       parameterName: '/cdkd-integ/cr-noecho-nested/producer/noecho',
       stringValue: noEchoCr.getAttString('Value'),
     });
+
+    // A SAME-STACK create-only reader (go-to-k/cdkd#3729): replaced in phase 4,
+    // where the token moves, and left alone in phase 7, where the CR re-runs
+    // and returns the same token.
+    noEchoLayer(
+      this,
+      'ProducerNoEchoLayer',
+      'cdkd-integ-crnoecho-nested-producer-layer',
+      noEchoCr.getAttString('Value')
+    );
 
     new cdk.CfnOutput(this, 'NoEchoTokenExport', {
       value: noEchoCr.getAttString('Value'),

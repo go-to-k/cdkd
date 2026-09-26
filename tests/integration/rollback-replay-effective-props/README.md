@@ -64,7 +64,7 @@ region can still be deleting.
 | 2 | only the top-level blob is doctored; the replica override stays recorded |
 | 3 | the table took the reverse-replacement arm, and the withdrawal was announced |
 | 4 | record: no index block anywhere, both replicas kept, only `pk` defined; live: 0 indexes, replica `ACTIVE`, no override |
-| 5 | drift counts 8 resources instead of 7; the one tolerated difference is issue #3573 (the readback drops the local replica), accepted only in exactly that shape |
+| 5 | drift counts 8 resources instead of 7, and the local replica is compared too (issue #3573: the readback used to drop it) |
 | 6 | both table names gone, in the deploy region and in the replica region |
 
 Replicas take minutes to create and delete, so the arm takes the run from

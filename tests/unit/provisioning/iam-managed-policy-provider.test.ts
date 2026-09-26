@@ -49,6 +49,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const ARN = 'arn:aws:iam::123456789012:policy/MyManagedPolicy';
 const POLICY_DOC = {
@@ -672,3 +679,41 @@ void GetPolicyVersionCommand;
 void ListPolicyTagsCommand;
 void ListPolicyVersionsCommand;
 void ListEntitiesForPolicyCommand;
+
+// Issue #3136: the policy ARN is AWS-minted but embeds the TEMPLATE-chosen
+// `Path`, whose AWS pattern admits every printable ASCII character — so all
+// three manual-cleanup commands render through `pasteableAwsCommand`.
+describe('IAMManagedPolicyProvider partial-create manual-cleanup commands (issue #3136)', () => {
+  const warn = (getLogger().child('x') as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warn.mockClear();
+  });
+
+  async function warnFor(arn: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ Policy: { Arn: arn, PolicyName: 'P' } }); // CreatePolicy
+    mockSend.mockRejectedValueOnce(new Error('AttachRolePolicy boom')); // attach fails
+    mockSend.mockRejectedValue(new Error('cleanup also failed')); // every cleanup call
+    await expect(
+      new IAMManagedPolicyProvider().create('P', 'AWS::IAM::ManagedPolicy', {
+        PolicyDocument: POLICY_DOC,
+        Roles: ['r'],
+      })
+    ).rejects.toThrow();
+    return warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('Manual deletion'))!;
+  }
+
+  it('shell-quotes a forged ARN in every command', async () => {
+    const arn = `arn:aws:iam::123456789012:policy/$(id)/${FORGED_QUOTE}`;
+    const msg = await warnFor(arn);
+    expectQuotedAfter(msg, 'aws iam list-entities-for-policy --policy-arn ', arn);
+    expectQuotedAfter(msg, 'aws iam list-policy-versions --policy-arn ', arn);
+    expectQuotedAfter(msg, 'aws iam delete-policy --policy-arn ', arn);
+  });
+
+  it('withholds every command for an ARN carrying a control byte', async () => {
+    expectWithheld(await warnFor(`${ARN}${FORGED_CTRL}`), '--policy-arn');
+  });
+});
+

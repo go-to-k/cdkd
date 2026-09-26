@@ -461,6 +461,63 @@ describe('DeployEngine - resolved secrets are redacted out of persisted state (G
     expect(attempted['client_secret']).toBe(SECRET_EXPR);
     expect(attempted['client_id']).toBe('public-client-id');
   });
+
+  it('redacts a resolved secret out of a NESTED engine SUCCESS segment (issue #3754)', async () => {
+    // A nested child's success now RETAINS a journal segment until its
+    // top-level deploy succeeds, so the success path is a journal writer too.
+    mockStateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+    mockProvider.create.mockResolvedValue({ physicalId: 'idp-phys', attributes: {} });
+    const desiredProps = {
+      ProviderName: 'oidc',
+      ProviderDetails: {
+        client_id: 'public-client-id',
+        client_secret: { __resolveSecret: [SECRET_PLAINTEXT, SECRET_EXPR] },
+      },
+    };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Idp',
+          {
+            logicalId: 'Idp',
+            changeType: 'CREATE',
+            resourceType: 'AWS::Cognito::UserPoolIdentityProvider',
+            desiredProperties: desiredProps,
+          },
+        ],
+      ])
+    );
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Idp: { Type: 'AWS::Cognito::UserPoolIdentityProvider', Properties: desiredProps },
+      },
+    };
+
+    const engine = new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      {
+        dryRun: false,
+        parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+      },
+      'us-east-1'
+    );
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    const segment = mockStateBackend.appendRollbackJournalSegment.mock.calls[0]![2] as {
+      reason: string;
+      operations: Array<{ properties?: Record<string, unknown> }>;
+    };
+    expect(segment.reason).toBe('nested-pending-parent');
+    expect(JSON.stringify(segment)).not.toContain(SECRET_PLAINTEXT);
+    const recorded = segment.operations[0]!.properties!['ProviderDetails'] as Record<string, unknown>;
+    expect(recorded['client_secret']).toBe(SECRET_EXPR);
+    expect(recorded['client_id']).toBe('public-client-id');
+  });
 });
 
 // ---------------------------------------------------------------- #2886 --

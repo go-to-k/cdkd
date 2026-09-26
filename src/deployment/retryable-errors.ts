@@ -1,7 +1,7 @@
 // The ONE import this module takes. `aws-failure-text.ts` is itself a
 // zero-import leaf, so this keeps the module graph flat -- which matters here
 // because this file is reached from the retry path of every command.
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, isAwsAuthoredFailure } from '../utils/aws-failure-text.js';
 
 /**
  * The **IAM-propagation** subset of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
@@ -1425,6 +1425,22 @@ export function isIamPropagationError(message: string): boolean {
 }
 
 /**
+ * An `…AlreadyExists` error CODE as a whole token (`EntityAlreadyExists`,
+ * `ResourceAlreadyExistsException`, `DBInstanceAlreadyExistsFault`). The
+ * singular `…AlreadyExist` stays unmatched (see below); the one real code
+ * spelled so, `SubscriptionAlreadyExistFault`, states the collision in prose.
+ * A bare substring matched INSIDE an
+ * identifier too (issue #3816): a logical id like `UserAlreadyExistsHandler…`
+ * sits in every provider wrapper and in every cdkd-derived physical name AWS
+ * echoes, so an unrelated failure — even Lambda's PENDING-state conflict
+ * quoting the function ARN — read as a collision. A token right after `-`, `:`
+ * or `/`, or right before `-`, is part of a name or ARN and is refused.
+ * RESIDUAL: an unhashed logical id ENDING in the token, relayed after a space
+ * by a provider wrapper, still matches there.
+ */
+const ALREADY_EXISTS_CODE = /(?<![-:/])\b[A-Za-z0-9]*AlreadyExists(?:Exception|Fault)?\b(?!-)/;
+
+/**
  * Match the "already exists" name-collision signature raised when a create
  * targets a physical name still held by another resource (or by the same
  * name's not-yet-released tombstone after an async delete).
@@ -1473,7 +1489,7 @@ export function isIamPropagationError(message: string): boolean {
 export function isNameCollisionError(message: string): boolean {
   return (
     /(?<!\b(?:must|not|should|may|cannot)\s)already exists?\b/i.test(message) ||
-    message.includes('AlreadyExists')
+    ALREADY_EXISTS_CODE.test(message)
   );
 }
 
@@ -1531,68 +1547,85 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
   'DuplicateTrustStoreNameException',
 ]);
 
+const NAME_COLLISION_MARKER = Symbol.for('cdkd.nameCollision');
+
+/**
+ * Declare a provider-built error a NAME collision (#3812 x #3816). For a
+ * refusal whose AWS text states the conflict without "already exists" (Route
+ * 53's CNAME-beside-a-record), a provider that has recognised it STRUCTURALLY
+ * says so here rather than in prose: `isNameCollisionErrorFrom` no longer
+ * credits cdkd-authored text, which can quote a template value. A
+ * non-enumerable own symbol, like `markNonRetryable`'s, so it survives
+ * `maskSecretsInError`'s clone and never serializes.
+ */
+export function markNameCollision<E extends Error>(error: E): E {
+  if (!Object.isExtensible(error)) return error;
+  Object.defineProperty(error, NAME_COLLISION_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
+}
+
 /**
  * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
  * message — which is the only way to see an exception NAME (issue #3208).
  *
- * Providers wrap an AWS failure as `Failed to create X: ${err.message}`, so the
- * name is dropped before any caller could match it. This walks the bounded
- * `cause` chain (the same {@link MAX_CAUSE_CHAIN_DEPTH} as every other
- * classifier in this file), checking each link's `name` against
- * {@link NAME_COLLISION_ERROR_NAMES} and each link's `message` through
- * {@link isNameCollisionError}. A provider is required to thread the caught
- * value as `cause` (`scripts/check-provider-error-cause.ts` enforces it across
- * `src/provisioning/providers/**`), which is what makes the walk reach the SDK
- * error at all.
+ * Walks the bounded `cause` chain (the same {@link MAX_CAUSE_CHAIN_DEPTH} as
+ * every other classifier in this file). Three signals, each read off a link:
  *
- * Prefer this at any site holding the error object. The string form stays for
- * callers that genuinely have only text, and its behaviour is unchanged — this
- * is strictly additive, so nothing that matched before stops matching.
+ *  - `name` in {@link NAME_COLLISION_ERROR_NAMES};
+ *  - a provider's `markNameCollision` on a link;
+ *  - `ccErrorCode === 'AlreadyExists'` — the Cloud Control handler code a
+ *    `CloudControlOperationFailedError` carries (the same code
+ *    `cleanupFailedCreateRemnant` already trusts). It needs no top-level
+ *    relay: the code is AWS's, and no provider rewords a Cloud Control
+ *    failure to opt out today;
+ *  - the "already exists" prose, credited only when BOTH the top-level message
+ *    AND an AWS-authored link (`isAwsAuthoredFailure`: `$fault` or an HTTP
+ *    status — bare `$metadata` is not proof, the retry middleware stamps it on
+ *    socket errors too) say it (issue #3816). The SDK half keeps a cdkd
+ *    refusal quoting a template value from classifying — the verdict here is
+ *    a DELETE, acted on by the `--replace`
+ *    delete-first fallback and the rollback's delete-new-first arm. The
+ *    top-level half keeps a provider's opt-out: one that rewords an AWS
+ *    collision it knows delete-first cannot clear (Glue's occupied table
+ *    name, #3750) stays unclassified.
+ *
+ * Providers must thread the caught SDK error as `cause`
+ * (`scripts/check-provider-error-cause.ts`), which is what makes the walk reach
+ * it. RESIDUAL: an AWS validation error that echoes a template value carrying
+ * the phrase still classifies — the surface is a name-like field AWS quotes
+ * verbatim, not any cdkd refusal. Deliberately NOT classified: a non-`Error`
+ * throw or a string; a Cloud Control handler reporting "already exists" under a
+ * code other than `AlreadyExists`; a custom resource's FAILED reason; and S3's
+ * `BucketAlreadyExists`, whose message carries neither form — another account
+ * holds the name, so a delete-first would destroy the old bucket and free
+ * nothing.
  */
-/**
- * `String(value)` that cannot itself throw — a thrown `Object.create(null)` has
- * no `toString`. Preserves the call sites' pre-#3208 `String(createError)` arm
- * for a non-`Error` throw, which reading `.message` alone would have dropped.
- */
-function stringifyForMatch(value: unknown): string {
-  try {
-    return String(value);
-  } catch {
-    return '';
-  }
-}
-
 export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
-  // Hoisted, not left to fall out of the loop: a string skips the object body,
-  // so reading it after the walk made a top-level string work while a string
-  // `cause` at depth >= 1 stayed invisible — an asymmetry with no reason.
-  if (typeof error === 'string') return isNameCollisionError(error);
-
+  const topRelaysIt =
+    error instanceof Error &&
+    typeof error.message === 'string' &&
+    isNameCollisionError(error.message);
   let current: unknown = error;
   for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     const link = current as {
       name?: unknown;
       message?: unknown;
       logicalId?: unknown;
+      ccErrorCode?: unknown;
+      $metadata?: unknown;
       cause?: unknown;
     };
 
-    // The ANCHOR runs FIRST at every depth, ahead of both reads — the same
+    // The ANCHOR runs FIRST at every depth, ahead of every read — the same
     // ordering, and for the same reason, as `isUpdateUnsupportedError`: a
     // rejection that NAMES ANOTHER RESOURCE must not classify this one by any
-    // route, and ordering a read ahead of it would leave that property resting
-    // on whichever wrapper happens to quote no AWS text.
-    //
-    // It is a GENERAL fence, not a fix for one measured chain. An earlier
-    // revision of this comment justified it with a specific nested-stack path —
-    // a child's `ProvisioningError` reaching the parent's chain — and review
-    // measured that FALSE: `NestedStackProvider` throws a fresh `Error` with no
-    // `cause` at all (zero `cause:` in that file), so a child provider error
-    // does not reach the parent's chain today. The justification was wrong; the
-    // fence is not. What it buys is that ANY chained sub-resource error — from
-    // that provider if it ever threads a cause, or from any other wrapper — is
-    // refused, and the cost of being wrong here is a DELETE at two of the four
-    // call sites.
+    // route. It is a GENERAL fence: `NestedStackProvider` throws a fresh
+    // `Error` with no `cause`, so no child provider error reaches the parent's
+    // chain today, and the fence keeps it that way if one ever does.
     //
     // RESIDUAL, stated because the sibling states it and the cost is WORSE
     // here: the anchor compares logical IDS, so a CHILD resource whose logical
@@ -1606,27 +1639,20 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
 
     if (typeof link.name === 'string' && NAME_COLLISION_ERROR_NAMES.has(link.name)) return true;
 
-    // The MESSAGE is read at depth 0 ONLY. Reading prose down the chain is a
-    // far larger widening than #3208 asked for, it buys nothing here (the
-    // measured ELBv2 error has no cause at all), and it is the read this file
-    // already refuses to make unconditionally — see `retryClassificationText`,
-    // which gates it behind an explicit marker for a merely RETRY decision.
-    // Here the verdict is a delete.
-    //
-    // The `instanceof Error` half is what makes this genuinely IDENTICAL to the
-    // call sites' pre-#3208 `err instanceof Error ? err.message : String(err)`.
-    // Review caught the first revision reading `.message` off ANY object: a
-    // thrown `{ message: 'X already exists' }` used to stringify to
-    // `[object Object]` and NOT match, and would have started matching — a
-    // widening in the DELETE direction, under a comment claiming the opposite.
-    // The `typeof` check stays too: a non-string `message` on a real `Error`
-    // would otherwise reach `includes` and throw.
-    if (depth === 0) {
-      const text =
-        error instanceof Error && typeof link.message === 'string'
-          ? link.message
-          : stringifyForMatch(error);
-      if (isNameCollisionError(text)) return true;
+    if (link.ccErrorCode === 'AlreadyExists') return true;
+
+    if ((link as Record<symbol, unknown>)[NAME_COLLISION_MARKER] === true) return true;
+
+    // The `typeof` check stays: a non-string `message` would otherwise reach
+    // the regex and throw.
+    if (
+      topRelaysIt &&
+      current instanceof Error &&
+      isAwsAuthoredFailure(current) &&
+      typeof link.message === 'string' &&
+      isNameCollisionError(link.message)
+    ) {
+      return true;
     }
 
     current = link.cause;
@@ -1687,13 +1713,6 @@ export function isRecreateRetryableError(message: string): boolean {
 export const CC_UNSUPPORTED_ACTION_ERROR_NAME = 'UnsupportedActionException';
 
 /**
- * The AWS prose the update-not-supported classifier accepted before the
- * structured signal existed. Kept as a TOP-LEVEL-only fallback — see
- * {@link isUpdateUnsupportedError} for why it is not walked down the chain.
- */
-export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
-
-/**
  * True when a failed `provider.update()` for `logicalId` was rejected because
  * the resource type has no UPDATE handler at all — the signal the deploy
  * engine's update-failure fallback fires on, turning the update into a
@@ -1721,20 +1740,12 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  *    `cloud-control-provider.ts` reads the code for `AlreadyExists` /
  *    `NotFound`. No async occurrence has been MEASURED
  *    (`UnsupportedActionException` is raised synchronously by `UpdateResource`
- *    today); the arm exists so the async shape cannot silently fall through to
- *    prose, and it is pinned by unit cases built from the real error class.
+ *    today); the arm exists so the async shape is classified at all, and it is
+ *    pinned by unit cases built from the real error class.
  *    `ccOperation` is required rather than decorative precisely BECAUSE the
  *    arm is unmeasured: a CREATE or DELETE sub-operation reporting the same
  *    code says nothing about whether the type has an UPDATE handler, and
- *    reading the code alone would let it trigger a DELETE + CREATE. The
- *    narrowing is not absolute and the gap is stated rather than papered over:
- *    such a failure arriving at the TOP level still classifies if its own
- *    MESSAGE quotes AWS's prose. Unreachable today —
- *    `CloudControlOperationFailedError`'s message is built as
- *    `${operation} failed for <id>: <StatusMessage>`, so a CREATE's text
- *    cannot contain the UPDATE phrase unless AWS puts it there — and closing
- *    it would mean anchoring the prose read on the operation too, which would
- *    narrow the retained pre-#2520 reach rather than preserve it.
+ *    reading the code alone would let it trigger a DELETE + CREATE.
  *
  * ## Why the walk stops at another resource's error
  *
@@ -1751,13 +1762,16 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * stops dead at the first link that names a resource other than the one being
  * updated.
  *
- * The prose fallback is read at the TOP LEVEL ONLY, exactly as the pre-#2520
- * predicate did, and for the same asymmetry: missing the signal fails the
- * deploy (safe), matching it too broadly replaces a resource nobody asked to
- * replace (unsafe). It is read INSIDE the walk, after the anchor, so the
- * anchor governs every route into a `true` — ordered ahead of it, the
- * nested-stack immunity would rest on the child engine's wrapper happening to
- * quote no AWS text, which is a property of another file.
+ * ## Why no message is read
+ *
+ * AWS's prose (`does not support UPDATE`) is NOT a signal (issue #3810). A
+ * top-level message can quote template-chosen text — a cdkd refusal
+ * interpolating a property value, or an AWS rejection echoing its input — so a
+ * substring match replaced resources without `--replace`. Both real shapes
+ * carry a structured field: `handleError` threads the SDK exception as `cause`,
+ * and the async failure carries `ccErrorCode`. Missing the signal fails the
+ * deploy (safe); matching too broadly deletes a resource nobody asked to
+ * replace (unsafe).
  *
  * ## Codes deliberately NOT matched
  *
@@ -1772,6 +1786,17 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * deleting the resource.
  */
 export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
+  // A typed `ResourceUpdateNotSupportedError` is the `--replace` OPT-IN
+  // trigger, never the auto-fallback (issue #3757). Still a live fence: its
+  // constructor accepts a `cause`, so a typed refusal wrapping a named
+  // `UnsupportedActionException` would otherwise match at depth 1. Matched by
+  // NAME: this module does not import `error-handler.ts`, which imports it, to
+  // avoid a cycle.
+  if (
+    (error as { name?: unknown } | null | undefined)?.name === 'ResourceUpdateNotSupportedError'
+  ) {
+    return false;
+  }
   let current: unknown = error;
   for (
     let depth = 0;
@@ -1785,12 +1810,9 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
       logicalId?: unknown;
       cause?: unknown;
     };
-    // The anchor runs FIRST at every depth, the prose check included. Ordering
-    // the prose read ahead of it would leave the nested-stack immunity
-    // INCIDENTAL — resting on the child engine's wrapper happening to quote no
-    // AWS text (`Failed to update resource <id>`), a property of another file
-    // that no fence here watches. Anchored first, a rejection that names
-    // another resource cannot classify this one by ANY route.
+    // The anchor runs FIRST at every depth, ahead of both structured reads, so
+    // a rejection that names another resource cannot classify this one by ANY
+    // route — a nested stack's child rejection included.
     //
     // RESIDUAL, stated rather than left to be rediscovered: the anchor
     // compares logical IDS, so a CHILD resource whose logical id EQUALS the
@@ -1853,24 +1875,6 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     // failure trigger a DELETE + CREATE.
     if (link.ccErrorCode === CC_UNSUPPORTED_ACTION_ERROR_NAME && link.ccOperation === 'UPDATE') {
       return true;
-    }
-    // AWS's prose, at the TOP LEVEL ONLY — exactly the reach of the pre-#2520
-    // predicate. Walking prose deeper would WIDEN which deploys take the
-    // destructive DELETE + CREATE: a nested `ProvisioningError` whose cause
-    // happens to quote the phrase would newly qualify.
-    //
-    // Byte-identical to the read this predicate replaced in `deploy-engine.ts`,
-    // `String(error)` arm included: a provider is free to `throw 'text'`, and
-    // narrowing to `Error | string` would silently stop classifying a shape the
-    // old code did classify.
-    if (depth === 0) {
-      // Read off `current`, not the parameter: at depth 0 the two are the same
-      // object, and every other read in this body goes through the link, so
-      // keeping this one local means the `depth === 0` gate is the ONLY thing
-      // holding the top-level property rather than a second, silent one.
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- deliberate: the pre-#2520 predicate stringified whatever was thrown
-      const topMessage = current instanceof Error ? current.message : String(current);
-      if (topMessage.includes(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK)) return true;
     }
     current = link.cause;
   }

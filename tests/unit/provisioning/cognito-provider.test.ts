@@ -42,6 +42,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 // The engine's classifier, imported so the #2901 cases below can assert the
 // END of the chain rather than a substring of the provider's own message: what
@@ -2901,6 +2907,36 @@ describe('CognitoUserPoolProvider', () => {
         expect(warned).toContain('restoring the previous one also failed (AccessDeniedException)');
         expect(warned).toContain('may now carry the NEW MFA configuration with its OLD sign-in policy');
         expect(warned).not.toContain('123456789012');
+      });
+
+      // Issue #3136: the pool id is the `state.json`-borne physical id, so the
+      // check command renders through `pasteableAwsCommand` — quoted, or
+      // withheld when it cannot be printed exactly.
+      it.each([
+        ['quoted', `us-east-1_abc${FORGED_QUOTE}`],
+        ['withheld', `us-east-1_abc${FORGED_CTRL}`],
+      ])('the failed-restore check command is %s for a forged pool id', async (outcome, poolId) => {
+        mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('bad EmailVerificationSubject'), { name: 'InvalidParameterException' })
+        ); // UpdateUserPool
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+        ); // SetUserPoolMfaConfig (restore)
+
+        await rejectionOf(
+          provider.update('MyUserPool', poolId, 'AWS::Cognito::UserPool', addWebAuthnMulti, {})
+        );
+
+        const warned = childLogger.warn.mock.calls
+          .map((c) => String(c[0]))
+          .find((m) => m.includes('restoring the previous one also failed'))!;
+        if (outcome === 'quoted') {
+          expectQuotedAfter(warned, 'aws cognito-idp get-user-pool-mfa-config --user-pool-id ', poolId);
+        } else {
+          expectWithheld(warned, 'aws cognito-idp');
+        }
       });
 
       // PARITY: CloudFormation ROLLS BACK lowering MFA from ON while adding

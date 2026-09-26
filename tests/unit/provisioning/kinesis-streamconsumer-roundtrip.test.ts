@@ -55,6 +55,9 @@ describe('KinesisStreamConsumerProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
+    // case that routes via mockImplementation does not leak into the next.
+    mockSend.mockImplementation(() => undefined);
     provider = new KinesisStreamConsumerProvider();
   });
 
@@ -242,6 +245,48 @@ describe('KinesisStreamConsumerProvider', () => {
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(UntagResourceCommand);
       const untag = mockSend.mock.calls[0]?.[0] as UntagResourceCommand;
       expect(untag.input).toEqual({ ResourceARN: CONSUMER_ARN, TagKeys: ['Env'] });
+    });
+
+    it('untags a removed tag whose Key is an Object.prototype name (constructor)', async () => {
+      // #3515 applyTagDiff: `k in newMap` answered true for `constructor`
+      // through the prototype chain, so the removal sent no UntagResource.
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof DescribeStreamConsumerCommand) {
+          return {
+            ConsumerDescription: {
+              ConsumerName: CONSUMER_NAME,
+              ConsumerARN: CONSUMER_ARN,
+              ConsumerStatus: 'ACTIVE',
+              StreamARN: STREAM_ARN,
+            },
+          };
+        }
+        return {};
+      });
+
+      await provider.update(
+        'LogicalId',
+        CONSUMER_ARN,
+        'AWS::Kinesis::StreamConsumer',
+        {
+          ConsumerName: CONSUMER_NAME,
+          StreamARN: STREAM_ARN,
+          Tags: [{ Key: 'keep', Value: 'k' }],
+        },
+        {
+          ConsumerName: CONSUMER_NAME,
+          StreamARN: STREAM_ARN,
+          Tags: [
+            { Key: 'keep', Value: 'k' },
+            { Key: 'constructor', Value: 'old' },
+          ],
+        }
+      );
+
+      const untags = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UntagResourceCommand) as UntagResourceCommand[];
+      expect(untags.map((c) => c.input.TagKeys)).toEqual([['constructor']]);
     });
 
     it('no-op (no Tags / no changes) makes no Tag/Untag SDK calls', async () => {

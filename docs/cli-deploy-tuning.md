@@ -129,6 +129,13 @@ Highest wins: `--no-capture-observed-state` on the command line, then `cdk.json`
 off, drift compares state-recorded properties only. Use the flag when deploy
 speed matters more than drift fidelity.
 
+The flag does not turn off the one readback that decides a replacement: when a
+[`NoEcho` custom resource](state-management.md#noecho-custom-resource-responses)
+re-runs and a resource holds its value in a property that cannot change in
+place, cdkd reads that resource back to see whether AWS already holds the value.
+That readback is compared in memory and never stored, so it has nothing to do
+with the drift baseline.
+
 ### Backfilling the baseline after an upgrade
 
 A stack deployed by cdkd earlier than 0.47 — the release where observed-state

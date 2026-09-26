@@ -147,7 +147,7 @@ export class S3VectorsProvider implements ResourceProvider {
     for (const [k, v] of Object.entries(newTags)) {
       if (oldTags[k] !== v) toSet[k] = v;
     }
-    const toRemove = Object.keys(oldTags).filter((k) => !(k in newTags));
+    const toRemove = Object.keys(oldTags).filter((k) => !Object.hasOwn(newTags, k));
 
     if (Object.keys(toSet).length === 0 && toRemove.length === 0) {
       // No tag delta — nothing to do on AWS (e.g. a metadata-only diff).

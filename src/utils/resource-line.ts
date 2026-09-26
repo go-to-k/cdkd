@@ -1,4 +1,5 @@
 import { bold, gray, green, red, yellow } from './colors.js';
+import { displaySafe } from './display-safe.js';
 
 /**
  * The per-resource operations whose status line deploy / destroy print.
@@ -27,6 +28,11 @@ export type ResourceOp = 'created' | 'updated' | 'deleted' | 'skipped';
  *
  * `verbOverride` replaces the default verb word (e.g. `'updated (metadata)'` for
  * a metadata-only update) while keeping the op's glyph and color.
+ *
+ * The logical id, the type and the verb each render through `displaySafe`: a
+ * logical id or type can come from a state record or template, and a skip
+ * reason can carry an AWS message, so a newline in any of them must not start
+ * a line of its own (go-to-k/cdkd#3773).
  */
 export function formatResourceLine(
   op: ResourceOp,
@@ -34,15 +40,16 @@ export function formatResourceLine(
   resourceType: string,
   verbOverride?: string
 ): string {
-  const body = `${bold(logicalId)} ${gray(`(${resourceType})`)}`;
+  const body = `${bold(displaySafe(logicalId))} ${gray(`(${displaySafe(resourceType)})`)}`;
+  const verb = verbOverride === undefined ? undefined : displaySafe(verbOverride);
   switch (op) {
     case 'created':
-      return `${green('✓')} ${body} ${green(verbOverride ?? 'created')}`;
+      return `${green('✓')} ${body} ${green(verb ?? 'created')}`;
     case 'updated':
-      return `${yellow('✓')} ${body} ${yellow(verbOverride ?? 'updated')}`;
+      return `${yellow('✓')} ${body} ${yellow(verb ?? 'updated')}`;
     case 'deleted':
-      return `${green('✓')} ${body} ${red(verbOverride ?? 'deleted')}`;
+      return `${green('✓')} ${body} ${red(verb ?? 'deleted')}`;
     case 'skipped':
-      return `${yellow('⚠')} ${body} ${yellow(verbOverride ?? 'skipped')}`;
+      return `${yellow('⚠')} ${body} ${yellow(verb ?? 'skipped')}`;
   }
 }

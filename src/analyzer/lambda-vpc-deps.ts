@@ -71,7 +71,7 @@ export function extractLambdaVpcDeleteDeps(
 
     for (const targetId of targets) {
       if (targetId === lambdaId) continue;
-      if (!(targetId in resources)) continue;
+      if (!Object.hasOwn(resources, targetId)) continue;
       // ENCODED, not separated (go-to-k/cdkd#3496). Both halves are keys of the
       // `resources` bag, which `parseStateBody` reads as an unchecked cast --
       // CloudFormation constrains a logical id to [A-Za-z0-9] but nothing

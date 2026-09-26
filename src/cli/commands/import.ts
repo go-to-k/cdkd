@@ -95,7 +95,9 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
+  refuseMalformedResourceEntriesForImport,
   refuseMalformedState,
+  refuseMalformedResourceEntriesForImportSave,
 } from '../../state/malformed-resources-bag.js';
 
 interface ImportOptions {
@@ -609,6 +611,28 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
     if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
+    // The ROWS of that map, in SELECTIVE mode only, and only the rows this
+    // merge does NOT re-import (go-to-k/cdkd#3202). A selective merge starts
+    // from `{ ...existingState.resources }` and saves every row it did not
+    // re-import AS IT STANDS, so a `null` or typeless row is carried into the
+    // record this command writes and met by the next deploy or destroy
+    // instead. A row NAMED by `--resource` / `--resource-mapping` is replaced
+    // by `buildStackState` from the provider's answer — `cdkd import S
+    // --resource Bad=<id> --force` IS the repair of a broken `Bad` row — so
+    // those ids are subtracted. Whole-stack and `--migrate-from-cloudformation`
+    // imports REPLACE the map from the template, which makes them a way OUT of
+    // such a record, so they are deliberately not refused — the rule
+    // go-to-k/cdkd#3159 set: a refusal must not close a recovery route. The
+    // shared text holds here: the lock is taken below, after this check, and no
+    // AWS resource has been read.
+    if (existingState && selectiveMode) {
+      refuseMalformedResourceEntriesForImport(
+        existingState,
+        [...overrides.keys()],
+        stackInfo.stackName,
+        targetRegion
+      );
+    }
     // The `outputs` bag takes the same answer and needs its own call — the one
     // above reads `resources` only, and a record can be malformed in either
     // container alone (go-to-k/cdkd#3192). This command CARRIES the bag into a
@@ -795,6 +819,39 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         writeRecordedMapping(options.recordResourceMapping, rows);
       }
 
+      // The state record this run would write, assembled HERE — once `rows`
+      // is final and BEFORE the `--dry-run` return and the confirmation
+      // prompt — rather than below them (go-to-k/cdkd#3202, maintainer round
+      // 2, M4). `buildStackState` is a pure assembly, so building it early
+      // costs nothing, and it is what lets the re-check below decide the same
+      // way on a dry run and on the real run: the pre-flight above exempted
+      // the LISTED rows from the unreadable-row refusal on the promise that
+      // this assembly replaces them, and it replaces only a row whose import
+      // SUCCEEDED, keeping the stored row for one that failed or was skipped.
+      // Checked below the assembly and above everything that acts on it —
+      // the dry-run verdict (which would otherwise say "re-run without
+      // --dry-run" for a run that then refuses), the prompt (which would
+      // otherwise ask "Write state?" for a record the run then refuses to
+      // write), the property resolution (which reads every row) and the
+      // save. Every unreadable row still present is a listed one the run
+      // could not repair; an unlisted one was refused pre-flight, and a
+      // whole-stack rebuild starts from `{}`.
+      //
+      // `stateTemplate` is the PRE-asset-rewrite snapshot in cdkd-assets mode
+      // (issue #1652) and `template` itself otherwise — identical in every
+      // respect except that its asset references still name CDK bootstrap
+      // storage, which is what AWS holds for the resources being adopted.
+      const stackState = buildStackState(
+        stackInfo.stackName,
+        targetRegion,
+        rows,
+        templateParser,
+        stateTemplate,
+        existingState,
+        selectiveMode
+      );
+      refuseMalformedResourceEntriesForImportSave(stackState, stackInfo.stackName, targetRegion);
+
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
         return;
@@ -831,19 +888,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         }
       }
 
-      // `stateTemplate` is the PRE-asset-rewrite snapshot in cdkd-assets mode
-      // (issue #1652) and `template` itself otherwise — identical in every
-      // respect except that its asset references still name CDK bootstrap
-      // storage, which is what AWS holds for the resources being adopted.
-      const stackState = buildStackState(
-        stackInfo.stackName,
-        targetRegion,
-        rows,
-        templateParser,
-        stateTemplate,
-        existingState,
-        selectiveMode
-      );
+      // `stackState` was assembled and re-checked above the `--dry-run` return
+      // and the prompt; from here on this run WRITES it.
 
       // Resolve CFn intrinsics (Ref / Fn::GetAtt / Fn::Sub / ...) in every
       // freshly-imported resource's `properties` against the assembled
@@ -3480,8 +3526,16 @@ async function importNestedStackChildrenRecursive(args: {
           parentRegion: childRegion,
           // Grandchild template paths live alongside the child template
           // file via `Metadata['aws:asset:path']` — index them with the
-          // same logic AssemblyReader uses at the parent level.
-          parentNestedTemplates: indexGrandchildTemplatePaths(childTemplate, childTemplatePath),
+          // same logic AssemblyReader uses at the parent level. Read off the
+          // PRE-rewrite snapshot: the asset rewrite walks every string,
+          // `aws:asset:path` included, so a path segment spelling a bootstrap
+          // bucket would otherwise lead here to a different file than the one
+          // `NestedStackProvider` deploys (it indexes before rewriting, as
+          // `cdkd diff` does since go-to-k/cdkd#3450).
+          parentNestedTemplates: indexGrandchildTemplatePaths(
+            childStateTemplate,
+            childTemplatePath
+          ),
           parentTree: childTreeNode,
           stateBackend,
           lockManager,

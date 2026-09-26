@@ -337,7 +337,8 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, StreamSpecification: '' },
-      { ...baseProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } }
+      { ...baseProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } },
+      { replayingState: true }
     );
 
     // SKIPPED, never defaulted: no UpdateTable carries a StreamSpecification.
@@ -374,7 +375,8 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, GlobalSecondaryIndexes: 'bad' },
-      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] }
+      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] },
+      { replayingState: true }
     );
 
     // The destructive reading — "the template declares no indexes, so delete
@@ -507,7 +509,8 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
           TABLE_NAME,
           RESOURCE_TYPE,
           { ...provisionedDesired, GlobalSecondaryIndexes: 'bad' },
-          { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] }
+          { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] },
+          { replayingState: true }
         )
       ).rejects.toThrow(/Cannot flip .* to PROVISIONED while its GlobalSecondaryIndexes/);
 
@@ -558,7 +561,8 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' },
-        { ...baseProps, BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [liveIndex] }
+        { ...baseProps, BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [liveIndex] },
+        { replayingState: true }
       );
 
       expect(billingFlipInputs()).toHaveLength(1);

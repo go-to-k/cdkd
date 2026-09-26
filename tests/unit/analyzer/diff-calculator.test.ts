@@ -138,6 +138,62 @@ describe('DiffCalculator - nested-map-key removal (bug-hunt 2026-06-29)', () => 
     const changes = await calc.calculateDiff(state, template);
     expect(changes.get('Fn')?.changeType).toBe('UPDATE');
   });
+
+  // go-to-k/cdkd#3515 (valuesEqual nested-key membership): `key in aObj`
+  // answered TRUE for an own `__proto__` key on the new side (JSON.parse makes
+  // one) through the prototype chain, then compared Object.prototype (no own
+  // enumerable keys) against `{}` as equal -- so a same-size key swap
+  // (`A` -> `__proto__`) was reported NO_CHANGE.
+  it('detects a nested-map key swap to an own __proto__ key', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Environment: { Variables: { A: '1' } } },
+      attributes: {},
+    };
+    const variables = JSON.parse('{"__proto__": {}}') as Record<string, unknown>;
+    expect(Object.hasOwn(variables, '__proto__')).toBe(true);
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { FunctionName: 'my-fn', Environment: { Variables: variables } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+  });
+
+  // Negative control (#3515): the same own `__proto__: {}` key on BOTH sides
+  // is unchanged. An own-key test that over-answers for prototype-member
+  // names passes the case above and fails only this one.
+  it('reports NO_CHANGE for an own __proto__ key present on both sides', async () => {
+    const vars = (): Record<string, unknown> =>
+      JSON.parse('{"__proto__": {}}') as Record<string, unknown>;
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Environment: { Variables: vars() } },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { FunctionName: 'my-fn', Environment: { Variables: vars() } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    expect(changes.get('Fn')?.changeType).toBe('NO_CHANGE');
+  });
 });
 
 describe('DiffCalculator - intrinsic-aware diff', () => {

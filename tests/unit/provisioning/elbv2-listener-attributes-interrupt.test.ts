@@ -60,6 +60,12 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const logger = getLogger() as unknown as { warn: ReturnType<typeof vi.fn> };
 import {
@@ -210,6 +216,50 @@ describe('ELBv2 ModifyListenerAttributes aborts on Ctrl-C (#2053)', () => {
     expect(warned).toContain('Interrupted after creating Listener');
     expect(warned).toContain(LISTENER_ARN);
     expect(warned).toContain('aws elbv2 delete-listener --listener-arn');
+  }, 120_000);
+
+  // Issue #3136: the listener ARN (AWS-minted, off the create response) goes
+  // through `pasteableAwsCommand` in BOTH manual-delete commands this path can
+  // print — the interrupt handle printed before the delete, and the
+  // cleanup-failure warn after it.
+  it.each([
+    ['quoted', `${LISTENER_ARN}${FORGED_QUOTE}`],
+    ['withheld', `${LISTENER_ARN}${FORGED_CTRL}`],
+  ])('CREATE: a forged listener ARN is %s in both manual-delete commands', async (outcome, arn) => {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof CreateListenerCommand) {
+        return Promise.resolve({ Listeners: [{ ListenerArn: arn }] });
+      }
+      if (command instanceof ModifyListenerAttributesCommand) {
+        fireInterrupt();
+        return Promise.reject(transientAwsError());
+      }
+      if (command instanceof DeleteListenerCommand) {
+        return Promise.reject(new Error('DeleteListener also failed'));
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.create('Listener', LISTENER_TYPE, {
+        LoadBalancerArn: LB_ARN,
+        Port: 443,
+        Protocol: 'HTTPS',
+        DefaultActions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+        ListenerAttributes: ATTR,
+      })
+    ).rejects.toThrow(/interrupted by user \(SIGINT\)/);
+
+    const warns = logger.warn.mock.calls.map((c) => String(c[0]));
+    const interrupted = warns.find((m) => m.includes('Interrupted after creating Listener'))!;
+    const failed = warns.find((m) => m.includes('Failed to clean up partially-created Listener'))!;
+    for (const msg of [interrupted, failed]) {
+      if (outcome === 'quoted') {
+        expectQuotedAfter(msg, 'aws elbv2 delete-listener --listener-arn ', arn);
+      } else {
+        expectWithheld(msg, 'aws elbv2 delete-listener');
+      }
+    }
   }, 120_000);
 
   it('UPDATE: stops at the attempt the signal landed in', async () => {

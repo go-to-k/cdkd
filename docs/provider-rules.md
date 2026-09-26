@@ -158,11 +158,17 @@ const ipProtocol = requireConfigString(
 // UPDATE-path sites WARN instead of throwing when the desired bag is a state
 // record (a rollback revert or `cdkd drift --revert`) — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards):
 // a refusal there can leave the resource un-rollbackable with no template-side
-// remedy. A template-path update may refuse the same value before any call.
-// (This IAM example still warns on every caller; issue #3740 tracks it.)
-const status = requireConfigString(properties['Status'], 'Active', 'AWS::IAM::AccessKey Status', {
-  onUnusable: (message) => this.logger.warn(message),
-});
+// remedy. A template-path update refuses the same value, before any call.
+// (`context` is `update()`'s `UpdateContext`; `previousStatus` is the recorded
+// status, the warn fallback, so a warning never ENABLES a key.)
+const stateBorneDesired =
+  context?.replayingState === true || context?.desiredFromAwsReadback === true;
+const status = requireConfigString(
+  properties['Status'],
+  previousStatus,
+  'AWS::IAM::AccessKey Status',
+  stateBorneDesired ? { onUnusable: (message) => this.logger.warn(message) } : {}
+);
 ```
 
 And check WHERE the read lives before guarding it: a helper the `delete()` or
@@ -224,11 +230,20 @@ implementation. Three details are worth copying:
     stated at the site (issue
     [#3728](https://github.com/go-to-k/cdkd/issues/3728)). Refuse BEFORE the
     first write: a throw from a mid-update arm strands whatever the earlier
-    arms applied (a read such as a hosted-zone lookup may precede it). Not
-    every arm follows this yet: the ones decided before #3141 gave the revert
-    arms a flag still warn on every caller — Glue's `DatabaseInput` and the
-    sites listed in [#3740](https://github.com/go-to-k/cdkd/issues/3740) —
-    and each says so at its site. On the warn path, **pick the FALLBACK per site** (issue
+    arms applied (a read such as a hosted-zone lookup may precede it). Where
+    the arm itself runs mid-update, ask its OWN predicate from a pre-flight
+    rather than restating it — S3's per-config appliers run on a probe whose
+    client writes nothing (issue
+    [#3740](https://github.com/go-to-k/cdkd/issues/3740)). Gate the refusal
+    on the value having changed wherever an unchanged one sends nothing, and
+    do NOT gate it where the value goes out on every update: Glue's
+    `UpdateDatabase` replaces `DatabaseInput` wholesale, so its malformed
+    blocks are refused whether or not they changed (#3740).
+    Separately, a create-only
+    value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
+    `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,
+    for the reason above. On the
+    warn path, **pick the FALLBACK per site** (issue
     [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
     applying the CREATE DEFAULT is frequently worse than the refusal was,
     because the default lands on a LIVE resource — it flipped an IAM-guarded
@@ -1743,7 +1758,7 @@ This is the **structural defense** against the "provider author forgets to emit 
 
 **The `properties` argument is the DESIRED side, and gating an emission on it is a fix with a TRANSITION COST — do not reach for it alone** (issues [#1742](https://github.com/go-to-k/cdkd/issues/1742) / [#1760](https://github.com/go-to-k/cdkd/issues/1760)). Every caller passes the resource's state-recorded / template-resolved bag (`drift.ts`, the deploy engine's observed capture, `import.ts`, `state.ts`), so a provider CAN ask what the user actually declared, and the temptation is to use that to stop emitting an AWS-COMPUTED value the desired side can never carry.
 
-**The half that is easy to miss:** `observedProperties` bags already in S3 were written by a binary that DID emit the member. The moment the new binary stops, the comparison is `baseline has it` vs `aws side undefined`, and the first `cdkd drift` after the upgrade reports a one-sided phantom on every such resource. It does not self-heal — the observed capture runs only on CREATE / UPDATE, and the auto-refresh skips a record that already has a capture — so the window is however long until the user's next deploy, which is exactly when they are running `drift` instead. Measured live on `AWS::DynamoDB::Table` (#1760).
+**The half that is easy to miss:** `observedProperties` bags already in S3 were written by a binary that DID emit the member. The moment the new binary stops, the comparison is `baseline has it` vs `aws side undefined`, and the first `cdkd drift` after the upgrade reports a one-sided phantom on every such resource. It does not self-heal — the observed capture runs only on CREATE / UPDATE, and the auto-refresh skips a record that already has a capture (the one it revisits, a baseline holding a `***` mask, is re-captured only when the readback reproduces that baseline, which a missing member prevents) — so the window is however long until the user's next deploy, which is exactly when they are running `drift` instead. Measured live on `AWS::DynamoDB::Table` (#1760).
 
 So the emission gate needs a companion that removes the path from the COMPARISON too:
 
@@ -1861,6 +1876,19 @@ Four rules, each load-bearing:
 - **Position in the chain matters.** The hook runs after the principal / `IpProtocol` passes and *before* the tag-list / id-array / unordered-path passes, which live inside `calculateResourceDrift`. That order is required: an element strip must precede the unordered sort, or the two sides' canonical sort keys are computed over different member sets and diverge.
 - **Return the input by identity** when nothing applies, so an unaffected resource pays nothing.
 - **Reach for it only for a per-array-element member.** A top-level key a readback stopped emitting is `getDriftUnknownPaths()`'s job; a difference that is only about ORDER is `getDriftUnorderedPaths()`'.
+
+### `canonicalizeDriftPair()` when the readback's SHAPE changes
+
+When `readCurrentState` starts emitting something it used to omit, every `observedProperties` record captured before the change lacks it, so the first `cdkd drift` after upgrading reports it on every untouched resource. `canonicalizeDriftProperties()` cannot absorb that: it sees one bag, so it cannot tell a legacy baseline from a current one, and stripping the new member from both sides would hide its drift forever.
+
+`canonicalizeDriftPair(resourceType, baseline, aws)` (issue [#3573](https://github.com/go-to-k/cdkd/issues/3573)) gets both bags, after the per-side hook. Key the rule on the BASELINE's shape: a legacy baseline selects the absorption, and a current-shape one is compared in full. State is not rewritten; the next deploy's capture moves the record to the current shape. The GlobalTable provider is the example: its readback gained the local (deploy-region) replica entry, and a baseline with no local entry is completed with the readback's.
+
+**Complete the baseline from the readback; do not drop from the readback.** Two write paths consume these bags:
+
+- `cdkd drift --revert` passes its DESIRED bag, the recorded baseline, through the same hook against the raw readback and sends the returned baseline to `update()`. A member missing there is a REMOVAL to the provider. A legacy GlobalTable record sent without its local entry untagged the local table.
+- `--accept` writes each change's `awsValue` from the AWS side. Leaving that side intact means an accept stores the current shape and heals the record.
+
+It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
 
 ### When there is NO observed baseline at all
 

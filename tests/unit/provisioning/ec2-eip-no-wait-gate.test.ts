@@ -51,6 +51,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const ALLOCATION_ID = 'eipalloc-0abc123';
 const INSTANCE_ID = 'i-1234567890abcdef0';
@@ -230,5 +236,74 @@ describe('EC2 EIP association on UPDATE under --no-wait', () => {
       provider.update('Eip', PHYSICAL_ID, 'AWS::EC2::EIP', { InstanceId: INSTANCE_ID }, {})
     ).rejects.toThrow(/already associated/);
     expect(warnMock).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #3136: `InstanceId` is a TEMPLATE value (on update the allocation id
+// is `state.json`-borne too), so the repair command renders through
+// `pasteableAwsCommand` — quoted, or withheld when it cannot be printed exactly.
+describe('EC2 EIP --no-wait repair command (issue #3136)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env['CDKD_NO_WAIT'] = 'true';
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  async function createWarn(instanceId: string): Promise<string> {
+    mockAllocateOk();
+    await new EC2Provider().create('Eip', 'AWS::EC2::EIP', { InstanceId: instanceId });
+    return warnMock.mock.calls.map((c) => String(c[0])).find((m) => m.includes('EIP'))!;
+  }
+
+  async function updateWarn(instanceId: string): Promise<string> {
+    const error = new Error('not in a valid state');
+    error.name = 'IncorrectInstanceState';
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof AssociateAddressCommand ? Promise.reject(error) : Promise.resolve({})
+    );
+    await new EC2Provider().update(
+      'Eip',
+      `54.0.0.9|${ALLOCATION_ID}`,
+      'AWS::EC2::EIP',
+      { InstanceId: instanceId },
+      {}
+    );
+    return warnMock.mock.calls.map((c) => String(c[0])).find((m) => m.includes('EIP'))!;
+  }
+
+  it.each([
+    ['create', createWarn],
+    ['update', updateWarn],
+  ] as const)('%s: a forged InstanceId is shell-quoted in both commands, or withholds them', async (_arm, warnFor) => {
+    const quoted = await warnFor(`i-1${FORGED_QUOTE}`);
+    expectQuotedAfter(quoted, 'aws ec2 describe-instances --instance-ids ', `i-1${FORGED_QUOTE}`);
+    expectQuotedAfter(quoted, ' --instance-id ', `i-1${FORGED_QUOTE}`);
+    warnMock.mockReset();
+    const withheld = await warnFor(`i-1${FORGED_CTRL}`);
+    expectWithheld(withheld, 'aws ec2');
+    // The PROSE copy of the InstanceId is display-safe too: under --no-wait
+    // AWS never validated it, so a raw ESC would forge terminal lines.
+    expect(withheld).not.toContain('\u001b');
+  });
+
+  it('update: a state-borne allocation id carrying a control byte never reaches the prose raw', async () => {
+    const error = new Error('not in a valid state');
+    error.name = 'IncorrectInstanceState';
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof AssociateAddressCommand ? Promise.reject(error) : Promise.resolve({})
+    );
+    await new EC2Provider().update(
+      'Eip',
+      `54.0.0.9|eipalloc-1${FORGED_CTRL}`,
+      'AWS::EC2::EIP',
+      { InstanceId: INSTANCE_ID },
+      {}
+    );
+    const msg = warnMock.mock.calls.map((c) => String(c[0])).find((m) => m.includes('EIP'))!;
+    expectWithheld(msg, 'aws ec2');
+    expect(msg).not.toContain('\u001b');
   });
 });
