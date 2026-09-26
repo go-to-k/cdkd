@@ -28,6 +28,7 @@ import {
 } from '../../../src/utils/error-handler.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -908,6 +909,12 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     );
     expect(isNameCollisionErrorFrom(marked, LID)).toBe(true);
     expect(isNameCollisionErrorFrom(marked, 'OtherRecord')).toBe(false);
+    // It survives the secret mask's clone, which is what the delete-first
+    // readers receive.
+    const masked = maskSecretsInError(marked, new Map([['Failed to create record set', '{{resolve:ssm:x}}']]));
+    expect(masked).not.toBe(marked);
+    expect(masked.message).not.toContain('Failed to create record set');
+    expect(isNameCollisionErrorFrom(masked, LID)).toBe(true);
     // An unmarked twin with the same text is not.
     expect(
       isNameCollisionErrorFrom(

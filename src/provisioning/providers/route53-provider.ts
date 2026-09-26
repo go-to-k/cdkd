@@ -26,7 +26,7 @@ import {
   type VPCRegion,
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -226,16 +226,22 @@ export function isCnameConflictRefusal(error: unknown): boolean {
   return (
     error instanceof Error &&
     error.name === 'InvalidChangeBatch' &&
-    /RRSet of type CNAME with DNS name .* is not permitted as it conflicts with other records with the same DNS name/.test(
+    isAwsAuthoredFailure(error) &&
+    // The WHOLE message, names as non-space tokens (Route 53 escapes a space
+    // as `\040`): an unanchored match also fired on a refusal ECHOING a
+    // template value that quotes this sentence (an unquoted TXT value), and
+    // the verdict drives a delete-first.
+    /^\[?RRSet of type CNAME with DNS name \S+ is not permitted as it conflicts with other records with the same DNS name in zone \S+\]?$/.test(
       error.message
     )
   );
 }
 
 /**
- * Appended to a create failure `isCnameConflictRefusal` recognises, so the
- * wrapped message states the collision in words. The classifier reads the
- * `markNameCollision` marker the same site sets, not this text (#3816).
+ * Appended to a create failure `isCnameConflictRefusal` recognises. The
+ * collision classifier reads the `markNameCollision` marker the same site
+ * sets (#3816), but this text is still what `isRecreateRetryableError` sees
+ * on the delete-then-re-create retry — removing it stops that retry.
  */
 const CNAME_CONFLICT_COLLISION_NOTE =
   ' (a record with the same DNS name already exists in the hosted zone)';

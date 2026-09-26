@@ -1547,6 +1547,27 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
   'DuplicateTrustStoreNameException',
 ]);
 
+const NAME_COLLISION_MARKER = Symbol.for('cdkd.nameCollision');
+
+/**
+ * Declare a provider-built error a NAME collision (#3812 x #3816). For a
+ * refusal whose AWS text states the conflict without "already exists" (Route
+ * 53's CNAME-beside-a-record), a provider that has recognised it STRUCTURALLY
+ * says so here rather than in prose: `isNameCollisionErrorFrom` no longer
+ * credits cdkd-authored text, which can quote a template value. A
+ * non-enumerable own symbol, like `markNonRetryable`'s, so it survives
+ * `maskSecretsInError`'s clone and never serializes.
+ */
+export function markNameCollision<E extends Error>(error: E): E {
+  if (!Object.isExtensible(error)) return error;
+  Object.defineProperty(error, NAME_COLLISION_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
+}
+
 /**
  * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
  * message — which is the only way to see an exception NAME (issue #3208).
@@ -1583,27 +1604,6 @@ export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
  * holds the name, so a delete-first would destroy the old bucket and free
  * nothing.
  */
-const NAME_COLLISION_MARKER = Symbol.for('cdkd.nameCollision');
-
-/**
- * Declare a provider-built error a NAME collision (#3812 x #3816). For a
- * refusal whose AWS text states the conflict without "already exists" (Route
- * 53's CNAME-beside-a-record), a provider that has recognised it STRUCTURALLY
- * says so here rather than in prose: `isNameCollisionErrorFrom` no longer
- * credits cdkd-authored text, which can quote a template value. A
- * non-enumerable own symbol, like `markNonRetryable`'s, so it survives
- * `maskSecretsInError`'s clone and never serializes.
- */
-export function markNameCollision<E extends Error>(error: E): E {
-  if (!Object.isExtensible(error)) return error;
-  Object.defineProperty(error, NAME_COLLISION_MARKER, {
-    value: true,
-    enumerable: false,
-    configurable: true,
-  });
-  return error;
-}
-
 export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
   const topRelaysIt =
     error instanceof Error &&
