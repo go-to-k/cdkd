@@ -1797,6 +1797,38 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(okayChange?.ccApi).toBeUndefined();
   });
 
+  it('routes no condition-false row through CC API: the deploy deletes it (go-to-k/cdkd#3815)', async () => {
+    const template: CloudFormationTemplate = {
+      Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
+      Resources: {
+        SilentDropLambda: {
+          Type: 'AWS::Lambda::Function',
+          Condition: 'Off',
+          Properties: {
+            FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+          },
+        },
+      },
+    };
+    const root = await buildDiffTree({
+      stackName: 'Leaf',
+      displayName: 'Leaf',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({
+        Leaf: st('Leaf', { SilentDropLambda: res('AWS::Lambda::Function', {}) }),
+      }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+
+    expect(root.changes.get('SilentDropLambda')!.changeType).toBe('DELETE');
+    expect(root.ccApiRoutes.has('SilentDropLambda')).toBe(false);
+    expect(diffTreeToJson(root).changes[0]!.ccApi).toBeUndefined();
+  });
+
   it('annotates sticky-CC resources (provisionedBy: cc-api in state, no silent-drop in template) with [via CC API: sticky] — matches live-progress label + design §8', async () => {
     // The Lambda's template has NO silent-drop property — the SDK provider's
     // coverage caught up between deploys. But cdkd state still pins routing
