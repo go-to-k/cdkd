@@ -396,9 +396,13 @@ describe('the run LISTING is sanitised and the --json payload is not (issue #243
     expect(out).not.toContain(CSI_ERASE_LINE);
     expect(out).not.toContain(SGR_BRIGHT_RED);
     expect(out).not.toContain(CR);
-    expect(out).toContain(`${RUN_ID} [2K`);
-    expect(out).toContain('cdkd 0.286.0 [2K');
-    expect(out).toContain('2026-01-01T00:01:00.000Z [1;31m');
+    // Since go-to-k/cdkd#3760 a field that sanitizes to more than one token is
+    // not printed at all: its padding could wrap into a counterfeit footer row.
+    expect(out).not.toContain(`${RUN_ID} [2K`);
+    // A trailing control character sanitizes away, leaving one token.
+    expect(out).toContain(`${cyan('<unrenderable>')}  deploy  `);
+    expect(out).toContain(`${gray('2026-01-01T00:00:00.000Z')} -> ${gray('?')}`);
+    expect(out).toContain(gray('cdkd <unrenderable>'));
     // A forged non-numeric event count is not renderable as a count.
     expect(out).toContain('? events');
   });
@@ -765,10 +769,11 @@ describe('the run listing keeps its exact benign layout (issue #2438)', () => {
     // The hole is printed instead, and the `<runId>` placeholder is quoted.
     expect(out).toContain("cdkd events '<stack>' --run '<runId>'");
     expect(out).not.toContain('cdkd events TestStack [2K');
-    // The HEADING still shows the sanitized name: naming it in prose is the
-    // display class (go-to-k/cdkd#3232), a different question from naming it
-    // in a command.
-    expect(out).toContain('TestStack [2K');
+    // The HEADING describes it too: it sits above the labelled footer, so
+    // since go-to-k/cdkd#3760 it names a stack only when it is a plain
+    // identifier.
+    expect(out).not.toContain('TestStack [2K');
+    expect(out).toContain(cyan('a stack name that is not a plain identifier'));
   });
 
   it('names no padded stack in the footer command, and explains the hole (go-to-k/cdkd#3773)', async () => {
@@ -1097,7 +1102,8 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
     await eventsCommand(ALL_CONTROL, { ...stateOpts });
 
     expect(infoSpy.mock.calls.map((c) => String(c[0]))[0]).toBe(
-      `${bold('Deployment runs for')} ${cyan('<unrenderable>')} ${gray('(<unrenderable>)')}`
+      `${bold('Deployment runs for')} ${cyan('a stack name that is not a plain identifier')} ` +
+        gray('(a region that is not a plain identifier)')
     );
   });
 
