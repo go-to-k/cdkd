@@ -3036,6 +3036,29 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(lines.some((l) => l.includes('could not preview its revert: throttled'))).toBe(true);
   });
 
+  it('the plan says a runId-less segment nested revert will FAIL', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? parentJournalWith([
+              { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp('old')] },
+            ])
+          : childJournal
+      ),
+      ...({ dropRollbackJournalSegments: vi.fn().mockResolvedValue(0) } as object),
+    });
+
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('carries no deploy run id'))).toBe(true);
+  });
+
   it('no arg: the parent filter compares the REGION too', async () => {
     installSetup({
       listRawKeys: vi.fn().mockResolvedValue([
