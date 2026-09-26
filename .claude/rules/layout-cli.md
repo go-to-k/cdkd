@@ -115,6 +115,11 @@ Index of every area: [code-layout.md](code-layout.md).
   orphans, `Snapshot` snapshots then deletes unless `--skip-final-snapshot`); it
   is off by default because the failed resource's remote state is unknown. Exit
   codes: 0 clean, 2 partial (journal kept, re-run is idempotent), 1 hard error.
+  Each segment replays inside `withNestedRevertRun(segment.runId)`, so a nested
+  row reverts from its child's journal with no templates, and a popped segment
+  drops the child segments of its run
+  ([#3754](https://github.com/go-to-k/cdkd/issues/3754)); run without a stack,
+  a child journal its parent's covers is not offered.
 - **src/cli/commands/gc.ts** - `cdkd gc` garbage-collects unreferenced objects /
   images from ONE region's cdkd-owned asset storage, with names read from the
   bootstrap marker rather than the naming convention (CDK bootstrap storage is
