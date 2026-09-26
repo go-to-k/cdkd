@@ -374,6 +374,96 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
     });
 
+    it('carries an unchanged ceiling down a Ref chain without replacing anything', async () => {
+      // The promoted policy's create-only ceiling seeds replacement
+      // propagation, so `Down` (a topic named by `Ref Policy`) gets a
+      // replacement-propagated ceiling too. Neither value moves, so the deploy
+      // replaces nothing.
+      const state = priorState();
+      const policyRecord = {
+        Description: 'topic-a',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: policyRecord,
+        observedProperties: policyRecord,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      const downRecord = { TopicName: 'arn:aws:iam::123456789012:policy/p' };
+      state.resources['Down'] = {
+        physicalId: 'arn:aws:sns:us-east-1:123456789012:down',
+        resourceType: 'AWS::SNS::Topic',
+        properties: downRecord,
+        observedProperties: downRecord,
+        attributes: {},
+        dependencies: ['Reader'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-a');
+      const tpl = policyTemplate('s1');
+      tpl.Resources['Down'] = {
+        Type: 'AWS::SNS::Topic',
+        Properties: { TopicName: { Ref: 'Reader' } },
+      };
+
+      await makeEngine().deploy(STACK, tpl);
+
+      for (const id of ['Reader', 'Down']) {
+        expect(callsFor(provider.create, id)).toHaveLength(0);
+        expect(callsFor(provider.delete, id)).toHaveLength(0);
+      }
+    });
+
+    it('keeps a NESTED create-only reader in place when only a mutable sibling moved', async () => {
+      // `ConnectionInput.Name` is create-only, and holds a stable intrinsic;
+      // `ConnectionInput.Description` reads the custom resource and moves.
+      // CloudFormation updates this in place, and so must cdkd.
+      const state = priorState();
+      const recorded = {
+        CatalogId: '123456789012',
+        ConnectionInput: { Name: 'conn-x', Description: 'topic-a', ConnectionType: 'JDBC' },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'conn-x',
+        resourceType: 'AWS::Glue::Connection',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-b');
+
+      await makeEngine().deploy(STACK, {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::Glue::Connection',
+            Properties: {
+              CatalogId: '123456789012',
+              ConnectionInput: {
+                Name: { 'Fn::Join': ['-', ['conn', 'x']] },
+                Description: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+                ConnectionType: 'JDBC',
+              },
+            },
+          },
+        },
+      });
+
+      const updates = callsFor(provider.update, 'Reader');
+      expect(updates).toHaveLength(1);
+      expect(
+        ((updates[0]![3] as Record<string, unknown>)['ConnectionInput'] as Record<string, unknown>)[
+          'Description'
+        ]
+      ).toBe('topic-b');
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
     describe('a stateful type (AWS::RDS::DBInstance.MasterUsername)', () => {
       function dbTemplate(): CloudFormationTemplate {
         return {

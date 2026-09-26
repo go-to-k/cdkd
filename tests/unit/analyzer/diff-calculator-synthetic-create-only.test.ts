@@ -233,6 +233,9 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
   });
 
   describe('a NESTED createOnly path (AWS::Glue::Connection ConnectionInput.Name)', () => {
+    // The engine lowers a ceiling by comparing the WHOLE top-level value with
+    // the record, so a nested ceiling would stand whenever a mutable sibling
+    // moved: a needless replacement. A nested path therefore raises none.
     async function glueDiff(input: Record<string, unknown>, recorded: Record<string, unknown>) {
       const state = crState();
       state.resources['Conn'] = {
@@ -257,22 +260,159 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
       return changeOf(changes, 'Conn', 'ConnectionInput');
     }
 
-    it('is a replacement ceiling when the read sits under the create-only sub-path', async () => {
+    it('raises no ceiling when a stable intrinsic sits under the create-only sub-path', async () => {
+      const pc = await glueDiff(
+        {
+          Name: { 'Fn::Sub': ['conn-x', {}] },
+          Description: { 'Fn::GetAtt': ['Cr', 'Text'] },
+          ConnectionType: 'JDBC',
+        },
+        { Name: 'conn-x', Description: 'text-a', ConnectionType: 'JDBC' }
+      );
+      expect(pc?.inPlacePropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(false);
+    });
+
+    it('raises none either when the read itself sits under the sub-path (residual: in place)', async () => {
       const pc = await glueDiff(
         { Name: { 'Fn::GetAtt': ['Cr', 'Text'] }, ConnectionType: 'JDBC' },
         { Name: 'text-a', ConnectionType: 'JDBC' }
       );
       expect(pc?.inPlacePropagated).toBe(true);
-      expect(pc?.requiresReplacement).toBe(true);
+      expect(pc?.requiresReplacement).toBe(false);
+    });
+  });
+
+  describe('DescribeType is asked only for types a promotion can reach', () => {
+    const typesAsked = (): string[] =>
+      mockCloudFormationSend.mock.calls.map(
+        (c) => ((c as unknown[])[0] as { input?: { TypeName?: string } }).input?.TypeName ?? '?'
+      );
+
+    function policyState(): StackState {
+      const state = crState();
+      state.resources['Policy'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: { Description: 'text-a', PolicyDocument: { Statement: [] } },
+      };
+      state.resources['Other'] = {
+        physicalId: '/other',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/other', Type: 'String', Value: 'v1' },
+      };
+      return state;
+    }
+    const policy = {
+      Type: 'AWS::IAM::ManagedPolicy',
+      Properties: {
+        Description: { 'Fn::GetAtt': ['Cr', 'Text'] },
+        PolicyDocument: { Statement: [] },
+      },
+    };
+
+    it('asks nothing on an unchanged stack', async () => {
+      const state = policyState();
+      mockCloudFormationSend.mockClear();
+
+      await new DiffCalculator().calculateDiff(
+        state,
+        {
+          Resources: {
+            Cr: cr('a'),
+            Policy: policy,
+            Other: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: { Name: '/other', Type: 'String', Value: 'v1' },
+            },
+          },
+        },
+        makeResolver(state)
+      );
+
+      expect(typesAsked()).not.toContain('AWS::IAM::ManagedPolicy');
     });
 
-    it('stays in place when the read sits in a MUTABLE sibling of the create-only sub-path', async () => {
-      const pc = await glueDiff(
-        { Name: 'conn', Description: { 'Fn::GetAtt': ['Cr', 'Text'] }, ConnectionType: 'JDBC' },
-        { Name: 'conn', Description: 'text-a', ConnectionType: 'JDBC' }
+    it('does not ask for a reader no changed resource reaches', async () => {
+      const state = policyState();
+      mockCloudFormationSend.mockClear();
+
+      await new DiffCalculator().calculateDiff(
+        state,
+        {
+          Resources: {
+            Cr: cr('a'),
+            Policy: policy,
+            Other: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: { Name: '/other', Type: 'String', Value: 'v2' },
+            },
+          },
+        },
+        makeResolver(state)
       );
-      expect(pc?.inPlacePropagated).toBe(true);
-      expect(pc?.requiresReplacement).toBe(false);
+
+      expect(typesAsked()).not.toContain('AWS::IAM::ManagedPolicy');
+    });
+
+    it('asks for a reader TWO hops from the change, which the replacement cascade reaches', async () => {
+      // Up is replaced; Mid's create-only TopicName reads it (a registry
+      // replacement); Policy's Description reads Mid.
+      const state = baseState();
+      state.resources['Up'] = {
+        physicalId: 'https://sqs/q-1',
+        resourceType: 'AWS::SQS::Queue',
+        properties: { QueueName: 'q-1' },
+        attributes: { QueueName: 'q-1' },
+      };
+      state.resources['Mid'] = {
+        physicalId: 'arn:aws:sns:us-east-1:123456789012:q-1',
+        resourceType: 'AWS::SNS::Topic',
+        properties: { TopicName: 'q-1' },
+      };
+      state.resources['Policy'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: {
+          Description: 'arn:aws:sns:us-east-1:123456789012:q-1',
+          PolicyDocument: { Statement: [] },
+        },
+      };
+      mockCloudFormationSend.mockClear();
+
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        {
+          Resources: {
+            Up: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q-2' } },
+            Mid: {
+              Type: 'AWS::SNS::Topic',
+              Properties: { TopicName: { 'Fn::GetAtt': ['Up', 'QueueName'] } },
+            },
+            Policy: {
+              Type: 'AWS::IAM::ManagedPolicy',
+              Properties: { Description: { Ref: 'Mid' }, PolicyDocument: { Statement: [] } },
+            },
+          },
+        },
+        makeResolver(state)
+      );
+
+      expect(typesAsked()).toContain('AWS::IAM::ManagedPolicy');
+      expect(changeOf(changes, 'Policy', 'Description')?.requiresReplacement).toBe(true);
+    });
+
+    it('asks for a reader the updated custom resource reaches', async () => {
+      const state = policyState();
+      mockCloudFormationSend.mockClear();
+
+      await new DiffCalculator().calculateDiff(
+        state,
+        { Resources: { Cr: cr('b'), Policy: policy } },
+        makeResolver(state)
+      );
+
+      expect(typesAsked()).toContain('AWS::IAM::ManagedPolicy');
     });
   });
 });
