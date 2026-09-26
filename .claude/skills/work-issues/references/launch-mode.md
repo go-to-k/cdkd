@@ -17,48 +17,37 @@ printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\nLAUNCH_BRANCH=%s\nORIGIN=%s\n' 
   "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT" "$LAUNCH_BRANCH" "$(git remote get-url origin)"
 ```
 
-Run it in the parent, pass all four values into the triage dispatch and into
-every lane dispatch, and state all four in the opening report.
+Run it in the parent, pass every value into the triage dispatch and into
+every lane dispatch, and state them all in the opening report.
 
-**`ORIGIN` not `go-to-k/cdkd` is a FORK run** — the fork's issues are off and
-its `main` lags. Before triage, `git remote add upstream
-https://github.com/go-to-k/cdkd.git && git fetch upstream main`, and pass the
-fork layout into every dispatch: each `gh` call takes `-R go-to-k/cdkd`,
-`origin/main` in any stage file reads `upstream/main`, lanes push to `origin`
-and open with `--head <fork-owner>:<branch>`, and without upstream `push` the
-merge and its integ are the maintainer's — lanes stop at merge-ready.
+### Reading the values
 
-### Reading the four values
-
-- `GITDIR` equals `COMMON` only in the main checkout — a linked worktree's
-  `--git-dir` is `<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing: the
-  main checkout answers `.git` RELATIVELY for both, so an unnormalised compare
-  is only accidentally right, and macOS spells `/tmp` as `/private/tmp`.
-- `MAIN_CHECKOUT` is `dirname "$COMMON"` — the parent of the ONE shared git dir
-  — never `pwd` and never `--show-toplevel`, both of which answer "the tree I am
-  standing in" and so are exactly wrong in the mode that needs the value.
-- `LANE_TREE` is "the tree this run stands in", NOT "the lane worktree":
-  MAIN-CHECKOUT records the main checkout under it and the two are equal there.
-  IN-PLACE they differ, and that difference is the whole point.
-- `LAUNCH_BRANCH` is `git branch --show-current` **at probe time** — the branch
-  the tree was handed to this run ON, which IN-PLACE means the branch the OUTER
-  TOOL created. An EMPTY value is a legitimate answer, not a probe failure: it
-  says the run was launched detached, and selects §9's detach fallback. It is
-  the one value that becomes UNRECOVERABLE if not recorded now — §5 switches the
-  tree onto the lane's own branch, after which every `git branch
-  --show-current` answers with the LANE's branch. MAIN-CHECKOUT records it and
-  does nothing with it: §9's restore arm does not fire there.
+- `GITDIR` equals `COMMON` only in the main checkout (a linked worktree's
+  `--git-dir` is `<common-dir>/worktrees/<name>`); `pwd -P` normalises the
+  relative `.git` and macOS's `/private/tmp`.
+- `MAIN_CHECKOUT` is `dirname "$COMMON"`, never `pwd` or `--show-toplevel`:
+  both answer "the tree I stand in", wrong in exactly the mode needing it.
+- `LANE_TREE` is the tree this run stands in: equal to `MAIN_CHECKOUT` in
+  MAIN-CHECKOUT, different IN-PLACE.
+- `LAUNCH_BRANCH` is the branch at probe time — IN-PLACE, the OUTER TOOL's.
+  Empty means launched detached and selects §9's detach fallback. Record it
+  now: once §5 switches to the lane branch it is unrecoverable. MAIN-CHECKOUT
+  never uses it.
+- `ORIGIN` other than `https://github.com/go-to-k/cdkd.git` /
+  `git@github.com:go-to-k/cdkd.git` is a FORK run: its issues are off and its
+  `main` lags. Before triage run `git remote get-url upstream || git remote add
+  upstream https://github.com/go-to-k/cdkd.git; git fetch upstream main`, and
+  tell every dispatch: `gh` takes `-R go-to-k/cdkd`, a stage file's
+  `origin/main` reads `upstream/main`, lanes push to `origin` and open with
+  `--head <fork-owner>:<branch>`, and without upstream `push` the merge and its
+  integ are the maintainer's.
 
 **The guard on the first line is not decoration.** Outside a work tree every
-`git rev-parse` fails and each substitution collapses to the empty string, so an
-unguarded compare tests `""` against `""` and prints MAIN-CHECKOUT — a wrong
-verdict with a wrong `LANE_TREE` beside it. `--is-inside-work-tree` is compared
-to the literal `true` rather than trusted for its exit status, because inside a
-`.git` directory it prints `false` and exits 0. The probe STOPS rather than
-warning because an empty value is worse than a failed command:
-`git -C "" rev-parse` exits 0 and answers about the CWD's repo, so a
-`git -C "<LANE_TREE>"` recipe handed a blank silently retargets the main
-checkout — the one tree the `-C` was added to avoid.
+substitution collapses to `""`, so an unguarded compare prints MAIN-CHECKOUT
+with a wrong `LANE_TREE`. `--is-inside-work-tree` is compared to the literal
+`true` because inside `.git` it prints `false` and exits 0. The probe STOPS
+because `git -C "" rev-parse` exits 0 against the CWD's repo, so a blank
+`<LANE_TREE>` silently retargets the main checkout.
 
 ### LAUNCH_BRANCH is borrowed, not owned
 
