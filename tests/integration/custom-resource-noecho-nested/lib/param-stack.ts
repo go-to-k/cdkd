@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { crHandler, valueResource } from './shared.ts';
+import { crHandler, noEchoLayer, noEchoNonce, valueResource } from './shared.ts';
 
 /**
  * The CHILD of {@link ParamParentStack}: it reads its parent's NoEcho custom
@@ -18,6 +18,15 @@ class ParamChild extends cdk.NestedStack {
       parameterName: '/cdkd-integ/cr-noecho-nested/param-child/token',
       stringValue: token.valueAsString,
     });
+    // The child-parameter path's create-only reader (go-to-k/cdkd#3729):
+    // replaced in phase 6, where the token moves, and left alone in phase 7,
+    // where the parent's CR re-runs and returns the same token.
+    noEchoLayer(
+      this,
+      'ParamChildLayer',
+      'cdkd-integ-crnoecho-nested-paramchild-layer',
+      token.valueAsString
+    );
   }
 }
 
@@ -40,6 +49,7 @@ class ParamChild extends cdk.NestedStack {
  * covers: AWS::CloudFormation::CustomResource
  * covers: AWS::SSM::Parameter
  * covers: AWS::Lambda::Function
+ * covers: AWS::Lambda::LayerVersion
  */
 export class ParamParentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -53,6 +63,7 @@ export class ParamParentStack extends cdk.Stack {
       prefix: 'noecho-param-token',
       seed,
       noEcho: true,
+      nonce: noEchoNonce(),
     });
     new ParamChild(this, 'ParamChild', {
       parameters: { ParentToken: tokenCr.getAttString('Value') },

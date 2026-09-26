@@ -1625,6 +1625,7 @@
     "--archive-name",
     "--arg",
     "--argjson",
+    "--arn",
     "--asset-bucket",
     "--assume-role",
     "--assume-role-policy-document",

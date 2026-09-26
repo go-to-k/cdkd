@@ -922,6 +922,58 @@ export function carriesFreshNoEchoValue(value: unknown, secrets: RecordedSecretV
 }
 
 /**
+ * One position a {@link freshNoEchoLeafPositions} answer names: the path of
+ * keys and array indexes from the value handed in down to a fresh leaf, and
+ * the plaintext found there.
+ */
+export interface FreshNoEchoLeaf {
+  readonly path: readonly (string | number)[];
+  readonly plaintext: string;
+}
+
+/**
+ * Where, inside `value`, the WHOLE string leaves are that
+ * {@link carriesFreshNoEchoValue} counts (go-to-k/cdkd#3729). The predicate is
+ * the same: the fresh side set and a mask-only entry, so a derived needle, a
+ * leaf that already IS the mask, an embedded value and an excluded leaf are not
+ * positions. A scalar `value` that is one is the position `[]`.
+ *
+ * The engine uses this for a create-only property whose record holds `***`.
+ * It asks AWS what the resource holds at each of these positions, because the
+ * record cannot say. Cycle-safe like the other walks: a container reached
+ * twice is walked once, and its positions are named by the first path.
+ */
+export function freshNoEchoLeafPositions(
+  value: unknown,
+  secrets: RecordedSecretValues
+): FreshNoEchoLeaf[] {
+  const fresh = freshNoEchoValuesOf.get(secrets);
+  if (fresh === undefined || fresh.size === 0) return [];
+  const leaves: FreshNoEchoLeaf[] = [];
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown, path: (string | number)[]): void => {
+    if (typeof node === 'string') {
+      if (fresh.has(node) && isMaskOnlyPlaintext(secrets, node)) {
+        leaves.push({ path, plaintext: node });
+      }
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, [...path, index]));
+      return;
+    }
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      walk(child, [...path, key]);
+    }
+  };
+  walk(value, []);
+  return leaves;
+}
+
+/**
  * The plaintexts the PERSIST path may scan for as SUBSTRINGS — every recorded
  * one except the mask-only class. See the mask-only channel note above for why the
  * mask class is whole-leaf only.

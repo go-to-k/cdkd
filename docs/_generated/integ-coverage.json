@@ -4812,11 +4812,16 @@
     {
       "resourceType": "AWS::Lambda::LayerVersion",
       "integs": [
+        "custom-resource-noecho-nested",
         "lambda",
         "lambda-layer-version-update",
         "local-invoke-layers"
       ],
       "signals": {
+        "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
+        ],
         "lambda": [
           "l2"
         ],

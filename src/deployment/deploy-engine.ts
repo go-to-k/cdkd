@@ -69,10 +69,12 @@ import {
   inheritedParameterExpression,
   carriesSecretMask,
   carriesFreshNoEchoValue,
+  freshNoEchoLeafPositions,
   recordMaskOnlyValuesIn,
   recordRecoverableMaskedOutput,
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
+  type FreshNoEchoLeaf,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
@@ -912,6 +914,51 @@ function isReplacementCeiling(pc: PropertyChange): boolean {
 }
 
 /**
+ * Why a create-only path carrying a fresh `NoEcho` value kept its replacement
+ * ceiling (go-to-k/cdkd#3729), or `held` when AWS confirmed it may be lowered.
+ * The class is all a log line says: never a value, never an error's text.
+ *
+ *  - `not-readable` — no provider readback for the record's route, the
+ *    readback returned nothing, or it did not report the property at all;
+ *  - `read-failed` — the readback threw, or outlived its cap;
+ *  - `differs` — the property was read, and some fresh position does not hold
+ *    exactly this value (a different string, a non-string, an array that does
+ *    not reach that index).
+ */
+type FreshNoEchoCeilingVerdict = 'held' | 'not-readable' | 'read-failed' | 'differs';
+
+/** The result of reading a reader back once for its fresh-`NoEcho` ceilings. */
+type FreshNoEchoReadback =
+  | { live: Record<string, unknown> }
+  | { failure: 'not-readable' | 'read-failed' };
+
+/**
+ * Does `live` hold every fresh leaf's plaintext at that leaf's position, with
+ * strict string equality (go-to-k/cdkd#3729)? `live` is the readback's value for
+ * one top-level property; each leaf's path is relative to it. ALL must hold.
+ * Anything this walk cannot follow counts as a difference: a missing key, an
+ * index past the end of an array, a container where a string should be. That
+ * is the direction that keeps the replacement, which is today's behaviour.
+ */
+function liveHoldsFreshLeaves(live: unknown, leaves: readonly FreshNoEchoLeaf[]): boolean {
+  for (const leaf of leaves) {
+    let node: unknown = live;
+    for (const segment of leaf.path) {
+      if (typeof segment === 'number') {
+        if (!Array.isArray(node) || segment >= node.length) return false;
+        node = node[segment];
+        continue;
+      }
+      if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+      if (!Object.prototype.hasOwnProperty.call(node, segment)) return false;
+      node = (node as Record<string, unknown>)[segment];
+    }
+    if (typeof node !== 'string' || node !== leaf.plaintext) return false;
+  }
+  return true;
+}
+
+/**
  * Structural equality for resolved Outputs maps (issue #875).
  *
  * Output values are intrinsic-resolved primitives or nested objects/arrays
@@ -1128,6 +1175,12 @@ export class DeployEngine {
    */
   private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
     new Map();
+  /**
+   * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
+   * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
+   * than a constant only so a test can shorten it.
+   */
+  private noEchoCeilingReadbackTimeoutMs = 30_000;
   /**
    * The bags a masked-baseline re-capture produced (issue #3595). Each is the
    * PREVIOUS baseline with some masks replaced, already redacted, so
@@ -2885,6 +2938,79 @@ export class DeployEngine {
       parentLogicalId,
       parentRegion,
     };
+  }
+
+  /**
+   * Read a reader back from AWS to decide the replacement ceiling of a
+   * create-only property that carries a `NoEcho` value supplied in THIS deploy
+   * (go-to-k/cdkd#3729). The record holds only `***` there, so it cannot say
+   * whether the value moved; AWS can.
+   *
+   * What makes it safe:
+   *  - It hands the provider the RECORD's `properties`, where the value is
+   *    `***`, never the resolved bag. A provider that echoes its `properties`
+   *    argument for a field AWS does not return therefore reports `***`, which
+   *    never equals the value. The deploy-time observed capture passes the
+   *    resolved bag; this read must not take that call shape.
+   *  - The provider is routed by the RECORD (its type and `provisionedBy`), as
+   *    the deploy-start refresh does: the question is what the EXISTING
+   *    resource holds. A `cc-api` record reads through Cloud Control.
+   *  - The readback stays in this call. It is never installed as
+   *    `observedProperties`, never joins `observedCaptureTasks`, and is dropped
+   *    once compared. It is not gated on `--no-capture-observed-state`, which
+   *    is about the persisted drift baseline, and this read persists nothing.
+   *  - A throw of any kind, or a read outliving its cap, is `read-failed`. The
+   *    error is masked with the resource's bag, and only its `name` is logged,
+   *    never its message, which could echo the value.
+   */
+  private async readReaderForFreshNoEchoCeiling(
+    logicalId: string,
+    currentResource: ResourceState,
+    secrets: RecordedSecretValues
+  ): Promise<FreshNoEchoReadback> {
+    let provider: ResourceProvider;
+    try {
+      provider = this.providerRegistry.getProviderFor({
+        resourceType: currentResource.resourceType,
+        provisionedBy: currentResource.provisionedBy,
+      }).provider;
+    } catch {
+      return { failure: 'not-readable' };
+    }
+    const readCurrentState = provider.readCurrentState?.bind(provider);
+    if (readCurrentState === undefined) return { failure: 'not-readable' };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const live = await Promise.race([
+        Promise.resolve().then(() =>
+          readCurrentState(
+            currentResource.physicalId,
+            logicalId,
+            currentResource.resourceType,
+            currentResource.properties
+          )
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('readback timed out')),
+            this.noEchoCeilingReadbackTimeoutMs
+          );
+        }),
+      ]);
+      if (live === undefined || live === null || typeof live !== 'object') {
+        return { failure: 'not-readable' };
+      }
+      return { live };
+    } catch (error: unknown) {
+      const masked = maskSecretsInError(error, secrets);
+      const errorClass = masked instanceof Error ? masked.name : typeof masked;
+      this.logger.debug(
+        `Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
+      );
+      return { failure: 'read-failed' };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   /**
@@ -6679,10 +6805,11 @@ export class DeployEngine {
         // mask-only class also holds DERIVED needles (`Fn::Base64` over a
         // `{{resolve:...}}` input), and counting those updated such a resource
         // on every deploy. The cost is a redundant update when the handler
-        // returned the same value, and a redundant REPLACEMENT where the
-        // value sits in a create-only property: the record holds only the
-        // mask, so there is nothing to compare the value with (a stored value
-        // fingerprint would close that: go-to-k/cdkd#3729).
+        // returned the same value: the record holds only the mask, so there is
+        // nothing here to compare the value with. A create-only property is the
+        // exception, where the cost would be a REPLACEMENT: the ceiling block
+        // below reads the resource back from AWS to decide that one
+        // (go-to-k/cdkd#3729).
         const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
@@ -6764,19 +6891,116 @@ export class DeployEngine {
         // NOTHING else moving; once another property changes, an unmoved value
         // would have destroyed and re-created the resource. The resolved value
         // is in hand now, so a path whose redacted value equals the record is
-        // lowered to an in-place change. A path carrying a `NoEcho` value
-        // supplied in this deploy cannot be compared (its record is the mask)
-        // and keeps the ceiling — a redundant replacement when the value did
-        // not in fact move, tracked in go-to-k/cdkd#3729 (value fingerprint).
-        if (change.propertyChanges?.some((pc) => isReplacementCeiling(pc)) === true) {
-          change.propertyChanges = change.propertyChanges.map((pc) => {
-            if (!isReplacementCeiling(pc)) return pc;
-            if (carriesFreshNoEchoValue(resolvedProps[pc.path], updateSecrets)) return pc;
+        // lowered to an in-place change.
+        //
+        // A path carrying a `NoEcho` value supplied in this deploy needs a
+        // second witness (go-to-k/cdkd#3729). Its record holds `***`, and the
+        // mask identifies nothing, so equal redacted values say only that the
+        // OTHER leaves did not move. The resource is read back from AWS (once,
+        // however many such paths it has), and the ceiling is lowered only when
+        // AWS holds exactly this value at every fresh position. Nothing
+        // derived from the value is stored, so there is nothing in state to
+        // guess against. Every case the readback cannot confirm keeps the
+        // replacement: no readback for the type, a write-only property, a
+        // failed or slow read, or a different value.
+        //
+        // The same witness answers one change that is NOT a ceiling: a
+        // create-only path the diff called changed only because it compared a
+        // fresh `NoEcho` plaintext with the recorded `***`. A consumer's
+        // `Fn::ImportValue` of a masked output this process recovered is that
+        // shape. Such a path enters this block only when it holds a fresh leaf
+        // AND its redacted value equals the record, so a real edit anywhere
+        // else in it keeps the replacement exactly as before.
+        // The paths whose fresh `NoEcho` leaves AWS confirmed, for the skip
+        // below the block.
+        const noEchoHeldPaths = new Set<string>();
+        if (change.propertyChanges?.some((pc) => pc.requiresReplacement) === true) {
+          let readback: Promise<FreshNoEchoReadback> | undefined;
+          const lowered: PropertyChange[] = [];
+          for (const pc of change.propertyChanges) {
+            if (!pc.requiresReplacement) {
+              lowered.push(pc);
+              continue;
+            }
+            const freshLeaves = freshNoEchoLeafPositions(resolvedProps[pc.path], updateSecrets);
+            if (!isReplacementCeiling(pc) && freshLeaves.length === 0) {
+              lowered.push(pc);
+              continue;
+            }
+            // The non-NoEcho half first, unchanged: a moved leaf keeps the
+            // replacement whatever AWS holds at the masked ones.
             const moved =
               JSON.stringify(desiredForSkipCheckAsWritten[pc.path]) !==
               JSON.stringify(currentPropsAsWritten[pc.path]);
-            return moved ? pc : { ...pc, requiresReplacement: false };
-          });
+            if (moved) {
+              lowered.push(pc);
+              continue;
+            }
+            if (freshLeaves.length > 0) {
+              // A Type change replaces anyway, and the record's provider
+              // describes the OLD type: no read.
+              let verdict: FreshNoEchoCeilingVerdict = 'not-readable';
+              if (!typeChanged) {
+                readback ??= this.readReaderForFreshNoEchoCeiling(
+                  logicalId,
+                  currentResource,
+                  updateSecrets
+                );
+                const read = await readback;
+                if ('failure' in read) {
+                  verdict = read.failure;
+                } else if (!Object.prototype.hasOwnProperty.call(read.live, pc.path)) {
+                  verdict = 'not-readable';
+                } else {
+                  verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves)
+                    ? 'held'
+                    : 'differs';
+                }
+              }
+              if (verdict !== 'held') {
+                this.logger.debug(
+                  `${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
+                );
+                lowered.push(pc);
+                continue;
+              }
+              this.logger.debug(
+                `${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
+              );
+              noEchoHeldPaths.add(pc.path);
+            }
+            lowered.push({ ...pc, requiresReplacement: false });
+          }
+          change.propertyChanges = lowered;
+        }
+
+        // The no-change skip above could not trust the mask. Once AWS has
+        // confirmed every fresh `NoEcho` leaf the bag carries, and every other
+        // leaf equals the record, there is nothing to send, so the same skip
+        // applies here. Without it the provider would be called with an
+        // unchanged bag: a redundant update, or, for a type with no update API
+        // (`AWS::Lambda::LayerVersion`), a refusal the update-failure fallback
+        // turns back into the replacement this block just avoided. A fresh
+        // leaf outside a confirmed path (an updatable property nobody read
+        // back) keeps the update, as before (go-to-k/cdkd#3729).
+        if (
+          noEchoHeldPaths.size > 0 &&
+          !typeChanged &&
+          (change.attributeChanges?.length ?? 0) === 0 &&
+          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten) &&
+          Object.entries(resolvedProps).every(
+            ([key, value]) =>
+              noEchoHeldPaths.has(key) ||
+              freshNoEchoLeafPositions(value, updateSecrets).length === 0
+          )
+        ) {
+          this.logger.debug(
+            `Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
+          );
+          // Nothing was attempted, as on the skip above the refusal.
+          this.attemptedResolvedProps.delete(logicalId);
+          if (counts) counts.skipped++;
+          break;
         }
 
         // Check if this update requires resource replacement (immutable property changed)
@@ -6819,8 +7043,8 @@ export class DeployEngine {
         const needsReplacement = propertyDrivenReplacement || recreateFlagged;
 
         // The label `provisionResource` chose left ceilings out; one that
-        // stood (the value moved, or it is a fresh `NoEcho` value that cannot
-        // be compared) turns this into a replacement, so say so.
+        // stood (the value moved, or it is a fresh `NoEcho` value AWS could
+        // not confirm unchanged) turns this into a replacement, so say so.
         const liveLabel = this.liveTaskLabels.get(logicalId);
         if (needsReplacement && liveLabel !== undefined && !liveLabel.replacing) {
           const routing = this.peekRoutingForLabel(
@@ -6838,6 +7062,25 @@ export class DeployEngine {
             ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
           });
           // Keep a slow-resource warning the deadline wrapper already added.
+          renderer.updateTaskLabel(logicalId, `${label}${liveLabel.warnSuffix ?? ''}`);
+        } else if (!needsReplacement && liveLabel !== undefined && liveLabel.replacing) {
+          // The other direction (go-to-k/cdkd#3729): a create-only change the
+          // label counted as a replacement was lowered above, because AWS
+          // already holds the fresh `NoEcho` value there.
+          const routing = this.peekRoutingForLabel(
+            change,
+            currentResource,
+            stackName,
+            logicalId,
+            false,
+            this.recreateDirectionFor(stackName, logicalId)
+          );
+          const label = `Updating ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
+          this.liveTaskLabels.set(logicalId, {
+            label,
+            replacing: false,
+            ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
+          });
           renderer.updateTaskLabel(logicalId, `${label}${liveLabel.warnSuffix ?? ''}`);
         }
 
