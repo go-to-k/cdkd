@@ -213,6 +213,11 @@ jobs:
       # may only shrink — a stale or dead entry fails too.
       - run: vp run audit:aws-client-defaults:check
 
+      # go-to-k/cdkd#3479 — a file may not gain a logger call that interpolates
+      # a value raw instead of through safeMsg. Baseline:
+      # tests/raw-log-interpolation-baseline.json, lowered with --update.
+      - run: vp run audit:raw-log-interpolation:check
+
       - run: vp run audit:enrichment-coverage:check
 
       - run: vp run audit:sdk-attr-coverage:check

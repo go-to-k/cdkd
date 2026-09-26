@@ -64,7 +64,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../types/state.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -960,7 +960,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.unrepairedReadNames > 0) {
       totalStacksWithUnrepairedReadNames++;
       logger.warn(
-        `${scrubbed.unrepairedReadNames} cross-stack read name(s) in ${shownStack} hold a ` +
+        safeMsg`${scrubbed.unrepairedReadNames} cross-stack read name(s) in ${shownStack} hold a ` +
           `plaintext scrub could NOT repair (see the warnings above) — so this stack is not ` +
           `reported clean.`
       );
@@ -6389,12 +6389,12 @@ export async function scrubStack(
           ? `producer ${displayStackName(maskSecretsInText(entry.sourceStack, crossStackNeedles))}, `
           : '';
       logger.warn(
-        `Scrub of ${shownStack}: state.${list}[${index}] (${producer}${displayIdent(String(entry.sourceRegion))}) ` +
+        safeMsg`Scrub of ${shownStack}: state.${list}[${index}] (${producer}${displayIdent(String(entry.sourceRegion))}) ` +
           `holds a cross-stack read name in plaintext that has the shape of a secret-bearing ` +
           `read in today's template but not the secret's current value — most likely a value ` +
           `from before the secret was ROTATED. Scrub cannot repair it (it matches only the ` +
           `current value) and does not print it; treat that earlier value as exposed. A deploy ` +
-          `that updates ${shownStack} rewrites this list from the reads it performs.`
+          safeMsg`that updates ${shownStack} rewrites this list from the reads it performs.`
       );
     }
 
