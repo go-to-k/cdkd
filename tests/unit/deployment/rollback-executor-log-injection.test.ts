@@ -7,6 +7,8 @@ import {
   type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
+import { displayIdent } from '../../../src/utils/display-safe.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
@@ -215,6 +217,106 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(lines.some((l) => /already reverted/.test(l))).toBe(true);
     expect(lines.some((l) => /physical id changed/.test(l))).toBe(true);
     expect(lines.some((l) => /no longer in state/.test(l))).toBe(true);
+  });
+
+  it('an error carrying an OWNED refusal code is still flattened on the failure line', async () => {
+    // `rollbackFailureText` renders per line ONLY the two refusal OBJECTS this
+    // module registers, keyed on identity (M7 of the go-to-k/cdkd#3764
+    // review): `deploy-engine.ts` throws a `CdkdError` with the same
+    // `NAMED_REPLACEMENT_COLLISION` code and the raw AWS text in its message,
+    // and a nested-stack rollback delivers it here with the code intact. The
+    // maintainer's measured payload is driven as that shape, and as an
+    // ordinary `Error` and a `CdkdError` with the other owned code, each with
+    // a planted newline spelling the genuine remedy's own label — every one
+    // must stay a single line. A code-keyed trust passes the first straight
+    // through.
+    const planted =
+      'ChildBucket (AWS::S3::Bucket) requires replacement, but the create-first attempt ' +
+      'collided with the existing resource: Bucket already exists\nTo orphan it: cdkd rollback ' +
+      '--orphan Victim. The resource has a user-supplied physical name (b)';
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Child',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys',
+        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 1 } }),
+      },
+    ];
+    const state = { Child: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 2 } }) };
+    for (const [label, error] of [
+      ["deploy-engine's collision refusal", new CdkdError(planted, 'NAMED_REPLACEMENT_COLLISION')],
+      ['the other owned code', new CdkdError(planted, 'ROLLBACK_REPLACEMENT_UNROUTABLE')],
+      ['an ordinary Error with the code', Object.assign(new Error(planted), { code: 'NAMED_REPLACEMENT_COLLISION' })],
+      ['an unrelated CdkdError', new CdkdError(planted, 'SOME_OTHER_CODE')],
+    ] as const) {
+      const update = vi.fn().mockRejectedValue(error);
+      const { ctx, lines } = makeCtx({ update });
+      await replayRollback(ops, state, 'S', ctx);
+      expect(update, label).toHaveBeenCalled();
+      const failed = lines.filter((l) => l.includes('Rollback failed for'));
+      expect(failed, label).toHaveLength(1);
+      expect(failed[0], label).not.toContain('\n');
+      expect(failed[0], label).toMatch(/Bucket already exists To orphan it: cdkd rollback --orphan Victim/);
+      expect(lines.join('\n'), label).not.toMatch(/^To orphan it:/m);
+    }
+  });
+
+  it("the collision refusal collapses and caps the AWS text it quotes above its remedy line", async () => {
+    // M8 of the go-to-k/cdkd#3764 review: `displaySafe` keeps runs of spaces,
+    // and the genuine `To orphan it:` line follows this text directly, so a
+    // message padded with spaces wraps on screen into a lookalike row just
+    // above it. Every whitespace run collapses to one space, and the text is
+    // capped at `displayAwsMessage`'s bound.
+    const padded = `Queue already exists${' '.repeat(80)}To orphan it: cdkd rollback --orphan Victim`;
+    // M10: zero-width characters interleaved with spaces render as spaces but
+    // are outside `\s`, so a `\s`-only collapse left this run intact.
+    const zeroWidth =
+      `Queue already exists${' \u200b \u200c \u200d \u2060'.repeat(20)}` +
+      `To orphan it: cdkd rollback --orphan Victim`;
+    const long = `Queue already exists ${'x'.repeat(5000)}`;
+    for (const [label, text] of [
+      ['padded', padded],
+      ['zero-width', zeroWidth],
+      ['long', long],
+    ] as const) {
+      const create = vi.fn().mockRejectedValue(awsSdkError(text));
+      const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
+      await replayRollback(
+        [
+          {
+            logicalId: 'RealDB',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SQS::Queue',
+            physicalId: 'phys-new',
+            previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+            oldResourceRetained: false,
+          },
+        ],
+        {
+          RealDB: res({
+            resourceType: 'AWS::SQS::Queue',
+            physicalId: 'phys-new',
+            properties: { a: 2 },
+            updateReplacePolicy: 'Retain',
+          }),
+        },
+        'S',
+        ctx,
+        { isInterrupted: () => false }
+      );
+      const failed = lines.filter((l) => l.includes('Underlying collision:'));
+      expect(failed, label).toHaveLength(1);
+      const quoted = failed[0]!.slice(failed[0]!.indexOf('Underlying collision:'), failed[0]!.lastIndexOf('\nTo orphan it:'));
+      expect(quoted, label).not.toMatch(/[\s\u200b-\u200d\u2060]{2,}/);
+      expect(failed[0], label).toMatch(/\nTo orphan it: cdkd rollback --orphan RealDB$/);
+      if (label === 'long') {
+        expect(quoted).toContain('[cut: ');
+        expect(quoted).not.toContain('x'.repeat(4096));
+      } else {
+        expect(quoted).toContain('Queue already exists To orphan it: cdkd rollback --orphan Victim');
+      }
+    }
   });
 
   it('the UPDATE revert path', async () => {
@@ -574,8 +676,11 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     const hostile = '\u200bRealDB';
     // The same message renders the OLD physical id, also journal-sourced. A
     // planted one that reads as the remedy must show its boundary, or it
-    // stands as a forged `--orphan RealDB` AHEAD of the guarded one.
-    const forgedPhys = 'old). To leave THIS resource alone, re-run with `cdkd rollback --orphan RealDB`: x';
+    // stands as a forged `--orphan RealDB` AHEAD of the guarded one. It
+    // spells the remedy's OWN shape — the labelled line — so the case also
+    // pins that the forged label never starts a line: `displayIdent`
+    // sanitizes the planted newline to a space inside its boundary.
+    const forgedPhys = 'old).\nTo orphan it: cdkd rollback --orphan RealDB\nx';
     const replacement = (id: string): CompletedOperation => ({
       logicalId: id,
       changeType: 'UPDATE',
@@ -593,18 +698,35 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       isInterrupted: () => false,
     });
 
-    // Strip the (JSON-quoted) planted physical id first: what is left is what
-    // the executor itself said.
-    const quotedPhys = JSON.stringify(forgedPhys);
+    // Strip the planted physical id, as the executor RENDERED it (sanitized,
+    // then JSON-quoted): what is left is what the executor itself said.
+    const quotedPhys = displayIdent(forgedPhys);
+    expect(quotedPhys).not.toContain('\n');
     const remedies = lines.filter((l) => l.includes('cdkd rollback --orphan'));
     expect(remedies).toHaveLength(2);
     for (const l of remedies) expect(l).toContain(`(${quotedPhys}) collided`);
     const own = remedies.map((l) => l.split(quotedPhys).join(''));
     // The legitimate op prints its id; the hostile op prints the placeholder.
-    expect(own.some((l) => l.includes('--orphan RealDB`'))).toBe(true);
-    expect(own.some((l) => l.includes('--orphan <id>`'))).toBe(true);
-    // And never the collapsed form that would paste as the legitimate resource.
-    expect(own.filter((l) => l.includes('--orphan RealDB`'))).toHaveLength(1);
+    //
+    // Keyed on the remedy's labelled LAST line, which go-to-k/cdkd#3436 gave
+    // it in place of a backtick-WRAPPED mid-sentence form (pasting a backtick
+    // span is command SUBSTITUTION; an over-selection of a mid-sentence
+    // command passes the next word as the stack argument). The FORGED text in
+    // `forgedPhys` spells that same line, so the needles are anchored on the
+    // END of the message, where only the executor's own line can be.
+    expect(own.some((l) => /\nTo orphan it: cdkd rollback --orphan RealDB$/.test(l))).toBe(true);
+    expect(own.some((l) => /\nTo orphan it: cdkd rollback --orphan '<id>'$/.test(l))).toBe(true);
+    // The withheld arm's pointer to `cdkd events` is a third literal in the
+    // same message, in the prose above the line; only the withheld message
+    // carries it.
+    expect(own.filter((l) => l.includes('read it from cdkd events and fill the quoted hole'))).toHaveLength(1);
+    for (const l of own) expect(l).not.toContain('`cdkd events`');
+    // And never the collapsed form that would paste as the legitimate resource,
+    // nor a second line carrying the forged label: the planted newline is
+    // escaped inside the JSON boundary, so `To orphan it:` starts exactly one
+    // line per message.
+    expect(own.filter((l) => /\nTo orphan it: cdkd rollback --orphan RealDB$/.test(l))).toHaveLength(1);
+    for (const l of remedies) expect(l.match(/^To orphan it: /gm)).toHaveLength(1);
   });
 
   it('the pasted `--orphan` remedy is WITHHELD for a plain id the shell would expand', async () => {
@@ -631,7 +753,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     const remedies = lines.filter((l) => l.includes('cdkd rollback --orphan'));
     expect(remedies).toHaveLength(3);
     for (const l of remedies) {
-      expect(l).toContain('--orphan <id>`');
+      // `'<id>'`, not a bare `<id>` with a trailing backtick: the remedy lost
+      // its backtick wrapper in go-to-k/cdkd#3436 and the placeholder gained
+      // `commandHole`'s quotes, which are what make it inert when pasted.
+      expect(l).toContain("--orphan '<id>'");
       expect(l).not.toMatch(/--orphan [~=]/);
     }
     // ...while each id still renders, unquoted, in the message's own text.
@@ -664,7 +789,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
 
     const remedies = lines.filter((l) => l.includes('cdkd rollback --orphan'));
     expect(remedies).toHaveLength(1);
-    expect(remedies[0]).toContain('--orphan <id>`');
+    expect(remedies[0]).toContain("--orphan '<id>'");
     expect(remedies[0]).not.toContain('--orphan 123');
   });
 
@@ -866,8 +991,9 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
   it('SOURCE SHAPE: every free-form error render takes displaySafe()', () => {
     // The static twin of the two free-form cases: every `<x>.message :
     // String(<x>)` interpolation in the executor must be wrapped, so the
-    // three reverse-replacement sites no unit case drives (a re-create
-    // failure, a delete-new failure, the collision `msg`) are pinned by shape.
+    // reverse-replacement sites no unit case drives (a re-create failure, a
+    // delete-new failure) are pinned by shape; the collision `msg` is pinned
+    // by shape here too, beside the runtime case above that drives it.
     const src = readFileSync(
       new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
       'utf8'
@@ -885,20 +1011,34 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     });
     expect(offenders).toEqual([]);
     const wrapped = /\$\{displaySafe\((\w+) instanceof Error \? \1\.message : String\(\1\)\)\}/g;
-    // recreateError, deleteError (warn), rollbackError, revertError -- and the
-    // fence proves it read the file.
-    expect((src.match(wrapped) ?? []).length).toBe(4);
+    // recreateError, deleteError (warn) -- and the fence proves it read the
+    // file. The two per-op failure lines (rollbackError, revertError) render
+    // through `rollbackFailureText`, whose free-form arm is the same wrapped
+    // render and whose other arm renders cdkd's OWN two refusals per LINE, so
+    // their labelled `To orphan it:` remedy stays a line of its own on the
+    // terminal (M1 of the go-to-k/cdkd#3764 review) while every line of it is
+    // still sanitized. Both call sites, and both arms, are pinned by shape.
+    expect((src.match(wrapped) ?? []).length).toBe(2);
+    expect((src.match(/\$\{rollbackFailureText\((\w+)\)\}/g) ?? []).length).toBe(2);
+    expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
+    expect(src).toContain('.map((line) => displaySafe(line))');
+    // The per-line arm is keyed on IDENTITY, and both of this module's
+    // refusals register through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
+    // review); no code-keyed trust remains.
+    expect(src).toContain('OWN_REMEDY_ERRORS.has(error)');
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(2);
+    expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
     // (`isNameCollisionErrorFrom` walks the cause chain for an exception NAME,
     // which a rendered message cannot carry), leaving the wrapped render as
-    // `msg`'s ONLY use. That is strictly safer for this file's subject, so all
+    // `msg`'s ONLY use (through `collisionText`). That is strictly safer for this file's subject, so all
     // three halves are pinned — the absence too, so a revert to classifying the
     // rendered text cannot pass quietly.
     expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
     expect(src).not.toContain('isNameCollisionError(msg)');
-    expect(src).toContain('displaySafe(msg)');
-    expect(src).toContain('${displaySafe(msg)}');
+    expect(src).toContain('displayAwsMessage(displaySafe(msg).replace(/[\\s\\u200b-\\u200d\\u2060]{2,}/g, \' \'))');
+    expect(src).toContain('${collisionText(maskSecretsInText(msg, secrets))}');
   });
 
   it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {
@@ -929,7 +1069,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       const named = lines.filter((l) => mustMention.test(l));
       expect(named.length).toBeGreaterThan(0);
       for (const l of named) {
-        expect(l.split('\n')).toHaveLength(1);
+        // The forged newline is folded; the only line break a failure line may
+        // carry is cdkd's OWN labelled remedy line (the unroutable refusal
+        // ends on one, rendered per line by `rollbackFailureText`).
+        expect(l.split('\n').filter((r) => !/^To orphan it: cdkd rollback --orphan /.test(r))).toHaveLength(1);
         expect(l).not.toMatch(INVISIBLE);
       }
     };
@@ -961,6 +1104,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     );
     expect(refused.failures).toBe(1);
     assertNoForgery(lines3, /two different types/);
+    // ...and that refusal's remedy reaches the LOG as a line of its own: the
+    // per-op failure line renders this refusal per line rather than folding
+    // cdkd's own break into the prose.
+    expect(lines3.some((l) => /\nTo orphan it: cdkd rollback --orphan Victim$/.test(l))).toBe(true);
   });
 
   it('SOURCE SHAPE: a bare journal-field interpolation exists only in an event-bound statement', () => {
@@ -991,27 +1138,26 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       bareCount += n;
       const stmt = statementAround(lines, i);
       if (/^\s*reason:|\bsurvivorReason\s*=/m.test(stmt)) return;
-      // The one rendered bare id: the pasted `--orphan` remedy, printed only
-      // when the id IS a CloudFormation logical id (the case above drives both
-      // arms). The guard must sit in the same statement, on the id itself.
-      if (
-        /\$\{op\.logicalId\}/.test(line) &&
-        n === 1 &&
-        /typeof op\.logicalId === 'string' && PASTEABLE_LOGICAL_ID\.test\(op\.logicalId\)\s*\?/.test(
-          stmt
-        )
-      )
-        return;
       offenders.push(`${i + 1}: ${line.trim()}`);
     });
 
     expect(offenders).toEqual([]);
     // Exactly the three event statements -- `--orphan` (2 fields), `orphan-
-    // retain` (2 fields), `survivorReason` (1 field) -- plus the TWO guarded
-    // remedies (1 each: the Retain collision refusal, and the unroutable-
-    // replacement refusal of go-to-k/cdkd#2668). An eighth is a new render that
-    // escaped; a sixth is one of these being sanitized -- both wrong.
-    expect(bareCount).toBe(7);
+    // retain` (2 fields), `survivorReason` (1 field). A sixth is a new render
+    // that escaped; a fourth is one of these being sanitized -- both wrong.
+    expect(bareCount).toBe(5);
+    // The one rendered bare id -- the pasted `--orphan` remedy -- lives in
+    // `orphanRemedy`, which both refusals call (the cases above drive both
+    // arms of both): the guard sits in that helper, on the id itself, and the
+    // interpolation that names the id is keyed on the guard's verdict. No
+    // `--orphan ${` render exists anywhere else in the file, so a refusal
+    // spelling its own remedy again would be a second match here.
+    const remedyRenders = [...src.matchAll(/--orphan \$\{[^}]*\}/g)].map((m) => m[0]);
+    expect(remedyRenders).toEqual(["--orphan ${pasteable ? logicalId : commandHole('id')}"]);
+    expect(src).toContain(
+      "const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);"
+    );
+    expect((src.match(/\borphanRemedy\(op\.logicalId\)/g) ?? []).length).toBe(2);
     // The fence sees its input: the wrapped form must be present in numbers.
     expect((src.match(/\$\{safe\(op\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
       .toBeGreaterThan(40);

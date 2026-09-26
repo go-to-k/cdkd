@@ -41,6 +41,7 @@ import {
   CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from './state-file-keys.js';
 import { displayIdent } from '../../utils/display-safe.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
@@ -681,17 +682,38 @@ async function scanReferencedAssets(
       // And the command is offered ONLY when both parts are pasteable. A name
       // outside that set is not quoted into the command, because quoting does
       // not fix the case this is really about: every character of
-      // `--state-bucket=attacker` is a plain identifier character, so it
-      // renders bare AND is still an option when pasted, silently pointing the
-      // inspection at another bucket. When either part fails, the operator gets
-      // the KEY — which is what they need to find the object anyway.
+      // `--state-bucket=attacker` survives `displaySafe`, so it renders EXACTLY
+      // — and it is still an option when pasted, silently pointing the
+      // inspection at another bucket. `isPasteableIdent` is what refuses it
+      // (the leading `-`, and the `=`). When either part fails, the operator
+      // gets the KEY — which is what they need to find the object anyway.
       const { stack, region } = parseStateKey(key, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX);
       const pasteable =
         isPasteableIdent(stack) && (region === undefined || isPasteableIdent(region));
+      // Built by the SHARED gate since go-to-k/cdkd#3436's fold-in, and printed
+      // on a labelled line rather than inside the sentence's `'...'`. This site
+      // is why the fence keys on a SHAPE: before the fold-in its own gate was
+      // `isPasteableIdent` alone, it never called `pasteableCommand`, and it
+      // carried no ` with: ` label — so NEITHER of go-to-k/cdkd#3436's two
+      // derivation greps returned it, and it was found by reading.
+      //
+      // `isPasteableIdent` stays IN CONJUNCTION with the shared gate rather
+      // than being replaced by it, because it is the STRICTER of the two: the
+      // gate's exactness admits `=`, a space and a quote (each renders exactly
+      // and each reshapes a pasted line or splits a flag value), and
+      // `isPasteableIdent` refuses them. The gate refuses the leading `-`
+      // too; dropping the stricter predicate here would be changing a
+      // security predicate while moving a string.
       const inspectHint = pasteable
-        ? region === undefined
-          ? `cdkd state show ${stack}`
-          : `cdkd state show ${stack} --stack-region ${region}`
+        ? pasteableCommand(
+            'cdkd state show',
+            region === undefined
+              ? [{ value: stack, hole: 'stack' }]
+              : [
+                  { value: stack, hole: 'stack' },
+                  { flag: '--stack-region', value: region, hole: 'region' },
+                ]
+          ).command
         : undefined;
       // The KEY is an S3 key too, so it is sanitised on its own account — it is
       // named here whether or not a command could be offered.
@@ -699,12 +721,13 @@ async function scanReferencedAssets(
         inspectHint === undefined
           ? `its stack name is not safe to paste into a command, so inspect the ` +
             `object at that key directly`
-          : `'${inspectHint}' to inspect`;
+          : `see the command below`;
       throw new CdkdError(
         `State file ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} is not valid JSON — aborting: gc must know every ` +
           `referenced asset before deleting anything, and this file's references ` +
           `are unreadable. Repair or remove the corrupt state file ` +
-          `(${inspect}), then re-run.`,
+          `(${inspect}), then re-run.` +
+          (inspectHint === undefined ? '' : `\nInspect it with: ${inspectHint}`),
         'GC_STATE_UNREADABLE',
         error as Error
       );
