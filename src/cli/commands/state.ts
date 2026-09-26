@@ -2444,8 +2444,12 @@ async function stateDestroyCommand(
       process.stdout.write(
         `\nWARNING: This destroys ${stackNames.length} stack(s) and removes their state records:\n`
       );
+      // Written to stdout directly, so neither the logger sink nor `safeMsg`
+      // reaches it; each name is an S3 key segment and could forge a row.
       for (const name of stackNames) {
-        process.stdout.write(`  - ${name}\n`);
+        process.stdout.write(
+          `  - ${displayIdent(name, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}\n`
+        );
       }
       process.stdout.write('\n');
       // NON-INTERACTIVE runs are refused BEFORE the prompt, which is this
@@ -3337,8 +3341,8 @@ async function stateRefreshObservedCommand(
           if (!ref) {
             const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
             throw new Error(
-              `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
-                `Available regions: ${seen}.`
+              safeMsg`No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
+                safeMsg`Available regions: ${seen}.`
             );
           }
           targets.push(ref);

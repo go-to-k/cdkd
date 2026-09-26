@@ -25,6 +25,7 @@ import {
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
 import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -693,7 +694,7 @@ export class DiffCalculator {
           // ceiling for this type. That is `main`'s in-place behaviour, never
           // a replacement nobody can confirm.
           this.logger.debug(
-            `Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers`
+            safeMsg`Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers`
           );
           loaded.set(
             type,

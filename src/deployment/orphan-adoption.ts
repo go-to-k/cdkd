@@ -41,6 +41,7 @@ import {
   displayIdent,
   displayStackName,
   displaySafe,
+  safeMsg,
 } from '../utils/display-safe.js';
 import { carriesSecretMask } from './secret-redaction.js';
 
@@ -601,7 +602,7 @@ export function makeSiblingClaimReader(params: {
         const bag: unknown = sibling.state.resources;
         if (typeof bag !== 'object' || bag === null) {
           logger.debug(
-            `orphan adoption: skipping ${displayStackName(ref.stackName)} — its state record ` +
+            safeMsg`orphan adoption: skipping ${displayStackName(ref.stackName)} — its state record ` +
               `has no readable 'resources' map, so nothing it claims can be read`
           );
           continue;
@@ -628,9 +629,9 @@ export function makeSiblingClaimReader(params: {
             .join(', ');
           const rest = unreadable.length - NAMED_UNREADABLE_SIBLING_ROWS;
           logger.debug(
-            `orphan adoption: ${displayStackName(ref.stackName)} holds ${unreadable.length} ` +
-              `resource record(s) with no readable physical id — ${named}` +
-              `${rest > 0 ? ` and ${rest} more` : ''} — skipped; the claim set is a lower ` +
+            safeMsg`orphan adoption: ${displayStackName(ref.stackName)} holds ${unreadable.length} ` +
+              safeMsg`resource record(s) with no readable physical id — ${named}` +
+              safeMsg`${rest > 0 ? ` and ${rest} more` : ''} — skipped; the claim set is a lower ` +
               `bound without them`
           );
         }

@@ -23,7 +23,7 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
-import { displayIdent, displaySafe, isPasteableIdent } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
@@ -3043,7 +3043,7 @@ export class DeployEngine {
         // keep 'Error'
       }
       this.logger.debug(
-        `Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
+        safeMsg`Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
       );
       return { failure: 'read-failed' };
     } finally {
@@ -3544,7 +3544,7 @@ export class DeployEngine {
         producerRegions = producerRegionsFromState(crossStackReads);
       } catch {
         this.logger.debug(
-          `Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
+          safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
         );
         masked.length = 0;
       }
@@ -3608,7 +3608,7 @@ export class DeployEngine {
       if (secrets === undefined || secrets.size === 0) {
         // The CLASS only: never a reference, a value or an error's text.
         this.logger.debug(
-          `Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
+          safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
         );
         return undefined;
       }
@@ -3623,16 +3623,18 @@ export class DeployEngine {
       const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
       if (recaptured === undefined) {
         this.logger.debug(
-          `Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
+          safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
         );
         return undefined;
       }
       this.recapturedBaselines.set(recaptured, previous);
-      this.logger.debug(`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`);
+      this.logger.debug(
+        safeMsg`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`
+      );
       return recaptured;
     })().catch(() => {
       this.logger.debug(
-        `Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
+        safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
       );
       return undefined;
     });
@@ -7028,7 +7030,9 @@ export class DeployEngine {
           const attrSummary = attributeChanges
             .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
             .join(', ');
-          this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+          this.logger.info(
+            safeMsg`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`
+          );
           stateResources[logicalId] = {
             ...currentResource,
             ...this.extractTemplateAttributes(template, logicalId),
@@ -7038,7 +7042,7 @@ export class DeployEngine {
           const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
           this.logger.info(
-            `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
+            safeMsg`${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
           );
         };
         if (
@@ -7165,13 +7169,13 @@ export class DeployEngine {
                 // replacement, and a `Replacing` label must never be
                 // unexplained. The id, the path and the class only.
                 this.logger.warn(
-                  `${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
+                  safeMsg`${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
                 );
                 lowered.push(pc);
                 continue;
               }
               this.logger.debug(
-                `${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
+                safeMsg`${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
               );
               noEchoHeldPaths.add(pc.path);
             }
@@ -7208,7 +7212,7 @@ export class DeployEngine {
           )
         ) {
           this.logger.debug(
-            `Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
+            safeMsg`Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
           );
           // Nothing was attempted, as on the skip above the refusal.
           this.attemptedResolvedProps.delete(logicalId);

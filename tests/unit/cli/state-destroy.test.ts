@@ -287,6 +287,16 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].skipConfirmation).toBe(true);
   });
 
+  it('--all renders a planted stack name in the batch prompt as one quoted row (go-to-k/cdkd#3374)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Decoy\n  - ProdStack', region: 'us-east-1' }]);
+    readlineQuestion.mockResolvedValue('n');
+
+    const output = await runStateDestroy(['destroy', '--all']);
+
+    expect(output).toContain('  - "Decoy   - ProdStack"\n');
+    expect(output).not.toContain('\n  - ProdStack');
+  });
+
   /**
    * A per-stack refusal ENDS the `--all` run (issue go-to-k/cdkd#3161): there
    * is no per-stack catch around the dispatch, so the first stack whose record

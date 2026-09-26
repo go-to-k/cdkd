@@ -20,7 +20,7 @@
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import ts from 'typescript-v6';
 
@@ -135,7 +135,13 @@ function main(): void {
   console.log(`raw log interpolations: ${total} in ${Object.keys(actual).length} files`);
   for (const p of gained) console.log(`  ${p}`);
   for (const p of stale) console.log(`  warning: ${p}`);
+  // A scan that read nothing reports no gains; refuse it rather than pass.
+  const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0);
+  if (total < baselineTotal / 2) {
+    console.log(`  measured ${total}, under half the baseline's ${baselineTotal}: the scan is broken`);
+    if (process.argv.includes('--check')) process.exit(1);
+  }
   if (process.argv.includes('--check') && gained.length > 0) process.exit(1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) main();
