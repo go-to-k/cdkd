@@ -53,6 +53,7 @@ import {
   extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 // Vitest's 5s default does not fit this file. Many of its tests parse the WHOLE
 // real `src/provisioning/providers` tree through the TypeScript compiler API —
@@ -94,7 +95,21 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // (2026-08-13, local: slowest 15.2s). Re-measure
 // and update them when this file's cost changes; a bump made without new numbers
 // is the thing this note exists to prevent.
-vi.setConfig({ testTimeout: 60_000 });
+//
+// RAISED 60s -> CONTENDED_CASE_TIMEOUT_MS (300s), with the new numbers
+// (go-to-k/cdkd#3607, 2026-09-26). Alone, this file's slowest per-case times are
+// now 33.5s (the hygiene probe below, on its own 120s bound) and 11.3-11.5s for
+// the opt-in-table and S3 reason-(C) fences. In a full suite with another
+// session's suite on the same machine, three cases blew the 60s cap at 72.1s,
+// 82.0s and 90.5s: the contention factor is about 8x, not the ~3x this note
+// assumed. What this gives up is the one thing the paragraph above says the cap
+// still buys: on the slowest case this file-level cap governs (11.5s alone) a
+// critic slowdown now has to exceed ~26x (60s reported ~5x) before the cap
+// reports it, and on the hygiene probe, which carries its own bound, ~9x
+// (120s reported ~3.6x). That is the same trade the paragraph
+// made at 60s, re-priced on measured contention — a cap tight enough to catch
+// 4x fires on a busy machine, which is what this issue recorded.
+vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 const repoRoot = process.cwd();
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
@@ -5886,7 +5901,7 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
   });
 });
 
-describe('target-table hygiene', { timeout: 30_000 }, () => {
+describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
   it('every freshObjectMapper target declares BOTH write floors (#1448)', () => {
     // `minWrittenMembers` falls back to MIN_WRITTEN_MEMBERS_PER_PROVIDER, but
     // `minWriteScopes` is skipped entirely when undefined — deliberately, since
@@ -5904,9 +5919,11 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
   // path set rather than with the change under test. This one measured 7.3s
   // locally and 31.8s on CI right after the #609 API Gateway v2 backfill added
   // its nested paths — i.e. it blew the 30s default without anything being
-  // wrong. The values are ~4x the observed CI time so the next target to opt
-  // in does not re-break them.
-  const HYGIENE_PROBE_TIMEOUT_MS = 120_000;
+  // wrong. The values were set at ~4x that CI time (120s) so the next target to
+  // opt in would not re-break them.
+  // Now the shared contended bound (go-to-k/cdkd#3607), ~9x that CI time: the
+  // slowest of these took 33.5s alone, so 120s left under 4x for contention.
+  const HYGIENE_PROBE_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
 
   it('a WALK-DEPENDENT opt-in must declare minHandoffPoints (#1445)', () => {
     // "Walk-dependent" is derived, not judged: re-classify the target with its

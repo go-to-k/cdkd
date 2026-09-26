@@ -34,9 +34,19 @@ import {
   type PropertyClassification,
   type HandledPropertyWiringReport,
 } from '../../../scripts/gen-handled-property-wiring.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const REPO_ROOT = process.cwd();
 const PROVIDERS_DIR = resolve(REPO_ROOT, 'src/provisioning/providers');
+// ONE walk of the real providers tree, at collection time, shared by every case
+// that grades the SHIPPED tree (go-to-k/cdkd#3607). Three cases each called
+// `loadReport(PROVIDERS_DIR)` themselves under Vitest's 5 s default, and that
+// walk is what timed out whenever another suite shared the machine; the
+// `assessBaseline` describe walked it a second time at collection. Collection
+// runs before any case and carries no per-case bound. Nothing here mutates the
+// report — every case that alters one spreads a copy. Still the SHIPPED
+// `loadReport()`, never a test-local re-walk (see 'real-repo coverage floors').
+const SHIPPED_REPORT = loadReport(PROVIDERS_DIR);
 const SCRIPT = resolve(REPO_ROOT, 'scripts/gen-handled-property-wiring.ts');
 const providerSource = (file: string): string =>
   readFileSync(resolve(PROVIDERS_DIR, file), 'utf8');
@@ -802,7 +812,7 @@ describe('handledProperties parsing', () => {
 // the directory: a floor computed by a private re-implementation would keep
 // passing after the shipped entry point broke.
 describe('real-repo coverage floors', () => {
-  const report = loadReport(PROVIDERS_DIR);
+  const report = SHIPPED_REPORT;
   const classes = report.classes;
   const allProps = classes.flatMap((c) => c.properties);
   const propsWith = (shape: string): number =>
@@ -1246,7 +1256,7 @@ describe('evidence-loss verdict (#1842)', () => {
     // allow-list), so a same-name class in two provider files would mis-pair.
     // 84/84 distinct today; this makes a future collision loud rather than a
     // silent wrong comparison.
-    const names = loadReport(PROVIDERS_DIR).classes.map((c) => c.className);
+    const names = SHIPPED_REPORT.classes.map((c) => c.className);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -1309,7 +1319,7 @@ describe('evidence-loss verdict (#1842)', () => {
       // "no comparison" rather than an exception. The REFUSAL that stops the run
       // from proceeding on it is `main`'s, fenced separately.
       expect(() =>
-        findEvidenceLosses(loadBaseline(truncated), loadReport(PROVIDERS_DIR))
+        findEvidenceLosses(loadBaseline(truncated), SHIPPED_REPORT)
       ).not.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1322,7 +1332,7 @@ describe('evidence-loss verdict (#1842)', () => {
     expect(
       findEvidenceLosses(
         loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json')),
-        loadReport(PROVIDERS_DIR)
+        SHIPPED_REPORT
       )
     ).toEqual([]);
   });
@@ -1411,8 +1421,11 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
 // AST walk, so 5s (Vitest's default) is not a safe budget under a loaded
 // parallel run — two of these flaked on timeout while the suite was otherwise
 // green. The generous per-test budget is about machine load, not about any of
-// them being slow enough to be worth optimizing.
-const SPAWN_TIMEOUT_MS = 60_000;
+// them being slow enough to be worth optimizing. 60 s was not generous enough:
+// `every malformed FIELD gets a STRUCTURED refusal` took 11.8 s alone and 80.6 s
+// with another session's suite running (go-to-k/cdkd#3607), so the budget is the
+// shared contended-case bound.
+const SPAWN_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
 
 describe('the shipped --check command', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'cdkd-hpw-'));
@@ -1463,6 +1476,10 @@ describe('the shipped --check command', () => {
     const proc = spawnSync(process.execPath, [SCRIPT, ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      // A case's Vitest bound cannot fire while `spawnSync` blocks the worker,
+      // so a hung critic is bounded here; it surfaces as `proc.error`
+      // (ETIMEDOUT) on the line below.
+      timeout: SPAWN_TIMEOUT_MS,
     });
     expect(proc.error, 'the critic must be spawnable').toBeUndefined();
     return { status: proc.status ?? -1, stderr: proc.stderr };
@@ -2321,8 +2338,8 @@ describe('unusable-baseline refusal predicate (#1842)', () => {
 });
 
 describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
-  const live = loadReport(PROVIDERS_DIR);
-  const pair = (className: string, name: string) => ({
+  const live = SHIPPED_REPORT;
+  const pair =(className: string, name: string) => ({
     file: 'p.ts',
     className,
     bucket: 'wired' as const,

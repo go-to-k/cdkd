@@ -18,6 +18,7 @@ import {
   buildReport,
   runSelfProbes,
 } from '../../../scripts/check-withretry-interrupt.ts';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 /** The import + binding a provenance-passing fixture needs in scope. */
 const SHARED_WATCH = `import { startInterruptWatch } from '../interrupt-watch.js';
@@ -59,7 +60,10 @@ function padFiles(dir: string, count: number): void {
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const SCRIPT = join(REPO_ROOT, 'scripts/check-withretry-interrupt.ts');
 const SCAN_DIR = join(REPO_ROOT, 'src/provisioning');
-const SPAWN_TIMEOUT_MS = 120_000;
+// The shared contended-case bound (go-to-k/cdkd#3607), not a file-local 120s:
+// these spawns run the same real-tree walk as the shared report below, and the
+// files #3607 names slowed by up to ~8x with another session's suite running.
+const SPAWN_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
 
 const scratchDirs: string[] = [];
 
@@ -316,8 +320,14 @@ class P {
 });
 
 describe('withRetry interrupt critic — the real tree', () => {
+  // ONE scan of the real tree, at collection time, shared by the two cases that
+  // read it (go-to-k/cdkd#3607). Each used to call `buildReport(SCAN_DIR)` itself,
+  // under Vitest's 5 s default, and that walk is what timed out whenever another
+  // suite shared the machine. Collection runs before any case and carries no
+  // per-case bound, so the report still describes the tree as checked out.
+  const report = buildReport(SCAN_DIR);
+
   it('finds every site interrupt-threaded today', () => {
-    const report = buildReport(SCAN_DIR);
     expect(report.dropped).toBe(0);
     expect(report.opaque).toBe(0);
     expect(report.unshared).toBe(0);
@@ -335,7 +345,7 @@ describe('withRetry interrupt critic — the real tree', () => {
   it('counts the exempt site as exempt rather than as clean', () => {
     // The distinction is load-bearing: an exemption that stops being counted is
     // an exemption nobody re-reads.
-    expect(buildReport(SCAN_DIR).exempt).toBeGreaterThanOrEqual(1);
+    expect(report.exempt).toBeGreaterThanOrEqual(1);
   });
 
   it('passes end to end against `src/`', () => {
