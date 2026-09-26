@@ -206,6 +206,7 @@ export const FUTURE_TOLERANCE_S = 300;
  * 08:20Z by hand at 07:29Z. `/run-integ` writes `date -u` at write time.
  */
 export function findFutureRows(rows: LedgerRow[], nowIso: string): LedgerRow[] {
+  if (!ISO_UTC.test(nowIso)) throw new Error(`findFutureRows: nowIso ${JSON.stringify(nowIso)} is not YYYY-MM-DDTHH:MM:SSZ`);
   const limit = isoPlusSeconds(nowIso, FUTURE_TOLERANCE_S);
   return rows.filter((r) => r.lastRunIso > limit);
 }

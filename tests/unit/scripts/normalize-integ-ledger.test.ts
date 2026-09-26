@@ -281,6 +281,10 @@ describe('findFutureRows', () => {
     expect(findFutureRows(rows, NOW).map((r) => r.test)).toEqual(['over']);
   });
 
+  it('refuses a malformed nowIso instead of comparing against garbage', () => {
+    expect(() => findFutureRows([], '2026-09-25 07:29')).toThrow(/nowIso "2026-09-25 07:29" is not/);
+  });
+
   it('carries the tolerance across a day boundary', () => {
     const { rows } = parseLedger(file(row('a', '2026-10-01T00:04:59Z'), row('b', '2026-10-01T00:05:01Z')));
     expect(findFutureRows(rows, '2026-09-30T23:59:59Z').map((r) => r.test)).toEqual(['b']);
