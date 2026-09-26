@@ -33,11 +33,12 @@
 #      the update phase flips the permission set (UpdateDatabase REPLACES
 #      DatabaseInput wholesale, so a regression ERASES it from a live
 #      database).
-#   8. Table `TableInput.Name` rename (issue #3724). The rename diffs as an
-#      in-place UPDATE and `UpdateTable` addresses the table BY the new name,
-#      so it rewrote an unmanaged table holding that name. Asserted by planting
-#      such a decoy: a plain deploy must be REFUSED with the decoy untouched,
-#      and `--replace --force-stateful-recreation` must perform the rename.
+#   8. Table `TableInput.Name` rename (issues #3724, #3750). It is a
+#      REPLACEMENT, as in CloudFormation; it once went in place and rewrote an
+#      unmanaged table holding the new name. Asserted by planting such a
+#      decoy: a plain deploy stops at the stateful guard, a consented one
+#      collides with the decoy, both leaving it untouched, and without the
+#      decoy `--force-stateful-recreation` performs the rename.
 #   9. Database `CatalogId` move (issue #3756). `CatalogId` is not createOnly
 #      on a Database, so the move diffs as an in-place UPDATE aimed at another
 #      account's catalog; a plain deploy must be REFUSED, the database intact.
@@ -500,73 +501,117 @@ fi
 aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${DECOY_TABLE_NAME}" --region "${REGION}"
 echo "    OK: '${PIPE_TABLE_NAME}' deleted, decoy '${DECOY_TABLE_NAME}' untouched"
 
-# --- Phase 2c: a TableInput.Name rename is refused, not aimed at the decoy (#3724)
-# Only the top-level name is createOnly, so the rename diffs as an in-place
-# UPDATE, and UpdateTable addresses the table BY TableInput.Name. Before the fix
-# this deploy SUCCEEDED by rewriting the unmanaged decoy (stamping it 'managed by
-# cdkd') while state kept pointing at the old table.
+# --- Phase 2c: a TableInput.Name rename is a REPLACEMENT, never aimed at the decoy (#3724, #3750)
+# CloudFormation replaces a Glue table on a TableInput.Name change (measured,
+# #3750), and so does cdkd: the diff plans a replacement, which the stateful
+# guard holds until --force-stateful-recreation. Before #3724 the in-place
+# UpdateTable REWROTE the unmanaged decoy; before #3750 the provider refused
+# the rename and demanded --replace. A decoy holding the new name must survive
+# every step: the replacement's create-first CREATE collides with it instead.
 echo "==> Phase 2c: TableInput.Name rename onto an unmanaged table"
 aws glue create-table --database-name "${TABLE_DB_NAME}" --region "${REGION}" \
   --table-input "{\"Name\":\"${RENAME_TO}\",\"Description\":\"unmanaged decoy\"}"
 DECOY_VERSION=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
   --region "${REGION}" --query 'Table.VersionId' --output text)
+
+# The rename must be refused WITHOUT the decoy being touched, the managed table
+# intact and state still naming it, after each failed attempt below.
+assert_rename_not_applied() { # usage: assert_rename_not_applied <step label>
+  local step="$1" decoy_json
+  decoy_json=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
+    --region "${REGION}" --output json) || return 1
+  if [ "$(printf '%s' "${decoy_json}" | jq -r '.Table.Description // "<absent>"')" != "unmanaged decoy" ] \
+    || [ "$(printf '%s' "${decoy_json}" | jq -r '.Table.VersionId')" != "${DECOY_VERSION}" ]; then
+    echo "FAIL: ${step}: the unmanaged decoy '${RENAME_TO}' was rewritten" >&2
+    printf '%s\n' "${decoy_json}" >&2
+    exit 1
+  fi
+  if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_FROM}" ]; then
+    echo "FAIL: ${step}: state no longer records RenameTable as '${TABLE_DB_NAME}|${RENAME_FROM}'" >&2
+    exit 1
+  fi
+  if ! aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_FROM}" --region "${REGION}" >/dev/null; then
+    echo "FAIL: ${step}: the managed table '${RENAME_FROM}' is gone" >&2
+    exit 1
+  fi
+}
+
+# Step 1: a plain deploy stops at the stateful guard, naming the replacement.
 set +e
 RENAME_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
 RENAME_RC=$?
 set -e
 if [ "${RENAME_RC}" -eq 0 ]; then
-  echo "FAIL: the TableInput.Name rename deployed IN PLACE (issue #3724)" >&2
+  echo "FAIL: the TableInput.Name rename deployed without --force-stateful-recreation" >&2
   printf '%s\n' "${RENAME_OUT}" >&2
   exit 1
 fi
-# Two markers: the refusal's own wording, and the remedy it must name. A
-# failure carrying neither is some other error, not the refusal under test.
+# Two markers: the guard's replacement wording naming TableInput, and the flag
+# it asks for. The #3724 refusal ("TableInput.Name changed from") must NOT be
+# what stopped it — that would mean the diff still planned an in-place update.
 # `grep >/dev/null`, not `grep -q`: under pipefail an early `-q` exit can
 # SIGPIPE the printf and fail a correct match.
-if ! printf '%s' "${RENAME_OUT}" | grep -F "TableInput.Name changed from '${RENAME_FROM}' to '${RENAME_TO}'" >/dev/null \
-  || ! printf '%s' "${RENAME_OUT}" | grep -F -- "--replace --force-stateful-recreation" >/dev/null; then
-  echo "FAIL: the rename deploy failed, but not with the #3724 refusal" >&2
+if ! printf '%s' "${RENAME_OUT}" | grep -F "RenameTable (AWS::Glue::Table) requires replacement (immutable property changed: TableInput" >/dev/null \
+  || ! printf '%s' "${RENAME_OUT}" | grep -F -- "--force-stateful-recreation" >/dev/null \
+  || printf '%s' "${RENAME_OUT}" | grep -F "TableInput.Name changed from" >/dev/null; then
+  echo "FAIL: the rename deploy failed, but not at the stateful guard of a planned replacement (#3750)" >&2
   printf '%s\n' "${RENAME_OUT}" >&2
   exit 1
 fi
-DECOY_JSON=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
-  --region "${REGION}" --output json)
-if [ "$(printf '%s' "${DECOY_JSON}" | jq -r '.Table.Description // "<absent>"')" != "unmanaged decoy" ] \
-  || [ "$(printf '%s' "${DECOY_JSON}" | jq -r '.Table.VersionId')" != "${DECOY_VERSION}" ]; then
-  echo "FAIL: the unmanaged decoy '${RENAME_TO}' was rewritten by the refused deploy" >&2
-  printf '%s\n' "${DECOY_JSON}" >&2
+assert_rename_not_applied 'plain deploy' || {
+  echo "FAIL: plain deploy: the unmanaged decoy '${RENAME_TO}' could not be read (gone?)" >&2
   exit 1
-fi
-if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_FROM}" ]; then
-  echo "FAIL: state no longer records RenameTable as '${TABLE_DB_NAME}|${RENAME_FROM}' after the refusal" >&2
-  exit 1
-fi
-if ! aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_FROM}" --region "${REGION}" >/dev/null; then
-  echo "FAIL: the managed table '${RENAME_FROM}' is gone after the refused rename" >&2
-  exit 1
-fi
-echo "    OK: rename refused; decoy '${RENAME_TO}' untouched; '${RENAME_FROM}' still managed"
+}
+echo "    OK: rename planned as a replacement; the stateful guard held it"
 
-# The remedy the refusal names must really rename the table.
+# Step 2: with consent, the replacement's create-first CREATE meets the decoy,
+# so nothing is created and nothing is deleted.
+set +e
+RENAME_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force-stateful-recreation --yes 2>&1)"
+RENAME_RC=$?
+set -e
+if [ "${RENAME_RC}" -eq 0 ]; then
+  echo "FAIL: the replacement succeeded although an unmanaged table holds '${RENAME_TO}'" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+# The provider reports the occupied name itself, and the engine must NOT turn it
+# into its create-first collision advice, whose --replace remedy would delete
+# the managed table first and then fail on the decoy again (#3750).
+if ! printf '%s' "${RENAME_OUT}" | grep -F "a table named '${RENAME_TO}' is present in database '${TABLE_DB_NAME}'" >/dev/null \
+  || printf '%s' "${RENAME_OUT}" | grep -F "the create-first attempt collided" >/dev/null; then
+  echo "FAIL: the consented replacement failed, but not on the provider's report of the decoy's name" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+assert_rename_not_applied 'consented deploy with the decoy present' || {
+  echo "FAIL: consented deploy with the decoy present: the unmanaged decoy '${RENAME_TO}' could not be read (gone?)" >&2
+  exit 1
+}
+echo "    OK: the replacement's CREATE met the decoy; decoy and '${RENAME_FROM}' untouched"
+
+# Step 3: without the decoy, the consented replacement renames the table
+# (create '${RENAME_TO}', then delete '${RENAME_FROM}').
 aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" --region "${REGION}"
 CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --replace --force-stateful-recreation --yes
+  --force-stateful-recreation --yes
 if [ "$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" --region "${REGION}" \
   --query 'Table.Description' --output text)" != "managed by cdkd" ]; then
-  echo "FAIL: '${RENAME_TO}' is not the managed table after --replace" >&2
+  echo "FAIL: '${RENAME_TO}' is not the managed table after the replacement" >&2
   exit 1
 fi
 if ! gone_probe aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_FROM}" --region "${REGION}"; then
-  echo "FAIL: '${RENAME_FROM}' survived the --replace rename" >&2
+  echo "FAIL: '${RENAME_FROM}' survived the replacement" >&2
   exit 1
 fi
 if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_TO}" ]; then
-  echo "FAIL: state does not record RenameTable as '${TABLE_DB_NAME}|${RENAME_TO}' after --replace" >&2
+  echo "FAIL: state does not record RenameTable as '${TABLE_DB_NAME}|${RENAME_TO}' after the replacement" >&2
   exit 1
 fi
-echo "    OK: --replace --force-stateful-recreation renamed '${RENAME_FROM}' to '${RENAME_TO}'"
+echo "    OK: --force-stateful-recreation replaced '${RENAME_FROM}' with '${RENAME_TO}'"
 
 # --- Phase 2d: a Database CatalogId move is refused (#3756) -------------
 # CatalogId is not createOnly on AWS::Glue::Database, so the change diffs as an

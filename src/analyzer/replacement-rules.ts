@@ -114,6 +114,37 @@ export function budgetNameChanged(oldValue: unknown, newValue: unknown): boolean
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::Glue::Table.TableInput` (issue
+ * [#3750](https://github.com/go-to-k/cdkd/issues/3750)).
+ *
+ * The table's name lives NESTED at `TableInput.Name`, while the registry
+ * schema marks only the TOP-LEVEL `Name` createOnly, so without this rule a
+ * rename diffs as an in-place update. MEASURED against CloudFormation (#3750
+ * thread): a `TableInput.Name` change REPLACES the table (the change set says
+ * `Replacement: Conditional`; execution creates the new name and deletes the
+ * old one). Every other `TableInput` edit stays in place.
+ *
+ * Glue folds table names to lowercase, so a case-only difference is the SAME
+ * table and is not a replacement. The fold here is FULL Unicode, deliberately
+ * wider than the provider's ASCII-only update-path check: every doubt must
+ * land on `false`, because the provider then refuses a rename it cannot vouch
+ * for (loud and safe), while a wrong `true` plans a DELETE of a table nobody
+ * renamed. For the same reason a side whose name is absent or not a string
+ * (an unresolved intrinsic) answers `false`.
+ */
+export function glueTableNameChanged(oldValue: unknown, newValue: unknown): boolean {
+  const nameOf = (value: unknown): string | undefined => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const name = (value as Record<string, unknown>)['Name'];
+    return typeof name === 'string' ? name : undefined;
+  };
+  const oldName = nameOf(oldValue);
+  const newName = nameOf(newValue);
+  if (oldName === undefined || newName === undefined) return false;
+  return oldName.toLowerCase() !== newName.toLowerCase();
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -555,6 +586,21 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set<string>(),
       updateableProperties: new Set(['NotificationsWithSubscribers', 'ResourceTags']),
       conditionalReplacements: new Map([['Budget', budgetNameChanged]]),
+    });
+
+    // Glue Table — the name is NESTED at `TableInput.Name` and the registry
+    // schema's createOnly `Name` is the top-level one CDK does not emit, so a
+    // rename needs this conditional rule to replace (issue #3750, measured
+    // against CloudFormation). Only `TableInput` is classified here; the
+    // schema fallback still decides `CatalogId` / `DatabaseName` / `Name`.
+    // `AWS::Glue::Connection` needs no entry: its schema lists the nested
+    // `ConnectionInput/Name` createOnly path, which the fallback compares at
+    // path granularity. `AWS::Glue::Database` deliberately has none either:
+    // CloudFormation does NOT replace on `DatabaseInput.Name` (the update
+    // fails), so cdkd's provider refuses it instead.
+    this.rules.set('AWS::Glue::Table', {
+      replacementProperties: new Set<string>(),
+      conditionalReplacements: new Map([['TableInput', glueTableNameChanged]]),
     });
 
     // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:

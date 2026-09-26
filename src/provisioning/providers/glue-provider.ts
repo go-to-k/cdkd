@@ -38,6 +38,7 @@ import {
   StopTriggerCommand,
   StopCrawlerCommand,
   EntityNotFoundException,
+  AlreadyExistsException,
   CrawlerRunningException,
   ConcurrentModificationException,
   type DatabaseInput,
@@ -483,10 +484,15 @@ function describeUnresolvedName(value: unknown): string {
  * (issue #3724).
  *
  * CDK emits the NESTED name (`TableInput.Name`, `DatabaseInput.Name`,
- * `ConnectionInput.Name`), and none of the registry schemas marks it
- * createOnly (Table marks its top-level `Name`, Database its `DatabaseName`,
- * Connection only `CatalogId`), so a rename diffs as an in-place UPDATE. For
- * a table that update is a wrong-target write: `UpdateTable` addresses the
+ * `ConnectionInput.Name`). Since issue #3750 the diff plans a Table or
+ * Connection rename as a REPLACEMENT, as CloudFormation does (a
+ * `replacement-rules.ts` rule for the Table, the schema's nested createOnly
+ * path for the Connection), so for those two this is a BACKSTOP for the
+ * paths that still reach `update()` with a changed name: a name the diff
+ * could not compare, `drift --revert`, a rollback replay. A Database rename
+ * is not a replacement (CloudFormation's update FAILS on it), so for a
+ * Database this is the answer, not a backstop. For a table the update would
+ * be a wrong-target write: `UpdateTable` addresses the
  * table BY `TableInput.Name`, so it would rewrite whichever table holds the new
  * name — possibly one cdkd does not manage — while the state record kept the
  * old id. `UpdateDatabase` / `UpdateConnection` address the recorded name, but
@@ -1197,6 +1203,35 @@ export class GlueProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      // On a replacement, the table holding this name is almost never the one
+      // being replaced: a rename, a `DatabaseName` or a `CatalogId` change all
+      // move the address (issue #3750). Only a change to the top-level `Name`
+      // CDK does not emit can keep it. So the engine's create-first collision
+      // arm must not see a name collision here: its remedy, `--replace`,
+      // deletes the managed table FIRST and, for a third-party holder, then
+      // collides again. Its classifier reads PROSE at depth 0 only and does not
+      // list `AlreadyExistsException` by name, so this wrapper — whose message
+      // avoids the words it matches — keeps the AWS error as `cause` safely.
+      // No `--replace` remedy either: this wrapper is exactly what keeps the
+      // engine's delete-first path from engaging, so the flag would change
+      // nothing. (Interpolated names can still carry the matched words; that
+      // template-controlled residual is #3757's class.)
+      if (error instanceof AlreadyExistsException) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Failed to create Glue Table ${logicalId}: a table named '${tableName}' is ` +
+              `present in database '${databaseName}' (${describeCatalog(catalogId)}), so ` +
+              `cdkd did not create it and left that table untouched. Choose a TableInput.Name ` +
+              `no table holds, or remove that table yourself if it is unwanted. If it is the ` +
+              `table this resource already manages, the planned replacement keeps its address: ` +
+              `revert the change that planned it.`,
+            resourceType,
+            logicalId,
+            undefined,
+            error
+          )
+        );
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
