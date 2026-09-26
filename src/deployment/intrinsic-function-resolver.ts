@@ -7698,6 +7698,33 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Refuse a LIST where `Fn::Sub` needs a string (issue
+   * [#3809](https://github.com/go-to-k/cdkd/issues/3809)). CloudFormation
+   * rejects the template for every list source: a `${X}` resolving to a
+   * `List<...>` / `CommaDelimitedList` parameter, a list-valued attribute or
+   * `AWS::NotificationARNs` ("variable X in Fn::Sub expression does not resolve
+   * to a string"), and a variable-map value that is a list, USED or not ("every
+   * value of the context object of every Fn::Sub object must be a string or a
+   * function that returns a string"). `String()` over the array used to render
+   * `a,b` instead, so cdkd deployed a template CloudFormation refuses.
+   *
+   * `subject` names template-controlled text, so it is masked here, once.
+   * Marked non-retryable at the throw: no retry changes a template.
+   */
+  private refuseSubListValue(subject: string, value: unknown, context: ResolverContext): void {
+    if (!Array.isArray(value)) return;
+    const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Fn::Sub: ${this.displayMasked(subject, context)} resolves to a list (an array of ${count}), ` +
+          `not a string. CloudFormation rejects this template too, because every Fn::Sub ` +
+          `variable must resolve to a string. Render the list with Fn::Join in the variable ` +
+          `map instead, for example ["ids=\${Ids}", {"Ids": {"Fn::Join": [",", {"Ref": "SubnetIds"}]}}].`
+      )
+    );
+  }
+
+  /**
    * Resolve Fn::Sub intrinsic function
    *
    * Fn::Sub supports two forms:
@@ -7825,6 +7852,9 @@ export class IntrinsicFunctionResolver {
             context.abandonedResolutions === undefined
               ? await this.resolveValue(val, context)
               : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
+          // Refused whether or not the template names it: CloudFormation
+          // validates every value of the map (issue #3809).
+          this.refuseSubListValue(`the variable-map value ${key}`, variables[key], context);
         }
       }
     } else {
@@ -7893,6 +7923,12 @@ export class IntrinsicFunctionResolver {
           : this.productLogTwin(variables[varNameStr], context);
         if (Object.hasOwn(variablePasses, varNameStr)) pass = variablePasses[varNameStr];
       } else {
+        // `AWS::NotificationARNs` is a LIST pseudo parameter, which
+        // `resolvePseudoParameter` renders as '' (cdkd sets no notification
+        // ARNs); CloudFormation rejects it inside `Fn::Sub` (issue #3809).
+        if (varNameStr === 'AWS::NotificationARNs') {
+          this.refuseSubListValue(`the variable \${${varNameStr}}`, [], context);
+        }
         // Check if it's a pseudo parameter
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
         if (pseudoValue !== undefined) {
@@ -7901,13 +7937,22 @@ export class IntrinsicFunctionResolver {
           // Try to resolve as Ref
           try {
             const value = await this.resolveRef(varNameStr, context);
+            this.refuseSubListValue(`the variable \${${varNameStr}}`, value, context);
             replacement = String(value);
             twinReplacement = this.productLogTwin(value, context);
           } catch (refError) {
+            // A DELIBERATE refusal is the final answer on both arms below
+            // (issue #1740): the list refusal above (#3809), or
+            // `lookupResourceRecord`'s malformed-record one (#3576). Re-raised
+            // ahead of the GetAtt fallback so neither is retried as
+            // `${Name.Attr}` and laundered there. A bare re-throw: the refusal
+            // was masked at its own throw.
+            if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
             // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
             if (varNameStr.includes('.')) {
               try {
                 const value = await this.resolveGetAtt(varNameStr, context);
+                this.refuseSubListValue(`the variable \${${varNameStr}}`, value, context);
                 replacement = String(value);
                 twinReplacement = this.productLogTwin(value, context);
               } catch (getAttError) {
@@ -7946,16 +7991,6 @@ export class IntrinsicFunctionResolver {
                 replacement = match[0]; // Keep original placeholder
               }
             } else {
-              // Without a `.` there is no GetAtt interpretation to fall back
-              // to, so a refusal raised by `Ref` would be the final answer.
-              // DEFENSIVE today and known to be so (PR review): no site on the
-              // `resolveRef` path raises this class — every refusal lives on the
-              // GetAtt side. Kept so a future `Ref`-side refusal cannot be
-              // silently laundered the way the GetAtt ones were, which is the
-              // whole defect this change fixes.
-              // A bare re-throw, on the same terms as the dotted arm above: the
-              // refusal was masked at its own throw one level down.
-              if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
               // Issue #2270's other half, on the SAME terms as the dotted arm
               // above: `${MyBucket}` naming a resource this template declares
               // is an implicit `Ref`, never ordinary text, so a `Ref MyBucket
@@ -11038,10 +11073,9 @@ export class IntrinsicFunctionResolver {
       case 'AWS::NotificationARNs':
         // cdkd has no stack-notification-ARN concept — a cdkd deploy never
         // sets SNS notification ARNs on a stack — so the list is always
-        // empty. CloudFormation resolves an empty AWS::NotificationARNs list
-        // to an empty string in an Fn::Sub / Ref string context, so returning
-        // '' (not undefined) matches CFn parity and ensures the pseudo
-        // parameter is substituted rather than left as a literal placeholder.
+        // empty, returned as '' (not undefined) for a bare `Ref`. Inside
+        // `Fn::Sub` CloudFormation REJECTS it as a list, and `resolveSub`
+        // refuses it before reaching here (issue #3809).
         return '';
 
       case 'AWS::NoValue':

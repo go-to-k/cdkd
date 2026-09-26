@@ -1954,10 +1954,10 @@ describe('IntrinsicFunctionResolver - Fn::Sub ${!Literal} escape', () => {
 
 describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
   // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
-  // always an empty list — which CloudFormation resolves to an empty string
-  // in an Fn::Sub / Ref string context. Before the fix it resolved to
-  // `undefined`, which left the literal `${AWS::NotificationARNs}` placeholder
-  // in an Fn::Sub body (the pseudo branch was skipped on `undefined`).
+  // always an empty list, which a bare Ref resolves to ''. Inside Fn::Sub it
+  // is REFUSED (issue #3809): CloudFormation rejects the template with
+  // "variable AWS::NotificationARNs in Fn::Sub expression does not resolve to
+  // a string" (measured by a CreateStack A/B). Before #3809 cdkd rendered ''.
   let resolver: IntrinsicFunctionResolver;
 
   beforeEach(() => {
@@ -1970,20 +1970,18 @@ describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', (
     resources: {},
   };
 
-  it('substitutes ${AWS::NotificationARNs} to an empty string in Fn::Sub', async () => {
-    const result = await resolver.resolve(
-      { 'Fn::Sub': '${AWS::NotificationARNs}' },
-      context
+  it('refuses ${AWS::NotificationARNs} in Fn::Sub as a list, non-retryable', async () => {
+    const error = await resolver
+      .resolve({ 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      'Fn::Sub: the variable ${AWS::NotificationARNs} resolves to a list'
     );
-    expect(result).toBe('');
-  });
-
-  it('substitutes ${AWS::NotificationARNs} embedded in a surrounding Fn::Sub string', async () => {
-    const result = await resolver.resolve(
-      { 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' },
-      context
-    );
-    expect(result).toBe('notif=;done');
   });
 
   it('resolves a bare Ref: AWS::NotificationARNs to an empty string', async () => {
