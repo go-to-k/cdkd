@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Command } from 'commander';
 import { describe, expect, it } from 'vite-plus/test';
 import { buildProgram } from '../../../src/cli/program.js';
@@ -362,6 +363,7 @@ function countOperands(root: Command, tokens: Token[]): Resolved | string {
       continue;
     }
     if (operands.length === 0 && cmd.commands.length > 0) {
+      if (t.text === 'help') return 'implicit help subcommand';
       const sub = cmd.commands.find((c) => c.name() === t.text || c.aliases().includes(t.text));
       if (sub) {
         cmd = sub as Command;
@@ -379,6 +381,26 @@ interface ArgFunction {
   readonly name: string;
   readonly params: string[];
   readonly headerAt: number;
+  /** Offsets of the body's braces; an expression-bodied arrow has none. */
+  readonly body?: readonly [number, number];
+}
+
+/** The `{...}` body after a parameter list, stepping over a return type's generics and type literals. */
+function bodyRange(source: string, paramsClose: number): [number, number] | undefined {
+  let angle = 0;
+  for (let i = paramsClose + 1; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === '=' && source[i + 1] === '>') i++;
+    else if (c === '<') angle++;
+    else if (c === '>') angle--;
+    else if (c === '{' && angle === 0) {
+      const close = closingIndex(source, i);
+      if (close < 0) return undefined;
+      if (!/[:|&]\s*$/.test(source.slice(paramsClose + 1, i))) return [i, close];
+      i = close;
+    } else if ((c === ';' || c === '(') && angle === 0) return undefined;
+  }
+  return undefined;
 }
 
 /** Named functions: `function f(...)` and `const f = (async) (...) =>`. */
@@ -396,7 +418,7 @@ function functionHeaders(source: string): ArgFunction[] {
     const params = splitTopLevel(source.slice(open + 1, close)).map(
       (p) => /^(?:\.\.\.)?(\w+)/.exec(p)?.[1] ?? ''
     );
-    out.push({ name: (m[1] ?? m[2])!, params, headerAt: m.index });
+    out.push({ name: (m[1] ?? m[2])!, params, headerAt: m.index, body: bodyRange(source, close) });
   }
   return out;
 }
@@ -404,8 +426,12 @@ function functionHeaders(source: string): ArgFunction[] {
 /** Factory name -> the command it builds, over every exported `create*Command` plus `buildProgram`. */
 const FACTORIES = new Map<string, () => Command>([['buildProgram', buildProgram]]);
 const COMMANDS_DIR = join(TESTS_ROOT, '..', 'src', 'cli', 'commands');
-for (const entry of readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'))) {
-  const mod = (await import(join(COMMANDS_DIR, entry))) as Record<string, unknown>;
+for (const entry of readdirSync(COMMANDS_DIR, { recursive: true, encoding: 'utf8' })) {
+  if (!entry.endsWith('.ts') || entry.endsWith('.test.ts')) continue;
+  const mod = (await import(pathToFileURL(join(COMMANDS_DIR, entry)).href)) as Record<
+    string,
+    unknown
+  >;
   for (const [name, value] of Object.entries(mod)) {
     if (/^create\w+Command$/.test(name) && typeof value === 'function') {
       FACTORIES.set(name, value as () => Command);
@@ -413,35 +439,40 @@ for (const entry of readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'))) 
   }
 }
 
+interface Receiver {
+  readonly factory: string;
+  readonly via: 'direct' | 'chained' | 'helper';
+}
+
 /**
- * The factory a receiver was built from: a direct factory call, or one hop
+ * The factory a receiver was built from: a factory call chained into the
+ * parse, the receiver's nearest preceding declaration calling one, or one hop
  * through a same-file helper whose body calls one.
  */
 function resolveReceiver(
   source: string,
   before: string,
   headers: ArgFunction[]
-): string | undefined {
+): Receiver | undefined {
   const chained = /\b(\w+)\s*\(\s*\)\s*(?:\.\s*\w+\s*\([^()]*\)\s*)*$/.exec(before);
-  if (chained && FACTORIES.has(chained[1]!)) return chained[1];
+  if (chained && FACTORIES.has(chained[1]!)) return { factory: chained[1]!, via: 'chained' };
   const recv = /(\w+)\s*$/.exec(before)?.[1];
   if (recv === undefined) return undefined;
-  const decls = [...before.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${recv}\\b[^=]*=\\s*([^;]*)`, 'g'))];
-  const init = decls.at(-1)?.[1];
-  if (init === undefined) return undefined;
-  const called = /^(?:await\s+)?(\w+)\s*\(/.exec(init)?.[1];
+  const decl = new RegExp(`\\b(?:const|let|var)\\s+${recv}\\b[^=;]*=\\s*([^;]*)`, 'g');
+  const init = [...before.matchAll(decl)].at(-1)?.[1];
+  const called = init === undefined ? undefined : /^(?:await\s+)?(\w+)\s*\(/.exec(init)?.[1];
   if (called === undefined) return undefined;
-  if (FACTORIES.has(called)) return called;
-  const helper = headers.find((h) => h.name === called);
-  if (!helper) return undefined;
-  const next = headers.find((h) => h.headerAt > helper.headerAt)?.headerAt ?? source.length;
-  const inner = source.slice(helper.headerAt, next).matchAll(/\b(\w+)\s*\(\s*\)/g);
-  return [...inner].map((m) => m[1]!).find((n) => FACTORIES.has(n));
+  if (FACTORIES.has(called)) return { factory: called, via: 'direct' };
+  const body = headers.find((h) => h.name === called)?.body;
+  if (!body) return undefined;
+  const inner = source.slice(body[0], body[1]).matchAll(/\b(\w+)\s*\(\s*\)/g);
+  const factory = [...inner].map((m) => m[1]!).find((n) => FACTORIES.has(n));
+  return factory === undefined ? undefined : { factory, via: 'helper' };
 }
 
 interface AritySite {
   readonly where: string;
-  readonly factory: string;
+  readonly receiver: Receiver;
   readonly tokens: Token[];
   /** Line of the enclosing function's call the tokens were substituted from. */
   readonly callLine?: number;
@@ -461,15 +492,13 @@ function expandSite(
   const constants = stringConstants(source);
   const token = (e: string) => toToken(e, constants);
   const elements = arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`];
-  const fn = headers.filter((h) => h.headerAt < at).at(-1);
+  const fn = headers.filter((h) => h.body && h.body[0] < at && at < h.body[1]).at(-1);
   const usesParam = (e: string) => fn?.params.includes(e.replace(/^\.\.\./, '')) === true;
   if (!fn || !elements.some(usesParam)) return [{ tokens: elements.map(token) }];
 
   const variants: { tokens: Token[]; callLine: number }[] = [];
-  for (const call of source.matchAll(new RegExp(`\\b${fn.name}\\s*\\(`, 'g'))) {
-    if (call.index === fn.headerAt || source.slice(fn.headerAt, call.index).trim().endsWith('function')) {
-      continue;
-    }
+  for (const call of source.matchAll(new RegExp(`(?<![.\\w])${fn.name}\\s*\\(`, 'g'))) {
+    if (source.slice(fn.headerAt, call.index).trim() === 'function') continue;
     const open = call.index + call[0].length - 1;
     const close = closingIndex(source, open);
     if (close < 0) continue;
@@ -503,14 +532,14 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
       if (args.length < 2 || !FROM_USER_RE.test(args[1]!)) continue;
       const line = source.slice(0, m.index).split('\n').length;
       const where = `${file.replace(`${TESTS_ROOT}/`, 'tests/')}:${line}`;
-      const factory = resolveReceiver(source, source.slice(0, m.index), headers);
-      if (factory === undefined) {
+      const receiver = resolveReceiver(source, source.slice(0, m.index), headers);
+      if (receiver === undefined) {
         unresolved.push(`${where}: receiver`);
         continue;
       }
       const variants = expandSite(source, m.index, args[0]!, headers);
       if (variants.length === 0) unresolved.push(`${where}: no call site`);
-      for (const v of variants) sites.push({ where, factory, ...v });
+      for (const v of variants) sites.push({ where, receiver, ...v });
     }
   }
   return { sites, unresolved };
@@ -520,39 +549,59 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
   const program = buildProgram();
   const tree = allCommands(program);
 
-  it('classifies every command in the tree, not just the leaves', () => {
-    const buckets = new Map<string, string[]>();
-    for (const cmd of tree) {
+  it('reaches every command in the tree and reads its arity, not just the leaves', () => {
+    // Drive the checker itself to each node by its path plus one operand past
+    // its arity. A leaf-only walk would miss a command carrying a positional
+    // AND a subcommand (`events`), so the sum is taken against the whole tree.
+    const reached = tree.map((cmd) => {
+      const path: string[] = [];
+      for (let c: Command | null = cmd; c && c !== program; c = c.parent) path.unshift(c.name());
       const max = maxOperands(cmd);
-      const key =
-        cmd.commands.length > 0 && cmd.registeredArguments.length === 0 ? 'group' : `max-${max}`;
-      buckets.set(key, [...(buckets.get(key) ?? []), cmd.name()]);
-    }
-    // Totality against the whole tree, not two walks agreeing with each other.
-    expect([...buckets.values()].flat()).toHaveLength(tree.length);
-    expect(buckets.get('group')?.length ?? 0).toBeGreaterThanOrEqual(3);
-    for (const key of ['max-0', 'max-1', 'max-Infinity']) {
-      expect(buckets.get(key)?.length ?? 0, key).toBeGreaterThan(0);
-    }
-    // A command with a positional AND a subcommand is classified by its
-    // positional; a leaf-only walk drops it.
+      const extra = Array.from({ length: Number.isFinite(max) ? max + 1 : 2 }, (_, i) => `operand-${i}`);
+      const r = countOperands(program, [...path, ...extra].map((x) => toToken(`'${x}'`)));
+      return typeof r === 'string' ? r : `${r.path} ${r.operands.length > r.max || !Number.isFinite(max)}`;
+    });
+    expect(reached).toEqual(tree.map((cmd) => {
+      const names: string[] = [];
+      for (let c: Command | null = cmd; c; c = c.parent) names.unshift(c.name());
+      return `${names.join(' ')} true`;
+    }));
+    const byArity = (want: number) => tree.filter((c) => maxOperands(c) === want).length;
+    expect(byArity(0)).toBeGreaterThan(0);
+    expect(byArity(1)).toBeGreaterThan(0);
+    expect(byArity(Number.POSITIVE_INFINITY)).toBeGreaterThan(0);
     expect(tree.some((c) => c.commands.length > 0 && maxOperands(c) === 1)).toBe(true);
   });
 
   const files: string[] = [];
   walkTestFiles(TESTS_ROOT, files);
-  const { sites, unresolved } = collectAritySites(files);
-  const resolved = sites.map((s) => ({ s, r: countOperands(FACTORIES.get(s.factory)!(), s.tokens) }));
+  const collected = collectAritySites(files);
+  const resolved = collected.sites.map((s) => ({
+    s,
+    r: countOperands(FACTORIES.get(s.receiver.factory)!(), s.tokens),
+  }));
+  const counted = resolved.flatMap(({ s, r }) => (typeof r === 'string' ? [] : [{ s, r }]));
+  const unresolved = [
+    ...new Set([
+      ...collected.unresolved,
+      ...resolved.flatMap(({ s, r }) => (typeof r === 'string' ? [`${s.where}: ${r}`] : [])),
+    ]),
+  ];
+  const sitesWhere = (keep: (c: (typeof counted)[number]) => boolean) =>
+    new Set(counted.filter(keep).map(({ s }) => s.where)).size;
 
   it('resolves sites of every shape to a real command (coverage floors per shape)', () => {
-    const counted = resolved.flatMap(({ s, r }) => (typeof r === 'string' ? [] : [{ s, r }]));
-    // A floor per shape the resolver claims: a literal array at the site, a
-    // wrapper argument substituted from its call sites, and a group receiver
-    // descended to a subcommand. An aggregate floor would hide one dead shape.
-    expect(new Set(counted.filter(({ s }) => s.callLine === undefined).map(({ s }) => s.where)).size).toBeGreaterThan(30);
-    expect(new Set(counted.filter(({ s }) => s.callLine !== undefined).map(({ s }) => s.where)).size).toBeGreaterThan(30);
-    expect(counted.filter(({ r }) => r.path.includes(" ")).length).toBeGreaterThan(100);
-    expect(unresolved.length).toBeLessThan(counted.length / 20);
+    // A floor per shape the resolver claims, counted in distinct sites that
+    // yielded at least one operand, so a shape that resolves but reads nothing
+    // does not hold its floor up. An aggregate floor would hide one dead shape.
+    const read = (c: (typeof counted)[number]) => c.r.operands.length > 0;
+    expect(sitesWhere((c) => read(c) && c.s.callLine === undefined), 'literal array').toBeGreaterThan(15);
+    expect(sitesWhere((c) => read(c) && c.s.callLine !== undefined), 'wrapper call').toBeGreaterThan(15);
+    expect(sitesWhere((c) => read(c) && c.r.path.includes(' ')), 'group descent').toBeGreaterThan(5);
+    expect(sitesWhere((c) => c.s.receiver.via === 'direct'), 'direct receiver').toBeGreaterThan(30);
+    expect(sitesWhere((c) => c.s.receiver.via === 'helper'), 'helper receiver').toBeGreaterThan(5);
+    expect(sitesWhere((c) => c.s.receiver.via === 'chained'), 'chained receiver').toBeGreaterThan(1);
+    expect(unresolved.length, unresolved.join('\n')).toBeLessThan(sitesWhere(() => true) / 5);
   });
 
   it('counts a surplus operand, including one behind a non-node runtime prefix', () => {
@@ -578,7 +627,10 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     ].join('\n');
     const headers = functionHeaders(source);
     const at = source.indexOf('.parseAsync');
-    expect(resolveReceiver(source, source.slice(0, at), headers)).toBe('createLocalRunTaskCommand');
+    expect(resolveReceiver(source, source.slice(0, at), headers)).toEqual({
+      factory: 'createLocalRunTaskCommand',
+      via: 'direct',
+    });
     expect(expandSite(source, at, 'args', headers)).toEqual([
       {
         tokens: [
@@ -588,6 +640,35 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
         callLine: 5,
       },
     ]);
+  });
+
+  it('resolves a helper-built receiver within the helper body, and a closed sibling is not enclosing', () => {
+    const source = [
+      'function tree(): Command {',
+      '  const local = createLocalCommand();',
+      '  return local;',
+      '}',
+      'function sibling(args: string[]) {',
+      '  return args;',
+      '}',
+      "sibling(['X', 'Y']);",
+      'it.each([[1]])((args) => {',
+      '  const cmd = tree();',
+      "  cmd.parse(args, { from: 'user' });",
+      '});',
+      'const later = createDeployCommand();',
+    ].join('\n');
+    const headers = functionHeaders(source);
+    const at = source.indexOf('.parse(');
+    expect(resolveReceiver(source, source.slice(0, at), headers)).toEqual({
+      factory: 'createLocalCommand',
+      via: 'helper',
+    });
+    expect(expandSite(source, at, 'args', headers)).toEqual([
+      { tokens: [{ kind: 'spread', text: 'args' }] },
+    ]);
+    const typed = 'let cmd: Command;\nconst other = createDeployCommand();\ncmd = x;\ncmd';
+    expect(resolveReceiver(typed, typed, functionHeaders(typed))).toBeUndefined();
   });
 
   it("no from: 'user' parse passes more operands than its target declares", () => {
