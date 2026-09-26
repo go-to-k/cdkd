@@ -280,7 +280,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       ['zero-width', zeroWidth],
       ['long', long],
     ] as const) {
-      const create = vi.fn().mockRejectedValue(new Error(text));
+      const create = vi.fn().mockRejectedValue(awsSdkError(text));
       const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
       await replayRollback(
         [

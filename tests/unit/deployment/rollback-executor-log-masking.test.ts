@@ -521,7 +521,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
   it('the Retain collision refusal masks a spaced secret before collapsing the AWS text', async () => {
     const create = vi
       .fn()
-      .mockRejectedValue(new Error(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
+      .mockRejectedValue(awsSdkError(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
     const prev = res({ physicalId: 'phys-OLD', properties: { ProviderDetails: { password: SPACED_EXPR } } });
@@ -557,7 +557,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     // secret: capped before masking, its first characters survive unmasked.
     const lead = 'Resource already exists. ';
     const fill = 'x'.repeat(4090 - lead.length);
-    const create = vi.fn().mockRejectedValue(new Error(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
+    const create = vi.fn().mockRejectedValue(awsSdkError(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
     const prev = res({ physicalId: 'phys-OLD', properties: { ProviderDetails: { password: SECRET_EXPR } } });
