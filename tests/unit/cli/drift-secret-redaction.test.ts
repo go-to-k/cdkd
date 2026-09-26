@@ -724,7 +724,8 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // No labelled line, and no hole standing in for one.
     expect(refusal).not.toMatch(/^Revert with: /m);
     expect(refusal).not.toContain("cdkd drift '<stack>'");
-    // The prose falls back to the wording that names no command to paste.
+    // The prose falls back to the fixed literal that names the command but no
+    // target, so nothing in it came from the record.
     expect(refusal).toContain(`Run 'cdkd drift --revert' for this stack`);
   });
 
