@@ -578,16 +578,28 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
   });
 
   describe('a LIST stringified into a Join part or a Sub placeholder keeps its elements’ masks', () => {
-    it('a Sub variable that is an Fn::Split list', async () => {
+    // A LIST reaching `Fn::Sub` is REFUSED since issue #3809, as CloudFormation
+    // refuses it, so the Sub arms of this pair no longer render a line. What
+    // they still pin: the refusal names the variable and never an element.
+    it('a Sub variable that is an Fn::Split list is refused without naming an element', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const ctx = freshContext();
-      const value = await resolver.resolve(
-        { 'Fn::Sub': ['port:${P}', { P: { 'Fn::Split': ['|', `${PIN_REF}|tail`] } }] },
-        ctx as never
-      );
+      const error = await resolver
+        .resolve(
+          { 'Fn::Sub': ['port:${P}', { P: { 'Fn::Split': ['|', `${PIN_REF}|tail`] } }] },
+          ctx as never
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
 
-      expect(value).toBe(`port:${PIN},tail`);
-      expect(resolvedLines('Sub')).toEqual(['Resolved Fn::Sub: port:***,tail']);
+      expect((error as Error).message).toContain(
+        'Fn::Sub: the variable-map value P resolves to a list'
+      );
+      expect((error as Error).message).not.toContain(PIN);
+      expect((error as Error).message).not.toContain('tail');
+      expect(resolvedLines('Sub')).toEqual([]);
     });
 
     it('a Join part that is an Fn::Split list', async () => {
@@ -602,7 +614,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: port:***,tail']);
     });
 
-    it('a list-valued GetAtt placeholder', async () => {
+    it('a list-valued GetAtt placeholder is refused without naming an element', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const ctx = freshContext({
         template: { Resources: { Db: { Type: 'Custom::PinHolder' } } } as CloudFormationTemplate,
@@ -611,8 +623,6 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
             physicalId: 'db-physical-1',
             resourceType: 'Custom::PinHolder',
             properties: {},
-            // A `null` element renders as the empty string, as `String()` of
-            // the list does, so the twin stays aligned with the value.
             attributes: { Pins: [PIN, UNRECORDED, null] },
           },
         } as never,
@@ -620,10 +630,17 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       await resolver.resolve({ 'Fn::Sub': `seed:${PIN_REF}` }, ctx as never);
       logSpies.debug.mockClear();
 
-      const value = await resolver.resolve({ 'Fn::Sub': 'port:${Db.Pins}' }, ctx as never);
+      const error = await resolver.resolve({ 'Fn::Sub': 'port:${Db.Pins}' }, ctx as never).then(
+        () => undefined,
+        (e: unknown) => e
+      );
 
-      expect(value).toBe(`port:${PIN},${UNRECORDED},`);
-      expect(resolvedLines('Sub')).toEqual([`Resolved Fn::Sub: port:***,${UNRECORDED},`]);
+      expect((error as Error).message).toContain(
+        'Fn::Sub: the variable ${Db.Pins} resolves to a list (an array of 3 items)'
+      );
+      expect((error as Error).message).not.toContain(PIN);
+      expect((error as Error).message).not.toContain(UNRECORDED);
+      expect(resolvedLines('Sub')).toEqual([]);
     });
   });
 
