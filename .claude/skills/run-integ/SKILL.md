@@ -21,10 +21,10 @@ verify, clean up.
 
 ## Steps
 
-1. **Rebase, then build**: `git fetch origin` and rebase the branch onto current
-   `origin/main` BEFORE the run — a real-AWS run against a stale base verifies
-   code that is not what will merge, and nothing warns you. Then `vp run build`
-   so `dist/` is current.
+1. **Rebase, then build**: `git fetch origin` and rebase onto current
+   `origin/main` (merge it when a force push is denied) BEFORE the run — a
+   stale base verifies code that is not what will merge, and nothing warns you.
+   Then `vp run build` so `dist/` is current.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -139,11 +139,12 @@ verify, clean up.
 
 7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)** —
    trigger when the destroy step reported errors, OR step 6 found leftover state
-   or any resource matching the stack prefix. **Not when the run failed on a
-   PEER's lock** (the lock-contention refusal, or a foreign `lock.json` under the
-   prefix): it finds the peer's LIVE fixture, whose lock lapses between
-   commands. Delete nothing; wait until the prefix holds no state and no lock,
-   then re-run step 6 (#3813):
+   or any resource matching the stack prefix. **Not while a PEER runs the
+   fixture** (this run failed on its lock, or a `lock.json` under the prefix has
+   a future `expiresAt`): the scan finds the peer's LIVE fixture, whose lock
+   lapses between commands. Delete nothing until no live lock remains AND the
+   prefix is unchanged for 10 minutes, then re-run step 6; what it still finds
+   is an orphan, cleaned here (#3813):
    - VPC-attached Lambda failures (commonest), **in delete order**: (1)
      hyperplane ENIs (`describe-network-interfaces --filters
      "Name=vpc-id,Values=<vpc>"` → `delete-network-interface`; re-poll `in-use`
@@ -321,12 +322,13 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   planned for the same PR** — the marker is digest-bound to its src scope, so a
   post-integ review fix stales it and forces a full real-AWS re-run.
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
-  still attempt destroy to clean up partial state.
+  still attempt destroy to clean up partial state — unless it failed on a
+  peer's lock (step 7).
 - **A run blocked BEFORE its assertions is not a test failure — say which it
   was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
   `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
-  and any hand-removed resources, clean up only what the aborted run itself
-  created (step 7), and WAIT for the blocker to clear. Never
+  and any hand-removed resources, WAIT for the blocker to clear, then clean up
+  what the aborted run leaked (step 7 says when). Never
   `cdkd force-unlock` a lock you did not take.
 - **Never report success on a successful deploy alone** — destroy must complete
   and the orphan check must pass.

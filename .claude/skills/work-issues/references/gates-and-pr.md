@@ -65,12 +65,14 @@ git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded pat
 ```
 
 Re-run the checks, `git push --force-with-lease`. If the harness denies it,
-`git merge origin/main` into the PUSHED head and push plainly: the squash merge
-makes that lossless (#3813).
+`git checkout -B <branch> origin/<branch>`, `git merge origin/main` (a ledger
+conflict: keep both, `vp run integ-ledger-normalize`, commit), push plainly:
+lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, and rebuild first**: a pre-rebase green
 attests to a tree that no longer exists, and `dist/` staleness is the usual
-failure (the `version` test). **Re-run the generators too**, since
+failure (the `version` test reads `dist/` against a release commit's
+`package.json`). **Re-run the generators too**, since
 `docs/_generated/**` derives from the TREE.
 
 **A clean merge is not evidence that there was no collision**: disjoint hunks in
