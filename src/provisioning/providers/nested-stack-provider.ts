@@ -88,6 +88,11 @@ export function isAbsoluteCrossPlatform(p: string): boolean {
  * [docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md)
  * for the full design.
  *
+ * A ROLLBACK revert of this row (`update` with `UpdateContext.replayingState`)
+ * is the exception: it replays the child's own rollback journal for the run
+ * being rolled back and deploys no template (issue #3754,
+ * `src/deployment/nested-child-journal.ts`).
+ *
  * On `create` / `update`, the provider builds a child {@link DeployEngine}
  * against the same shared state backend / lock manager / provider registry,
  * deploys the child template recursively, and surfaces the child's outputs

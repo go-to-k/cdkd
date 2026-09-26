@@ -133,6 +133,8 @@ These are surfaced in the plan rather than applied silently.
   (written by an older cdkd, or removed by a direct `cdkd rollback` of the
   child) fails the row, and the journal is kept for a re-run. The child's
   own failed operation is not reverted by `--revert-failed` on the parent.
+  Run without a stack name, `cdkd rollback` does not offer a nested child's
+  journal separately when its parent has one.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The
