@@ -337,6 +337,27 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
   });
 
+  it('a rollback whose journal POP failed keeps the child segments for the re-run', async () => {
+    // The re-run `cdkd rollback` replays the still-journaled segment, reverting
+    // the Child row again, and must find the child's segments for the run.
+    const { engine, backend } = build({
+      nested: false,
+      changes: new Map([
+        ['Child', updateNestedChange('Child')],
+        ['B', createChange('B')],
+      ]),
+      resources: { Child: { ...record('Child', NESTED), properties: { TemplateURL: 'old' } } },
+      failCreateOf: 'B',
+      levels: [['Child'], ['B']],
+    });
+    backend.popRollbackJournalSegment.mockRejectedValue(new Error('S3 down'));
+
+    await expect(engine.deploy(STACK, templateOf(['Child', 'B']))).rejects.toThrow();
+
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+    expect(backend.dropRollbackJournalSegments).not.toHaveBeenCalled();
+  });
+
   it('a partial rollback keeps the children segments for a re-run', async () => {
     const { engine, backend, provider } = build({
       nested: false,
