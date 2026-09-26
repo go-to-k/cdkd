@@ -932,6 +932,9 @@ Refusing to deploy MyStack: a resource changes its Type into or out of AWS::Clou
     Replacing a single resource BY a nested stack is not supported: ...
 ```
 
+`cdkd diff` previews the same refusal under `Blocking (cdkd deploy will
+refuse):` and exits `3`.
+
 There is no flag that overrides this refusal. Deploy the change as two changes
 instead: give the new resource a **different logical id** (in CDK, rename the
 construct) so the old row is deleted through its own type's provider, or remove

@@ -3526,8 +3526,16 @@ async function importNestedStackChildrenRecursive(args: {
           parentRegion: childRegion,
           // Grandchild template paths live alongside the child template
           // file via `Metadata['aws:asset:path']` — index them with the
-          // same logic AssemblyReader uses at the parent level.
-          parentNestedTemplates: indexGrandchildTemplatePaths(childTemplate, childTemplatePath),
+          // same logic AssemblyReader uses at the parent level. Read off the
+          // PRE-rewrite snapshot: the asset rewrite walks every string,
+          // `aws:asset:path` included, so a path segment spelling a bootstrap
+          // bucket would otherwise lead here to a different file than the one
+          // `NestedStackProvider` deploys (it indexes before rewriting, as
+          // `cdkd diff` does since go-to-k/cdkd#3450).
+          parentNestedTemplates: indexGrandchildTemplatePaths(
+            childStateTemplate,
+            childTemplatePath
+          ),
           parentTree: childTreeNode,
           stateBackend,
           lockManager,

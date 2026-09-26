@@ -7,6 +7,7 @@ import {
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
+import { templateIdentity } from '../../utils/nested-template-cycle.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
@@ -52,6 +53,10 @@ import {
   templateResourceTypes,
 } from '../../provisioning/create-only-properties.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+import {
+  findNestedStackTypeChanges,
+  type NestedStackTypeChange,
+} from '../../deployment/type-change-guard.js';
 import {
   malformedExportNamesWarning,
   malformedOutputsWarning,
@@ -248,6 +253,23 @@ function deployRefusesPropertiesReason(logicalIds: readonly string[]): string {
     `${logicalIds.length} resource record(s) hold a 'properties' map that cannot be read. ` +
     `This preview repaired them to empty; 'cdkd deploy' refuses the record instead, so the ` +
     `deploy this previews will not start.`
+  );
+}
+
+/**
+ * The reason one row of the deploy's nested-stack Type-change refusal
+ * (`renderNestedStackTypeChangeRefusal`, go-to-k/cdkd#2668) puts on the node's
+ * `blocking` (go-to-k/cdkd#3453). One line per row, since the renderer prints
+ * each reason on one `!` line; the deploy's own message carries the longer
+ * explanation. The id and both types are template- or state-chosen, so each
+ * takes `displayIdent`, as the adoption refusals' fields do.
+ */
+function nestedStackTypeChangeReason(tc: NestedStackTypeChange): string {
+  return (
+    `${displayIdent(tc.logicalId)}: Type changes from ${displayIdent(tc.currentType)} to ` +
+    `${displayIdent(tc.desiredType)}. cdkd does not replace a resource into or out of ` +
+    `${NESTED_STACK_RESOURCE_TYPE} (issue #2668); give the new resource a different logical ` +
+    `id, or remove it in one deploy and add its replacement in the next.`
   );
 }
 
@@ -1164,6 +1186,22 @@ export async function computeStackDiff(
     canonicalizeProperties
   );
 
+  // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
+  // through the SAME finder over the same two inputs the engine hands it —
+  // this diff's `changes` and the state after the orphan splice — so the
+  // preview cannot disagree with it about which rows it refuses. Joins
+  // `blocking` at every node, beside the adoption refusals: in a CDK
+  // assembly a change to a child's template moves the parent row's
+  // `TemplateURL` hash, so the deploy reaches the child engine where this
+  // refusal runs.
+  const nestedStackTypeChanges = findNestedStackTypeChanges({
+    changes,
+    stateResources: stateForDiff.resources,
+  });
+  if (nestedStackTypeChanges.length > 0) {
+    blocking = [...blocking, ...nestedStackTypeChanges.map(nestedStackTypeChangeReason)];
+  }
+
   // Issue #1921: the Outputs section, resolved through the SAME resolver /
   // conditions the resource diff just used. Resolving here rather than in a
   // second pass matters — parameter binding and condition evaluation can issue
@@ -1599,8 +1637,8 @@ export async function buildDiffTree(args: {
    */
   parentHasSecretReference?: boolean;
   /**
-   * Resolved absolute paths of every nested template ALREADY on the walk from
-   * the root down to this node — the ancestor chain, not a global visited set
+   * `templateIdentity` of every nested template ALREADY on the walk from the
+   * root down to this node — the ancestor chain, not a global visited set
    * (issue go-to-k/cdkd#3239).
    *
    * The distinction is the whole point: two sibling rows may legitimately name
@@ -1737,7 +1775,7 @@ export async function buildDiffTree(args: {
     Object.keys(adoptedRecords).length > 0
       ? { ...state, resources: { ...state.resources, ...adoptedRecords } }
       : state;
-  const ccApiRoutes = collectCcApiRoutes(template, stateAfterAdoption);
+  const ccApiRoutes = collectCcApiRoutes(template, stateAfterAdoption, changes);
   const node: DiffTreeNode = {
     stackName,
     displayName,
@@ -1789,18 +1827,19 @@ export async function buildDiffTree(args: {
     // would under-report changes the next deploy would still make. A view
     // whose contract is that every record appears would answer differently.
     //
-    // `path.resolve` is DEFENSIVE, not load-bearing, and saying so is the
-    // point of this paragraph. Every path here is already normalized: synth
-    // builds the root's entries with `resolveAssemblyPath(assemblyDir,
-    // assetPath).path` (`src/synthesis/assembly-reader.ts`), which is absolute,
-    // and every deeper one comes from this module's own call to the same
-    // helper. So in the real pipeline a raw string
-    // comparison would behave identically. It resolves anyway because the set
-    // is keyed on the value, and a future caller that hands us an
-    // unnormalized `nestedTemplates` would otherwise miss the first repeat
-    // and refuse one level late.
+    // Keyed on `templateIdentity` — the file's name inside its REAL directory —
+    // the key the deploy-side walk uses (go-to-k/cdkd#3450), so the two
+    // commands agree about which assemblies are cyclic. A lexical key missed a
+    // cycle spelled through a symlinked DIRECTORY (`d -> .`): each level joins
+    // one more `d/` onto the same file, so the string never repeats and the
+    // walk ran on to S3's key limit. The module's own doc says why the
+    // directory is resolved and the file name is not.
+    //
+    // The MESSAGE keeps the lexical `path.resolve` spelling: it is the path
+    // the assembly names, and the one the user can find in `cdk.out`.
     const resolvedChildPath = path.resolve(childTemplatePath);
-    if (ancestorTemplatePaths?.has(resolvedChildPath) === true) {
+    const childIdentity = templateIdentity(childTemplatePath);
+    if (ancestorTemplatePaths?.has(childIdentity) === true) {
       // `displaySafe` on ALL THREE interpolations: this refusal exists FOR a
       // hand-modified assembly, so every one of its inputs is
       // attacker-controlled. `logicalId` is a template key; the path derives
@@ -1819,12 +1858,17 @@ export async function buildDiffTree(args: {
           `Refusing to diff.`
       );
     }
-    const childAncestorTemplatePaths = new Set(ancestorTemplatePaths ?? []).add(resolvedChildPath);
+    const childAncestorTemplatePaths = new Set(ancestorTemplatePaths ?? []).add(childIdentity);
     const childTemplate = readNestedTemplate(childTemplatePath);
+    // Index BEFORE the asset rewrite (go-to-k/cdkd#3450), the order
+    // `NestedStackProvider.readChildTemplate` uses: the rewrite walks every
+    // string, `Metadata['aws:asset:path']` included, so a path segment
+    // spelling a bootstrap bucket name would otherwise send this walk to a
+    // different file than the one the deploy follows.
+    const grandchildTemplates = indexNestedChildTemplates(childTemplate, childTemplatePath);
     if (assetRedirect) {
       rewriteTemplateAssetReferences(childTemplate, assetRedirect);
     }
-    const grandchildTemplates = indexNestedChildTemplates(childTemplate, childTemplatePath);
     // Resolve the child's input `Parameters` (declared on this parent's
     // `AWS::CloudFormation::Stack` row) against THIS node's deployed state +
     // already-resolved parameters, so the child's diff resolver can resolve a
@@ -1966,6 +2010,30 @@ async function buildDeletedSubtree(
 const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
 
 /**
+ * Does the deploy REPLACE this row? The same test the engine's live label
+ * applies before dispatch (`needsReplacement` in `deploy-engine.ts`'s
+ * `provisionResource`), less the `--recreate-via-*` half, which `cdkd diff`
+ * does not take: an `UPDATE` with a create-only property change, or whose
+ * recorded type differs from the template's.
+ *
+ * A replacement CEILING is left out, as the label leaves it out: a
+ * `requiresReplacement` the diff set on a propagated value before it could be
+ * read (`replacementPropagated` / `inPlacePropagated`, go-to-k/cdkd#3662)
+ * replaces only if the value moves, which only the deploy learns, and until
+ * then the resource is updated in place, where the recorded route stands.
+ */
+function diffReplaces(change: ResourceChange | undefined, record: ResourceState): boolean {
+  if (change?.changeType !== 'UPDATE') return false;
+  if (record.resourceType !== change.resourceType) return true;
+  return (
+    change.propertyChanges?.some(
+      (pc) =>
+        pc.requiresReplacement && pc.inPlacePropagated !== true && pc.replacementPropagated !== true
+    ) ?? false
+  );
+}
+
+/**
  * Walk every resource in `template` and return the logicalId → annotation
  * source map that #614's auto-fallback would route via Cloud Control API.
  *
@@ -1990,6 +2058,14 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  * `--allow-unsupported-properties` is a deploy-only flag, so diff
  * renders every actionable drop as an auto-route hint.
  *
+ * A row the diff REPLACES takes no sticky hit (go-to-k/cdkd#3453): the deploy
+ * routes the NEW physical resource with no recorded layer (`replaceDecision`
+ * in `deploy-engine.ts`, mirrored by its live label), because stickiness
+ * spares an EXISTING resource from churn and a replacement is not that. The
+ * old record's layer — on a `Type` change, a record of a different type — says
+ * nothing about where the create goes. The fresh-hit arm is unchanged, since
+ * the replacement reads the same template bag against the same baseline.
+ *
  * Excludes `AWS::CDK::Metadata` (filtered like the deploy pre-flight); also
  * excludes `AWS::CloudFormation::Stack` rows since nested-stack children
  * recurse through their own templates rather than carrying CC-routable
@@ -1997,7 +2073,13 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  */
 export function collectCcApiRoutes(
   template: CloudFormationTemplate,
-  state: StackState
+  state: StackState,
+  /**
+   * The diff computed from this same template and state. REQUIRED, so a
+   * caller cannot forget it and put the old record's route back on every
+   * replaced row.
+   */
+  changes: ReadonlyMap<string, ResourceChange>
 ): Map<string, string[]> {
   const hits = new Map<string, string[]>();
   for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
@@ -2025,7 +2107,7 @@ export function collectCcApiRoutes(
     // distinguishing `sticky` token so the user can tell this case apart
     // from a fresh auto-route.
     const record = state.resources[logicalId];
-    if (record?.provisionedBy === 'cc-api') {
+    if (record?.provisionedBy === 'cc-api' && !diffReplaces(changes.get(logicalId), record)) {
       // ...unless the type is exempt AND this resource's own property bags say
       // the flip is safe, in which case the next op leaves Cloud Control
       // instead of staying on it (issue #2719). Before that check existed this

@@ -29,7 +29,9 @@ The layer is decided per resource, per deploy, in this order:
 1. **A resource already recorded `cc-api` normally stays there.** This is the
    *sticky* rule. Without it, every release that added an SDK provider would
    drag existing resources back across the boundary, and moving a resource
-   between layers used to mean destroying and recreating it.
+   between layers used to mean destroying and recreating it. A resource the
+   deploy REPLACES is the exception: its replacement is a new resource, routed
+   by the steps below as a fresh one would be.
 2. **Otherwise, if a hand-written SDK provider exists for the type, cdkd checks
    the template's properties against it.** If the SDK provider covers all of
    them, the resource goes to the SDK provider.
