@@ -144,6 +144,36 @@ describe('resolveEcsSecrets', () => {
     ).rejects.toBeInstanceOf(EcsSecretsResolutionError);
   });
 
+  // Issue #3515: the json-key read was a bare index, so a key named after an
+  // Object.prototype member the secret does NOT carry read the inherited
+  // function, passed the `=== undefined` check, and `JSON.stringify(fn)`
+  // returned `undefined` -- a value-less secret docker then resolved against
+  // the CLIENT's own environment. It is the named not-found refusal now.
+  it('hard-fails on a json-key named after an Object.prototype member the secret lacks (#3515)', async () => {
+    sends.secrets.mockResolvedValueOnce({ SecretString: '{"other":"x"}' });
+    await expect(
+      resolveEcsSecrets([
+        {
+          containerName: 'app',
+          name: 'API_KEY',
+          valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo:constructor::',
+        },
+      ])
+    ).rejects.toThrow(/no such key exists in the secret JSON/);
+  });
+
+  it('extracts a json-key named after an Object.prototype member the secret DOES carry (#3515 control)', async () => {
+    sends.secrets.mockResolvedValueOnce({ SecretString: '{"constructor":"own-value"}' });
+    const r = await resolveEcsSecrets([
+      {
+        containerName: 'app',
+        name: 'API_KEY',
+        valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo:constructor::',
+      },
+    ]);
+    expect(r[0]!.value).toBe('own-value');
+  });
+
   it('resolves SSM parameter with decryption', async () => {
     sends.ssm.mockResolvedValueOnce({ Parameter: { Value: 'val' } });
     const r = await resolveEcsSecrets([

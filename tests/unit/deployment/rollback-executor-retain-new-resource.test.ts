@@ -23,6 +23,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 // Single-attempt pass-through so the collision arm does not sleep through the
 // real 2-10s name-release schedule.
@@ -229,7 +230,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
               return {
                 provider: {
                   create: async () => {
-                    throw new Error('Queue already exists');
+                    throw awsSdkError('Queue already exists');
                   },
                   delete: vi.fn(),
                   update: vi.fn(),
@@ -336,7 +337,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // free the name the re-create collided on, so Retain makes the op
       // impossible. Failing loudly beats destroying a resource marked to
       // survive — and beats a silent, repeated collision.
-      const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+      const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
       const del = vi.fn().mockResolvedValue(undefined);
       const { ctx } = makeCtx({ create, delete: del });
       const refusals: string[] = [];
@@ -371,7 +372,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // the replay never rethrows it, so the assertion has to reach the error
       // through the recorded event rather than through `rejects`.
       const errors: Array<{ message?: string }> = [];
-      const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
+      const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
       const { ctx } = makeCtx({ create, delete: vi.fn() });
       ctx.recordEvent = (e) => {
         if (e.error) errors.push(e.error);

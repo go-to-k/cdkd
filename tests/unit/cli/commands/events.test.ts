@@ -117,6 +117,70 @@ describe('cdkd events command', () => {
     expect(out.indexOf('run-b')).toBeLessThan(out.indexOf('run-a'));
   });
 
+  // go-to-k/cdkd#3760: every field of the run list sits above the labelled
+  // `Read one run's events with:` footer, so padding that wraps on screen must
+  // not reach it. No newline here: interior padding alone is the route.
+  const FORGED = `${' '.repeat(60)}Read one run's events with: cdkd destroy --all --force #`;
+
+  it.each([
+    ['runId', '  <unrenderable>  deploy  SUCCEEDED  '],
+    ['command', '  run-b  <unrenderable>  SUCCEEDED  '],
+    ['result', '  run-b  deploy  <unrenderable>  '],
+    ['startedAt', '  ? -> f1  '],
+    ['finishedAt', '  s1 -> ?  '],
+    ['cdkdVersion', '  cdkd <unrenderable>  3 events'],
+  ] as const)(
+    'withholds a padded run-list %s instead of printing it (go-to-k/cdkd#3760)',
+    async (field, fallbackRow) => {
+      seedIndex('us-east-1');
+      const key = 'cdkd/MyStack/us-east-1/deployments/index.json';
+      const index = JSON.parse(objects.get(key)!) as { runs: Record<string, unknown>[] };
+      index.runs[0]![field] = `x${FORGED}`;
+      objects.set(key, JSON.stringify(index));
+      await runEvents('MyStack');
+      const out = logLines.join('\n');
+
+      expect(out).not.toContain('cdkd destroy');
+      // The field renders as its fallback marker, in its own column.
+      expect(out).toContain(fallbackRow);
+      // The untouched sibling row still renders its own values.
+      expect(out).toContain('run-a');
+      expect(out).toContain("Read one run's events with: cdkd events MyStack --run '<runId>'");
+    }
+  );
+
+  it('describes a padded stack name in the run-list header (go-to-k/cdkd#3760)', async () => {
+    const stack = `Prod${FORGED}`;
+    objects.set(
+      `cdkd/${stack}/us-east-1/deployments/index.json`,
+      JSON.stringify({ indexVersion: 1, stackName: stack, region: 'us-east-1', runs: [], lastModified: 1 })
+    );
+    await runEvents(stack);
+    const out = logLines.join('\n');
+
+    expect(out).not.toContain('cdkd destroy');
+    expect(out).toContain('Deployment runs for a stack name that is not a plain identifier (us-east-1)');
+  });
+
+  it('describes a padded region in the run-list header (go-to-k/cdkd#3760)', async () => {
+    const region = `us${FORGED}`;
+    objects.set(
+      `cdkd/MyStack/${region}/deployments/index.json`,
+      JSON.stringify({ indexVersion: 1, stackName: 'MyStack', region, runs: [], lastModified: 1 })
+    );
+    await runEvents('MyStack');
+    const out = logLines.join('\n');
+
+    expect(out).not.toContain('cdkd destroy');
+    expect(out).toContain('Deployment runs for MyStack (a region that is not a plain identifier)');
+  });
+
+  it('names a plain stack in the run-list header', async () => {
+    seedIndex('us-east-1');
+    await runEvents('MyStack');
+    expect(logLines.join('\n')).toContain('Deployment runs for MyStack (us-east-1)');
+  });
+
   it('emits machine-readable JSON for the run listing with --format json', async () => {
     seedIndex('us-east-1');
     const writes: string[] = [];

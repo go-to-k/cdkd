@@ -157,14 +157,26 @@ const LIVE_INVENTORY = inventoryItem({ ScheduleFrequency: 'Weekly' });
  */
 const MALFORMED = ['   ', null, 1, ['Daily'], { 'Fn::If': ['C', 'Daily', 'Weekly'] }];
 
-async function updateInventory(desired: Record<string, unknown>) {
+async function updateInventory(
+  desired: Record<string, unknown>,
+  context?: Record<string, unknown>
+) {
   const properties = { BucketName: BUCKET, InventoryConfigurations: [desired] };
-  const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-    BucketName: BUCKET,
-    InventoryConfigurations: [LIVE_INVENTORY],
-  });
+  const result = await provider.update(
+    'B',
+    BUCKET,
+    RESOURCE_TYPE,
+    properties,
+    { BucketName: BUCKET, InventoryConfigurations: [LIVE_INVENTORY] },
+    context
+  );
   return { result, properties };
 }
+
+// The flag the rollback revert arms set. A warn-and-substitute read is a
+// state-borne update's arm since issue #3740: a template-path update refuses
+// the same malformed value before any call.
+const STATE_REPLAY = { replayingState: true } as const;
 
 describe('#1686 UPDATE: inventory schedule is recorded in the CFn spelling', () => {
   it('records ScheduleFrequency and DROPS Schedule when only the SDK spelling is declared', async () => {
@@ -196,7 +208,7 @@ describe('#1686 UPDATE: inventory schedule is recorded in the CFn spelling', () 
         ScheduleFrequency: value,
         Schedule: { Frequency: 'Daily' },
       });
-      const { result } = await updateInventory(desired);
+      const { result } = await updateInventory(desired, STATE_REPLAY);
 
       const sent = sentCommands(PutBucketInventoryConfigurationCommand);
       expect(sent).toHaveLength(1);
@@ -806,7 +818,7 @@ describe('#1707 UPDATE: a substituted destination Format converges after the fol
       ScheduleFrequency: 'Weekly',
       Destination: { BucketArn: DEST_ARN, Format: 42, Prefix: 'live/' },
     };
-    const { result } = await updateInventory(desired);
+    const { result } = await updateInventory(desired, STATE_REPLAY);
 
     // The wire carries the substituted default.
     const sent = sentCommands(PutBucketInventoryConfigurationCommand);

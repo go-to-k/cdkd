@@ -6,5 +6,5 @@ const app = new cdk.App();
 
 new IntrinsicsTortureStack(app, 'CdkdIntrinsicsTortureExample', {
   description:
-    'cdkd integ designed to surface intrinsic-function-resolution bugs (Fn::Cidr / Fn::FindInMap / Fn::GetAZs / Fn::Base64 / nested Split-Select-Join / nested Fn::Sub / all pseudo-parameters)',
+    'cdkd integ designed to surface intrinsic-function-resolution bugs (Fn::Cidr / Fn::FindInMap / Fn::GetAZs / Fn::Base64 / nested Split-Select-Join / nested Fn::Sub / string pseudo-parameters)',
 });

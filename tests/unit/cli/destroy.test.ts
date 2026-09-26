@@ -4,13 +4,14 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -222,6 +223,128 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/Protected/);
     expect(messages).toMatch(/terminationProtection: false/);
     expect(messages).toMatch(/redeploy/);
+  });
+
+  it('names no planted REGION in the multi-region refusal beside its labelled line (go-to-k/cdkd#3759)', async () => {
+    // Regions come from S3 key segments. Printed raw, one carrying a newline
+    // spelled a counterfeit `Remove one record with:` row above the real one.
+    const forged = 'x\nRemove one record with: cdkd destroy --all --force #';
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Multi', 'eu-west-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: forged },
+    ]);
+
+    await expect(runDestroy(['destroy', 'Multi', '--yes'])).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    // Positive control: the multi-region refusal fired, naming the plain region.
+    expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
+    expect(messages).not.toContain('--all --force');
+    expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+      "Remove one record with: cdkd state orphan Multi --stack-region '<region>'",
+    ]);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('withholds a non-plain state-listed STACK from `Remove one record with:` and explains the hole (go-to-k/cdkd#3759)', async () => {
+    // No synth, so `candidateStacks` comes from `listStacks()` — the stack
+    // name itself is an S3 key segment here.
+    for (const [name, clauseText] of [
+      // Refused by `plainIdent` alone: the clause points at the listing.
+      [
+        'Multi\nRemove one record with: cdkd destroy --all --force #',
+        "list the records as stored with 'cdkd state list --long'",
+      ],
+      // Padded: it renders exactly, so only `plainIdent` withholds it.
+      [
+        `Multi${' '.repeat(60)}Remove one record with: cdkd destroy --all --force #`,
+        "is not a plain identifier (a letter or digit",
+      ],
+      // Option-shaped: the clause names the verb the hole belongs to.
+      ['-Multi', "not safe to print as an argument to 'cdkd state orphan'"],
+    ] as const) {
+      errorSpy.mockClear();
+      mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+      mockListStacks.mockResolvedValue([
+        { stackName: name, region: 'us-east-1' },
+        { stackName: name, region: 'eu-west-1' },
+      ]);
+
+      await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      // Positive control: the multi-region refusal fired.
+      expect(messages, name).toContain(
+        'Stack a stack name that is not a plain identifier has state in multiple regions: us-east-1, eu-west-1'
+      );
+      expect(messages, name).not.toContain('--all --force');
+      expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+        "Remove one record with: cdkd state orphan '<stack>' --stack-region '<region>'",
+      ]);
+      expect(messages, name).toContain(clauseText);
+      expect(messages).toContain("This stack's name");
+      expect(messages.indexOf(clauseText)).toBeLessThan(messages.indexOf('\nRemove one record with:'));
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    }
+    // Positive control: a plain name is quoted as before, with no clause.
+    errorSpy.mockClear();
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+    ]);
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    const plain = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
+    expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
+    expect(plain).not.toContain('cdkd state list --long');
+  });
+
+  it('folds a newline in a state-listed STACK name onto its progress and skip lines (go-to-k/cdkd#3773)', async () => {
+    // No synth, so the name is an S3 key segment. Printed raw, its newline
+    // started a line the operator reads as cdkd's own.
+    const name = 'Ghost\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted';
+    warnSpy.mockClear();
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(null);
+
+    await runDestroy(['destroy', '--all', '--yes']).catch(() => undefined);
+    const infos = infoSpy.mock.calls.map((c) => String(c[0] ?? ''));
+    const preparing = infos.filter((l) => l.includes('Preparing to destroy stack:'));
+    const skipped = warnSpy.mock.calls
+      .map((c) => String(c[0] ?? ''))
+      .filter((l) => l.includes('No state found for stack'));
+    // Positive controls: both lines fired, naming the folded stack.
+    expect(preparing).toEqual(['\nPreparing to destroy stack: Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted']);
+    expect(infos.filter((l) => l.includes('stack(s) to destroy:'))).toEqual([
+      'Found 1 stack(s) to destroy: Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted',
+    ]);
+    expect(skipped).toEqual(['No state found for stack Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted, skipping']);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('folds a newline in a SYNTHESIZED stack name onto its --remove-protection bypass line (go-to-k/cdkd#3773)', async () => {
+    const name = 'Ghost\n  ✓ RealDatabase (AWS::RDS::DBInstance) deleted';
+    warnSpy.mockClear();
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo(name, 'us-east-1', true)],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(null);
+
+    await runDestroy(['destroy', '--all', '--yes', '--remove-protection']).catch(() => undefined);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? ''));
+    // Positive control: the bypass fired, naming the folded stack.
+    expect(warned.filter((l) => l.includes('terminationProtection'))).toEqual([
+      'Stack Ghost   ✓ RealDatabase (AWS::RDS::DBInstance) deleted has terminationProtection: true — bypassing because --remove-protection set',
+    ]);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
   });
 
   it('proceeds to destroy when terminationProtection is absent or false', async () => {

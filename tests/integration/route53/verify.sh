@@ -25,6 +25,13 @@
 # billing — with `cdkd diff` reporting no changes. Real CloudFormation removes
 # both (live A/B, 2026-08-10).
 #
+# Phase 2.7 (issue #3741) renames three records in two redeploys --
+# CDKD_TEST_RENAME=name (a Name change), then name,swap (a SetIdentifier
+# change and an A -> CNAME swap) -- and asserts each OLD record is gone from
+# the zone, the new one is live, and state tracks it. 2.7c then swaps the
+# CNAME back to an A in a deploy that fails, and asserts the rollback
+# restores the CNAME.
+#
 # Also asserts the destroy path cleans up (the hosted zone delete requires
 # every non-default record gone first; the cdkd destroy DAG handles order).
 #
@@ -847,6 +854,144 @@ if [ "${REIMPORTED_LIST_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
 fi
 echo "    OK: an IMPORTED zone resolved both Outputs identically to a DEPLOYED one (${REIMPORTED_LIST_COUNT}-element LIST)"
 
+# --- Phase 2.7: RENAME redeploys (issue #3741) ------------------------------
+# Changes each part of a record's Route 53 identity, in two redeploys split by
+# how the pre-fix binary failed, so each half goes red at its OWN line:
+#   2.7a  TestARecord's Name (test -> test-renamed). Pre-fix, updateRecordSet
+#         sent a lone UPSERT of the new record, the deploy SUCCEEDED, and the
+#         old record stayed live and untracked (the zone delete then failed as
+#         not empty) -- measured against real AWS.
+#   2.7b  GeoProximityRecord's SetIdentifier (geo-use1 -> geo-use1-renamed) and
+#         TypeSwapRecord's Type (A -> CNAME on one name). Pre-fix, Route 53
+#         REFUSED the UPSERT: the new record conflicts with the old one it did
+#         not delete ("a GEO_PROXIMITY RRSet with the same name, type and
+#         routing ... already exists", measured).
+# CloudFormation swaps all three in place (live A/B on the issue). Everything
+# else matches the 2.5d template.
+ZONE_NAME="cdkd-test-${ACCOUNT_ID}.internal."
+# Count the records named $1 (fully qualified, trailing dot) of type $2 whose
+# SetIdentifier is $3 ("" = none) in a list-resource-record-sets JSON on stdin.
+count_records() {
+  jq --arg n "$1" --arg t "$2" --arg s "$3" \
+    '[.ResourceRecordSets[] | select(.Name == $n and .Type == $t and ((.SetIdentifier // "") == $s))] | length'
+}
+list_zone_records() {
+  aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" --region "${REGION}" --output json
+}
+expect_records() { # usage: expect_records <json> <name> <type> <setId> <expected count> <description>
+  local got
+  got=$(printf '%s' "$1" | count_records "$2" "$3" "$4") || return 1
+  if [ "${got}" != "$5" ]; then
+    echo "FAIL: $6 (found ${got} record(s) named $2 type $3 SetIdentifier '${4}', expected $5)" >&2
+    printf '%s' "$1" | jq -c '.ResourceRecordSets[] | {Name, Type, SetIdentifier}' >&2
+    exit 1
+  fi
+}
+
+# While the zone's AcceleratedRecovery feature (enabled in Phase 1) is still
+# transitioning, Route 53 refuses EVERY record mutation ("is marked disabled for
+# mutation"), and the transition can outlast the deploy's retry budget -- a
+# pre-fix run's rollback hit exactly that. Wait for it to settle so the renames
+# below fail only for their own reasons.
+ACCEL_SETTLED=""
+for _ in $(seq 1 90); do
+  ACCEL_NOW=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+    --query 'HostedZone.Features.AcceleratedRecoveryStatus' --output text)
+  case "${ACCEL_NOW}" in
+    ENABLED|DISABLED|None) ACCEL_SETTLED="${ACCEL_NOW}"; break ;;
+  esac
+  sleep 10
+done
+if [ -z "${ACCEL_SETTLED}" ]; then
+  echo "FAIL: AcceleratedRecoveryStatus did not settle within 900s (last: ${ACCEL_NOW:-unknown})" >&2
+  exit 1
+fi
+echo "    OK: AcceleratedRecoveryStatus settled at ${ACCEL_SETTLED}"
+
+# The BASELINE half: the three old records are live before the rename, so the
+# "old record is gone" checks below cannot pass vacuously.
+PRE_RENAME_RECORDS=$(list_zone_records)
+expect_records "${PRE_RENAME_RECORDS}" "test.${ZONE_NAME}" A "" 1 "baseline A record is not live"
+expect_records "${PRE_RENAME_RECORDS}" "swap.${ZONE_NAME}" A "" 1 "baseline swap A record is not live"
+expect_records "${PRE_RENAME_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}" 1 "baseline geo record is not live"
+echo "    OK: the three records to rename are live"
+
+echo "==> Phase 2.7a: RENAME redeploy (Name, #3741)"
+CDKD_TEST_RENAME=name node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+NAME_RENAMED_RECORDS=$(list_zone_records)
+expect_records "${NAME_RENAMED_RECORDS}" "test.${ZONE_NAME}" A "" 0 "the renamed A record's OLD name is still live (#3741)"
+expect_records "${NAME_RENAMED_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "the renamed A record's NEW name is not live"
+# The records of the next phase are untouched by this one.
+expect_records "${NAME_RENAMED_RECORDS}" "swap.${ZONE_NAME}" A "" 1 "the swap A record changed before its own phase"
+expect_records "${NAME_RENAMED_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}" 1 "the geo record changed before its own phase"
+echo "    OK: the Name rename replaced the old record (no leftover)"
+
+echo "==> Phase 2.7b: RENAME redeploy (SetIdentifier + Type A -> CNAME, #3741)"
+CDKD_TEST_RENAME=name,swap node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+POST_RENAME_RECORDS=$(list_zone_records)
+expect_records "${POST_RENAME_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}" 0 "the geo record's OLD SetIdentifier is still live (#3741)"
+expect_records "${POST_RENAME_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}-renamed" 1 "the geo record's NEW SetIdentifier is not live"
+expect_records "${POST_RENAME_RECORDS}" "swap.${ZONE_NAME}" A "" 0 "the swapped record's OLD type (A) is still live (#3741)"
+expect_records "${POST_RENAME_RECORDS}" "swap.${ZONE_NAME}" CNAME "" 1 "the swapped record's NEW type (CNAME) is not live"
+expect_records "${POST_RENAME_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "the renamed A record is gone after 2.7b"
+echo "    OK: the SetIdentifier and Type renames replaced the old records"
+
+# --- Phase 2.7c: roll back a CNAME -> A rename (issue #3741) ----------------
+# Swaps TypeSwapRecord back from CNAME to A and fails the deploy AFTER the swap
+# (an SQS queue with an out-of-range retention period). The automatic rollback
+# reverses the swap as a replacement: it re-creates the CNAME while the A of
+# the same name is live, and Route 53 refuses that with "... is not permitted
+# as it conflicts with other records with the same DNS name ..." (measured).
+# Unless that refusal classifies as a name collision, the delete-new-first arm
+# never runs and the CNAME is not restored.
+echo "==> Phase 2.7c: CNAME -> A rename, failed deploy, automatic rollback (#3741)"
+set +e
+CDKD_TEST_RENAME=name,swap,unswap,inject-fail node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+ROLLBACK_DEPLOY_RC=$?
+set -e
+if [ "${ROLLBACK_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2.7c]: the inject-fail deploy SUCCEEDED, so nothing was rolled back" >&2
+  exit 1
+fi
+ROLLED_BACK_RECORDS=$(list_zone_records)
+expect_records "${ROLLED_BACK_RECORDS}" "swap.${ZONE_NAME}" CNAME "" 1 "the rollback did not restore the CNAME (#3741)"
+expect_records "${ROLLED_BACK_RECORDS}" "swap.${ZONE_NAME}" A "" 0 "the rollback left the swapped-in A record live (#3741)"
+expect_records "${ROLLED_BACK_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "an untouched record changed during the rollback"
+echo "    OK: the rollback deleted the A and restored the CNAME"
+
+# State must track the NEW records, or destroy aims at names that are gone.
+RENAME_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${RENAME_STATE}" ]; then
+  echo "FAIL: could not read state after the rename redeploy" >&2
+  exit 1
+fi
+A_RECORD_ID=$(printf '%s' "${RENAME_STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::Route53::RecordSet") | .physicalId | select(test("\\|test(-renamed)?\\."))] | join(" ")')
+# Exact ids, not globs: a join of the old AND the new id must fail too. The
+# ARecord L2 renders a trailing dot, the L1 swap record does not.
+EXPECTED_A_RECORD_ID="${ZONE_ID}|test-renamed.cdkd-test-${ACCOUNT_ID}.internal.|A"
+if [ "${A_RECORD_ID}" != "${EXPECTED_A_RECORD_ID}" ]; then
+  echo "FAIL: state's A record physical id is '${A_RECORD_ID}', expected '${EXPECTED_A_RECORD_ID}'" >&2
+  exit 1
+fi
+SWAP_RECORD_ID=$(printf '%s' "${RENAME_STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::Route53::RecordSet") | .physicalId | select(test("\\|swap\\."))] | join(" ")')
+EXPECTED_SWAP_RECORD_ID="${ZONE_ID}|swap.cdkd-test-${ACCOUNT_ID}.internal|CNAME"
+if [ "${SWAP_RECORD_ID}" != "${EXPECTED_SWAP_RECORD_ID}" ]; then
+  echo "FAIL: state's swap record physical id is '${SWAP_RECORD_ID}', expected '${EXPECTED_SWAP_RECORD_ID}'" >&2
+  exit 1
+fi
+echo "    OK: state tracks the renamed records (${A_RECORD_ID}, ${SWAP_RECORD_ID})"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -881,4 +1026,4 @@ fi
 echo "    OK: query-logging log group is gone"
 
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + clean destroy)"

@@ -32,6 +32,10 @@ import {
   probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
+import {
+  refuseMalformedResourceEntriesForDeploy,
+  refuseMalformedResourcesForDeploy,
+} from '../../state/malformed-resources-bag.js';
 import { analyzePinCcApiReachability } from './pin-cc-api-reachability.js';
 import { refuseMalformedNestedTemplateTrees } from './nested-template-preflight.js';
 import { promptYesNo } from './confirm-prompt.js';
@@ -850,6 +854,27 @@ async function deployCommand(
             stackInfo.stackName,
             stackRegion
           );
+          // The SAME two refusals the engine raises at its own state load, on
+          // this pre-lock read of the same record (go-to-k/cdkd#3202). The
+          // engine's load does not dominate this check: `validateRecreateTargets`
+          // indexes the named rows itself, so a `null` row was reported as
+          // "missing from state" — with a diagnostic telling the operator to
+          // drop the flag for it, which leaves the resource un-recreated with
+          // the broken row in place — and a typeless row reached the
+          // confirmation prompt as `resourceType: undefined` before the engine
+          // refused. Bag first: an unreadable bag has no rows to name.
+          if (stateForRecreateCheck) {
+            refuseMalformedResourcesForDeploy(
+              stateForRecreateCheck.state,
+              stackInfo.stackName,
+              stackRegion
+            );
+            refuseMalformedResourceEntriesForDeploy(
+              stateForRecreateCheck.state,
+              stackInfo.stackName,
+              stackRegion
+            );
+          }
           const syncValidation = validateRecreateTargets({
             template: stackInfo.template,
             state: stateForRecreateCheck?.state ?? {

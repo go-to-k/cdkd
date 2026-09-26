@@ -108,6 +108,15 @@ const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
 };
 
 /**
+ * What state records for `GraphQLApi.EnvironmentVariables` when the env-var arm
+ * sent something other than the desired map (issue #3781): the map AWS holds
+ * afterwards, or `undefined` to drop the key.
+ */
+interface EnvironmentVariablesRecord {
+  value: Record<string, unknown> | undefined;
+}
+
+/**
  * `AWS::AppSync::GraphQLApi` properties that map to a member of
  * `UpdateGraphqlApi` (so a diff on any of them must fire the call).
  *
@@ -645,7 +654,8 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::AppSync::GraphQLSchema':
         return this.updateGraphQLSchema(
@@ -696,6 +706,82 @@ export class AppSyncProvider implements ResourceProvider {
   // ─── update helpers ────────────────────────────────────────────────
 
   /**
+   * The template-path pre-flight for `updateGraphQLApi` (issue
+   * [#3740](https://github.com/go-to-k/cdkd/issues/3740)): throw the refusal a
+   * template-path create raises for a malformed nested block, or return.
+   *
+   * It runs the SAME converters the update arms run — the ones behind
+   * `applyGraphQLApiConfig` and `applyEnvironmentVariables`'s container and
+   * per-key reads —
+   * so each refuses exactly where its arm would warn, with the sentence a
+   * template-path create throws.
+   * Only a block that CHANGED from the recorded one is asked: an unchanged
+   * malformed block is not a pending operation (the arm drops the WHOLE block —
+   * for `AdditionalAuthenticationProviders` the whole list, even when only one
+   * nested member is malformed — and AppSync treats the omitted member as "no
+   * change"), so refusing it would fail an update that changes something else.
+   */
+  private refuseChangedMalformedGraphQLApiBlocks(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): void {
+    const changed = (key: string): boolean =>
+      !this.deepEqual(properties[key], previousProperties[key]);
+    // The converters' own `onUnusable` seam COLLECTS the refusal instead of
+    // warning: it receives the very sentence the no-callback arm would throw,
+    // and no `catch` is needed to re-word it (a catch here could also capture
+    // an unrelated typed throw and re-label it).
+    const refusals: string[] = [];
+    const guard: ShapeGuardOptions = {
+      logicalId,
+      onUnusable: (message: string) => refusals.push(message),
+    };
+    if (changed('UserPoolConfig')) {
+      this.toSdkUserPoolConfig(properties['UserPoolConfig'], 'UserPoolConfig', guard);
+    }
+    if (changed('OpenIDConnectConfig')) {
+      this.toSdkOpenIDConnectConfig(
+        properties['OpenIDConnectConfig'],
+        'OpenIDConnectConfig',
+        guard
+      );
+    }
+    if (changed('LambdaAuthorizerConfig')) {
+      this.toSdkLambdaAuthorizerConfig(
+        properties['LambdaAuthorizerConfig'],
+        'LambdaAuthorizerConfig',
+        guard
+      );
+    }
+    if (changed('AdditionalAuthenticationProviders')) {
+      this.toSdkAdditionalAuthProviders(properties['AdditionalAuthenticationProviders'], guard);
+    }
+    if (changed('EnhancedMetricsConfig')) {
+      this.toSdkEnhancedMetricsConfig(properties['EnhancedMetricsConfig'], guard);
+    }
+    if (changed('EnvironmentVariables')) {
+      const env = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables', guard);
+      // Per-KEY values too (issue #3781): the PUT runs after `UpdateGraphqlApi`
+      // has landed, so a value it cannot carry must be refused here, not there.
+      for (const [key, value] of Object.entries(env ?? {})) {
+        const refusal = this.environmentVariableRefusal(key, value);
+        if (refusal !== undefined) refusals.push(refusal);
+      }
+    }
+    if (refusals.length > 0) {
+      throw new ProvisioningError(
+        `${refusals[0]}. Nothing was applied to GraphQL API ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+  }
+
+  /**
    * Structural equality for the small object / array shapes that ride on
    * AppSync update inputs. `JSON.stringify` is sufficient because none of
    * these shapes contain `undefined` keys at this layer (the create /
@@ -710,7 +796,12 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // Read for the ORIGIN of the desired bag only (`replayingState` /
+    // `desiredFromAwsReadback`): it decides whether a malformed nested block
+    // refuses (a template-path update) or warns (a rollback revert or
+    // `cdkd drift --revert`) — issue #3740.
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // `Name` is immutable on AWS — UpdateGraphqlApi REQUIRES `name` in the
     // input shape but rejects any value other than the existing one.
@@ -744,6 +835,25 @@ export class AppSyncProvider implements ResourceProvider {
           `AWS AppSync GraphqlApi.${immutable} is immutable — destroy + redeploy to change it`
         );
       }
+    }
+
+    // The template-path half of the nested-block shape guards (issue #3740,
+    // the #3728 shape), before ANY call. `applyGraphQLApiConfig` and
+    // `applyEnvironmentVariables` warn-and-drop a malformed block on every
+    // caller, leaving the live value untouched; that stays for the two
+    // state-borne callers (`replayingState`, `desiredFromAwsReadback`), whose
+    // bag the user cannot edit from the template. On a template-path update the
+    // block is template-borne and mutable in place, so it is refused the way a
+    // template-path create refuses it — and HERE, because the
+    // `EnvironmentVariables` arm runs after `UpdateGraphqlApi` has landed.
+    if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      this.refuseChangedMalformedGraphQLApiBlocks(
+        properties,
+        previousProperties,
+        logicalId,
+        physicalId,
+        resourceType
+      );
     }
 
     // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
@@ -839,7 +949,10 @@ export class AppSyncProvider implements ResourceProvider {
         logicalId,
         // An UPDATE's desired bag is a STATE record whenever the rollback
         // executor or `drift --revert` replays it, so a malformed nested block
-        // warns rather than making the resource un-rollbackable.
+        // warns rather than making the resource un-rollbackable. On a
+        // template-path update a CHANGED malformed block never gets here
+        // (`refuseChangedMalformedGraphQLApiBlocks` refused it above); what
+        // still warns there is an UNCHANGED one, which this call leaves alone.
         shapeGuard: {
           logicalId,
           onUnusable: (message: string) =>
@@ -855,12 +968,14 @@ export class AppSyncProvider implements ResourceProvider {
 
     // Separate API pair — diffs itself, so it runs whether or not the
     // UpdateGraphqlApi call above fired.
-    await this.applyEnvironmentVariables(
+    const envRecord = await this.applyEnvironmentVariables(
       physicalId,
       resourceType,
       logicalId,
       properties,
-      previousProperties
+      previousProperties,
+      false,
+      maskerOrIdentity(context?.maskSecrets)
     );
 
     // Tags diff via TagResource / UntagResource. The API key is the
@@ -883,6 +998,11 @@ export class AppSyncProvider implements ResourceProvider {
     return {
       physicalId,
       wasReplaced: false,
+      // A skipped env-var PUT (a state-borne caller's malformed map) records
+      // what AWS still holds, not the map it could not send.
+      ...(envRecord && {
+        effectiveProperties: this.withEnvironmentVariablesRecord(properties, envRecord),
+      }),
     };
   }
 
@@ -1218,7 +1338,7 @@ export class AppSyncProvider implements ResourceProvider {
       this.arnCache.set(apiId, arn);
     }
 
-    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
+    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !Object.hasOwn(newMap, k));
     const tagsToAdd: Record<string, string> = {};
     for (const [k, v] of Object.entries(newMap)) {
       if (oldMap[k] !== v) tagsToAdd[k] = v;
@@ -1546,12 +1666,28 @@ export class AppSyncProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
-    return entries.map((entry, index) => {
+    // An entry-level or nested downgrade drops the WHOLE list, never one
+    // member of one entry: `UpdateGraphqlApi` REPLACES the list, so sending the
+    // rest would rewrite the live providers the "(leaving the live value
+    // untouched)" warning promises to keep. Returning `undefined` omits the
+    // member, which AppSync treats as "no change" (and a replay-create
+    // proceeds without the block, as its warning says).
+    let dropped = false;
+    const entryOptions: ShapeGuardOptions | undefined = options?.onUnusable
+      ? {
+          ...options,
+          onUnusable: (message: string) => {
+            dropped = true;
+            options.onUnusable?.(message);
+          },
+        }
+      : options;
+    const providers = entries.map((entry, index) => {
       const at = `AdditionalAuthenticationProviders[${index}]`;
       // `requireConfigArray` validates the CONTAINER, not its ELEMENTS — a
       // list of strings would index to `undefined` on every key and send an
       // empty provider object to AWS: the same silent drop one level down.
-      const cfn = this.asObject(entry, at, options) ?? {};
+      const cfn = this.asObject(entry, at, entryOptions) ?? {};
       const provider: AdditionalAuthenticationProvider = {};
       if (cfn['AuthenticationType'] !== undefined) {
         provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
@@ -1559,21 +1695,26 @@ export class AppSyncProvider implements ResourceProvider {
       const oidc = this.toSdkOpenIDConnectConfig(
         cfn['OpenIDConnectConfig'],
         `${at}.OpenIDConnectConfig`,
-        options
+        entryOptions
       );
       if (oidc) provider.openIDConnectConfig = oidc;
       // The additional-provider variant is AWS's CognitoUserPoolConfig, which
       // has NO defaultAction member — a different shape from the top-level one.
-      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig'], `${at}.UserPoolConfig`);
+      const pool = this.toSdkCognitoUserPoolConfig(
+        cfn['UserPoolConfig'],
+        `${at}.UserPoolConfig`,
+        entryOptions
+      );
       if (pool) provider.userPoolConfig = pool;
       const lambda = this.toSdkLambdaAuthorizerConfig(
         cfn['LambdaAuthorizerConfig'],
         `${at}.LambdaAuthorizerConfig`,
-        options
+        entryOptions
       );
       if (lambda) provider.lambdaAuthorizerConfig = lambda;
       return provider;
     });
+    return dropped ? undefined : providers;
   }
 
   private toSdkEnhancedMetricsConfig(
@@ -1718,6 +1859,10 @@ export class AppSyncProvider implements ResourceProvider {
    * (`PutGraphqlApiEnvironmentVariables` / `Get...`), not on
    * Create/UpdateGraphqlApi. The PUT is whole-map replace, so a removed
    * key is cleared by re-putting the remaining map (and `{}` clears all).
+   *
+   * Returns what STATE must record for `EnvironmentVariables` when this arm
+   * sent something other than the desired map (`value: undefined` = drop the
+   * key), or `undefined` to record the desired map as-is.
    */
   private async applyEnvironmentVariables(
     apiId: string,
@@ -1725,9 +1870,64 @@ export class AppSyncProvider implements ResourceProvider {
     logicalId: string,
     properties: Record<string, unknown>,
     previousProperties?: Record<string, unknown>,
-    replayingState = false
-  ): Promise<void> {
+    replayingState = false,
+    mask: MaskerFn = maskerOrIdentity(undefined)
+  ): Promise<EnvironmentVariablesRecord | undefined> {
     const isUpdate = previousProperties !== undefined;
+    // An UPDATE that sends nothing leaves the live map as it was, so state
+    // records THAT map. Only a skip of a PENDING change narrows anything: an
+    // unchanged malformed map (a template-path update reaches the container
+    // warning only that way) is already what the record says.
+    //
+    // The previous side is not always what AWS holds: `rollback --revert-failed`
+    // passes the FAILED update's attempted bag, whose PUT may never have run.
+    // So the live map is read, keeping the previous side's DECLARED value for
+    // each key whose live string it produces (an unquoted `RETRIES: 3` stays a
+    // number, and the next diff stays quiet). An unreadable live map falls back
+    // to the previous map, dropped when that is unusable too.
+    const retainPrevious = async (): Promise<EnvironmentVariablesRecord | undefined> => {
+      const raw = previousProperties?.['EnvironmentVariables'];
+      if (this.deepEqual(properties['EnvironmentVariables'], raw)) return undefined;
+      const previousMap =
+        raw != null &&
+        typeof raw === 'object' &&
+        !Array.isArray(raw) &&
+        Object.entries(raw).every(([k, v]) => this.environmentVariableRefusal(k, v) === undefined)
+          ? // Every value passed the per-key predicate above.
+            (raw as Record<string, string | number | boolean>)
+          : undefined;
+      let live: Record<string, string> | undefined;
+      try {
+        const response = await this.getClient().send(
+          new GetGraphqlApiEnvironmentVariablesCommand({ apiId })
+        );
+        live = response.environmentVariables ?? {};
+      } catch (error) {
+        this.logger.debug(
+          `AppSync GraphqlApi ${logicalId}: could not read the live environment variables ` +
+            `(${describeAwsFailure(error).detail}); recording the previous map`
+        );
+        return { value: previousMap ? { ...previousMap } : undefined };
+      }
+      // AWS renders a cleared map as an absent member.
+      if (Object.keys(live).length === 0) return { value: undefined };
+      // The previous side's key order first, then keys only AWS holds: the
+      // comparator is `JSON.stringify`, so AWS's order would read as a change.
+      const recorded: Record<string, unknown> = {};
+      // OWN keys only: `in` also answers for `constructor` / `toString`, which
+      // are legal AppSync variable names.
+      const previousOwn = previousMap ?? {};
+      const keys = [
+        ...Object.keys(previousOwn).filter((key) => Object.hasOwn(live, key)),
+        ...Object.keys(live).filter((key) => !Object.hasOwn(previousOwn, key)),
+      ];
+      for (const key of keys) {
+        const value = live[key]!;
+        const declared = Object.hasOwn(previousOwn, key) ? previousOwn[key] : undefined;
+        recorded[key] = declared !== undefined && String(declared) === value ? declared : value;
+      }
+      return { value: recorded };
+    };
     let desired: Record<string, unknown> | undefined;
     try {
       desired = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables', {
@@ -1737,15 +1937,21 @@ export class AppSyncProvider implements ResourceProvider {
       // The PUT is a WHOLE-MAP replace, so treating a malformed desired value
       // as "absent" would clear every live variable. On a template-path CREATE
       // refusing is right; on UPDATE — or on a create that REPLAYS a cdkd state
-      // record — the user has no template-side remedy, so warn and leave AWS
-      // untouched.
+      // record — warn and leave AWS untouched. A template-path UPDATE reaches
+      // this warning only with an UNCHANGED malformed value: a changed one is
+      // refused before any call (issue #3740,
+      // `refuseChangedMalformedGraphQLApiBlocks`), since this arm runs after
+      // `UpdateGraphqlApi` has landed.
       if (!isUpdate && !replayingState) throw error;
       this.logger.warn(
-        `AppSync GraphqlApi ${logicalId}: ${
-          describeAwsFailure(error).detail
-        } — leaving the live environment variables untouched`
+        mask(
+          `AppSync GraphqlApi ${logicalId}: ${
+            describeAwsFailure(error).detail
+          } — leaving the live environment variables untouched`
+        )
       );
-      return;
+      // Replay-CREATE: nothing was put, so the new API holds no variables.
+      return isUpdate ? await retainPrevious() : { value: undefined };
     }
     // The PREVIOUS side comes from cdkd state, never from the user's template:
     // a malformed value recorded there must not make the stack undeployable,
@@ -1762,29 +1968,49 @@ export class AppSyncProvider implements ResourceProvider {
     if (isUpdate && this.deepEqual(desired, previous)) return;
 
     const environmentVariables: Record<string, string> = {};
+    // The DECLARED values of the keys that go out, for a replay-create record.
+    const sentDeclared: Record<string, unknown> = {};
+    const refusals: string[] = [];
     for (const [key, value] of Object.entries(desired ?? {})) {
-      // CloudFormation coerces scalars into its Map<String,String>, so an
-      // unquoted YAML `RETRIES: 3` deploys under CFn and must keep working
-      // here (same rationale as `coerceNumber` in config-shape.ts). An OBJECT
-      // or array is a template bug — `String({})` would send the literal
-      // "[object Object]" to AWS.
-      if (typeof value === 'string') {
-        environmentVariables[key] = value;
-      } else if (
-        (typeof value === 'number' && Number.isFinite(value)) ||
-        typeof value === 'boolean'
-      ) {
-        environmentVariables[key] = String(value);
-      } else {
-        throw new ProvisioningError(
-          `AWS::AppSync::GraphQLApi EnvironmentVariables.${key} must be a string, got ${
-            Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
-          }`,
-          resourceType,
-          logicalId,
-          apiId
+      const refusal = this.environmentVariableRefusal(key, value);
+      if (refusal !== undefined) {
+        refusals.push(refusal);
+        continue;
+      }
+      environmentVariables[key] = String(value);
+      sentDeclared[key] = value;
+    }
+    let narrowed: EnvironmentVariablesRecord | undefined;
+    if (refusals.length > 0) {
+      // A template-path CREATE refuses (and the caller rolls the API back). A
+      // template-path UPDATE never gets here with an unusable value: a changed
+      // map is refused before any call (`refuseChangedMalformedGraphQLApiBlocks`,
+      // issue #3781) and an unchanged one returned above.
+      if (!isUpdate && !replayingState) {
+        throw new ProvisioningError(refusals[0]!, resourceType, logicalId, apiId);
+      }
+      if (isUpdate) {
+        // A state-borne UPDATE (rollback revert, `drift --revert`): the PUT
+        // REPLACES the whole map, so sending the usable keys alone would
+        // delete the skipped one from AWS. Send nothing; AppSync keeps the
+        // live map.
+        this.logger.warn(
+          mask(
+            `AppSync GraphqlApi ${logicalId}: ${refusals.join('; ')} — ` +
+              'leaving the live environment variables untouched'
+          )
+        );
+        return await retainPrevious();
+      }
+      // A replay-CREATE has no live map to protect, so the skip unit is the
+      // KEY: the restored API gets every variable that can be sent.
+      for (const refusal of refusals) {
+        this.logger.warn(
+          mask(`AppSync GraphqlApi ${logicalId}: ${refusal} (state replay — proceeding without it)`)
         );
       }
+      narrowed = { value: Object.keys(sentDeclared).length > 0 ? sentDeclared : undefined };
+      if (narrowed.value === undefined) return narrowed;
     }
     try {
       await this.getClient().send(
@@ -1799,6 +2025,44 @@ export class AppSyncProvider implements ResourceProvider {
         isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)'
       );
     }
+    return narrowed;
+  }
+
+  /**
+   * The per-key read of `EnvironmentVariables`: the refusal sentence for a
+   * value `PutGraphqlApiEnvironmentVariables` cannot carry, or `undefined`.
+   * CloudFormation coerces scalars into its Map<String,String>, so an unquoted
+   * YAML `RETRIES: 3` deploys under CFn and must keep working here (same
+   * rationale as `coerceNumber` in config-shape.ts). An OBJECT or array is a
+   * template bug — `String({})` would send the literal "[object Object]" to
+   * AWS. The sentence names the value's TYPE, never the value (a variable can
+   * hold a secret).
+   */
+  private environmentVariableRefusal(key: string, value: unknown): string | undefined {
+    if (
+      typeof value === 'string' ||
+      (typeof value === 'number' && Number.isFinite(value)) ||
+      typeof value === 'boolean'
+    ) {
+      return undefined;
+    }
+    return `AWS::AppSync::GraphQLApi EnvironmentVariables.${key} must be a string, got ${
+      Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+    }`;
+  }
+
+  /** The complete `effectiveProperties` bag for an env-var narrowing. */
+  private withEnvironmentVariablesRecord(
+    properties: Record<string, unknown>,
+    record: EnvironmentVariablesRecord
+  ): Record<string, unknown> {
+    const effective: Record<string, unknown> = {
+      ...properties,
+      EnvironmentVariables: record.value,
+    };
+    // REMOVE rather than leave `undefined`, which survives `structuredClone`.
+    if (record.value === undefined) delete effective['EnvironmentVariables'];
+    return effective;
   }
 
   // ─── AWS::AppSync::Resolver / DataSource config converters (#609) ──
@@ -2424,13 +2688,14 @@ export class AppSyncProvider implements ResourceProvider {
       const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'];
 
       // Separate API — must run AFTER the API exists.
-      await this.applyEnvironmentVariables(
+      const envRecord = await this.applyEnvironmentVariables(
         apiId,
         resourceType,
         logicalId,
         properties,
         undefined,
-        context?.replayingState === true
+        context?.replayingState === true,
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully created GraphQL API ${logicalId}: ${apiId}`);
@@ -2441,6 +2706,11 @@ export class AppSyncProvider implements ResourceProvider {
           ApiId: apiId,
           Arn: arn,
           GraphQLUrl: graphQLUrl,
+        }),
+        // A state replay that skipped all or part of the map records what was
+        // actually put, not the record it could not send.
+        ...(envRecord && {
+          effectiveProperties: this.withEnvironmentVariablesRecord(properties, envRecord),
         }),
       };
     } catch (error) {

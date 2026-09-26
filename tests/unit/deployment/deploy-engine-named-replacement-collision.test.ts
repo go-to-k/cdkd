@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -59,9 +60,7 @@ describe('DeployEngine — custom-named replacement collision', () => {
   const TYPE = 'AWS::Pipes::Pipe'; // non-stateful: the stateful guard stays out of the way
 
   const alreadyExists = () =>
-    new Error(
-      "CREATE failed for Pipe: Resource of type 'AWS::Pipes::Pipe' with identifier 'my-pipe' already exists."
-    );
+    ccAlreadyExistsError("CREATE failed for Pipe: Resource of type 'AWS::Pipes::Pipe' with identifier 'my-pipe' already exists.");
 
   // SQS same-name re-creation cooldown in its error-CODE form.
   //
@@ -90,7 +89,9 @@ describe('DeployEngine — custom-named replacement collision', () => {
   // flag. Kept at the CONSUMER level rather than only in the matcher's own
   // unit test, because it is the consumer's behavior that regresses.
   const alreadyExistSingular = () =>
-    new Error('Failed to create Lambda function Pipe: Function already exist: MyStack-Pipe');
+    new Error('Failed to create Lambda function Pipe: Function already exist: MyStack-Pipe', {
+      cause: awsSdkError('Function already exist: MyStack-Pipe'),
+    });
 
   beforeEach(() => {
     callOrder = [];

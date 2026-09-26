@@ -84,7 +84,19 @@
 #        persisted copy stays `***`.
 #      - go-to-k/cdkd#3722: IdCr's handler answers the Update with a new
 #        PhysicalResourceId, and IdRefParam (`Ref IdCr`) must follow it.
-#   7. destroy --all; everything gone; state versions swept and asserted zero.
+#      Both NoEcho CRs with a create-only reader feed a layer version's
+#      `Description` (go-to-k/cdkd#3729): ProducerNoEchoLayer (same stack) and
+#      ParamChildLayer (the child-parameter path). Phase 4 must REPLACE the
+#      producer's layer and phase 6 the child's (a new version ARN, and the
+#      "could not confirm unchanged (differs)" line): the token moved, and the
+#      AWS readback says so. These are the controls for phase 7.
+#   7. deploy --all with CDKD_TEST_UPDATE=...,nonce: both of those CRs re-run
+#      (a `Nonce` property their handler ignores) and return the SAME token.
+#      The record holds only `***`, so before go-to-k/cdkd#3729 each layer was
+#      replaced. Now cdkd reads each layer back from AWS, finds the token
+#      already there, and skips it: the same version ARN, the "already holds"
+#      and "Skipping" lines, and no persisted copy of the token.
+#   8. destroy --all; everything gone; state versions swept and asserted zero.
 #
 # A RED whole-blob grep is not automatically a fixture defect. The mask-only
 # channel keeps no durable NoEcho flag on the record (go-to-k/cdkd#2449), so a
@@ -175,6 +187,11 @@ CHILD_FUNCTION="cdkd-integ-crnoecho-nested-child"
 PRODUCER_FUNCTION="cdkd-integ-crnoecho-nested-producer"
 PARAM_FUNCTION="cdkd-integ-crnoecho-nested-param"
 PARAM_CHILD_TOKEN_PARAM="/cdkd-integ/cr-noecho-nested/param-child/token"
+# The create-only layer readers (go-to-k/cdkd#3729), by logical id and name.
+PRODUCER_LAYER_ID="ProducerNoEchoLayer"
+PARAM_CHILD_LAYER_ID="ParamChildLayer"
+PRODUCER_LAYER_NAME="cdkd-integ-crnoecho-nested-producer-layer"
+PARAM_CHILD_LAYER_NAME="cdkd-integ-crnoecho-nested-paramchild-layer"
 ID_REF_PARAM="/cdkd-integ/cr-noecho-nested/param-parent/id-ref"
 
 # The values the handlers assemble (`<Prefix>-<Seed>`, lib/shared.ts). NOT
@@ -226,6 +243,14 @@ cleanup() {
              "${CONSUMER_NOECHO_PARAM}" "${CONSUMER_PLAIN_PARAM}" "${PRODUCER_NOECHO_PARAM}" \
              "${PARAM_CHILD_TOKEN_PARAM}" "${ID_REF_PARAM}"; do
       aws ssm delete-parameter --region "${REGION}" --name "${p}" >/dev/null 2>&1
+    done
+    # Every version of the two fixture-owned layers (exact names, lib/*.ts).
+    for l in "${PRODUCER_LAYER_NAME}" "${PARAM_CHILD_LAYER_NAME}"; do
+      for v in $(aws lambda list-layer-versions --region "${REGION}" --layer-name "${l}" \
+          --query 'LayerVersions[].Version' --output text 2>/dev/null); do
+        aws lambda delete-layer-version --region "${REGION}" --layer-name "${l}" \
+          --version-number "${v}" >/dev/null 2>&1
+      done
     done
     # Explicit, fixture-owned names (lib/*.ts), so these are exact deletes
     # rather than a prefix sweep, and no scope guard is needed.
@@ -567,6 +592,42 @@ assert_param_arm() { # assert_param_arm <label> <token> <IdCr physical id>
   assert_no_tokens "${label}: the param-child state blob" "${child}"
 }
 
+# A create-only layer reader of a NoEcho value (go-to-k/cdkd#3729): its record
+# holds the mask and its live description the token. Sets LAYER_ARN to the
+# physical id the record names, for the caller to compare across phases.
+LAYER_ARN=""
+assert_layer() { # assert_layer <label> <state key> <logical id> <token>
+  local label="$1" state desc
+  state="$(read_state "$2")" || fail "${label}: could not read $2"
+  LAYER_ARN="$(printf '%s' "${state}" | jq -r --arg id "$3" '.resources[$id].physicalId // "<absent>"')"
+  case "${LAYER_ARN}" in
+    arn:aws*:lambda:*:layer:*:[0-9]*) pass "${label}: $3 physicalId is a layer version ARN" ;;
+    *) fail "${label}: $3 physicalId is not a layer version ARN (${LAYER_ARN})" ;;
+  esac
+  assert_eq "${label}: $3 properties.Description" \
+    "$(printf '%s' "${state}" | jq -r --arg id "$3" '.resources[$id].properties.Description // "<absent>"')" \
+    "${SECRET_MASK}"
+  if ! desc="$(aws lambda get-layer-version-by-arn --region "${REGION}" --arn "${LAYER_ARN}" --query 'Description' --output text)"; then
+    fail "${label}: could not read layer ${LAYER_ARN}"
+  fi
+  assert_eq "${label}: $3 Description on AWS" "${desc}" "$4"
+}
+
+# The engine's verdict line for a layer's create-only `Description`
+# (go-to-k/cdkd#3729). FAILS on a zero match, naming a drifted wording.
+assert_layer_verdict() { # assert_layer_verdict <label> <logical id> <held|differs>
+  local line
+  if [ "$3" = "held" ]; then
+    line="$2.Description carries a NoEcho value AWS already holds: not replaced."
+  else
+    line="$2.Description carries a NoEcho value that AWS could not confirm unchanged (differs): replacement kept."
+  fi
+  if ! grep -qF "${line}" "${DEPLOY_LOG}"; then
+    fail "$1: no '${line}' line — the readback did not decide $2's replacement, or the wording drifted"
+  fi
+  pass "$1: $2 — ${line}"
+}
+
 # The custom-resource response objects (`custom-resource-responses/<id>.json`,
 # a SHARED top-level prefix of the state bucket): cdkd PUTs an empty
 # placeholder per invoke, and a handler answering through `ResponseURL` would
@@ -624,6 +685,10 @@ run_deploy "Phase 1" Deploying -u CDKD_TEST_UPDATE
 assert_nested_arm "Phase 1" "${CHILD_TOKEN_V1}" "${CHILD_PLAIN}"
 assert_import_arm "Phase 1" "${PRODUCER_TOKEN}"
 assert_param_arm "Phase 1" "${PARAM_TOKEN}" "${ID_V1}"
+assert_layer "Phase 1" "${PRODUCER_KEY}" "${PRODUCER_LAYER_ID}" "${PRODUCER_TOKEN}"
+PRODUCER_LAYER_ARN_1="${LAYER_ARN}"
+assert_layer "Phase 1" "${PARAM_CHILD_KEY}" "${PARAM_CHILD_LAYER_ID}" "${PARAM_TOKEN}"
+PARAM_CHILD_LAYER_ARN_1="${LAYER_ARN}"
 assert_no_tokens_in_all_versions "Phase 1"
 
 # --- Phase 2: a freshly deployed tree reports NO change ----------------------
@@ -730,6 +795,15 @@ fi
 pass "Phase 4: ProducerNoEchoParam promoted as a reader of the updated custom resource"
 assert_nested_arm "Phase 4" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V2}"
 assert_import_arm "Phase 4" "${PRODUCER_TOKEN_V2}"
+# The CONTROL for phase 7 (go-to-k/cdkd#3729): the token moved, the readback
+# found the old one on AWS, and the layer was replaced.
+assert_layer_verdict "Phase 4" "${PRODUCER_LAYER_ID}" differs
+assert_layer "Phase 4" "${PRODUCER_KEY}" "${PRODUCER_LAYER_ID}" "${PRODUCER_TOKEN_V2}"
+PRODUCER_LAYER_ARN_4="${LAYER_ARN}"
+if [ "${PRODUCER_LAYER_ARN_4}" = "${PRODUCER_LAYER_ARN_1}" ]; then
+  fail "Phase 4: ${PRODUCER_LAYER_ID} kept version ARN ${PRODUCER_LAYER_ARN_1} although its token moved"
+fi
+pass "Phase 4: ${PRODUCER_LAYER_ID} replaced (a new layer version)"
 assert_no_tokens_in_all_versions "Phase 4"
 
 # --- Phase 5: a promoted reader of a mask NOTHING re-minted ------------------
@@ -773,10 +847,50 @@ assert_promoted "Phase 6" ParamChild IdRefParam ParentTokenParam
 assert_param_arm "Phase 6" "${PARAM_TOKEN_V2}" "${ID_V2}"
 assert_nested_arm "Phase 6" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V3}"
 assert_import_arm "Phase 6" "${PRODUCER_TOKEN_V2}"
+# The child-parameter CONTROL for phase 7 (go-to-k/cdkd#3729).
+assert_layer_verdict "Phase 6" "${PARAM_CHILD_LAYER_ID}" differs
+assert_layer "Phase 6" "${PARAM_CHILD_KEY}" "${PARAM_CHILD_LAYER_ID}" "${PARAM_TOKEN_V2}"
+PARAM_CHILD_LAYER_ARN_6="${LAYER_ARN}"
+if [ "${PARAM_CHILD_LAYER_ARN_6}" = "${PARAM_CHILD_LAYER_ARN_1}" ]; then
+  fail "Phase 6: ${PARAM_CHILD_LAYER_ID} kept version ARN ${PARAM_CHILD_LAYER_ARN_1} although its token moved"
+fi
+pass "Phase 6: ${PARAM_CHILD_LAYER_ID} replaced (a new layer version)"
 assert_no_tokens_in_all_versions "Phase 6"
 
-# --- Phase 7: destroy --------------------------------------------------------
-echo "==> Phase 7: destroy --all"
+# --- Phase 7: a NoEcho CR returns the SAME value (go-to-k/cdkd#3729) ---------
+# `nonce` re-runs ProducerNoEchoCr and ParentNoEchoCr, whose handlers ignore
+# it and return the token they returned in phases 4 and 6. Each layer's record
+# holds only `***`, so only the AWS readback can say the value did not move.
+# Nothing else about a layer changed, so each is skipped outright: the same
+# version ARN is the outcome, and the verdict and skip lines are the mechanism.
+echo "==> Phase 7: deploy --all with CDKD_TEST_UPDATE=seed,producer-seed,plain-seed,parent-seed,nonce (the NoEcho CRs re-run with the same token)"
+run_deploy "Phase 7" Unchanged CDKD_TEST_UPDATE=seed,producer-seed,plain-seed,parent-seed,nonce
+if ! grep -qF "Updating nested stack ${PARAM_CHILD}" "${DEPLOY_LOG}"; then
+  fail "Phase 7: no 'Updating nested stack ${PARAM_CHILD}' line — the re-run CR's fresh value did not reach the child, so its layer was never asked about"
+fi
+pass "Phase 7: ${PARAM_CHILD} updated with the re-run CR's value"
+for id in "${PRODUCER_LAYER_ID}" "${PARAM_CHILD_LAYER_ID}"; do
+  assert_layer_verdict "Phase 7" "${id}" held
+  skip_line="Skipping ${id}: AWS already holds every NoEcho value it carries, and nothing else changed"
+  if ! grep -qF "${skip_line}" "${DEPLOY_LOG}"; then
+    fail "Phase 7: no '${skip_line}' line — the layer was sent to its provider although nothing moved, or the wording drifted"
+  fi
+  pass "Phase 7: ${id} skipped"
+  if grep -qF "${id}.Description carries a NoEcho value that AWS could not confirm" "${DEPLOY_LOG}"; then
+    fail "Phase 7: ${id} was judged unconfirmed although its token did not move"
+  fi
+done
+assert_layer "Phase 7" "${PRODUCER_KEY}" "${PRODUCER_LAYER_ID}" "${PRODUCER_TOKEN_V2}"
+assert_eq "Phase 7: ${PRODUCER_LAYER_ID} version ARN (not replaced)" "${LAYER_ARN}" "${PRODUCER_LAYER_ARN_4}"
+assert_layer "Phase 7" "${PARAM_CHILD_KEY}" "${PARAM_CHILD_LAYER_ID}" "${PARAM_TOKEN_V2}"
+assert_eq "Phase 7: ${PARAM_CHILD_LAYER_ID} version ARN (not replaced)" "${LAYER_ARN}" "${PARAM_CHILD_LAYER_ARN_6}"
+assert_param_arm "Phase 7" "${PARAM_TOKEN_V2}" "${ID_V2}"
+assert_import_arm "Phase 7" "${PRODUCER_TOKEN_V2}"
+assert_nested_arm "Phase 7" "${CHILD_TOKEN_V2}" "${CHILD_PLAIN_V3}"
+assert_no_tokens_in_all_versions "Phase 7"
+
+# --- Phase 8: destroy --------------------------------------------------------
+echo "==> Phase 8: destroy --all"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy --all \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -798,6 +912,12 @@ for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}" "${PARAM_FUNCTION}"; do
     aws lambda get-function --region "${REGION}" --function-name "${f}"
 done
 pass "all three handler Lambdas are gone"
+for l in "${PRODUCER_LAYER_NAME}" "${PARAM_CHILD_LAYER_NAME}"; do
+  left="$(aws lambda list-layer-versions --region "${REGION}" --layer-name "${l}" \
+    --query 'length(LayerVersions)' --output text)" \
+    || fail "could not list the versions of layer ${l}"
+  assert_eq "layer ${l} versions left after destroy" "${left}" "0"
+done
 
 # Lambda creates its log group on invoke and neither CFn nor cdkd deletes it.
 for f in "${CHILD_FUNCTION}" "${PRODUCER_FUNCTION}" "${PARAM_FUNCTION}"; do

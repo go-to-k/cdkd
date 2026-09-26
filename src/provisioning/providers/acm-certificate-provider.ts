@@ -27,6 +27,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * True for ACM's refusal to delete a certificate a consumer still references
@@ -437,7 +438,7 @@ export class ACMCertificateProvider implements ResourceProvider {
       return (
         `The certificate ${certificateArn} this attempt created could NOT be deleted, ` +
         `and cdkd is not tracking it -- retire it with ` +
-        `\`aws acm delete-certificate --certificate-arn ${certificateArn} --region ${this.regionOfArn(certificateArn)}\` ` +
+        `${pasteableAwsCommand()`aws acm delete-certificate --certificate-arn ${certificateArn} --region ${this.regionOfArn(certificateArn)}`.render()} ` +
         `(the reason is in the warning above).`
       );
     }

@@ -1,0 +1,7 @@
+- **An Output, ECS env var, FSx `FileSystemType` or drift baseline key named after an `Object.prototype` member (`constructor`, `toString`) is no longer mistaken for one that is present (issue [#3515](https://github.com/go-to-k/cdkd/issues/3515), its `in`-membership READS row)** -- `src/cli/commands/scrub.ts`, `src/local/ecs-task-resolver.ts`, `src/local/ecs-task-runner.ts`, `src/provisioning/providers/fsx-filesystem-provider.ts`, `src/analyzer/drift-calculator.ts`.
+  - `cdkd scrub` treated a condition-suppressed Output named `constructor` as written, because `in` checks the prototype chain. So a failing best-effort resolution of its value or export name refused the whole stack, where a suppressed output must never refuse.
+  - `cdkd local run-task` (`--from-state` / `--from-cfn-stack`) skipped a cross-stack `Environment` entry named `constructor`, which left the container without it.
+  - An FSx create with `FileSystemType: constructor` passed the "supported type" guard instead of getting cdkd's named refusal.
+  - `cdkd drift` compared an undeclared, captured-empty baseline key of that name instead of skipping it: phantom drift that `--revert` would act on. Only a hand-edited `state.json` can carry such a key.
+  - All four sites use `Object.hasOwn` now.
+  - `cdkd local run-task` also dropped an env var named `__proto__` with no warning. The resolver's three env writes, the runner's merge of the template env and its `--env-vars` override writes all ran `Object.prototype`'s setter. They are own-key defines now, so the variable reaches the container.

@@ -34,6 +34,8 @@ import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secr
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -354,7 +356,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
       creates += 1;
       // The create-first attempt collides with the live resource holding the
       // name; `--replace` then deletes the old one and re-creates.
-      if (creates === 1) throw new Error('Parameter already exists: old-phys');
+      if (creates === 1) throw awsSdkError('Parameter already exists: old-phys');
       return { physicalId: 'new-phys' };
     });
 
@@ -388,9 +390,9 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
 
   it('site 6 — the UPDATE-not-supported fallback (DELETE -> CREATE)', async () => {
     primeUpdate();
-    mockProvider.update!.mockImplementation(async () => {
+    mockProvider.update!.mockImplementation(async (logicalId: string, _pid, resourceType) => {
       capture(seenUpdate);
-      throw new Error('UnsupportedActionException: this type does not support UPDATE');
+      throw ccUpdateUnsupportedRejection(resourceType, logicalId);
     });
 
     // `forceStatefulRecreation` for the same reason sites 3 and 4 pass it:

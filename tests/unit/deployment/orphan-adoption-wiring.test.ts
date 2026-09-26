@@ -305,4 +305,180 @@ describe('readSiblingPhysicalIds (#2934)', () => {
     // record as soon as ANY unrelated stack's state stops parsing.
     expect([...(await readSiblings(makeEngine()))]).toEqual(['fine-a']);
   });
+
+  /**
+   * go-to-k/cdkd#3202. The sibling's record is a hand-editable file, and the
+   * walk used to trust every row: a `null` one threw on `record.physicalId`
+   * into the per-sibling catch, which logged at DEBUG and moved on — so every
+   * id collected BEFORE it stayed claimed and every id AFTER it was dropped.
+   * That silently NARROWS the one set that stops this deploy adopting a
+   * resource another stack still owns.
+   *
+   * The assertion is NOT "no throw", which passed before the fix: it is that
+   * the ids AFTER the bad row ARE claimed. Object key order is insertion
+   * order, so `Bad` is planted FIRST.
+   */
+  it('keeps collecting a sibling`s ids past an unreadable ROW, rather than stopping at it', async () => {
+    backend.listStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({
+      state: {
+        resources: {
+          Bad: null,
+          Typeless: { physicalId: 'after-typeless' },
+          Str: 'abc',
+          Empty: { physicalId: '' },
+          // A NON-STRING id: `!== undefined` would claim the number 42, which
+          // no live resource is named by, and report nothing for the row.
+          Num: { physicalId: 42 },
+          Fine: { physicalId: 'after-bad' },
+        },
+      },
+    });
+
+    // `Typeless` still names a physical id, so it is a CLAIM this set must
+    // keep — the predicate here is the id, not `isReadableResourceEntry`'s
+    // `resourceType`, which this walk never reads. An EMPTY id claims nothing,
+    // and neither does a non-string one.
+    const claimed = await readSiblings(makeEngine());
+    expect([...claimed].sort()).toEqual(['after-bad', 'after-typeless']);
+    expect(claimed.has(42 as unknown as string)).toBe(false);
+  });
+
+  it('still walks a LIST-shaped sibling bag, so its ids stay claimed (fail-closed)', async () => {
+    // Maintainer review M2 on go-to-k/cdkd#3758: `Object.values` claimed the
+    // element's id before this lane, and a claim dropped is a record this stack
+    // may adopt while the sibling still owns it — the operator repairs the
+    // sibling's list into a map, and `cdkd destroy` of the sibling then deletes
+    // this stack's live resource. `isReadableBag` rejects an array, which is
+    // why it is NOT the test here.
+    backend.listStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({
+      state: { resources: [{ physicalId: 'from-list' }, null, { physicalId: '' }] },
+    });
+    const debug = vi.fn();
+    const claimed = await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    expect([...claimed]).toEqual(['from-list']);
+    // The two unusable elements are reported by index, as rows.
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toMatch(/2 resource record\(s\) with no readable physical id/);
+    expect(said).not.toContain("no readable 'resources' map");
+  });
+
+  it('skips a NULL sibling bag with the bag diagnosis, and keeps collecting from the next sibling', async () => {
+    // `typeof null === 'object'`, so the `|| bag === null` half of the guard
+    // is what routes a null bag to the bag diagnosis; without it
+    // `Object.entries(null)` throws into the per-sibling catch, the claim set
+    // stays the same (inert) and the diagnosis names an unreadable STATE
+    // rather than the bag — which is what this pins.
+    backend.listStacks.mockResolvedValue([
+      { stackName: 'NullBag', region: 'us-east-1' },
+      { stackName: 'Fine', region: 'us-east-1' },
+    ]);
+    backend.getState
+      .mockResolvedValueOnce({ state: { resources: null } })
+      .mockResolvedValueOnce({ state: { resources: { A: { physicalId: 'fine-a' } } } });
+    const debug = vi.fn();
+    const claimed = await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    expect([...claimed]).toEqual(['fine-a']);
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain('NullBag');
+    expect(said).toContain("no readable 'resources' map");
+    expect(said, 'the null bag fell into the catch instead of the bag diagnosis').not.toContain(
+      'skipping unreadable state'
+    );
+  });
+
+  it('skips a sibling whose resources BAG is unreadable, and claims no fabricated id from it', async () => {
+    backend.listStacks.mockResolvedValue([
+      { stackName: 'Broken', region: 'us-east-1' },
+      { stackName: 'Fine', region: 'us-east-1' },
+    ]);
+    backend.getState
+      // `Object.values('abc')` used to walk the string one character at a time,
+      // each one's `physicalId` `undefined` — so the set gained a claim on
+      // `undefined` and nothing else. A `[]` bag was walked as an empty map.
+      .mockResolvedValueOnce({ state: { resources: 'abc' } })
+      .mockResolvedValueOnce({ state: { resources: { A: { physicalId: 'fine-a' } } } });
+
+    const claimed = await readSiblings(makeEngine());
+    expect([...claimed]).toEqual(['fine-a']);
+    expect(claimed.has(undefined as unknown as string)).toBe(false);
+  });
+
+  /**
+   * The DIAGNOSIS half, which the two cases above cannot see: for the CLAIMED
+   * set the bag guard is equivalent to walking the bag anyway (a string's
+   * characters are not objects, so they are skipped as rows; a `null` bag
+   * throws into the per-sibling catch) — measured, both mutants stayed green
+   * on the set alone. What the guard and the row list buy is that the
+   * narrowing is SAID, at the level the sibling-skip beside them already uses,
+   * naming the record and the rows rather than one character per row.
+   */
+  it('says at DEBUG which sibling record, and which rows, it could not read', async () => {
+    backend.listStacks.mockResolvedValue([
+      { stackName: 'BagBroken', region: 'us-east-1' },
+      { stackName: 'RowBroken', region: 'us-east-1' },
+    ]);
+    backend.getState
+      .mockResolvedValueOnce({ state: { resources: 'abc' } })
+      .mockResolvedValueOnce({
+        state: {
+          resources: { Bad: null, Fine: { physicalId: 'fine' }, Typeless: {}, Num: { physicalId: 42 } },
+        },
+      });
+    const debug = vi.fn();
+    const claimed = await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    expect([...claimed]).toEqual(['fine']);
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    // The BAG, named as a bag — not as three rows called `0`, `1`, `2`.
+    expect(said).toContain('BagBroken');
+    expect(said).toContain("no readable 'resources' map");
+    expect(said).not.toMatch(/\b0\b.*\b1\b.*\b2\b/);
+    // The ROWS, each by logical id, and the healthy one not among them.
+    expect(said).toContain('RowBroken');
+    expect(said).toMatch(/3 resource record\(s\) with no readable physical id/);
+    expect(said).toContain('Bad');
+    expect(said).toContain('Typeless');
+    // The non-string id is REPORTED, not claimed: `!== undefined` would do the
+    // reverse on exactly this row.
+    expect(said).toContain('Num');
+    expect(said).not.toContain('Fine');
+  });
+
+  it('caps the rows the debug line names at five, and counts the rest', async () => {
+    // A planted sibling record with thousands of torn rows must not render one
+    // debug line per byte of it — the cap `namedEntriesClause` takes for the
+    // user-facing texts (review of go-to-k/cdkd#3202).
+    const resources: Record<string, unknown> = {};
+    for (let i = 0; i < 8; i++) resources[`Torn${i}`] = null;
+    backend.listStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+    backend.getState.mockResolvedValue({ state: { resources } });
+    const debug = vi.fn();
+    await makeSiblingClaimReader({
+      stateBackend: backend as unknown as never,
+      selfStackName: 'MyStack',
+      selfRegion: 'us-east-1',
+      logger: { debug },
+    })();
+    const said = debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain('8 resource record(s)');
+    for (let i = 0; i < 5; i++) expect(said).toContain(`Torn${i}`);
+    expect(said).not.toContain('Torn5');
+    expect(said).toContain('and 3 more');
+  });
 });

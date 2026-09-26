@@ -276,4 +276,22 @@ describe('extractLambdaVpcDeleteDeps', () => {
       { before: 'Fn', after: 'SubnetOnly' },
     ]);
   });
+
+  // go-to-k/cdkd#3515: `targetId in resources` answered TRUE for a Ref named
+  // after an Object.prototype member (`constructor`) through the prototype
+  // chain, emitting an edge to a resource that does not exist.
+  it('emits no edge for a Ref named after an Object.prototype member with no such resource', () => {
+    const resources: Record<string, ResourceLike> = {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          VpcConfig: {
+            SubnetIds: [{ Ref: 'constructor' }, { Ref: 'SubnetA' }],
+          },
+        },
+      },
+      SubnetA: { Type: 'AWS::EC2::Subnet', Properties: {} },
+    };
+    expect(extractLambdaVpcDeleteDeps(resources)).toEqual([{ before: 'Fn', after: 'SubnetA' }]);
+  });
 });

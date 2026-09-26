@@ -121,6 +121,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { displayIdent } from '../../utils/display-safe.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -1017,7 +1019,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-vpc --vpc-id ${vpcId}`
+            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
         throw innerError;
@@ -1319,7 +1321,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-subnet --subnet-id ${subnetId}`
+            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
         throw innerError;
@@ -1786,7 +1788,11 @@ export class EC2Provider implements ResourceProvider {
       if (instanceId) {
         if (process.env['CDKD_NO_WAIT'] === 'true') {
           this.logger.warn(
-            `EIP ${logicalId} (${allocationId}) was NOT associated with ${instanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${instanceId}`
+            // The PROSE copy of the template's InstanceId renders through
+            // `displayIdent`: under --no-wait AWS never saw it, so nothing has
+            // validated it, and a control byte there forges terminal lines
+            // beside the command (#3136).
+            `EIP ${logicalId} (${allocationId}) was NOT associated with ${displayIdent(instanceId)}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${instanceId}`.render()}`
           );
         } else {
           await this.ec2Client.send(
@@ -1885,7 +1891,7 @@ export class EC2Provider implements ResourceProvider {
               this.isIncorrectInstanceStateError(error)
             ) {
               this.logger.warn(
-                `EIP ${logicalId} (${allocationId}) was NOT associated with ${newInstanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${newInstanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${newInstanceId} --allow-reassociation`
+                `EIP ${logicalId} (${displayIdent(allocationId)}) was NOT associated with ${displayIdent(newInstanceId)}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: ${pasteableAwsCommand()`aws ec2 describe-instances --instance-ids ${newInstanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${newInstanceId} --allow-reassociation`.render()}`
               );
             } else {
               throw error;
@@ -2986,7 +2992,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-security-group --group-id ${groupId}`
+            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
         throw innerError;
@@ -3944,7 +3950,12 @@ export class EC2Provider implements ResourceProvider {
         // unassigned IP, so this warns rather than staying quiet (issue #1279).
         if (iamInstanceProfile) {
           if (process.env['CDKD_NO_WAIT'] === 'true') {
-            const profileRef = iamInstanceProfile.arn ?? iamInstanceProfile.name;
+            // Both commands render through `pasteableAwsCommand` (issue
+            // #3136): the profile is a template value, so it is sanitized and
+            // shell-quoted, and a value that cannot be printed exactly
+            // withholds the command rather than naming another profile.
+            const aws = pasteableAwsCommand(context?.maskSecrets);
+            const profileRef = iamInstanceProfile.arn ?? iamInstanceProfile.name ?? '';
             // cdkd-profile-display: a DIFFERENT SUBJECT that shares the word.
             // `profileRef` is an `AWS::IAM::InstanceProfile` name or ARN out of
             // the user's own CloudFormation template, not the `--profile <name>`
@@ -3957,10 +3968,9 @@ export class EC2Provider implements ResourceProvider {
                 `because --no-wait leaves the instance in 'pending', where AssociateIamInstanceProfile ` +
                 `is rejected. RunInstances associates the profile asynchronously and can complete with ` +
                 `NO profile attached when the profile was created moments earlier. Verify with: ` +
-                `aws ec2 describe-iam-instance-profile-associations --filters ` +
-                `Name=instance-id,Values=${instanceId} — and if it is missing, re-associate with: ` +
-                `aws ec2 associate-iam-instance-profile --instance-id ${instanceId} ` +
-                `--iam-instance-profile ${iamInstanceProfile.arn ? `Arn=${profileRef}` : `Name=${profileRef}`}`
+                `${aws`aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=${instanceId}`.render()}` +
+                ` — and if it is missing, re-associate with: ` +
+                `${aws`aws ec2 associate-iam-instance-profile --instance-id ${instanceId} --iam-instance-profile ${iamInstanceProfile.arn ? aws`Arn=${profileRef}` : aws`Name=${profileRef}`}`.render()}`
             );
           } else {
             await this.ensureIamInstanceProfileAssociated(
@@ -4003,7 +4013,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: aws ec2 terminate-instances --instance-ids ${instanceId}`
+            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
         throw innerError;

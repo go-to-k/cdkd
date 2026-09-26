@@ -237,6 +237,10 @@ DELETE_RETRY_DRIVER_PID=""
 # them inline — cannot leak two `mktemp` files per run.
 DESTROY_LOG=""
 DELETE_RETRY_MARKER=""
+# Step 12c-3's scratch directory (a state.json copy and two drift logs), swept
+# by `cleanup()` for the same reason: every FAIL in that step exits past the
+# success-path `rm`.
+DRIFT_3573_DIR=""
 
 cleanup() {
   rc=$?
@@ -257,6 +261,10 @@ cleanup() {
     rm -f "${DELETE_RETRY_MARKER}"
     DELETE_RETRY_MARKER=""
   fi
+  if [ -n "${DRIFT_3573_DIR}" ]; then
+    rm -rf "${DRIFT_3573_DIR}"
+    DRIFT_3573_DIR=""
+  fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     # Retry once on dependency errors (AWS DynamoDB delete can lag
@@ -265,6 +273,9 @@ cleanup() {
     # mid-run; without the flag, AWS rejects DeleteTable.
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force || \
       ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force || true
+    # A run that died between a #3740 revert staging and its rollback leaves a
+    # journal behind; a leftover journal would hijack the next run's rollback.
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
   fi
   exit "${rc}"
 }
@@ -278,6 +289,75 @@ ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 echo "[verify] step 3: read deployed table names from cdkd state"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+
+# --- issue #3740: staging the REPLAY path for the warn arms -----------------
+# A template-path update REFUSES a malformed StreamSpecification /
+# GlobalSecondaryIndexes / BillingMode since #3740, so the #1653 / #1683 /
+# #1738 warn-and-skip arms are driven through the rollback REVERT arm, which
+# replays the journal's PREVIOUS record as the desired bag. At each call site:
+#   set +e
+#   CDKD_TEST_UPDATE="<the currently deployed modes>,revert-probe,inject-fail" \
+#     ${CLI} deploy ... --no-rollback > "${STAGE_LOG}" 2>&1
+#   STAGE_RC=$?
+#   set -e
+#   doctor_gt_journal "${STAGE_LOG}" "${STAGE_RC}" '<python: doctor the journal>'
+# The deploy is inlined (not passed in) so the mode-timeline fence can resolve
+# every CDKD_TEST_UPDATE. `revert-probe` is an ordinary in-place change (a
+# local-replica tag on the four junk tables) and `inject-fail` a queue AWS
+# refuses, created after them, so the tables' updates are COMPLETED ops in the
+# journal. In the doctor, `ops("<logical-id prefix>")` returns that table's
+# previous-record properties to edit in place. The caller then runs
+# `cdkd rollback`. The doctored values stand in for records an older binary
+# could have written, exactly like the hand-patched state records below.
+doctor_gt_journal() {
+  local log="$1" rc="$2" doctor="$3" tmp out
+  tail -40 "${log}" | sed 's/^/  /' || true
+  rm -f "${log}"
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: the inject-fail deploy SUCCEEDED — there is no journal to roll back" >&2
+    exit 1
+  fi
+  tmp="$(mktemp)"
+  out="$(mktemp)"
+  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${tmp}" >/dev/null
+  DOCTOR="${doctor}" python3 - "${tmp}" > "${out}" <<'PY'
+import json, os, sys
+with open(sys.argv[1]) as fh:
+    journal = json.load(fh)
+def ops(prefix):
+    found = [op for seg in journal.get("segments", []) for op in seg.get("operations", [])
+             if op.get("changeType") == "UPDATE" and op.get("logicalId", "").startswith(prefix)]
+    if len(found) != 1:
+        sys.exit("expected exactly one UPDATE op for %s in the journal, got %d" % (prefix, len(found)))
+    return found[0]["previousState"]["properties"]
+exec(os.environ["DOCTOR"])
+json.dump(journal, sys.stdout)
+PY
+  aws s3 cp "${out}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+  rm -f "${tmp}" "${out}"
+}
+
+# A template-path deploy that must be REFUSED by the #3740 pre-flight: non-zero
+# exit, the guard's own sentence ($3, a grep -E pattern) and the pre-flight's
+# suffix. The deploy is inlined at the call site (see above), so this takes its
+# captured log and exit code. Usage: check_template_refusal "<log>" "<rc>" "<pattern>"
+check_template_refusal() {
+  local log="$1" rc="$2" pattern="$3"
+  tail -30 "${log}" | sed 's/^/  /' || true
+  if [ "${rc}" -eq 0 ]; then
+    rm -f "${log}"
+    echo "FAIL: issue #3740 — the malformed template deployed (exit 0) on the template path" >&2
+    exit 1
+  fi
+  if ! grep -qE "${pattern}" "${log}" || ! grep -q "Nothing was applied to the table; fix the template value" "${log}"; then
+    rm -f "${log}"
+    echo "FAIL: issue #3740 — the deploy failed, but not with the template-path refusal /${pattern}/" >&2
+    exit 1
+  fi
+  rm -f "${log}"
+  echo "    issue #3740 ok: refused on the template path before any write (${pattern})"
+}
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 # The stack deploys THREE AWS::DynamoDB::GlobalTable resources (the original
 # HistoryTable plus the two Issue #1387 GSI fixtures), so select by logical-id
@@ -691,6 +771,147 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   fi
   echo "[verify] step 12c-2 ok: eu-west-1 ProvisionedThroughputOverride = 7"
 
+  # --- step 12c-3 (Issue #3573): the LOCAL replica on a multi-region table ---
+  # `DescribeTable` in the deploy region lists only the OTHER regions, so the
+  # readback used to leave the local entry out of `Replicas` and drift on it
+  # was invisible. Two halves, one arm each:
+  #   (a) an out-of-band tag on the LOCAL table must be reported. Pre-fix the
+  #       local entry, and so its Tags, were never read back: this is the
+  #       assertion that can only pass after the fix.
+  #   (b) a LEGACY observed baseline (no local entry, what an older binary
+  #       captured) must compare clean against the new readback, via the
+  #       provider's canonicalizeDriftPair. Without it, (b) reports Replicas.
+  # Both read the HistoryTable's drift row only, so an unrelated phantom on a
+  # sibling resource cannot be read as a verdict on this change.
+  echo "[verify] step 12c-3 (Issue #3573): local-replica drift on a multi-region table"
+  HISTORY_LID="$(echo "${STATE_JSON}" | python3 -c '
+import json, sys
+for logical_id, resource in json.load(sys.stdin).get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("HistoryTable"):
+        print(logical_id)
+        break
+')"
+  if [ -z "${HISTORY_LID}" ]; then
+    echo "[verify] FAIL (#3573): no HistoryTable logical id in cdkd state" >&2
+    exit 1
+  fi
+  LOCAL_ARN="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableArn' --output text)"
+  DRIFT_3573_DIR="$(mktemp -d)"
+  echo "[verify] step 12c-3 scratch: ${DRIFT_3573_DIR}"
+  PROBE_TAG_KEY="cdkd-3573-probe"
+
+  # (a) Tag reads are eventually consistent, so poll the report rather than
+  # read it once; each attempt is a full drift run.
+  aws dynamodb tag-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+    --tags "Key=${PROBE_TAG_KEY},Value=out-of-band"
+  SAW_LOCAL_DRIFT=0
+  for _ in $(seq 1 6); do
+    set +e
+    ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+      > "${DRIFT_3573_DIR}/drift-a.log" 2>&1
+    set -e
+    if grep -qE "^[[:space:]]+~ ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-a.log" &&
+       grep -qF "${PROBE_TAG_KEY}" "${DRIFT_3573_DIR}/drift-a.log"; then
+      SAW_LOCAL_DRIFT=1
+      break
+    fi
+    sleep 10
+  done
+  aws dynamodb untag-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+    --tag-keys "${PROBE_TAG_KEY}"
+  if [ "${SAW_LOCAL_DRIFT}" != "1" ]; then
+    echo "[verify] FAIL (#3573 a): an out-of-band tag on the LOCAL replica of ${TABLE_NAME} was not reported by cdkd drift -- the readback still drops the local entry" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-a.log" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-3 (a) ok: the local replica's out-of-band tag is reported"
+  # Wait for the untag to be visible before (b), or (b) reads the tag as drift.
+  # Rows of a projection, not `length(...)`: under `--output text` that
+  # aggregates per PAGE. An absent tag prints nothing.
+  for _ in $(seq 1 30); do
+    TAG_LEFT="$(aws dynamodb list-tags-of-resource --resource-arn "${LOCAL_ARN}" --region "${REGION}" \
+      --query "Tags[?Key=='${PROBE_TAG_KEY}'].Key" --output text)"
+    [ -z "${TAG_LEFT}" ] && break
+    sleep 5
+  done
+  if [ -n "${TAG_LEFT}" ]; then
+    echo "[verify] FAIL (#3573): the probe tag ${PROBE_TAG_KEY} is still on ${TABLE_NAME} after untag" >&2
+    exit 1
+  fi
+
+  # (b) Rewrite the recorded observed baseline into the legacy shape. First
+  # pin that the deploy just captured the NEW shape: exactly one local entry.
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${DRIFT_3573_DIR}/state.json" >/dev/null
+  CAPTURED_LOCAL="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '.resources[$lid].observedProperties.Replicas // [] | map(select(.Region == $r)) | length' \
+    "${DRIFT_3573_DIR}/state.json")"
+  if [ "${CAPTURED_LOCAL}" != "1" ]; then
+    echo "[verify] FAIL (#3573 b): the deploy captured ${CAPTURED_LOCAL} local (${REGION}) entries in ${HISTORY_LID}'s observed Replicas, want 1" >&2
+    exit 1
+  fi
+  # The other regions the record holds, read rather than named, so the shape
+  # check below follows the arm if its replica region ever changes.
+  OTHER_REGIONS="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '[.resources[$lid].observedProperties.Replicas[] | select(.Region != $r) | .Region] | join(",")' \
+    "${DRIFT_3573_DIR}/state.json")"
+  if [ -z "${OTHER_REGIONS}" ]; then
+    echo "[verify] FAIL (#3573 b): ${HISTORY_LID}'s observed Replicas holds no cross-region entry, so there is no legacy shape to build" >&2
+    exit 1
+  fi
+  jq --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '.resources[$lid].observedProperties.Replicas |= map(select(.Region != $r))' \
+    "${DRIFT_3573_DIR}/state.json" > "${DRIFT_3573_DIR}/state-legacy.json"
+  # Fail loudly if the rewrite did not take: a baseline that still carries the
+  # local entry makes (b) pass for the wrong reason.
+  LEGACY_SHAPE="$(jq -r --arg lid "${HISTORY_LID}" --arg r "${REGION}" \
+    '[(.resources[$lid].observedProperties.Replicas | map(.Region)),
+      (.resources[$lid].observedProperties.Replicas | map(select(.Region == $r)) | length)]
+     | "\(.[0] | join(","))|\(.[1])"' "${DRIFT_3573_DIR}/state-legacy.json")"
+  if [ "${LEGACY_SHAPE}" != "${OTHER_REGIONS}|0" ]; then
+    echo "[verify] FAIL (#3573 b): the legacy baseline is not in the shape the arm needs (got '${LEGACY_SHAPE}', want '${OTHER_REGIONS}|0')" >&2
+    exit 1
+  fi
+  aws s3 cp "${DRIFT_3573_DIR}/state-legacy.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+  set +e
+  ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    > "${DRIFT_3573_DIR}/drift-b.log" 2>&1
+  DRIFT_B_RC=$?
+  set -e
+  # Restore the recorded state before judging, so a FAIL leaves it as cdkd wrote it.
+  aws s3 cp "${DRIFT_3573_DIR}/state.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+  if grep -qE "^[[:space:]]+~ ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): a legacy observed baseline (no local replica entry) drifted against the new readback -- the upgrade phantom was not absorbed" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  # The absence of a `~` row proves the table compared clean only if it WAS
+  # compared: rule out every other outcome that prints no such row -- an
+  # unreadable resource (`! <lid>` under "NOT fully compared"), an unsupported
+  # one, and a run that produced no report at all. Exit 1 is still accepted,
+  # for a drifted SIBLING, but then the report must say drift was detected.
+  if grep -qE "^[[:space:]]+! ${HISTORY_LID} " "${DRIFT_3573_DIR}/drift-b.log" ||
+     grep -qF 'drift unknown' "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): ${HISTORY_LID} was not fully compared, so the absence of a drift row proves nothing" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  # Exit 0 alone is not enough either: the "NOTHING was compared" summary
+  # also exits 0, and prints `0 of N resources checked`.
+  case "${DRIFT_B_RC}" in
+    0) B_REPORT='\([0-9]+ resources checked, 0 unsupported\)' ;;
+    1) B_REPORT='drift detected on' ;;
+    *) B_REPORT='' ;;
+  esac
+  if [ -z "${B_REPORT}" ] || ! grep -qE "${B_REPORT}" "${DRIFT_3573_DIR}/drift-b.log"; then
+    echo "[verify] FAIL (#3573 b): cdkd drift exited ${DRIFT_B_RC} without the report that exit code implies, so the run compared nothing provable" >&2
+    tail -30 "${DRIFT_3573_DIR}/drift-b.log" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-3 (b) ok: a legacy observed baseline compares clean"
+  rm -rf "${DRIFT_3573_DIR}"
+  DRIFT_3573_DIR=""
+
   echo "[verify] step 12d: remove the eu-west-1 replica"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
@@ -1093,7 +1314,7 @@ if [ "${UNRESOLVABLE_READ}" != "5" ] || [ "${UNRESOLVABLE_WRITE}" != "1" ]; then
 fi
 echo "    unresolvable capacity warned and defaulted to 5 while the valid sibling kept 1, issue #1511 closed"
 
-echo "[verify] step 13f2: cdkd deploy with stream-state-junk (issue #1653 — a SKIPPED StreamSpecification must record the PREVIOUS value, not the malformed one)"
+echo "[verify] step 13f2: stream-state-junk — refused on the template path (#3740); on a REVERT a SKIPPED StreamSpecification must record the PREVIOUS value (#1653)"
 # The warn-and-skip arm (issue #1551) leaves the live stream alone, so the
 # deploy SUCCEEDS and the engine records a bag for a call that never ran.
 # Pre-#1653 that bag was the DESIRED one, so state held the string
@@ -1117,9 +1338,30 @@ if [ "${STREAM_VIEW_BEFORE}" != "KEYS_ONLY" ]; then
   exit 1
 fi
 
+# Issue #3740: the template-path half REFUSES the junk before any write...
+REFUSE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${STREAM_MODES},stream-state-junk" ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${REFUSE_LOG}" 2>&1
+REFUSE_RC=$?
+set -e
+check_template_refusal "${REFUSE_LOG}" "${REFUSE_RC}" \
+  "GlobalTable StreamRecoveryTable: .*StreamSpecification must be an object"
+if [ "$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.LatestStreamArn' --output text)" != "${STREAM_ARN_BEFORE}" ]; then
+  echo "FAIL: issue #3740 — the refused deploy changed the live stream" >&2
+  exit 1
+fi
+# ...so the #1653 warn-and-skip arm is driven through the REVERT arm instead.
+STAGE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${STREAM_MODES},revert-probe,inject-fail" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${STAGE_LOG}" 2>&1
+STAGE_RC=$?
+set -e
+doctor_gt_journal "${STAGE_LOG}" "${STAGE_RC}" \
+  "ops('StreamRecoveryTable')['StreamSpecification'] = '${REGION}-x'"
 STREAM_JUNK_LOG="$(mktemp)"
-CDKD_TEST_UPDATE="${STREAM_MODES},stream-state-junk" \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${STREAM_JUNK_LOG}"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${STREAM_JUNK_LOG}"
 
 # ONE line-coupled grep: the table name, the refused property and the skip
 # decision in a single sentence. Three independent greps would each pass on
@@ -1227,6 +1469,17 @@ echo "[verify] step 13f3: issue #1653 review (A2) — a MALFORMED previous side 
 # Only a hand-patched record can produce that shape now (which is the point:
 # post-fix cdkd never writes one), so patch it directly, exactly the recipe
 # issue #1654 spells out for the Lambda URL sibling.
+# Since #3740 the revert arm is the path that reaches it: the journal's
+# previous record (the DESIRED side) carries the junk, and the current record
+# (the PREVIOUS side) is patched unusable after the failed deploy.
+STAGE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${STREAM_MODES},revert-probe,inject-fail" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${STAGE_LOG}" 2>&1
+STAGE_RC=$?
+set -e
+doctor_gt_journal "${STAGE_LOG}" "${STAGE_RC}" \
+  "ops('StreamRecoveryTable')['StreamSpecification'] = '${REGION}-x'"
 STATE_PATCH="$(mktemp)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
 import json, sys
@@ -1246,10 +1499,9 @@ aws s3 cp "${STATE_PATCH}" "s3://${STATE_BUCKET}/${STATE_KEY}"
 rm -f "${STATE_PATCH}"
 
 STREAM_JUNK2_LOG="$(mktemp)"
-CDKD_TEST_UPDATE="${STREAM_MODES},stream-state-junk" \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${STREAM_JUNK2_LOG}"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${STREAM_JUNK2_LOG}"
 if ! grep -q "GlobalTable StreamRecoveryTable: .*StreamSpecification must be an object" "${STREAM_JUNK2_LOG}"; then
-  echo "FAIL: issue #1653 (A2) — the skip did not fire on the both-sides-malformed deploy" >&2
+  echo "FAIL: issue #1653 (A2) — the skip did not fire on the both-sides-malformed revert" >&2
   exit 1
 fi
 rm -f "${STREAM_JUNK2_LOG}"
@@ -1296,7 +1548,7 @@ if [ "${STREAM_RESTORED}" != '{"StreamViewType": "KEYS_ONLY"}' ]; then
 fi
 echo "    record restored to the pre-patch value"
 
-echo "[verify] step 13g: cdkd deploy with gsi-state-junk (issue #1571 phase 1 — RECORD an unusable GlobalSecondaryIndexes into cdkd state)"
+echo "[verify] step 13g: gsi-state-junk — refused on the template path (#3740); the warn arms driven through a REVERT (issue #1571 phase 1)"
 # The provider's warn path (issue #1551) records a malformed desired
 # `GlobalSecondaryIndexes` as the new state, and the NEXT update then has no
 # usable previous side. Nothing about that sequence is reachable from a mocked
@@ -1307,9 +1559,37 @@ echo "[verify] step 13g: cdkd deploy with gsi-state-junk (issue #1571 phase 1 �
 # the region pseudo-parameter, so cdkd resolves it at deploy time to the STRING
 # `us-east-1-x` — present, and not an array.
 GSI_RECOVERY_MODES="ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity${OD_MODE_SUFFIX}"
+# Issue #3740: the template-path half REFUSES the junk before any write, so
+# the #1571 / #1683 / #1738 arms below are driven through the REVERT arm: the
+# journal's previous records get exactly what the `gsi-state-junk` template
+# renders (a present-but-non-array GlobalSecondaryIndexes, no replica index
+# entries, and on the PROVISIONED table an unusable BillingMode plus a raised
+# on-demand ceiling).
+REFUSE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-junk" ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${REFUSE_LOG}" 2>&1
+REFUSE_RC=$?
+set -e
+check_template_refusal "${REFUSE_LOG}" "${REFUSE_RC}" \
+  "GlobalTable Gsi(Prov)?RecoveryTable: .*(GlobalSecondaryIndexes must be an array|BillingMode must be a non-empty string)"
+STAGE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},revert-probe,inject-fail" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${STAGE_LOG}" 2>&1
+STAGE_RC=$?
+set -e
+doctor_gt_journal "${STAGE_LOG}" "${STAGE_RC}" "
+p = ops('GsiRecoveryTable')
+p['GlobalSecondaryIndexes'] = '${REGION}-x'
+p['Replicas'][0].pop('GlobalSecondaryIndexes', None)
+q = ops('GsiProvRecoveryTable')
+q['GlobalSecondaryIndexes'] = '${REGION}-y'
+q['Replicas'][0].pop('GlobalSecondaryIndexes', None)
+q['BillingMode'] = {'Unusable': 'not-a-string'}
+q['WriteOnDemandThroughputSettings']['MaxWriteRequestUnits'] = 200
+"
 JUNK_LOG="$(mktemp)"
-CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-junk" \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${JUNK_LOG}"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${JUNK_LOG}"
 
 if ! grep -q "GlobalTable GsiRecoveryTable: .*GlobalSecondaryIndexes must be an array" "${JUNK_LOG}"; then
   echo "FAIL: issue #1571 phase 1 — cdkd did not report the malformed desired GlobalSecondaryIndexes on GsiRecoveryTable" >&2
@@ -1806,9 +2086,29 @@ echo "[verify] step 13k: issue #1738 — kept-PAY_PER_REQUEST retains the previo
 # KEPT) and raises the replica's declared ReadCapacityUnits 3 -> 9. Under
 # PAY_PER_REQUEST `toSdkReplicaThroughputOverrides` drops the provisioned branch
 # entirely, so nothing is sent and state must record the PREVIOUS 3.
+# Issue #3740: refused on the template path; the kept-mode arm is driven
+# through the REVERT arm with the journal's previous record carrying what the
+# `billing-seed-unusable` template renders.
+REFUSE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery,billing-seed-unusable" ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${REFUSE_LOG}" 2>&1
+REFUSE_RC=$?
+set -e
+check_template_refusal "${REFUSE_LOG}" "${REFUSE_RC}" \
+  "GlobalTable BillingSeedTable: .*BillingMode must be a non-empty string"
+STAGE_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery,billing-seed-flip,revert-probe,inject-fail" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${STAGE_LOG}" 2>&1
+STAGE_RC=$?
+set -e
+doctor_gt_journal "${STAGE_LOG}" "${STAGE_RC}" "
+s = ops('BillingSeedTable')
+s['BillingMode'] = {'Unusable': 'not-a-string'}
+s['Replicas'][0]['ReadProvisionedThroughputSettings']['ReadCapacityUnits'] = 9
+"
 SEED_UNUSABLE_LOG="$(mktemp)"
-CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery,billing-seed-unusable" \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${SEED_UNUSABLE_LOG}"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${SEED_UNUSABLE_LOG}"
 
 if ! grep -q "GlobalTable BillingSeedTable: .*is kept for this update" "${SEED_UNUSABLE_LOG}"; then
   echo "FAIL: issue #1738 — the BillingMode guard did not suppress the flip on BillingSeedTable" >&2

@@ -33,6 +33,7 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * AWS RDS Provider
@@ -619,8 +620,16 @@ export class RDSProvider implements ResourceProvider {
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
         } catch (cleanupError) {
+          // The identifier is TEMPLATE-chosen (or generated), so the recovery
+          // commands render through `pasteableAwsCommand` (issue #3136): one
+          // that cannot be printed exactly withholds them rather than naming
+          // another cluster.
+          const aws = pasteableAwsCommand();
+          const unprotect = wantsDeletionProtection
+            ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
+            : aws``;
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${wantsDeletionProtection ? `aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; ` : ''}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;

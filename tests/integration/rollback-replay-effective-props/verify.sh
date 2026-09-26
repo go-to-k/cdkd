@@ -855,43 +855,6 @@ ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_
   --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-2.log" 2>&1
 DRIFT2_RC=$?
 set -e
-# COVERAGE BOUND for the cross-region arm, issue #3573: on a multi-region
-# GlobalTable `readCurrentState` leaves the LOCAL replica out of `Replicas`,
-# and the rollback strips `observedProperties`, so drift compares the (right)
-# two-replica record against a one-replica readback. Accepted ONLY in exactly
-# that shape -- one drifted resource, the cross-region table, differing only
-# in `Replicas`, the record naming the deploy region and the readback not --
-# so any OTHER difference on any resource still fails below. When #3573 is
-# fixed this stops matching and the plain rc check takes over: delete it then.
-known_xr_local_replica_gap() { # $1 = drift log
-  local log="$1"
-  [ "${MULTI_REGION}" = "1" ] || return 1
-  [ "$(grep -cE '^[[:space:]]+~ ' "${log}")" = "1" ] || return 1
-  grep -qE "^[[:space:]]+~ ${GTX_LOGICAL_ID} " "${log}" || return 1
-  [ "$(grep -cE '^[[:space:]]+[-+] ' "${log}")" = "2" ] || return 1
-  [ "$(grep -cE '^[[:space:]]+[-+] Replicas: ' "${log}")" = "2" ] || return 1
-  # The ONLY tolerated difference is the missing local entry: the readback
-  # must equal the record with the deploy-region entry removed, member for
-  # member, so a real regression in the OTHER replica's entry still fails.
-  # Each side is one compact JSON line after its `- Replicas: ` / `+ Replicas: `
-  # prefix (state on `-`, readback on `+`).
-  local recorded readback verdict
-  recorded="$(grep -E '^[[:space:]]+- Replicas: ' "${log}" | sed -E 's/^[[:space:]]+- Replicas: //')"
-  readback="$(grep -E '^[[:space:]]+\+ Replicas: ' "${log}" | sed -E 's/^[[:space:]]+\+ Replicas: //')"
-  verdict="$(jq -n -r --argjson rec "${recorded}" --argjson live "${readback}" --arg r "${REGION}" \
-    '(($rec | map(select(.Region == $r)) | length) == 1)
-     and ($rec | map(select(.Region != $r))) == $live' 2>/dev/null)" || return 1
-  [ "${verdict}" = "true" ]
-}
-DRIFT1_GAP_ACCEPTED=0
-for n in 1 2; do
-  eval "rc=\${DRIFT${n}_RC}"
-  if [ "${rc}" -eq 1 ] && known_xr_local_replica_gap "${WORK_DIR}/drift-${n}.log"; then
-    echo "[verify] phase 5: drift run ${n} reports only the known #3573 local-replica readback gap on ${GTX_LOGICAL_ID}; accepted"
-    eval "DRIFT${n}_RC=0"
-    [ "${n}" = "1" ] && DRIFT1_GAP_ACCEPTED=1
-  fi
-done
 if [ "${DRIFT1_RC}" -ne 0 ] || [ "${DRIFT2_RC}" -ne 0 ]; then
   echo "FAIL: phase 5: drift reported a difference (rc=${DRIFT1_RC}/${DRIFT2_RC})." >&2
   echo "      A DestinationIpv6CidrBlock difference here is the #1682 phantom" >&2
@@ -921,21 +884,7 @@ fi
 # is what the first version of this check did). Assert the COUNT instead: the
 # stack has exactly 7 resources, so "7 resources checked, 0 unsupported" is what
 # proves every rewritten record was actually compared rather than skipped.
-if [ "${DRIFT1_GAP_ACCEPTED}" = "1" ]; then
-  # The drifted branch of the report prints no "N resources checked" line, so
-  # the count cannot be read here. What it CAN prove: exactly one resource
-  # drifted (the known gap, shape-checked above), and nothing was left
-  # uncompared or unsupported -- the `drift unknown` check above covers an
-  # unreadable resource, this covers the rest of the not-compared population.
-  if ! grep -qF 'drift detected on 1 resource' "${WORK_DIR}/drift-1.log" ||
-     grep -qiE 'not compared|not fully compared|partially compared|unsupported' "${WORK_DIR}/drift-1.log"; then
-    echo "FAIL: phase 5: drift run 1 was accepted as the #3573 gap, but its report" >&2
-    echo "      does not show exactly one drifted resource with nothing left" >&2
-    echo "      uncompared, so the other ${EXPECTED_DRIFT_RESOURCES} records are unproven." >&2
-    tail -30 "${WORK_DIR}/drift-1.log" >&2
-    exit 1
-  fi
-elif ! grep -qE "${EXPECTED_DRIFT_RESOURCES} resources checked, 0 unsupported" "${WORK_DIR}/drift-1.log"; then
+if ! grep -qE "${EXPECTED_DRIFT_RESOURCES} resources checked, 0 unsupported" "${WORK_DIR}/drift-1.log"; then
   echo "FAIL: phase 5: drift did not report all ${EXPECTED_DRIFT_RESOURCES} resources checked with 0" >&2
   echo "      unsupported, so a rewritten record was skipped and the clean exit" >&2
   echo "      proves nothing about convergence." >&2

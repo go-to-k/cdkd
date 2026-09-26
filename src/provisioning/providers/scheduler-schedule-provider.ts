@@ -370,7 +370,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       const manualHint =
         safeId && safeId === physicalId
           ? `If the schedule lives in a custom group, delete it manually: ` +
-            `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name <group>`
+            `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name '<group>'`
           : `If the schedule lives in a custom group, delete it manually via the console: the ` +
             `name recorded for it cannot be reproduced safely on a command line.`;
       this.logger.warn(

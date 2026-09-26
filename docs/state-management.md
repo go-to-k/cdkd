@@ -81,8 +81,9 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
       └── {Region}/
           ├── lock.json               # Exclusive lock information (region-scoped)
           ├── state.json              # Resource state (region-scoped)
-          └── rollback-journal.json   # Transient — present only between a failed
-                                      #   deploy and its `cdkd rollback`
+          └── rollback-journal.json   # Transient — between a failed deploy and its
+                                      #   `cdkd rollback`; for a nested stack, also
+                                      #   until its top-level deploy succeeds
 s3://{STATE_BUCKET}/cdkd-bootstrap/
   └── {Region}.json          # Asset-storage bootstrap marker
 s3://{STATE_BUCKET}/custom-resource-responses/
@@ -167,9 +168,14 @@ object is deleted on the next **successful deploy**, after a **clean
 automatic rollback** settles it to a failed-only segment instead of
 deleting it (`operations: []` plus the failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
-default deploy flow too. It carries
+default deploy flow too. A **nested stack** (`{Parent}~{Child}`) differs:
+its successful deploy appends a `nested-pending-parent` segment instead of
+deleting the journal, and the journal is deleted when its **top-level** stack's
+deploy succeeds; the parent's rollback replays it to revert the child (see
+[cdkd rollback](cli-rollback.md#known-limitations)). It carries
 resolved properties, the **same sensitivity class as `state.json`** (no new
-secret-exposure class). Every writer holds the stack lock, so no optimistic
+secret-exposure class). Every writer holds the lock of the stack whose journal
+it writes — for a nested child's journal, the child's lock — so no optimistic
 locking is needed.
 
 **Deleting the journal purges its noncurrent versions too**, on every one of
@@ -946,6 +952,7 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
 | `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
+| `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record; every `Ref` / `Fn::GetAtt` in the run's environment that names a resource of this record resolves to nothing and is dropped, and a bare `--assume-role` falls back to the developer's credentials |
 
 The destroy row is the one where *repairing* would be unsafe rather than
 merely lossy. Read as empty, the count comes back zero, the empty-stack fast
@@ -1029,6 +1036,31 @@ legitimately publish no outputs.
 Each container is judged on its own: a record whose `resources` map is fine and
 whose `outputs` is damaged is refused with a message naming `outputs`, and vice
 versa.
+
+#### When one `resources` RECORD cannot be read
+
+The map being an object says nothing about the records in it. A record is
+readable only if it is an object carrying a string `resourceType` — the one
+field every reader touches before any other. A `null`, a string, a list, or an
+object with no type is a row nothing can route, and every command that reaches
+it answers the way it answers a damaged map:
+
+| Command | Answer |
+| --- | --- |
+| `cdkd deploy` | **Refuses** at the load (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the rows — under `--dry-run` too. The same refusal runs on the pre-lock `--recreate-via-cc-api` / `--recreate-via-sdk-provider` check, which reads the record itself: without it a `null` named row was reported as *missing from state*, with advice to drop the flag for it |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock, and again on the record the empty-stack path re-reads under the lock, naming the rows — a falsy row was skipped as "not found in state" and the record removed with its resource live; a row with no type was routed to a provider on no type with a physical id nothing checked; see [`cdkd destroy`](cli-destroy.md#an-unreadable-resource-record-refuses-the-destroy) |
+| `cdkd import` | **Refuses** a SELECTIVE merge over an unreadable row it does NOT re-import (`STATE_RESOURCES_MALFORMED`, exit `1`) — it copies every such row into the record it saves. A row named by `--resource` / `--resource-mapping` is replaced from the provider's answer, so `cdkd import <stack> --resource <id>=<physicalId> --force` is the repair of that row and is not refused pre-flight — if that row's import then does not succeed, the import refuses before saving rather than writing the row back; a whole-stack `--force` import or `--migrate-from-cloudformation` REPLACES the map from the template and is not refused either |
+| `cdkd orphan` | **Refuses** for a row on a record it would **keep**, under `--dry-run` too; a row you are orphaning is dropped as usual |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`) — the rewrite reads each row and saves the rebuilt map; under `--dry-run` it DROPS the rows, warns, and reports them in the audited-record refusal — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
+| `cdkd state refresh-observed`, `cdkd drift --accept` / `--revert` | **Refuse** before the lock, naming the rows — see [`cdkd drift`](cli-drift.md) |
+| `cdkd diff`, plain `cdkd drift` | **Drop** the rows, warn, and report the rest; `cdkd diff` also reports the deploy's refusal under `Blocking` on the stack you named and exits `3` |
+| `cdkd local *` (`--from-state`) | **Drops** the rows in memory and warns — it writes no state record. A `Ref` or `Fn::GetAtt` naming a dropped row resolves to nothing and is dropped like any other unresolvable reference, and a bare `--assume-role` read through one falls back to the developer's credentials. An unreadable **map** is read as empty the same way, with its own warning |
+| The rollback-orphan claim scan (`cdkd deploy` / `cdkd diff`) | **Skips** the row and keeps reading the rest of that sibling's record, at debug level — a row with no readable physical id claims nothing. The scan exists to stop this stack adopting a resource another stack still owns, so it reads past a damaged row rather than stopping at it |
+
+A row that names its type but no `physicalId` is readable here: it can be
+routed, and what its missing id costs is reported by the command that reaches
+it, in that command's own terms. Inspect the record with
+`cdkd state show '<stack>' --stack-region '<region>' --json` and repair the row.
 
 #### When a resource `properties` map is not an object
 
@@ -1346,8 +1378,20 @@ tell, so:
 - a consumer that is itself a custom resource has its OWN handler invoked
   again, with whatever side effects that handler has;
 - a consumer holding the value in a property that cannot change in place is
-  replaced, because cdkd keeps only the mask and cannot compare the new value
-  with the old one.
+  read back from AWS first, because cdkd keeps only the mask and cannot compare
+  the new value with the old one. If AWS already holds exactly the new value
+  there, the consumer is not replaced: it is updated in place when something
+  else about it changed, and left alone when nothing did. The readback is
+  compared in memory and never stored, so nothing derived from the value lands
+  in state. The consumer is still REPLACED (or, for a stateful type, the deploy
+  stops and asks for `--force-stateful-recreation`) whenever the readback cannot
+  confirm the value: AWS holds a different one, the resource type has no
+  readback, or the read fails. The deploy log says which, as a warning. A
+  write-only property, which AWS never returns, is replaced only on the few
+  resource types cdkd's own replacement rules name. On any other type, it is
+  updated in place and never read back. So is any property of a type whose
+  write-only list cdkd cannot look up, for example when
+  `cloudformation:DescribeType` is denied.
 
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no
@@ -1402,6 +1446,17 @@ EMBEDS the attribute inside a longer string (`Fn::Sub` / `Fn::Join` around the
 `Fn::GetAtt`) persists that string with the value still in it, because an
 inline `***` would be indistinguishable from a literal `***` and nothing
 downstream could recognise it.
+
+The same holds for a value used as a NAME. A resource's physical id is what
+cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
+create-only name (`QueueName`, `TableName`, a parameter `Name`) is therefore
+stored in the clear as that resource's physical id. So is every attribute AWS
+builds around the name, such as a queue URL or an ARN (an attribute equal to
+the whole value is still masked), and so is any other resource's property or
+output that reads one of those, and any command output that shows a physical
+id. CloudFormation behaves the same way: `DescribeStackResources`
+returns the physical id in the clear, whatever `NoEcho` said. Use `NoEcho`
+values as values, never as names.
 
 #### physicalId Format
 

@@ -23,6 +23,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
+import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -606,9 +607,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     const newProvider = providerFor(NEW_TYPE);
     newProvider.create
       .mockRejectedValueOnce(
-        new Error(
-          `CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`
-        )
+        ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`)
       )
       .mockResolvedValue({ physicalId: NEW_PHYSICAL_ID, attributes: {} });
     const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
@@ -623,9 +622,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
 
   it('a create-first collision WITHOUT --replace says the holder may be an unrelated resource', async () => {
     providerFor(NEW_TYPE).create.mockRejectedValue(
-      new Error(
-        `CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`
-      )
+      ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`)
     );
     const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
     const err = await deployAndCatch(makeEngine({ noRollback: true }), template);

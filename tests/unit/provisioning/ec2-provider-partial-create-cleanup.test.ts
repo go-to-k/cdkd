@@ -44,6 +44,12 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 describe('EC2Provider createVpc partial-create cleanup (Issue #376)', () => {
   let provider: EC2Provider;
@@ -359,5 +365,79 @@ describe('EC2Provider createInstance partial-create cleanup (Issue #376)', () =>
     expect(warnMsg).toContain('THE INSTANCE IS STILL RUNNING AND BILLING');
     expect(warnMsg).toContain('aws ec2 terminate-instances --instance-ids');
     expect(warnMsg).toContain('i-aaa');
+  });
+});
+
+// Issue #3136: each id below is AWS-minted, read off the create RESPONSE, and
+// still routed through `pasteableAwsCommand` — a forged response id shows the
+// command is quoted or withheld rather than trusting the response's charset.
+describe('EC2Provider partial-create recovery commands (issue #3136)', () => {
+  let provider: EC2Provider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+    waitUntilInstanceRunningMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockResolvedValue({});
+    provider = new EC2Provider();
+  });
+
+  async function vpcWarn(vpcId: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: vpcId } }); // CreateVpcCommand
+    mockSend.mockRejectedValueOnce(new Error('ModifyVpcAttribute boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteVpc also failed'));
+    await expect(
+      provider.create('MyVpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16', EnableDnsHostnames: true })
+    ).rejects.toThrow('ModifyVpcAttribute boom');
+    return String(warnSpy.mock.calls[0][0]);
+  }
+
+  async function subnetWarn(subnetId: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: subnetId, AvailabilityZone: 'us-east-1a' } });
+    mockSend.mockRejectedValueOnce(new Error('ModifySubnetAttribute boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteSubnet also failed'));
+    await expect(
+      provider.create('MySubnet', 'AWS::EC2::Subnet', {
+        VpcId: 'vpc-aaa',
+        CidrBlock: '10.0.1.0/24',
+        MapPublicIpOnLaunch: true,
+      })
+    ).rejects.toThrow('ModifySubnetAttribute boom');
+    return String(warnSpy.mock.calls[0][0]);
+  }
+
+  async function sgWarn(groupId: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ GroupId: groupId });
+    mockSend.mockRejectedValueOnce(new Error('Authorize boom'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteSG also failed'));
+    await expect(
+      provider.create('MySg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'test',
+        SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' }],
+      })
+    ).rejects.toThrow('Authorize boom');
+    return String(warnSpy.mock.calls[0][0]);
+  }
+
+  async function instanceWarn(instanceId: string): Promise<string> {
+    mockSend.mockResolvedValueOnce({ Instances: [{ InstanceId: instanceId }] });
+    waitUntilInstanceRunningMock.mockRejectedValueOnce(new Error('Waiter timed out'));
+    mockSend.mockRejectedValueOnce(new Error('TerminateInstances also failed'));
+    await expect(
+      provider.create('MyInstance', 'AWS::EC2::Instance', { ImageId: 'ami-aaa' })
+    ).rejects.toThrow('Waiter timed out');
+    return String(warnSpy.mock.calls[0][0]);
+  }
+
+  it.each([
+    ['VPC', vpcWarn, 'aws ec2 delete-vpc --vpc-id '],
+    ['Subnet', subnetWarn, 'aws ec2 delete-subnet --subnet-id '],
+    ['SecurityGroup', sgWarn, 'aws ec2 delete-security-group --group-id '],
+    ['Instance', instanceWarn, 'aws ec2 terminate-instances --instance-ids '],
+  ] as const)('%s: a forged id is shell-quoted, or withholds the command', async (_t, warnFor, flag) => {
+    expectQuotedAfter(await warnFor(`id-1${FORGED_QUOTE}`), flag, `id-1${FORGED_QUOTE}`);
+    warnSpy.mockReset();
+    expectWithheld(await warnFor(`id-1${FORGED_CTRL}`), flag.trim());
   });
 });

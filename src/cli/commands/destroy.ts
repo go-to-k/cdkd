@@ -1,5 +1,11 @@
 import { Command } from 'commander';
-import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  plainOrDescribed,
+  quotedOrDescribed,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
@@ -16,6 +22,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -152,7 +159,7 @@ export async function purgeEventsAfterDestroy(
     // one. Same note on `NONCURRENT_VERSIONS_SURVIVE_NOTE` in events.ts.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
-        `  Purged deployment-event history for ${stackName} (${region}). Where the state ` +
+        `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
           `bucket is versioned — which cdkd bootstrap enables — earlier versions of those ` +
           `keys survive and stay readable with GetObject and a VersionId.`
       );
@@ -160,8 +167,8 @@ export async function purgeEventsAfterDestroy(
     return purge;
   } catch (purgeError) {
     logger.warn(
-      `  Failed to purge deployment-event history for ${stackName}: ` +
-        `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+      `  Failed to purge deployment-event history for ${displaySafe(stackName)}: ` +
+        `${displaySafe(purgeError instanceof Error ? purgeError.message : String(purgeError))}`
     );
     return null;
   }
@@ -528,7 +535,9 @@ async function destroyCommand(
       stackNames = orderConsumersBeforeProducers(stackNames, inferred);
     }
 
-    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+    logger.info(
+      `Found ${stackNames.length} stack(s) to destroy: ${stackNames.map((n) => displaySafe(n)).join(', ')}`
+    );
 
     // accountId is only used to synthesize the parent's fake `Ref` ARN inside
     // `NestedStackProvider.create` — the destroy path never re-synthesizes
@@ -552,7 +561,7 @@ async function destroyCommand(
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
     for (const [stackIndex, stackName] of stackNames.entries()) {
-      logger.info(`\nPreparing to destroy stack: ${stackName}`);
+      logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
 
       // Pick the region for this stack. If synth ran, prefer the synth region
       // (so a user changing env.region targets only that region). Otherwise,
@@ -574,7 +583,7 @@ async function destroyCommand(
       if (synthStack?.terminationProtection === true) {
         if (options.removeProtection) {
           logger.warn(
-            `Stack ${stackName} has terminationProtection: true — bypassing because --remove-protection set`
+            `Stack ${displaySafe(stackName)} has terminationProtection: true — bypassing because --remove-protection set`
           );
         } else {
           const err = new StackTerminationProtectionError(stackName);
@@ -585,7 +594,7 @@ async function destroyCommand(
       }
       let stackTargetRegion: string;
       if (refs.length === 0) {
-        logger.warn(`No state found for stack ${stackName}, skipping`);
+        logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
       } else if (refs.length === 1) {
         const onlyRegion = refs[0]?.region;
@@ -598,27 +607,32 @@ async function destroyCommand(
       } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
         stackTargetRegion = synthRegion;
       } else {
-        const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+        // Regions come from S3 KEY segments and sit beside a labelled line, so
+        // each is named only when it is a plain identifier (go-to-k/cdkd#3759).
+        const regions = refs
+          .map((r) => (r.region === undefined ? '(legacy)' : plainOrDescribed(r.region, 'region')))
+          .join(', ');
+        // Both the name AND the `<region>` hole are quoted on a trailing
+        // labelled line: bare, `<region>` reads stdin from a file `region`
+        // and truncates the next word (go-to-k/cdkd#3436). A withheld name is
+        // explained in the prose before it (go-to-k/cdkd#3759).
+        const orphanOne = pasteableCommand('cdkd state orphan', [
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          { flag: '--stack-region', hole: 'region' },
+        ]);
         throw new Error(
-          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+          `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
             `Remove cdkd's record for ONE region with the command below (fill in the ` +
             `region), or run destroy from a CDK app whose env.region matches one of them.` +
-            // Both the name AND the `<region>` hole are quoted on a trailing
-            // labelled line: bare, `<region>` reads stdin from a file `region`
-            // and truncates the next word (go-to-k/cdkd#3436).
-            `\nRemove one record with: ${
-              pasteableCommand('cdkd state orphan', [
-                { value: stackName, hole: 'stack' },
-                { flag: '--stack-region', hole: 'region' },
-              ]).command
-            }`
+            withheldTargetClause(orphanOne, 'stack', 'cdkd state orphan', "This stack's name") +
+            `\nRemove one record with: ${orphanOne.command}`
         );
       }
 
       // Load current state for the chosen region
       const stateResult = await stateBackend.getState(stackName, stackTargetRegion);
       if (!stateResult) {
-        logger.warn(`No state found for stack ${stackName}, skipping`);
+        logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
       }
 

@@ -64,6 +64,7 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import { IAMAccessKeyProvider } from '../../../src/provisioning/providers/iam-access-key-provider.js';
 import { LambdaEventInvokeConfigProvider } from '../../../src/provisioning/providers/lambda-event-invoke-config-provider.js';
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /** Return the SDK command-input object from the Nth mockSend call. */
 function inputOf(callIndex = 0): Record<string, unknown> {
@@ -377,7 +378,8 @@ describe('AWS::IAM::AccessKey Status', () => {
       'AKIAEXAMPLE',
       'AWS::IAM::AccessKey',
       { UserName: 'alice', Status: null },
-      { UserName: 'alice', Status: 'Active' }
+      { UserName: 'alice', Status: 'Active' },
+      { replayingState: true }
     );
 
     expect(result.physicalId).toBe('AKIAEXAMPLE');
@@ -404,11 +406,119 @@ describe('AWS::IAM::AccessKey Status', () => {
       'AKIAEXAMPLE',
       'AWS::IAM::AccessKey',
       { UserName: 'alice', Status: null },
-      { UserName: 'alice', Status: 'Inactive' }
+      { UserName: 'alice', Status: 'Inactive' },
+      { replayingState: true }
     );
 
     expect(logWarn).toHaveBeenCalled();
     expect(inputOf().Status).toBe('Inactive');
+  });
+
+  // Issue #3740 (the #3728 shape): the update-path answer is split on the
+  // ORIGIN of the desired bag. On a template-path update the malformed Status
+  // is template-borne and `Status` is the one in-place property, so it is
+  // REFUSED before the only call; the two state-borne callers keep the warning.
+  it.each([
+    ['no context', undefined],
+    ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+  ])(
+    'REFUSES a malformed Status on a template-path update (%s), before UpdateAccessKey',
+    async (_label, context) => {
+      mockSend.mockResolvedValue({});
+      const provider = new IAMAccessKeyProvider();
+
+      const error = await provider
+        .update(
+          'Key',
+          'AKIAEXAMPLE',
+          'AWS::IAM::AccessKey',
+          { UserName: 'alice', Status: '   ' },
+          { UserName: 'alice', Status: 'Inactive' },
+          context
+        )
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(
+        /^AWS::IAM::AccessKey Status must be a non-empty string \(got a blank string\)/
+      );
+      expect((error as Error).message).toMatch(
+        /Nothing was applied to access key Key; fix the template value$/
+      );
+      // Not re-labelled as an AWS failure, and nothing reached IAM.
+      expect((error as Error).message).not.toMatch(/Failed to update/);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(logWarn).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['a rollback revert arm (replayingState)', { replayingState: true }],
+    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+  ])('keeps the warning on %s, sending the PREVIOUS status', async (_label, context) => {
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await provider.update(
+      'Key',
+      'AKIAEXAMPLE',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice', Status: '   ' },
+      { UserName: 'alice', Status: 'Inactive' },
+      context
+    );
+
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/AWS::IAM::AccessKey Status must be a non-empty string/)
+    );
+    expect(inputOf().Status).toBe('Inactive');
+  });
+
+  it('is NOT gated on a change: an UNCHANGED malformed Status is refused on the template path', async () => {
+    // `UpdateAccessKey` sends the status on every update (issue #3740).
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await expect(
+      provider.update(
+        'Key',
+        'AKIAEXAMPLE',
+        'AWS::IAM::AccessKey',
+        { UserName: 'alice', Status: '   ' },
+        { UserName: 'alice', Status: '   ' }
+      )
+    ).rejects.toBeInstanceOf(ProvisioningError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse a usable, changed Status on the template path', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await provider.update(
+      'Key',
+      'AKIAEXAMPLE',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice', Status: 'Inactive' },
+      { UserName: 'alice', Status: 'Active' }
+    );
+    expect(inputOf().Status).toBe('Inactive');
+    expect(logWarn).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse an ABSENT Status on the template path', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await provider.update(
+      'Key',
+      'AKIAEXAMPLE',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice' },
+      { UserName: 'alice', Status: 'Inactive' }
+    );
+    expect(inputOf().Status).toBe('Active');
+    expect(logWarn).not.toHaveBeenCalled();
   });
 });
 
@@ -439,6 +549,9 @@ describe('AWS::Lambda::EventInvokeConfig Qualifier', () => {
   });
 
   it('WARNS and defaults on update, because a rollback replays a STATE record', async () => {
+    // A bare (template-path) update on purpose: issue #3740 KEPT this warning
+    // on every caller, because `Qualifier` is createOnly — a changed value is a
+    // replacement, so a malformed one here is already on the recorded resource.
     mockSend.mockResolvedValue({});
     const provider = new LambdaEventInvokeConfigProvider();
 
@@ -477,6 +590,8 @@ describe('AWS::RDS::DBProxyTargetGroup TargetGroupName', () => {
     // ResourceUpdateNotSupportedError twelve lines later — making the warning's
     // "using the default for this update" false. It now compares the GUARDED
     // value, so the update proceeds exactly as the message promises.
+    // A bare (template-path) update on purpose: issue #3740 KEPT this warning
+    // on every caller, because `TargetGroupName` is createOnly.
     mockSend.mockResolvedValue({});
     const provider = new RDSDBProxyTargetGroupProvider();
 

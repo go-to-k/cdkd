@@ -187,7 +187,8 @@ describe('LambdaUrlProvider malformed AuthType on the UPDATE path (issue #1551)'
       FN_ARN,
       RESOURCE_TYPE,
       { TargetFunctionArn: FN_ARN, AuthType: null, InvokeMode: 'RESPONSE_STREAM' },
-      { TargetFunctionArn: FN_ARN, AuthType: 'AWS_IAM', InvokeMode: 'BUFFERED' }
+      { TargetFunctionArn: FN_ARN, AuthType: 'AWS_IAM', InvokeMode: 'BUFFERED' },
+      { replayingState: true }
     );
 
     // The load-bearing assertion: NOT 'NONE'. Defaulting here would make a
@@ -209,7 +210,8 @@ describe('LambdaUrlProvider malformed AuthType on the UPDATE path (issue #1551)'
       FN_ARN,
       RESOURCE_TYPE,
       { TargetFunctionArn: FN_ARN, AuthType: '', InvokeMode: 'RESPONSE_STREAM' },
-      { TargetFunctionArn: FN_ARN, AuthType: null, InvokeMode: 'BUFFERED' }
+      { TargetFunctionArn: FN_ARN, AuthType: null, InvokeMode: 'BUFFERED' },
+      { replayingState: true }
     );
 
     const input = updateInput();

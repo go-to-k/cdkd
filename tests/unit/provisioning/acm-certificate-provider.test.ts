@@ -45,6 +45,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
 
@@ -373,6 +379,39 @@ describe('ACMCertificateProvider', () => {
       expect(message).toMatch(/did not reach ISSUED/);
       expect(message).toMatch(/could NOT be deleted/);
       expect(message).toContain(`aws acm delete-certificate --certificate-arn ${ARN}`);
+      // Not wrapped in backticks: a copy including them runs as command
+      // substitution (#3136).
+      expect(message).not.toContain('`aws acm');
+    });
+
+    // Issue #3136: the ARN (AWS-minted, off the RequestCertificate response)
+    // and the region parsed out of it route through `pasteableAwsCommand`.
+    it.each([
+      ['quoted', `${ARN}${FORGED_QUOTE}`],
+      ['withheld', `${ARN}${FORGED_CTRL}`],
+    ])('the survivor note command is %s for a forged certificate ARN', async (outcome, arn) => {
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: arn });
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException'));
+
+      const message = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        );
+
+      expect(message).toMatch(/could NOT be deleted/);
+      if (outcome === 'quoted') {
+        expectQuotedAfter(message, 'aws acm delete-certificate --certificate-arn ', arn);
+      } else {
+        expectWithheld(message, 'aws acm delete-certificate');
+      }
     });
 
     it('appends the survivor note on the NON-cdkd path too', async () => {

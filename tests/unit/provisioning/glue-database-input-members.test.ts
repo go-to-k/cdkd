@@ -45,6 +45,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
  * `AWS::Glue::Database` DatabaseInput members that reached NO AWS call before
@@ -280,9 +281,10 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
   describe('malformed blocks (shape guards)', () => {
     // The three blocks are read off the DESIRED bag, so they take the repo's
-    // standard split: REFUSE on a template-path create, WARN on update (which
-    // cannot tell a template push from the state-borne bag `drift --revert` and
-    // the rollback revert arm hand it). Before the guards a malformed value did
+    // standard split: REFUSE on a template-path create or update, WARN on a
+    // state-borne update (the rollback revert arms' `replayingState`, which
+    // the update cases below pass; the template-path refusal has its own
+    // describe block, issue #3740). Before the guards a malformed value did
     // not fail - every member read yielded `undefined` and cdkd SENT an empty
     // `{}` block, or threw a raw TypeError from `.map` on a non-array.
     it.each([
@@ -418,7 +420,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         'mydb',
         'AWS::Glue::Database',
         { DatabaseInput: { Name: 'mydb', TargetDatabase: 'linked' } },
-        { DatabaseInput: { Name: 'mydb', TargetDatabase: { DatabaseName: 'sourcedb' } } }
+        { DatabaseInput: { Name: 'mydb', TargetDatabase: { DatabaseName: 'sourcedb' } } },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -437,7 +440,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         'mydb',
         'AWS::Glue::Database',
         { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: 'ALL' } },
-        { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: 'ALL' } }
+        { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: 'ALL' } },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -532,7 +536,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
               Name: 'mydb',
               TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
             },
-          }
+          },
+          { replayingState: true }
         );
 
         const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -553,7 +558,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         'mydb',
         'AWS::Glue::Database',
         { DatabaseInput: { Name: 'mydb', TargetDatabase: {} } },
-        { DatabaseInput: { Name: 'mydb' } }
+        { DatabaseInput: { Name: 'mydb' } },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -569,7 +575,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         'mydb',
         'AWS::Glue::Database',
         { DatabaseInput: { Name: 'mydb', TargetDatabase: 'linked' } },
-        { DatabaseInput: { Name: 'mydb' } }
+        { DatabaseInput: { Name: 'mydb' } },
+        { replayingState: true }
       );
 
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TargetDatabase must be an object/));
@@ -599,7 +606,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
               },
             ],
           },
-        }
+        },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -630,7 +638,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
             Name: 'mydb',
             CreateTableDefaultPermissions: [{ Principal: 'IAM_ALLOWED_PRINCIPALS' }],
           },
-        }
+        },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -711,7 +720,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
             TargetDatabase: { DatabaseName: 'sourcedb' },
             FederatedDatabase: { ConnectionName: 'conn', Identifier: 'ext' },
           },
-        }
+        },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -758,7 +768,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
             Name: 'mydb',
             TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: '123456789012' },
           },
-        }
+        },
+        { replayingState: true }
       );
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
@@ -840,6 +851,181 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
           { Permissions: ['ALL'], Principal: { DataLakePrincipalIdentifier: '123456789012' } },
         ],
       });
+    });
+  });
+
+  describe('update() splits on the desired bag ORIGIN (issue #3740)', () => {
+    // A template-path update (no context, or both flags false) REFUSES a
+    // malformed block before ANY AWS call — the `GetDatabase` pre-read
+    // included — because the block is template-borne and `DatabaseInput` is
+    // mutable in place. The two state-borne callers keep the warn-and-retain
+    // ladder the cases above pin.
+    const malformed: Array<[string, Record<string, unknown>, RegExp]> = [
+      ['a non-object TargetDatabase', { TargetDatabase: 'linked' }, /TargetDatabase must be an object/],
+      [
+        'an unresolved-intrinsic TargetDatabase',
+        { TargetDatabase: { Ref: 'SomeDb' } },
+        /got an unresolved Ref intrinsic/,
+      ],
+      ['an empty TargetDatabase', { TargetDatabase: {} }, /TargetDatabase declares no member/],
+      [
+        'a TargetDatabase mixing sendable and unreadable members',
+        { TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: { Ref: 'Acct' } } },
+        /TargetDatabase declares no member/,
+      ],
+      ['an empty FederatedDatabase', { FederatedDatabase: {} }, /FederatedDatabase declares no member/],
+      [
+        'a non-array CreateTableDefaultPermissions',
+        { CreateTableDefaultPermissions: 'ALL' },
+        /CreateTableDefaultPermissions must be an array/,
+      ],
+      [
+        'a CreateTableDefaultPermissions entry cdkd cannot read',
+        { CreateTableDefaultPermissions: [{ Permissions: 'ALL' }] },
+        /carries an entry cdkd cannot read/,
+      ],
+      [
+        'a null CreateTableDefaultPermissions entry',
+        { CreateTableDefaultPermissions: [null] },
+        /carries an entry cdkd cannot read/,
+      ],
+    ];
+    const previous = {
+      DatabaseInput: {
+        Name: 'mydb',
+        TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
+        FederatedDatabase: { ConnectionName: 'conn', Identifier: 'ext' },
+        CreateTableDefaultPermissions: [
+          {
+            Permissions: ['SELECT'],
+            Principal: { DataLakePrincipalIdentifier: 'IAM_ALLOWED_PRINCIPALS' },
+          },
+        ],
+      },
+    };
+    const templatePaths: Array<[string, Record<string, unknown> | undefined]> = [
+      ['no context', undefined],
+      ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
+    ];
+
+    for (const [pathLabel, context] of templatePaths) {
+      it.each(malformed)(
+        `the template path (${pathLabel}) refuses %s before any AWS call`,
+        async (_label, block, createMessage) => {
+          const error = await provider
+            .update(
+              'L',
+              'mydb',
+              'AWS::Glue::Database',
+              { DatabaseInput: { Name: 'mydb', ...block } },
+              previous,
+              context
+            )
+            .then(
+              () => undefined,
+              (e: unknown) => e
+            );
+
+          expect(error).toBeInstanceOf(ProvisioningError);
+          const message = (error as Error).message;
+          // The create-path refusal, then the "nothing applied" clause, and
+          // NOT re-labelled as an AWS update failure by the call's own catch.
+          expect(message).toMatch(createMessage);
+          expect(message).toMatch(/\. Nothing was applied to Glue Database L; fix the template value$/);
+          expect(message).not.toMatch(/^Failed to update Glue Database/);
+          // The builder's own refusal is chained as the cause.
+          const cause = (error as { cause?: unknown }).cause;
+          expect(cause).toBeInstanceOf(Error);
+          expect((cause as Error).message).toMatch(createMessage);
+          expect(message.startsWith((cause as Error).message)).toBe(true);
+          expect(mockSend).not.toHaveBeenCalled();
+          expect(warn).not.toHaveBeenCalled();
+        }
+      );
+    }
+
+    it.each([
+      ['replayingState', { replayingState: true }],
+      ['desiredFromAwsReadback', { desiredFromAwsReadback: true }],
+    ])('a %s update warns and retains the previous block instead', async (_label, context) => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            TargetDatabase: 'linked',
+            FederatedDatabase: previous.DatabaseInput.FederatedDatabase,
+            CreateTableDefaultPermissions: previous.DatabaseInput.CreateTableDefaultPermissions,
+          },
+        },
+        previous,
+        context
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual(previous.DatabaseInput);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TargetDatabase must be an object/));
+    });
+
+    it('a replayingState update warns and retains the previous list over a null permission entry', async () => {
+      // A `null` entry used to throw a raw TypeError past the warn ladder, so
+      // a rollback revert failed with a "fix the template" remedy.
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        {
+          DatabaseInput: {
+            ...previous.DatabaseInput,
+            CreateTableDefaultPermissions: [null],
+          },
+        },
+        previous,
+        { replayingState: true }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual(previous.DatabaseInput);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/carries an entry cdkd cannot read/));
+    });
+
+    it('is NOT gated on a change: an unchanged malformed block is refused too', async () => {
+      // UpdateDatabase replaces DatabaseInput wholesale, so the block is sent
+      // on every update; retaining a previous side that is just as malformed
+      // would DROP it and erase the live block.
+      const bag = { DatabaseInput: { Name: 'mydb', Description: 'd2', TargetDatabase: {} } };
+      await expect(
+        provider.update('L', 'mydb', 'AWS::Glue::Database', bag, {
+          DatabaseInput: { Name: 'mydb', Description: 'd1', TargetDatabase: {} },
+        })
+      ).rejects.toThrow(/Nothing was applied to Glue Database L/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a usable block still updates on the template path', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        previous,
+        { DatabaseInput: { Name: 'mydb' } },
+        { replayingState: false, desiredFromAwsReadback: false }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual(previous.DatabaseInput);
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 

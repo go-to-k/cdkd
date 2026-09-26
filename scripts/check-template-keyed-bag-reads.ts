@@ -425,9 +425,16 @@ export function scanRepo(read: (p: string) => string = (p) => readFileSync(p, 'u
  * CI runs the binary, so floors that live only in the test leave the CI step a
  * byte-identical green when the walk stops seeing a shape. Measured 2026-09-08
  * at 1 / 37 / 15; deliberately loose.
+ *
+ * `in` is 0 because its real-tree POPULATION is empty: the one site that
+ * measurement counted was `resolveSub`'s variable lookup, which issue #2776
+ * turned into `Object.hasOwn`. A floor cannot be derived from a shape the tree
+ * no longer contains, so the evidence that the walk still SEES an `in` test
+ * comes from the pre-sweep fixture ("finds all three shapes") and the
+ * synthetic refuse arm in the unit test instead.
  */
 export const EXAMINED_FLOORS: Record<Shape, number> = {
-  in: 1,
+  in: 0,
   'index-read': 25,
   'index-write': 10,
 };

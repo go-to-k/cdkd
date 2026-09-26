@@ -108,9 +108,17 @@ function sentCommand<T>(
   return mockSend.mock.calls.map((c) => c[0]).find((c) => c instanceof commandType) as T | undefined;
 }
 
-async function update(properties: Record<string, unknown>): Promise<void> {
-  await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET });
+async function update(
+  properties: Record<string, unknown>,
+  context?: Record<string, unknown>
+): Promise<void> {
+  await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET }, context);
 }
+
+// The flag the rollback revert arms set. Since issue #3740 a template-path
+// update refuses a malformed value before any call, so the WARN rows below are
+// a state-borne update's.
+const STATE_REPLAY = { replayingState: true } as const;
 
 describe('item 2: a malformed Destination is REFUSED on the create path', () => {
   // Each case is a value that indexed every branch probe to `undefined` and
@@ -193,9 +201,11 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
 
 });
 
-describe('item 2: the same value only WARNS on the update path', () => {
+describe('item 2: the same value only WARNS on a state-borne update path', () => {
   it('analytics: warns and leaves the live configuration untouched', async () => {
-    await expect(update(analyticsProps('arn:aws:s3:::reports'))).resolves.toBeUndefined();
+    await expect(
+      update(analyticsProps('arn:aws:s3:::reports'), STATE_REPLAY)
+    ).resolves.toBeUndefined();
 
     const warning = childLogger.warn.mock.calls
       .map((c) => String(c[0]))
@@ -212,7 +222,9 @@ describe('item 2: the same value only WARNS on the update path', () => {
   });
 
   it('inventory: warns and leaves the live configuration untouched', async () => {
-    await expect(update(inventoryProps(['not', 'an', 'object']))).resolves.toBeUndefined();
+    await expect(
+      update(inventoryProps(['not', 'an', 'object']), STATE_REPLAY)
+    ).resolves.toBeUndefined();
 
     expect(
       childLogger.warn.mock.calls
@@ -227,7 +239,7 @@ describe('item 2: the same value only WARNS on the update path', () => {
     // a malformed `Format` must not hard-fail underneath it, or the
     // replay-safety invariant is only half true.
     await expect(
-      update(inventoryProps({ BucketArn: 'arn:aws:s3:::reports', Format: 42 }))
+      update(inventoryProps({ BucketArn: 'arn:aws:s3:::reports', Format: 42 }), STATE_REPLAY)
     ).resolves.toBeUndefined();
 
     expect(

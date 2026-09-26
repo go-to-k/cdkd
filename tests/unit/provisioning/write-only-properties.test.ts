@@ -22,6 +22,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import {
   getTopLevelWriteOnlyProperties,
+  tryGetTopLevelWriteOnlyProperties,
   clearWriteOnlyPropertiesCache,
 } from '../../../src/provisioning/write-only-properties.js';
 import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
@@ -84,5 +85,39 @@ describe('getTopLevelWriteOnlyProperties + throttle retry (issue #1236)', () => 
     expect(result.size).toBe(0);
     expect(mockCloudFormationSend).not.toHaveBeenCalled();
     expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+});
+
+describe('tryGetTopLevelWriteOnlyProperties (go-to-k/cdkd#3803)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    describeTypeRetryDelays.sleep = async () => {};
+  });
+
+  afterEach(() => {
+    delete describeTypeRetryDelays.sleep;
+  });
+
+  it('answers undefined (unknown) on a failed lookup, warns nothing, and caches nothing', async () => {
+    const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
+    mockCloudFormationSend.mockRejectedValueOnce(denied).mockResolvedValueOnce({ Schema: ECS_SCHEMA });
+
+    expect(await tryGetTopLevelWriteOnlyProperties('AWS::ECS::Service')).toBeUndefined();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    const retried = await tryGetTopLevelWriteOnlyProperties('AWS::ECS::Service');
+    expect([...(retried ?? [])].sort()).toEqual(['ForceNewDeployment', 'VolumeConfigurations']);
+  });
+
+  it('reuses a settled success from either variant without a second DescribeType call', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: ECS_SCHEMA });
+
+    await tryGetTopLevelWriteOnlyProperties('AWS::ECS::Service');
+    await tryGetTopLevelWriteOnlyProperties('AWS::ECS::Service');
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+
+    await getTopLevelWriteOnlyProperties('AWS::SNS::Topic');
+    await tryGetTopLevelWriteOnlyProperties('AWS::SNS::Topic');
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(2);
   });
 });

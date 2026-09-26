@@ -14,7 +14,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayIdent } from '../utils/display-safe.js';
-import { getLogger } from '../utils/logger.js';
+import { getLogger, isStdoutReservedForPayload } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -379,12 +379,26 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 /**
  * `docker logs -f <id>` plumbed to stdout/stderr. Returns a function that
  * stops the stream (used by the caller in a `finally` block).
+ *
+ * The container's STDOUT follows the payload reservation
+ * ({@link isStdoutReservedForPayload}), decided per chunk, the same way
+ * `spawnStreaming` in `src/utils/docker-cmd.ts` routes its live mirror
+ * (issue #2419). On `cdkd local invoke` / `local invoke-agentcore`, which
+ * reserve stdout for the response, the Lambda RIE puts `START` / `END` /
+ * `REPORT` and every handler log line — `console.error` included — on the
+ * container's stdout, so it joins the container's stderr on OURS. The
+ * long-running servers (`local start-api` / `run-task` / `start-service`,
+ * via `container-pool.ts`) reserve nothing, so their stdout stays the human
+ * log surface, byte-identical to before.
  */
 export function streamLogs(containerId: string): () => void {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  proc.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));
+  proc.stdout?.on('data', (chunk: Buffer) => {
+    if (isStdoutReservedForPayload()) process.stderr.write(chunk);
+    else process.stdout.write(chunk);
+  });
   proc.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
   // Swallow the exit code; this child is just plumbing.
   proc.on('error', () => {

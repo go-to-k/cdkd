@@ -2,9 +2,14 @@
 # Integration test for the AWS::Lambda::Url `AuthType` warn arms (issue #1654,
 # plus the review follow-up that added the create-path replay warning).
 #
-# The guard (#1551) warns and SUBSTITUTES rather than throwing, because a
-# rollback replay / `drift --revert` feeds a cdkd STATE record in as the desired
-# bag and a hard refusal would leave the URL un-rollbackable. Two arms:
+# The guard (#1551) warns and SUBSTITUTES rather than throwing on the REPLAY
+# paths, because a rollback replay / `drift --revert` feeds a cdkd STATE record
+# in as the desired bag and a hard refusal would leave the URL un-rollbackable.
+# A TEMPLATE-path update refuses the value since issue #3740 (PHASE 2a), so the
+# two warn arms are driven through the rollback REVERT arm: fail an ordinary
+# in-place update (`URL_STREAM` + `INJECT_FAIL`, `--no-rollback`), doctor the
+# journal's previous record (and, for the OMITTED arm, the current record) the
+# way an older binary could have written it, then `cdkd rollback`:
 #
 #   PHASE 2  previous-value arm  — the previous `AuthType` is SENT.
 #   PHASE 3  OMITTED arm         — the previous side is unusable too, so
@@ -147,10 +152,47 @@ live_auth_type() {
     --region "${REGION}" --query 'AuthType' --output text
 }
 
+# Issue #3740: fail an ordinary in-place update of the URL (InvokeMode) so the
+# journal records the URL's previous record, then set `AuthType` in that
+# journal record to $1 (JSON). The revert arm replays it as the DESIRED bag.
+stage_revert_with_journal_auth_type() { # usage: stage_revert_with_journal_auth_type '<json value>'
+  local log rc doctored
+  log="$(mktemp)"
+  set +e
+  URL_STREAM=true INJECT_FAIL=true AUTHTYPE_JUNK= \
+    ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${log}" 2>&1
+  rc=$?
+  set -e
+  sed 's/^/  /' "${log}" || true
+  rm -f "${log}"
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: the INJECT_FAIL deploy unexpectedly SUCCEEDED — no journal to roll back" >&2
+    exit 1
+  fi
+  doctored="$(mktemp)"
+  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | AUTH_JSON="$1" python3 -c '
+import json, os, sys
+journal = json.load(sys.stdin)
+value = json.loads(os.environ["AUTH_JSON"])
+hits = 0
+for segment in journal.get("segments", []):
+    for op in segment.get("operations", []):
+        if op.get("resourceType") == "AWS::Lambda::Url" and op.get("changeType") == "UPDATE":
+            op["previousState"]["properties"]["AuthType"] = value
+            hits += 1
+if hits != 1:
+    sys.stderr.write("expected exactly one AWS::Lambda::Url UPDATE op in the journal, got %d\n" % hits)
+    sys.exit(1)
+json.dump(journal, sys.stdout)
+' > "${doctored}"
+  aws s3 cp "${doctored}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+  rm -f "${doctored}"
+}
+
 # ---------------------------------------------------------------------------
 echo "[verify] step 2 (PHASE 1): baseline deploy — a function URL with AuthType AWS_IAM"
 # ---------------------------------------------------------------------------
-unset AUTHTYPE_JUNK URL_TARGET INJECT_FAIL
+unset AUTHTYPE_JUNK URL_TARGET INJECT_FAIL URL_STREAM
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 FN_A="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
@@ -178,12 +220,36 @@ assert_eq "baseline LIVE AuthType" "AWS_IAM" "$(live_auth_type)"
 echo "[verify] step 2 ok: URL on ${FN_A} is IAM-guarded"
 
 # ---------------------------------------------------------------------------
-echo "[verify] step 3 (PHASE 2): redeploy with a MALFORMED desired AuthType — the PREVIOUS value must be sent AND recorded"
+echo "[verify] step 3a (PHASE 2a): a MALFORMED AuthType on the TEMPLATE path is REFUSED before any write (issue #3740)"
 # ---------------------------------------------------------------------------
-JUNK_LOG="$(mktemp)"
-AUTHTYPE_JUNK=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${JUNK_LOG}"
+REFUSED_LOG="$(mktemp)"
+set +e
+AUTHTYPE_JUNK=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose > "${REFUSED_LOG}" 2>&1
+REFUSED_RC=$?
+set -e
+sed 's/^/  /' "${REFUSED_LOG}" || true
+if [ "${REFUSED_RC}" -eq 0 ]; then
+  echo "FAIL: issue #3740 — the malformed AuthType deployed (exit 0) on the template path" >&2
+  exit 1
+fi
+if ! grep -q "AWS::Lambda::Url AuthType must be a non-empty string" "${REFUSED_LOG}" ||
+   ! grep -q "Nothing was applied to Lambda URL" "${REFUSED_LOG}"; then
+  echo "FAIL: issue #3740 — the deploy failed, but not with the template-path AuthType refusal" >&2
+  exit 1
+fi
+rm -f "${REFUSED_LOG}"
+assert_eq "issue #3740 — recorded AuthType after the refused deploy" "AWS_IAM" "$(recorded_auth_type)"
+assert_eq "issue #3740 — LIVE AuthType after the refused deploy" "AWS_IAM" "$(live_auth_type)"
+echo "[verify] step 3a ok: refused, nothing changed"
 
-# The deploy must WARN, not fail — a refusal here is what would strand a
+# ---------------------------------------------------------------------------
+echo "[verify] step 3 (PHASE 2): a REVERT replaying a MALFORMED AuthType — the PREVIOUS value must be sent AND recorded"
+# ---------------------------------------------------------------------------
+stage_revert_with_journal_auth_type '["AWS_IAM"]'
+JUNK_LOG="$(mktemp)"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${JUNK_LOG}"
+
+# The revert must WARN, not fail — a refusal here is what would strand the
 # rollback replay, which is why #1551 downgraded it.
 if ! grep -q "AWS::Lambda::Url AuthType must be a non-empty string" "${JUNK_LOG}"; then
   echo "FAIL: issue #1654 — cdkd did not report the malformed desired AuthType" >&2
@@ -272,10 +338,12 @@ echo "[verify] step 3b ok: unchanged template is a no-op against the recorded va
 # ---------------------------------------------------------------------------
 echo "[verify] step 4 (PHASE 3): both sides malformed — AuthType must be OMITTED from the call and DROPPED from state"
 # ---------------------------------------------------------------------------
-# Post-fix cdkd never WRITES a malformed previous side (that is what phase 2
-# just proved), so the only way to reach this arm is to hand-patch the record —
-# which is exactly the recipe issue #1654 spells out, and a faithful stand-in
-# for a state.json written by an older binary.
+# Post-fix cdkd never WRITES a malformed record (that is what phase 2 just
+# proved), so the only way to reach this arm is to hand-patch the records —
+# the recipe issue #1654 spells out, and a faithful stand-in for records
+# written by an older binary: the journal's previous record (the revert's
+# DESIRED side) and the current state record (its PREVIOUS side).
+stage_revert_with_journal_auth_type '""'
 STATE_PATCH="$(mktemp)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
 import json, sys
@@ -296,9 +364,9 @@ rm -f "${STATE_PATCH}"
 assert_eq "state patch precondition" "" "$(recorded_auth_type)"
 
 OMIT_LOG="$(mktemp)"
-AUTHTYPE_JUNK=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${OMIT_LOG}"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tee "${OMIT_LOG}"
 if ! grep -q "AWS::Lambda::Url AuthType must be a non-empty string" "${OMIT_LOG}"; then
-  echo "FAIL: issue #1654 — the guard did not fire on the both-sides-malformed deploy" >&2
+  echo "FAIL: issue #1654 — the guard did not fire on the both-sides-malformed revert" >&2
   exit 1
 fi
 rm -f "${OMIT_LOG}"

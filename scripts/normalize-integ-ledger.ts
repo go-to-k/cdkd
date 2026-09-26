@@ -190,6 +190,39 @@ export function normalizeLedger(content: string): string {
   return serializeLedger(header, sortRows(dedupeRows(rows)));
 }
 
+/**
+ * How far past the current clock a row may sit before it is refused: covers
+ * clock skew between the machine that wrote the row and the one normalizing.
+ */
+export const FUTURE_TOLERANCE_S = 300;
+
+/**
+ * Rows whose `last_run_iso` lies more than `FUTURE_TOLERANCE_S` after
+ * `nowIso` (same fixed-width UTC form, so string comparison is chronological).
+ *
+ * A future-dated row wins every `dedupeRows` comparison, so a REAL later run
+ * of that test is silently deleted — "nothing to commit", no warning. Hit
+ * twice: a JST date filled as midnight UTC (~7h ahead), and a lane that wrote
+ * 08:20Z by hand at 07:29Z. `/run-integ` writes `date -u` at write time.
+ */
+export function findFutureRows(rows: LedgerRow[], nowIso: string): LedgerRow[] {
+  if (!ISO_UTC.test(nowIso)) throw new Error(`findFutureRows: nowIso ${JSON.stringify(nowIso)} is not YYYY-MM-DDTHH:MM:SSZ`);
+  const limit = isoPlusSeconds(nowIso, FUTURE_TOLERANCE_S);
+  return rows.filter((r) => r.lastRunIso > limit);
+}
+
+/** `iso` (the `ISO_UTC` form) plus `s` seconds, back in the same form. */
+function isoPlusSeconds(iso: string, s: number): string {
+  // `Date.UTC` on the parsed fields, never `Date.parse` (see `ISO_UTC`).
+  const [y, mo, d, h, mi, se] = iso.match(/\d+/g)!.map(Number) as [number, number, number, number, number, number];
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, se + s)).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** The current instant in the `ISO_UTC` form. */
+function nowUtcIso(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 /** Test names appearing more than once, in first-seen order. */
 export function findDuplicateTests(rows: LedgerRow[]): string[] {
   const counts = new Map<string, number>();
@@ -231,6 +264,15 @@ function run(argv: string[]): number {
   // testable against synthetic fixtures; CI and `vp run` pass no path.
   const ledgerPath = argv.find((a) => !a.startsWith('--')) ?? LEDGER_PATH;
   const original = readFileSync(ledgerPath, 'utf8');
+  // Refused BEFORE dedupe, in both modes: the future row would delete the real one.
+  const future = findFutureRows(parseLedger(original).rows, nowUtcIso());
+  if (future.length > 0) {
+    const list = future.map((r) => `line ${r.line} ${r.test} ${r.lastRunIso}`).join(', ');
+    throw new Error(
+      `integ-last-run.tsv: future-dated last_run_iso (${list}) would win dedupe and delete a real later run; ` +
+        `rewrite it with \`date -u +%Y-%m-%dT%H:%M:%SZ\` taken when the run finished`,
+    );
+  }
   const normalized = normalizeLedger(original);
 
   if (normalized === original) {

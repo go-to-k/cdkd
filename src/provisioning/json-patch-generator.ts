@@ -46,7 +46,12 @@ export class JsonPatchGenerator {
 
     // Find added or changed properties
     for (const [key, value] of Object.entries(desiredProperties)) {
-      const previousValue = previousProperties[key];
+      // Own-key read (issue #3515): an inherited `Object.prototype` member
+      // (`constructor`, `toString`) is not a previous value, so a NEW key of
+      // that name is an `add`, never a `replace` of a path that does not exist.
+      const previousValue = Object.hasOwn(previousProperties, key)
+        ? previousProperties[key]
+        : undefined;
 
       if (previousValue === undefined) {
         // Property added
@@ -68,7 +73,7 @@ export class JsonPatchGenerator {
 
     // Find removed properties
     for (const key of Object.keys(previousProperties)) {
-      if (!(key in desiredProperties)) {
+      if (!Object.hasOwn(desiredProperties, key)) {
         patches.push({
           op: 'remove',
           path: `/${this.escapeJsonPointer(key)}`,
@@ -141,7 +146,7 @@ export class JsonPatchGenerator {
 
       if (aKeys.length !== bKeys.length) return false;
 
-      return aKeys.every((key) => this.deepEqual(aObj[key], bObj[key]));
+      return aKeys.every((key) => Object.hasOwn(bObj, key) && this.deepEqual(aObj[key], bObj[key]));
     }
 
     // Primitive comparison (already handled by a === b above, but for clarity)

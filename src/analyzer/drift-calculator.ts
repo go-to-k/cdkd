@@ -161,7 +161,13 @@ export function undeclaredEmptyObservedKeys(
 ): string[] {
   const keys: string[] = [];
   for (const key of Object.keys(observed)) {
-    if (key in declared) continue;
+    // `Object.hasOwn`, not `in` (issue #3515). `in` read an inherited
+    // `Object.prototype` member name as DECLARED, so a captured-empty
+    // undeclared key of that name was COMPARED instead of skipped: phantom
+    // drift, which `drift --revert` then acts on by stripping the value. No
+    // cdkd-written baseline carries such a top-level key (they are schema
+    // property names); only a hand-edited state.json could.
+    if (Object.hasOwn(declared, key)) continue;
     const value = observed[key];
     const isEmptyContainer =
       value === null ||

@@ -385,6 +385,34 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     expect(abandonedResolutions[0]!.carriedFetchableReference).toBe(false);
   });
 
+  it('a Fn::Sub list refusal still lets a LATER reference record its needle (issue #3809)', async () => {
+    // The list refusal is DEFERRED to the end of `resolveSub`. Thrown where it
+    // was found, it abandoned the walk: variable `B` after list-valued `A`,
+    // and a token in the body after a list placeholder, recorded nothing, and
+    // `cdkd scrub` left their plaintext in state -- the #3218 class again.
+    for (const value of [
+      { 'Fn::Sub': ['${A}${B}', { A: { 'Fn::Split': [',', 'x,y'] }, B: LIVE }] },
+      { 'Fn::Sub': `n=\${AWS::NotificationARNs};${LIVE}` },
+    ]) {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const recordedSecretValues = new Map<string, string>();
+      const abandonedResolutions: AbandonedResolution[] = [];
+      const error = await resolver
+        .resolve(value, { recordedSecretValues, abandonedResolutions } as never)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect((error as Error).message).toMatch(/^Fn::Sub: the variable.* resolves to a list/);
+      expect((error as Error).message).not.toContain(LIVE_PLAINTEXT);
+      expect(
+        [...recordedSecretValues.keys()],
+        'the reference after the refused list recorded no needle (issue #3809)'
+      ).toContain(LIVE_PLAINTEXT);
+    }
+  });
+
   it('computes the gate booleans from the unit that actually failed', () => {
     // The positive side of the seam above, kept as its own case so the two
     // directions cannot be satisfied by one hard-coded value. A failing TOKEN

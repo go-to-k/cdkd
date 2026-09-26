@@ -11,13 +11,15 @@ Sibling containers:
 [state-malformed-properties.md](state-malformed-properties.md). Index:
 [code-layout.md](code-layout.md).
 
-## THREE call sites
+## FOUR call sites
 
-`destroy-runner.ts`, `deploy-engine.ts`, and
-`src/provisioning/providers/nested-stack-provider.ts`: that `delete()` counts the
+`destroy-runner.ts`, `deploy-engine.ts`,
+`src/provisioning/providers/nested-stack-provider.ts` — that `delete()` counts the
 CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
 runner's guard alone cannot see a `null` or absent child bag — the bare `TypeError`
-fires first. Same helper, so a child's refusal reads identically.
+fires first — and, since go-to-k/cdkd#3202, `src/cli/commands/deploy.ts`'s
+pre-lock `--recreate-via-*` read, an INDEPENDENT load of the same record the
+engine's guard does not dominate. Same helper, so every refusal reads identically.
 
 ## Three refusal entry points, one predicate
 

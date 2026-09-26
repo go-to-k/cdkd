@@ -159,7 +159,7 @@ describe('DynamoDBGlobalTableProvider malformed StreamSpecification (issue #1493
     await provider.update('MyTable', 'my-test-table-xxx', RESOURCE_TYPE, {
       ...baseProps,
       StreamSpecification: 'NEW_IMAGE',
-    }, { ...baseProps });
+    }, { ...baseProps }, { replayingState: true });
 
     const streamCall = mockSend.mock.calls.find(
       (c) => c[0].constructor.name === 'UpdateTableCommand' && c[0].input.StreamSpecification

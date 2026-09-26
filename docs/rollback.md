@@ -26,6 +26,11 @@ stays consistent:
   recorded for it — its last deployed template values, not a live read,
   so drift is not restored. A replacement is undone by reversing the
   replacement rather than by reverting properties.
+- A nested stack this run updated is reverted by replaying the child
+  stack's own journal for this run, not by re-deploying its template: a
+  nested child's successful deploy keeps what it did until the top-level
+  deploy succeeds. When that record is missing, the nested stack's row
+  is reported as a failed rollback operation, never as restored.
 - A resource this run had already deleted cannot be brought back. The
   rollback warns and moves on.
 - Resources this run did not touch are left alone.
@@ -68,7 +73,9 @@ purpose: a broken app is a common reason you want to roll back. The
 journal is deleted automatically on the next successful deploy and by
 `cdkd destroy`; after a clean automatic rollback it keeps only the
 failed resource's record so `cdkd rollback --revert-failed` still works
-in the default deploy flow.
+in the default deploy flow. A nested stack's journal is the exception:
+its successful deploy keeps a record until the top-level stack's deploy
+succeeds, which deletes the journals of every nested stack under it.
 
 Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
 leave the resource alone during replay, like `cdk rollback --orphan`),

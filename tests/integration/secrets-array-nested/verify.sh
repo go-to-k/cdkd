@@ -85,6 +85,12 @@
 #       issue #3595 that is reported as a not-compared position
 #       (`uncertifiedBaseline`, exit 2), never as drift, with no plaintext from
 #       any mode and `--accept` leaving the masked baseline byte-identical.
+#   2r. Then a NO_CHANGE redeploy RE-CAPTURES that baseline (issue #3595 item
+#       1): with one of the two references rotated out of band first, the
+#       certifiable position comes back as its expression, the rotated one
+#       stays masked and still reads `uncertifiedBaseline`, and nothing else in
+#       the bag changes. Rotated back, the next NO_CHANGE redeploy clears the
+#       last mask and the resource reads clean.
 #
 # SECURITY: the resolved secret value is never printed. Assertions compare
 # against a masked representation; only PASS/FAIL + a masked snippet is shown.
@@ -1340,6 +1346,229 @@ if [ "$(json_index "${P2D_EP}" 1)" != "***" ] || [ "$(json_index "${P2D_EP}" 3)"
 fi
 echo "    OK: --accept left the mask, the paired expression and the keyed expression in place"
 
+# --- Phase 2r: a NO_CHANGE redeploy re-captures the masked baseline (#3595) --
+# Issue #3595 item (1). The deploy-start auto-refresh re-captures a baseline
+# holding a #2852 fail-closed mask, resolving the record's OWN references for
+# that record alone, and replaces a mask only where that resolution certifies
+# the position. The two masked EntryPoint positions are split to opposite
+# verdicts first: `ambigBravo` is ROTATED out of band, so the registered
+# revision still holds the old value while the reference now resolves to the
+# new one -- nothing can certify [3], and it must stay masked. [1]
+# (`ambigAlpha`) is certifiable and must come back as its EXPRESSION. Every
+# other byte of the observed bag must be unchanged: the re-capture repairs
+# masks, it does not re-take the baseline. SecretString is a drift-unknown path
+# of the secret's own provider, so the rotation adds no drift of its own.
+echo "==> Phase 2r: rotate ambigBravo, redeploy UNCHANGED, re-capture the masked baseline (issue #3595)"
+ROTATED_AMBIG_BRAVO="cdkd-anchor-ambiguous-bravo-rotated-745"
+DRIFT_NEEDLES+=("${ROTATED_AMBIG_BRAVO}")
+P2R_BEFORE=$(read_record AWS::ECS::TaskDefinition | jq -cS '.observedProperties')
+assert_read "the task definition's observed baseline before the re-capture" "${P2R_BEFORE}"
+P2R_BEFORE_EP=$(cd_field_of "${P2R_BEFORE}" anchorprobe EntryPoint)
+if [ "$(json_index "${P2R_BEFORE_EP}" 1)" != "***" ] || [ "$(json_index "${P2R_BEFORE_EP}" 3)" != "***" ]; then
+  echo "FAIL: premise: both refused EntryPoint positions must be masked before the re-capture, or it has nothing to repair" >&2
+  exit 1
+fi
+ROT_ORIG_SECRET=$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query SecretString --output text)
+assert_read "the fixture secret's SecretString before the rotation" "${ROT_ORIG_SECRET}"
+ROT_NEW_SECRET=$(printf '%s' "${ROT_ORIG_SECRET}" | jq -c --arg v "${ROTATED_AMBIG_BRAVO}" '.ambigBravo = $v')
+# Through a 0600 file, not argv, for the reason `put_secret_string` gives.
+SECRET_VALUE_FILE=$(umask 077 && mktemp)
+put_secret_string "${ROT_NEW_SECRET}"
+rm -f "${SECRET_VALUE_FILE}"
+# Polled, for the reason `wait_secret_has_drift_pw` gives.
+rotated=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [ "$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+      --query SecretString --output text | jq -r '.ambigBravo // empty')" = "${ROTATED_AMBIG_BRAVO}" ]; then
+    rotated=1
+    break
+  fi
+  sleep 3
+done
+if [ "${rotated}" -ne 1 ]; then
+  echo "FAIL: the fixture secret never reported the rotated ambigBravo" >&2
+  exit 1
+fi
+echo "    OK: ambigBravo rotated out of band; the registered revision still holds the old value"
+
+# --verbose, captured: the re-capture's own log lines are debug lines, and the
+# resolution it runs holds every plaintext this fixture seeds.
+redeploy_verbose() { # -> P2R_DEPLOY_OUT; a failed deploy prints masked and exits
+  local rc=0
+  P2R_DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --verbose --yes 2>&1) || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: the NO_CHANGE redeploy failed (rc=${rc})" >&2
+    diag_masked "${P2R_DEPLOY_OUT}"
+    exit 1
+  fi
+}
+redeploy_verbose
+assert_no_drift_plaintext "the re-capturing deploy's --verbose output" "${P2R_DEPLOY_OUT}"
+TD_RECORD=$(read_record AWS::ECS::TaskDefinition)
+assert_read "the task definition record after the re-capture" "${TD_RECORD}"
+# The arming guard phase 2 uses: an UPDATE would re-capture with a populated
+# map by the ordinary route and prove nothing about the re-capture.
+if [ "$(printf '%s' "${TD_RECORD}" | jq -r '.physicalId')" != "${P1_PHYSICAL_ID}" ]; then
+  echo "FAIL: the task definition was UPDATED on the redeploy, so the re-capture was not what rewrote its baseline" >&2
+  exit 1
+fi
+P2R_OBSERVED=$(printf '%s' "${TD_RECORD}" | jq -c '.observedProperties')
+P2R_EP=$(cd_field_of "${P2R_OBSERVED}" anchorprobe EntryPoint)
+assert_read "observedProperties anchorprobe EntryPoint after the re-capture" "${P2R_EP}"
+assert_unkeyed_string_array "observedProperties anchorprobe EntryPoint after the re-capture" "${P2R_EP}" 4
+P2R_EP_1=$(json_index "${P2R_EP}" 1)
+P2R_EP_3=$(json_index "${P2R_EP}" 3)
+# THE assertion item (1) exists for: a NO_CHANGE deploy cleared a mask.
+if [ "${P2R_EP_1}" != "${AMBIG_ALPHA_EXPR}" ]; then
+  echo "FAIL: a NO_CHANGE redeploy must re-capture the certifiable masked position as its expression (issue #3595)." >&2
+  echo "      got:  $(mask "${P2R_EP_1}")" >&2
+  echo "      want: ${AMBIG_ALPHA_EXPR}" >&2
+  exit 1
+fi
+echo "    OK: the certifiable masked position was re-captured as its expression"
+# ...and the rotated one kept its mask: neither value is the one the reference
+# resolves to AND the one AWS holds, so no position can be certified.
+if [ "${P2R_EP_3}" != "***" ]; then
+  echo "FAIL: the rotated position must stay masked after the re-capture: got $(mask "${P2R_EP_3}")" >&2
+  exit 1
+fi
+echo "    OK: the uncertifiable (rotated) position stayed masked"
+# Only [1] moved. Put the mask back there and the bag must be the one phase 2
+# captured, byte for byte.
+P2R_RESTORED=$(printf '%s' "${P2R_OBSERVED}" \
+  | jq -cS '(.ContainerDefinitions[] | select(.Name=="anchorprobe") | .EntryPoint[1]) |= "***"')
+if [ "${P2R_RESTORED}" != "${P2R_BEFORE}" ]; then
+  echo "FAIL: the re-capture changed the observed baseline outside the masked position it certified" >&2
+  exit 1
+fi
+echo "    OK: nothing else in the observed baseline changed"
+assert_no_drift_plaintext "the task definition record after the re-capture" "${TD_RECORD}"
+
+# The position that stays uncertifiable still reads as not compared (#3609).
+run_drift
+if [ "${DRIFT_RC}" -ne 2 ]; then
+  echo "FAIL: 'cdkd drift' after the re-capture exited ${DRIFT_RC}, expected 2 (the rotated position is still not compared)" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' after the re-capture" "${DRIFT_OUT}"
+run_drift_json
+P2R_CAUSE=$(printf '%s' "${DRIFT_JSON}" | jq -r --arg id "${TD_LOGICAL_ID}" \
+  '[.[0].notCompared[] | select(.logicalId==$id) | .cause] | join(",")')
+P2R_DRIFTED=$(printf '%s' "${DRIFT_JSON}" | jq -r '.[0].drifted | length')
+if [ "${P2R_CAUSE}" != "uncertifiedBaseline" ] || [ "${P2R_DRIFTED}" != "0" ]; then
+  echo "FAIL: expected the task definition still not compared as 'uncertifiedBaseline' and nothing drifted; got cause '${P2R_CAUSE}', ${P2R_DRIFTED} drifted" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --json' after the re-capture" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+echo "    OK: the remaining masked position is still reported not compared (uncertifiedBaseline)"
+
+# A second NO_CHANGE redeploy, still rotated, has nothing more to certify and
+# leaves the bag as it is. Not vacuous: the fresh readback masks BOTH positions
+# while the baseline now holds [1]'s expression, and the re-capture must read
+# that as the baseline it wrote rather than refuse or rewrite it.
+redeploy_verbose
+assert_no_drift_plaintext "the second NO_CHANGE deploy's --verbose output" "${P2R_DEPLOY_OUT}"
+if [ "$(read_record AWS::ECS::TaskDefinition | jq -cS '.observedProperties')" \
+  != "$(printf '%s' "${P2R_OBSERVED}" | jq -cS '.')" ]; then
+  echo "FAIL: a second NO_CHANGE redeploy changed the re-captured baseline" >&2
+  exit 1
+fi
+echo "    OK: a second NO_CHANGE redeploy left the re-captured baseline as it was"
+
+# Rotate ambigBravo BACK: the registered value is certifiable again, so the next
+# NO_CHANGE deploy clears the last mask -- on top of the baseline the first
+# re-capture wrote -- and the resource then reads clean.
+SECRET_VALUE_FILE=$(umask 077 && mktemp)
+put_secret_string "${ROT_ORIG_SECRET}"
+rm -f "${SECRET_VALUE_FILE}"
+# Both variables hold every key's plaintext; drop them once they are written, so
+# no later diagnostic can print them.
+unset ROT_ORIG_SECRET ROT_NEW_SECRET
+restored=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [ "$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+      --query SecretString --output text | jq -r '.ambigBravo // empty')" = "${EXPECTED_AMBIG_BRAVO}" ]; then
+    restored=1
+    break
+  fi
+  sleep 3
+done
+if [ "${restored}" -ne 1 ]; then
+  echo "FAIL: the fixture secret never reported ambigBravo rotated back" >&2
+  exit 1
+fi
+redeploy_verbose
+assert_no_drift_plaintext "the third NO_CHANGE deploy's --verbose output" "${P2R_DEPLOY_OUT}"
+TD_RECORD=$(read_record AWS::ECS::TaskDefinition)
+assert_read "the task definition record after the rotate-back re-capture" "${TD_RECORD}"
+if [ "$(printf '%s' "${TD_RECORD}" | jq -r '.physicalId')" != "${P1_PHYSICAL_ID}" ]; then
+  echo "FAIL: the task definition was UPDATED on the rotate-back redeploy" >&2
+  exit 1
+fi
+P2R_FINAL_EP=$(cd_field_of "$(printf '%s' "${TD_RECORD}" | jq -c '.observedProperties')" anchorprobe EntryPoint)
+assert_read "observedProperties anchorprobe EntryPoint after the rotate-back re-capture" "${P2R_FINAL_EP}"
+if [ "$(json_index "${P2R_FINAL_EP}" 1)" != "${AMBIG_ALPHA_EXPR}" ] \
+  || [ "$(json_index "${P2R_FINAL_EP}" 3)" != "${AMBIG_BRAVO_EXPR}" ]; then
+  echo "FAIL: after ambigBravo was rotated back, a NO_CHANGE redeploy must clear the last mask too" >&2
+  echo "      got[1]: $(mask "$(json_index "${P2R_FINAL_EP}" 1)")  got[3]: $(mask "$(json_index "${P2R_FINAL_EP}" 3)")" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "the task definition record after the rotate-back re-capture" "${TD_RECORD}"
+echo "    OK: the last masked position was re-captured once it became certifiable"
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' after the last mask cleared exited ${DRIFT_RC}, expected 0" >&2
+  diag_masked "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift' after the last mask cleared" "${DRIFT_OUT}"
+run_drift_json
+if [ "$(printf '%s' "${DRIFT_JSON}" | jq -r --arg id "${TD_LOGICAL_ID}" '[.[0].clean[] | select(.logicalId==$id)] | length')" != "1" ]; then
+  echo "FAIL: the task definition is not reported compared-and-matched once its baseline holds no mask" >&2
+  diag_masked "${DRIFT_JSON}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd drift --json' after the last mask cleared" "${DRIFT_JSON}${DRIFT_JSON_ERR}"
+echo "    OK: the task definition now reads compared-and-matched"
+
+# `cdkd state refresh-observed` resolves nothing, so it takes the empty-map
+# capture and rule 3 masks BOTH positions again (the docs say so) -- and the
+# next NO_CHANGE deploy re-captures them from there.
+P2R_REFRESH_RC=0
+P2R_REFRESH_OUT=$(node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1) || P2R_REFRESH_RC=$?
+if [ "${P2R_REFRESH_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd state refresh-observed' failed (rc=${P2R_REFRESH_RC})" >&2
+  diag_masked "${P2R_REFRESH_OUT}"
+  exit 1
+fi
+assert_no_drift_plaintext "'cdkd state refresh-observed' output" "${P2R_REFRESH_OUT}"
+P2R_REFRESH_EP=$(cd_field_of "$(read_record AWS::ECS::TaskDefinition | jq -c '.observedProperties')" anchorprobe EntryPoint)
+assert_read "observedProperties anchorprobe EntryPoint after refresh-observed" "${P2R_REFRESH_EP}"
+if [ "$(json_index "${P2R_REFRESH_EP}" 1)" != "***" ] || [ "$(json_index "${P2R_REFRESH_EP}" 3)" != "***" ]; then
+  echo "FAIL: 'cdkd state refresh-observed' must write both refused positions back as the mask (rule 3, empty map)" >&2
+  echo "      got[1]: $(mask "$(json_index "${P2R_REFRESH_EP}" 1)")  got[3]: $(mask "$(json_index "${P2R_REFRESH_EP}" 3)")" >&2
+  exit 1
+fi
+echo "    OK: refresh-observed wrote the masks back"
+redeploy_verbose
+assert_no_drift_plaintext "the post-refresh NO_CHANGE deploy's --verbose output" "${P2R_DEPLOY_OUT}"
+if [ "$(read_record AWS::ECS::TaskDefinition | jq -r '.physicalId')" != "${P1_PHYSICAL_ID}" ]; then
+  echo "FAIL: the task definition was UPDATED on the post-refresh redeploy, so the re-capture was not what rewrote its baseline" >&2
+  exit 1
+fi
+P2R_AGAIN_EP=$(cd_field_of "$(read_record AWS::ECS::TaskDefinition | jq -c '.observedProperties')" anchorprobe EntryPoint)
+if [ "$(json_index "${P2R_AGAIN_EP}" 1)" != "${AMBIG_ALPHA_EXPR}" ] \
+  || [ "$(json_index "${P2R_AGAIN_EP}" 3)" != "${AMBIG_BRAVO_EXPR}" ]; then
+  echo "FAIL: the NO_CHANGE deploy after refresh-observed must re-capture both positions" >&2
+  exit 1
+fi
+assert_no_drift_plaintext "the task definition record after the post-refresh re-capture" "$(read_record AWS::ECS::TaskDefinition)"
+echo "    OK: the next NO_CHANGE deploy re-captured both positions"
+
 # --- Phase 3: destroy -------------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -1458,4 +1687,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
-echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, cdkd drift on the array shape is clean when fresh, masks a drifted array, refuses to --accept it and --reverts it RESOLVED, and reports a masked baseline position as not compared and leaks nothing over it (issues #1947 / #3595), clean destroy"
+echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, cdkd drift on the array shape is clean when fresh, masks a drifted array, refuses to --accept it and --reverts it RESOLVED, and reports a masked baseline position as not compared and leaks nothing over it (issues #1947 / #3595), a NO_CHANGE redeploy re-captures a certifiable masked position and keeps a rotated one masked (issue #3595), clean destroy"

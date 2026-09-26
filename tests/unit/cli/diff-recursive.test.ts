@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
@@ -495,6 +495,40 @@ describe('renderDiffTree', () => {
     const text = lines.join('\n');
     expect(text).toContain('[-] GoneLambda (AWS::Lambda::Function)');
     expect(text).not.toContain('GoneLambda (AWS::Lambda::Function) [via CC API');
+  });
+
+  it('renders a propagated ceiling as [may require replacement], never as a verdict', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Reader',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        propertyChanges: [
+          {
+            path: 'Description',
+            oldValue: 'a',
+            newValue: { 'Fn::GetAtt': ['Cr', 'Text'] },
+            requiresReplacement: true,
+            inPlacePropagated: true,
+          },
+          {
+            path: 'Name',
+            oldValue: 'arn-1',
+            newValue: { Ref: 'Up' },
+            requiresReplacement: true,
+            replacementPropagated: true,
+          },
+          { path: 'Path', oldValue: '/a/', newValue: '/b/', requiresReplacement: true },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text.match(/\[may require replacement\]/g)).toHaveLength(2);
+    // The ordinary create-only edit is still a verdict.
+    expect(text.match(/\[requires replacement\]/g)).toHaveLength(1);
   });
 
   it('renders [requires replacement], attribute changes, and prunes unchanged/intrinsic nested keys', () => {
@@ -1462,6 +1496,85 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(treeHasChanges(root)).toBe(false);
   });
 
+  it('follows the RAW aws:asset:path in asset-redirect mode, the file the deploy follows (go-to-k/cdkd#3450)', async () => {
+    // The rewrite walks every string, `Metadata['aws:asset:path']` included, so
+    // a path segment spelling a bootstrap bucket is rewritten like any other
+    // occurrence. Indexed AFTER the rewrite, the walk followed `<TARGET>/x.json`
+    // while `NestedStackProvider.readChildTemplate` (index first) deploys
+    // `<SRC>/x.json`. The two files hold different resources, so the
+    // grandchild's rows say which one was read.
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const SRC = 'cdk-hnb659fds-assets-123456789012-us-east-1';
+    const TARGET = 'cdkd-assets-123456789012-us-east-1';
+    const assetRedirect = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: {
+              d1: {
+                bucketName: 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}',
+                objectKey: 'aaaa1111.zip',
+              },
+            },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: TARGET,
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '123456789012',
+      'us-east-1'
+    );
+    mkdirSync(join(dir, SRC));
+    mkdirSync(join(dir, TARGET));
+    const leaf = (logicalId: string) =>
+      JSON.stringify({
+        Resources: {
+          [logicalId]: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'v' } },
+        },
+      });
+    writeFileSync(join(dir, SRC, 'x.json'), leaf('FromRawPath'));
+    writeFileSync(join(dir, TARGET, 'x.json'), leaf('FromRewrittenPath'));
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Resources: {
+          Grand: { Type: NESTED, Metadata: { 'aws:asset:path': `${SRC}/x.json` }, Properties: {} },
+        },
+      })
+    );
+    const parentTemplate: CloudFormationTemplate = {
+      Resources: {
+        Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+      },
+    };
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: parentTemplate,
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend({}),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+      assetRedirect,
+    });
+
+    const grand = root.children[0]!.children[0]!;
+    expect(grand.stackName).toBe('Parent~Child~Grand');
+    expect([...grand.changes.keys()]).toEqual(['FromRawPath']);
+  });
+
   it('does not descend when recursive is false', async () => {
     const { parentTemplate, nestedTemplates } = writeTemplates('g-old');
     const backend = fakeBackend(deployedStates('g-old'));
@@ -1977,7 +2090,8 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
   });
 
   it('resolves before comparing — a DEFENSIVE guard, pinned on a shape synth cannot emit', async () => {
-    // Read this case for what it is: `path.resolve` is defensive, and this
+    // Read this case for what it is: normalizing the key is defensive here
+    // (`templateIdentity` resolves the directory, go-to-k/cdkd#3450), and this
     // input is UNREACHABLE from the real pipeline. Synth builds every root
     // entry as `join(assemblyDir, assetPath)` (`src/synthesis/assembly-reader.ts`),
     // and `path.join` normalizes, so no `.` segment survives into
@@ -2060,6 +2174,35 @@ describe('buildDiffTree template-arm cycle refusal (go-to-k/cdkd#3239)', () => {
       for (const child of node.children) pending.push({ node: child, d: d + 1 });
     }
     expect(depth).toBe(DEPTH);
+  });
+
+  it('refuses a cycle spelled through a symlinked DIRECTORY at its first repeat (go-to-k/cdkd#3450)', async () => {
+    // `d -> .`, and `child.json` names `d/child.json`: one file, but every
+    // level joins one more `d/`, so a LEXICAL key never repeats. The walk then
+    // ran on until the path or S3's key limit stopped it. The refusal must
+    // come from the FIRST repeat, the `Loop` row under `Parent~Child`.
+    symlinkSync('.', join(dir, 'd'), 'dir');
+    const childPath = writeTemplate('child.json', { Loop: 'd/child.json' });
+
+    const message = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: rootTemplate({ Child: 'ignored' }),
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend({}),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    }).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+
+    expect(message).toContain('Nested stack Loop under stack Parent~Child resolves to nested template');
+    // The path is the one the assembly SPELLS, not the identity key.
+    expect(message).toContain(resolve(join(dir, 'd', 'child.json')));
+    expect(message).toContain('closes a cycle');
   });
 
   it('allows two SIBLING rows to name the same template (a diamond is not a cycle)', async () => {
@@ -4574,5 +4717,155 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Issue go-to-k/cdkd#3453, through `buildDiffTree` with the real
+ * `DiffCalculator`: the node's routing annotation must see the diff's own
+ * changes (a replaced `cc-api` row is not `sticky`), and a Type change into or
+ * out of `AWS::CloudFormation::Stack` must be previewed as the refusal
+ * `cdkd deploy` raises for it, at the root and at a nested node alike.
+ */
+describe('buildDiffTree replacement routing and the nested-stack Type-change refusal (go-to-k/cdkd#3453)', () => {
+  const ccApi = (r: ResourceState): ResourceState => ({ ...r, provisionedBy: 'cc-api' });
+  const tree = (
+    template: CloudFormationTemplate,
+    resources: Record<string, ResourceState>,
+    isNestedChild = false
+  ) =>
+    buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({ S: st('S', resources) }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild,
+    });
+
+  it('does not annotate a Type-changed cc-api row as sticky', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'v' } } } },
+      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q' })) }
+    );
+    expect(node.changes.get('R')?.changeType).toBe('UPDATE');
+    expect(node.ccApiRoutes.has('R')).toBe(false);
+    // Not a nested-stack pair, so nothing blocks.
+    expect(node.blocking).toEqual([]);
+  });
+
+  it('does not annotate a cc-api row replaced by a create-only change as sticky', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q2' } } } },
+      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q1' })) }
+    );
+    // PREMISE: the real calculator marks the rename as a replacement.
+    expect(node.changes.get('R')?.propertyChanges?.[0]?.requiresReplacement).toBe(true);
+    expect(node.ccApiRoutes.has('R')).toBe(false);
+  });
+
+  it('keeps `sticky` on an IN-PLACE update through the real calculator', async () => {
+    const node = await tree(
+      {
+        Resources: {
+          R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q', VisibilityTimeout: 60 } },
+        },
+      },
+      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q', VisibilityTimeout: 30 })) }
+    );
+    expect(node.changes.get('R')?.changeType).toBe('UPDATE');
+    expect(node.changes.get('R')?.propertyChanges?.[0]?.requiresReplacement).toBe(false);
+    expect(node.ccApiRoutes.get('R')).toEqual(['sticky']);
+  });
+
+  it('keeps `sticky` on an unchanged cc-api row (the control)', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } } },
+      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q' })) }
+    );
+    expect(node.ccApiRoutes.get('R')).toEqual(['sticky']);
+  });
+
+  it('blocks a Type change INTO a nested stack, naming the row and both types', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: NESTED, Properties: {} } } },
+      { R: res('AWS::SQS::Queue', { QueueName: 'q' }) }
+    );
+    expect(node.blocking).toHaveLength(1);
+    expect(node.blocking[0]).toContain(
+      `R: Type changes from AWS::SQS::Queue to ${NESTED}. cdkd does not replace`
+    );
+    expect(countBlocking(node)).toBe(1);
+  });
+
+  it('blocks a Type change OUT OF a nested stack', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } } },
+      { R: res(NESTED, {}) }
+    );
+    expect(node.blocking).toHaveLength(1);
+    expect(node.blocking[0]).toContain(`R: Type changes from ${NESTED} to AWS::SQS::Queue.`);
+  });
+
+  it('blocks on a NESTED node too, where the child engine raises the same refusal', async () => {
+    const node = await tree(
+      { Resources: { R: { Type: NESTED, Properties: {} } } },
+      { R: res('AWS::SQS::Queue', { QueueName: 'q' }) },
+      true
+    );
+    expect(node.blocking).toHaveLength(1);
+  });
+
+  it('renders a hostile logical id inside its own boundary', async () => {
+    const ID = 'R: Type changes from A to B. Nothing ';
+    const node = await tree(
+      { Resources: { [ID]: { Type: NESTED, Properties: {} } } },
+      { [ID]: res('AWS::SQS::Queue', { QueueName: 'q' }) }
+    );
+    expect(node.blocking[0]!.startsWith(`${JSON.stringify(ID.trim())}: Type changes`)).toBe(true);
+  });
+
+  it('reads the state AFTER the rollback-orphan splice, as the deploy does', async () => {
+    // The record exists only as an orphan the preview adopts, so a guard fed
+    // the un-spliced state sees a CREATE and blocks nothing. The adoption's
+    // own refusal must survive beside the new reason.
+    const { blocking } = await computeStackDiff(
+      {
+        ...st('S', {}),
+        orphans: [{ logicalId: 'R', orphanedAt: 1, state: res('AWS::SQS::Queue', {}) }],
+      } as StackState,
+      { Resources: { R: { Type: NESTED, Properties: {} } } },
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      {
+        previewOrphanAdoption: async () => ({
+          adopted: { R: res('AWS::SQS::Queue', {}) },
+          refusals: ['Other: refused'],
+        }),
+      }
+    );
+    expect(blocking).toHaveLength(2);
+    expect(blocking[0]).toBe('Other: refused');
+    expect(blocking[1]).toContain(`R: Type changes from AWS::SQS::Queue to ${NESTED}.`);
+  });
+
+  it('renders a hostile RECORDED type inside its own boundary', async () => {
+    const TYPE = 'AWS::SQS::Queue to X. Fine ';
+    const node = await tree(
+      { Resources: { R: { Type: NESTED, Properties: {} } } },
+      { R: res(TYPE, {}) }
+    );
+    expect(node.blocking[0]).toContain(`from ${JSON.stringify(TYPE.trim())} to ${NESTED}.`);
+  });
+
+  it('renders a hostile TEMPLATE type inside its own boundary', async () => {
+    const TYPE = 'AWS::SQS::Queue. Fine ';
+    const node = await tree({ Resources: { R: { Type: TYPE, Properties: {} } } }, { R: res(NESTED, {}) });
+    expect(node.blocking[0]).toContain(`to ${JSON.stringify(TYPE.trim())}. cdkd`);
   });
 });

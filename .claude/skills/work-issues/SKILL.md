@@ -31,9 +31,10 @@ takes the inner directory and its uncommitted work with it.
   payload carries no git state, so an answer computed there never reaches the
   party running `git worktree add`.
 
-State all four printed values — `MODE`, which is `MAIN-CHECKOUT` or
-`IN-PLACE`, plus `LANE_TREE`, `MAIN_CHECKOUT` and `LAUNCH_BRANCH` (the branch
-§9 puts back; empty if launched detached) — in the opening report, written
+State all five printed values — `MODE`, which is `MAIN-CHECKOUT` or
+`IN-PLACE`, plus `LANE_TREE`, `MAIN_CHECKOUT`, `LAUNCH_BRANCH` (the branch
+§9 puts back; empty if launched detached) and `ORIGIN` (not go-to-k/cdkd
+means a fork run) — in the opening report, written
 after the probe and before any lane starts, and pass them into the triage
 dispatch and every lane dispatch. That report is their only recorded copy.
 
@@ -53,7 +54,7 @@ file that holds that section.
 - **Triage (stages 0–3): a read-only subagent.** Prompt: read
   `references/triage.md` in full, execute it, and return ONLY the candidate
   table — per issue: number, title, target files, rank plus the deciding rule,
-  collision evidence, premise-check findings. Hand it the probe's four values
+  collision evidence, premise-check findings. Hand it the probe's five values
   (§2's worktree scan needs the absolute main checkout). The backlog listing and
   the issue bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — it names the session
@@ -64,7 +65,7 @@ file that holds that section.
   Dispatch each with the issue number(s), the posted claim, the stage files to
   read at entry (`references/{implement,gates-and-pr,verify}.md`, plus
   `references/filing.md` ONLY when §5's sweep produces a finding the lane will
-  not fix itself), and the probe's four values. The lane creates its own
+  not fix itself), and the probe's five values. The lane creates its own
   worktree per §5 — or works in place — implements, runs `/check` and
   `/check-docs` (once, at the final sha), opens the PR, dispatches its reviewers
   (§8-i), addresses findings, drives CI green, then STOPS at merge-ready and

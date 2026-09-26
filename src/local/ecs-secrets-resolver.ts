@@ -2,6 +2,7 @@ import { displayIdent, displaySafe, SECRET_REF_MAX_CODE_POINTS } from '../utils/
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { ownValue } from '../utils/own-keys.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
@@ -247,7 +248,11 @@ async function resolveSecretsManager(
       `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but the secret root is not a JSON object.`
     );
   }
-  const value = (parsed as Record<string, unknown>)[shape.jsonKey];
+  // Own-key read (issue #3515): a bare index answered for a json-key named
+  // after an `Object.prototype` member the secret does not carry, with the
+  // inherited function, which passed the check below and stringified to
+  // `undefined` -- a value-less secret docker resolves against the client env.
+  const value = ownValue(parsed as Record<string, unknown>, shape.jsonKey);
   if (value === undefined) {
     throw new EcsSecretsResolutionError(
       `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but no such key exists in the secret JSON.`

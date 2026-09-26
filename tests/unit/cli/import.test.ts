@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * the PROMPT has to present as interactive; the refusal cases set it back.
  */
 import { setStdinIsTty } from '../../stdin-tty.js';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -2504,6 +2504,280 @@ describe('cdkd import', () => {
     }
 
     /**
+     * A ROW of the existing record's `resources` map that is not a resource
+     * record (issue go-to-k/cdkd#3202), through the COMMAND. A selective merge
+     * starts from `{ ...existingState.resources }` and saves every row it did
+     * not re-import AS IT STANDS — so unguarded, `cdkd import` wrote a record
+     * holding a `null` row and the next deploy or destroy met it instead. The
+     * map itself is healthy here: the bag guard cannot see this.
+     */
+    for (const [label, row] of [
+      ['null', null],
+      ['a string', 'abc'],
+      ['a list', [{ physicalId: 'p', resourceType: 'AWS::SQS::Queue' }]],
+      ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ] as const) {
+      it(`refuses a SELECTIVE import over an existing record whose row is ${label}, and writes nothing`, async () => {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          state: existingState({ Broken: row }),
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        const importFn = vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} }));
+        mockGetProvider.mockImplementation(() => ({ import: importFn }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // The ROW text, naming the row — not the bag one, whose "no readable
+        // 'resources' map" is false over a map that is an object.
+        expect(message).toContain('Broken');
+        expect(message).toContain('cannot be read as resources');
+        expect(message).not.toContain("no readable 'resources' map");
+        // The PRE-FLIGHT refusal, not the assembled-map one: it fires before the
+        // lock and before any provider import, and its text says so. Without
+        // these three the pre-save twin alone satisfies every assertion above.
+        expect(message).toContain('Nothing was locked');
+        expect(mockAcquireLock, 'the lock was taken before the refusal').not.toHaveBeenCalled();
+        expect(importFn, 'a provider import ran before the refusal').not.toHaveBeenCalled();
+        expect(
+          mockSaveState,
+          'cdkd import saved a record carrying a row it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
+    /**
+     * THE OTHER DIRECTION, and the reason the refusal is scoped to selective
+     * mode: a whole-stack `--force` import REPLACES the map from the template,
+     * so it is the way OUT of such a record — refusing it would close a recovery
+     * route, the rule go-to-k/cdkd#3159 set.
+     */
+    it('does NOT refuse the selective re-import OF the broken row — `--resource Broken=… --force` is its repair', async () => {
+      // Maintainer review M1 on go-to-k/cdkd#3758: the rows named by
+      // `--resource` are REPLACED by `buildStackState` from the provider's
+      // answer, so refusing them would close the one per-row recovery route.
+      // Only the rows the merge does NOT re-import are refused.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+      }));
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=cdkd-test-my-bucket',
+        '--force',
+        '--yes',
+      ]);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, { physicalId?: string } | null> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      // REPAIRED, not carried: the null row is now the imported record.
+      expect(saved!.resources['MyBucket']?.physicalId).toBe('cdkd-test-my-bucket');
+      // And the unlisted healthy rows are still preserved by the merge.
+      expect(saved!.resources['MyQueue']?.physicalId).toBe('queue-arn');
+    });
+
+    it('refuses BEFORE saving when the listed broken row`s import did not succeed — the exemption is a promise, not a pass', async () => {
+      // The pre-flight exempts a listed row because `buildStackState` will
+      // replace it — and it replaces only a row whose import SUCCEEDED. A
+      // provider failure on `MyBucket` leaves the stored `null` in the
+      // assembled map, so the save would carry it (or the property resolution
+      // would crash on it). The assembled map is re-checked instead.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+          '--yes',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('MyBucket');
+      expect(errored).toContain('their import did not succeed');
+      // The pre-flight text is NOT the one raised here: the lock is held and
+      // AWS was read by then, which that text denies.
+      expect(errored).not.toContain('Nothing was locked');
+      // ...and the lock IS released on the way out: this is the one new
+      // refusal raised while it is held (maintainer round 2, optional).
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(
+        mockSaveState,
+        'cdkd import saved a record still carrying the row it could not re-import'
+      ).not.toHaveBeenCalled();
+    });
+
+    it('refuses BEFORE the confirmation prompt on a real run without --yes', async () => {
+      // Maintainer round 2, M4 (b): the re-check sits above the prompt, so the
+      // user is never asked "Write state?" for a record the run then refuses.
+      // Stdin is interactive here (the file's `beforeEach` sets it so), so the
+      // prompt WOULD be asked through the readline mock if the ordering were
+      // wrong — the assertion that it was never asked is what proves the order.
+      readlineQuestion.mockResolvedValue('y');
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('their import did not succeed');
+      expect(readlineQuestion, 'the prompt was asked before the refusal').not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('refuses the same way under --dry-run, so the preview cannot say "re-run without --dry-run" for a run that then refuses', async () => {
+      // Maintainer round 2, M4: the re-check sits ABOVE the `--dry-run` return
+      // and the confirmation prompt, on the map `buildStackState` assembles
+      // once `rows` is final — so the preview and the real run agree, and the
+      // real run never asks "Write state?" for a record it then refuses.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ MyBucket: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'MyBucket') throw new Error('bucket vanished mid-import');
+          return { physicalId: 'imported', attributes: {} };
+        }),
+      }));
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--resource',
+          'MyQueue=queue-arn',
+          '--force',
+          '--dry-run',
+        ])
+      ).rejects.toThrow();
+      const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errored).toContain('MyBucket');
+      expect(errored).toContain('their import did not succeed');
+      // The dry-run verdict line must NOT have been printed: the refusal
+      // comes first, which is the whole point of the placement.
+      const infos = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(infos).not.toContain('Re-run without --dry-run to apply');
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('does NOT refuse a whole-stack --force import over the same row, which replaces the map', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ Broken: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'imported', attributes: {} })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--force', '--yes']);
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, unknown> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      // The broken row is GONE from the saved record, replaced from the
+      // template — which is what makes this route a recovery rather than a
+      // laundering.
+      expect(saved!.resources['Broken']).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT refuse a --migrate-from-cloudformation import over the same row either — the other recovery route', async () => {
+      // Migration forces `selectiveMode = false` through the same expression
+      // the case above relies on (import.ts computes it once). Pinned
+      // separately so a later edit that splits the two arms cannot close this
+      // route silently (test review of go-to-k/cdkd#3202).
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({ Broken: null }),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'imported', attributes: {} })),
+      }));
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'S',
+        physicalId: 'S',
+        resources: new Map([
+          ['MyBucket', 'cdkd-test-my-bucket'],
+          ['MyQueue', 'queue-arn'],
+          ['MyTopic', 'topic-arn'],
+        ]),
+        nested: new Map(),
+      });
+
+      await runImport(['import', 'S', '--app', 'x', '--force', '--yes', '--migrate-from-cloudformation']);
+      expect(mockSaveState).toHaveBeenCalled();
+      const saved = mockSaveState.mock.calls[0]!.find(
+        (a: unknown) => a !== null && typeof a === 'object' && 'resources' in (a as object)
+      ) as { resources: Record<string, unknown> } | undefined;
+      expect(saved, 'no state record reached saveState').toBeDefined();
+      expect(saved!.resources['Broken']).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    /**
      * The `orphans` CONTAINER on the EXISTING record (issue
      * go-to-k/cdkd#3379), through the COMMAND. The module's source fences pin
      * the guard's placement and cannot see REACHABILITY, which is what these
@@ -4534,6 +4808,112 @@ describe('cdkd import', () => {
           expect(grandSave[2].parentLogicalId).toBe('Grandchild');
           expect(grandSave[2].parentRegion).toBe('us-east-1');
           expect(Object.keys(grandSave[2].resources)).toContain('GrandchildBucket');
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('follows the RAW grandchild aws:asset:path in asset-redirect mode (go-to-k/cdkd#3450)', async () => {
+        // The rewrite walks every string in the child template, the
+        // grandchild row's `aws:asset:path` included. Indexed from the
+        // REWRITTEN template, the walk read `<TARGET>/x.json` while the deploy
+        // (index first) follows `<SRC>/x.json`. The two files hold different
+        // resources, so the grandchild's saved record says which one was read.
+        const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+        const SRC = 'cdk-hnb659fds-assets-123-us-east-1';
+        const TARGET = 'cdkd-assets-123-us-east-1';
+        mockCreateAssetRedirectResolver.mockReturnValueOnce(async () =>
+          buildAssetRedirectMap(
+            {
+              version: '38.0.0',
+              files: {
+                aaaa1111: {
+                  displayName: 'Code',
+                  source: { path: 'asset.aaaa1111', packaging: 'zip' },
+                  destinations: { d1: { bucketName: SRC, objectKey: 'k.zip' } },
+                },
+              },
+              dockerImages: {},
+            },
+            {
+              assetBucket: TARGET,
+              containerRepo: 'cdkd-container-assets-123-us-east-1',
+              assetSupportVersion: 1,
+              createdAt: '2026-07-15T00:00:00.000Z',
+            },
+            '123',
+            'us-east-1'
+          )
+        );
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-raw-'));
+        try {
+          mkdirSync(join(tmpdirPath, SRC));
+          mkdirSync(join(tmpdirPath, TARGET));
+          const leaf = (logicalId: string) =>
+            JSON.stringify({ Resources: { [logicalId]: { Type: 'AWS::S3::Bucket', Properties: {} } } });
+          writeFileSync(join(tmpdirPath, SRC, 'x.json'), leaf('FromRawPath'));
+          writeFileSync(join(tmpdirPath, TARGET, 'x.json'), leaf('FromRewrittenPath'));
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                Grandchild: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'x' },
+                  Metadata: { 'aws:asset:path': `${SRC}/x.json` },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid-c';
+          const grandchildArn = 'arn:aws:cloudformation:us-east-1:123:stack/Grandchild/uuid-g';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['Grandchild', grandchildArn]]),
+                  nested: new Map([
+                    [
+                      'Grandchild',
+                      {
+                        stackName: grandchildArn,
+                        physicalId: grandchildArn,
+                        resources: new Map([
+                          ['FromRawPath', 'raw-real'],
+                          ['FromRewrittenPath', 'rewritten-real'],
+                        ]),
+                        nested: new Map(),
+                      },
+                    ],
+                  ]),
+                },
+              ],
+            ]),
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const grandSave = mockSaveState.mock.calls.find(
+            (c) => (c as unknown[])[0] === 'P~Child~Grandchild'
+          ) as unknown as [string, string, { resources: Record<string, unknown> }];
+          expect(Object.keys(grandSave[2].resources)).toEqual(['FromRawPath']);
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
         }

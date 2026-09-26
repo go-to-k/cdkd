@@ -32,6 +32,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
 /**
  * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
@@ -794,7 +795,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         // Warn and proceed instead.
         this.logger.warn(
           `CloudFront Distribution ${logicalId} (${distributionId}) did not reach Deployed within the wait budget; continuing (propagation finishes in the background). ` +
-            `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}. ` +
+            `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}. ` +
             `Raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
         );
       }
@@ -809,7 +810,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     this.logger.info(
       `CloudFront Distribution ${logicalId} accepted (not waiting for Deployed${fullWaitHint}). ` +
-        `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}`
+        `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}`
     );
   }
 
@@ -959,8 +960,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     const merged: Record<string, unknown> = { ...currentConfig };
 
     for (const key of Object.keys(previousSdk)) {
-      if (key in templateSdk || key === 'CallerReference') continue;
-      if (key in REMOVAL_RESET_DEFAULTS) {
+      // `Object.hasOwn`, not `in` (issue #3515), on BOTH tests and together:
+      // `in` answers true for an inherited `Object.prototype` member, so a
+      // removed key named `constructor` was skipped as still templated, and
+      // fixing only the first test would send it into `structuredClone` of the
+      // inherited `Object` function (a DataCloneError) via the second.
+      if (Object.hasOwn(templateSdk, key) || key === 'CallerReference') continue;
+      if (Object.hasOwn(REMOVAL_RESET_DEFAULTS, key)) {
         merged[key] = structuredClone(REMOVAL_RESET_DEFAULTS[key]);
       } else {
         // Report the key in its CFn/template spelling (the user removes

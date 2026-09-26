@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * An S3 bucket with lifecycle rules — a daily pattern. The fixture mixes a
@@ -192,13 +193,14 @@ export class S3LifecycleStack extends cdk.Stack {
     // took the ENABLE arm and every value cdkd cannot read turned EventBridge
     // delivery ON, on a LIVE bucket, with no warning anywhere.
     //
-    // The arm has to live on the UPDATE path, and that is a property of the fix
-    // rather than a convenience: a template-path create REFUSES the value and
-    // would fail the deploy, while the replay-reachable update path warns and
-    // SKIPS the whole notification configuration (the Put is a full replace).
-    // So phase 1 deploys a usable `false` and phase 2 replaces it with a
-    // malformed value; AWS must still hold NO EventBridge block afterwards.
-    // Pre-fix, phase 2 CREATED one.
+    // A template-path deploy REFUSES the value on create AND, since issue
+    // #3740, on update too (only the rollback revert arms and
+    // `cdkd drift --revert` still warn and SKIP the whole notification
+    // configuration). So phase 1 deploys a usable `false`, and phase 2b
+    // (`CDKD_TEST_EB_MALFORMED=true`, on top of the phase-2 template) replaces
+    // it with a malformed value: the deploy must FAIL before any write and AWS
+    // must still hold NO EventBridge block. Pre-#1759, that update CREATED one.
+    // Its own toggle, not `update`, so phase 2's ordinary update still lands.
     //
     // `addPropertyOverride` on purpose (the memory rule that an L1 validator
     // refuses the shape): `CfnBucket`'s typed props declare
@@ -209,11 +211,28 @@ export class S3LifecycleStack extends cdk.Stack {
       bucketName: `cdkd-lifecycle-ebmalformed-${cdk.Stack.of(this).account}`,
       notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: false } },
     });
-    if (update) {
+    if (update && process.env.CDKD_TEST_EB_MALFORMED === 'true') {
       ebMalformed.addPropertyOverride(
         'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled',
         'yes'
       );
+    }
+    // Phase 2c (issue #3740): the #1759 warn-and-SKIP now lives on the REPLAY
+    // path only, so verify.sh drives it through the rollback REVERT arm. An
+    // ordinary in-place change (a tag) on this bucket lands, then a queue AWS
+    // refuses fails the deploy (`--no-rollback`); verify.sh doctors the
+    // journal's previous record to carry `'yes'` and runs `cdkd rollback`.
+    // allow-mode-gated-drop: the probe tag exists only for the failing deploy; the rollback and every later step correctly remove it.
+    if (update && process.env.CDKD_TEST_EB_REVERT === 'true') {
+      ebMalformed.tags.setTag('RevertProbe', '1');
+    }
+    // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (update && process.env.CDKD_TEST_EB_REVERT === 'true') {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${cdk.Stack.of(this).stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      failing.addDependency(ebMalformed);
     }
 
     // Issue #1748: the TOLERATED key spellings, which no L2 and no typed L1

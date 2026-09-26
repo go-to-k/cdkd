@@ -341,6 +341,41 @@ describe('AgentCoreEvaluatorProvider', () => {
       expect(untagCall.input.tagKeys.sort()).toEqual(['env', 'team']);
     });
 
+    it('should untag a removed tag whose Key is an Object.prototype name (constructor)', async () => {
+      // #3515 syncTags: `key in nextTags` answered true for `constructor`
+      // through the prototype chain, so no UntagResource was sent.
+      mockSend.mockResolvedValue({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-07-17T01:00:00Z'),
+      });
+
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        {
+          EvaluatorConfig: CODE_BASED_CONFIG,
+          Level: 'TRACE',
+          Tags: [{ Key: 'keep', Value: 'k' }],
+        },
+        {
+          EvaluatorConfig: CODE_BASED_CONFIG,
+          Level: 'TRACE',
+          Tags: [
+            { Key: 'keep', Value: 'k' },
+            { Key: 'constructor', Value: 'old' },
+          ],
+        }
+      );
+
+      const untags = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c.constructor.name === 'UntagResourceCommand');
+      expect(untags.map((c) => c.input.tagKeys)).toEqual([['constructor']]);
+    });
+
     it('should only call TagResource when tags are added to a previously untagged evaluator', async () => {
       mockSend.mockResolvedValue({
         evaluatorArn: EVALUATOR_ARN,

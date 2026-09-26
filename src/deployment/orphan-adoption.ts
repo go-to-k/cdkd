@@ -35,7 +35,7 @@
  */
 
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
-import type { ResourceState, StackOrphanRecord } from '../types/state.js';
+import { isReadableBag, type ResourceState, type StackOrphanRecord } from '../types/state.js';
 import {
   displayAwsMessage,
   displayIdent,
@@ -482,6 +482,13 @@ export async function planOrphanAdoption(params: {
   return outcome;
 }
 
+/**
+ * How many unreadable sibling rows the claim scan's debug line names before
+ * it says "and N more" — the same cap `namedEntriesClause` takes for the
+ * user-facing texts (go-to-k/cdkd#3202 review).
+ */
+const NAMED_UNREADABLE_SIBLING_ROWS = 5;
+
 /** The slice of the state backend {@link makeSiblingClaimReader} needs. */
 export interface SiblingStateReader {
   listStacks(): Promise<readonly { stackName: string; region?: string }[]>;
@@ -557,8 +564,75 @@ export function makeSiblingClaimReader(params: {
       if (ref.region === undefined) continue;
       try {
         const sibling = await stateBackend.getState(ref.stackName, ref.region);
-        for (const record of Object.values(sibling?.state.resources ?? {})) {
-          claimed.add(record.physicalId);
+        if (!sibling) continue;
+        // The sibling's record is a hand-editable file this stack does not
+        // own, so its shape is checked here rather than trusted
+        // (go-to-k/cdkd#3202). Before this, `Object.values(bag ?? {})` walked
+        // a STRING bag one character at a time — each one's `physicalId` is
+        // `undefined`, so the set gained a claim on `undefined` and no live
+        // id — and a `null` ROW threw on `record.physicalId` into the `catch`
+        // below, which logs at DEBUG and moves on: every id collected BEFORE
+        // the bad row stayed claimed, every id AFTER it was silently dropped.
+        // That is a NARROWING of the one set that stops this deploy adopting
+        // a resource another cdkd stack still owns, reported nowhere a user
+        // sees. Skip the unreadable bag, or the unreadable rows, and keep
+        // collecting the rest — the best-effort contract in this function's
+        // doc — and say so at DEBUG, the level the sibling-skip beside it uses.
+        //
+        // The predicate is a NON-EMPTY string `physicalId`, not
+        // `isReadableResourceEntry`: that one asks for `resourceType`, which
+        // this walk never reads, and a typeless row that still names a
+        // physical id is a claim this set must keep, since dropping it is the
+        // narrowing above by another route. An empty string is not a claim on
+        // anything, and `planOrphanAdoption` never looks one up.
+        //
+        // FAIL-CLOSED on the bag too, so the set never SHRINKS relative to the
+        // old `Object.values` walk: a LIST bag whose elements carry a
+        // `physicalId` is walked like a map (`Object.entries` indexes it), and
+        // only a bag that is not a non-null object — a string, a number, a
+        // boolean, `null`, absent — is skipped, since the walk over one of
+        // those yields no row at all (a string's characters are not objects).
+        // Claiming more costs nothing here, while a claim dropped is a record
+        // this stack may adopt while another stack still owns it: an operator
+        // repairing the sibling's list into a map, as the refusal texts
+        // advise, would then hold two records for one live resource
+        // (go-to-k/cdkd#3202 maintainer review M2). `isReadableBag` is
+        // deliberately NOT the test here — it rejects an array.
+        const bag: unknown = sibling.state.resources;
+        if (typeof bag !== 'object' || bag === null) {
+          logger.debug(
+            `orphan adoption: skipping ${displayStackName(ref.stackName)} — its state record ` +
+              `has no readable 'resources' map, so nothing it claims can be read`
+          );
+          continue;
+        }
+        const unreadable: string[] = [];
+        for (const [logicalId, record] of Object.entries(bag as Record<string, unknown>)) {
+          const physicalId = isReadableBag(record)
+            ? (record as { physicalId?: unknown }).physicalId
+            : undefined;
+          if (typeof physicalId === 'string' && physicalId !== '') {
+            claimed.add(physicalId);
+          } else {
+            unreadable.push(logicalId);
+          }
+        }
+        if (unreadable.length > 0) {
+          // CAPPED like `namedEntriesClause` in `malformed-resources-bag.ts`:
+          // each id is already bounded by `displayIdent`, but a planted record
+          // with thousands of torn rows would otherwise render one debug line
+          // per byte of it. Five named, the rest counted.
+          const named = unreadable
+            .slice(0, NAMED_UNREADABLE_SIBLING_ROWS)
+            .map((id) => displayIdent(id))
+            .join(', ');
+          const rest = unreadable.length - NAMED_UNREADABLE_SIBLING_ROWS;
+          logger.debug(
+            `orphan adoption: ${displayStackName(ref.stackName)} holds ${unreadable.length} ` +
+              `resource record(s) with no readable physical id — ${named}` +
+              `${rest > 0 ? ` and ${rest} more` : ''} — skipped; the claim set is a lower ` +
+              `bound without them`
+          );
         }
       } catch (error) {
         logger.debug(

@@ -9,6 +9,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as assets from 'aws-cdk-lib/aws-s3-assets';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +45,14 @@ export class AppSyncStack extends cdk.Stack {
     //                                     so a blanket reset cannot pass
     const updateMode = process.env['CDKD_TEST_UPDATE'] === 'true';
     const removalMode = process.env['CDKD_TEST_REMOVAL'] === 'true';
+    // Issue #3781, on top of the update template (verify.sh phases 2b / 2c):
+    //   - envMalformed — a per-key EnvironmentVariables value the PUT cannot
+    //     carry, beside an ownerContact change that would fire UpdateGraphqlApi
+    //     first. The deploy must be REFUSED before any write.
+    //   - envRevert — an ordinary env-var change, then a queue AWS refuses, so
+    //     `--no-rollback` leaves a journal for verify.sh to doctor and replay.
+    const envMalformed = updateMode && process.env['CDKD_TEST_ENV_MALFORMED'] === 'true';
+    const envRevert = updateMode && process.env['CDKD_TEST_ENV_REVERT'] === 'true';
 
     // An extra Cognito user pool + Lambda authorizer, so the two nested auth
     // blobs (CognitoUserPoolConfig / LambdaAuthorizerConfig) are exercised
@@ -97,10 +106,16 @@ export class AppSyncStack extends cdk.Stack {
             introspectionConfig: updateMode ? 'ENABLED' : 'DISABLED',
             queryDepthLimit: updateMode ? 8 : 5,
             resolverCountLimit: updateMode ? 200 : 100,
-            ownerContact: updateMode ? 'cdkd-integ-updated' : 'cdkd-integ',
-            environmentVariables: updateMode
-              ? { CdkdStage: 'updated', CdkdExtra: 'added' }
-              : { CdkdStage: 'baseline' },
+            ownerContact: envMalformed
+              ? 'cdkd-integ-malformed'
+              : updateMode
+                ? 'cdkd-integ-updated'
+                : 'cdkd-integ',
+            environmentVariables: envRevert
+              ? { CdkdStage: 'reverting', CdkdExtra: 'added' }
+              : updateMode
+                ? { CdkdStage: 'updated', CdkdExtra: 'added' }
+                : { CdkdStage: 'baseline' },
             additionalAuthenticationProviders: [
               {
                 authenticationType: 'AWS_IAM',
@@ -142,6 +157,26 @@ export class AppSyncStack extends cdk.Stack {
         operationLevelMetricsConfig: 'DISABLED',
       },
     });
+
+    // `addPropertyOverride` on purpose: the L1 types `environmentVariables` as
+    // `Record<string, string>` and its validator refuses an object value, so
+    // the shape is unreachable through the construct API — a hand-written or
+    // imported template carries exactly it.
+    if (envMalformed) {
+      graphqlApi.addPropertyOverride('EnvironmentVariables.CdkdExtra', {
+        nested: 'cdkd-integ-not-a-string',
+      });
+    }
+
+    // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (envRevert) {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${cdk.Stack.of(this).stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+      // After the API's env-var update has landed, so the journal holds it.
+      failing.addDependency(graphqlApi);
+    }
 
     // API Key
     const apiKey = new appsync.CfnApiKey(this, 'ApiKey', {

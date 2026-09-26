@@ -256,6 +256,32 @@ describe('GlueCrawlerProvider', () => {
     });
   });
 
+  // #3515 — glue-provider.ts GlueCrawlerProvider.applyTagDiff (~L4374) removal loop
+  it('update() removes a dropped tag keyed `constructor` via UntagResource (own-key membership, #3515)', async () => {
+    mockSend.mockImplementation((cmd) => {
+      return Promise.resolve({});
+    });
+
+    await provider.update(
+      'L',
+      'my-crawler',
+      'AWS::Glue::Crawler',
+      { Tags: [{ Key: 'keep', Value: 'k' }] },
+      {
+        Tags: [
+          { Key: 'keep', Value: 'k' },
+          { Key: 'constructor', Value: 'c' },
+        ],
+      }
+    );
+
+    const removed = mockSend.mock.calls
+      .filter((c) => c[0] instanceof UntagResourceCommand)
+      .map((c) => (c[0] as UntagResourceCommand).input.TagsToRemove);
+    expect(removed).toEqual([['constructor']]);
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof TagResourceCommand)).toHaveLength(0);
+  });
+
   it('update() does not call TagResource / UntagResource when tags are unchanged', async () => {
     const tags = [{ Key: 'env', Value: 'prod' }];
     await provider.update(

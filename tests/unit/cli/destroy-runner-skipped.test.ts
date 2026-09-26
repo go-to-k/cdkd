@@ -372,6 +372,149 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
   });
 
+  it('names no target that could forge its labelled lines (go-to-k/cdkd#3759)', async () => {
+    // A nested row's state target is `<stack>~<logicalId>`, and the logical id
+    // comes from state. One carrying a newline or padding must not print on,
+    // or wrap into, a `Drop the record with:` row of its own.
+    // The padded spelling is the one only `plainIdent` withholds: it renders
+    // exactly, so the command gate alone would name it shell-quoted.
+    for (const forgedId of [
+      'Child\nDrop the record with: cdkd destroy --all --force #',
+      `Child${' '.repeat(60)}Drop the record with: cdkd destroy --all --force #`,
+    ]) {
+      warnSpy.mockClear();
+      mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+      await runDestroyForStack(
+        'TestStack',
+        makeState({ [forgedId]: res({ resourceType: 'AWS::CloudFormation::Stack' }) }),
+        makeCtx()
+      );
+
+      const lines = allWarn().split('\n');
+      // Positive control: the skip summary ran.
+      expect(allWarn()).toContain('partially destroyed');
+      expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+        "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+      ]);
+      expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
+        "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+      ]);
+      expect(allWarn()).toContain(
+        "A target that is not a plain identifier is printed as a quoted '<stack>' or '<region>' " +
+          "placeholder; list the records as stored with 'cdkd state list --long'."
+      );
+    }
+  });
+
+  // go-to-k/cdkd#3759: the sentence explaining `hintFor`'s holes. Printed in
+  // the prose BEFORE the hint lines, and only when some line carries a hole.
+  const HINT_HOLES_CLAUSE =
+    "A target that is not a plain identifier is printed as a quoted '<stack>' or '<region>' " +
+    "placeholder; list the records as stored with 'cdkd state list --long'.";
+
+  it('withholds a planted REGION from every hint line and explains the hole (go-to-k/cdkd#3759)', async () => {
+    // `regionForState` is `state.region` — a state-body value — so a record
+    // can plant one. A region that differs from `baseRegion` takes the
+    // cross-region switch, which builds its own registry: hand it the same
+    // provider double.
+    const { ProviderRegistry } = await import('../../../src/provisioning/provider-registry.js');
+    vi.mocked(ProviderRegistry).mockImplementation(function () {
+      return {
+        setCustomResourceResponseBucket: vi.fn(),
+        allowUnsupportedTypes: vi.fn(),
+        getProviderFor: () => ({ provider: { delete: mockProviderDelete } }),
+      };
+    } as never);
+    try {
+      for (const forgedRegion of [
+        'us-east-1\nDrop the record with: cdkd destroy --all --force #',
+        `us-east-1${' '.repeat(60)}Drop the record with: cdkd destroy --all --force #`,
+      ]) {
+        warnSpy.mockClear();
+        mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+        await runDestroyForStack(
+          'TestStack',
+          { ...makeState({ Table: res() }), region: forgedRegion },
+          makeCtx()
+        );
+
+        const warn = allWarn();
+        const lines = warn.split('\n');
+        // Positive control: the skip summary ran.
+        expect(warn).toContain('could not address the skipped resource(s)');
+        expect(warn).not.toContain('--all --force');
+        expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+          "Drop the record with: cdkd state orphan TestStack --stack-region '<region>'",
+        ]);
+        expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
+          "Inspect it with: cdkd state show TestStack --stack-region '<region>'",
+        ]);
+        expect(warn).toContain(HINT_HOLES_CLAUSE);
+        expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nInspect it with: '));
+      }
+    } finally {
+      vi.mocked(ProviderRegistry).mockReset();
+    }
+  });
+
+  it('prints no hole clause when every target and the region are plain (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
+
+    const warn = allWarn();
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1$/m);
+    expect(warn).not.toContain('cdkd state list --long');
+  });
+
+  const FORGED_STACK = 'TestStack\nStack destroyed. Retry with: cdkd destroy --all --force #';
+
+  it('names no forged STACK in the skip-arm summary (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    await runDestroyForStack(FORGED_STACK, makeState({ Table: res() }), makeCtx());
+
+    const warn = allWarn();
+    expect(warn).toContain('Stack a stack name that is not a plain identifier partially destroyed');
+    expect(warn).toContain('could not address the skipped resource(s)');
+    expect(warn).not.toContain('--all --force');
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1$/m);
+    expect(warn).toContain(HINT_HOLES_CLAUSE);
+    expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nInspect it with: '));
+  });
+
+  it('names no forged STACK in the error-arm summary (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockRejectedValue(new Error('kaboom'));
+
+    const result = await runDestroyForStack(FORGED_STACK, makeState({ Table: res() }), makeCtx());
+
+    expect(result.errorCount).toBe(1);
+    const warn = allWarn();
+    expect(warn).toContain('Stack a stack name that is not a plain identifier partially destroyed');
+    expect(warn).toContain("re-run 'cdkd destroy'");
+    expect(warn).not.toContain('--all --force');
+    expect(warn.split('\n').filter((l) => l.startsWith('Drop the record with: '))).toEqual([
+      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+    ]);
+    expect(warn).toContain(HINT_HOLES_CLAUSE);
+    expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nDrop the record with: '));
+  }, 30_000);
+
+  it('names no forged STACK in the clean-destroy summary (go-to-k/cdkd#3759)', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+
+    await runDestroyForStack(FORGED_STACK, makeState({ Table: res() }), makeCtx());
+
+    // The SUMMARY line, not the whole log: this runner's progress lines
+    // (`Acquiring lock for stack ...`) are outside go-to-k/cdkd#3759.
+    const summary = lines(infoSpy).filter((l) => l.includes('✓ Stack'));
+    expect(summary).toEqual([
+      '✓ Stack a stack name that is not a plain identifier destroyed (1 deleted, 0 errors)',
+    ]);
+  });
+
   it('gives EVERY skipped target its own command line, never one concatenated run', () => {
     // Two targets is where the hazard lives: with one, the call site's own
     // layout hides a `hintFor` that stopped opening a line, and the two
@@ -450,7 +593,10 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // ARITY as well as distinctness: `> 0` plus all-distinct is satisfied by a
     // regression that emits only one of the two labels (m15 of the
     // go-to-k/cdkd#3499 review).
-    const holes = lines.filter((l) => l.includes("'<stack>'"));
+    // Keyed on the COMMAND's spelling of the hole: the prose above the lines
+    // names `'<stack>'` too, in the one sentence explaining it
+    // (go-to-k/cdkd#3759).
+    const holes = lines.filter((l) => l.includes("'<stack>' --stack-region"));
     expect(holes).toEqual([
       "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
       "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
@@ -588,6 +734,33 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
       // address it, the not-yet-attempted one because it was never tried.
       expect(mockDeleteState).not.toHaveBeenCalled();
       expect(Object.keys(lastSavedState().resources).sort()).toEqual(['Later', 'Table']);
+    }, 30_000);
+
+    it('names no forged STACK in the interrupted summary (go-to-k/cdkd#3759)', async () => {
+      mockProviderDelete.mockImplementation(async (logicalId: string) => {
+        if (logicalId === 'Table') {
+          capturedSigintHandlers.forEach((h) => h());
+          return { outcome: 'skipped', reason: 'bad id' };
+        }
+        return undefined;
+      });
+
+      const result = await runDestroyForStack(
+        FORGED_STACK,
+        makeState({
+          Later: res({ resourceType: 'AWS::S3::Bucket' }),
+          Table: res({ dependencies: ['Later'] }),
+        }),
+        makeCtx()
+      );
+
+      expect(result.interrupted).toBe(true);
+      const summary = lines(warnSpy).filter((l) => l.includes('⚠ Stack'));
+      expect(summary).toHaveLength(1);
+      expect(summary[0]).toMatch(
+        /^⚠ Stack a stack name that is not a plain identifier destroy interrupted \(/
+      );
+      expect(summary[0]).not.toContain('--all --force');
     }, 30_000);
   });
 

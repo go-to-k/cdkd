@@ -343,10 +343,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // Defensive: refuse clearly if a create reaches us with a
     // FileSystemType cdkd does not implement (e.g. a future AWS variant, or
     // a typo routed past the pre-flight). BackupId creates derive the type
-    // from the backup, so they skip this check.
+    // from the backup, so they skip this check. `Object.hasOwn`, not `in`
+    // (issue #3515): a type named after an `Object.prototype` member
+    // (`constructor`, `toString`) answered `in` and passed the guard.
     if (
       backupId === undefined &&
-      !(fileSystemType !== undefined && fileSystemType in VARIANT_CONFIG_KEY)
+      !(fileSystemType !== undefined && Object.hasOwn(VARIANT_CONFIG_KEY, fileSystemType))
     ) {
       throw new ProvisioningError(
         `AWS::FSx::FileSystem: FileSystemType '${fileSystemType ?? '(unset)'}' is not supported by cdkd — expected one of ${Object.keys(VARIANT_CONFIG_KEY).join(' / ')}.`,

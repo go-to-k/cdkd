@@ -329,7 +329,7 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       BillingMode: 'PROVISIONED',
       StreamSpecification: previousStream,
       GlobalSecondaryIndexes: VALID_GSI,
-    });
+    }, { replayingState: true });
 
     expect(result.effectiveProperties).toEqual({
       ...desired,
@@ -347,7 +347,7 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
       ...baseProps,
       BillingMode: 'PROVISIONED',
-    });
+    }, { replayingState: true });
 
     // The WIRE half first: retaining the previous mode is only correct BECAUSE
     // the flip was suppressed. A mutation that re-priced the table to
@@ -391,7 +391,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, BillingMode: '' },
-      previous
+      previous,
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties).toBeDefined();
@@ -424,7 +425,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, BillingMode: '' },
-        { ...baseProps, BillingMode: previousMode }
+        { ...baseProps, BillingMode: previousMode },
+        { replayingState: true }
       );
 
       expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
@@ -443,7 +445,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, BillingMode: '' },
-      { ...baseProps, BillingMode: 'PROVISIONED' }
+      { ...baseProps, BillingMode: 'PROVISIONED' },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
@@ -469,7 +472,7 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
       ...baseProps,
       GlobalSecondaryIndexes: VALID_GSI,
-    });
+    }, { replayingState: true });
 
     // On UPDATE the answer is "retain the PREVIOUS value" — the create side's
     // OMIT would read as "the template declares no GSIs" and derive a delete
@@ -502,7 +505,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
-      { ...baseProps, GlobalSecondaryIndexes: previousIndexes }
+      { ...baseProps, GlobalSecondaryIndexes: previousIndexes },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).toEqual(previousIndexes);
@@ -524,7 +528,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
-        { ...baseProps, GlobalSecondaryIndexes: previousIndexes }
+        { ...baseProps, GlobalSecondaryIndexes: previousIndexes },
+        { replayingState: true }
       );
 
       expect(result.effectiveProperties).toBeDefined();
@@ -542,7 +547,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
-      { ...baseProps }
+      { ...baseProps },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties).toBeDefined();
@@ -557,7 +563,8 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       TABLE_NAME,
       RESOURCE_TYPE,
       { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
-      { ...baseProps, GlobalSecondaryIndexes: [] }
+      { ...baseProps, GlobalSecondaryIndexes: [] },
+      { replayingState: true }
     );
 
     expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).toEqual([]);

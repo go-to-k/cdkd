@@ -885,10 +885,12 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
   );
 
   it.each([
-    ['a rollback revert arm (replayingState)', { replayingState: true }],
-    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
-  ])('warns and packs the same rename on %s', async (_label, context) => {
-    mockRoute53Send.mockResolvedValueOnce({});
+    // A rename looks the old record up first, then writes (issue #3741) ...
+    ['a rollback revert arm (replayingState)', { replayingState: true }, 2],
+    // ... except on drift --revert, which never renames: one UPSERT.
+    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }, 1],
+  ])('warns and packs the same rename on %s', async (_label, context, sends) => {
+    for (let i = 0; i < sends; i++) mockRoute53Send.mockResolvedValueOnce({});
     const provider = new Route53Provider();
     const result = await renameIntoSeparator(provider, context);
 
@@ -896,7 +898,7 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.stringContaining("recordName 'a|b.example.com.'")
     );
-    expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+    expect(mockRoute53Send).toHaveBeenCalledTimes(sends);
   });
 
   it('REFUSES a template-path update that changes the TYPE into the separator', async () => {

@@ -232,12 +232,18 @@ describe('replay create (`replayingState`): warn and skip instead of stranding t
 });
 
 describe('update path: warn and skip (the desired bag can be a historical state record)', () => {
-  async function update(properties: Record<string, unknown>): Promise<void> {
-    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET });
+  // The warn-and-skip rows pass `replayingState` — the flag the rollback
+  // revert arms set: since issue #3740 a template-path update refuses the same
+  // value before any call. The VALID row stays a template-path update.
+  async function update(
+    properties: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ): Promise<void> {
+    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET }, context);
   }
 
   it('metrics: warns and does NOT send the Put', async () => {
-    await update(metricsProps({ TagFilters: MALFORMED_OBJECT }));
+    await update(metricsProps({ TagFilters: MALFORMED_OBJECT }), { replayingState: true });
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${METRICS_PATH} must be an array`)
     );
@@ -245,7 +251,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
   });
 
   it('analytics: warns and does NOT send the Put', async () => {
-    await update(analyticsProps({ TagFilters: MALFORMED_OBJECT }));
+    await update(analyticsProps({ TagFilters: MALFORMED_OBJECT }), { replayingState: true });
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${ANALYTICS_PATH} must be an array`)
     );
@@ -253,7 +259,7 @@ describe('update path: warn and skip (the desired bag can be a historical state 
   });
 
   it('intelligent-tiering: warns and does NOT send the Put', async () => {
-    await update(itProps({ TagFilters: MALFORMED_OBJECT }));
+    await update(itProps({ TagFilters: MALFORMED_OBJECT }), { replayingState: true });
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${IT_PATH} must be an array`)
     );
@@ -261,7 +267,9 @@ describe('update path: warn and skip (the desired bag can be a historical state 
   });
 
   it('lifecycle: warns and does NOT send the Put', async () => {
-    await update(lifecycleProps({ ExpirationInDays: 30, TagFilters: MALFORMED_OBJECT }));
+    await update(lifecycleProps({ ExpirationInDays: 30, TagFilters: MALFORMED_OBJECT }), {
+      replayingState: true,
+    });
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`${LIFECYCLE_PATH} must be an array`)
     );

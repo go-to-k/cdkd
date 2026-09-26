@@ -53,6 +53,12 @@ import {
   setResolvedResourceTimeouts,
   clearResolvedResourceTimeouts,
 } from '../../../src/provisioning/resource-timeout-registry.js';
+import {
+  FORGED_CTRL,
+  FORGED_QUOTE,
+  expectQuotedAfter,
+  expectWithheld,
+} from './pasteable-aws-command-assert.js';
 
 const SERVICE_ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
 
@@ -437,3 +443,103 @@ describe('ECS Service wait semantics (issue #1275)', () => {
     });
   });
 });
+
+// Issue #3136: the cluster and the service name are TEMPLATE values (the name
+// echoed back on the create response), so every pasteable command the create
+// path prints renders through `pasteableAwsCommand` — quoted, or withheld.
+describe('ECS Service pasteable commands (issue #3136)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    waitUntilServicesStableMock.mockResolvedValue({ state: 'SUCCESS' });
+    delete process.env['CDKD_FULL_WAIT'];
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_FULL_WAIT'];
+  });
+
+  it('the manual-wait hint quotes a forged cluster and service name, or withholds', async () => {
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: `svc${FORGED_QUOTE}` },
+    });
+    await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
+      ...CREATE_PROPS,
+      Cluster: `c${FORGED_QUOTE}`,
+    });
+    const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!;
+    expectQuotedAfter(hint, 'aws ecs wait services-stable --cluster ', `c${FORGED_QUOTE}`);
+    expectQuotedAfter(hint, ' --services ', `svc${FORGED_QUOTE}`);
+
+    infoSpy.mockReset();
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: `svc${FORGED_CTRL}` },
+    });
+    await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+    expectWithheld(
+      infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!,
+      'aws ecs wait'
+    );
+  });
+
+  async function fullWaitFailure(cluster: string, deleteOk: boolean): Promise<{ thrown: string; warn: string }> {
+    process.env['CDKD_FULL_WAIT'] = 'true';
+    mockCreateOk();
+    waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+    if (deleteOk) mockSend.mockResolvedValueOnce({});
+    else mockSend.mockRejectedValueOnce(new Error('delete denied'));
+    const thrown = await new ECSProvider()
+      .create('MySvc', 'AWS::ECS::Service', { ...CREATE_PROPS, Cluster: cluster })
+      .then(
+        () => '',
+        (e: unknown) => String((e as Error).message)
+      );
+    return { thrown, warn: warnSpy.mock.calls.map((c) => String(c[0])).join('\n') };
+  }
+
+  it('the --full-wait failure commands quote a forged cluster everywhere they name it', async () => {
+    const cluster = `c${FORGED_QUOTE}`;
+    const ok = await fullWaitFailure(cluster, true);
+    expectQuotedAfter(ok.warn, 'aws ecs list-tasks --cluster ', cluster);
+    expectQuotedAfter(ok.thrown, 'aws ecs list-tasks --cluster ', cluster);
+    expectQuotedAfter(ok.thrown, 'aws ecs describe-tasks --cluster ', cluster);
+    // The task-arn hole is quoted: bare, `<task-arn>` is two redirections.
+    expect(ok.thrown).toContain(`--tasks '<task-arn>'`);
+
+    warnSpy.mockReset();
+    const failed = await fullWaitFailure(cluster, false);
+    expectQuotedAfter(failed.warn, 'aws ecs delete-service --cluster ', cluster);
+  });
+
+  it('a NON-string Cluster withholds the manual-wait hint instead of dropping --cluster', async () => {
+    mockCreateOk();
+    await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
+      ...CREATE_PROPS,
+      Cluster: { Ref: 'X' } as unknown as string,
+    });
+    expectWithheld(
+      infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!,
+      'aws ecs wait'
+    );
+    warnSpy.mockReset();
+    const failed = await fullWaitFailure({ Ref: 'X' } as unknown as string, false);
+    expectWithheld(failed.warn, 'aws ecs delete-service');
+  });
+
+  it('a NON-string Cluster withholds the commands instead of dropping --cluster', async () => {
+    // Dropping the flag would address the DEFAULT cluster.
+    const { thrown, warn } = await fullWaitFailure({ Ref: 'X' } as unknown as string, true);
+    expectWithheld(warn, 'aws ecs list-tasks');
+    expectWithheld(thrown, 'aws ecs');
+  });
+
+  it('the --full-wait failure commands are withheld for a cluster carrying a control byte', async () => {
+    const ok = await fullWaitFailure(`c${FORGED_CTRL}`, true);
+    expectWithheld(ok.warn, 'aws ecs list-tasks');
+    expectWithheld(ok.thrown, 'aws ecs');
+
+    warnSpy.mockReset();
+    const failed = await fullWaitFailure(`c${FORGED_CTRL}`, false);
+    expectWithheld(failed.warn, 'aws ecs delete-service');
+  });
+});
+

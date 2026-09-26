@@ -832,6 +832,135 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
   });
 
   /**
+   * The ROWS of a readable `resources` map (issue go-to-k/cdkd#3202) — the
+   * SAME two arms as the bag block above, on a map that IS an object and
+   * holds one row that is not a record, which the bag guard cannot see.
+   *
+   * What a real run did without the refusal, MEASURED through this harness
+   * with the guard removed (2026-09-25), three ways. The rewrite runs only once
+   * the STACK recorded any secret, and positions every row the template still
+   * declares: `{ Db: null }` with a secret recorded threw `TypeError: Cannot
+   * read properties of null (reading 'properties')` at the rewrite, under the
+   * lock; the same row with NO secret recorded anywhere RESOLVED with zero saves
+   * — the stack reported clean over a row never examined; `{ Db: healthy,
+   * Gone: null }` with `Db`'s plaintext recorded SAVED the rebuilt map with
+   * `Gone: null` (undeclared, so never positioned) in it; and a typeless `Db`
+   * object was rewritten (`recordsChanged: 1`) and saved still without a type.
+   * (A templated PRIMITIVE is a fourth arm read from the rewrite, not driven:
+   * `{ ...'abc', properties }` saves an object that never was one.) Every arm
+   * is a WRITER acting on a row it could not read.
+   */
+  describe('a malformed `resources` ROW', () => {
+    const healthyDb = {
+      physicalId: 'app-db',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { MasterUserPassword: 'plain' },
+    };
+
+    for (const [label, row] of [
+      ['null', null],
+      ['a string', 'abc'],
+      ['a number', 5],
+      ['a list', [healthyDb]],
+      ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ] as const) {
+      it(`is REFUSED on a real run when a row the template declares is ${label}`, async () => {
+        let thrown: unknown;
+        try {
+          await run(makeState({ Db: row }));
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(CdkdError);
+        expect((thrown as CdkdError).code).toBe('STATE_RESOURCES_MALFORMED');
+        expect((thrown as unknown as { exitCode?: number }).exitCode).toBe(2);
+        const message = (thrown as CdkdError).message;
+        // The ROW text, naming the row: the map itself was readable, so the
+        // bag refusal's "no readable 'resources' map" would be the wrong claim.
+        expect(message).toContain('Db');
+        expect(message).toContain('cannot be read as resources');
+        expect(message).not.toContain("no readable 'resources' map");
+        // Scrub's OWN text, not the shared entry one — which says "Nothing was
+        // locked", false at scrub's load on a real run.
+        expect(message).toContain('cdkd scrub');
+        expect(message).not.toContain('Nothing was locked');
+        expect(stateBackend.saveState).not.toHaveBeenCalled();
+      });
+
+      it(`is REFUSED on a real run when a row the template NO LONGER declares is ${label}`, async () => {
+        let thrown: unknown;
+        try {
+          await run(makeState({ Db: healthyDb, Gone: row }));
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(CdkdError);
+        expect((thrown as CdkdError).code).toBe('STATE_RESOURCES_MALFORMED');
+        expect((thrown as CdkdError).message).toContain('Gone');
+        expect((thrown as CdkdError).message, 'the healthy row was named').not.toContain('Db');
+        expect(stateBackend.saveState).not.toHaveBeenCalled();
+      });
+    }
+
+    it('refuses BEFORE a change elsewhere can carry the row into a save', async () => {
+      // The measured laundering shape: `Db`'s plaintext is recorded, so the
+      // rewrite changes it and the run would save — with `Gone: null` copied
+      // into the saved map as it stands.
+      recordFor = (v) => (v === '{{resolve:ssm-secure}}' ? 'plain' : undefined);
+      await expect(run(makeState({ Db: healthyDb, Gone: null }))).rejects.toMatchObject({
+        code: 'STATE_RESOURCES_MALFORMED',
+      });
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+    });
+
+    it('is DROPPED under --dry-run, reported as a finding, and never written', async () => {
+      const state = makeState({ Db: healthyDb, Gone: null });
+      const result = await run(state, { dryRun: true });
+      // Its OWN finding, not the bag's: a run can meet either alone and the
+      // remedies differ. `scrubCommand` folds both into one audited-record
+      // refusal, so the exit is 2 either way.
+      expect(
+        (result as unknown as { malformedResourceRows?: true }).malformedResourceRows,
+        'scrubStack did not report the dropped row; the run would exit 0 over a row it never read'
+      ).toBe(true);
+      expect((result as unknown as { malformedResources?: true }).malformedResources).toBeUndefined();
+      // The DROP itself, on the record the run read: a "report but keep" arm
+      // (`unreadableResourceEntries` in place of the repair) satisfies every
+      // assertion above and leaves the row for the rewrite to walk.
+      expect(Object.keys(state.resources)).toEqual(['Db']);
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+      const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('Gone');
+      expect(warned).toContain('Continuing WITHOUT them');
+    });
+
+    it('drops a DECLARED null row before the rewrite can throw on it, under --dry-run', async () => {
+      // The measured TypeError arm: a null row the template positions, with a
+      // secret recorded in the stack, threw at `record.properties`. The drop
+      // runs at the load, above that walk, so a dry run over exactly that shape
+      // reports the row instead — which is what a "report but keep" mutant
+      // cannot do.
+      recordFor = (v) => (v === '{{resolve:ssm-secure}}' ? 'plain' : undefined);
+      const state = makeState({ Db: null });
+      const result = await run(state, { dryRun: true });
+      expect((result as unknown as { malformedResourceRows?: true }).malformedResourceRows).toBe(
+        true
+      );
+      expect(state.resources).toEqual({});
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+    });
+
+    it('reports NEITHER finding on a map of readable rows', async () => {
+      const result = (await run(makeState({ Db: healthyDb }), { dryRun: true })) as unknown as {
+        malformedResources?: true;
+        malformedResourceRows?: true;
+      };
+      expect(result.malformedResources).toBeUndefined();
+      expect(result.malformedResourceRows).toBeUndefined();
+    });
+  });
+
+  /**
    * The `outputs` container (issue go-to-k/cdkd#3192) — the SAME two arms as
    * the `resources` block above, on a record whose resource map is perfectly
    * readable, because the two containers are independent and a guard that
