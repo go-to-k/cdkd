@@ -230,7 +230,7 @@ nested-stack	2026-09-25T13:49:20Z	PASS	101	verify.sh	rc ok, orph clean; sha 0c50
 nested-stack-3level	2026-09-26T02:11:41Z	PASS	176	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 nested-stack-deep	2026-09-26T02:11:41Z	PASS	110	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
-nested-stack-rollback	2026-09-26T08:20:00Z	PASS	105	verify.sh	#3754 at 5a6496a9e (final round): auto-rollback + cdkd rollback revert the child (VT 30), journals cleared incl ~Child, 0 journal versions left; destroy clean, 0 orphans; RED on origin/main 50e8f190b
+nested-stack-rollback	2026-09-26T07:30:00Z	PASS	105	verify.sh	#3754 final sha: auto-rollback + cdkd rollback revert the child (VT 30), journals cleared incl ~Child (delete markers only), destroy clean, 0 orphans; RED on origin/main 50e8f190b
 nested-stack-secret	2026-09-26T02:11:41Z	PASS	210	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
