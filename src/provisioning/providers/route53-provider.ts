@@ -16,6 +16,7 @@ import {
   ListResourceRecordSetsCommand,
   ListTagsForResourceCommand,
   HostedZoneAlreadyExists,
+  type Change,
   type CreateHostedZoneCommandInput,
   type CreateHostedZoneCommandOutput,
   type HostedZone,
@@ -204,6 +205,77 @@ function templateZoneVisibility(properties: Record<string, unknown>): boolean | 
     (v) => typeof v === 'object' && v !== null && !Array.isArray(v) && !isIntrinsicOnly(v)
   );
   return attachesAVpc ? true : undefined;
+}
+
+/**
+ * Route 53's refusal to CREATE a CNAME beside another record of the same DNS
+ * name. Measured (us-east-1, 2026-09-26, `InvalidChangeBatch`):
+ *
+ *   [RRSet of type CNAME with DNS name y.<zone>. is not permitted as it
+ *   conflicts with other records with the same DNS name in zone <zone>.]
+ *
+ * The mirror case (any other type beside a live CNAME) and a duplicate record
+ * already say "already exists", which `isNameCollisionError` reads; this one
+ * does not. So a rollback reversing a CNAME -> A rename (#3741) re-created the
+ * CNAME, collided with the live A of the same name, and the delete-new-first
+ * arm never ran. Keyed on the message because `InvalidChangeBatch` also
+ * carries every non-collision batch refusal.
+ */
+export function isCnameConflictRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'InvalidChangeBatch' &&
+    /RRSet of type CNAME with DNS name .* is not permitted as it conflicts with other records with the same DNS name/.test(
+      error.message
+    )
+  );
+}
+
+/**
+ * Appended to a create failure `isCnameConflictRefusal` recognises, so the
+ * wrapped message states the collision the way the name-collision classifier
+ * (which reads a wrapped provider error's own message) is written to see.
+ * True as prose: a record with the same DNS name is what holds the name.
+ */
+const CNAME_CONFLICT_COLLISION_NOTE =
+  ' (a record with the same DNS name already exists in the hosted zone)';
+
+/**
+ * Whether `desired` names a DIFFERENT Route 53 record from `previous` (issue
+ * #3741): Route 53 identifies a record by name, type and SetIdentifier, so a
+ * change to any of them is a rename the provider must carry out as a
+ * DELETE + CREATE rather than an UPSERT, which would leave the old record live.
+ *
+ * Names compare the way Route 53 does (trailing dot, letter case and `\\ddd`
+ * escapes do not make a different name). Answers `false` — the pre-#3741
+ * UPSERT — whenever the recorded side cannot be compared: a missing or
+ * non-string `Name` / `Type`, or a redacted dynamic reference
+ * (`redactSecretsForState` writes `{{resolve:...}}` where the desired side holds
+ * the plaintext), since deleting from an identity cdkd cannot read is a guess.
+ */
+export function recordIdentityChanged(
+  previous: Record<string, unknown>,
+  desired: Record<string, unknown>
+): boolean {
+  const comparable = (value: unknown): value is string =>
+    typeof value === 'string' && value !== '' && !value.includes('{{resolve:');
+  const prevName = previous['Name'];
+  const prevType = previous['Type'];
+  const name = desired['Name'];
+  const type = desired['Type'];
+  if (!comparable(prevName) || !comparable(prevType)) return false;
+  if (!comparable(name) || !comparable(type)) return false;
+  if (normalizeRecordName(prevName) !== normalizeRecordName(name)) return true;
+  if (prevType !== type) return true;
+  const prevSetIdentifier = previous['SetIdentifier'];
+  const setIdentifier = desired['SetIdentifier'];
+  if (prevSetIdentifier === setIdentifier) return false;
+  // Absent on one side only is a change (a simple record becoming a weighted
+  // one, or back).
+  // Present on both, or on one side only, it must be readable to compare.
+  if (prevSetIdentifier === undefined) return comparable(setIdentifier);
+  if (setIdentifier === undefined) return comparable(prevSetIdentifier);
+  return comparable(prevSetIdentifier) && comparable(setIdentifier);
 }
 
 /**
@@ -1102,7 +1174,8 @@ export class Route53Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
+          (isCnameConflictRefusal(error) ? CNAME_CONFLICT_COLLISION_NOTE : ''),
         resourceType,
         logicalId,
         undefined,
@@ -1194,22 +1267,56 @@ export class Route53Provider implements ResourceProvider {
       maskSecrets: context?.maskSecrets,
     });
 
+    // Issue #3741: Route 53 keys a record on name + type + SetIdentifier, so a
+    // change to any of the three is a DIFFERENT record, and the UPSERT below
+    // would create it beside the old one — which stayed live, untracked, and
+    // out of `cdkd destroy`'s reach. CloudFormation replaces the record (live
+    // A/B on the issue), so this deletes the old record and creates the new
+    // one in ONE atomic ChangeBatch rather than reporting a replacement to the
+    // engine: the engine's replacement creates first, which Route 53 refuses
+    // whenever the two records conflict (an A -> CNAME swap on one name, or a
+    // simple record becoming a weighted one), while a batch is applied all or
+    // nothing, so a refused CREATE leaves the old record serving.
+    //
+    // Never on `cdkd drift --revert` (`desiredFromAwsReadback`): it restores a
+    // record's VALUES, never its identity, and there the previous side is a
+    // readback whose identity is only as good as the lookup that produced it.
+    const identityChanged =
+      context?.desiredFromAwsReadback !== true &&
+      recordIdentityChanged(previousProperties, properties);
+
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
 
       const comment = properties['Comment'] as string | undefined;
+
+      // The DELETE carries the LIVE record verbatim — Route 53 refuses a DELETE
+      // whose values differ from what it holds, and the recorded properties
+      // can lag the live record (an out-of-band edit, or an earlier binary's
+      // narrowing). No live old record (already removed, or a retry after a
+      // batch that committed before state was saved) leaves only the new
+      // record to write, which the UPSERT does idempotently.
+      const liveOldRecord = identityChanged
+        ? await this.findLiveRecordSet(hostedZoneId, previousProperties)
+        : undefined;
+      if (identityChanged && !liveOldRecord) {
+        this.logger.debug(
+          `Record set ${logicalId}: the previous record is not live in ${hostedZoneId}; writing the renamed record only`
+        );
+      }
+      const changes: Change[] = liveOldRecord
+        ? [
+            { Action: 'DELETE', ResourceRecordSet: liveOldRecord },
+            { Action: 'CREATE', ResourceRecordSet: resourceRecordSet },
+          ]
+        : [{ Action: 'UPSERT', ResourceRecordSet: resourceRecordSet }];
 
       await this.getClient().send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
           ChangeBatch: {
             ...(comment ? { Comment: comment } : {}),
-            Changes: [
-              {
-                Action: 'UPSERT',
-                ResourceRecordSet: resourceRecordSet,
-              },
-            ],
+            Changes: changes,
           },
         })
       );
@@ -1218,7 +1325,10 @@ export class Route53Provider implements ResourceProvider {
 
       return {
         physicalId: compositeId,
-        wasReplaced: false,
+        // A renamed record IS a new physical record, whatever the composite id
+        // (which omits SetIdentifier) says. For a SetIdentifier-only rename the
+        // id is unchanged, so the engine logs "replaced: X -> X".
+        wasReplaced: identityChanged,
         attributes: {},
       };
     } catch (error) {
@@ -1231,6 +1341,39 @@ export class Route53Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The live record `properties` identify (name, type, SetIdentifier), exactly
+   * as Route 53 holds it — what a DELETE must carry — or `undefined` when no
+   * such record exists.
+   */
+  private async findLiveRecordSet(
+    hostedZoneId: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceRecordSet | undefined> {
+    const name = properties['Name'] as string;
+    const type = properties['Type'] as string;
+    const setIdentifier =
+      typeof properties['SetIdentifier'] === 'string' ? properties['SetIdentifier'] : undefined;
+    const resp = await this.getClient().send(
+      new ListResourceRecordSetsCommand({
+        HostedZoneId: hostedZoneId,
+        // Encoded start key: see `canonicalizeQueryName` and `readRecordSet`.
+        StartRecordName: canonicalizeQueryName(name),
+        StartRecordType: type as RRType,
+        ...(setIdentifier !== undefined && { StartRecordIdentifier: setIdentifier }),
+        MaxItems: 5,
+      })
+    );
+    const wantedName = normalizeRecordName(name);
+    return resp.ResourceRecordSets?.find(
+      (r) =>
+        r.Name !== undefined &&
+        normalizeRecordName(r.Name) === wantedName &&
+        r.Type === type &&
+        r.SetIdentifier === setIdentifier
+    );
   }
 
   private async deleteRecordSet(
@@ -2442,6 +2585,22 @@ export class Route53Provider implements ResourceProvider {
     const identity = await this.resolveRecordSetIdentity(physicalId, properties);
     if (!identity) return undefined;
     const { hostedZoneId, name, type } = identity;
+    // Weighted / latency / failover / geo records share name + type and
+    // differ only by SetIdentifier, so without it the read returns whichever
+    // sibling sorts first — and `drift --revert` then hands THAT record to
+    // `update()` as the previous side (issue #3741 review). Match the recorded
+    // SetIdentifier (absent means "the record without one") whenever the
+    // recorded bag is present and readable; with no bag (the import
+    // verification), a malformed value or a redacted `{{resolve:...}}` one
+    // (`recordIdentityChanged`'s uncomparable case), keep the name + type match.
+    const recordedSetIdentifier = properties?.['SetIdentifier'];
+    const matchSetIdentifier =
+      properties !== undefined &&
+      (recordedSetIdentifier === undefined ||
+        (typeof recordedSetIdentifier === 'string' &&
+          !recordedSetIdentifier.includes('{{resolve:')));
+    const setIdentifier =
+      typeof recordedSetIdentifier === 'string' ? recordedSetIdentifier : undefined;
 
     let resp;
     try {
@@ -2458,6 +2617,8 @@ export class Route53Provider implements ResourceProvider {
           // return the record first.
           StartRecordName: canonicalizeQueryName(name),
           StartRecordType: type as RRType,
+          ...(matchSetIdentifier &&
+            setIdentifier !== undefined && { StartRecordIdentifier: setIdentifier }),
           // Still > 1 after the encoding fix: a name can also carry escapes
           // this helper does not encode, and a few extra rows are free.
           MaxItems: 5,
@@ -2475,7 +2636,11 @@ export class Route53Provider implements ResourceProvider {
     // way, and the composite physicalId carries whatever the template wrote.
     const wantedName = normalizeRecordName(name);
     const recordSet = resp.ResourceRecordSets?.find(
-      (r) => r.Name !== undefined && normalizeRecordName(r.Name) === wantedName && r.Type === type
+      (r) =>
+        r.Name !== undefined &&
+        normalizeRecordName(r.Name) === wantedName &&
+        r.Type === type &&
+        (!matchSetIdentifier || r.SetIdentifier === setIdentifier)
     );
     if (!recordSet) return undefined;
 

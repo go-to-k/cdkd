@@ -16492,6 +16492,7 @@
             "createRecordSet",
             "delete",
             "deleteRecordSet",
+            "findLiveRecordSet",
             "readCurrentState",
             "readRecordSet",
             "resolveRecordSetIdentity",
@@ -16574,6 +16575,9 @@
             "createRecordSet",
             "delete",
             "deleteRecordSet",
+            "findLiveRecordSet",
+            "readCurrentState",
+            "readRecordSet",
             "update",
             "updateRecordSet"
           ]
@@ -16615,6 +16619,7 @@
             "createRecordSet",
             "delete",
             "deleteRecordSet",
+            "findLiveRecordSet",
             "readCurrentState",
             "readRecordSet",
             "resolveRecordSetIdentity",
