@@ -40,6 +40,7 @@ import {
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import { ccUpdateUnsupportedRejection, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -622,7 +623,7 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       vi.mocked(provider.create).mockImplementation(async () => {
         callOrder.push('create');
-        throw new Error('Table already exists: my-table');
+        throw awsSdkError('Table already exists: my-table');
       });
       const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
         () => null,
@@ -650,7 +651,7 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       vi.mocked(provider.create).mockImplementation(async () => {
         callOrder.push('create');
-        throw new Error('Table already exists: my-table');
+        throw awsSdkError('Table already exists: my-table');
       });
       const collision = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
         () => null,
@@ -690,7 +691,7 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       vi.mocked(provider.create).mockImplementation(async () => {
         callOrder.push('create');
-        throw new Error('Table already exists: my-table');
+        throw awsSdkError('Table already exists: my-table');
       });
       const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
         () => null,
@@ -713,7 +714,7 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       vi.mocked(provider.create).mockImplementation(async () => {
         callOrder.push('create');
-        throw new Error('Table already exists: my-table');
+        throw awsSdkError('Table already exists: my-table');
       });
       const err = await invokeProvision(
         makeEngine({ forceStatefulRecreation: true }),
@@ -850,7 +851,7 @@ describe('DeployEngine — --replace wire-through', () => {
       function collideOnCreate(): void {
         vi.mocked(provider.create).mockImplementation(async () => {
           callOrder.push('create');
-          throw new Error('Table already exists');
+          throw awsSdkError('Table already exists');
         });
       }
 

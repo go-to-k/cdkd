@@ -475,8 +475,13 @@ const CNAME_BESIDE_A = `[RRSet of type CNAME with DNS name y.${ZONE_NAME} is not
 const A_BESIDE_CNAME = `[RRSet of type A with DNS name x.${ZONE_NAME} is not permitted because a conflicting RRSet of type CNAME with the same DNS name already exists in zone ${ZONE_NAME}]`;
 const DUPLICATE = `[Tried to create resource record set [name='x.${ZONE_NAME}', type='CNAME'] but it already exists]`;
 
+// AWS-authored, as the SDK delivers it: the collision classifier credits
+// prose only off such a link (#3816).
 function batchRefusal(message: string): Error {
-  return Object.assign(new Error(message), { name: 'InvalidChangeBatch' });
+  return Object.assign(new Error(message), {
+    name: 'InvalidChangeBatch',
+    $metadata: { httpStatusCode: 400 },
+  });
 }
 
 describe('Route53Provider create classifies Route 53 name conflicts as collisions (issue #3741)', () => {
@@ -513,7 +518,18 @@ describe('Route53Provider create classifies Route 53 name conflicts as collision
   it.each([
     ['another batch refusal', batchRefusal('[Invalid Resource Record: FATAL problem: ARRDATAIllegalIPv4Address]')],
     // The CNAME text under a different error name is not the batch refusal.
-    ['the CNAME text under another error name', Object.assign(new Error(CNAME_BESIDE_A), { name: 'Throttling' })],
+    [
+      'the CNAME text under another error name',
+      Object.assign(new Error(CNAME_BESIDE_A), { name: 'Throttling', $metadata: { httpStatusCode: 400 } }),
+    ],
+    // A refusal ECHOING a template value that quotes the conflict sentence
+    // (an unquoted TXT value) must not mint a collision.
+    [
+      'the CNAME sentence echoed inside another refusal',
+      batchRefusal(
+        `[Invalid Resource Record: 'FATAL problem: InvalidCharacterString (Value should be enclosed in quotation marks) encountered with '${CNAME_BESIDE_A.slice(1, -1)}'']`
+      ),
+    ],
   ])('%s is not a name collision', async (_label, refusal) => {
     const error = await createError(refusal);
     expect(error).toBeInstanceOf(ProvisioningError);

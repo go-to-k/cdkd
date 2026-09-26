@@ -47,6 +47,7 @@ import {
   IntrinsicFunctionResolver,
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 // The REAL retry loop with its waits removed, NOT a pass-through stub. The
 // binding under test sits INSIDE the thunk `withRetry` re-invokes, so a
@@ -286,7 +287,7 @@ describe('rollback-executor binds the nested-stack secrets scope (#2086)', () =>
       attempts += 1;
       // "already exists" is deliberately NOT a transient-retry pattern, so the
       // inner loop does not swallow it and the collision catch sees it.
-      if (attempts === 1) throw new Error('Parameter already exists: new-child');
+      if (attempts === 1) throw awsSdkError('Parameter already exists: new-child');
       return { physicalId: 'old-child' };
     });
     const del = vi.fn().mockResolvedValue(undefined);

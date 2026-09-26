@@ -10,6 +10,7 @@ import { SECRET_MASK, scrubResourceRecord } from '../../../src/deployment/secret
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 // Issues #2038 (the `withRetry` give-up summary) and #2031 (the direct
 // `logger.warn` + the DURABLE deployment-events record).
@@ -99,7 +100,7 @@ function cooldownErrorQuotingSecret(): Error {
 
 /** A name-collision error that also quotes the secret. */
 function collisionErrorQuotingSecret(): Error {
-  return new Error(
+  return awsSdkError(
     `Resource already exists. Value '${SECRET_PLAINTEXT}' at 'password' failed to satisfy constraint`
   );
 }

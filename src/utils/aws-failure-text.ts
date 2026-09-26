@@ -301,7 +301,7 @@ function redactedAwsFailureSummary(error: Error): string {
  * with neither signal, and that is the correct answer rather than a gap: those
  * messages are written by the HTTP layer and name a host, never a caller.
  */
-function isAwsAuthoredFailure(error: Error): boolean {
+export function isAwsAuthoredFailure(error: Error): boolean {
   const candidate = error as {
     $metadata?: { httpStatusCode?: unknown };
     $fault?: unknown;
