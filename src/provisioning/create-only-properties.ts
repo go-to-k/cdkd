@@ -330,7 +330,7 @@ function valueAtPath(
  * True for a single-key object whose key is `Ref` or `Fn::*` — the shape of
  * an unresolved CloudFormation intrinsic.
  */
-function isIntrinsicShaped(value: object): boolean {
+export function isIntrinsicShaped(value: object): boolean {
   const keys = Object.keys(value);
   return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
 }

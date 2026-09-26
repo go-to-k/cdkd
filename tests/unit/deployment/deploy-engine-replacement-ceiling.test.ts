@@ -47,21 +47,38 @@ const renderer = {
 };
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
-vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({
-    cloudFormation: {
-      send: vi.fn(() =>
-        Promise.reject(
-          Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
-            name: 'AccessDeniedException',
-            $metadata: { httpStatusCode: 403 },
-          })
-        )
-      ),
-    },
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
-  }),
-}));
+// DescribeType answers from the committed schema snapshot with no write-only
+// properties (go-to-k/cdkd#3803: the synthetic create-only fallback needs a
+// successful write-only lookup; an unknown list raises no ceiling).
+vi.mock('../../../src/utils/aws-clients.js', async () => {
+  const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
+    '../../../src/provisioning/create-only-snapshot.generated.js'
+  );
+  return {
+    getAwsClients: () => ({
+      cloudFormation: {
+        send: vi.fn((command: { input?: { TypeName?: string } }) => {
+          const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
+          if (paths === undefined) {
+            return Promise.reject(
+              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+                name: 'AccessDeniedException',
+                $metadata: { httpStatusCode: 403 },
+              })
+            );
+          }
+          return Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
+              writeOnlyProperties: [],
+            }),
+          });
+        }),
+      },
+      sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    }),
+  };
+});
 
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
@@ -308,6 +325,319 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
   });
   /**
+   * go-to-k/cdkd#3803: a reader whose type is OUTSIDE the replacement registry
+   * gets its create-only ceiling from the CFn schema, and the engine's lowering
+   * keeps that from causing a needless replacement.
+   */
+  describe('a create-only reader outside the replacement registry', () => {
+    function policyTemplate(document: string): CloudFormationTemplate {
+      return {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::IAM::ManagedPolicy',
+            Properties: {
+              Description: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+              PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: document }] },
+            },
+          },
+        },
+      };
+    }
+
+    beforeEach(() => {
+      const state = priorState();
+      const recorded = {
+        Description: 'topic-a',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    });
+
+    it('is not replaced when the value did not move, and another property changed', async () => {
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s2'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is skipped when the value did not move and nothing else changed', async () => {
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is skipped when the record spells the same bag in another key order', async () => {
+      const state = (
+        (await (stateBackend.getState as unknown as () => Promise<{ state: StackState }>)()) as {
+          state: StackState;
+        }
+      ).state;
+      state.resources['Reader']!.properties = {
+        PolicyDocument: { Statement: [{ Sid: 's1' }], Version: '2012-10-17' },
+        Description: 'topic-a',
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('is REPLACED when the value moved (it used to be sent to update())', async () => {
+      crReturns('topic-b');
+
+      await makeEngine().deploy(STACK, policyTemplate('s1'));
+
+      const creates = callsFor(provider.create, 'Reader');
+      expect(creates).toHaveLength(1);
+      expect((creates[0]![2] as Record<string, unknown>)['Description']).toBe('topic-b');
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+    });
+
+    it('carries an unchanged ceiling down a Ref chain without replacing anything', async () => {
+      // The promoted policy's create-only ceiling seeds replacement
+      // propagation, so `Down` (a topic named by `Ref Policy`) gets a
+      // replacement-propagated ceiling too. Neither value moves, so the deploy
+      // replaces nothing.
+      const state = priorState();
+      const policyRecord = {
+        Description: 'topic-a',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: policyRecord,
+        observedProperties: policyRecord,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      const downRecord = { TopicName: 'arn:aws:iam::123456789012:policy/p' };
+      state.resources['Down'] = {
+        physicalId: 'arn:aws:sns:us-east-1:123456789012:down',
+        resourceType: 'AWS::SNS::Topic',
+        properties: downRecord,
+        observedProperties: downRecord,
+        attributes: {},
+        dependencies: ['Reader'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-a');
+      const tpl = policyTemplate('s1');
+      tpl.Resources['Down'] = {
+        Type: 'AWS::SNS::Topic',
+        Properties: { TopicName: { Ref: 'Reader' } },
+      };
+
+      await makeEngine().deploy(STACK, tpl);
+
+      for (const id of ['Reader', 'Down']) {
+        expect(callsFor(provider.create, id)).toHaveLength(0);
+        expect(callsFor(provider.delete, id)).toHaveLength(0);
+      }
+    });
+
+    it('keeps a NESTED create-only reader in place when only a mutable sibling moved', async () => {
+      // `ConnectionInput.Name` is create-only, and holds a stable intrinsic;
+      // `ConnectionInput.Description` reads the custom resource and moves.
+      // CloudFormation updates this in place, and so must cdkd.
+      const state = priorState();
+      const recorded = {
+        CatalogId: '123456789012',
+        ConnectionInput: { Name: 'conn-x', Description: 'topic-a', ConnectionType: 'JDBC' },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'conn-x',
+        resourceType: 'AWS::Glue::Connection',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-b');
+
+      await makeEngine().deploy(STACK, {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::Glue::Connection',
+            Properties: {
+              CatalogId: '123456789012',
+              ConnectionInput: {
+                Name: { 'Fn::Join': ['-', ['conn', 'x']] },
+                Description: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+                ConnectionType: 'JDBC',
+              },
+            },
+          },
+        },
+      });
+
+      const updates = callsFor(provider.update, 'Reader');
+      expect(updates).toHaveLength(1);
+      expect(
+        ((updates[0]![3] as Record<string, unknown>)['ConnectionInput'] as Record<string, unknown>)[
+          'Description'
+        ]
+      ).toBe('topic-b');
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+    });
+
+    it('reads an equal create-only object recorded in another key order as unmoved', async () => {
+      // `KeySchema` is create-only on a stateful table. The record spells each
+      // element's keys in the reverse order of the template: equal values, so
+      // no replacement (and no STATEFUL_REPLACE_BLOCKED).
+      const state = priorState();
+      const recorded = {
+        TableName: 'orders',
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [{ KeyType: 'HASH', AttributeName: 'topic-a' }],
+      };
+      state.resources['Reader'] = {
+        physicalId: 'orders',
+        resourceType: 'AWS::DynamoDB::Table',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      crReturns('topic-a');
+
+      await makeEngine().deploy(STACK, {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Reader: {
+            Type: 'AWS::DynamoDB::Table',
+            Properties: {
+              TableName: 'orders',
+              BillingMode: 'PROVISIONED',
+              KeySchema: [
+                { AttributeName: { 'Fn::GetAtt': ['Cr', 'TopicName'] }, KeyType: 'HASH' },
+              ],
+            },
+          },
+        },
+      });
+
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+    });
+
+    describe('a stateful type (AWS::RDS::DBInstance.MasterUsername)', () => {
+      function dbTemplate(): CloudFormationTemplate {
+        return {
+          Resources: {
+            Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+            Reader: {
+              Type: 'AWS::RDS::DBInstance',
+              Properties: {
+                MasterUsername: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+                DBInstanceClass: 'db.t3.small',
+              },
+            },
+          },
+        };
+      }
+
+      beforeEach(() => {
+        const state = priorState();
+        const recorded = { MasterUsername: 'topic-a', DBInstanceClass: 'db.t3.micro' };
+        state.resources['Reader'] = {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: recorded,
+          observedProperties: recorded,
+          attributes: {},
+          dependencies: ['Cr'],
+        };
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      });
+
+      it('is updated in place, no STATEFUL_REPLACE_BLOCKED, when the value did not move', async () => {
+        crReturns('topic-a');
+
+        await makeEngine().deploy(STACK, dbTemplate());
+
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      });
+
+      it('stops at STATEFUL_REPLACE_BLOCKED when the value moved', async () => {
+        crReturns('topic-b');
+
+        const error = await makeEngine()
+          .deploy(STACK, dbTemplate())
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+
+        const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+        expect(cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+        expect(cause?.message).toContain('MasterUsername');
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      });
+    });
+
+    it('is not replaced when a fresh NoEcho value is confirmed on AWS (the #3729 readback)', async () => {
+      const state = priorState();
+      state.resources['Cr']!.attributes = { TopicName: '***' };
+      const recorded = {
+        Description: '***',
+        PolicyDocument: { Version: '2012-10-17', Statement: [{ Sid: 's1' }] },
+      };
+      state.resources['Reader'] = {
+        physicalId: 'arn:aws:iam::123456789012:policy/p',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Cr'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? {
+                physicalId,
+                wasReplaced: false,
+                attributes: { TopicName: 'noecho-description' },
+                noEchoAttributes: true,
+              }
+            : { physicalId, wasReplaced: false }
+        )
+      );
+      provider.readCurrentState.mockResolvedValue({ Description: 'noecho-description' });
+
+      await makeEngine({ captureObservedState: false }).deploy(STACK, policyTemplate('s1'));
+
+      expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+    });
+  });
+
+  /**
    * go-to-k/cdkd#3729: a create-only path holding a `NoEcho` value supplied in
    * THIS deploy. Its record is `***`, so the record cannot say whether the value
    * moved; the engine reads the reader back from AWS and lowers the ceiling
@@ -358,7 +688,8 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       expect(creates).toHaveLength(1);
       expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(SECRET);
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
-      expect(debugLines()).toContain(
+      // At WARN: this is what turns the update into a replacement.
+      expect(logger['warn']!.mock.calls.map((c) => String(c[0]))).toContain(
         `Reader.TopicName carries a NoEcho value that AWS could not confirm unchanged (${reason}): replacement kept.`
       );
     }
@@ -667,6 +998,29 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
         expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
         expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
         expect(callsFor(provider.delete, 'Reader')).toHaveLength(0);
+      });
+
+      it('skips it when the record spells the same bag in another key order', async () => {
+        arrange('HASH', 'partition-key-secret');
+        const state = (
+          (await (stateBackend.getState as unknown as () => Promise<{ state: StackState }>)()) as {
+            state: StackState;
+          }
+        ).state;
+        state.resources['Reader']!.properties = {
+          KeySchema: [{ KeyType: 'HASH', AttributeName: '***' }],
+          BillingMode: 'PAY_PER_REQUEST',
+          TableName: 'orders',
+        };
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+
+        await run();
+
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+        expect(debugLines()).toContain(
+          'Skipping Reader: AWS already holds every NoEcho value it carries, and nothing else changed'
+        );
       });
 
       it('stops at STATEFUL_REPLACE_BLOCKED when AWS holds a different value at the masked leaf', async () => {

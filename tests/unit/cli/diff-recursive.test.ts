@@ -497,6 +497,40 @@ describe('renderDiffTree', () => {
     expect(text).not.toContain('GoneLambda (AWS::Lambda::Function) [via CC API');
   });
 
+  it('renders a propagated ceiling as [may require replacement], never as a verdict', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Reader',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::IAM::ManagedPolicy',
+        propertyChanges: [
+          {
+            path: 'Description',
+            oldValue: 'a',
+            newValue: { 'Fn::GetAtt': ['Cr', 'Text'] },
+            requiresReplacement: true,
+            inPlacePropagated: true,
+          },
+          {
+            path: 'Name',
+            oldValue: 'arn-1',
+            newValue: { Ref: 'Up' },
+            requiresReplacement: true,
+            replacementPropagated: true,
+          },
+          { path: 'Path', oldValue: '/a/', newValue: '/b/', requiresReplacement: true },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text.match(/\[may require replacement\]/g)).toHaveLength(2);
+    // The ordinary create-only edit is still a verdict.
+    expect(text.match(/\[requires replacement\]/g)).toHaveLength(1);
+  });
+
   it('renders [requires replacement], attribute changes, and prunes unchanged/intrinsic nested keys', () => {
     const root = leaf('P', 'P', [
       {

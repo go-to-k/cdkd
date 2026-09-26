@@ -914,6 +914,27 @@ function isReplacementCeiling(pc: PropertyChange): boolean {
 }
 
 /**
+ * `JSON.stringify` with every object's keys in sorted order, arrays kept
+ * positional: the equality the replacement-ceiling lowering and the
+ * post-readback skip compare with (go-to-k/cdkd#3803 review). The diff raised
+ * the ceiling through `DiffCalculator.valuesEqual`, which ignores key order,
+ * and a template and a `JSON.parse`d record can spell the same create-only
+ * object in different orders; an order-sensitive compare there read an equal
+ * value as moved and replaced the resource.
+ */
+function keyOrderFreeJson(value: unknown): string {
+  return JSON.stringify(value, (_key, node: unknown) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return node;
+    // Null prototype, so a `__proto__` key stays an own key.
+    const sorted = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(node).sort()) {
+      sorted[key] = (node as Record<string, unknown>)[key];
+    }
+    return sorted;
+  });
+}
+
+/**
  * Why a create-only path carrying a fresh `NoEcho` value kept its replacement
  * ceiling (go-to-k/cdkd#3729), or `held` when AWS confirmed it may be lowered.
  * The class is all a log line says: never a value, never an error's text.
@@ -6859,7 +6880,7 @@ export class DeployEngine {
         if (
           !typeChanged &&
           !suppliesFreshMaskOnlyValue &&
-          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
+          keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
@@ -6946,8 +6967,8 @@ export class DeployEngine {
             // The non-NoEcho half first, unchanged: a moved leaf keeps the
             // replacement whatever AWS holds at the masked ones.
             const moved =
-              JSON.stringify(desiredForSkipCheckAsWritten[pc.path]) !==
-              JSON.stringify(currentPropsAsWritten[pc.path]);
+              keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
+              keyOrderFreeJson(currentPropsAsWritten[pc.path]);
             if (moved) {
               lowered.push(pc);
               continue;
@@ -6976,7 +6997,10 @@ export class DeployEngine {
                   : 'differs';
               }
               if (verdict !== 'held') {
-                this.logger.debug(
+                // WARN, not debug: this is what turns the update into a
+                // replacement, and a `Replacing` label must never be
+                // unexplained. The id, the path and the class only.
+                this.logger.warn(
                   `${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
                 );
                 lowered.push(pc);
@@ -7011,7 +7035,8 @@ export class DeployEngine {
           noEchoHeldPaths.size > 0 &&
           !typeChanged &&
           this.recreateDirectionFor(stackName, logicalId) === undefined &&
-          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten) &&
+          keyOrderFreeJson(desiredForSkipCheckAsWritten) ===
+            keyOrderFreeJson(currentPropsAsWritten) &&
           Object.entries(resolvedProps).every(
             ([key, value]) =>
               noEchoHeldPaths.has(key) ||

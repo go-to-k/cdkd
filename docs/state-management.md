@@ -1379,8 +1379,13 @@ tell, so:
   compared in memory and never stored, so nothing derived from the value lands
   in state. The consumer is still REPLACED (or, for a stateful type, the deploy
   stops and asks for `--force-stateful-recreation`) whenever the readback cannot
-  confirm the value: AWS holds a different one, the property is write-only so
-  AWS never returns it, the resource type has no readback, or the read fails.
+  confirm the value: AWS holds a different one, the resource type has no
+  readback, or the read fails. The deploy log says which, as a warning. A
+  write-only property, which AWS never returns, is replaced only on the few
+  resource types cdkd's own replacement rules name. On any other type, it is
+  updated in place and never read back. So is any property of a type whose
+  write-only list cdkd cannot look up, for example when
+  `cloudformation:DescribeType` is denied.
 
 **There is a cost, and it is not hidden from you.** cdkd has nothing to
 re-derive the value from — a handler-generated value has no
