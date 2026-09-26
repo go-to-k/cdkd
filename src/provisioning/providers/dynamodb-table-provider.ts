@@ -1219,12 +1219,12 @@ const SDK_ONLY_INDEX_MEMBERS = [
   'IndexSizeBytes',
   'ItemCount',
   'IndexArn',
-];
+] as const;
 const SDK_ONLY_THROUGHPUT_MEMBERS = [
   'NumberOfDecreasesToday',
   'LastIncreaseDateTime',
   'LastDecreaseDateTime',
-];
+] as const;
 
 /**
  * One index entry of {@link DynamoDBTableProvider.canonicalizeDriftProperties}:
@@ -6510,7 +6510,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * readback (issue #1812). Such a record holds each index's raw
    * `DescribeTable` description, so a table whose template declares indexes
    * reported a one-sided `GlobalSecondaryIndexes` difference on every
-   * `cdkd drift` until the next deploy re-captured it.
+   * `cdkd drift` until the next deploy re-captured it. Convergence needs a
+   * non-empty recorded bag: with an empty one the readback emits every
+   * throughput block (see {@link reverseMapSecondaryIndex}), so a stale
+   * baseline still reports.
    *
    * Keyed on members only an SDK description carries — never on the desired
    * side, which this hook does not see — so a bag written by the current
