@@ -940,8 +940,10 @@ export interface FreshNoEchoLeaf {
  *
  * The engine uses this for a create-only property whose record holds `***`.
  * It asks AWS what the resource holds at each of these positions, because the
- * record cannot say. Cycle-safe like the other walks: a container reached
- * twice is walked once, and its positions are named by the first path.
+ * record cannot say. Cycle-safe through an ANCESTOR set rather than a
+ * visited-once set: a container shared by two positions is walked at each of
+ * them, since a position left out would go unchecked against AWS, which is
+ * the unsafe direction here. Only a true cycle stops the walk.
  */
 export function freshNoEchoLeafPositions(
   value: unknown,
@@ -950,7 +952,7 @@ export function freshNoEchoLeafPositions(
   const fresh = freshNoEchoValuesOf.get(secrets);
   if (fresh === undefined || fresh.size === 0) return [];
   const leaves: FreshNoEchoLeaf[] = [];
-  const seen: WalkedContainers = new Set();
+  const ancestors: WalkedContainers = new Set();
   const walk = (node: unknown, path: (string | number)[]): void => {
     if (typeof node === 'string') {
       if (fresh.has(node) && isMaskOnlyPlaintext(secrets, node)) {
@@ -959,15 +961,16 @@ export function freshNoEchoLeafPositions(
       return;
     }
     if (node === null || typeof node !== 'object') return;
-    if (seen.has(node)) return;
-    seen.add(node);
+    if (ancestors.has(node)) return;
+    ancestors.add(node);
     if (Array.isArray(node)) {
       node.forEach((item, index) => walk(item, [...path, index]));
-      return;
+    } else {
+      for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+        walk(child, [...path, key]);
+      }
     }
-    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
-      walk(child, [...path, key]);
-    }
+    ancestors.delete(node);
   };
   walk(value, []);
   return leaves;

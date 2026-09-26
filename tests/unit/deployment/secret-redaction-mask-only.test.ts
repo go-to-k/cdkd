@@ -296,7 +296,19 @@ describe('mask-only redaction channel (issue #2274)', () => {
       }
     });
 
-    it('terminates on a cycle, naming a shared container once', () => {
+    it('names every position of a container shared by two paths', () => {
+      // A position left out would go unchecked against AWS.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const shared = { Name: NOECHO };
+
+      expect(freshNoEchoLeafPositions({ A: shared, B: [shared] }, secrets)).toEqual([
+        { path: ['A', 'Name'], plaintext: NOECHO },
+        { path: ['B', 0, 'Name'], plaintext: NOECHO },
+      ]);
+    });
+
+    it('terminates on a cycle, naming the leaf once', () => {
       const secrets: RecordedSecretValues = new Map();
       recordFreshNoEchoValuesIn(NOECHO, secrets);
       const cyclic: Record<string, unknown> = { Value: NOECHO };

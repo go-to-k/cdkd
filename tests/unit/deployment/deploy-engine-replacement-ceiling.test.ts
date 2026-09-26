@@ -371,6 +371,10 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       const updates = callsFor(provider.update, 'Reader');
       expect(updates).toHaveLength(1);
       expect((updates[0]![3] as Record<string, unknown>)['TopicName']).toBe(SECRET);
+      // The previous side carries the confirmed value, not the record's `***`:
+      // a provider diffing `***` against it would see a create-only change and
+      // re-create inside its own update() (ACM, IAM ManagedPolicy).
+      expect(updates[0]![4]).toEqual({ TopicName: SECRET, DisplayName: 'd1' });
       expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Reader')).toHaveLength(0);
       expect(labelsFor('Reader')).toEqual(['Updating Reader (AWS::SNS::Topic)']);
@@ -450,6 +454,23 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
           ),
       ],
       [
+        'rejects with an Error whose getters throw',
+        () => {
+          const hostile = new Error('x');
+          Object.defineProperty(hostile, 'message', {
+            get: () => {
+              throw new Error(`getter ${SECRET}`);
+            },
+          });
+          Object.defineProperty(hostile, 'name', {
+            get: () => {
+              throw new Error(`getter ${SECRET}`);
+            },
+          });
+          provider.readCurrentState.mockRejectedValue(hostile);
+        },
+      ],
+      [
         'throws a non-Error synchronously',
         () =>
           provider.readCurrentState.mockImplementation(() => {
@@ -509,6 +530,61 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       expect(debugLines()).toContain(
         'Skipping Reader: AWS already holds every NoEcho value it carries, and nothing else changed'
       );
+    });
+
+    it('still UPDATES a reader whose updatable property carries a fresh value AWS was not asked about', async () => {
+      // The create-only path is confirmed, but `DisplayName` holds the same
+      // fresh value and no readback vouches for it: skipping would leave AWS on
+      // the old value under a green deploy (the go-to-k/cdkd#3662 class).
+      const state = noEchoState();
+      state.resources['Reader']!.properties = { TopicName: '***', DisplayName: '***' };
+      state.resources['Reader']!.observedProperties = { TopicName: '***', DisplayName: '***' };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockResolvedValue({ TopicName: SECRET, DisplayName: SECRET });
+      const tpl = template('unused');
+      (tpl.Resources['Reader']!.Properties as Record<string, unknown>)['DisplayName'] = {
+        'Fn::GetAtt': ['Cr', 'TopicName'],
+      };
+
+      await makeEngine({ captureObservedState: false }).deploy(STACK, tpl);
+
+      const updates = callsFor(provider.update, 'Reader');
+      expect(updates).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['DisplayName']).toBe(SECRET);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      expect(debugLines().some((l) => l.startsWith('Skipping Reader'))).toBe(false);
+    });
+
+    it('refreshes only the metadata when a DeletionPolicy flip rides along, with no provider call', async () => {
+      provider.readCurrentState.mockResolvedValue({ TopicName: SECRET, DisplayName: 'd1' });
+      const tpl = template('d1');
+      tpl.Resources['Reader']!.DeletionPolicy = 'Retain';
+
+      await makeEngine({ captureObservedState: false }).deploy(STACK, tpl);
+
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+      const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.resources['Reader']?.deletionPolicy).toBe('Retain');
+      expect(saved.resources['Reader']?.properties['TopicName']).toBe('***');
+    });
+
+    it('never skips a --recreate-via-* target, even when AWS holds the value', async () => {
+      provider.readCurrentState.mockResolvedValue({ TopicName: SECRET, DisplayName: 'd1' });
+
+      await makeEngine({
+        captureObservedState: false,
+        recreateTargets: {
+          stackName: STACK,
+          viaCcApi: new Set<string>(),
+          viaSdkProvider: new Set(['Reader']),
+        },
+      })
+        .deploy(STACK, template('d1'))
+        .catch(() => undefined);
+
+      expect(debugLines().some((l) => l.startsWith('Skipping Reader'))).toBe(false);
+      expect(callsFor(provider.create, 'Reader')).toHaveLength(1);
     });
 
     /**

@@ -1440,8 +1440,10 @@ The same holds for a value used as a NAME. A resource's physical id is what
 cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
 create-only name (`QueueName`, `TableName`, a parameter `Name`) is therefore
 stored in the clear as that resource's physical id. So is every attribute AWS
-derives from the name, such as a queue URL or an ARN, and any output that reads
-one of them. CloudFormation behaves the same way: `DescribeStackResources`
+builds around the name, such as a queue URL or an ARN (an attribute equal to
+the whole value is still masked), and so is any other resource's property or
+output that reads one of those, and any command output that shows a physical
+id. CloudFormation behaves the same way: `DescribeStackResources`
 returns the physical id in the clear, whatever `NoEcho` said. Use `NoEcho`
 values as values, never as names.
 

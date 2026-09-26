@@ -3002,8 +3002,17 @@ export class DeployEngine {
       }
       return { live };
     } catch (error: unknown) {
-      const masked = maskSecretsInError(error, secrets);
-      const errorClass = masked instanceof Error ? masked.name : typeof masked;
+      // `maskSecretsInError` masks `message` / `stack` / `cause`, not `name`:
+      // only an identifier-shaped name is printed. Guarded, so an error whose
+      // getters throw still reads as `read-failed` rather than escaping.
+      let errorClass = 'Error';
+      try {
+        const masked = maskSecretsInError(error, secrets);
+        const name = masked instanceof Error ? masked.name : typeof masked;
+        if (typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(name)) errorClass = name;
+      } catch {
+        // keep 'Error'
+      }
       this.logger.debug(
         `Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
       );
@@ -6826,6 +6835,27 @@ export class DeployEngine {
                 currentResource.properties
               )
             : desiredForSkipCheck;
+        // The metadata-only arm both no-change skips share: refresh the record's
+        // template attributes and call no provider.
+        const applyAttributeOnlyUpdate = (
+          attributeChanges: NonNullable<typeof change.attributeChanges>
+        ): void => {
+          const attrSummary = attributeChanges
+            .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
+            .join(', ');
+          this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+          stateResources[logicalId] = {
+            ...currentResource,
+            ...this.extractTemplateAttributes(template, logicalId),
+          };
+          if (counts) counts.updated++;
+          if (progress) progress.current++;
+          const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
+          this.logger.info(
+            `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
+          );
+        };
         if (
           !typeChanged &&
           !suppliesFreshMaskOnlyValue &&
@@ -6836,21 +6866,7 @@ export class DeployEngine {
           // property change. There is no per-resource AWS API for those —
           // refresh cdkd state alone and skip the provider call.
           if (change.attributeChanges && change.attributeChanges.length > 0) {
-            const attrSummary = change.attributeChanges
-              .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
-              .join(', ');
-            this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
-            stateResources[logicalId] = {
-              ...currentResource,
-              ...this.extractTemplateAttributes(template, logicalId),
-            };
-            if (counts) counts.updated++;
-            if (progress) progress.current++;
-            const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-            renderer.removeTask(logicalId);
-            this.logger.info(
-              `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
-            );
+            applyAttributeOnlyUpdate(change.attributeChanges);
             break;
           }
           this.logger.debug(
@@ -6938,24 +6954,26 @@ export class DeployEngine {
             }
             if (freshLeaves.length > 0) {
               // A Type change replaces anyway, and the record's provider
-              // describes the OLD type: no read.
-              let verdict: FreshNoEchoCeilingVerdict = 'not-readable';
-              if (!typeChanged) {
-                readback ??= this.readReaderForFreshNoEchoCeiling(
-                  logicalId,
-                  currentResource,
-                  updateSecrets
-                );
-                const read = await readback;
-                if ('failure' in read) {
-                  verdict = read.failure;
-                } else if (!Object.prototype.hasOwnProperty.call(read.live, pc.path)) {
-                  verdict = 'not-readable';
-                } else {
-                  verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves)
-                    ? 'held'
-                    : 'differs';
-                }
+              // describes the OLD type: no read, and nothing to report.
+              if (typeChanged) {
+                lowered.push(pc);
+                continue;
+              }
+              readback ??= this.readReaderForFreshNoEchoCeiling(
+                logicalId,
+                currentResource,
+                updateSecrets
+              );
+              const read = await readback;
+              let verdict: FreshNoEchoCeilingVerdict;
+              if ('failure' in read) {
+                verdict = read.failure;
+              } else if (!Object.prototype.hasOwnProperty.call(read.live, pc.path)) {
+                verdict = 'not-readable';
+              } else {
+                verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves)
+                  ? 'held'
+                  : 'differs';
               }
               if (verdict !== 'held') {
                 this.logger.debug(
@@ -6983,10 +7001,16 @@ export class DeployEngine {
         // turns back into the replacement this block just avoided. A fresh
         // leaf outside a confirmed path (an updatable property nobody read
         // back) keeps the update, as before (go-to-k/cdkd#3729).
+        //
+        // A `--recreate-via-*` target is never skipped here: before this skip
+        // existed a fresh value always reached the recreate below, and a named
+        // recreate must not be dropped because a value turned out unchanged.
+        // An attribute-only change (`DeletionPolicy`, ...) takes the same
+        // metadata arm as the skip above, for the same no-update-API reason.
         if (
           noEchoHeldPaths.size > 0 &&
           !typeChanged &&
-          (change.attributeChanges?.length ?? 0) === 0 &&
+          this.recreateDirectionFor(stackName, logicalId) === undefined &&
           JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten) &&
           Object.entries(resolvedProps).every(
             ([key, value]) =>
@@ -6999,6 +7023,10 @@ export class DeployEngine {
           );
           // Nothing was attempted, as on the skip above the refusal.
           this.attemptedResolvedProps.delete(logicalId);
+          if (change.attributeChanges && change.attributeChanges.length > 0) {
+            applyAttributeOnlyUpdate(change.attributeChanges);
+            break;
+          }
           if (counts) counts.skipped++;
           break;
         }
@@ -7820,6 +7848,26 @@ export class DeployEngine {
                   this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                 )
               : resolvedProps;
+          // The previous side the provider diffs against, with each create-only
+          // path AWS confirmed holding its fresh `NoEcho` value set to the
+          // value being sent (go-to-k/cdkd#3729). The record holds `***` there,
+          // and a provider comparing `***` with the plaintext would see a
+          // create-only change: ACM and IAM ManagedPolicy re-create inside
+          // their own `update()` (bypassing `UpdateReplacePolicy: Retain` and
+          // the stateful guard), and Cloud Control would patch a create-only
+          // path. In memory only: nothing persists this bag, and the provider's
+          // masker already holds the value as a needle.
+          const previousForUpdate =
+            noEchoHeldPaths.size === 0
+              ? currentPropsAsWritten
+              : {
+                  ...currentPropsAsWritten,
+                  ...Object.fromEntries(
+                    [...noEchoHeldPaths]
+                      .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
+                      .map((path) => [path, updateProps[path]])
+                  ),
+                };
 
           let result;
           let resultProvisionedBy = updateDecision.provisionedBy;
@@ -7872,8 +7920,9 @@ export class DeployEngine {
                     // `CloudControlProvider.update` diffs this into a JSON
                     // Patch, so a key the SDK route never wrote must be absent
                     // here or the patch omits it and the auto-route sends
-                    // nothing for it.
-                    currentPropsAsWritten,
+                    // nothing for it. `previousForUpdate` differs from it only
+                    // at confirmed NoEcho paths (go-to-k/cdkd#3729).
+                    previousForUpdate,
                     // The UPDATE twin of the CREATE call's masker (issue #1932
                     // item 3): same resolved bag, same exposure, so the contract
                     // is applied on both or it has a hole in the shape of
