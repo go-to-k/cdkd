@@ -12537,6 +12537,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -12583,6 +12584,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -12599,6 +12601,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [

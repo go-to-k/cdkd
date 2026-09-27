@@ -121,7 +121,7 @@ eventbridge-pipes	2026-09-25T13:49:20Z	PASS	170	verify.sh	rc ok, orph clean; sha
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-09-27T15:24:20Z	PASS	221	verify.sh	PR #3876 merge-gate run; rc ok, orph clean
+export	2026-09-27T16:52:30Z	PASS	235	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
 export-nested-stack	2026-09-27T15:27:10Z	PASS	170	verify.sh	PR #3876 merge-gate run; rc ok, orph clean
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
@@ -135,10 +135,10 @@ getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: 
 glue-securityconfig-replace	2026-09-26T01:30:00Z	PASS	60	verify.sh	maintainer merge-gate run of PR #3817; rc ok, orph clean (solo rerun; a parallel run failed phase 2 unexplained)
 glue-update-hardening	2026-09-26T01:30:00Z	PASS	206	verify.sh	maintainer merge-gate run of PR #3817; rc ok, orph clean
 iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
-iam-managed-policy	2026-09-27T14:13:26Z	PASS	40	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
+iam-managed-policy	2026-09-27T16:47:18Z	PASS	35	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
-iam-propagation-stress	2026-08-19T10:26:57Z	PASS	108	verify.sh	issue 2026: 27 runs; repro captured http=500; fix live-verified after review round 2
-iam-role-policies-drift-clean	2026-09-25T15:55:34Z	PASS	86	verify.sh	rc ok, orph clean (#3595 lane)
+iam-propagation-stress	2026-09-27T16:48:35Z	PASS	75	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
+iam-role-policies-drift-clean	2026-09-27T16:46:41Z	PASS	75	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
 iam-role-prefixed-name-update	2026-09-27T14:13:26Z	PASS	70	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
@@ -163,7 +163,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T15:53:36Z	PASS	100	verify.sh	rc ok, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-27T14:43:09Z	PASS	105	verify.sh	rc ok, orph clean (#3866)
+lambda	2026-09-27T16:54:32Z	PASS	120	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
