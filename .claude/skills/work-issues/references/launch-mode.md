@@ -106,7 +106,7 @@ it has exactly ONE launch tree (a concurrent lane lives in a sibling, row 1):
 |---|---|---|
 | 1 | Lanes in THIS tree run serially. A CONCURRENT lane gets a SIBLING worktree, never one NESTED inside this tree: `git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<b> -b <b> origin/main` (go-to-k/cdkd#3902), and its claim names that path. Integ runs and merges stay serialized; each tree runs its integ from its OWN `dist/` and `integ-destroy` marker; §9 removes a sibling with the MAIN-CHECKOUT arm | §3, §4, §5, §9 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
-| 3 | The claim names the tree checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
+| 3 | For a lane in THIS tree, the claim names the tree checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
 | 4 | Create no worktree for a lane in THIS tree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH` | §5 |
 | 5 | Remove no worktree you stand in: a lane that removes the tree it runs in deletes its own cwd; a sibling this run created is yours to remove (row 1). Cleanup of the TREE belongs to whoever created it | §9 |
 | 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
