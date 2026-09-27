@@ -1182,7 +1182,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain(
       "const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);"
     );
-    expect((src.match(/\borphanRemedy\(op\.logicalId\)/g) ?? []).length).toBe(2);
+    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(2);
     // The fence sees its input: the wrapped form must be present in numbers.
     expect((src.match(/\$\{safe\(op\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
       .toBeGreaterThan(40);

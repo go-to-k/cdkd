@@ -457,6 +457,57 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(text).not.toContain('`cdkd deploy`');
     }, 120_000);
 
+    it('inside a nested child revert, neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async () => {
+      // `cdkd rollback --orphan` reaches only the replay of the stack it is
+      // run on, and a direct rollback of the child is refused while the
+      // parent's run is unsettled, so a printed command would send the
+      // operator round the same refusal. Both arms, each asserted to FIRE
+      // (the refusal text) before the remedy's absence is read.
+      const errors: string[] = [];
+      const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+      const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
+      ctx.nestedChildRevert = true;
+      ctx.recordEvent = (e) => {
+        if (e.error?.message) errors.push(e.error.message);
+      };
+      const unroutable: CompletedOperation = {
+        logicalId: 'U',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+      };
+      const state: Record<string, ResourceState> = {
+        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        U: res({ physicalId: 'phys-new' }),
+      };
+
+      const result = await replayRollback([replacementOp(), unroutable], state, 'S', ctx, {
+        isInterrupted: () => false,
+      });
+
+      expect(result.failures).toBe(2);
+      const collision = errors.find((m) => m.includes('replacement of B ('));
+      const unrouted = errors.find((m) => m.includes('replacement of U ('));
+      expect(collision).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
+      expect(unrouted).toContain('so cdkd will not guess which provider re-creates');
+      for (const message of [collision!, unrouted!]) {
+        // No command naming an id: the prose mentions the flag only to say it
+        // cannot reach this replay.
+        expect(message).not.toMatch(/--orphan (?:B|U|'<id>')/);
+        expect(message).not.toContain('\n');
+        expect(message).not.toContain('To orphan it:');
+        expect(message).not.toContain('command below');
+        expect(message).toContain(
+          "where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level stack's rollback"
+        );
+      }
+      // The collision text stays in the prose, and the unroutable refusal's
+      // fix-forward pointer ends its sentence rather than offering the command.
+      expect(collision).toContain('Underlying collision: Queue already exists');
+      expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
+    });
+
     it('the collision refusal names the pinning policy and the recovery path', async () => {
       // Separated from the case above because the refusal is caught per-op:
       // the replay never rethrows it, so the assertion has to reach the error

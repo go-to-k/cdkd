@@ -387,10 +387,29 @@ const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
  * backtick span is command SUBSTITUTION, a worse wrapper than `'...'` and one
  * the source fence cannot see. The explanation of a hole goes in the PROSE,
  * before the line, so the line stays pasteable as a whole.
+ *
+ * Inside a nested child's revert (`nestedChildRevert`) there is NO line: no
+ * `cdkd rollback --orphan` reaches that replay, so a printed one would send
+ * the operator round the same refusal (go-to-k/cdkd#3845). `offered` tells the
+ * caller whether its prose may point at "the command below".
  */
-function orphanRemedy(logicalId: unknown): { readonly clause: string; readonly line: string } {
+function orphanRemedy(
+  logicalId: unknown,
+  nestedChildRevert: boolean | undefined
+): { readonly offered: boolean; readonly clause: string; readonly line: string } {
+  if (nestedChildRevert === true) {
+    return {
+      offered: false,
+      clause:
+        ` This op is reverted inside a nested stack's revert for its parent's rollback, where ` +
+        `cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level ` +
+        `stack's rollback, or re-deploy the top-level stack.`,
+      line: '',
+    };
+  }
   const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);
   return {
+    offered: true,
     clause: pasteable
       ? ''
       : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
@@ -942,6 +961,15 @@ export interface RollbackExecutorContext {
    * The ARN-named arm needs no list at all and is live regardless of either.
    */
   importedProducerRegions?: readonly string[] | undefined;
+  /**
+   * True when this replay reverts a nested CHILD for its parent's rollback
+   * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
+   * replay of the stack it is run on, and a direct rollback of the child is
+   * refused while the parent's run is unsettled, so no command reaches this
+   * replay's ops: the two refusals print no `--orphan` line here
+   * (go-to-k/cdkd#3845).
+   */
+  nestedChildRevert?: boolean | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
@@ -1138,17 +1166,24 @@ export function resolveReplacementOldType(
  * `reverse-replacement` arm's own guard raise. `markNonRetryable`: the verdict
  * is read off the journal alone, so no retry can change it.
  */
-function unroutableReplacementError(op: CompletedOperation, reason: string): Error {
+function unroutableReplacementError(
+  op: CompletedOperation,
+  reason: string,
+  nestedChildRevert: boolean | undefined
+): Error {
   // The remedy is a labelled last line built by `orphanRemedy`, which owns
   // the gate on the id and the sentence for a withheld one.
-  const remedy = orphanRemedy(op.logicalId);
+  const remedy = orphanRemedy(op.logicalId, nestedChildRevert);
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
         `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
           `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
-          `was changed. The journal is kept: fix forward with cdkd deploy, or leave this resource ` +
-          `as it is and let the rest of the rollback proceed by re-running with the command below.` +
+          `was changed. The journal is kept: fix forward with cdkd deploy` +
+          (remedy.offered
+            ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
+              `re-running with the command below.`
+            : '.') +
           `${remedy.clause}${remedy.line}`,
         'ROLLBACK_REPLACEMENT_UNROUTABLE'
       )
@@ -2394,7 +2429,8 @@ async function replaySingle(
         const routing = resolveReplacementOldType(op);
         throw unroutableReplacementError(
           op,
-          routing.ok ? 'its old type could not be routed' : routing.reason
+          routing.ok ? 'its old type could not be routed' : routing.reason,
+          ctx.nestedChildRevert
         );
       }
 
@@ -2798,7 +2834,9 @@ async function replaySingle(
         // already refused an op whose old type cannot be named, so the `throw`
         // is for a caller that reaches this arm without it.
         const oldTypeRouting = resolveReplacementOldType(op);
-        if (!oldTypeRouting.ok) throw unroutableReplacementError(op, oldTypeRouting.reason);
+        if (!oldTypeRouting.ok) {
+          throw unroutableReplacementError(op, oldTypeRouting.reason, ctx.nestedChildRevert);
+        }
         const oldType = oldTypeRouting.oldType;
         const typeChanged = oldType !== op.resourceType;
         // Issue #3203, BEFORE any AWS call and before the secret resolution:
@@ -3128,7 +3166,7 @@ async function replaySingle(
             // inside a retried call, an unmarked refusal would burn the whole
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
-            const remedy = orphanRemedy(op.logicalId);
+            const remedy = orphanRemedy(op.logicalId, ctx.nestedChildRevert);
             throw ownRemedyError(
               markNonRetryable(
                 new CdkdError(
@@ -3160,10 +3198,13 @@ async function replaySingle(
                       `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                       `not delete it to free the name. Delete the new resource yourself, or ` +
                       `remove UpdateReplacePolicy: Retain, then re-run cdkd rollback — the ` +
-                      `journal is kept, so the revert resumes from here. To leave THIS resource ` +
-                      `alone and let the rest of the rollback proceed, re-run with the command ` +
-                      `below: one op failure stops the segment loop, so a single pinned resource ` +
-                      `otherwise halts every OLDER segment too.` +
+                      `journal is kept, so the revert resumes from here.` +
+                      (remedy.offered
+                        ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                          `proceed, re-run with the command below: one op failure stops the ` +
+                          `segment loop, so a single pinned resource otherwise halts every ` +
+                          `OLDER segment too.`
+                        : '') +
                       // The remedy is the message's labelled LAST line, built by
                       // `orphanRemedy`, which owns the gate on the id and the
                       // sentence for a withheld one; the AWS text stays in the
