@@ -188,6 +188,19 @@ describe('resolveStartApiAssumeRoleArn (bare auto-resolve) is FAIL-CLOSED on a m
     expect(warnings(warn).join('\n')).toContain('could not auto-resolve');
   });
 
+  it('renders the logical id in the miss warning through displayIdent', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    resolveStartApiAssumeRoleArn({
+      logicalId: `Fn${ESC}[2K`,
+      assumeRole: auto,
+      lambdaResource: lambda(),
+      stateBundle: undefined,
+    });
+    const line = warnings(warn).join('\n');
+    expect(line).toContain('could not auto-resolve');
+    expect(line).not.toContain(ESC);
+  });
+
   it('still returns a well-formed template literal or state ARN (negative control)', () => {
     vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
     expect(
