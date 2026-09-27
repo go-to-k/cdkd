@@ -1333,7 +1333,10 @@ export function parseAssumeRoleToken(
   // happens to be called `arn` and leaving its neighbours raw would be the
   // "guard defeated by its own neighbour" shape on one line.
   const shownRaw = displayIdent(raw, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-  const eqIndex = raw.indexOf('=');
+  // A value that STARTS as an ARN is the bare form even when it contains `=`:
+  // IAM role names allow `=` (`role/a=b`), and a logical id can never start
+  // with `arn:` (no `:` in one), so the two forms cannot be confused.
+  const eqIndex = raw.trim().startsWith('arn:') ? -1 : raw.indexOf('=');
   if (eqIndex === -1) {
     const bare = raw.trim();
     if (!isIamRoleArn(bare)) {

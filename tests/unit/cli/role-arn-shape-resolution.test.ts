@@ -49,6 +49,16 @@ describe('parseAssumeRoleToken (`local start-api --assume-role`)', () => {
     expect(() => parseAssumeRoleToken(`Fn=${value}`, undefined)).toThrow(/right-hand side/);
   });
 
+  it('reads a bare ARN whose role name contains `=` as the BARE form', () => {
+    // IAM role names allow `=`; splitting on it first read `arn:...role/a` as a
+    // logical id and refused the value.
+    const withEq = 'arn:aws:iam::123456789012:role/a=b';
+    expect(parseAssumeRoleToken(withEq, undefined).globalArn).toBe(withEq);
+    expect(parseAssumeRoleToken(`  ${withEq}`, undefined).globalArn).toBe(withEq);
+    // ...and the LogicalId=<arn> form keeps splitting on the FIRST `=`.
+    expect(parseAssumeRoleToken(`Fn=${withEq}`, undefined).perLambda['Fn']).toBe(withEq);
+  });
+
   it('trims the bare form, as the LogicalId=<arn> form always was', () => {
     expect(parseAssumeRoleToken(`  ${GOOD}  `, undefined).globalArn).toBe(GOOD);
     expect(parseAssumeRoleToken(`Fn= ${GOOD} `, undefined).perLambda['Fn']).toBe(GOOD);
@@ -126,22 +136,76 @@ describe('resolveExecutionRoleArnFromState', () => {
   });
 });
 
-describe('resolveStartApiAssumeRoleArn (bare auto-resolve)', () => {
-  it('skips a malformed template Role literal, warns, and falls through to state', () => {
+describe('resolveStartApiAssumeRoleArn (bare auto-resolve) is FAIL-CLOSED on a malformed ARN', () => {
+  const auto = { perLambda: {}, bareAutoResolve: true };
+  const lambda = (role?: unknown) =>
+    ({ Type: 'AWS::Lambda::Function', Properties: role === undefined ? {} : { Role: role } }) as never;
+  const bundleWith = (role: unknown) =>
+    ({
+      state: stateWith({
+        Fn: { resourceType: 'AWS::Lambda::Function', properties: { Role: role }, attributes: {} },
+      }),
+    }) as never;
+
+  it('refuses at startup on a malformed template Role literal, naming the logical id', () => {
+    expect(() =>
+      resolveStartApiAssumeRoleArn({
+        logicalId: 'Fn',
+        assumeRole: auto,
+        lambdaResource: lambda(FORGED),
+        // A GOOD state value must not rescue it: the template literal EXISTS.
+        stateBundle: bundleWith(GOOD),
+      })
+    ).toThrow(/^--assume-role-auto: the template Role for 'Fn' is not a well-formed IAM role ARN: .*Refusing to start/);
+  });
+
+  it('refuses at startup on a malformed state role ARN', () => {
+    let caught: unknown;
+    try {
+      resolveStartApiAssumeRoleArn({
+        logicalId: 'Fn',
+        assumeRole: auto,
+        lambdaResource: lambda(),
+        stateBundle: bundleWith(ESCAPED),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).toMatch(/^--assume-role-auto: Deployed state for 'Fn'/);
+    expect((caught as Error).message).not.toContain(ESC);
+  });
+
+  it('keeps the TRUE-miss fallback: warns and returns undefined', () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    expect(
+      resolveStartApiAssumeRoleArn({
+        logicalId: 'Fn',
+        assumeRole: auto,
+        lambdaResource: lambda({ 'Fn::GetAtt': ['Missing', 'Arn'] }),
+        stateBundle: undefined,
+      })
+    ).toBeUndefined();
+    expect(warnings(warn).join('\n')).toContain('could not auto-resolve');
+  });
+
+  it('still returns a well-formed template literal or state ARN (negative control)', () => {
     vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
-    const arn = resolveStartApiAssumeRoleArn({
-      logicalId: 'Fn',
-      assumeRole: { perLambda: {}, bareAutoResolve: true },
-      lambdaResource: { Type: 'AWS::Lambda::Function', Properties: { Role: FORGED } },
-      stateBundle: {
-        state: stateWith({
-          Fn: { resourceType: 'AWS::Lambda::Function', properties: { Role: GOOD }, attributes: {} },
-        }),
-      } as never,
-    });
-    expect(arn).toBe(GOOD);
-    expect(warnings(warn).join('\n')).toContain('the template Role');
+    expect(
+      resolveStartApiAssumeRoleArn({
+        logicalId: 'Fn',
+        assumeRole: auto,
+        lambdaResource: lambda(GOOD),
+        stateBundle: undefined,
+      })
+    ).toBe(GOOD);
+    expect(
+      resolveStartApiAssumeRoleArn({
+        logicalId: 'Fn',
+        assumeRole: auto,
+        lambdaResource: lambda(),
+        stateBundle: bundleWith(GOOD),
+      })
+    ).toBe(GOOD);
   });
 });
 

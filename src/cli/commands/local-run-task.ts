@@ -14,6 +14,7 @@ import { getLogger } from '../../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import {
   applyRoleArnIfSet,
+  assertFlagRoleArn,
   assertSendableRoleArn,
   sendableAssumeRoleCommand,
 } from '../../utils/role-arn.js';
@@ -254,6 +255,15 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   };
 
   try {
+    // Refuse a malformed or EMPTY explicit role-ARN flag before any AWS call,
+    // docker probe or synthesis (issue #2348) -- the same check each send
+    // applies, earlier. Neither value is trimmed: it is sent as typed.
+    if (typeof options.assumeTaskRole === 'string') {
+      assertFlagRoleArn('--assume-task-role', options.assumeTaskRole);
+    }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
+    }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
     await ensureDockerAvailable();
 

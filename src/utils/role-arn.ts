@@ -122,9 +122,11 @@ export const IAM_ROLE_ARN_MAX_LENGTH = 2048;
  * different questions. That one is a PARSE: `Fn::GetStackOutput` derives the
  * producer's state bucket from the 12-digit account it captures, so it must be
  * exact. This one is a BOUND on what may leave the process, and must not refuse
- * a role IAM itself accepts: IAM's path grammar is printable ASCII (`[!-~]`),
- * which admits `( ) ! # $ % & * [ ]` that `IAM_ROLE_ARN_RE`'s `[\w+=,.@-]`
- * rejects, and the account stays `[0-9]+` because AWS rejects a wrong account
+ * a role IAM itself accepts: IAM's path grammar admits `\u0021` through
+ * `\u007F`, i.e. `( ) ! # $ % & * [ ]` that `IAM_ROLE_ARN_RE`'s `[\w+=,.@-]`
+ * rejects. The class here is `[!-~]`, one character SHORT of that: DEL
+ * (`\u007F`) is refused deliberately, since it is a terminal control
+ * character and a role path carrying it is not worth rendering or sending, and the account stays `[0-9]+` because AWS rejects a wrong account
  * far better than a regex can. The partition is `[A-Za-z0-9-]+`, open-ended so a
  * partition AWS has not launched yet is not refused by name.
  *
@@ -232,6 +234,22 @@ export function explicitRoleArnOrThrow(
     throw makeError(`Invalid ${flag} value: ${refusedRoleArnMessage(raw)}`);
   }
   return trimmed;
+}
+
+/**
+ * Refuse a role-ARN flag value at a command's ENTRY, without trimming — for
+ * the flags whose value is sent as typed (`--ecr-role-arn`,
+ * `--assume-task-role <arn>`), so the entry check is exactly the send-site
+ * check, only earlier (issue [#2348](https://github.com/go-to-k/cdkd/issues/2348)).
+ */
+export function assertFlagRoleArn(
+  flag: string,
+  value: string,
+  makeError: (message: string) => Error = (message) => new Error(message)
+): void {
+  // cdkd-raw-beside-safe: `flag` is a caller LITERAL (the flag's own name);
+  // the untrusted value is rendered inside `refusedRoleArnMessage`.
+  assertSendableRoleArn(value, (message) => makeError(`Invalid ${flag} value: ${message}`));
 }
 
 /**
@@ -557,7 +575,7 @@ export async function applyRoleArnIfSet(opts: {
   //
   // THE COST, stated rather than implied away (go-to-k/cdkd#3408 code review
   // measured it): a COMMON ARN renders byte-identically, but "every legitimate
-  // ARN does" is FALSE. IAM's path grammar is `/[!-~]+/`,
+  // ARN does" is FALSE. IAM's path grammar is `\u0021`-`\u007F`,
   // which admits `( ) ! # $ % & * [ ]` — none of them in `PLAIN_IDENT` — so
   // `arn:aws:iam::123456789012:role/team(a)/MyRole` renders JSON-QUOTED where
   // `asciiOnly` left it bare. That is a display change on a legal value, and it

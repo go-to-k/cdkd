@@ -80,11 +80,13 @@ describe('isIamRoleArn', () => {
       'a service-linked role',
       'arn:aws:iam::123456789012:role/aws-service-role/x.amazonaws.com/AWSServiceRoleForX',
     ],
-    // IAM's path grammar is printable ASCII; `IAM_ROLE_ARN_RE`'s narrower
+    // IAM's path grammar is `\u0021`-`\u007F`; `IAM_ROLE_ARN_RE`'s narrower
     // class would refuse this, which is why the send bound is a separate
     // pattern (see its doc comment).
     ['a path with IAM-legal punctuation', 'arn:aws:iam::123456789012:role/team(a)/MyRole'],
     ['another partition', 'arn:aws-us-gov:iam::123456789012:role/R'],
+    ['the China partition', 'arn:aws-cn:iam::123456789012:role/R'],
+    ['an ISO partition', 'arn:aws-iso-b:iam::123456789012:role/R'],
     ['a short account, as unit fixtures use', 'arn:aws:iam::111:role/R'],
     ['exactly the maximum length', arnOfLength(IAM_ROLE_ARN_MAX_LENGTH)],
   ])('accepts %s', (_label, value) => {
@@ -104,6 +106,8 @@ describe('isIamRoleArn', () => {
     ['a role NAME, not an ARN', 'MyRole'],
     ['leading whitespace', ` ${PREFIX}R`],
     ['a non-ASCII role name', `${PREFIX}Rolé`],
+    // IAM's path grammar admits DEL; this bound refuses it deliberately.
+    ['a DEL in the path', `${PREFIX}team\u007f/R`],
     ['a number', 42],
     ['undefined', undefined],
     ['an object', { Ref: 'Role' }],
@@ -271,16 +275,64 @@ describe('the role-arn.ts send sites refuse before STS', () => {
 const ASSUME_CONSTRUCT = /\bAssumeRole\w*Command\b|\bfromTemporaryCredentials\b|\.assumeRole\s*\(/;
 const ROLE_ARN_MODULE = path.join('utils', 'role-arn.ts');
 
-/** Code lines only: a mention in a comment is prose. */
+/**
+ * Code lines only, with comments REMOVED rather than whole lines skipped: a
+ * mention in a comment is prose, but a line that opens with a closed block
+ * comment and then builds the command is code behind a comment. Block-comment state carries across lines. A `//`
+ * starts a line comment only at the start or after whitespace, so a URL inside
+ * a string does not hide the code after it.
+ */
 function codeLines(text: string): Array<{ line: number; text: string }> {
-  return text
-    .split('\n')
-    .map((t, i) => ({ line: i + 1, text: t }))
-    .filter(({ text: t }) => {
-      const trimmed = t.trim();
-      return !(trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*'));
-    });
+  const out: Array<{ line: number; text: string }> = [];
+  let inBlock = false;
+  text.split('\n').forEach((raw, i) => {
+    let code = '';
+    let rest = raw;
+    while (rest.length > 0) {
+      if (inBlock) {
+        const close = rest.indexOf('*/');
+        if (close === -1) {
+          rest = '';
+        } else {
+          inBlock = false;
+          rest = rest.slice(close + 2);
+        }
+        continue;
+      }
+      const open = rest.indexOf('/*');
+      const line = /(^|\s)\/\//.exec(rest);
+      const lineAt = line ? line.index + line[1]!.length : -1;
+      if (lineAt !== -1 && (open === -1 || lineAt < open)) {
+        code += rest.slice(0, lineAt);
+        rest = '';
+      } else if (open !== -1) {
+        code += rest.slice(0, open);
+        inBlock = true;
+        rest = rest.slice(open + 2);
+      } else {
+        code += rest;
+        rest = '';
+      }
+    }
+    if (code.trim() !== '') out.push({ line: i + 1, text: code });
+  });
+  return out;
 }
+
+describe('codeLines strips comments without hiding code behind them', () => {
+  it('keeps code after a leading block comment, and drops prose', () => {
+    const text = [
+      '/**',
+      ' * new AssumeRoleCommand( in prose',
+      ' */',
+      '/* x */ const c = new AssumeRoleCommand({});',
+      '// new AssumeRoleCommand( in a line comment',
+      "const u = 'https://example.com'; const d = new AssumeRoleCommand({});",
+    ].join('\n');
+    const hits = codeLines(text).filter((l) => ASSUME_CONSTRUCT.test(l.text));
+    expect(hits.map((l) => l.line)).toEqual([4, 6]);
+  });
+});
 
 describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)', () => {
   const SRC = path.resolve(__dirname, '../../../src');

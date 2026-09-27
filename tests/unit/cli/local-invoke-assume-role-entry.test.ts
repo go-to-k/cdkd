@@ -46,6 +46,8 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 
 import { STSClient } from '@aws-sdk/client-sts';
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
+import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-task.js';
+import { createLocalInvokeAgentCoreCommand } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { releaseStdoutForPayload } from '../../../src/utils/logger.js';
 
 const DOCKER_SENTINEL = 'SENTINEL: reached ensureDockerAvailable';
@@ -94,3 +96,68 @@ describe('local invoke refuses an explicit --assume-role at handler entry (issue
     expect(mocks.ensureDockerAvailable).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * The same entry refusal for the role-ARN flags whose value is sent AS TYPED
+ * (no trim): `--ecr-role-arn` on all three commands and `--assume-task-role
+ * <arn>` on `local run-task`. Before, these were refused only at the send,
+ * after synthesis and docker work.
+ */
+async function runCmd(make: () => import('commander').Command, args: string[]): Promise<unknown> {
+  const cmd = make();
+  cmd.exitOverride();
+  try {
+    await cmd.parseAsync(args, { from: 'user' });
+  } catch (err) {
+    return err;
+  }
+  return undefined;
+}
+
+describe('explicit role-ARN flags are refused at handler entry (issue #2348)', () => {
+  beforeEach(() => {
+    for (const m of Object.values(mocks)) m.mockReset();
+    vi.mocked(STSClient).mockClear();
+    mocks.ensureDockerAvailable.mockRejectedValue(new Error(DOCKER_SENTINEL));
+  });
+
+  afterEach(() => {
+    releaseStdoutForPayload();
+  });
+
+  const GOOD_ARN = 'arn:aws:iam::123456789012:role/Good';
+  const cases: Array<[string, () => import('commander').Command, string[], string]> = [
+    ['local invoke --ecr-role-arn', createLocalInvokeLeaf, ['MyStack/Fn', '--ecr-role-arn'], '--ecr-role-arn'],
+    ['local run-task --ecr-role-arn', createLocalRunTaskCommand, ['MyStack/Task', '--ecr-role-arn'], '--ecr-role-arn'],
+    ['local run-task --assume-task-role', createLocalRunTaskCommand, ['MyStack/Task', '--assume-task-role'], '--assume-task-role'],
+    ['local invoke-agentcore --ecr-role-arn', createLocalInvokeAgentCoreCommand, ['MyStack/Agent', '--ecr-role-arn'], '--ecr-role-arn'],
+  ];
+
+  describe.each(cases)('%s', (_label, make, prefix, flag) => {
+    it.each([
+      ['a malformed', 'arn:aws:iam::123456789012:role/x\nforged'],
+      ['an EMPTY', ''],
+      // Sent as typed, so the entry check does not trim either.
+      ['a padded', ` ${GOOD_ARN} `],
+    ])('refuses %s value before any STS or docker work', async (_l, value) => {
+      const err = await runCmd(make, [...prefix, value]);
+      expect((err as Error).message).toMatch(new RegExp(`^Invalid ${flag} value: AssumeRole refused`));
+      expect(mocks.applyRoleArnIfSet).not.toHaveBeenCalled();
+      expect(mocks.ensureDockerAvailable).not.toHaveBeenCalled();
+      expect(vi.mocked(STSClient)).not.toHaveBeenCalled();
+    });
+
+    it('lets a well-formed ARN past the entry check (negative control)', async () => {
+      const err = await runCmd(make, [...prefix, GOOD_ARN]);
+      expect((err as Error).message).toBe(DOCKER_SENTINEL);
+      expect(mocks.applyRoleArnIfSet).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+function createLocalInvokeLeaf(): import('commander').Command {
+  const local = createLocalCommand();
+  const invoke = local.commands.find((c) => c.name() === 'invoke')!;
+  return invoke;
+}
+

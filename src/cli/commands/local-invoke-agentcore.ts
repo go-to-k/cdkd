@@ -19,6 +19,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
 import {
   applyRoleArnIfSet,
+  assertFlagRoleArn,
   assertSendableRoleArn,
   explicitRoleArnOrThrow,
   isIamRoleArn,
@@ -397,6 +398,13 @@ async function localInvokeAgentCoreCommand(
         '--assume-role',
         options.assumeRole,
         (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ASSUME_ROLE_INVALID')
+      );
+    }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn(
+        '--ecr-role-arn',
+        options.ecrRoleArn,
+        (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
       );
     }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });

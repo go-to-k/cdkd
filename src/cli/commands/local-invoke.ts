@@ -21,6 +21,7 @@ import {
 } from '../../utils/assembly-path.js';
 import {
   applyRoleArnIfSet,
+  assertFlagRoleArn,
   assertSendableRoleArn,
   explicitRoleArnOrThrow,
   isIamRoleArn,
@@ -436,6 +437,9 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     if (options.layerRoleArn !== undefined) {
       explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
     }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
+    }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
     await ensureDockerAvailable();
@@ -656,7 +660,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           );
         } else {
           logger.warn(
-            `--assume-role: could not resolve the execution role ARN from cdkd state for '${lambda.logicalId}'. ` +
+            `--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(lambda.logicalId)}'. ` +
               "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
           );
         }
@@ -1854,38 +1858,68 @@ export function resolveExecutionRoleArnFromState(
   logicalId: string,
   roleProperty = 'Role'
 ): string | undefined {
+  const found = classifyExecutionRoleArnFromState(state, logicalId, roleProperty);
+  if (found.kind === 'ok') return found.arn;
+  if (found.kind === 'malformed') getLogger().warn(`${found.description}. Ignoring it.`);
+  return undefined;
+}
+
+/**
+ * What {@link resolveExecutionRoleArnFromState} found, WITHOUT deciding what a
+ * malformed value means (issue #2348). That function warns and treats it as a
+ * miss, which is what `local invoke` and the hint path have always ended up
+ * doing (an unusable ARN failed at STS and fell back). `local start-api
+ * --assume-role-auto` refuses at startup instead, because there a failed
+ * assume was never a fallback: an ARN that EXISTS but is malformed is not the
+ * same as no ARN.
+ *
+ * Only a value that LOOKS like it was meant as an ARN (`arn:` prefix) is
+ * `malformed`; any other string was never a candidate under the old
+ * `startsWith` rule and stays a `miss`.
+ */
+export type ExecutionRoleArnLookup =
+  | { kind: 'ok'; arn: string }
+  | { kind: 'malformed'; description: string }
+  | { kind: 'miss' };
+
+export function classifyExecutionRoleArnFromState(
+  state: Pick<StackState, 'resources'>,
+  logicalId: string,
+  roleProperty = 'Role'
+): ExecutionRoleArnLookup {
   const lambda = state.resources[logicalId];
-  if (!lambda) return undefined;
+  if (!lambda) return { kind: 'miss' };
 
   const roleRef = lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
   if (typeof roleRef === 'string') {
-    if (isIamRoleArn(roleRef)) return roleRef;
-    // Only a value that LOOKS like it was meant as an ARN is worth a warn; any
-    // other string was never a candidate under the old `startsWith` rule
-    // either, and warning on it would be new noise.
+    if (isIamRoleArn(roleRef)) return { kind: 'ok', arn: roleRef };
     if (roleRef.startsWith('arn:')) {
-      getLogger().warn(
-        `Deployed state for '${displayIdent(logicalId)}' carries a ${displayIdent(roleProperty)} that is not ` +
-          `a well-formed IAM role ARN: ${displayIdent(roleRef, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
-      );
+      return {
+        kind: 'malformed',
+        description:
+          `Deployed state for '${displayIdent(logicalId)}' carries a ${displayIdent(roleProperty)} that is not ` +
+          `a well-formed IAM role ARN: ${displayIdent(roleRef, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+      };
     }
-    return undefined;
+    return { kind: 'miss' };
   }
   if (typeof roleRef === 'object' && roleRef !== null) {
     const refLogicalId = pickReferencedLogicalId(roleRef as Record<string, unknown>);
     if (refLogicalId) {
       const roleResource = state.resources[refLogicalId];
       const cached = roleResource?.attributes?.['Arn'];
-      if (typeof cached === 'string' && isIamRoleArn(cached)) return cached;
+      if (typeof cached === 'string' && isIamRoleArn(cached)) return { kind: 'ok', arn: cached };
       if (typeof cached === 'string' && cached.startsWith('arn:')) {
-        getLogger().warn(
-          `The cached Arn attribute of '${displayIdent(refLogicalId)}' is not a well-formed IAM role ARN: ` +
-            `${displayIdent(cached, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
-        );
+        return {
+          kind: 'malformed',
+          description:
+            `The cached Arn attribute of '${displayIdent(refLogicalId)}' is not a well-formed IAM role ARN: ` +
+            `${displayIdent(cached, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+        };
       }
     }
   }
-  return undefined;
+  return { kind: 'miss' };
 }
 
 /**
