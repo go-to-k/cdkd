@@ -12,7 +12,12 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assertFlagRoleArn,
+  assertSendableRoleArn,
+  sendableAssumeRoleCommand,
+} from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -250,6 +255,15 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   };
 
   try {
+    // Refuse a malformed or EMPTY explicit role-ARN flag before any AWS call,
+    // docker probe or synthesis (issue #2348) -- the same check each send
+    // applies, earlier. Neither value is trimmed: it is sent as typed.
+    if (typeof options.assumeTaskRole === 'string') {
+      assertFlagRoleArn('--assume-task-role', options.assumeTaskRole);
+    }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
+    }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
     await ensureDockerAvailable();
 
@@ -531,7 +545,11 @@ async function assumeTaskRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
+  // Both `--assume-task-role <arn>` and the task definition's `TaskRoleArn`
+  // (a template literal, passed through verbatim) arrive here unchecked, so the
+  // shape bound is enforced at the send (issue #2348).
+  assertSendableRoleArn(roleArn);
+  const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the task role's credentials, served to the container by the metadata sidecar,
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
@@ -541,7 +559,7 @@ async function assumeTaskRole(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `cdkd-local-run-task-${Date.now()}`,
         DurationSeconds: 3600,
@@ -988,7 +1006,7 @@ export function buildRunEcsTaskOptions(
   if (extra.resolvedRoleArn) runOpts.taskRoleArn = extra.resolvedRoleArn;
   if (options.platform) runOpts.platformOverride = options.platform;
   if (options.region) runOpts.region = options.region;
-  if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
+  if (options.ecrRoleArn !== undefined) runOpts.ecrRoleArn = options.ecrRoleArn;
   if (channels.profileCredsFile) {
     runOpts.profileCredentialsFile = {
       hostPath: channels.profileCredsFile.hostPath,

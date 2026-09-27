@@ -597,10 +597,12 @@ describe('assumeRoleForCrossAccountStateRead bounds AWS error text (issue #3397 
  * caught and sanitized for the stated reason that STS ECHOES THE SUBMITTED
  * RoleArn back. One class, two halves, one guard.
  *
- * Reachable rather than theoretical: `IAM_ROLE_ARN_REGEX` in
- * `src/cli/options.ts` is START-anchored and constrains nothing past `role/`,
- * `formatError` renders the message, and `ConsoleLogger.formatMessage`
- * sanitizes a call's extra ARGS and never the message itself.
+ * Since issue #2348 a SUBMITTED value carrying control characters never
+ * reaches STS (`assertSendableRoleArn`), so the echo case below is driven by
+ * the MESSAGE alone — AWS's text, which a proxy or a hostile endpoint controls
+ * independently of what was sent. `formatError` renders the message, and
+ * `ConsoleLogger.formatMessage` sanitizes a call's extra ARGS and never the
+ * message itself.
  */
 describe('applyRoleArnIfSet sanitizes an STS rejection (issue #3397 review round 2)', () => {
   beforeEach(() => {
@@ -608,15 +610,19 @@ describe('applyRoleArnIfSet sanitizes an STS rejection (issue #3397 review round
     resetAwsClientDefaults();
   });
 
-  it('strips control characters STS echoed back from the submitted RoleArn', async () => {
+  it('strips control characters from the STS rejection message', async () => {
     const esc = String.fromCharCode(0x1b);
     const hostile = `arn:aws:iam::123456789012:role/x${esc}[2K\revil`;
-    // The real shape: STS quotes the submitted value into its own message.
+    // STS quotes a value into its own message; here the control bytes arrive
+    // in the MESSAGE while the submitted ARN is well-formed.
     mockStsSend.mockRejectedValue(
       new Error(`ValidationError: ${hostile} is invalid`)
     );
 
-    const err = await applyRoleArnIfSet({ roleArn: hostile, region: 'us-east-1' }).then(
+    const err = await applyRoleArnIfSet({
+      roleArn: 'arn:aws:iam::123456789012:role/x',
+      region: 'us-east-1',
+    }).then(
       () => undefined,
       (e: unknown) => e as Error
     );

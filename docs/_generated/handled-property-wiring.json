@@ -13444,10 +13444,14 @@
             "AWS::Lambda::EventSourceMapping"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "applyUpdate",
+            "create",
+            "update"
           ]
         },
         {
@@ -13770,9 +13774,11 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "update"
           ]

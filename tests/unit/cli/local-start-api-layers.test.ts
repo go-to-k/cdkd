@@ -177,4 +177,26 @@ describe("local-start-api materializeLambdaLayers — layerTmpDirs cleanup contr
     expect(layerTmpDirs.size).toBe(0);
     expect(mockMaterializeLayerFromArn).not.toHaveBeenCalled();
   });
+  it.each([
+    // cdk-local reads `roleArn` by truthiness, so an EMPTY value forwarded
+    // would pull as the caller (issue #2348).
+    ['an EMPTY', ''],
+    ['a malformed', 'arn:aws:iam::999988887777:role/x\nforged'],
+  ])('refuses %s --layer-role-arn instead of forwarding it', async (_label, value) => {
+    const layers: ResolvedLambdaLayer[] = [
+      {
+        kind: 'arn',
+        logicalId: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        arn: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        name: 'External',
+        version: '1',
+      },
+    ];
+    await expect(materializeLambdaLayers(layers, new Set<string>(), value)).rejects.toThrow(
+      /Invalid --layer-role-arn value: AssumeRole refused/
+    );
+    expect(mockMaterializeLayerFromArn).not.toHaveBeenCalled();
+  });
 });

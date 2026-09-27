@@ -256,7 +256,11 @@ cdkd deploy --role-arn arn:aws:iam::123456789012:role/cdkd-deploy
 CDKD_ROLE_ARN=arn:aws:iam::123456789012:role/cdkd-deploy cdkd deploy
 ```
 
-cdkd does an `STS AssumeRole` once at command start (1-hour session, session
+The value must be a well-formed role ARN
+(`arn:<partition>:iam::<account>:role/<name>`, at most 2048 characters);
+anything else, including an empty `--role-arn ""`, is refused before any
+request is sent. An empty `CDKD_ROLE_ARN` counts as unset. cdkd does an
+`STS AssumeRole` once at command start (1-hour session, session
 name `cdkd-<unix-ms>`) and hands the resulting temporary credentials to every
 AWS SDK client it builds afterwards, so the role is the identity behind every
 call cdkd makes.
