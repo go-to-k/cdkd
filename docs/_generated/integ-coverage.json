@@ -6652,6 +6652,7 @@
     "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
+    "AWS::HealthImaging::Datastore",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",
