@@ -127,8 +127,9 @@ describe('IAMRoleProvider partial-create cleanup (Issue #376)', () => {
   describe('the recovery commands name the role BARE, by provenance (issue #3136)', () => {
     // The name is `generateResourceNameWithFallback`'s output, which rewrites
     // everything outside `[A-Za-z0-9-]`: a forged template name reaches the
-    // commands only as one plain word, so the site does not route through
-    // `pasteableAwsCommand`. If the generator ever stops sanitizing, this fails.
+    // commands only as one plain word, which `pasteableAwsCommand` (routed through
+    // for the masker since issue #2177) leaves BARE. If the generator ever stops
+    // sanitizing, this fails.
     it.each([FORGED_QUOTE, FORGED_CTRL])('a forged RoleName reaches every command as a plain word, and the holes are quoted', async (forged) => {
       mockSend.mockResolvedValueOnce({ Role: { Arn: 'arn:aws:iam::123:role/MyRole' } }); // CreateRoleCommand
       mockSend.mockRejectedValueOnce(new Error('PutRolePolicy boom')); // PutRolePolicyCommand

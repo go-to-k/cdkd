@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 24
+    "classesWithBlindSpots": 25
   },
   "classes": [
     {
@@ -12331,7 +12331,8 @@
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -12920,7 +12921,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in derivedNamePairs()"
+      ]
     },
     {
       "file": "kinesis-provider.ts",

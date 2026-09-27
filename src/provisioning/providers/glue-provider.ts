@@ -3286,12 +3286,13 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * must never call `this.create()` from inside its own `update()` the way ACM /
  * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
  * forward `update()`'s `properties` — a STATE record during a rollback replay —
- * and pass no `CreateContext`, so this refusal would fire on a replay with no
- * way to detect it. (`update()` DOES take a context — an `UpdateContext` since
+ * and forward no `replayingState` (IAM role / IAM managed policy pass a
+ * masker-only `CreateContext`, issue #2177), so this refusal would fire on a
+ * replay with no way to detect it. (`update()` DOES take a context — an `UpdateContext` since
  * issue #1732 — and since issue #3141 that context carries its own
  * `replayingState`, set by the rollback executor's two revert arms. So the
  * information now reaches `update()`; what is missing is a re-create that
- * builds a `CreateContext` from it, and none of those providers does. An
+ * forwards it into a `CreateContext`, and none of those providers does. An
  * earlier revision said `update()` had "no context parameter to carry the
  * flag" — issue #1999.) Were GlueProvider ever to re-create inside `update()`,
  * it would have to forward a replay signal into that `create()` —

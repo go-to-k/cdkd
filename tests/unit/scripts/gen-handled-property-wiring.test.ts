@@ -1079,7 +1079,7 @@ export class BorrowerProvider {
     // this single-file parse never sees, so it would read as stale for an
     // unrelated reason.
     const allow = new Map([[key, HANDLED_WIRING_ALLOW_LIST.get(key)!]]);
-    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    const anchor = "log.debug(`Creating IAM access key ${logicalId}`);";
     expect(realIamAccessKey).toContain(anchor);
     const wired = realIamAccessKey.replace(
       anchor,
@@ -1553,7 +1553,7 @@ describe('the shipped --check command', () => {
     const dir = join(scratch, 'providers-stale');
     cpSync(PROVIDERS_DIR, dir, { recursive: true });
     const accessKey = join(dir, 'iam-access-key-provider.ts');
-    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    const anchor = "log.debug(`Creating IAM access key ${logicalId}`);";
     const accessKeySource = readFileSync(accessKey, 'utf8');
     expect(accessKeySource, 'the stale probe needs its anchor').toContain(anchor);
     writeFileSync(
