@@ -22,6 +22,7 @@ import {
   readAllowList,
   sdkClientIdentifiers,
 } from '../../../scripts/check-aws-client-defaults.ts';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 function parse(source: string): ts.SourceFile {
   return ts.createSourceFile('fake.ts', source, ts.ScriptTarget.Latest, true);
@@ -752,7 +753,9 @@ describe('SDK client construction critic', () => {
           `--src-dir=${srcDir}`,
           `--allow-list=${allowListPath}`,
         ],
-        { encoding: 'utf8' }
+        // Vitest's bound cannot fire while spawnSync blocks; a hang surfaces as
+        // a null status on the line below.
+        { encoding: 'utf8', timeout: CONTENDED_CASE_TIMEOUT_MS }
       );
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('expected-bucket-owner.ts');
@@ -762,7 +765,7 @@ describe('SDK client construction critic', () => {
       const result = spawnSync(
         process.execPath,
         [join(repoRoot, 'scripts/check-aws-client-defaults.ts'), '--src-dir=/tmp'],
-        { encoding: 'utf8' }
+        { encoding: 'utf8', timeout: CONTENDED_CASE_TIMEOUT_MS }
       );
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('only valid with --check');
@@ -783,4 +786,14 @@ describe('SDK client construction critic', () => {
   // loudly. 30 s would silently absorb another 6x regression in a file whose
   // entire job is to fail loudly. The repo already spells per-test budgets as
   // `}, 15_000)` and sets no global `testTimeout`, so this adds no mechanism.
-}, 15_000);
+  //
+  // RAISED 15s -> CONTENDED_CASE_TIMEOUT_MS (300s) on measured contention
+  // (go-to-k/cdkd#3607, 2026-09-26): with another session's suite on the same
+  // machine, `reports the spread-shared bag restored in the REAL
+  // aws-region-resolver.ts` timed out at 15.2s. Real-tree cases in the files
+  // #3607 names slowed by up to ~8x under that load, so the ~10x headroom above
+  // was ~1.2x in practice. The "fails loudly" property this paragraph wanted is
+  // not one a wall-clock bound can deliver on a shared machine: it fires on
+  // contention as readily as on a regression, and a red that re-runs green
+  // teaches the next reader to ignore it.
+}, CONTENDED_CASE_TIMEOUT_MS);
