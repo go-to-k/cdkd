@@ -482,6 +482,33 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
 }
 
 /**
+ * Where the three DESTROY withhold arms send the reader for the exact name
+ * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
+ * {@link malformedDestroyOrphansRefusalMessage} and
+ * {@link divergentRecordRegionRefusalMessage}. Completes "List the records as
+ * stored with ".
+ *
+ * `--json`, never `--long`: each arm is reached exactly when the identity did
+ * NOT render exactly, and `--long` renders through `displayIdent`, which TRIMS
+ * — `'prod-api '` lists as `"prod-api"`, a healthy sibling's name, so the
+ * pointer would hand back the very spelling the gate refused. `--json` writes
+ * the raw name through `JSON.stringify`, the reason
+ * {@link withheldIdentityClause} gives for the same pointer. The hole remedy is
+ * that clause's too, deliberately NOT "shell-quote it": the command below each
+ * arm already prints the hole quoted (`'<stack>'`), and shell-quoting INSIDE
+ * those quotes splits a padded name into two words aimed at a different record
+ * (go-to-k/cdkd#3363).
+ *
+ * No `--profile` / `--state-bucket` flags ride on it: these builders take no
+ * `LockRecoveryContext`, and the `Inspect` command beside them carries none
+ * either, so the listing reads the same bucket that command does.
+ */
+const WITHHELD_LISTING_POINTER =
+  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
+  `one whose key matches, filling the Inspect command's holes from it — replacing each quoted ` +
+  `hole, quotes included, with the shell-quoted value`;
+
+/**
  * The DESTROY refusal text for the `resources` bag (issue
  * [#3161](https://github.com/go-to-k/cdkd/issues/3161)).
  *
@@ -634,8 +661,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
-      `on the one whose key matches.`;
+      `${WITHHELD_LISTING_POINTER}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses ` +
     `rather than continuing: the resource map IS the list of what to delete, so an unreadable ` +
@@ -825,8 +851,7 @@ export function divergentRecordRegionRefusalMessage(
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
-      `on the one whose key matches. Inspect it with: ${inspectCommand(undefined, undefined)}`;
+      `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`;
   // The tail says "those resources" only when the opening counted some; on the
   // unreadable-bag arm it has no antecedent, so that arm gets its own wording.
   const cannotTell =
@@ -1189,6 +1214,11 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
   return true;
 }
 
+/** {@link malformedOutputsWarning}'s deploy sentence; its note says why this wording. */
+const DEPLOY_REFUSES_OUTPUTS_SENTENCE =
+  `'cdkd deploy' REFUSES this record when it loads it, over this same unreadable 'outputs' ` +
+  `map, rather than rebuilding the map over it — repair the stored value before deploying.`;
+
 /**
  * The warning a caller of {@link repairMalformedOutputsForReadOnly} emits.
  *
@@ -1202,6 +1232,17 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * reports every resolved output as an `ADD`. Saying so is the point: an
  * operator who reads `ADD` rows for outputs the stack already has needs to know
  * the comparison lost its left-hand side.
+ *
+ * It also says the DEPLOY refuses this record, as the `properties` warning does
+ * for its container (go-to-k/cdkd#3513) — {@link refuseMalformedOutputs} runs
+ * at the deploy engine's state load on the same predicate this repair takes.
+ * That is not an exit-code nicety: `cdkd diff` confines exit 3 to the
+ * top-level stack (go-to-k/cdkd#3335), so on a nested child this sentence is
+ * the only statement of it. Its own sentence, never the `properties` text's
+ * "Do NOT run 'cdkd deploy'": that prohibition belongs to a record whose
+ * resources cannot be read, and this one's are intact. "When it loads it", not
+ * "the deploy will fail": a deploy skips an unchanged nested-stack row and never
+ * loads that child's state.
  *
  * Identifiers are sanitized in the PROSE and GATED in the command — named
  * shell-quoted only when the shared gate admits them, a quoted hole otherwise
@@ -1219,7 +1260,8 @@ export function malformedOutputsWarning(rawStackName: string, rawRegion: string)
     `character or element carrying the record's own characters; where it is a number, a boolean ` +
     `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
     `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
-    `same as the record holding none. See the stored value with: ` +
+    `same as the record holding none. ${DEPLOY_REFUSES_OUTPUTS_SENTENCE} ` +
+    `See the stored value with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1620,7 +1662,7 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
       `must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long' and act on the one whose key matches.`;
+      `${WITHHELD_LISTING_POINTER}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
     `container counts as no orphans, so the run would proceed through resource deletion to ` +
