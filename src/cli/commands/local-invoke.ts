@@ -652,18 +652,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
             "Falling back to the developer's shell credentials."
         );
       } else {
-        const arn = resolveExecutionRoleArnFromState(stateForRoleHint, lambda.logicalId);
-        if (arn) {
-          resolvedAssumeRoleArn = arn;
-          logger.info(
-            `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
-          );
-        } else {
-          logger.warn(
-            `--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(lambda.logicalId)}'. ` +
-              "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
-          );
-        }
+        resolvedAssumeRoleArn = resolveBareAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
       }
     } else {
       // `--no-assume-role` (false) and an absent flag (undefined) BOTH land
@@ -1861,6 +1850,33 @@ export function resolveExecutionRoleArnFromState(
   const found = classifyExecutionRoleArnFromState(state, logicalId, roleProperty);
   if (found.kind === 'ok') return found.arn;
   if (found.kind === 'malformed') getLogger().warn(`${found.description}. Ignoring it.`);
+  return undefined;
+}
+
+/**
+ * Bare `--assume-role` with cdkd state loaded: resolve the function's execution
+ * role from state and say which way it went -- the ARN on success, or a warn
+ * and `undefined` (the caller falls back to the developer's shell
+ * credentials). Split out of the handler so the lines it emits are testable
+ * without synthesis or docker; the logical id is template-supplied text and is
+ * rendered through `displayIdent` (issue #2348).
+ */
+export function resolveBareAssumeRoleFromState(
+  state: Pick<StackState, 'resources'>,
+  logicalId: string
+): string | undefined {
+  const logger = getLogger();
+  const arn = resolveExecutionRoleArnFromState(state, logicalId);
+  if (arn) {
+    logger.info(
+      `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+    );
+    return arn;
+  }
+  logger.warn(
+    `--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(logicalId)}'. ` +
+      "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
+  );
   return undefined;
 }
 

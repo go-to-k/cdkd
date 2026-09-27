@@ -5,7 +5,10 @@ import {
   normalizeStartApiAssumeRole,
   parseAssumeRoleToken,
 } from '../../../src/cli/options.js';
-import { resolveExecutionRoleArnFromState } from '../../../src/cli/commands/local-invoke.js';
+import {
+  resolveBareAssumeRoleFromState,
+  resolveExecutionRoleArnFromState,
+} from '../../../src/cli/commands/local-invoke.js';
 import { resolveStartApiAssumeRoleArn } from '../../../src/cli/commands/local-start-api.js';
 import { resolveAssumeRoleArn } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
@@ -132,6 +135,29 @@ describe('resolveExecutionRoleArnFromState', () => {
       Fn: { resourceType: 'AWS::Lambda::Function', properties: { Role: 'MyRole' }, attributes: {} },
     });
     expect(resolveExecutionRoleArnFromState(state, 'Fn')).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveBareAssumeRoleFromState (`local invoke --assume-role` bare, from state)', () => {
+  it('renders the logical id in the state-miss warning through displayIdent', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const logicalId = `Fn${ESC}[2K\rforged`;
+    expect(resolveBareAssumeRoleFromState(stateWith({}), logicalId)).toBeUndefined();
+    const line = warnings(warn).join('\n');
+    expect(line).toContain('could not resolve the execution role ARN from cdkd state');
+    expect(line).not.toContain(ESC);
+    expect(line).not.toContain('\r');
+    expect(line).toContain('forged');
+  });
+
+  it('returns the ARN and logs it on a hit (negative control)', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    const state = stateWith({
+      Fn: { resourceType: 'AWS::Lambda::Function', properties: { Role: GOOD }, attributes: {} },
+    });
+    expect(resolveBareAssumeRoleFromState(state, 'Fn')).toBe(GOOD);
     expect(warn).not.toHaveBeenCalled();
   });
 });
