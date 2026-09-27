@@ -3002,6 +3002,56 @@ export function parseNonProvisionableTypes(generatedSource) {
 }
 
 /**
+ * The registered SDK-provider types AWS reports NON_PROVISIONABLE, read out of
+ * `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` in `unsupported-types.ts` (issue
+ * #3871). `getProviderFor` refuses their Cloud Control route per TYPE, whatever
+ * the provider class declares, so they belong with the Tier 3 set rather than
+ * with the provider-file opt-outs. Same refusal polarity as
+ * {@link parseNonProvisionableTypes}: unread or empty REFUSES.
+ *
+ * @param {string} unsupportedTypesSource
+ * @returns {Set<string>}
+ */
+export function parseSdkNonProvisionableTypes(unsupportedTypesSource) {
+  const table =
+    /SDK_PROVIDER_NON_PROVISIONABLE_TYPES[^=]*=\s*new Set(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
+      unsupportedTypesSource
+    );
+  if (!table) {
+    throw new Error(
+      'could not read SDK_PROVIDER_NON_PROVISIONABLE_TYPES out of unsupported-types.ts — refusing ' +
+        'to render a changelog fragment, because an unread table reads as "these types route ' +
+        'through Cloud Control" and that is the polarity that ships a FALSE auto-route claim.'
+    );
+  }
+  const types = [...table[1].replace(/\/\/.*$/gm, '').matchAll(/'(AWS::\w+::\w+)'/g)].map((m) => m[1]);
+  if (types.length === 0) {
+    throw new Error('SDK_PROVIDER_NON_PROVISIONABLE_TYPES parsed to zero types — the shape changed.');
+  }
+  return new Set(types);
+}
+
+/**
+ * Every type Cloud Control has no handlers for, as the route reads it
+ * (`hasNoCloudControlHandlers`): the generated Tier 3 set UNION the registered
+ * NON_PROVISIONABLE types. Dropping either half would tell a changelog reader
+ * that such a type's new property reaches AWS through Cloud Control.
+ *
+ * @param {string} [repoRoot]
+ * @returns {Set<string>}
+ */
+export function loadNoCloudControlHandlerTypes(repoRoot = REPO_ROOT) {
+  return new Set([
+    ...parseNonProvisionableTypes(
+      readFileSync(join(repoRoot, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+    ),
+    ...parseSdkNonProvisionableTypes(
+      readFileSync(join(repoRoot, 'src/provisioning/unsupported-types.ts'), 'utf-8')
+    ),
+  ]);
+}
+
+/**
  * The changelog fragment a refresh cycle writes, or `null` when AWS added no
  * writable property and the cycle therefore ships no behaviour delta.
  *
@@ -4039,9 +4089,7 @@ function main() {
   if (changelogOut !== undefined) {
     try {
       const optOuts = parseCcFallbackOptOuts(providerFiles);
-      const nonProvisionable = parseNonProvisionableTypes(
-        readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
-      );
+      const nonProvisionable = loadNoCloudControlHandlerTypes();
       const fragment = renderChangelogFragment({
         writableAdded,
         exemptTypes: parseStickyCcMigrationExempt(

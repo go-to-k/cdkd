@@ -2067,25 +2067,31 @@ Rationales are free text but should be greppable. Common shapes:
 - `"covered by separate AWS::Foo::Bar resource type"`
 - `"OpenAPI-import-only flag; meaningful only on the ImportApi code path"`
 
-**NON_PROVISIONABLE types: set `disableCcApiFallback`.** A template property
-in neither `handledProperties` nor the allow set normally auto-routes the
-resource through Cloud Control (issue #614). If your provider covers a
-`ProvisioningType: NON_PROVISIONABLE` type (the reason SDK providers exist
-for e.g. `AWS::FSx::FileSystem` / `AWS::DLM::LifecyclePolicy`), that route
-target does not exist — Cloud Control has no handlers — and the runtime
-Tier 3 set cannot catch it (it excludes SDK-covered types by design, so
-`isNonProvisionable()` returns false once your provider is registered).
-Declare `readonly disableCcApiFallback = true;` on the provider class: the
-`ProviderRegistry` then rejects such templates pre-flight with a clear
-error (property rationale + `--prefer-sdk-route` escape hatch)
-instead of failing at provisioning time with an opaque
-`UnsupportedActionException`. It matters for every such type, fully handled
-or not: a property missing from the schema snapshot also triggers the
-auto-route, and the flag is what keeps it on the SDK provider with a warning
-instead. The flag covers every type the provider class serves, so a type Cloud
-Control CAN manage gets a provider class of its own rather than losing its
-route — `AWS::DocDB::DBSubnetGroup` is served by `DocDBSubnetGroupProvider`,
-apart from the opted-out DocDB cluster and instance (issue #3866).
+**NON_PROVISIONABLE types: list them in `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`.**
+A template property in neither `handledProperties` nor the allow set normally
+auto-routes the resource through Cloud Control (issue #614), and so does a key
+the schema snapshot does not know (#3713). If your provider covers a
+`ProvisioningType: NON_PROVISIONABLE` type (e.g. `AWS::FSx::FileSystem`,
+`AWS::CodeBuild::Project`), that route target does not exist — Cloud Control
+has no handlers — and the generated Tier 3 set cannot catch it: it excludes
+SDK-covered types by design, so `isNonProvisionable()` returns false once the
+audit is regenerated after your provider is registered. Add the type to
+`SDK_PROVIDER_NON_PROVISIONABLE_TYPES` in
+`src/provisioning/unsupported-types.ts` (measured with
+`aws cloudformation list-types --visibility PUBLIC --type RESOURCE
+--provisioning-type NON_PROVISIONABLE`). The `ProviderRegistry` then rejects a
+silent-drop property pre-flight with a clear error (property rationale +
+`--prefer-sdk-route` escape hatch) instead of failing at provisioning time with
+an opaque `UnsupportedActionException`, and keeps an unknown key on the SDK
+provider with a warning. It matters for every such type, fully handled or not,
+and it is per TYPE, so a provider class that also serves provisionable types
+(`EC2Provider` for `AWS::EC2::NetworkAclEntry`) needs nothing else.
+`property-coverage-cc-fallback-binding.test.ts` fails while a registered type is
+still in the Tier 3 set and missing from the list.
+
+`readonly disableCcApiFallback = true;` on a provider class is the other
+opt-out: it covers every type the class serves, for a provider that must not
+fall back for a reason other than missing handlers (`NestedStackProvider`).
 
 ### Workflow when adding a new provider
 

@@ -21,7 +21,7 @@
  */
 import { isDeepStrictEqual } from 'node:util';
 import { type PropertyCoverage, PROPERTY_COVERAGE_BY_TYPE } from './property-coverage.generated.js';
-import { isNonProvisionable } from './unsupported-types.js';
+import { hasNoCloudControlHandlers } from './unsupported-types.js';
 
 export { PROPERTY_COVERAGE_BY_TYPE };
 export type { PropertyCoverage };
@@ -160,7 +160,7 @@ export function findRoutableUnrecognizedProperties(
 ): string[] {
   const coverage = getPropertyCoverage(resourceType);
   if (!templateProperties || !coverage) return [];
-  if (coverage.ccRouteUnavailable || isNonProvisionable(resourceType)) return [];
+  if (coverage.ccRouteUnavailable || hasNoCloudControlHandlers(resourceType)) return [];
   return findUnrecognizedProperties(resourceType, templateProperties).filter(
     (property) =>
       !coverage.readOnly.has(property) &&
