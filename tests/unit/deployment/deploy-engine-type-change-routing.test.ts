@@ -540,8 +540,9 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       // `provisionResource`'s `ProvisioningError`, where neither the class
       // test nor the `InterruptedWaitError` cause walk sees it. The engine's
       // own SIGINT handler has set `interruptCause = 'user'` before either can
-      // observe the signal, so that is what the branch keys on; a real SIGINT
-      // is not emitted here because it races the test runner's own listeners.
+      // observe the signal, so that is what the branch keys on. A real SIGINT
+      // is not emitted here because it races the test runner's own listeners;
+      // the user row calls the engine's registered listener instead.
       const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
       arrangedChanges.set('Boom', {
         logicalId: 'Boom',
@@ -555,8 +556,17 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       );
       const engine = makeEngine();
       const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+      // The user row fires the SIGINT listener `deploy()` itself registered —
+      // found by diffing the listener list, so no real signal is raised — which
+      // proves the handler-to-branch link, not only the branch condition.
+      const before = new Set(process.listeners('SIGINT'));
       providerFor('AWS::Test::Boom').create.mockImplementation(async () => {
-        if (cause !== null) {
+        if (cause === 'user') {
+          const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
+          expect(registered, 'deploy() registered no SIGINT listener').toHaveLength(1);
+          (registered[0] as () => void)();
+          expect(fields.interruptCause).toBe('user');
+        } else if (cause !== null) {
           fields.interrupted = true;
           fields.interruptCause = cause;
         }
