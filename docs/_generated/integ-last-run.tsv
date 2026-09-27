@@ -85,15 +85,15 @@ drift-revert-arrays	2026-09-25T15:49:51Z	PASS	180	verify.sh	rc ok, orph clean (#
 drift-revert-vpc	2026-09-27T19:00:18Z	PASS	281	verify.sh	rc ok, orph clean (#3887)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
-dynamodb-autoscaling	2026-09-20T06:14:17Z	PASS	80	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
+dynamodb-autoscaling	2026-09-27T19:50:55Z	PASS	80	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
 dynamodb-globaltable	2026-09-25T20:11:20Z	PASS	1443	verify.sh	rc ok, orph clean (#3740 final sha)
-dynamodb-gsi-update	2026-09-26T13:10:30Z	PASS	1308	verify.sh	rc ok, orph clean (maintainer merge-gate rerun of #3782 at 76637c9)
-dynamodb-ondemand	2026-09-27T15:53:36Z	PASS	251	verify.sh	rc ok, orph clean
-dynamodb-sse	2026-09-20T06:14:17Z	PASS	45	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
-dynamodb-stream-filter	2026-09-27T12:27:25Z	PASS	65	verify.sh	rc ok, orph clean (#3861)
-dynamodb-streams	2026-09-27T12:27:25Z	PASS	256	verify.sh	rc ok, orph clean (#3861)
-dynamodb-tableclass-switch	2026-09-20T06:14:17Z	PASS	94	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
-dynamodb-ttl-attr-change	2026-09-20T06:14:17Z	PASS	60	verify.sh	rc ok, orph clean; #1782 DynamoDB table provider
+dynamodb-gsi-update	2026-09-27T19:39:53Z	PASS	1808	verify.sh	PR #3901 merge-gate run; rc ok, orph clean; Phase 2f (#3777) 3/3
+dynamodb-ondemand	2026-09-27T19:48:46Z	PASS	250	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-sse	2026-09-27T19:49:33Z	PASS	45	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-stream-filter	2026-09-27T19:54:25Z	PASS	65	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-streams	2026-09-27T19:44:33Z	PASS	275	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-tableclass-switch	2026-09-27T19:52:11Z	PASS	70	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-ttl-attr-change	2026-09-27T19:53:18Z	PASS	65	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
 ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)

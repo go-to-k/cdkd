@@ -1303,7 +1303,10 @@ export interface ResourceProvider {
    * passes its DESIRED bag (the recorded baseline) through it against the raw
    * readback and sends the returned baseline. So complete a legacy baseline
    * from the readback rather than drop from the readback: a member missing
-   * from the desired side is a REMOVAL to `update()`.
+   * from the desired side is a REMOVAL to `update()`. The one exception is a
+   * member whose absence the provider's `update()` provably never treats as a
+   * removal (`AWS::DynamoDB::Table` `WarmThroughput`, issue #3777; see
+   * docs/provider-rules.md).
    *
    * MUST be NON-MUTATING, and return BOTH inputs by identity when nothing
    * applies. Async only so a provider can resolve the same client region its
@@ -1312,12 +1315,16 @@ export interface ResourceProvider {
    * @param resourceType e.g. `AWS::DynamoDB::GlobalTable`
    * @param baseline the drift baseline (`observedProperties`, else `properties`)
    * @param aws the AWS-current readback
+   * @param properties the resource's recorded `properties` (the template
+   *   intent), the same bag `getDriftUnknownPaths` and `readCurrentState`
+   *   receive, for a rule keyed on what the template declared. May be `{}`.
    * @returns the two canonicalized bags
    */
   canonicalizeDriftPair?(
     resourceType: string,
     baseline: Record<string, unknown>,
-    aws: Record<string, unknown>
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
 
   /**

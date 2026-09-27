@@ -3096,7 +3096,8 @@ async function runDriftForStack(
           ? await provider.canonicalizeDriftPair(
               resource.resourceType,
               canonicalized.baseline,
-              canonicalized.aws
+              canonicalized.aws,
+              resource.properties ?? {}
             )
           : canonicalized;
         const changes = calculateResourceDrift(paired.baseline, paired.aws, {
@@ -5908,7 +5909,8 @@ async function runRevert(
               await provider.canonicalizeDriftPair(
                 outcome.resourceType,
                 desiredProperties,
-                outcome.awsProperties
+                outcome.awsProperties,
+                stateResource.properties ?? {}
               )
             ).baseline;
           }
