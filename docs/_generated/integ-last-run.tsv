@@ -161,7 +161,7 @@ intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolv
 intrinsics-torture	2026-09-26T12:48:55Z	PASS	60	verify.sh	#3809 final sha (rebased); rc ok, orph clean
 intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (rebased); rc ok, orph clean
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
-kinesis-stream-mode-switch	2026-09-27T15:53:36Z	PASS	100	verify.sh	rc ok, orph clean
+kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-09-27T17:08:26Z	PASS	100	verify.sh	rc ok, orph clean (#3871)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
@@ -311,7 +311,7 @@ state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, d
 stepfunctions	2026-09-24T22:46:12Z	PASS	48	verify.sh	rc ok, 0 orphans (#3663)
 stepfunctions-logging	2026-09-09T03:36:24Z	PASS	310	verify.sh	rc 0; 1a 6 log-dest retries, 4a 5 assume-role (+1 log-dest tail); 2 destroys 0 errors (#2801)
 stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-stream-delete-redeploy	2026-09-27T15:53:36Z	PASS	271	verify.sh	#3872 fixture: streams gone at destroy return, immediate redeploy ok; pre-fix probe RED at redeploy
+stream-delete-redeploy	2026-09-27T18:06:09Z	PASS	296	verify.sh	rc ok, orph clean; #3881 follow-up (DELETING_FAILED first-read guard)
 synthetics-canary	2026-07-26T19:25:15Z	PASS	144	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 throttle-wide-dag	2026-07-26T19:45:58Z	PASS	186	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
