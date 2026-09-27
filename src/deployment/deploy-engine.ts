@@ -5608,7 +5608,7 @@ export class DeployEngine {
         completedOperations,
         stateResources,
         stackName,
-        this.rollbackExecutorContext(previousState)
+        this.rollbackExecutorContext(previousState, stackName)
       ),
       run: scope,
     }));
@@ -5783,7 +5783,10 @@ export class DeployEngine {
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
-  private rollbackExecutorContext(previousState: StackState): RollbackExecutorContext {
+  private rollbackExecutorContext(
+    previousState: StackState,
+    stackName: string
+  ): RollbackExecutorContext {
     return {
       providerRegistry: this.providerRegistry,
       region: this.stackRegion,
@@ -5794,6 +5797,10 @@ export class DeployEngine {
       // opt-out the engine's own delete sites use.
       finalSnapshotClients: this.options.finalSnapshotClients,
       skipFinalSnapshot: this.options.skipFinalSnapshot,
+      // A nested child's own rollback: its segment is replayed only by a
+      // rollback of the CHILD, so the refusals' `--orphan` command names it
+      // (go-to-k/cdkd#3859).
+      ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
       // Issue #2057: the producer regions this stack reads across, so the
       // replay refuses a region-LESS `{{resolve:...}}` expression rather than
       // re-resolving it here and writing a same-named foreign secret to a live
