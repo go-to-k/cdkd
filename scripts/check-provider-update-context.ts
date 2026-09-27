@@ -243,6 +243,7 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'CodeCommitRepositoryProvider',
   'DLMLifecyclePolicyProvider',
   'DocDBProvider',
+  'DocDBSubnetGroupProvider',
   'ECRProvider',
   'ECSProvider',
   'EFSProvider',
