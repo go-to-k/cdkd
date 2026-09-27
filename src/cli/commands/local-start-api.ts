@@ -17,7 +17,13 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assertSendableRoleArn,
+  explicitRoleArnOrThrow,
+  isIamRoleArn,
+  sendableAssumeRoleCommand,
+} from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -362,6 +368,12 @@ async function localStartApiCommand(
   }
 
   warnIfDeprecatedRegion(options);
+  // Refuse a malformed or empty `--layer-role-arn` at boot, like
+  // `--assume-role`'s parse-time refusal, rather than at the first request
+  // that materializes an ARN layer (issue #2348).
+  if (options.layerRoleArn !== undefined) {
+    explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
+  }
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Issue #256 Option 1: compose `--assume-role` (value-form
@@ -1667,15 +1679,25 @@ export function resolveStartApiAssumeRoleArn(args: {
   // Bare-auto-resolve: try the synthesized template's literal-ARN
   // `Properties.Role` first (most CDK apps render this as an intrinsic,
   // but explicit-ARN refs DO surface here), then the deployed state.
+  //
+  // `isIamRoleArn`, not `startsWith('arn:')` (issue #2348): the template is
+  // assembly-supplied and the value is SENT to STS. A refused literal is
+  // warned about and the state lookup below still runs.
   const roleProp = (lambdaResource.Properties ?? {})['Role'];
-  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
+  if (typeof roleProp === 'string' && isIamRoleArn(roleProp)) {
     return roleProp;
+  }
+  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
+    getLogger().warn(
+      `--assume-role: the template Role for '${displayIdent(logicalId)}' is not a well-formed IAM role ARN: ` +
+        `${displayIdent(roleProp, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
+    );
   }
   if (stateBundle) {
     const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
     if (fromState) {
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${fromState}`
+        `--assume-role: auto-resolved execution role for '${displayIdent(logicalId)}' from state: ${displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
       );
       return fromState;
     }
@@ -2163,7 +2185,11 @@ export async function materializeLambdaLayers(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
-      ...(layerRoleArn !== undefined && { roleArn: layerRoleArn }),
+      // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
+      // cdk-local reads `roleArn` by truthiness and would pull as the caller.
+      ...(layerRoleArn !== undefined && {
+        roleArn: explicitRoleArnOrThrow('--layer-role-arn', layerRoleArn),
+      }),
     });
     layerTmpDirs.add(dir);
     flat.push({ logicalId: layer.arn, assetPath: dir });
@@ -2896,7 +2922,8 @@ async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
+  assertSendableRoleArn(roleArn);
+  const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
@@ -2906,7 +2933,7 @@ async function assumeLambdaExecutionRole(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `cdkd-local-start-api-${Date.now()}`,
         DurationSeconds: 3600,

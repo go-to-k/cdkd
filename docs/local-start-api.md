@@ -667,6 +667,10 @@ credentials into the container, in two forms:
 | `--assume-role <arn>` | A single global default ARN used for every routed Lambda. |
 | `--assume-role <LogicalId>=<arn>` | A per-Lambda override. Repeatable. |
 
+Either ARN must be a well-formed role ARN
+(`arn:<partition>:iam::<account>:role/<name>`, at most 2048 characters), or the
+command errors at boot. Surrounding whitespace is trimmed.
+
 `--assume-role-auto` resolves **each** routed Lambda's own execution role
 instead of using one global default: it tries the synthesized template's
 literal-ARN `Properties.Role`, then a deployed-state lookup (pair it with

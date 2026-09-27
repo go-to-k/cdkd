@@ -187,8 +187,8 @@ outbound AWS calls reach real AWS as you.
 
 | Form | Behaviour |
 | --- | --- |
-| `--assume-role <arn>` | Assumes the explicit ARN and forwards the STS-issued temporary credentials to the container. |
-| `--assume-role` (bare) | Uses the runtime's own `RoleArn` when the template carries it as a literal ARN, or resolves it from the loaded stack state. When neither can supply one, cdkd warns and falls back to your shell credentials. |
+| `--assume-role <arn>` | Assumes the explicit ARN and forwards the STS-issued temporary credentials to the container. A value that is not a well-formed role ARN (`arn:<partition>:iam::<account>:role/<name>`, at most 2048 characters) is an error. |
+| `--assume-role` (bare) | Uses the runtime's own `RoleArn` when the template carries it as a well-formed literal ARN, or resolves it from the loaded stack state. When neither can supply one, cdkd warns and falls back to your shell credentials. |
 | flag omitted | Your shell credentials are forwarded unchanged. |
 | `--no-assume-role` | Explicitly declines: your shell credentials are forwarded unchanged. Distinct from omitting the flag. |
 
