@@ -1030,8 +1030,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "is unable to assume provided role",
       "is unable to assume the role",
       "security token included in the request is invalid. (Service:",
-      // Issue #3853: Lambda's synchronous CreateEventSourceMapping rejection,
-      // decided before any function runs — front-door where it originates.
+      // Issue #3853 — see its EXAMINED_NON_FRONT_DOOR entry below.
       "Received Exception while reading from provided stream. The security token included in the request is invalid",
       "role defined for the function",
       "not authorized to perform",
@@ -1113,12 +1112,19 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // #805 arguments have -- a reading of AWS's behaviour -- and the reason
       // this case says below what it cannot pin.
       'One or more security group IDs are invalid',
+      // Issue #3853, argument (a) for both `Invoke` and `Publish`. Lambda relays
+      // a failure of its own downstream read of an event source mapping's
+      // STREAM, made with the target function's role — a relayed shape, so it
+      // is not claimed as front-door. Unreachable here: the whole matched
+      // substring opens with the ESM stream-read prefix, which no CR `Invoke`
+      // or SNS `Publish` failure carries.
+      'Received Exception while reading from provided stream. The security token included in the request is invalid',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(4);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(5);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);

@@ -75,7 +75,7 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // 'security token included in the request is invalid' pattern would break.
   'security token included in the request is invalid. (Service:',
   // FOURTH wording, Lambda's (issue #3853): CreateEventSourceMapping on a
-  // DynamoDB / Kinesis stream reads the stream with the function's just-created
+  // DynamoDB stream (the only source observed) reads the stream with the function's just-created
   // role, and relays the not-yet-valid session as "Received Exception while
   // reading from provided stream. The security token included in the request is
   // invalid." — no `(Service:` trailer, so the anchor above misses it. The
