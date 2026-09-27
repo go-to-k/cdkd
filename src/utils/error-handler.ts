@@ -248,7 +248,10 @@ function formatDuration(ms: number): string {
  *    accept; and `lookupResourceRecord`'s refusal of a state record whose
  *    `physicalId` is not a string
  *    ([#3576](https://github.com/go-to-k/cdkd/issues/3576)), which both `Ref`
- *    and `Fn::GetAtt` reach, and so both `${...}` forms.
+ *    and `Fn::GetAtt` reach, and so both `${...}` forms; and
+ *    `subListRefusal`, raised BY `resolveSub` itself for a `${...}` or a
+ *    variable-map value that resolves to a list
+ *    ([#3809](https://github.com/go-to-k/cdkd/issues/3809)).
  * 2. NOT reachable from it, and thrown as this class only so that "deliberate
  *    refusal" is a property of the THROW rather than of the one catch that
  *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874),
@@ -269,7 +272,8 @@ function formatDuration(ms: number): string {
  *    every site in groups 1 and 2 is USER-FIXABLE (correct the stale
  *    placeholder ARN, deploy the producer so STS resolves, enrich the
  *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split` or
- *    `Fn::Select` index, repair the record's `physicalId`,
+ *    `Fn::Select` index, repair the record's `physicalId`, `Fn::Join` a list
+ *    before substituting it,
  *    correct the nested stack's output name, declare the nested-stack parameter
  *    `Type: String`) and a
  *    consumer that treats "permanent" as a property of the CLASS silently

@@ -41,17 +41,15 @@ This goes **beyond** the existing
 | `base64` | `Fn::Base64('cdkd-intrinsics-torture')` | `Y2RrZC1pbnRyaW5zaWNzLXRvcnR1cmU=` |
 | `split-select-join` | nested `Fn::Join` of three `Fn::Select`-of-`Fn::Split` picks | `a\|c\|e` |
 | `nested-sub` | two-arg `Fn::Sub`: literal-map var (nested `Fn::Join`) + `${AWS::Region}` + `${TortureQueue.Arn}` GetAtt | `label=cdkd-torture-sub;region=<r>;queueArn=arn:<p>:sqs:<r>:<acct>:...` |
-| `pseudo` | `Fn::Sub` over ALL pseudo-params: `${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::StackName}` / `${AWS::URLSuffix}` / `${AWS::NotificationARNs}` | `account=<acct>;region=<r>;partition=aws;stack=<stack>;urlsuffix=amazonaws.com;notif=` |
+| `pseudo` | `Fn::Sub` over the string pseudo-params: `${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::StackName}` / `${AWS::URLSuffix}` | `account=<acct>;region=<r>;partition=aws;stack=<stack>;urlsuffix=amazonaws.com` |
 | `topic-ref-sub` | `Fn::Sub` with pseudo params + a `Ref` to the SNS topic | `arn-prefix=arn:<p>:sns:<r>:<acct>;topicRef=arn:<p>:sns:<r>:<acct>:...` |
 
 ### Note on `AWS::NotificationARNs`
 
-cdkd has no CloudFormation notification-ARN list in its CloudFormation-free
-model, so `AWS::NotificationARNs` is always an empty list. Matching
-CloudFormation's behavior for an empty list, it resolves to an **empty string**
-inside `Fn::Sub` (so `notif=` has nothing after the `=`). The `pseudo`
-assertion **pins this CFn-parity behavior** — a regression that left the literal
-`${AWS::NotificationARNs}` placeholder, or crashed, would flip the assertion.
+`AWS::NotificationARNs` is a LIST pseudo parameter. CloudFormation rejects it
+inside `Fn::Sub` ("does not resolve to a string"), and cdkd refuses it the same
+way (issue [#3809](https://github.com/go-to-k/cdkd/issues/3809)), so the
+`pseudo` arm leaves it out.
 
 ## Resources
 
