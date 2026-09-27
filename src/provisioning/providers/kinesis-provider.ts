@@ -836,7 +836,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     // Issue #3872: the stream keeps its NAME while it is DELETING, and a
     // CreateStream of that name is refused with the same `already exists`
     // text a live stream gets, so the delete is complete only once the stream
-    // is gone. Outside the try: the wait never throws.
+    // is gone. Outside the try: with no `failedStatus` passed, the wait never
+    // throws.
     await waitForGoneAfterDelete({
       what: `Kinesis stream ${physicalId}`,
       resourceType,
