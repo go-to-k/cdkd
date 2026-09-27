@@ -226,7 +226,7 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     });
     // No `cdkd rollback --orphan` reaches this replay, so its refusals must not
     // print one (go-to-k/cdkd#3845).
-    expect(replay.calls[0]!.ctx['nestedChildRevert']).toBe(true);
+    expect(replay.calls[0]!.ctx['nestedChildReplay']).toBe('parent-revert');
   });
 
   it('restores the OLDEST matching segment previous outputs and republishes the exports', async () => {

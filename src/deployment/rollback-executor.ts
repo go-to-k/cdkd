@@ -388,22 +388,25 @@ const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
  * the source fence cannot see. The explanation of a hole goes in the PROSE,
  * before the line, so the line stays pasteable as a whole.
  *
- * Inside a nested child's revert (`nestedChildRevert`) there is NO line: no
- * `cdkd rollback --orphan` reaches that replay, so a printed one would send
- * the operator round the same refusal (go-to-k/cdkd#3845). `offered` tells the
+ * In a nested child's replay (`nestedChildReplay`) there is NO line: no
+ * `cdkd rollback --orphan` reaches it, so a printed one would send the
+ * operator round the same refusal (go-to-k/cdkd#3845). `offered` tells the
  * caller whether its prose may point at "the command below".
  */
 function orphanRemedy(
   logicalId: unknown,
-  nestedChildRevert: boolean | undefined
+  nestedChildReplay: NestedChildReplay | undefined
 ): { readonly offered: boolean; readonly clause: string; readonly line: string } {
-  if (nestedChildRevert === true) {
+  if (nestedChildReplay !== undefined) {
+    const where =
+      nestedChildReplay === 'parent-revert'
+        ? `inside a nested stack's revert for its parent's rollback`
+        : `in a nested stack's own rollback inside its parent's deploy`;
     return {
       offered: false,
       clause:
-        ` This op is reverted inside a nested stack's revert for its parent's rollback, where ` +
-        `cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level ` +
-        `stack's rollback, or re-deploy the top-level stack.`,
+        ` This op is reverted ${where}, where cdkd rollback --orphan cannot reach it: resolve ` +
+        `the cause and re-run the top-level stack's rollback, or re-deploy the top-level stack.`,
       line: '',
     };
   }
@@ -962,15 +965,24 @@ export interface RollbackExecutorContext {
    */
   importedProducerRegions?: readonly string[] | undefined;
   /**
-   * True when this replay reverts a nested CHILD for its parent's rollback
-   * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
-   * replay of the stack it is run on, and a direct rollback of the child is
-   * refused while the parent's run is unsettled, so no command reaches this
-   * replay's ops: the two refusals print no `--orphan` line here
-   * (go-to-k/cdkd#3845).
+   * Set when this replay runs a nested CHILD's ops, where no
+   * `cdkd rollback --orphan` reaches them: the flag feeds only the replay of
+   * the stack it is run on, and a direct rollback of the child is refused
+   * while the parent's run is unsettled. The two refusals print no `--orphan`
+   * line then (go-to-k/cdkd#3845).
+   *
+   * - `'parent-revert'`: the child reverted for its parent's rollback
+   *   (`revertNestedChildFromJournal`).
+   * - `'own-rollback'`: the child engine's own in-process rollback inside its
+   *   parent's deploy (`DeployEngine` with `parentStackInfo`). Its failure
+   *   segment carries the parent's run id, so the parent's rollback replays
+   *   the same op again.
    */
-  nestedChildRevert?: boolean | undefined;
+  nestedChildReplay?: NestedChildReplay | undefined;
 }
+
+/** Which nested-child replay a {@link RollbackExecutorContext} runs. */
+export type NestedChildReplay = 'parent-revert' | 'own-rollback';
 
 /** The action the planner / replayer decided for a single op. */
 export type RollbackActionKind =
@@ -1169,11 +1181,11 @@ export function resolveReplacementOldType(
 function unroutableReplacementError(
   op: CompletedOperation,
   reason: string,
-  nestedChildRevert: boolean | undefined
+  nestedChildReplay: NestedChildReplay | undefined
 ): Error {
   // The remedy is a labelled last line built by `orphanRemedy`, which owns
   // the gate on the id and the sentence for a withheld one.
-  const remedy = orphanRemedy(op.logicalId, nestedChildRevert);
+  const remedy = orphanRemedy(op.logicalId, nestedChildReplay);
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
@@ -2430,7 +2442,7 @@ async function replaySingle(
         throw unroutableReplacementError(
           op,
           routing.ok ? 'its old type could not be routed' : routing.reason,
-          ctx.nestedChildRevert
+          ctx.nestedChildReplay
         );
       }
 
@@ -2835,7 +2847,7 @@ async function replaySingle(
         // is for a caller that reaches this arm without it.
         const oldTypeRouting = resolveReplacementOldType(op);
         if (!oldTypeRouting.ok) {
-          throw unroutableReplacementError(op, oldTypeRouting.reason, ctx.nestedChildRevert);
+          throw unroutableReplacementError(op, oldTypeRouting.reason, ctx.nestedChildReplay);
         }
         const oldType = oldTypeRouting.oldType;
         const typeChanged = oldType !== op.resourceType;
@@ -3166,7 +3178,7 @@ async function replaySingle(
             // inside a retried call, an unmarked refusal would burn the whole
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
-            const remedy = orphanRemedy(op.logicalId, ctx.nestedChildRevert);
+            const remedy = orphanRemedy(op.logicalId, ctx.nestedChildReplay);
             throw ownRemedyError(
               markNonRetryable(
                 new CdkdError(

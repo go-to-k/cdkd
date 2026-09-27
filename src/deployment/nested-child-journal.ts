@@ -503,7 +503,7 @@ export async function revertNestedChildFromJournal(args: {
       }),
       // No `--orphan` reaches this replay: the flag feeds only the replay of
       // the stack it is run on (go-to-k/cdkd#3845).
-      nestedChildRevert: true,
+      nestedChildReplay: 'parent-revert',
     };
     // The child is the "parent" of its own rows: a grandchild row reverted by
     // this replay derives `<child>~<Grandchild>` from here. No templates — a
