@@ -1751,8 +1751,7 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -5387,6 +5386,7 @@
           "literal"
         ],
         "rollback-replay-effective-props": [
+          "l1",
           "literal"
         ],
         "s3-analytics-inventory": [
