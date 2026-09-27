@@ -457,6 +457,71 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(text).not.toContain('`cdkd deploy`');
     }, 120_000);
 
+    it("in a nested child's own rollback, both refusals' --orphan command names the child stack (go-to-k/cdkd#3859)", async () => {
+      // The child's own failure segment is replayed only by a rollback of the
+      // CHILD: a stack-less command resolves to the parent, which never
+      // replays it. Both arms, each asserted to FIRE first; the named child,
+      // then a child name the gate withholds, then the whole message pasted.
+      const run = async (child: string): Promise<string[]> => {
+        const errors: string[] = [];
+        const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+        const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
+        ctx.nestedChildStack = child;
+        ctx.recordEvent = (e) => {
+          if (e.error?.message) errors.push(e.error.message);
+        };
+        const unroutable: CompletedOperation = {
+          logicalId: 'U',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'phys-new',
+          previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+        };
+        const result = await replayRollback(
+          [replacementOp(), unroutable],
+          {
+            B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+            U: res({ physicalId: 'phys-new' }),
+          },
+          child,
+          ctx,
+          { isInterrupted: () => false }
+        );
+        expect(result.failures).toBe(2);
+        return errors;
+      };
+
+      const named = await run('Top~Child');
+      const collision = named.find((m) => m.includes('replacement of B ('));
+      const unrouted = named.find((m) => m.includes('replacement of U ('));
+      expect(collision).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
+      expect(unrouted).toContain('so cdkd will not guess which provider re-creates');
+      expect(collision).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan B$/);
+      expect(unrouted).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan U$/);
+      // The collision's own resume sentence names the nested stack too: a
+      // stack-less `cdkd rollback` resolves to the parent.
+      expect(collision).not.toContain('re-run cdkd rollback —');
+      expect(collision).toContain(
+        "then re-run the rollback of the nested stack 'Top~Child' itself — the journal is kept"
+      );
+      for (const message of [collision!, unrouted!]) {
+        expect(message).toContain("This is the nested stack's own rollback, and only a rollback of the nested stack itself honours --orphan for this op");
+        expect(message).toContain('command below');
+      }
+
+      // A child name the gate will not print becomes a quoted hole, explained.
+      const held = await run('Top~Child; touch OWNED');
+      for (const message of held) {
+        expect(message).toMatch(/\nTo orphan it: cdkd rollback '<stack>' --stack-region us-east-1 --orphan [BU]$/);
+        expect(message).toContain("The nested stack's name");
+      }
+
+      // Pasted whole, neither message runs anything.
+      withPasteDir((dir) => {
+        for (const message of [...named, ...held]) expect(spansThatRun(message, dir)).toEqual([]);
+      });
+    }, 120_000);
+
     it('inside a nested child revert, neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async () => {
       // `cdkd rollback --orphan` reaches only the replay of the stack it is
       // run on, and a direct rollback of the child is refused while the
