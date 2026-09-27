@@ -33,6 +33,8 @@ const DEFAULT_CHAIN_ACCOUNT = '999999999999';
 const PROFILE_ACCOUNT = '333333333333';
 
 const stsClientConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+/** Flip to make every `GetCallerIdentity` reject, for the warning-label cases. */
+const stsFailure = vi.hoisted(() => ({ on: false }));
 
 /** The account the mocked STS reports for the identity a client was built with. */
 function accountFor(config: Record<string, unknown>): string {
@@ -48,7 +50,10 @@ vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: vi.fn(function STSClient(this: unknown, config: Record<string, unknown>) {
     stsClientConfigs.push(config);
     return {
-      send: vi.fn(async () => ({ Account: accountFor(config) })),
+      send: vi.fn(async () => {
+        if (stsFailure.on) throw new Error('sts unavailable');
+        return { Account: accountFor(config) };
+      }),
       destroy: vi.fn(),
     };
   }),
@@ -203,6 +208,7 @@ beforeEach(() => {
   }
   resetAwsClientDefaults();
   stsClientConfigs.length = 0;
+  stsFailure.on = false;
   warnSpy.mockReset();
   warnSpy.mockImplementation(() => {});
 });
@@ -254,6 +260,28 @@ describe('${AWS::AccountId} follows the state source the stack was read from (is
       publishRole();
       await expect(resolve('from-state', 'dev')).resolves.toBe(ROLE_ACCOUNT);
       await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(PROFILE_ACCOUNT);
+    });
+  });
+});
+
+describe('an STS failure is warned under the state-source flag actually in use', () => {
+  // `run-task`'s warning carries no flag prefix, so it has no label to get wrong.
+  const labelled = resolvers.filter(
+    (r) => !r.name.startsWith('local run-task')
+  );
+
+  describe.each(labelled)('$name', ({ resolve }) => {
+    it.each<[Source, string, string]>([
+      ['from-state', '--from-state:', '--from-cfn-stack:'],
+      ['from-cfn-stack', '--from-cfn-stack:', '--from-state:'],
+    ])('%s', async (source, expected, other) => {
+      stsFailure.on = true;
+      await expect(resolve(source)).resolves.toBeUndefined();
+      const messages = warnSpy.mock.calls.map((c) => String(c[0]));
+      const sts = messages.filter((m) => m.includes('sts unavailable'));
+      expect(sts).toHaveLength(1);
+      expect(sts[0]?.startsWith(expected)).toBe(true);
+      expect(messages.some((m) => m.startsWith(other))).toBe(false);
     });
   });
 });

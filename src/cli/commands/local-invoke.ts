@@ -1290,9 +1290,11 @@ export async function resolvePseudoParametersForInvoke(
   const region = canonicalizeRegion(
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion
   );
+  // Both state sources reach this resolver, so its warnings name the one in use.
+  const sourceFlag = options.fromState ? '--from-state' : '--from-cfn-stack';
   if (!region) {
     logger.warn(
-      '--from-state: resolver references ${AWS::Region} but cdkd could not determine the target region. ' +
+      `${sourceFlag}: resolver references \${AWS::Region} but cdkd could not determine the target region. ` +
         'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
     );
   }
@@ -1328,7 +1330,7 @@ export async function resolvePseudoParametersForInvoke(
     }
   } catch (err) {
     logger.warn(
-      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'Substitution will be skipped; affected env entries will be dropped with per-key warnings.'
     );
   }

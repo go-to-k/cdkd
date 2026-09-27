@@ -3425,6 +3425,8 @@ export async function resolvePseudoParametersForStartApi(
   const region = canonicalizeRegion(
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion
   );
+  // Both state sources reach this resolver, so its warnings name the one in use.
+  const sourceFlag = options.fromState ? '--from-state' : '--from-cfn-stack';
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
@@ -3457,7 +3459,7 @@ export async function resolvePseudoParametersForStartApi(
     }
   } catch (err) {
     logger.warn(
-      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'Substitution will be skipped for AWS::AccountId; affected env entries will be dropped with per-key warnings.'
     );
   }

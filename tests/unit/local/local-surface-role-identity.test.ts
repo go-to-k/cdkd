@@ -22,9 +22,11 @@ import {
  * from that point every client under `src/**` runs as the role unless it opts
  * out. That is right for cdkd's own calls and WRONG for this surface's
  * workload-facing ones: whatever these resolve — container credentials, a task
- * role assumed for the container, ECS task-secret plaintext, the
- * `${AWS::AccountId}` substituted into the emulated environment — is handed to
- * the user's locally-running code. A deploy role is normally the more
+ * role assumed for the container, ECS task-secret plaintext — is handed to the
+ * user's locally-running code. (The `${AWS::AccountId}` substituted into the
+ * emulated environment is an identifier, not a permission: under `--from-state`
+ * it deliberately follows the role the state was read as, and those sites say
+ * so — issue go-to-k/cdkd#3230.) A deploy role is normally the more
  * privileged of the two identities in play, so inheriting it there lets local
  * code read what the caller's own principal cannot.
  *
