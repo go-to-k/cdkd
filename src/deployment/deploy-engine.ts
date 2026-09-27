@@ -5124,19 +5124,28 @@ export class DeployEngine {
       // journal segment so the interrupted deploy is REVERTIBLE (not just
       // resumable), and let the caller exit.
       //
-      // `InterruptedError` is this module's own and is NOT exported, so it can
-      // only ever be raised HERE — by the engine's own interrupt poll between
-      // operations. An interrupt raised inside a provider's wait (issues #2053
-      // / #1952 thread one into every `withRetry` under
-      // `src/provisioning/**`) arrives as an `InterruptedWaitError`, and by the
-      // time it reaches this catch it is WRAPPED: every provider catch
-      // re-throws AWS failures as a `ProvisioningError` threading the original
-      // as `cause` (issue #2040). Matching only the private class meant a
-      // Ctrl-C during a provider backoff read as a genuine resource failure and
-      // rolled the whole stack back automatically — strictly worse than the
-      // unresponsiveness the threading removes. `isInterruptedWaitError` walks
-      // the cause chain to a bounded depth for exactly that reason.
-      if (error instanceof InterruptedError || isInterruptedWaitError(error)) {
+      // A user interrupt reaches this catch in three shapes, and all three must
+      // take this branch — the other one rolls the stack back on a Ctrl-C:
+      //
+      //  - the engine's own `InterruptedError`, raised by its between-ops poll;
+      //  - an `InterruptedWaitError` from a provider's wait, WRAPPED by the
+      //    provider's `ProvisioningError` (issue #2040), which
+      //    `isInterruptedWaitError` finds on the cause chain;
+      //  - an `InterruptedError` WRAPPED by `provisionResource`'s own
+      //    `ProvisioningError`: one raised by this engine's retry backoff
+      //    (`onInterrupted`), or by a NESTED child engine's poll, which reaches
+      //    the parent through `NestedStackProvider` (go-to-k/cdkd#3875).
+      //
+      // The last shape is keyed on this engine's own `interruptCause`, not on
+      // the class: `InterruptedError` does not carry its cause, and a child's
+      // `'sibling-failure'` one must still roll back. The SIGINT handler sets
+      // `'user'` before any poll or backoff can observe the signal, and a row
+      // failure's `??= 'sibling-failure'` never overwrites it.
+      if (
+        error instanceof InterruptedError ||
+        isInterruptedWaitError(error) ||
+        this.interruptCause === 'user'
+      ) {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
