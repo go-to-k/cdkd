@@ -19,7 +19,14 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assertFlagRoleArn,
+  assertSendableRoleArn,
+  explicitRoleArnOrThrow,
+  isIamRoleArn,
+  sendableAssumeRoleCommand,
+} from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -420,6 +427,19 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // The role-arn helper accepts an optional region for the SDK fallback;
     // any AWS calls invoked indirectly (e.g. STS during synthesis context
     // probing) will pick up the assumed credentials.
+    //
+    // A malformed explicit `--assume-role <arn>` is refused HERE, before any
+    // AWS call, docker probe or synthesis (issue #2348); the resolution below
+    // repeats the same check where the value is used.
+    if (typeof options.assumeRole === 'string') {
+      explicitRoleArnOrThrow('--assume-role', options.assumeRole);
+    }
+    if (options.layerRoleArn !== undefined) {
+      explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
+    }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
+    }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
     await ensureDockerAvailable();
@@ -620,7 +640,9 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     //   absent (undefined) no state           → dev creds (SAM default)
     let resolvedAssumeRoleArn: string | undefined;
     if (typeof options.assumeRole === 'string') {
-      resolvedAssumeRoleArn = options.assumeRole;
+      // A malformed explicit ARN is a HARD error (issue #2348), matching
+      // `local start-api`'s parse-time refusal; see `explicitRoleArnOrThrow`.
+      resolvedAssumeRoleArn = explicitRoleArnOrThrow('--assume-role', options.assumeRole);
     } else if (options.assumeRole === true) {
       // Bare `--assume-role` — must have state to resolve the ARN.
       if (!stateForRoleHint) {
@@ -630,18 +652,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
             "Falling back to the developer's shell credentials."
         );
       } else {
-        const arn = resolveExecutionRoleArnFromState(stateForRoleHint, lambda.logicalId);
-        if (arn) {
-          resolvedAssumeRoleArn = arn;
-          logger.info(
-            `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
-          );
-        } else {
-          logger.warn(
-            `--assume-role: could not resolve the execution role ARN from cdkd state for '${lambda.logicalId}'. ` +
-              "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
-          );
-        }
+        resolvedAssumeRoleArn = resolveBareAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
       }
     } else {
       // `--no-assume-role` (false) and an absent flag (undefined) BOTH land
@@ -984,7 +995,11 @@ export async function materializeLambdaLayersIncludingArns(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
-      ...(options.layerRoleArn !== undefined && { roleArn: options.layerRoleArn }),
+      // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
+      // cdk-local reads `roleArn` by truthiness and would pull as the caller.
+      ...(options.layerRoleArn !== undefined && {
+        roleArn: explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn),
+      }),
     });
     extraTmpDirs.push(dir);
     flat.push({ logicalId: layer.arn, assetPath: dir });
@@ -1512,7 +1527,8 @@ async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
+  assertSendableRoleArn(roleArn);
+  const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
@@ -1522,7 +1538,7 @@ async function assumeLambdaExecutionRole(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `cdkd-local-invoke-${Date.now()}`,
         DurationSeconds: 3600,
@@ -1805,7 +1821,7 @@ export function maybeSuggestAssumeRole(
  *
  * Resolution rules (mirrors the v1 scope spelled out in (#442)):
  *
- *   - Literal-string `Role` starting with `arn:` → returned verbatim.
+ *   - Literal-string `Role` that `isIamRoleArn` accepts → returned verbatim.
  *   - `{ Fn::GetAtt: [<RoleId>, 'Arn'] }` or `{ Ref: <RoleId> }` → looked up
  *     against the sibling IAM Role resource's `attributes.Arn` (recorded
  *     at deploy time by `IAMRoleProvider.create` / drift refresh).
@@ -1818,6 +1834,12 @@ export function maybeSuggestAssumeRole(
  * is missing entirely, the referenced sibling has no `Arn` attribute
  * captured, or the shape is one we don't try to resolve.
  *
+ * Every string it returns has passed `isIamRoleArn` (issue
+ * [#2348](https://github.com/go-to-k/cdkd/issues/2348)): a state record is
+ * read from S3 or CloudFormation, and this used to accept anything beginning
+ * `arn:` — a value that is then both printed and SENT to STS. A string it
+ * refuses is warned about (so a broken record is visible) and ignored.
+ *
  * Exported for unit testing.
  */
 export function resolveExecutionRoleArnFromState(
@@ -1825,24 +1847,95 @@ export function resolveExecutionRoleArnFromState(
   logicalId: string,
   roleProperty = 'Role'
 ): string | undefined {
+  const found = classifyExecutionRoleArnFromState(state, logicalId, roleProperty);
+  if (found.kind === 'ok') return found.arn;
+  if (found.kind === 'malformed') getLogger().warn(`${found.description}. Ignoring it.`);
+  return undefined;
+}
+
+/**
+ * Bare `--assume-role` with cdkd state loaded: resolve the function's execution
+ * role from state and say which way it went -- the ARN on success, or a warn
+ * and `undefined` (the caller falls back to the developer's shell
+ * credentials). Split out of the handler so the lines it emits are testable
+ * without synthesis or docker; the logical id is template-supplied text and is
+ * rendered through `displayIdent` (issue #2348).
+ */
+export function resolveBareAssumeRoleFromState(
+  state: Pick<StackState, 'resources'>,
+  logicalId: string
+): string | undefined {
+  const logger = getLogger();
+  const arn = resolveExecutionRoleArnFromState(state, logicalId);
+  if (arn) {
+    logger.info(
+      `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+    );
+    return arn;
+  }
+  logger.warn(
+    `--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(logicalId)}'. ` +
+      "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
+  );
+  return undefined;
+}
+
+/**
+ * What {@link resolveExecutionRoleArnFromState} found, WITHOUT deciding what a
+ * malformed value means (issue #2348). That function warns and treats it as a
+ * miss, which is what `local invoke` and the hint path have always ended up
+ * doing (an unusable ARN failed at STS and fell back). `local start-api
+ * --assume-role-auto` refuses at startup instead, because there a failed
+ * assume was never a fallback: an ARN that EXISTS but is malformed is not the
+ * same as no ARN.
+ *
+ * Only a value that LOOKS like it was meant as an ARN (`arn:` prefix) is
+ * `malformed`; any other string was never a candidate under the old
+ * `startsWith` rule and stays a `miss`.
+ */
+export type ExecutionRoleArnLookup =
+  | { kind: 'ok'; arn: string }
+  | { kind: 'malformed'; description: string }
+  | { kind: 'miss' };
+
+export function classifyExecutionRoleArnFromState(
+  state: Pick<StackState, 'resources'>,
+  logicalId: string,
+  roleProperty = 'Role'
+): ExecutionRoleArnLookup {
   const lambda = state.resources[logicalId];
-  if (!lambda) return undefined;
+  if (!lambda) return { kind: 'miss' };
 
   const roleRef = lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
-  if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
-    return roleRef;
+  if (typeof roleRef === 'string') {
+    if (isIamRoleArn(roleRef)) return { kind: 'ok', arn: roleRef };
+    if (roleRef.startsWith('arn:')) {
+      return {
+        kind: 'malformed',
+        description:
+          `Deployed state for '${displayIdent(logicalId)}' carries a ${displayIdent(roleProperty)} that is not ` +
+          `a well-formed IAM role ARN: ${displayIdent(roleRef, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+      };
+    }
+    return { kind: 'miss' };
   }
   if (typeof roleRef === 'object' && roleRef !== null) {
     const refLogicalId = pickReferencedLogicalId(roleRef as Record<string, unknown>);
     if (refLogicalId) {
       const roleResource = state.resources[refLogicalId];
       const cached = roleResource?.attributes?.['Arn'];
+      if (typeof cached === 'string' && isIamRoleArn(cached)) return { kind: 'ok', arn: cached };
       if (typeof cached === 'string' && cached.startsWith('arn:')) {
-        return cached;
+        return {
+          kind: 'malformed',
+          description:
+            `The cached Arn attribute of '${displayIdent(refLogicalId)}' is not a well-formed IAM role ARN: ` +
+            `${displayIdent(cached, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+        };
       }
     }
   }
-  return undefined;
+  return { kind: 'miss' };
 }
 
 /**

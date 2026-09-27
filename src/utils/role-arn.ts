@@ -1,4 +1,4 @@
-import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
+import { STSClient, AssumeRoleCommand, type AssumeRoleCommandInput } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
 import {
   ambientCredentialConfig,
@@ -99,6 +99,168 @@ export function clearCrossAccountCredentialsCache(): void {
 const IAM_ROLE_ARN_RE = /^arn:(aws[a-z0-9-]*):iam::(\d{12}):role\/[\w+=,.@-]+(?:\/[\w+=,.@-]+)*$/;
 
 /**
+ * Upper bound on a role ARN cdkd will SEND to STS or accept as one: the
+ * documented maximum of `AssumeRole`'s `RoleArn` parameter in the STS API
+ * reference (issue [#2348](https://github.com/go-to-k/cdkd/issues/2348),
+ * following cdk-local#607).
+ *
+ * The receiver's number rather than a tighter guess derived from IAM's own
+ * limits: the job is stopping an UNBOUNDED value (a flag, a template literal, a
+ * state record) from being sent and printed, not re-deriving IAM's schema.
+ * Compared on UTF-16 units, exact for every value {@link isIamRoleArn} can
+ * accept (printable ASCII only) and a safe over-approximation for the rest.
+ */
+export const IAM_ROLE_ARN_MAX_LENGTH = 2048;
+
+/**
+ * The SHAPE an IAM role ARN must have before cdkd sends it as
+ * `AssumeRoleCommand.RoleArn` or adopts it as an execution role
+ * (issue [#2348](https://github.com/go-to-k/cdkd/issues/2348)) — the same
+ * pattern cdk-local owns as `isIamRoleArn`, which that package does not export.
+ *
+ * Deliberately LOOSER than {@link IAM_ROLE_ARN_RE} above, and the two answer
+ * different questions. That one is a PARSE: `Fn::GetStackOutput` derives the
+ * producer's state bucket from the 12-digit account it captures, so it must be
+ * exact. This one is a BOUND on what may leave the process, and must not refuse
+ * a role IAM itself accepts: IAM's path grammar admits `\u0021` through
+ * `\u007F`, i.e. `( ) ! # $ % & * [ ]` that `IAM_ROLE_ARN_RE`'s `[\w+=,.@-]`
+ * rejects. The class here is `[!-~]`, one character SHORT of that: DEL
+ * (`\u007F`) is refused deliberately, since it is a terminal control
+ * character and a role path carrying it is not worth rendering or sending.
+ * The account stays `[0-9]+` because AWS rejects a wrong account far better
+ * than a regex can. The partition is `[A-Za-z0-9-]+`, open-ended so a
+ * partition AWS has not launched yet is not refused by name.
+ *
+ * ANCHORED AT BOTH ENDS. The pattern this replaced for `--assume-role`
+ * (`/^arn:[^:]+:iam::\d+:role\//`) was anchored at the start only, so a value
+ * carrying a newline, an ESC sequence or megabytes of anything after `role/`
+ * passed; several resolution points asked even less (`startsWith('arn:')`).
+ *
+ * LINEAR: each quantified class is disjoint from the literal after it, and the
+ * one that is not (`[!-~]+`) is the last element before `$`. The length bound in
+ * {@link isIamRoleArn} runs BEFORE the match, so the pattern never sees an
+ * unbounded string.
+ */
+const IAM_ROLE_ARN_SHAPE_RE = /^arn:[A-Za-z0-9-]+:iam::[0-9]+:role\/[!-~]+$/;
+
+/**
+ * The ONE answer to "is this a role ARN cdkd may send to STS?" (issue
+ * [#2348](https://github.com/go-to-k/cdkd/issues/2348)). Every
+ * `AssumeRoleCommand` send site refuses a value this rejects
+ * ({@link assertSendableRoleArn}), and every point that resolves a role ARN from
+ * a template, a state record or a flag asks it rather than paraphrasing it.
+ */
+export function isIamRoleArn(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (value.length > IAM_ROLE_ARN_MAX_LENGTH) return false;
+  return IAM_ROLE_ARN_SHAPE_RE.test(value);
+}
+
+/**
+ * The sentence a send site throws when {@link isIamRoleArn} refuses a value.
+ * One spelling so every refusal reads the same. The value is rendered through
+ * `displayIdent` with the role-ARN cap, which both sanitizes it and names how
+ * many characters a cut withheld — the refused value is by construction one no
+ * shape test accepted, so it is the most untrusted text on the line.
+ */
+export function refusedRoleArnMessage(value: unknown): string {
+  // An EMPTY value (`--role-arn ""`) says so, rather than `displayIdent`'s
+  // generic `<unrenderable>`, which reads as if the value were binary.
+  return (
+    // cdkd-raw-beside-safe: `IAM_ROLE_ARN_MAX_LENGTH` is this module's own
+    // numeric constant, so it carries no caller-controlled bytes; the refused
+    // value beside it is the untrusted operand and goes through `displayIdent`,
+    // whose cut marker already names how many characters a long value withheld.
+    // cdkd-arn-display: the raw operand is the LENGTH CONSTANT, a number, not an
+    // ARN; its name carries `ROLE_ARN` only because it bounds one.
+    `AssumeRole refused: the role ARN is not a well-formed IAM role ARN ` +
+    `(expected arn:<partition>:iam::<account>:role/<name>, at most ${IAM_ROLE_ARN_MAX_LENGTH} characters): ` +
+    `${shownRefusedValue(value)}. Nothing was sent to STS.`
+  );
+}
+
+function shownRefusedValue(value: unknown): string {
+  if (value === '') return '(empty)';
+  return displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+}
+
+/**
+ * Throw {@link refusedRoleArnMessage} unless `roleArn` is well-formed.
+ * {@link sendableAssumeRoleCommand} calls it before it builds any command, so
+ * no value reaches STS unchecked whichever path resolved it; a send site may
+ * also call it EARLIER, before it builds a client. `makeError` lets a site keep
+ * its own error class.
+ */
+export function assertSendableRoleArn(
+  roleArn: unknown,
+  makeError: (message: string) => Error = (message) => new Error(message)
+): asserts roleArn is string {
+  if (typeof roleArn !== 'string' || !isIamRoleArn(roleArn)) {
+    throw makeError(refusedRoleArnMessage(roleArn));
+  }
+}
+
+/**
+ * The ONLY way `src/**` builds an `AssumeRoleCommand` (issue
+ * [#2348](https://github.com/go-to-k/cdkd/issues/2348)): the command cannot
+ * exist without its `RoleArn` having passed {@link assertSendableRoleArn}, so
+ * "every send is guarded" is a property of this function rather than of each
+ * call site's statement order. `tests/unit/utils/role-arn-shape.test.ts` fences
+ * the other half — no `AssumeRole*Command` / `fromTemporaryCredentials` /
+ * `.assumeRole(` anywhere else under `src/**`.
+ *
+ * Send sites still call {@link assertSendableRoleArn} earlier where that
+ * refuses before a client is built or a `try` would re-word the refusal; this
+ * is the backstop that makes forgetting that call harmless.
+ */
+export function sendableAssumeRoleCommand(
+  input: AssumeRoleCommandInput,
+  makeError?: (message: string) => Error
+): AssumeRoleCommand {
+  assertSendableRoleArn(input.RoleArn, makeError);
+  return new AssumeRoleCommand(input);
+}
+
+/**
+ * Validate an ARN a user typed as a flag VALUE (`--assume-role <arn>` on
+ * `cdkd local invoke` / `local invoke-agentcore`): trimmed, then refused with a
+ * thrown error rather than left to the send-site guard. Left there, the refusal
+ * is caught by the command's STS-failure arm and quietly falls back to the
+ * developer's shell credentials — the broader identity the flag was passed to
+ * avoid (issue [#2348](https://github.com/go-to-k/cdkd/issues/2348)).
+ */
+export function explicitRoleArnOrThrow(
+  flag: string,
+  raw: string,
+  makeError: (message: string) => Error = (message) => new Error(message)
+): string {
+  const trimmed = raw.trim();
+  if (!isIamRoleArn(trimmed)) {
+    // cdkd-raw-beside-safe: `flag` is a caller LITERAL (the flag's own name,
+    // e.g. `'--assume-role'`); the untrusted value is rendered inside
+    // `refusedRoleArnMessage` through `displayIdent`.
+    throw makeError(`Invalid ${flag} value: ${refusedRoleArnMessage(raw)}`);
+  }
+  return trimmed;
+}
+
+/**
+ * Refuse a role-ARN flag value at a command's ENTRY, without trimming — for
+ * the flags whose value is sent as typed (`--ecr-role-arn`,
+ * `--assume-task-role <arn>`), so the entry check is exactly the send-site
+ * check, only earlier (issue [#2348](https://github.com/go-to-k/cdkd/issues/2348)).
+ */
+export function assertFlagRoleArn(
+  flag: string,
+  value: string,
+  makeError: (message: string) => Error = (message) => new Error(message)
+): void {
+  // cdkd-raw-beside-safe: `flag` is a caller LITERAL (the flag's own name);
+  // the untrusted value is rendered inside `refusedRoleArnMessage`.
+  assertSendableRoleArn(value, (message) => makeError(`Invalid ${flag} value: ${message}`));
+}
+
+/**
  * Parse an IAM role ARN into its component parts.
  *
  * @param roleArn  The full role ARN to parse.
@@ -107,6 +269,9 @@ const IAM_ROLE_ARN_RE = /^arn:(aws[a-z0-9-]*):iam::(\d{12}):role\/[\w+=,.@-]+(?:
  *                 surfacing a clear error message when this returns `null`.
  */
 export function parseIamRoleArn(roleArn: string): { partition: string; accountId: string } | null {
+  // The length bound first, so the strict parse is a SUBSET of `isIamRoleArn`
+  // in both dimensions, not only in charset.
+  if (roleArn.length > IAM_ROLE_ARN_MAX_LENGTH) return null;
   const match = IAM_ROLE_ARN_RE.exec(roleArn);
   if (!match || !match[1] || !match[2]) return null;
   return { partition: match[1], accountId: match[2] };
@@ -201,12 +366,15 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     // The SOURCE identity of the hop is the active `AwsClients`' (issue
     // #3588): an explicit `AwsClientConfig.credentials` has no environment
     // path, so `awsClientDefaults()` alone took this hop as the default chain.
+    // Before the client is built, and inside the IIFE so the refusal takes the
+    // same cache-eviction path as an STS rejection.
+    assertSendableRoleArn(roleArn);
     const sts = new STSClient({ ...clientDefaultsFor(sourceConfig) });
     try {
       let response;
       try {
         response = await sts.send(
-          new AssumeRoleCommand({
+          sendableAssumeRoleCommand({
             RoleArn: roleArn,
             RoleSessionName: `cdkd-xacc-${Date.now()}`,
             DurationSeconds: 3600,
@@ -375,8 +543,14 @@ export async function applyRoleArnIfSet(opts: {
   roleArn: string | undefined;
   region: string | undefined;
 }): Promise<void> {
-  const roleArn = opts.roleArn || process.env['CDKD_ROLE_ARN'];
-  if (!roleArn) return;
+  // `--role-arn ""` is an explicit value, not an absent one (issue #2348): a
+  // CI line `--role-arn "$DEPLOY_ROLE"` with the variable unset must refuse,
+  // not run the whole command as the caller's own (often admin) identity. An
+  // EMPTY `CDKD_ROLE_ARN` stays "unset", the usual reading of an environment
+  // variable.
+  const roleArn =
+    opts.roleArn !== undefined ? opts.roleArn : process.env['CDKD_ROLE_ARN'] || undefined;
+  if (roleArn === undefined) return;
 
   // BEFORE the hop, not after it. `setAssumedRoleCredentials` refuses a second
   // publish too, but by the time that refusal fires this function has already
@@ -409,7 +583,7 @@ export async function applyRoleArnIfSet(opts: {
   //
   // THE COST, stated rather than implied away (go-to-k/cdkd#3408 code review
   // measured it): a COMMON ARN renders byte-identically, but "every legitimate
-  // ARN does" is FALSE. IAM's path grammar is `/[!-~]+/`,
+  // ARN does" is FALSE. IAM's path grammar is `\u0021`-`\u007F`,
   // which admits `( ) ! # $ % & * [ ]` — none of them in `PLAIN_IDENT` — so
   // `arn:aws:iam::123456789012:role/team(a)/MyRole` renders JSON-QUOTED where
   // `asciiOnly` left it bare. That is a display change on a legal value, and it
@@ -420,6 +594,10 @@ export async function applyRoleArnIfSet(opts: {
   // had no way to tell before.
   const displayRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
   logger.debug(`Assuming role ${displayRoleArn}...`);
+
+  // Nothing validated `--role-arn` / `CDKD_ROLE_ARN` before this point (issue
+  // #2348): refuse a malformed value here rather than sending it to STS.
+  assertSendableRoleArn(roleArn);
 
   // `ignoreAssumedRole` because this hop must be answered by the identity the
   // user STARTED with — a profile, the environment, an instance role — not by a
@@ -445,12 +623,11 @@ export async function applyRoleArnIfSet(opts: {
     // stated reason that STS ECHOES THE SUBMITTED RoleArn back. The two halves
     // of one class, and only one had the guard.
     //
-    // Reachable: `IAM_ROLE_ARN_REGEX` in `src/cli/options.ts` is START-anchored
-    // and constrains nothing past `role/`, so `--role-arn` accepts
-    // `arn:aws:iam::123456789012:role/x<ESC>[2K<CR>evil`; `formatError` renders
-    // the message and `ConsoleLogger.formatMessage` sanitizes only a call's
-    // extra ARGS, never the message text. So this PR was sanitizing the
-    // `Assuming role ...` debug line while the FAILURE it is about went out raw.
+    // Still needed after `assertSendableRoleArn` above (issue #2348): that
+    // guard bounds the SUBMITTED value to printable ASCII, but this message is
+    // AWS's text, which a proxy or a hostile endpoint controls independently.
+    // `formatError` renders the message and `ConsoleLogger.formatMessage`
+    // sanitizes only a call's extra ARGS, never the message text.
     //
     // `cause` is threaded UNMASKED so the retry classifiers' `$metadata` walk
     // still sees the original — the rule `layout-deployment-secrets.md` records
@@ -458,7 +635,7 @@ export async function applyRoleArnIfSet(opts: {
     let response;
     try {
       response = await sts.send(
-        new AssumeRoleCommand({
+        sendableAssumeRoleCommand({
           RoleArn: roleArn,
           RoleSessionName: `cdkd-${Date.now()}`,
           DurationSeconds: 3600,

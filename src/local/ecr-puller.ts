@@ -1,5 +1,5 @@
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
-import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
+import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   describeDockerFailure,
   formatDockerLoginError,
@@ -11,6 +11,7 @@ import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
 
 export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
+import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../utils/role-arn.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import {
@@ -355,7 +356,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // for all N (sessions are valid 3600s, far longer than any practical
   // image-pull loop).
   let assumed: TempCredentials | undefined;
-  if (options.ecrRoleArn) {
+  // `!== undefined`, not truthiness (issue #2348): `--ecr-role-arn ""` is an
+  // explicit value and is refused at the send, never read as "no role".
+  if (options.ecrRoleArn !== undefined) {
     // cdkd-arn-display: a Map KEY, never rendered. It is built from the ARN
     // so two different roles cannot share a credential cache entry, and from
     // the source identity's own map (keyed by its fingerprint) so two source
@@ -456,6 +459,8 @@ async function assumeRoleForEcr(
   credentialConfig: CredentialConfig,
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
+  // `--ecr-role-arn` is argv and nothing upstream shape-checks it (issue #2348).
+  assertSendableRoleArn(roleArn, (message) => new LocalInvokeBuildError(message));
   logger.debug(
     `Assuming role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull...`
   );
@@ -469,7 +474,7 @@ async function assumeRoleForEcr(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `cdkd-local-ecr-${Date.now()}`,
         DurationSeconds: 3600,

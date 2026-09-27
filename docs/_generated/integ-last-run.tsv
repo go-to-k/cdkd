@@ -185,7 +185,7 @@ legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 list-parameters	2026-09-27T08:48:52Z	PASS	100	verify.sh	maintainer merge-gate run of PR #3779; rc ok, orph clean
 local-ecs-service-connect	2026-09-24T13:18:12Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
-local-invoke	2026-09-26T00:27:28Z	PASS	40	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke	2026-09-27T12:23:44Z	PASS	40	verify.sh	rc ok, docker sweep clean, 0 orphans; #2348 PR 3855 @0118485
 local-invoke-agentcore	2026-09-26T00:06:20Z	PASS	125	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-agentcore-from-state	2026-09-26T00:09:21Z	PASS	85	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-buildkit	2026-09-26T00:24:47Z	PASS	35	verify.sh	rc ok on rerun, docker clean; first attempt hit an RIE Go-runtime crash under amd64 emulation on arm64 (fatal error: found pointer to free object), unrelated; #2419 PR 3804
@@ -193,13 +193,13 @@ local-invoke-container	2026-09-26T00:08:25Z	PASS	35	verify.sh	rc ok, docker swee
 local-invoke-dotnet	2026-09-26T00:21:13Z	PASS	45	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-from-cfn-stack	2026-09-26T00:12:36Z	PASS	105	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-from-cfn-stack-multi-stack	2026-09-26T00:14:21Z	PASS	136	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
-local-invoke-from-state	2026-09-26T00:10:46Z	PASS	110	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-invoke-from-state	2026-09-27T12:23:44Z	PASS	115	verify.sh	rc ok, destroy 7 deleted 0 errors, docker clean; removed pre-existing (0924) AutoDeleteObjects /aws/lambda log group; #2348 PR 3855 @0118485
 local-invoke-java	2026-09-26T00:20:38Z	PASS	35	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-layers	2026-09-26T00:09:00Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-provided	2026-09-26T00:19:48Z	PASS	50	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-python	2026-09-26T00:16:52Z	PASS	120	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-ruby	2026-09-26T00:18:52Z	PASS	55	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
-local-run-task	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
+local-run-task	2026-09-27T11:27:27Z	PASS	30	verify.sh	rc ok, docker sweep clean, 0 orphans; #2348 PR 3855
 local-run-task-awsvpc	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-run-task-cdkd-assets	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-run-task-from-state	2026-09-25T23:53:54Z	PASS	156	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
@@ -207,7 +207,7 @@ local-run-task-multi-container	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, doc
 local-start-agentcore	2026-09-24T15:26:58Z	PASS	15	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb	2026-09-24T15:27:48Z	PASS	25	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 local-start-alb-from-state	2026-09-25T05:52:32Z	PASS	187	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
-local-start-api	2026-09-26T00:21:58Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
+local-start-api	2026-09-27T12:23:44Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2348 PR 3855 @0118485
 local-start-api-container	2026-09-26T00:22:18Z	PASS	15	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-start-api-rest-v1-non-proxy	2026-09-26T00:22:33Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-start-api-websocket	2026-09-26T00:22:54Z	PASS	105	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
