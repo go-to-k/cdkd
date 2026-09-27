@@ -1109,7 +1109,8 @@ export class S3TablesProvider implements ResourceProvider {
    * `Namespace` / `TableName`, and that is INERT for the case this exists to
    * fix: in a CDK-synthesized template `TableBucketARN` is
    * `{"Fn::GetAtt": ["TableBucket", "TableBucketARN"]}`, `import.ts`
-   * pre-substitutes only single-key `{Ref}` before calling a provider, and
+   * pre-substitutes only overridden `{Ref}`s and account / region
+   * pseudo-parameter intrinsics before calling a provider (never a GetAtt), and
    * full intrinsic resolution runs AFTER every `provider.import()`. So the
    * template read yielded `undefined` on exactly the
    * `--migrate-from-cloudformation` path that supplies the bare ARN, turning a

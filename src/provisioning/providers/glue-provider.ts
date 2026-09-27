@@ -153,11 +153,13 @@ function decodeTableId(
  * Read a template-borne value that is about to be forwarded to a Glue read
  * API as a string.
  *
- * `import()` runs against the RAW template, where `substituteOverrideRefs`
- * has resolved only the `Ref`s whose target is in the overrides map — a
- * pseudo parameter is never in that map, so `CatalogId: {Ref: AWS::AccountId}`
- * (what `@aws-cdk/aws-glue-alpha` renders for an environment-agnostic stack)
- * survives as an OBJECT. A bare `as string` cast then hands that object to
+ * `import()` runs against the template, where `cdkd import` resolves only the
+ * `Ref`s in its overrides map and the intrinsics built from literals and the
+ * account / region pseudo-parameters (issue #1897). So
+ * `CatalogId: {Ref: AWS::AccountId}` (what `@aws-cdk/aws-glue-alpha` renders
+ * for an environment-agnostic stack) normally arrives as the account id — but
+ * survives as an OBJECT when the account is `fabricated` (STS failed and no
+ * `AWS_ACCOUNT_ID`). A bare `as string` cast then hands that object to
  * `GetTable` / `GetDatabase` as if it were an id. Dropping it instead matches
  * the API default (the caller's own account), which is what the intrinsic
  * would have resolved to anyway.
