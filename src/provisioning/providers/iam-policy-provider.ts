@@ -16,7 +16,10 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -92,9 +95,15 @@ export class IAMPolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM policy ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), and every bag-derived value masked RAW as well. Absent context
+    // means identity.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Creating IAM policy ${logicalId}`);
 
     const policyName =
       (properties['PolicyName'] as string | undefined) ||
@@ -139,7 +148,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to role ${roleName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to role ${v(roleName)}`);
         }
       }
 
@@ -153,7 +162,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to group ${groupName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to group ${v(groupName)}`);
         }
       }
 
@@ -167,11 +176,11 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to user ${userName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to user ${v(userName)}`);
         }
       }
 
-      this.logger.debug(`Successfully created IAM policy ${logicalId}: ${policyName}`);
+      log.debug(`Successfully created IAM policy ${logicalId}: ${v(policyName)}`);
 
       // For inline policies, physical ID is the policy name
       const physicalId = policyName;
@@ -185,7 +194,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         policyName,
@@ -202,9 +211,22 @@ export class IAMPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM policy ${logicalId}: ${physicalId}`);
+    // Derive old policy name from physical ID (may contain ':roleName' suffix from old format)
+    const oldPolicyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
+    // Issue #2177 -- see `create()`. The recorded name is ALSO a needle when the
+    // PREVIOUS value it came from is secret-derived: after a rotated or
+    // re-pointed secret, that previous value is the `{{resolve:` reference state
+    // holds and the OLD plaintext is in no masker bag of this deploy.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['PolicyName'], oldPolicyName]]
+    );
+    const { value: v } = log;
+    log.debug(`Updating IAM policy ${logicalId}: ${v(physicalId)}`);
 
     const newPolicyName =
       (properties['PolicyName'] as string | undefined) ||
@@ -245,9 +267,6 @@ export class IAMPolicyProvider implements ResourceProvider {
       const policyDoc =
         typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
-      // Derive old policy name from physical ID (may contain ':roleName' suffix from old format)
-      const oldPolicyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
-
       // ── Roles ──
       const newRoleSet = new Set(newRoles || []);
       const oldRoleSet = new Set(oldRoles || []);
@@ -261,7 +280,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to role ${roleName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to role ${v(roleName)}`);
       }
 
       // Remove policy from old roles no longer in the list
@@ -274,7 +293,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from role ${roleName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from role ${v(roleName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -296,7 +315,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to group ${groupName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to group ${v(groupName)}`);
       }
 
       // Remove policy from old groups no longer in the list
@@ -309,7 +328,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from group ${groupName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from group ${v(groupName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -331,7 +350,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to user ${userName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to user ${v(userName)}`);
       }
 
       // Remove policy from old users no longer in the list
@@ -344,7 +363,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from user ${userName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from user ${v(userName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -353,7 +372,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Successfully updated IAM policy ${logicalId}`);
+      log.debug(`Successfully updated IAM policy ${logicalId}`);
 
       const newPhysicalId = newPolicyName;
 
@@ -367,7 +386,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
