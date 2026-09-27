@@ -264,8 +264,11 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
  * kind, with identical results for both blocks:
  *
  * - `ConsumerGroupId` is rejected on update even when UNCHANGED ("Unsupported
- *   '<block>.consumerGroupId' parameter"), so it is sent only when it changed,
- *   leaving AWS to refuse that change as it does under CloudFormation.
+ *   '<block>.consumerGroupId' parameter"), so a template-path update sends it
+ *   only when it changed, for Lambda to reject. A restore (`restoring`: a
+ *   rollback replay or `drift --revert`) never sends it: AWS cannot have
+ *   applied a change to it, so there is nothing to restore, and sending one
+ *   would make a `rollback --revert-failed` of that very change fail forever.
  * - `SchemaRegistryConfig` is applied as sent (AWS itself requires provisioned
  *   mode and `SchemaValidationConfigs`), so it is sent only when it changed.
  * - An omitted block, and an empty block `{}`, both leave the live
@@ -277,7 +280,8 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
  */
 function kafkaConfigForUpdate(
   desired: unknown,
-  previous: unknown
+  previous: unknown,
+  options: { restoring: boolean }
 ): Record<string, unknown> | undefined {
   const asObject = (v: unknown): Record<string, unknown> | undefined =>
     typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -288,7 +292,7 @@ function kafkaConfigForUpdate(
   const had = asObject(previous) ?? {};
   const changed = (key: string): boolean => JSON.stringify(want[key]) !== JSON.stringify(had[key]);
   const out: Record<string, unknown> = {};
-  if (want['ConsumerGroupId'] !== undefined && changed('ConsumerGroupId')) {
+  if (!options.restoring && want['ConsumerGroupId'] !== undefined && changed('ConsumerGroupId')) {
     out['ConsumerGroupId'] = want['ConsumerGroupId'];
   }
   if (want['SchemaRegistryConfig'] !== undefined) {
@@ -603,7 +607,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       );
     }
     try {
-      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties, context);
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
       // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
@@ -624,7 +628,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
 
@@ -684,7 +689,9 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       'SelfManagedKafkaEventSourceConfig',
       'AmazonManagedKafkaEventSourceConfig',
     ] as const) {
-      const block = kafkaConfigForUpdate(properties[key], previousProperties[key]);
+      const block = kafkaConfigForUpdate(properties[key], previousProperties[key], {
+        restoring: context?.replayingState === true || context?.desiredFromAwsReadback === true,
+      });
       if (block !== undefined) updateParams[key] = block;
     }
     // #609 backfill — the 4 mutable props (Queues / Topics /

@@ -136,7 +136,7 @@ esm_brokers() {
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy (self-managed Kafka ESM; create FAILED outright before #1384)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P1="$(esm_uuid)"
@@ -194,24 +194,26 @@ fi
 echo "    OK: no drift"
 
 # --- Phase 2: in-place update -----------------------------------------
-# Wait out `Creating`: UpdateEventSourceMapping rejects a mapping that is still
-# being created with ResourceInUseException, which is NOT in cdkd's retryable
-# pattern table.
+# Wait out an in-flight state: UpdateEventSourceMapping rejects a mapping that
+# is still Creating / Updating with ResourceInUseException, which is NOT in
+# cdkd's retryable pattern table. Gate on the TERMINAL set, not on "not
+# Creating": Enabling / Disabling are also in-flight states.
+wait_settled() {
+  local state="" settled=""
+  for _ in $(seq 1 24); do
+    state="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
+      --query 'State' --output text)" || return 1
+    case "${state}" in
+      Enabled | Disabled) settled=1; break ;;
+    esac
+    sleep 5
+  done
+  [ -z "${settled}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${state})" >&2; return 1; }
+  echo "    ESM settled (State=${state})"
+}
 echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
-SETTLED=""
-for _ in $(seq 1 24); do
-  ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
-    --query 'State' --output text)"
-  # Gate on the TERMINAL set, not on "not Creating": Enabling / Disabling are
-  # also in-flight states that would break the loop early.
-  case "${ESM_STATE}" in
-    Enabled | Disabled) SETTLED=1; break ;;
-  esac
-  sleep 5
-done
-[ -z "${SETTLED}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${ESM_STATE})" >&2; exit 1; }
-echo "    ESM settled (State=${ESM_STATE})"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P2="$(esm_uuid)"
@@ -245,6 +247,8 @@ if [ "${SR_URI_P2}" != "https://schema-registry.cdkd-integ.example.com" ] || [ "
 fi
 echo "    OK: the added schema registry reached AWS"
 
+# Belt-and-braces only, for the reason Phase 1.5 gives: the baseline is the
+# readback captured by this same deploy. The AWS assertions above are the proof.
 DRIFT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || DRIFT_RC=$?
 if [ "${DRIFT_RC}" = "1" ]; then
@@ -257,24 +261,11 @@ fi
 echo "    OK: no drift after the update"
 
 # --- Phase 2b: remove the schema registry -------------------------------
-wait_settled() {
-  local state="" settled=""
-  for _ in $(seq 1 24); do
-    state="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
-      --query 'State' --output text)" || return 1
-    case "${state}" in
-      Enabled | Disabled) settled=1; break ;;
-    esac
-    sleep 5
-  done
-  [ -z "${settled}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${state})" >&2; exit 1; }
-  return 0
-}
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (the schema registry leaves the template)"
-wait_settled || exit 1
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
 CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-wait_settled || exit 1
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
 if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
   echo "FAIL: ESM was REPLACED on the schema-registry removal, expected an in-place update" >&2
   exit 1

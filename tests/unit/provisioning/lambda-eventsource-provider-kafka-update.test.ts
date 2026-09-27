@@ -97,6 +97,23 @@ describe.each(['SelfManagedKafkaEventSourceConfig', 'AmazonManagedKafkaEventSour
     });
 
     it.each([
+      ['a rollback state replay', { replayingState: true }],
+      ['a drift --revert readback', { desiredFromAwsReadback: true }],
+    ])('never sends a changed ConsumerGroupId on %s', async (_label, context) => {
+      await provider.update(
+        'Esm',
+        UUID,
+        TYPE,
+        props({ ConsumerGroupId: 'old', SchemaRegistryConfig: SR_JSON }),
+        props({ ConsumerGroupId: 'new' }),
+        context
+      );
+      const input = (mockSend.mock.calls[0]![0] as UpdateEventSourceMappingCommand)
+        .input as unknown as Record<string, unknown>;
+      expect(input[block]).toEqual({ SchemaRegistryConfig: SR_JSON });
+    });
+
+    it.each([
       ['an unchanged block', { ConsumerGroupId: 'g', SchemaRegistryConfig: SR_JSON }],
       ['a block holding only ConsumerGroupId', { ConsumerGroupId: 'g' }],
     ])('sends nothing for %s', async (_label, config) => {
