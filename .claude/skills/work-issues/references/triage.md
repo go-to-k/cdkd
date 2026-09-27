@@ -73,7 +73,7 @@ its target file first.
 
 The LAUNCH MODE decides how many lanes and the parent settles it before stage 0
 (`MODE` / `LANE_TREE` / `MAIN_CHECKOUT` ride the dispatch — if they did not, STOP
-and ask). `IN-PLACE`, lanes in the launch tree run SERIALLY; a concurrent lane
+and ask). In `IN-PLACE`, lanes in the launch tree run SERIALLY; a concurrent lane
 takes a SIBLING worktree under `<MAIN_CHECKOUT>/.claude/worktrees/`, never a
 nested one, which dies with the outer workspace (launch-mode.md row 1). Queued
 lanes are claimed up front (§4), every one after the first `QUEUED`, and

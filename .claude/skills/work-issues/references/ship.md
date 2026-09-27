@@ -125,9 +125,10 @@ git branch --list '<your prefix>*'               # ...and so is every branch it 
 
 IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
 tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
-block above, via `git -C <MAIN_CHECKOUT>`). It owes the BRANCH — put back the
+block above, every `git` line prefixed with `-C <MAIN_CHECKOUT>`, and so is
+not in this block's `-D` list). It owes the BRANCH — put back the
 one it found, delete the one it made.
-`<LAUNCH_BRANCH>` and `<each branch this run created>` are SUBSTITUTION
+`<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are SUBSTITUTION
 PLACEHOLDERS, not shell variables (`references/launch-mode.md`):
 
 ```bash
@@ -136,7 +137,7 @@ DIRTY=$(git status --porcelain)
 [ -z "$DIRTY" ] || echo 'dirty -> commit or stash first, then re-run this block'
 [ -z "$DIRTY" ] \
   && git switch --no-guess <LAUNCH_BRANCH> \
-  && git branch -D <each branch this run created>  # AS-IS: no pull, no rebase, no fast-forward
+  && git branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
 git branch --show-current      # must print <LAUNCH_BRANCH>
 git branch --list '<your prefix>*'             # ...and every branch this run added is gone
 ```
@@ -157,7 +158,7 @@ is now gone; never as the default. Chaining matters here too: an unchained
 ```bash
 git fetch origin \
   && git switch --detach origin/main \
-  && git branch -D <each branch this run created>
+  && git branch -D <each branch this run created in THIS tree>
 ```
 
 Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`

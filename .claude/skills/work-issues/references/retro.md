@@ -99,6 +99,6 @@ git fetch origin && git switch -c "$B" origin/main
   (`git worktree remove .claude/worktrees/<name> && git worktree prune`). An
   IN-PLACE run keeps its launch tree and runs §9's cleanup arm HERE, last of the
   whole run: `git switch --no-guess <LAUNCH_BRANCH> && git branch -D` every
-  branch this run created, the retro included, AS-IS — no pull, no rebase.
+  branch this run created in this tree, the retro included, AS-IS — no pull, no rebase.
 
 Report it in one wrap line: what changed where, or "no skill change".
