@@ -157,6 +157,14 @@ phases, and lets CloudFormation re-`CREATE` it in phase 2.
 | `AWS::ApiGatewayV2::Stage` | The schema declares no handlers at all. CDK's `HttpApi` construct auto-emits the `$default` stage. | About 10 seconds of unavailability. The HttpApi endpoint URL is unchanged — it embeds the API id, not the stage name. |
 | `AWS::IAM::Policy` | No `read` or `list` handler: an inline policy attachment has no first-class AWS resource id. CDK L2 grants emit these (ECS task execution role ECR pull, Lambda execution role inline policies). | The attachment is dropped from its role / user / group between phases, so any in-flight call relying on the granted permission fails with `AccessDenied` until phase 2 completes. |
 
+The plan printed before the confirmation lists each of these resources. For
+an `AWS::IAM::Policy` it also lists the roles, users and groups the policy is
+removed from. Those names come from cdkd state, which recorded them at deploy
+time, not from the template. If cdkd state records no such list, or a value
+that is not a list of IAM names, the policy is reported as a resource that
+blocks migration, and the export stops before phase 1, without changing any
+AWS resource.
+
 Pass `--no-recreate-import-unsupported` to block instead. The pre-delete is
 fatal on failure — phase 2 would otherwise collide with the still-present AWS
 resource — and cdkd state plus the post-phase-1 CloudFormation stack are
