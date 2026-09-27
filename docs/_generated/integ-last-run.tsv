@@ -121,8 +121,6 @@ eventbridge-pipes	2026-09-25T13:49:20Z	PASS	170	verify.sh	rc ok, orph clean; sha
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T10:10:30Z	PASS	85	verify.sh	rc ok, orph clean (#3849)
-export	2026-09-26T02:11:41Z	PASS	226	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
-eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
 export	2026-09-27T09:49:54Z	PASS	236	verify.sh	PR #3852 head a507ce80e: rc 0, CFn stack deleted, 0 state versions, orph clean
 export-nested-stack	2026-09-26T02:11:41Z	PASS	165	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 fifo-sqs-event-source	2026-09-27T10:10:30Z	PASS	90	verify.sh	rc ok, orph clean (#3849)
