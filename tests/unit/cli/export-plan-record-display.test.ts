@@ -146,6 +146,8 @@ const TEMPLATE = {
 
 let bucketPhysicalId = 'my-bucket-phys';
 let stagePhysicalId = 'stage-phys';
+/** Recorded detach targets of an optional `AWS::IAM::Policy` row (go-to-k/cdkd#3857). */
+let policyRoles: string[] | undefined;
 
 function stateRecord(): { state: Record<string, unknown>; etag: string } {
   return {
@@ -168,6 +170,15 @@ function stateRecord(): { state: Record<string, unknown>; etag: string } {
           attributes: {},
           dependencies: [],
         },
+        ...(policyRoles && {
+          MyPolicy: {
+            physicalId: 'MyPolicyName',
+            resourceType: 'AWS::IAM::Policy',
+            properties: { PolicyName: 'MyPolicyName', Roles: policyRoles },
+            attributes: {},
+            dependencies: [],
+          },
+        }),
       },
       outputs: {},
       lastModified: 1,
@@ -210,6 +221,7 @@ beforeEach(() => {
   setStdinIsTty(true);
   bucketPhysicalId = 'my-bucket-phys';
   stagePhysicalId = 'stage-phys';
+  policyRoles = undefined;
   cfnState.phase1Succeeds = false;
   cfnState.describeStacksCalls = 0;
   deleteStage.mockReset();
@@ -355,5 +367,32 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
     );
     expect(message).toContain('more characters withheld]');
     expect(message).not.toContain('e'.repeat(4097));
+  });
+});
+
+describe('cdkd export --dry-run names what an IAM::Policy pre-delete detaches (go-to-k/cdkd#3857)', () => {
+  it('lists the recorded roles under the policy row, before the confirmation', async () => {
+    policyRoles = ['HandlerRole', 'OtherRole'];
+    writeFileSync(
+      templatePath,
+      JSON.stringify({
+        ...TEMPLATE,
+        Resources: {
+          ...TEMPLATE.Resources,
+          MyPolicy: {
+            Type: 'AWS::IAM::Policy',
+            Properties: { PolicyName: 'MyPolicyName', Roles: ['HandlerRole', 'OtherRole'] },
+          },
+        },
+      }),
+      'utf-8'
+    );
+    expect(await runExport(dryRunArgs())).toBeUndefined();
+    const lines = infoLines();
+    const at = lines.indexOf('  MyPolicy (AWS::IAM::Policy) — physicalId: MyPolicyName');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1]).toBe(
+      '    removes inline policy MyPolicyName from roles: HandlerRole, OtherRole'
+    );
   });
 });
