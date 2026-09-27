@@ -4035,7 +4035,7 @@ export class DeployEngine {
       // the legacy PR #608 fail-fast was reversed by #614 to a default-on
       // auto-route — but this step CAN still refuse, and the comment said
       // it could not until issue #3028. A drop on a type the Cloud Control
-      // route cannot serve (`isNonProvisionable`, or a provider declaring
+      // route cannot serve (`hasNoCloudControlHandlers`, or a provider declaring
       // `disableCcApiFallback`) has nowhere to be auto-routed, so
       // `ProviderRegistry.reportSilentDropDecisions` throws rather than
       // letting the route fail later with an opaque error. That refusal

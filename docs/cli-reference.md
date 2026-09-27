@@ -362,14 +362,22 @@ exception, on **four** of the eight commands: `local invoke`, `local start-api`,
 `local run-task` and `local invoke-agentcore`. On those, everything **cdkd**
 resolves *for* the workload stays on your own identity — the credentials it is
 given, any role it assumes on the container's behalf (`--assume-role` /
-`--assume-task-role`), the ECS task secrets read into its environment, and the
-`${AWS::AccountId}` substituted into it — so `--role-arn` cannot quietly hand
-your local code more permission than you asked for. That holds however you
+`--assume-task-role`), and the ECS task secrets read into its environment — so
+`--role-arn` cannot quietly hand your local code more permission than you asked
+for. That holds however you
 selected a profile, including not selecting one: cdkd captures your own
 credentials before it assumes the role, and puts them back on the container's
 environment afterwards. What cdkd does for *itself* still uses the role,
 including reading state and pulling the container image (which leaves an ECR
 login for the role's account in your Docker config).
+
+The `${AWS::AccountId}` substituted into the workload is an identifier, not a
+permission, and depends on the state source. Under `--from-state` it is the
+account the state was read in — the role's, when `--role-arn` is set — so the
+ARNs, image URIs and the bare `--assume-task-role` ARN it completes name the
+stack's own account. Under `--from-cfn-stack` it is your own account — which,
+with `--role-arn` and no profile selected, is not the account the engine read
+the stack from (the last row of the table below).
 
 Read "what cdkd resolves" strictly — the next section is what it excludes.
 

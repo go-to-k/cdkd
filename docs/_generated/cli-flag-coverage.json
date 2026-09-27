@@ -205,6 +205,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -347,6 +348,7 @@
         "elbv2-same-name-replacement",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
@@ -529,6 +531,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -702,6 +705,7 @@
       "flag": "--recreate-via-cc-api",
       "integs": [
         "cc-to-sdk-reroute",
+        "codebuild-project",
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -833,6 +837,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -1024,6 +1029,12 @@
       ]
     },
     {
+      "flag": "--role-arn",
+      "integs": [
+        "local-invoke-from-state"
+      ]
+    },
+    {
       "flag": "--skip-assets",
       "integs": [
         "asset-auto-create",
@@ -1162,6 +1173,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -1484,6 +1496,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -1618,7 +1631,6 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--prefix-user-supplied-names",
-    "--role-arn",
     "--stack",
     "--strict"
   ],
@@ -1689,6 +1701,7 @@
     "--create-bucket-configuration",
     "--database-input",
     "--database-name",
+    "--datastore-id",
     "--db-cluster-identifier",
     "--db-instance-identifier",
     "--db-parameter-group-name",
@@ -1707,6 +1720,7 @@
     "--directory-id",
     "--directory-ids",
     "--distribution-config",
+    "--duration-seconds",
     "--email-identity",
     "--enforce-consumer-deletion",
     "--entries",
@@ -1890,6 +1904,7 @@
     "--reverts",
     "--rm",
     "--role-name",
+    "--role-session-name",
     "--route-id",
     "--route-table-id",
     "--route-table-ids",

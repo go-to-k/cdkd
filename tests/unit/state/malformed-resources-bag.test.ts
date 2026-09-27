@@ -80,6 +80,7 @@ import {
   IDENT_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
+  displayIdent,
   displaySafe,
   truncateCodePoints,
 } from '../../../src/utils/display-safe.js';
@@ -816,7 +817,11 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // sibling's behaviour too.
       const withheld = malformedDestroyOrphansRefusalMessage(`a${String.fromCharCode(0x1b)}b`, 'us-east-1');
       expect(withheld).not.toContain('cdkd state orphan <stack>');
-      expect(withheld).toContain('cdkd state list --long');
+      // `--json`, not `--long`: the listing this arm names must hand back the
+      // spelling the gate refused, and `--long` trims it (go-to-k/cdkd#3420).
+      expect(withheld).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(withheld).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(withheld).not.toContain('--long');
       // No `Drop the record:` LINE either, which is the half a per-string
       // `not.toContain` cannot tell from a template rendered inside the prose.
       expectDestroyCommandLines(withheld, {
@@ -1682,9 +1687,34 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
           'operator can be sent to a healthy same-rendering record'
       ).not.toContain('cdkd state orphan');
       expect(m).toContain('does NOT render exactly');
-      expect(m).toContain('cdkd state list --long');
+      // The raw listing, for the reason the orphans DESTROY text's case gives
+      // (go-to-k/cdkd#3420).
+      expect(m).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(m).not.toContain('--long');
     });
   }
+
+  it('keeps the EXACT arm on --long, where the name rendered faithfully (control)', () => {
+    // The `--json` pointer is the WITHHOLD arm's; the exact arm only confirms
+    // the key's REGION, which `--long` shows, so it did not move.
+    const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
+    expect(m).toContain("Confirm the key with 'cdkd state list --long'");
+    expect(m).not.toContain('cdkd state list --json');
+  });
+
+  it('pins the premise: displayIdent trims a padded name, JSON.stringify keeps it (go-to-k/cdkd#3420)', () => {
+    // Why the withhold arms point at `--json`: `cdkd state list --long`
+    // renders through `displayIdent`, `--json` through `JSON.stringify`. A
+    // later `displayIdent` that preserved padding shows up HERE as a premise
+    // change rather than passing silently.
+    // The quotes flag the alteration; the SPELLING inside them is the trimmed
+    // one, which is a healthy sibling's name.
+    expect(displayIdent('prod-api ')).toBe('"prod-api"');
+    expect(displayIdent(' prod-api')).toBe('"prod-api"');
+    expect(JSON.stringify('prod-api ')).toBe('"prod-api "');
+    expect(JSON.stringify('prod-api ')).not.toBe(JSON.stringify('prod-api'));
+  });
 
   /**
    * The destroy refusal is THROWN through a caller that classifies
@@ -1942,6 +1972,8 @@ describe('the malformed-outputs warning (issue go-to-k/cdkd#3189)', () => {
     // ...and NOT the resources text's deploy/destroy prohibition: the resource
     // SET is readable here, so borrowing it would attach a
     // re-create-the-world warning to a record whose resources are intact.
+    // Still true after go-to-k/cdkd#3513 added the deploy sentence below: that
+    // one is its own sentence about the `outputs` map, not this prohibition.
     expect(w).not.toContain(`Do NOT run 'cdkd deploy'`);
     // The fabrication clause is CONDITIONAL, not an assertion about this
     // record. Five shapes reach this text and only two of them invent rows —
@@ -1950,6 +1982,37 @@ describe('the malformed-outputs warning (issue go-to-k/cdkd#3189)', () => {
     // three of them (review of go-to-k/cdkd#3194).
     expect(w).toContain('Where the stored value is a string or a list');
     expect(w).toContain('yields no comparison at all');
+  });
+
+  it("names the DEPLOY's refusal of this record, over the OUTPUTS map (go-to-k/cdkd#3513)", () => {
+    // `refuseMalformedOutputs` runs at the deploy engine's state load on the
+    // same predicate this repair takes, and on a NESTED child `cdkd diff` exits
+    // 3 for nothing (go-to-k/cdkd#3335) — so this sentence is the only place
+    // that child's operator learns it. Keyed on the `outputs`-specific phrase so
+    // a reword cannot blunt it into a generic "deploy may fail".
+    const w = malformedOutputsWarning('S', 'us-east-1');
+    expect(w).toContain(
+      "'cdkd deploy' REFUSES this record when it loads it, over this same unreadable 'outputs' map"
+    );
+    // "when it loads it": a deploy skips an unchanged nested-stack row and never
+    // loads that child, so an unconditional "the deploy will fail" overstates.
+    expect(w).not.toMatch(/deploy (will|would) fail/);
+    // Still ends on the read it offers — the new sentence sits BEFORE it.
+    expect(w.endsWith("See the stored value with: cdkd state show S --stack-region us-east-1 --json")).toBe(
+      true
+    );
+  });
+
+  it('stays DISTINCT from the properties warning, each stating its own container consequence', () => {
+    // Two positive "both mention the deploy" assertions would be satisfied by
+    // two identical strings, so pin inequality plus each text's own half.
+    const outputs = malformedOutputsWarning('S', 'us-east-1');
+    const properties = malformedResourcePropertiesWarning('S', 'us-east-1', ['Fn']);
+    expect(outputs).not.toBe(properties);
+    expect(outputs).toContain("over this same unreadable 'outputs' map");
+    expect(properties).not.toContain("'outputs' map");
+    expect(properties).toContain(`Do NOT run 'cdkd deploy' against this record`);
+    expect(outputs).not.toContain(`Do NOT run 'cdkd deploy'`);
   });
 
   it('renders both identifiers exactly as its sibling messages do, and ends on the command', () => {
@@ -2445,7 +2508,7 @@ describe('the entry-level text', () => {
       const text = divergentRecordRegionRefusalMessage(stackName, keyRegion, 'eu-west-1', 1);
       expect(text, label).not.toContain('prod --stack-region us-east-1');
       // The withhold arm still says what to do; it just names no target.
-      expect(text, label).toContain('cdkd state list --long');
+      expect(text, label).toContain('cdkd state list --json');
     }
     // The CONTROL, at this site's OWN cap: it measures a key region at the
     // state-record grammar's 1152 rather than a region's 128 on purpose

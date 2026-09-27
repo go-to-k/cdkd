@@ -913,7 +913,8 @@ export const recreateViaCcApiOption = new Option(
     'destroy-and-recreate cost is acknowledged for each target. Stateful resource ' +
     'types (RDS, DynamoDB, S3, EFS, ...) refuse unless --force-stateful-recreation ' +
     'is ALSO passed (two-flag protection). Cannot be combined with ' +
-    '--prefer-sdk-route on the same resource type and property.'
+    '--prefer-sdk-route on the same resource type and property. Refused, with ' +
+    'no bypass, for a type Cloud Control cannot create (NON_PROVISIONABLE).'
 ).argParser(parseRecreateViaCcApiToken);
 
 /**

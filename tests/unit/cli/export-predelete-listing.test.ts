@@ -93,7 +93,8 @@ describe('preDeleteListingLines', () => {
     ['nothing recorded', {}, 'no Roles/Users/Groups attachment is recorded'],
     ['only empty lists', { Roles: [], Users: [] }, 'no Roles/Users/Groups attachment is recorded'],
     ['a string', { Roles: 'RoleA' }, 'properties.Roles is not a list of role names (found string)'],
-    ['null', { Users: null }, 'properties.Users is not a list of user names (found null)'],
+    // `null` is ABSENT, as on the provider's delete (go-to-k/cdkd#3878).
+    ['only null', { Users: null }, 'no Roles/Users/Groups attachment is recorded'],
     ['an object beside a valid list', { Roles: {}, Users: ['u'] }, 'properties.Roles is not a list'],
     ['a non-string element', { Groups: ['ops', 7] }, 'a 2-element list holding a non-name entry'],
     ['an empty name', { Roles: [''] }, 'properties.Roles is not a list'],
@@ -161,7 +162,6 @@ describe('the IAM::Policy pre-delete refuses what the plan shows as a refusal', 
 
   it.each([
     ['a string', { Roles: 'RoleA' }],
-    ['null', { Roles: null }],
     ['an object beside a valid list', { Roles: {}, Users: ['u'] }],
     ['a non-string element', { Roles: ['R', null] }],
   ])('refuses %s with no AWS call', async (_what, properties) => {
@@ -169,6 +169,11 @@ describe('the IAM::Policy pre-delete refuses what the plan shows as a refusal', 
       /cannot be pre-deleted: its recorded properties\.\w+ is not a list/
     );
     expect(sent).toEqual([]);
+  });
+
+  it('reads a null list as absent beside a valid one', async () => {
+    await invokePreDeleteHandler('AWS::IAM::Policy', policy({ Roles: null, Users: ['u'] }));
+    expect(sent).toEqual([{ UserName: 'u', PolicyName: 'HandlerPolicyName' }]);
   });
 
   it('removes the listed policy from exactly the listed principals', async () => {

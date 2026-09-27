@@ -269,24 +269,28 @@ describe('FirehoseProvider', () => {
     });
 
     it('throws, keeping the state record, when the stream enters DELETING_FAILED', async () => {
+      vi.useFakeTimers();
       mockSend
         .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ DeliveryStreamDescription: { DeliveryStreamStatus: 'DELETING' } })
         .mockResolvedValueOnce({
           DeliveryStreamDescription: { DeliveryStreamStatus: 'DELETING_FAILED' },
         });
 
-      const err = await provider
+      const outcome = provider
         .delete('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream')
         .then(
           () => undefined,
           (e: unknown) => e
         );
+      await vi.advanceTimersByTimeAsync(5_000);
+      const err = await outcome;
 
       expect(err).toBeInstanceOf(ProvisioningError);
       expect((err as Error).message).toMatch(/entered DELETING_FAILED/);
-      expect((err as Error).message).toMatch(/AllowForceDelete/);
+      expect((err as Error).message).toMatch(/outside cdkd with AllowForceDelete \(cdkd never sends it\)/);
       expect(isWaitAbandonedError(err)).toBe(true);
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
     it('stops waiting at its cap without throwing when the stream never disappears', async () => {

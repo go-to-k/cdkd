@@ -1751,8 +1751,7 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -3858,6 +3857,7 @@
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
+        "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-provided",
         "local-invoke-ruby",
@@ -4032,6 +4032,9 @@
           "literal"
         ],
         "local-invoke-dotnet": [
+          "l2"
+        ],
+        "local-invoke-from-state": [
           "l2"
         ],
         "local-invoke-java": [
@@ -5383,6 +5386,7 @@
           "literal"
         ],
         "rollback-replay-effective-props": [
+          "l1",
           "literal"
         ],
         "s3-analytics-inventory": [
@@ -6648,6 +6652,7 @@
     "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
+    "AWS::HealthImaging::Datastore",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",

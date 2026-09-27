@@ -22,6 +22,9 @@
 #      --stack-region against the canonically-keyed state record, plus the
 #      canonical counter-case asserting byte-identical output. No extra
 #      deploy — it reuses the stack from step 2.
+#   4e (issue #3230): --from-state --role-arn <the stack's state-read role> —
+#      the state is read as the role, and ACCOUNT_TAG's ${AWS::AccountId}
+#      must still resolve (the role's account, which is the caller's here).
 #   5. cdkd destroy --force
 #
 # Run via `/run-integ local-invoke-from-state` (recommended) or directly:
@@ -60,6 +63,38 @@ docker version --format '{{.Server.Version}}' >/dev/null
 
 echo "[verify] step 1c: pulling ${IMAGE} (one-time, ~600MB if not cached)"
 docker pull "${IMAGE}"
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 
 cleanup() {
   rc=$?
@@ -130,6 +165,10 @@ echo "${RESULT_PR1}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in response, got: ${RESULT_PR1}"
   exit 1
 }
+echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
+  exit 1
+}
 
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
 RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
@@ -140,6 +179,10 @@ echo "${RESULT_PR2}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
 }
 echo "${RESULT_PR2}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-state, got: ${RESULT_PR2}"
+  exit 1
+}
+echo "${RESULT_PR2}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
 
@@ -198,9 +241,54 @@ echo "${RESULT_ENV_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || 
   exit 1
 }
 
+# Step 4e — `--from-state --role-arn` (issue #3230). The state is read as the
+# role, and `${AWS::AccountId}` is now asked as the state reader too. This
+# account holds only one identity's account, so the role's account IS the
+# caller's: the arm proves the role-published path resolves the account (and
+# still reads the state), not that the two differ — the unit suite covers that.
+echo "[verify] step 4e: --from-state --role-arn <LocalReadRole> — expect acct-${ACCOUNT_ID} + BUCKET_NAME"
+READ_ROLE_NAME="$(${CLI} state resources "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);for(const r of j){if(r.resourceType==="AWS::IAM::Role"&&r.logicalId.startsWith("LocalReadRole")){console.log(r.physicalId);process.exit(0)}}process.exit(1)})')"
+[ -n "${READ_ROLE_NAME}" ] || { echo "[verify] FAIL: could not read LocalReadRole from cdkd state"; exit 1; }
+READ_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${READ_ROLE_NAME}"
+# A just-created role is not assumable until IAM propagates. Wait for it with
+# the caller's own credentials, bounded, so the invoke below never races it.
+role_ready=0
+assume_err=""
+for _ in $(seq 1 30); do
+  # Only the error text is kept; the issued credentials go to /dev/null.
+  if assume_err="$(aws sts assume-role --role-arn "${READ_ROLE_ARN}" --role-session-name cdkd-3230-probe \
+       --query 'Credentials.Expiration' --output text 2>&1 >/dev/null)"; then
+    role_ready=1
+    break
+  fi
+  sleep 3
+done
+[ "${role_ready}" = 1 ] || {
+  echo "[verify] FAIL: ${READ_ROLE_ARN} never became assumable; last error: ${assume_err}"
+  exit 1
+}
+RESULT_ROLE=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --role-arn "${READ_ROLE_ARN}" \
+  --no-pull --state-bucket "${STATE_BUCKET}")
+echo "[verify]   response: ${RESULT_ROLE}"
+echo "${RESULT_ROLE}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+  echo "[verify] FAIL: --role-arn must still read the state record; expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ROLE}"
+  exit 1
+}
+echo "${RESULT_ROLE}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state --role-arn, got: ${RESULT_ROLE}"
+  exit 1
+}
+
 echo "[verify] step 5: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
+# The step-4e role can read the state bucket and is assumable account-wide, so
+# a leaked copy is a standing grant: assert it is gone rather than trusting rc.
+assert_gone "LocalReadRole ${READ_ROLE_NAME} survived destroy" \
+  aws iam get-role --role-name "${READ_ROLE_NAME}"
+
 echo ""
 echo "[verify] All checks passed: --from-state substituted BUCKET_NAME with the deployed bucket name,"
-echo "[verify] and an upper-cased --stack-region still read the ${REGION} state record (#1836)."
+echo "[verify] an upper-cased --stack-region still read the ${REGION} state record (#1836),"
+echo "[verify] and --from-state --role-arn resolved \${AWS::AccountId} as the state reader (#3230)."

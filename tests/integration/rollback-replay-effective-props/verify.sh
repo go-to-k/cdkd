@@ -17,18 +17,16 @@
 # `prev.properties`, so the substitution was announced into a void and the
 # phantom drift it exists to close survived the rollback.
 #
-# WHY `AWS::EC2::Route` AND NOT THE `AWS::S3::Bucket` #1682 NAMES
+# WHY `AWS::EC2::Route` IS THE ENGINE SUBJECT
 #
-# Both providers substitute on a state replay. But a bucket's
-# reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique
-# name, whose release is not immediate — the fixture would be flaky for a
-# reason unrelated to what it tests. A route's identity is
-# `<RouteTableId>|<Destination>` scoped to this stack's own route table, so the
-# re-create is deterministic. `EC2Provider.createRoute`'s multi-destination
-# warn arm is reached with exactly the same `CreateContext.replayingState`
-# gate (ec2-provider.ts: the callback is passed only when
-# `context?.replayingState === true`), so it exercises the identical engine
-# path.
+# A route's identity is `<RouteTableId>|<Destination>` scoped to this stack's
+# own route table, so its re-create is deterministic.
+# `EC2Provider.createRoute`'s multi-destination warn arm is reached with
+# exactly the same `CreateContext.replayingState` gate (ec2-provider.ts: the
+# callback is passed only when `context?.replayingState === true`), so it
+# exercises the identical engine path. The GlobalTables and the S3 bucket are
+# the PER-PROVIDER subjects: whether each provider's create arm answers with a
+# bag `readCurrentState` can match (issues #1724 / #1726 / #1706).
 #
 # WHAT THIS ASSERTS
 #   1. Deploy v1 succeeds; state records the route with ONE destination key.
@@ -43,13 +41,18 @@
 #      `DestinationCidrBlock` restored to the v1 value and
 #      `DestinationIpv6CidrBlock` GONE. Pre-fix it is still present, because
 #      the record was rebuilt from `prev.properties` verbatim.
+#      For issue #1706 the stream table records the SUBSTITUTED
+#      `{StreamViewType: NEW_AND_OLD_IMAGES}` and streams that way, and the
+#      bucket records no `VersioningConfiguration` and is unversioned.
 #   5. Two consecutive `cdkd drift` runs CONVERGE (no phantom drift), which is
 #      the user-visible consequence the wiring exists to deliver.
+#   5b. A template describing the live stream table and bucket diffs clean
+#      against their records, while the v1 template lists both (issue #1706).
 #   6. Destroy is clean and leaves 0 orphans.
 #
 # OPT-IN CROSS-REGION ARM (issue #1741, second instance)
 #
-# `CDKD_INTEG_MULTI_REGION=1` adds a THIRD GlobalTable whose second replica
+# `CDKD_INTEG_MULTI_REGION=1` adds a FOURTH GlobalTable whose second replica
 # (`GT_XR_REPLICA_REGION`, default eu-west-1) carries a per-index override for
 # `gsi1`. Its record gets the same malformed index blob as the omit table, so
 # the replay builds a table with NO indexes and then adds the cross-region
@@ -99,6 +102,24 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# S3 propagates a DeleteBucket to HeadBucket asynchronously: a probe issued
+# immediately after a successful delete can still answer 200 for a few seconds.
+# Retry on a bounded schedule instead of asserting once. This does NOT weaken
+# leak detection -- a bucket that never disappears still FAILs, and gone_probe
+# still hard-fails on any non-not-found probe error.
+assert_gone_eventually() { # usage: assert_gone_eventually "<desc>" aws s3api head-bucket ...
+  local desc="$1"; shift
+  local attempt
+  for attempt in $(seq 1 10); do
+    if gone_probe "$@"; then
+      return 0
+    fi
+    sleep 3
+  done
+  echo "FAIL: ${desc} (still present after 10 probes over ~30s)" >&2
+  exit 1
+}
+
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 
@@ -132,6 +153,22 @@ GT_NAME_V2="cdkd-rbreplay-gt-${GT_RUN_ID}-v2"
 # (a real GSI carrying capacity vs. a GSI blob replaced by a string).
 GTO_NAME_V1="cdkd-rbreplay-gto-${GT_RUN_ID}-v1"
 GTO_NAME_V2="cdkd-rbreplay-gto-${GT_RUN_ID}-v2"
+# Issue #1706 arm 1: the StreamSpecification subject, a table of its own so
+# phase 5b can diff it per resource (see lib/*.ts).
+GTS_NAME_V1="cdkd-rbreplay-gts-${GT_RUN_ID}-v1"
+GTS_NAME_V2="cdkd-rbreplay-gts-${GT_RUN_ID}-v2"
+# The view type v1 is DEPLOYED with, and the default the replay substitutes for
+# the malformed block. They must differ, or phase 4's live read cannot tell the
+# substituted value from the one v1 was created with.
+STREAM_VIEW_V1="KEYS_ONLY"
+STREAM_VIEW_SUBSTITUTED="NEW_AND_OLD_IMAGES"
+# Injected into the v1 record in phase 2: a present-but-non-object container,
+# the `StreamSpecification: ''` shape the provider's replay downgrade exists for.
+BAD_STREAM_SPEC=""
+# Issue #1706 arm 2: the S3 bucket's names are set below, once ACCOUNT_ID is
+# known -- a bucket name is GLOBAL across accounts, not just per-account.
+# Injected into the v1 record in phase 2: a string where an object belongs.
+BAD_VERSIONING="Enabled"
 # Injected into the v1 state records in phase 2 (see there for why each one).
 BAD_BILLING_MODE=""
 BAD_GSI_BLOB="not-an-array"
@@ -154,9 +191,9 @@ GTX_NAME_V2="cdkd-rbreplay-gtx-${GT_RUN_ID}-v2"
 # an override that never existed.
 XR_INDEX_MAX_READ=13
 # `cdkd drift` counts every resource; the arm adds one.
-EXPECTED_DRIFT_RESOURCES=7
+EXPECTED_DRIFT_RESOURCES=9
 if [ "${MULTI_REGION}" = "1" ]; then
-  EXPECTED_DRIFT_RESOURCES=8
+  EXPECTED_DRIFT_RESOURCES=10
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -170,6 +207,12 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 # somewhere else.
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+
+# Per-RUN unique, like the table names, and carrying the account id because a
+# bucket name is unique across ALL accounts. Stable within a run: the rollback
+# re-acquires the v1 name from the state record.
+BUCKET_V1="cdkd-rbreplay-b-${ACCOUNT_ID}-${GT_RUN_ID}-v1"
+BUCKET_V2="cdkd-rbreplay-b-${ACCOUNT_ID}-${GT_RUN_ID}-v2"
 
 WORK_DIR="$(mktemp -d)"
 
@@ -215,7 +258,7 @@ cleanup() {
   echo ""
   echo "[verify] cleanup (rc=${rc})..."
 
-  ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1:-}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1:-}" GT_XR_TABLE_NAME="${GTX_NAME_V1:-}" \
+  ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1:-}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1:-}" GT_XR_TABLE_NAME="${GTX_NAME_V1:-}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1:-}" BUCKET_NAME="${BUCKET_V1:-}" \
     ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
 
   # The GlobalTable is swept by NAME, not by the fixture tag: the CFn
@@ -225,11 +268,25 @@ cleanup() {
   # swept because a failure between the replacement and the rollback can leave
   # either one live.
   local gt
-  for gt in "${GT_NAME_V1:-}" "${GT_NAME_V2:-}" "${GTO_NAME_V1:-}" "${GTO_NAME_V2:-}"; do
+  for gt in "${GT_NAME_V1:-}" "${GT_NAME_V2:-}" "${GTO_NAME_V1:-}" "${GTO_NAME_V2:-}" \
+    "${GTS_NAME_V1:-}" "${GTS_NAME_V2:-}"; do
     [ -n "${gt}" ] || continue
     if aws dynamodb describe-table --table-name "${gt}" >/dev/null 2>&1; then
       echo "[verify] cleanup: deleting leftover table ${gt}"
       aws dynamodb delete-table --table-name "${gt}" >/dev/null 2>&1
+    fi
+  done
+
+  # The bucket, by NAME for the same reason as the tables: a failure between
+  # the replacement and the rollback can leave either one live, and a name the
+  # state no longer records is out of the destroy's reach. Nothing in this
+  # fixture writes an object, so an empty-bucket delete is enough.
+  local b
+  for b in "${BUCKET_V1:-}" "${BUCKET_V2:-}"; do
+    [ -n "${b}" ] || continue
+    if aws s3api head-bucket --bucket "${b}" >/dev/null 2>&1; then
+      echo "[verify] cleanup: deleting leftover bucket ${b}"
+      aws s3api delete-bucket --bucket "${b}" >/dev/null 2>&1
     fi
   done
 
@@ -306,7 +363,7 @@ npm install --silent >/dev/null 2>&1 || npm install >/dev/null
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 1: deploy v1 (destination ${DEST_V1})"
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} deploy "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" ${CDKD} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --yes
 
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state-v1.json" >/dev/null
@@ -406,6 +463,50 @@ if [ "${GTO_V1_ATTRS}" != "gsipk,pk" ]; then
   exit 1
 fi
 
+# --- issue #1706: the StreamSpecification table and the bucket --------------
+# Each selected by its EXACT recorded physicalId, for the reason given above.
+GTS_LOGICAL_ID="$(jq -r --arg n "${GTS_NAME_V1}" '.resources | to_entries[]
+  | select(.value.resourceType == "AWS::DynamoDB::GlobalTable")
+  | select(.value.physicalId == $n) | .key' "${WORK_DIR}/state-v1.json" | head -1)"
+BUCKET_LOGICAL_ID="$(jq -r --arg n "${BUCKET_V1}" '.resources | to_entries[]
+  | select(.value.resourceType == "AWS::S3::Bucket")
+  | select(.value.physicalId == $n) | .key' "${WORK_DIR}/state-v1.json" | head -1)"
+if [ -z "${GTS_LOGICAL_ID}" ] || [ -z "${BUCKET_LOGICAL_ID}" ]; then
+  echo "FAIL: phase 1: the #1706 subjects are not in state" >&2
+  echo "      stream table (${GTS_NAME_V1}) -> '${GTS_LOGICAL_ID}', bucket (${BUCKET_V1}) -> '${BUCKET_LOGICAL_ID}'" >&2
+  exit 1
+fi
+echo "[verify] phase 1: stream table logical id = ${GTS_LOGICAL_ID}, bucket logical id = ${BUCKET_LOGICAL_ID}"
+
+# The stream must be LIVE with the v1 view type, which differs from the default
+# the replay substitutes. Otherwise phase 4's live read cannot tell the
+# substituted value from the one v1 was created with.
+GTS_V1_STREAM="$(aws dynamodb describe-table --table-name "${GTS_NAME_V1}" \
+  --query '[Table.TableStatus, Table.StreamSpecification.StreamEnabled, Table.StreamSpecification.StreamViewType]' \
+  --output text | tr '\t' '|')"
+if [ "${GTS_V1_STREAM}" != "ACTIVE|True|${STREAM_VIEW_V1}" ]; then
+  echo "FAIL: phase 1: ${GTS_NAME_V1} reads '${GTS_V1_STREAM}' (status|stream enabled|view type)," >&2
+  echo "      want 'ACTIVE|True|${STREAM_VIEW_V1}'." >&2
+  exit 1
+fi
+# ...and the record carries the CFn shape the template declared, the shape
+# phase 4 requires the substituted record to have too.
+GTS_V1_REC="$(jq -cS --arg id "${GTS_LOGICAL_ID}" '.resources[$id].properties.StreamSpecification' \
+  "${WORK_DIR}/state-v1.json")"
+if [ "${GTS_V1_REC}" != "{\"StreamViewType\":\"${STREAM_VIEW_V1}\"}" ]; then
+  echo "FAIL: phase 1: the stream table records StreamSpecification ${GTS_V1_REC}," >&2
+  echo "      want {\"StreamViewType\":\"${STREAM_VIEW_V1}\"}." >&2
+  exit 1
+fi
+
+# The bucket must be VERSIONED before the replay, or phase 4's "comes up
+# unversioned" read holds for a bucket that never was.
+BUCKET_V1_VERSIONING="$(aws s3api get-bucket-versioning --bucket "${BUCKET_V1}" --query Status --output text)"
+if [ "${BUCKET_V1_VERSIONING}" != "Enabled" ]; then
+  echo "FAIL: phase 1: ${BUCKET_V1} versioning is '${BUCKET_V1_VERSIONING}', expected Enabled" >&2
+  exit 1
+fi
+
 GTX_LOGICAL_ID=""
 if [ "${MULTI_REGION}" = "1" ]; then
   GTX_LOGICAL_ID="$(jq -r --arg n "${GTX_NAME_V1}" '.resources | to_entries[]
@@ -437,7 +538,7 @@ if [ "${MULTI_REGION}" = "1" ]; then
   fi
 fi
 
-echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC}; both tables ACTIVE, omit table has 1 index keyed on a dedicated gsipk)"
+echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC}; all three tables ACTIVE, omit table has 1 index keyed on a dedicated gsipk; stream table streams ${STREAM_VIEW_V1}; bucket versioned)"
 
 # --------------------------------------------------------------------------
 # Phase 2 — doctor state so the recorded bag carries a SECOND destination key.
@@ -511,6 +612,38 @@ if [ "${MULTI_REGION}" = "1" ]; then
   fi
 fi
 
+# Issue #1706: the stream table's StreamSpecification and the bucket's
+# VersioningConfiguration each become a STRING where an object belongs. The
+# stream downgrade SUBSTITUTES the default and applies it; the versioning one
+# SKIPS the call. The record must describe each outcome -- the substituted block
+# in the CFn shape, and no versioning key at all.
+jq --arg gts "${GTS_LOGICAL_ID}" --arg b "${BUCKET_LOGICAL_ID}" \
+  --arg ss "${BAD_STREAM_SPEC}" --arg vc "${BAD_VERSIONING}" \
+  --arg bm "${BAD_BILLING_MODE}" \
+  '.resources[$gts].properties.StreamSpecification = $ss
+   # ...plus the blank BillingMode, so the stream arm runs AFTER the billing
+   # arm has already produced an effective bag. The stream arm must build on
+   # that bag rather than on the raw `properties`, or the substituted mode is
+   # lost from the record (phase 4 reads it).
+   | .resources[$gts].properties.BillingMode = $bm
+   | .resources[$b].properties.VersioningConfiguration = $vc' \
+  "${WORK_DIR}/state-doctored.json" > "${WORK_DIR}/state-doctored-1706.json"
+mv "${WORK_DIR}/state-doctored-1706.json" "${WORK_DIR}/state-doctored.json"
+# By TYPE and value, not truthiness: the stream injection is the EMPTY string.
+INJ_1706="$(jq -r --arg gts "${GTS_LOGICAL_ID}" --arg b "${BUCKET_LOGICAL_ID}" \
+  '[(.resources[$gts].properties.StreamSpecification | type),
+    (.resources[$gts].properties.StreamSpecification | tostring),
+    (.resources[$gts].properties | has("BillingMode") | tostring),
+    (.resources[$gts].properties.BillingMode | tostring),
+    (.resources[$b].properties.VersioningConfiguration | type),
+    (.resources[$b].properties.VersioningConfiguration | tostring)] | join("|")' \
+  "${WORK_DIR}/state-doctored.json")"
+if [ "${INJ_1706}" != "string|${BAD_STREAM_SPEC}|true|${BAD_BILLING_MODE}|string|${BAD_VERSIONING}" ]; then
+  echo "FAIL: phase 2: the #1706 injections did not take (got '${INJ_1706}'," >&2
+  echo "      want 'string|${BAD_STREAM_SPEC}|true|${BAD_BILLING_MODE}|string|${BAD_VERSIONING}')" >&2
+  exit 1
+fi
+
 # Fail loudly if any injection did not take -- a silently unchanged record makes
 # every phase-4 absence assertion pass for the WRONG reason (the key would be
 # absent because it was never there), which is the vacuity this fixture exists
@@ -551,7 +684,8 @@ fi
 aws s3 cp "${WORK_DIR}/state-doctored.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
 echo "[verify] phase 2: OK (route declares both destinations; capacity table carries a blank"
 echo "         BillingMode + 5 unsendable capacity members + 2 sendable on-demand ceilings;"
-echo "         omit table carries a malformed GSI blob)"
+echo "         omit table carries a malformed GSI blob; stream table and bucket each carry"
+echo "         a string where their StreamSpecification / VersioningConfiguration object belongs)"
 
 # --------------------------------------------------------------------------
 # Phase 3 — deploy v2: replacement + injected failure -> rollback.
@@ -567,7 +701,7 @@ set +e
 # rollback had only the ROUTE to reverse, and phase 3 correctly reported that
 # the GlobalTable replay substitution never fired. The route needs no such
 # consent, so the flag changes nothing about the arm this fixture already had.
-ROUTE_DEST="${DEST_V2}" GT_TABLE_NAME="${GT_NAME_V2}" GT_OMIT_TABLE_NAME="${GTO_NAME_V2}" GT_XR_TABLE_NAME="${GTX_NAME_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
+ROUTE_DEST="${DEST_V2}" GT_TABLE_NAME="${GT_NAME_V2}" GT_OMIT_TABLE_NAME="${GTO_NAME_V2}" GT_XR_TABLE_NAME="${GTX_NAME_V2}" GT_STREAM_TABLE_NAME="${GTS_NAME_V2}" BUCKET_NAME="${BUCKET_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --force-stateful-recreation --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
 DEPLOY_RC=$?
 set -e
@@ -638,7 +772,28 @@ if ! grep -qF 'AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an arra
   tail -40 "${WORK_DIR}/deploy-v2.log" >&2
   exit 1
 fi
-echo "[verify] phase 3: OK (reverse-replacement arm + all three replay-CREATE downgrades observed)"
+# Issue #1706: both subjects took the reverse-replacement arm, each downgrade
+# fired, and each one's stateful-recreation advisory was printed (neither
+# one's data survives the replacement, which is why phase 3 passes
+# `--force-stateful-recreation`).
+for needle in \
+  "${GTS_LOGICAL_ID} replacement reversed" \
+  "${BUCKET_LOGICAL_ID} replacement reversed" \
+  "${GTS_LOGICAL_ID} (AWS::DynamoDB::GlobalTable) is a stateful type" \
+  "${BUCKET_LOGICAL_ID} (AWS::S3::Bucket) is a stateful type" \
+  'AWS::DynamoDB::GlobalTable StreamSpecification must be an object' \
+  'AWS::S3::Bucket VersioningConfiguration must be an object' \
+  'No PutBucketVersioning is issued'
+do
+  if ! grep -qF "${needle}" "${WORK_DIR}/deploy-v2.log"; then
+    echo "FAIL: phase 3: issue #1706 -- the rollback log lacks '${needle}'," >&2
+    echo "      so the arm phase 4 asserts the recording of never ran. Lines:" >&2
+    grep -aE "${GTS_LOGICAL_ID}|${BUCKET_LOGICAL_ID}|StreamSpecification|VersioningConfiguration" \
+      "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+    exit 1
+  fi
+done
+echo "[verify] phase 3: OK (reverse-replacement arm + all five replay-CREATE downgrades observed)"
 
 # --------------------------------------------------------------------------
 # Phase 4 — THE POINT: the post-rollback record holds the SUBSTITUTED bag.
@@ -829,6 +984,71 @@ if [ "${MULTI_REGION}" = "1" ]; then
   echo "[verify] phase 4: OK (cross-region table re-created with its ${XR_REGION} replica, no index override sent or recorded)"
 fi
 
+# --- issue #1706 arm 1: the StreamSpecification substitution ---------------
+#
+# RECORD: exactly the CFn shape, `{StreamViewType: <sent>}`. Not the malformed
+# string (the pre-#1682 `prev.properties` copy), not an absent key (the arm DID
+# send a stream), and not the SDK shape with `StreamEnabled` -- the CFn
+# `AWS::DynamoDB::GlobalTable` StreamSpecification declares no such member, so
+# that record would diff against every template on the next deploy (phase 5b).
+# `-cS` sorts keys, so the compare is on content rather than key order.
+GTS_POST_REC="$(jq -cS --arg id "${GTS_LOGICAL_ID}" \
+  '.resources[$id].properties | if has("StreamSpecification") then .StreamSpecification else "ABSENT" end' \
+  "${WORK_DIR}/state-rolled-back.json")"
+if [ "${GTS_POST_REC}" != "{\"StreamViewType\":\"${STREAM_VIEW_SUBSTITUTED}\"}" ]; then
+  echo "FAIL: phase 4: issue #1706 -- the replay substituted and SENT a" >&2
+  echo "      ${STREAM_VIEW_SUBSTITUTED} stream, but the record's StreamSpecification is" >&2
+  echo "      ${GTS_POST_REC}, want {\"StreamViewType\":\"${STREAM_VIEW_SUBSTITUTED}\"}." >&2
+  exit 1
+fi
+# ...COMPOSED with the billing arm's answer, which ran first on the same create.
+GTS_POST_BM="$(jq -r --arg id "${GTS_LOGICAL_ID}" \
+  '.resources[$id].properties.BillingMode // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
+if [ "${GTS_POST_BM}" != "PAY_PER_REQUEST" ]; then
+  echo "FAIL: phase 4: the stream table records BillingMode='${GTS_POST_BM}', want the" >&2
+  echo "      substituted PAY_PER_REQUEST -- the stream arm rebuilt the effective bag from" >&2
+  echo "      the raw properties and discarded the billing arm's answer." >&2
+  exit 1
+fi
+# WIRE: the re-created table really streams with the substituted view type.
+# Phase 1 proved v1 was created with a DIFFERENT one, so this can fail.
+GTS_LIVE_STREAM="$(aws dynamodb describe-table --table-name "${GTS_NAME_V1}" \
+  --query '[Table.StreamSpecification.StreamEnabled, Table.StreamSpecification.StreamViewType]' \
+  --output text | tr '\t' '|')"
+if [ "${GTS_LIVE_STREAM}" != "True|${STREAM_VIEW_SUBSTITUTED}" ]; then
+  echo "FAIL: phase 4: the re-created ${GTS_NAME_V1} streams as '${GTS_LIVE_STREAM}'," >&2
+  echo "      want 'True|${STREAM_VIEW_SUBSTITUTED}': the record describes a stream the" >&2
+  echo "      table does not have." >&2
+  exit 1
+fi
+
+# --- issue #1706 arm 2: the S3 bucket's create-path applyEffectiveOverrides --
+#
+# RECORD: the SKIPPED key is gone (`has`, so a present-but-null half-fix fails),
+# while the rest of the bag survives -- the fence against an over-broad drop.
+BUCKET_POST_REC="$(jq -r --arg id "${BUCKET_LOGICAL_ID}" \
+  '.resources[$id] | [.physicalId, (.properties | has("VersioningConfiguration")),
+     (.properties.BucketName // "MISSING"), ((.properties.Tags // []) | length > 0)]
+   | map(tostring) | join("|")' "${WORK_DIR}/state-rolled-back.json")"
+if [ "${BUCKET_POST_REC}" != "${BUCKET_V1}|false|${BUCKET_V1}|true" ]; then
+  echo "FAIL: phase 4: issue #1706 -- the bucket record reads '${BUCKET_POST_REC}'" >&2
+  echo "      (physicalId|has VersioningConfiguration|BucketName|has Tags), want" >&2
+  echo "      '${BUCKET_V1}|false|${BUCKET_V1}|true'. The replay SKIPPED PutBucketVersioning," >&2
+  echo "      so the key must be dropped and nothing else." >&2
+  exit 1
+fi
+# WIRE: the re-created bucket is unversioned. Phase 1 proved v1 was versioned.
+# `get-bucket-versioning` omits `Status` for a never-versioned bucket, which the
+# CLI's text output renders as `None`.
+BUCKET_LIVE_VERSIONING="$(aws s3api get-bucket-versioning --bucket "${BUCKET_V1}" --query Status --output text)"
+if [ "${BUCKET_LIVE_VERSIONING}" != "None" ]; then
+  echo "FAIL: phase 4: the re-created ${BUCKET_V1} reports versioning '${BUCKET_LIVE_VERSIONING}'," >&2
+  echo "      but the replay announced it issued no PutBucketVersioning." >&2
+  exit 1
+fi
+echo "[verify] phase 4: OK (#1706: stream record {StreamViewType: ${STREAM_VIEW_SUBSTITUTED}} matches the live"
+echo "         stream; bucket record dropped VersioningConfiguration and the live bucket is unversioned)"
+
 # Sanity, NOT a discriminator: the template's own mode is PAY_PER_REQUEST too, so
 # this cannot tell the substitution from the template. It is here to catch a
 # record that describes a mode the table is not in.
@@ -848,10 +1068,10 @@ echo "         kept, GSI blob + local replica block dropped, omit table has 0 li
 echo ""
 echo "[verify] phase 5: two consecutive drift runs must converge"
 set +e
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} drift "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" ${CDKD} drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-1.log" 2>&1
 DRIFT1_RC=$?
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" ${CDKD} drift "${STACK}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" ${CDKD} drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-2.log" 2>&1
 DRIFT2_RC=$?
 set -e
@@ -876,13 +1096,13 @@ if grep -qF 'drift unknown' "${WORK_DIR}/drift-1.log"; then
   exit 1
 fi
 # The drift-unknown check above is per-RUN, not per-RESOURCE: it greps the whole
-# log, so it already fails if EITHER resource was unreadable. Assert the table
+# log, so it already fails if ANY resource was unreadable. Assert the table
 # by name too, because that is the resource whose record this change rewrote --
 # a clean run that silently skipped it would prove nothing about #1724 / #1726.
 # A CLEAN drift run prints only a SUMMARY -- it names no resource, so grepping
 # for a logical id here reports "never compared" on a perfectly clean run (that
 # is what the first version of this check did). Assert the COUNT instead: the
-# stack has exactly 7 resources, so "7 resources checked, 0 unsupported" is what
+# resource count is fixed (EXPECTED_DRIFT_RESOURCES), so "N resources checked, 0 unsupported" is what
 # proves every rewritten record was actually compared rather than skipped.
 if ! grep -qE "${EXPECTED_DRIFT_RESOURCES} resources checked, 0 unsupported" "${WORK_DIR}/drift-1.log"; then
   echo "FAIL: phase 5: drift did not report all ${EXPECTED_DRIFT_RESOURCES} resources checked with 0" >&2
@@ -891,14 +1111,94 @@ if ! grep -qE "${EXPECTED_DRIFT_RESOURCES} resources checked, 0 unsupported" "${
   tail -30 "${WORK_DIR}/drift-1.log" >&2
   exit 1
 fi
-echo "[verify] phase 5: OK (both drift runs clean; route AND global table both compared)"
+echo "[verify] phase 5: OK (both drift runs clean; all ${EXPECTED_DRIFT_RESOURCES} resources compared)"
+
+# --------------------------------------------------------------------------
+# Phase 5b — issue #1706: the template that describes the LIVE resources diffs
+# clean against the two #1706 records.
+#
+# Drift cannot carry this. It walks only the keys present in STATE, so a record
+# in the SDK shape (`{StreamEnabled, StreamViewType}`) would drift clean against
+# the readback, and so would one that is simply absent. `properties` is the
+# PREVIOUS side of the next deploy's diff, so the diff is where a wrong shape
+# shows: a permanent UPDATE on every later deploy.
+#
+# Two runs of one parser. The v1 template still declares KEYS_ONLY and
+# versioning, so it MUST list both resources -- the control proving the parser
+# sees them. The corrected template (the live view type, no versioning) must
+# list neither. Per resource, not `--fail`: the capacity and omit tables
+# legitimately diff here, since their records describe what the replay sent.
+# --------------------------------------------------------------------------
+echo ""
+echo "[verify] phase 5b: the corrected template must diff clean against the #1706 records"
+# Prints, for each of the two logical ids, whether the diff lists it (and for
+# which property paths); or
+# `undetermined: ...` when there is no parseable report, which is not "clean"
+# (the tri-state rule `gone_probe` follows).
+diff_lists() { # usage: diff_lists <json-file>
+  python3 -c '
+import json, sys
+path, ids = sys.argv[1], sys.argv[2:]
+try:
+    payload = json.load(open(path))
+except Exception as exc:  # noqa: BLE001 - any parse failure is undetermined
+    print("undetermined: %s" % exc)
+    sys.exit(0)
+if not isinstance(payload, list) or not payload:
+    print("undetermined: empty diff payload")
+    sys.exit(0)
+try:
+    changes = [c for node in payload for c in node["changes"]]
+    listed = {c["logicalId"]: [p["path"] for p in c.get("propertyChanges", [])] for c in changes}
+except Exception as exc:  # noqa: BLE001 - an unexpected shape is undetermined
+    print("undetermined: unexpected diff payload shape (%s)" % exc)
+    sys.exit(0)
+print("|".join("%s=%s" % (i, ("listed:" + ",".join(sorted(listed[i]))) if i in listed else "clean") for i in ids))
+' "$1" "${GTS_LOGICAL_ID}" "${BUCKET_LOGICAL_ID}"
+}
+set +e
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" \
+  ${CDKD} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --json > "${WORK_DIR}/diff-v1.json" 2>"${WORK_DIR}/diff-v1.err"
+DIFF_V1_RC=$?
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" \
+  GT_STREAM_VIEW="${STREAM_VIEW_SUBSTITUTED}" BUCKET_VERSIONING=off \
+  ${CDKD} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --json > "${WORK_DIR}/diff-corrected.json" 2>"${WORK_DIR}/diff-corrected.err"
+DIFF_CORRECTED_RC=$?
+set -e
+DIFF_V1_VERDICT="$(diff_lists "${WORK_DIR}/diff-v1.json")"
+DIFF_CORRECTED_VERDICT="$(diff_lists "${WORK_DIR}/diff-corrected.json")"
+# The control must list each resource FOR the property the corrected template
+# changes, not merely list it: a resource listed for an unrelated reason would
+# make the corrected run's verdict meaningless.
+case "${DIFF_V1_VERDICT}" in
+  "${GTS_LOGICAL_ID}=listed:"*StreamSpecification*"|${BUCKET_LOGICAL_ID}=listed:"*VersioningConfiguration*) ;;
+  *)
+    echo "FAIL: phase 5b: the CONTROL diff (v1 template: ${STREAM_VIEW_V1}, versioning on) reads" >&2
+    echo "      '${DIFF_V1_VERDICT}' (cdkd diff exit ${DIFF_V1_RC}); each resource must be listed" >&2
+    echo "      for StreamSpecification / VersioningConfiguration respectively, or the" >&2
+    echo "      corrected run's 'clean' proves nothing. stderr tail:" >&2
+    tail -20 "${WORK_DIR}/diff-v1.err" >&2
+    exit 1
+    ;;
+esac
+if [ "${DIFF_CORRECTED_VERDICT}" != "${GTS_LOGICAL_ID}=clean|${BUCKET_LOGICAL_ID}=clean" ]; then
+  echo "FAIL: phase 5b: issue #1706 -- the template describing the live resources does not" >&2
+  echo "      diff clean against their records: '${DIFF_CORRECTED_VERDICT}' (cdkd diff exit" >&2
+  echo "      ${DIFF_CORRECTED_RC}). A listed resource is a recorded shape the next deploy" >&2
+  echo "      would re-apply forever. Changes:" >&2
+  jq -c --arg a "${GTS_LOGICAL_ID}" --arg b "${BUCKET_LOGICAL_ID}" \
+    '[.[].changes[] | select(.logicalId == $a or .logicalId == $b)]' \
+    "${WORK_DIR}/diff-corrected.json" >&2 || tail -20 "${WORK_DIR}/diff-corrected.err" >&2
+  exit 1
+fi
+echo "[verify] phase 5b: OK (v1 template lists both; the corrected template lists neither)"
 
 # --------------------------------------------------------------------------
 # Phase 6 — destroy clean, 0 orphans.
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 6: destroy + orphan sweep"
-ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" \
+ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1}" GT_XR_TABLE_NAME="${GTX_NAME_V1}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1}" BUCKET_NAME="${BUCKET_V1}" \
   ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 VPC_LEFT="$(aws ec2 describe-vpcs \
@@ -936,6 +1236,14 @@ assert_gone "phase 6: the v1 omit table ${GTO_NAME_V1} survived destroy" \
   aws dynamodb describe-table --table-name "${GTO_NAME_V1}"
 assert_gone "phase 6: the v2 omit table ${GTO_NAME_V2} survived the rollback" \
   aws dynamodb describe-table --table-name "${GTO_NAME_V2}"
+assert_gone "phase 6: the v1 stream table ${GTS_NAME_V1} survived destroy" \
+  aws dynamodb describe-table --table-name "${GTS_NAME_V1}"
+assert_gone "phase 6: the v2 stream table ${GTS_NAME_V2} survived the rollback" \
+  aws dynamodb describe-table --table-name "${GTS_NAME_V2}"
+assert_gone_eventually "phase 6: the v1 bucket ${BUCKET_V1} survived destroy" \
+  aws s3api head-bucket --bucket "${BUCKET_V1}"
+assert_gone_eventually "phase 6: the v2 bucket ${BUCKET_V2} survived the rollback" \
+  aws s3api head-bucket --bucket "${BUCKET_V2}"
 
 if [ "${MULTI_REGION}" = "1" ]; then
   assert_gone "phase 6: the v1 cross-region table ${GTX_NAME_V1} survived destroy" \

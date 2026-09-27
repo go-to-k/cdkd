@@ -66,6 +66,7 @@ import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
+import { readRecordedPrincipals } from '../../provisioning/iam-policy-targets.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -3761,15 +3762,6 @@ export function preDeletedLine(physicalId: unknown): string {
 /** The most detach targets {@link preDeleteListingLines} names per kind. */
 const DETACH_TARGETS_SHOWN = 20;
 
-/**
- * An IAM role, user or group NAME: IAM's own character set, and at most 128
- * characters (AWS caps a group name at 128, a role or user name at 64). A
- * recorded target outside it is not a principal name, so it is refused
- * rather than handed to `Delete*Policy`, where IAM would reject it between
- * phases.
- */
-const IAM_PRINCIPAL_NAME = /^[\w+=,.@-]{1,128}$/;
-
 /** What {@link policyDetachTargets} returns for a policy it will act on. */
 interface PolicyDetachTargets {
   policyName: string;
@@ -3789,12 +3781,10 @@ interface PolicyDetachTargets {
  * `policyName:roleName` (Cloud Control, pre-SDK-provider state); the SDK
  * provider's own delete takes the first segment, and so does this.
  *
- * Each of `Roles` / `Users` / `Groups` must be ABSENT or a list of
- * {@link IAM_PRINCIPAL_NAME}s. The record is
- * read unvalidated, and the handler used to cast and iterate whatever it
- * found: a string was walked character by character, deleting a same-named
- * inline policy from one-letter roles the plan never showed. Anything else
- * now refuses before any AWS call.
+ * Each of `Roles` / `Users` / `Groups` is read by `readRecordedPrincipals`
+ * (`src/provisioning/iam-policy-targets.ts`), the reader
+ * `IAMPolicyProvider.delete` shares: a `malformed` one refuses before any AWS
+ * call (go-to-k/cdkd#3878).
  */
 function policyDetachTargets(
   entry: RecreateBeforePhase2Entry
@@ -3805,21 +3795,16 @@ function policyDetachTargets(
     return { refusal: 'its physicalId names no policy' };
   }
   const read = (key: 'Roles' | 'Users' | 'Groups'): string[] | { refusal: string } => {
-    const value = entry.properties[key];
-    if (value === undefined) return [];
-    if (
-      !Array.isArray(value) ||
-      !value.every((v) => typeof v === 'string' && IAM_PRINCIPAL_NAME.test(v))
-    ) {
+    const recorded = readRecordedPrincipals(entry.properties[key]);
+    if (recorded.kind === 'absent') return [];
+    if (recorded.kind === 'malformed') {
       return {
         refusal:
           `its recorded properties.${key} is not a list of ${key.slice(0, -1).toLowerCase()} names ` +
-          (Array.isArray(value)
-            ? `(a ${value.length}-element list holding a non-name entry)`
-            : `(found ${value === null ? 'null' : typeof value})`),
+          `(${recorded.detail})`,
       };
     }
-    return value as string[];
+    return recorded.names;
   };
   const roles = read('Roles');
   if ('refusal' in roles) return roles;

@@ -261,8 +261,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * to CC — it would fail at provisioning time with an opaque
    * UnsupportedActionException. With this opt-out the ProviderRegistry
    * rejects such templates pre-flight with a clear error instead.
-   * (The runtime Tier 3 set cannot express this: it excludes SDK-covered
-   * types by design, so `isNonProvisionable()` is false for this type.)
+   * (The type is also in `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`, which the
+   * route reads per type (#3871), so this flag is now redundant for it.)
    */
   readonly disableCcApiFallback = true;
 

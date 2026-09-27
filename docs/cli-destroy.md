@@ -670,7 +670,10 @@ it withholds the target entirely when the stack name or region does not render
 exactly. Both are deliberate: `cdkd state orphan` deletes a record, the region
 in the message is read from the damaged record's own body, and a name that
 needed sanitizing can render identically to a healthy one. Identify the record
-with `cdkd state list --long`, which prints the keys as stored.
+with `cdkd state list --json`, which prints each stack name and region as
+stored — `--long` trims a padded name, so it would show the healthy one's
+spelling — and replace each quoted hole in the command, quotes included, with
+the shell-quoted value.
 
 To act on the resources instead, inspect the record with `cdkd state show
 '<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An

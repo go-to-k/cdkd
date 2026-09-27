@@ -14,7 +14,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **provider-registry.ts** - The ROUTING decision, in order: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` says otherwise (one spelling, shared with `cdkd diff`; per-type escapes in `STICKY_CC_MIGRATION_EXEMPT` — issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)); an SDK provider with no silent-drop property -> that one; a silent drop -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic as much as create logic**, hence in the `integ-destroy` gate scope.
 
-- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags, which would fire false drift; deliberately no `aws:cdk:path` tag walk, since AWS rejects `aws:` tag writes.
+- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift); no `aws:cdk:path` tag walk, since AWS rejects `aws:` tag writes.
 
 - **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete` — set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`.
 
@@ -26,6 +26,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: `pending` and NO state are unsettled, everything else is settled. Shared by the provider and the resolver's live arm, which must not disagree. A LEAF.
 
+- **iam-policy-targets.ts** - `readRecordedPrincipals`, the ONE reader of an `AWS::IAM::Policy` bag's `Roles` / `Groups` / `Users`, for every `IAMPolicyProvider` method and `cdkd export`'s pre-delete ([#3878](https://github.com/go-to-k/cdkd/issues/3878)). A present value that is not a list of IAM names is `malformed` and refused before ANY call: a cast iterated a string by character. A LEAF.
+
 - **composite-id.ts** - Refusal guard for COMPOSITE physicalIds (issue [#1672](https://github.com/go-to-k/cdkd/issues/1672)). The separator is unescaped, so a segment containing one yields the wrong ARITY yet passes every guard: the deploy SUCCEEDS, then destroy deletes the wrong one. `packCompositeId` is the ACTION (throws, or warns-and-packs while replaying state); `compositeIdSeparatorRefusal` is the bare PREDICATE for `import()` paths that warn-and-SKIP.
 
 - **nested-stack-messages.ts** - What `NestedStackProvider.delete` THROWS on child-destroy errors. **Must stay a LEAF — no imports, ever**: importing it back from the provider closes a cycle through `destroy-runner.ts`. A builder, not a literal: both callers classify failures by MESSAGE and read already-deleted phrases as idempotent success, DROPPING the state row.
@@ -34,7 +36,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **final-snapshot.ts** - `DeletionPolicy` / `UpdateReplacePolicy: Snapshot`. ATOMIC types thread `DeleteContext.finalSnapshotIdentifier` and flip `SkipFinalSnapshot` — SDK route ONLY, and `CloudControlProvider.delete` fail-closes on the field. **The atomic and pre-delete sets must stay DISJOINT**: atomic is tested first, so a type in both never reaches the pre-delete snapshot.
 
-- **emr-configuration.ts** - CFn -> SDK converters for `AWS::EMR::*` nested config blobs (`ConfigurationProperties` / `StepProperties` -> `Properties`). Pure key renames, but the SDK v3 serializer DROPS unknown members, so without them an EMR application configuration silently vanishes.
+- **emr-configuration.ts** - CFn -> SDK converters for `AWS::EMR::*` nested config blobs (`ConfigurationProperties` / `StepProperties` -> `Properties`). Pure key renames, but the SDK v3 serializer DROPS unknown members.
 
 - **dynamodb-warm-throughput.ts** - Numeric-member rules shared by both DynamoDB providers. `coerceWarmThroughput`'s `spec` presence IS the sendability predicate, so write-side and drift-side cannot answer differently; `isWarmThroughputDecrease` fails OPEN on a mixed or unreadable live block, since AWS rejects an `UpdateTable` that LOWERS warm throughput.
 
@@ -50,9 +52,9 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
 
-- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; issue [#3872](https://github.com/go-to-k/cdkd/issues/3872)). The delete was ACCEPTED, so the cap, a Ctrl-C and an unreadable status warn and RETURN; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws, marked as an abandoned wait so the state record is kept.
+- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; issue [#3872](https://github.com/go-to-k/cdkd/issues/3872)). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 
-- **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON; CI fails on drift. `--allow-unsupported-types` routes named types through CC.
+- **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON. `--allow-unsupported-types` routes named types through CC. Hand-written `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` lists the REGISTERED `NON_PROVISIONABLE` types the audit drops from Tier 3; the CC auto-route reads both, per TYPE, via `hasNoCloudControlHandlers` (#3871).
 
 - **property-coverage.ts** + **.generated.ts** - Property-level REPORTING and routing, NOT a rejection; the generated per-type `{ handled, silentDrop }` map is built offline from the committed schema fixtures (CI fails on drift). `--allow-unsupported-properties` opts named entries back INTO the drop, keeping the SDK path. **An accepted drop is not RECORDED either** (issue [#2750](https://github.com/go-to-k/cdkd/issues/2750)): the allow set is per `<Type>:<Prop>` but the ROUTE is per RESOURCE, so ONE un-allowed drop routes the whole resource through CC and nothing is dropped. Both narrowings must KEEP an un-allowed drop, and neither removes a CREATE-ONLY drop, which would become an ADDITION next deploy — a replacement of a resource nobody touched. A property in NEITHER map (unrecognized) ROUTES like a drop unless read-only, allow-listed, on a type with no CC route, or held unchanged by the state record — that baseline is what keeps an existing deployment on its route, so every existing-resource caller threads the record's bag, and the narrowings stay schema-known only ([design](../../docs/design/3713-route-unrecognized-properties.md)).
 

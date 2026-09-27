@@ -413,7 +413,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
             `Pass the ARN explicitly: --assume-task-role <arn>`
         );
       }
-      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options.region);
+      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options);
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     } else if (typeof options.assumeTaskRole === 'string') {
       resolvedRoleArn = options.assumeTaskRole;
@@ -506,22 +506,63 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
 }
 
 /**
+ * What decides whose account `${AWS::AccountId}` names (issue
+ * go-to-k/cdkd#3230): the state source the stack was read from, and the
+ * `--profile` that source reads through.
+ */
+interface StackAccountSource {
+  region?: string | undefined;
+  profile?: string | undefined;
+  fromState: boolean;
+}
+
+/**
  * If `arn` contains the `${AWS::AccountId}` placeholder emitted by the
- * resolver for inline same-stack IAM Roles, substitute the live caller
- * account via STS `GetCallerIdentity`. Otherwise pass through unchanged.
+ * resolver for inline same-stack IAM Roles, substitute the account the stack
+ * lives in via STS `GetCallerIdentity`. Otherwise pass through unchanged.
  * Lazy: callers should only invoke this when the resolved ARN is actually
  * going to be used (i.e. on the bare `--assume-task-role` path).
+ *
+ * The account follows the state SOURCE (issue go-to-k/cdkd#3230): under
+ * `--from-state` it is the account of the identity that read the state record
+ * — the `--role-arn` role when one is published — because the task role is a
+ * resource of that stack; otherwise it stays the caller's own. Either way the
+ * resulting ARN is then assumed AS THE CALLER (`assumeTaskRole` opts out), so
+ * only the account ID is taken from the reader here.
+ *
+ * @internal exported for unit tests.
  */
-async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
+export async function resolvePlaceholderAccount(
+  arn: string,
+  source: StackAccountSource
+): Promise<string> {
+  const { region, profile, fromState } = source;
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  // `ignoreAssumedRole` -- this resolves the account filled into a task-role ARN that is then assumed FOR the container,
-  // so it must be the caller's own identity, never a `--role-arn` assumed
-  // for cdkd's own calls. See that option's JSDoc.
-  const sts = new STSClient({
-    ...awsClientDefaults({ ignoreAssumedRole: true }),
-    ...(region && { region }),
-  });
+  let sts: InstanceType<typeof STSClient>;
+  if (fromState) {
+    // cdkd-local-role-identity: `--from-state` read the state record through
+    // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
+    // account the task role lives in (issue go-to-k/cdkd#3230). Only the account
+    // ID is taken; the ARN it completes is assumed as the caller.
+    sts = new STSClient({
+      ...awsClientDefaults({ profile }),
+      ...(region && { region }),
+      // `--profile` is the identity both state sources read through when no role
+      // is published, so the account must be asked as it too.
+      ...(profile && { profile }),
+    });
+  } else {
+    // `ignoreAssumedRole` -- without `--from-state` the account filled into a
+    // task-role ARN that is then assumed FOR the container stays the caller's
+    // own, never a `--role-arn` assumed for cdkd's own calls. See that option's JSDoc.
+    sts = new STSClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
+  }
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -704,7 +745,11 @@ export async function buildEcsImageResolutionContext(
     }
     let accountId: string | undefined;
     try {
-      accountId = await resolveCallerAccountId(region);
+      accountId = await resolveStackAccountId({
+        region,
+        profile: options.profile,
+        fromState: options.fromState,
+      });
     } catch (err) {
       logger.warn(
         `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -788,15 +833,40 @@ function pickCandidateStack(
   return undefined;
 }
 
-async function resolveCallerAccountId(region: string | undefined): Promise<string | undefined> {
+/**
+ * STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter. The
+ * account follows the SOURCE the stack was read from (issue
+ * go-to-k/cdkd#3230): under `--from-state` it is the account of the identity
+ * that read the state record — the `--role-arn` role when one is published —
+ * and otherwise (`--from-cfn-stack`, or no state source) the caller's own.
+ */
+async function resolveStackAccountId(source: StackAccountSource): Promise<string | undefined> {
+  const { region, profile, fromState } = source;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated task sees,
-  // so it must be the caller's own identity, never a `--role-arn` assumed
-  // for cdkd's own calls. See that option's JSDoc.
-  const sts = new STSClient({
-    ...awsClientDefaults({ ignoreAssumedRole: true }),
-    ...(region && { region }),
-  });
+  let sts: InstanceType<typeof STSClient>;
+  if (fromState) {
+    // cdkd-local-role-identity: `--from-state` read the state record through
+    // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
+    // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
+    // is taken; no credential reaches the emulated task.
+    sts = new STSClient({
+      ...awsClientDefaults({ profile }),
+      ...(region && { region }),
+      // `--profile` is the identity both state sources read through when no role
+      // is published, so the account must be asked as it too.
+      ...(profile && { profile }),
+    });
+  } else {
+    // `ignoreAssumedRole` -- without `--from-state` the `${AWS::AccountId}` the
+    // emulated task sees stays the caller's own, never a `--role-arn` assumed
+    // for cdkd's own calls. See that option's JSDoc.
+    sts = new STSClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
+  }
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

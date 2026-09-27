@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd CodeCommit Repository SDK provider integ (issue #1045).
 #
-# AWS::CodeCommit::Repository is `ProvisioningType: NON_PROVISIONABLE`, so
-# pre-fix cdkd's pre-flight rejected the type (no Cloud Control fallback).
-# This verifies the new SDK provider end to end.
+# This verifies the AWS::CodeCommit::Repository SDK provider end to end.
 #
 # Phases:
 #   1. Deploy a repository with description + Tags env=dev, team=platform, a
