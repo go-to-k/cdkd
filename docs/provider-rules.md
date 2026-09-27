@@ -1817,7 +1817,7 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
   // nothing, so answer 'declared' and keep comparing. A wrong DROP here is
   // unrecoverable phantom drift; the residual is a loud revert failure.
   if (!desiredBagIsInformative(properties)) return true;
-  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);
+  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);
 }
 ```
 
@@ -1898,6 +1898,8 @@ When `readCurrentState` starts emitting something it used to omit, every `observ
 
 - `cdkd drift --revert` passes its DESIRED bag, the recorded baseline, through the same hook against the raw readback and sends the returned baseline to `update()`. A member missing there is a REMOVAL to the provider. A legacy GlobalTable record sent without its local entry untagged the local table.
 - `--accept` writes each change's `awsValue` from the AWS side. Leaving that side intact means an accept stores the current shape and heals the record.
+
+The reverse change, a readback that STOPS emitting something, is the one case where the hook drops from the baseline. `AWS::DynamoDB::Table` reads back only the `WarmThroughput` members cdkd sends (issue [#3777](https://github.com/go-to-k/cdkd/issues/3777)), so a baseline block is trimmed to the members the recorded declaration sends, read from the `properties` argument the hook also receives. Key such a trim on the declaration, never on what the readback omitted: a member AWS transiently fails to report must stay reported. That is safe only because a warm-throughput member missing from the desired side is not a removal: every send site coerces the block to its usable members, and AWS cannot lower or unset warm throughput. Before copying it, check that the same holds for your member.
 
 It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
 

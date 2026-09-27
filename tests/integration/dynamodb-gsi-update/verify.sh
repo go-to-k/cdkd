@@ -36,6 +36,10 @@
 #      behind that baseline IS reported.
 #   2e. Assert (issue #1782): the per-index ContributorInsightsSpecification
 #      declared on gsi1 — an index this very update ADDED — reached AWS.
+#   2f. Assert (issue #3777): the table-level WarmThroughput declares ONE
+#      member, so the deploy-time capture carries that member alone; a legacy
+#      capture that also holds the unsent member compares CLEAN, and a change
+#      to the member cdkd sends is still reported.
 #   I1-I5. The per-index Contributor Insights arms (issue #1782) on their OWN
 #      stack and table — enable at create with an undeclared sibling as the
 #      negative control, no phantom drift, an out-of-band toggle detected and
@@ -180,7 +184,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -536,6 +540,52 @@ if [ "$(table_outcome_count clean)" != "1" ]; then
 fi
 echo "    observed baseline: table reported CLEAN"
 
+# --- Phase 2f: WarmThroughput is read back per member (issue #3777) ----------
+# The template declares `{ReadUnitsPerSecond: 6000}` and nothing else, and AWS
+# reports BOTH members for every table. Pre-fix the readback emitted both, so the
+# capture held AWS's `WriteUnitsPerSecond`, a member cdkd never sent, and a later
+# AWS-side change to it reported as drift. Each record below is uploaded, compared
+# by a read-only `cdkd drift`, and superseded by Phase 2c's own upload.
+echo "==> Phase 2f: the table-level WarmThroughput is read back per member (issue #3777)"
+OBSERVED_WARM_KEYS="$(jq -r --arg l "${TABLE_LID}" \
+  '(.resources[$l].observedProperties.WarmThroughput // {}) | keys | join(",")' "${STATE_JSON}")"
+if [ "${OBSERVED_WARM_KEYS}" != "ReadUnitsPerSecond" ]; then
+  echo "FAIL (issue #3777): the observed table WarmThroughput carries '${OBSERVED_WARM_KEYS}', expected 'ReadUnitsPerSecond' alone (the template declares no WriteUnitsPerSecond)" >&2
+  jq --arg l "${TABLE_LID}" '.resources[$l].observedProperties.WarmThroughput' "${STATE_JSON}" >&2
+  exit 1
+fi
+echo "    observed WarmThroughput carries only the declared member (${OBSERVED_WARM_KEYS})"
+
+# A legacy capture: the unsent member recorded at a value AWS does not hold, so
+# the comparison cannot pass by the two sides agreeing on it.
+jq --arg l "${TABLE_LID}" \
+  '.resources[$l].observedProperties.WarmThroughput.WriteUnitsPerSecond = 987654' \
+  "${STATE_JSON}" > "${STATE_JSON}.warm"
+aws s3 cp "${STATE_JSON}.warm" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+run_drift_json "legacy WarmThroughput capture"
+if [ "$(table_outcome_count notSupported)" != "0" ] || [ "$(table_outcome_count drifted)" != "0" ] \
+  || [ "$(table_outcome_count clean)" != "1" ]; then
+  echo "FAIL (issue #3777): a capture holding the unsent WriteUnitsPerSecond must compare CLEAN:" >&2
+  jq '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table")]' "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    legacy capture with the unsent member: table reported CLEAN"
+
+# The member cdkd DOES send stays compared: record it one below what AWS holds.
+jq --arg l "${TABLE_LID}" \
+  '.resources[$l].observedProperties.WarmThroughput |= (.WriteUnitsPerSecond = 987654 | .ReadUnitsPerSecond -= 1)' \
+  "${STATE_JSON}" > "${STATE_JSON}.warm"
+aws s3 cp "${STATE_JSON}.warm" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+run_drift_json "legacy WarmThroughput capture, sent member changed"
+WARM_DRIFT_PATHS="$(jq -r '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table") | .changes[].path] | join(" ")' \
+  "${DRIFT_JSON}")"
+if [ "${WARM_DRIFT_PATHS}" != "WarmThroughput.ReadUnitsPerSecond" ]; then
+  echo "FAIL (issue #3777): expected drift on WarmThroughput.ReadUnitsPerSecond alone, got '${WARM_DRIFT_PATHS}'" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    a change to the sent member is still reported: ${WARM_DRIFT_PATHS}"
+
 # --- Phase 2c: a STALE observed baseline converges (issue #1812) -------------
 # A record an older cdkd wrote (before issue #1767) holds each index's RAW
 # `DescribeTable` description in `observedProperties`. No fresh deploy can
@@ -635,7 +685,7 @@ if [ -n "${OTHER_DRIFT_PATHS}" ]; then
 fi
 echo "    properties baseline: no GlobalSecondaryIndexes / LocalSecondaryIndexes drift"
 
-rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${DRIFT_JSON}"
+rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}"
 
 # --- Phases I1-I5: per-index ContributorInsightsSpecification (issue #1782) ---
 # CFn's `GlobalSecondaryIndex.ContributorInsightsSpecification` is not a member

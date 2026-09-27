@@ -1363,7 +1363,7 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
   // in-code comment says so) — which is issue #1842 in one line, and why the
   // anchor is asserted unique rather than assumed.
   const DELEGATED_READ =
-    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
+    "  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);";
 
   it('the fixture still discriminates: the real read carries delegated evidence', () => {
     // Without this the two probes below could both pass vacuously — a property
@@ -1395,7 +1395,7 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
     // unfollowable spelling (a computed key with no literal table behind it).
     const degraded = realDdb.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && wasSentWarmThroughput(properties[k]);"
     );
     expect(degraded).not.toBe(realDdb);
     const losses = findEvidenceLosses(analyze(realDdb), analyze(degraded));
@@ -1403,7 +1403,9 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
       'DynamoDBTableProvider#WarmThroughput',
     ]);
     expect(losses[0]?.lostShapes).toEqual(['delegated']);
-    expect(losses[0]?.lostSeeds).toEqual(['getDriftUnknownPaths', 'readCurrentState']);
+    // `readCurrentState` keeps its seed: it also reads the bag directly for the
+    // per-member readback (issue #3777), which this degradation does not touch.
+    expect(losses[0]?.lostSeeds).toEqual(['getDriftUnknownPaths']);
     // The property is STILL `wired` and the class still reports no gap — which
     // is precisely why the gap verdict could not see this.
     expect(analyze(degraded).classes.flatMap((c) => c.gaps)).toEqual([]);
@@ -1511,12 +1513,12 @@ describe('the shipped --check command', () => {
   // in-code comment says so) — which is issue #1842 in one line, and why the
   // anchor is asserted unique rather than assumed.
   const DELEGATED_READ =
-    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
+    "  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);";
   const degradeWarmThroughput = (src: string): string => {
     expect(src.split(DELEGATED_READ).length - 1, 'probe anchor must be unique').toBe(1);
     return src.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && wasSentWarmThroughput(properties[k]);"
     );
   };
 
@@ -1592,7 +1594,7 @@ describe('the shipped --check command', () => {
     // seeds (leaving only the property name) cannot pass.
     expect(stderr).toContain(
       'DynamoDBTableProvider#WarmThroughput \u2014 lost evidence [delegated] ' +
-        'and seeded-by [getDriftUnknownPaths, readCurrentState]'
+        'and seeded-by [getDriftUnknownPaths]'
     );
     // Not a gap. If this ever starts matching, the probe stopped exercising the
     // degradation-under-a-surviving-read case that the gap verdict is blind to.

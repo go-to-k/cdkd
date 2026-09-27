@@ -6257,6 +6257,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftPair",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState",
@@ -6266,6 +6267,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in canonicalizeDriftPair()",
         "object spread in canonicalizeDriftProperties()"
       ]
     },

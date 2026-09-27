@@ -1072,6 +1072,44 @@ describe('cdkd drift', () => {
       expect(aws).toEqual({ ...readback, Marked: true });
     });
 
+    it('hands the pair hook the recorded properties, on detection and on --revert (issue #3777)', async () => {
+      // A rule keyed on what the template DECLARED (the Table's per-member
+      // WarmThroughput trim) needs the recorded bag; a distinct marker proves
+      // it is `properties`, not either comparison side.
+      const recorded = { ...readback, RecordedMarker: 'properties' };
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Table1: makeResource({
+            physicalId: 'table-1',
+            resourceType: 'AWS::DynamoDB::GlobalTable',
+            properties: recorded,
+            observedProperties: legacyBaseline,
+          }),
+        })
+      );
+      const seen: unknown[] = [];
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => driftedReadback,
+        canonicalizeDriftPair: async (
+          _type: string,
+          baseline: Record<string, unknown>,
+          aws: Record<string, unknown>,
+          properties?: Record<string, unknown>
+        ) => {
+          seen.push(properties);
+          return { baseline, aws };
+        },
+        update: vi.fn(async () => ({ physicalId: 'table-1', wasReplaced: false })),
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      // One detection call, one on the revert's desired bag.
+      expect(seen).toEqual([recorded, recorded]);
+    });
+
     /** A pair hook that completes a baseline lacking us-east-1 from the readback. */
     const completingPairHook = async (
       _type: string,
