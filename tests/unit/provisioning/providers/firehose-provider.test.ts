@@ -37,7 +37,11 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-firehose';
 import { FirehoseProvider } from '../../../../src/provisioning/providers/firehose-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../../src/utils/error-handler.js';
+import { isWaitAbandonedError } from '../../../../src/provisioning/wait-abandoned.js';
 
 describe('FirehoseProvider', () => {
   let provider: FirehoseProvider;
@@ -259,6 +263,27 @@ describe('FirehoseProvider', () => {
         expect(call[0]).toBeInstanceOf(DescribeDeliveryStreamCommand);
         expect(call[0].input).toEqual({ DeliveryStreamName: 'test-stream' });
       }
+    });
+
+    it('throws, keeping the state record, when the stream enters DELETING_FAILED', async () => {
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'DELETING_FAILED' },
+        });
+
+      const err = await provider
+        .delete('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream')
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toMatch(/entered DELETING_FAILED/);
+      expect((err as Error).message).toMatch(/AllowForceDelete/);
+      expect(isWaitAbandonedError(err)).toBe(true);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('stops waiting at its cap without throwing when the stream never disappears', async () => {

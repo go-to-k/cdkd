@@ -4,6 +4,7 @@ import {
   clearResolvedResourceTimeouts,
   setResolvedResourceTimeouts,
 } from '../../../src/provisioning/resource-timeout-registry.js';
+import { isWaitAbandonedError } from '../../../src/provisioning/wait-abandoned.js';
 import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
@@ -31,8 +32,13 @@ function makeHarness(statuses: Array<string | undefined | Error>) {
     if (next instanceof Error) throw next;
     return next;
   });
-  const run = (maxWaitMs = 60_000, pollIntervalMs = 5_000) =>
+  const run = (
+    maxWaitMs = 60_000,
+    pollIntervalMs = 5_000,
+    failedStatus?: (status: string) => Error | undefined
+  ) =>
     waitForGoneAfterDelete({
+      failedStatus,
       what: 'Firehose delivery stream s1',
       resourceType: TYPE,
       describe,
@@ -46,6 +52,13 @@ function makeHarness(statuses: Array<string | undefined | Error>) {
       now: () => clock,
     });
   return { run, describe, logger, sleeps, clock: () => clock };
+}
+
+function waitUntilGone(
+  h: ReturnType<typeof makeHarness>,
+  failedStatus: (status: string) => Error | undefined
+): Promise<void> {
+  return h.run(60_000, 5_000, failedStatus);
 }
 
 function throttle(): Error {
@@ -96,6 +109,34 @@ describe('waitForGoneAfterDelete (#3872)', () => {
     expect(h.logger.warn).toHaveBeenCalledTimes(1);
     expect(h.logger.warn.mock.calls[0]![0]).toMatch(/status could not be read/);
     expect(h.logger.warn.mock.calls[0]![0]).toMatch(/AccessDeniedException/);
+  });
+
+  it('logs the withheld AWS detail at debug when the status read fails', async () => {
+    const h = makeHarness([accessDenied()]);
+    await h.run();
+    const debug = h.logger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(debug).toMatch(/status read failed: .*not authorized to perform firehose:DescribeDeliveryStream/);
+  });
+
+  it('throws the caller error, marked as an abandoned wait, on a terminal failed status', async () => {
+    const h = makeHarness(['DELETING', 'DELETING_FAILED', undefined]);
+    const failure = new Error('stream s1 entered DELETING_FAILED');
+    let caught: unknown;
+    try {
+      await waitUntilGone(h, (s) => (s === 'DELETING_FAILED' ? failure : undefined));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBe(failure);
+    expect(isWaitAbandonedError(caught)).toBe(true);
+    expect(h.describe).toHaveBeenCalledTimes(2);
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting through a status the failedStatus predicate does not name', async () => {
+    const h = makeHarness(['DELETING', undefined]);
+    await expect(waitUntilGone(h, () => undefined)).resolves.toBeUndefined();
+    expect(h.describe).toHaveBeenCalledTimes(2);
   });
 
   it('stops at the cap with a warning naming the last status, without throwing', async () => {

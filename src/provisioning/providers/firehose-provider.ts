@@ -876,6 +876,22 @@ export class FirehoseProvider implements ResourceProvider {
       what: `Firehose delivery stream ${physicalId}`,
       resourceType,
       describe: () => this.readDeliveryStreamStatusForDelete(physicalId),
+      // DELETING_FAILED is terminal: Firehose could not finish the delete
+      // (typically a customer-managed KMS key it can no longer use) and keeps
+      // the stream until a forced delete. Returning would drop the state
+      // record of a live stream, so this one exit throws and keeps it.
+      failedStatus: (status) =>
+        status === 'DELETING_FAILED'
+          ? new ProvisioningError(
+              `Firehose delivery stream ${logicalId} entered DELETING_FAILED after the delete ` +
+                `was accepted, so AWS will not finish it on its own (commonly a customer-managed ` +
+                `KMS key the stream can no longer use). Fix the key or delete the stream with ` +
+                `AllowForceDelete, then re-run; the state record is kept.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          : undefined,
       logger: this.logger,
       pollIntervalMs: FIREHOSE_DELETE_POLL_INTERVAL_MS,
       maxWaitMs: FIREHOSE_DELETE_MAX_WAIT_MS,

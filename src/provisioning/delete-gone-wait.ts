@@ -2,6 +2,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import { startInterruptWatch } from './interrupt-watch.js';
 import { resolvedResourceTimeoutMs } from './resource-timeout-registry.js';
+import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
 type WaitLogger = { debug(message: string): void; warn(message: string): void };
@@ -19,13 +20,19 @@ type WaitLogger = { debug(message: string): void; warn(message: string): void };
  * CloudFormation reports a delete complete only once the resource is gone;
  * waiting here closes the window at its source.
  *
- * CONTRACT. Every exit RETURNS — none throws — because the delete has already
- * been ACCEPTED and completes on AWS's side whatever cdkd does next: throwing
- * would turn an accepted delete into a reported FAILURE with the state record
- * kept, and the re-run would find nothing to delete. The non-gone exits
- * (timeout, interrupt, an unreadable status) warn instead, and leave exactly
- * the pre-#3872 behaviour: the delete is reported done while the name may
- * still be held for a little longer.
+ * CONTRACT. Every exit but one RETURNS, because the delete has already been
+ * ACCEPTED and completes on AWS's side whatever cdkd does next: throwing would
+ * turn an accepted delete into a reported FAILURE with the state record kept,
+ * and the re-run would find nothing to delete. The non-gone exits (timeout,
+ * interrupt, an unreadable status) warn instead, and leave exactly the
+ * pre-#3872 behaviour: the delete is reported done while the name may still be
+ * held for a little longer.
+ *  - The exception is a status the caller names TERMINAL through
+ *    `failedStatus` (Firehose `DELETING_FAILED`): there the delete will NOT
+ *    complete on its own, so returning would drop the state record of a live
+ *    resource. The caller's error is thrown, marked as an abandoned wait
+ *    (`wait-abandoned.ts`) so no already-deleted classifier can read its text
+ *    — which interpolates user-chosen names — as success.
  *  - `describe()` resolving `undefined` means GONE (the caller maps its
  *    service's not-found error to it); any string is the still-present status.
  *  - A THROTTLED describe keeps polling — a destroy deleting many streams at
@@ -48,6 +55,8 @@ export async function waitForGoneAfterDelete(opts: {
   resourceType: string;
   /** Resolves the still-present status, or `undefined` once the resource is gone. */
   describe: () => Promise<string | undefined>;
+  /** The error for a TERMINAL failed status, or `undefined` to keep waiting. */
+  failedStatus?: (status: string) => Error | undefined;
   logger: WaitLogger;
   pollIntervalMs: number;
   maxWaitMs: number;
@@ -81,10 +90,18 @@ export async function waitForGoneAfterDelete(opts: {
           opts.logger.debug(`${opts.what} is gone`);
           return;
         }
+        const failure = opts.failedStatus?.(status);
+        if (failure !== undefined) throw markWaitAbandoned(failure);
         lastStatus = status;
         opts.logger.debug(`${opts.what} status: ${status}, waiting for it to disappear`);
       } catch (error) {
+        if (isWaitAbandonedError(error)) throw error;
         if (!isThrottlingError(error)) {
+          // The warn carries the redacted summary; the AWS text it withholds
+          // goes to debug, which is where `--verbose` points.
+          opts.logger.debug(
+            `${opts.what}: status read failed: ${describeAwsFailure(error).detail}`
+          );
           opts.logger.warn(
             `${stopped}: its status could not be read (${describeAwsFailure(error).summary}). ` +
               consequence
