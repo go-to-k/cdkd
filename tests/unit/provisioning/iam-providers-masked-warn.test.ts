@@ -428,10 +428,12 @@ describe('IAMPolicyProvider (issue #2177)', () => {
   it('masks the policy name and every principal on create() and update()', async () => {
     answerIam();
     const provider = new IAMPolicyProvider();
+    // Principals are IAM NAMES: an ARN-shaped entry is refused before any call
+    // since go-to-k/cdkd#3878, so every principal here is a name.
     await provider.create(
       'MyPolicy',
       TYPE,
-      { PolicyName: SECRET, PolicyDocument: DOC, Roles: [SHORT], Groups: [OLD_SECRET], Users: [SECRET_ARN] },
+      { PolicyName: SECRET, PolicyDocument: DOC, Roles: [SHORT], Groups: [OLD_SECRET], Users: [SECRET] },
       { maskSecrets }
     );
     await provider.update(
@@ -439,7 +441,7 @@ describe('IAMPolicyProvider (issue #2177)', () => {
       SECRET,
       TYPE,
       { PolicyName: SECRET, PolicyDocument: DOC, Roles: [SHORT] },
-      { PolicyName: SECRET, PolicyDocument: DOC, Roles: [OLD_SECRET], Groups: [SECRET_ARN], Users: [SECRET] },
+      { PolicyName: SECRET, PolicyDocument: DOC, Roles: [OLD_SECRET], Groups: [SHORT], Users: [SECRET] },
       { maskSecrets }
     );
     expectTranscriptMasked();

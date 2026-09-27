@@ -891,8 +891,12 @@ eight same-class arms outside the composite-id family: both malformed
 arm in `lambda-permission-provider.ts`, the no-properties / no-`ServiceToken`
 arms in `custom-resource-provider.ts`, the empty-policy-name arm in
 `iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
-`iam-user-group-provider.ts`. Each exports its `reason` as a named constant
-beside the provider, so the wording is pinned by a test instead of retyped.
+`iam-user-group-provider.ts`. Issue
+[#3878](https://github.com/go-to-k/cdkd/issues/3878) added the
+malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
+`Groups` / `Users` that is not a list of IAM names. Each exports its `reason` as
+a named constant beside the provider, so the wording is pinned by a test instead
+of retyped.
 
 Three lessons from that issue's code review are worth reusing before you add a
 skip arm of your own.
