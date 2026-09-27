@@ -3858,6 +3858,7 @@
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
+        "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-provided",
         "local-invoke-ruby",
@@ -4032,6 +4033,9 @@
           "literal"
         ],
         "local-invoke-dotnet": [
+          "l2"
+        ],
+        "local-invoke-from-state": [
           "l2"
         ],
         "local-invoke-java": [
