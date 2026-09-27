@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 23
+    "classesWithBlindSpots": 24
   },
   "classes": [
     {
@@ -6027,6 +6027,7 @@
             "table-loop"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState",
@@ -6071,6 +6072,7 @@
             "table-loop"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState"
@@ -6235,7 +6237,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in canonicalizeDriftProperties()"
+      ]
     },
     {
       "file": "ec2-provider.ts",

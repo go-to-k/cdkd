@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
   CreateTableCommand,
@@ -1128,32 +1129,10 @@ function reverseMapSecondaryIndex(
   if (live.KeySchema !== undefined) {
     out['KeySchema'] = live.KeySchema.map((element) => ({ ...element }));
   }
-  // `Projection` is rebuilt member by member, fixing its key ORDER as
-  // [ProjectionType, NonKeyAttributes]. That matters because `applyGsiUpdates`
-  // compares this shape with `JSON.stringify`, which is key-order sensitive: a
-  // mismatched order reads as a CHANGED `Projection` and hits the "cannot
-  // modify in place" THROW instead of a no-op.
-  //
-  // Which order actually differs was measured, and the round-6 version of this
-  // note named the wrong one (PR review round 7). Two facts:
-  //  - a READBACK is always [ProjectionType, NonKeyAttributes] — the SDK
-  //    deserializer rebuilds each struct in schema order — so a stale
-  //    pre-#1767 `observedProperties` baseline, itself a readback, CANNOT
-  //    produce the flip. That was the path the earlier note named.
-  //  - a TEMPLATE is the other way round: `aws-cdk-lib`'s generated renderer
-  //    emits `{NonKeyAttributes, ProjectionType}` (verified in
-  //    `aws-dynamodb/lib/dynamodb.generated.js`,
-  //    `convertCfnTableProjectionPropertyToCloudFormation`, aws-cdk-lib
-  //    2.264.0 — and the `CfnGlobalTable` twin does the same).
-  //
-  // So the reachable shape is a TEMPLATE-ordered value meeting a
-  // READBACK-ordered one inside that compare — a `--revert` on a record with no
-  // `observedProperties`, where the desired side is built from the readback
-  // while the recorded previous is template-shaped. Pre-existing, and REDUCED
-  // by this issue (a readback used to carry the whole SDK description, so the
-  // two sides differed in far more than key order). Left as a note rather than
-  // a key-order-independent compare, which changes the WRITE path's equality
-  // rule and belongs with the canonicalization work in #1812.
+  // `Projection` is rebuilt member by member so no AWS-added member can join
+  // it. Its key order differs from a template's (`aws-cdk-lib` renders
+  // `{NonKeyAttributes, ProjectionType}`), which is why `applyGsiUpdates`
+  // compares it with {@link sameJsonValue} rather than `JSON.stringify`.
   if (live.Projection !== undefined) {
     const projection: Record<string, unknown> = {};
     if (live.Projection.ProjectionType !== undefined) {
@@ -1232,6 +1211,66 @@ function reverseMapSecondaryIndex(
     if (Object.keys(wt).length > 0) out['WarmThroughput'] = wt;
   }
   return out;
+}
+
+const SDK_ONLY_INDEX_MEMBERS = [
+  'IndexStatus',
+  'Backfilling',
+  'IndexSizeBytes',
+  'ItemCount',
+  'IndexArn',
+] as const;
+const SDK_ONLY_THROUGHPUT_MEMBERS = [
+  'NumberOfDecreasesToday',
+  'LastIncreaseDateTime',
+  'LastDecreaseDateTime',
+] as const;
+
+/**
+ * One index entry of {@link DynamoDBTableProvider.canonicalizeDriftProperties}:
+ * the input by identity unless it carries an SDK-only member.
+ */
+function canonicalizeStaleIndexDescription(element: unknown): unknown {
+  if (typeof element !== 'object' || element === null || Array.isArray(element)) return element;
+  const entry = element as Record<string, unknown>;
+  const copy = { ...entry };
+  let changed = false;
+  for (const member of SDK_ONLY_INDEX_MEMBERS) {
+    if (member in copy) {
+      delete copy[member];
+      changed = true;
+    }
+  }
+  const pt = copy['ProvisionedThroughput'];
+  if (isPlainCapacityBlock(pt) && SDK_ONLY_THROUGHPUT_MEMBERS.some((member) => member in pt)) {
+    changed = true;
+    const trimmed = { ...pt };
+    for (const member of SDK_ONLY_THROUGHPUT_MEMBERS) delete trimmed[member];
+    // The readback never emits an empty block, so a trim that leaves nothing
+    // must drop the key like the `{0, 0}` placeholder does.
+    const placeholder =
+      (trimmed['ReadCapacityUnits'] ?? 0) === 0 && (trimmed['WriteCapacityUnits'] ?? 0) === 0;
+    if (placeholder) delete copy['ProvisionedThroughput'];
+    else copy['ProvisionedThroughput'] = trimmed;
+  }
+  const warm = copy['WarmThroughput'];
+  if (isPlainCapacityBlock(warm) && 'Status' in warm) {
+    delete copy['WarmThroughput'];
+    changed = true;
+  }
+  return changed ? copy : element;
+}
+
+/**
+ * Structural equality that ignores object key order and prototype: a template
+ * renders `Projection` as `{NonKeyAttributes, ProjectionType}`, a readback as
+ * `{ProjectionType, NonKeyAttributes}`, and a redacted bag can be null-prototype.
+ * Array order stays significant (`KeySchema` is HASH before RANGE).
+ */
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  const toJson = (v: unknown): unknown =>
+    v === undefined ? undefined : (JSON.parse(JSON.stringify(v)) as unknown);
+  return isDeepStrictEqual(toJson(a), toJson(b));
 }
 
 /**
@@ -4992,8 +5031,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // applied. Fail loud instead (the no-silent-drop rule) so the user
         // renames the index (forcing remove + add) or accepts a table replace.
         if (
-          JSON.stringify(before.KeySchema) !== JSON.stringify(gsi.KeySchema) ||
-          JSON.stringify(before.Projection) !== JSON.stringify(gsi.Projection)
+          !sameJsonValue(before.KeySchema, gsi.KeySchema) ||
+          !sameJsonValue(before.Projection, gsi.Projection)
         ) {
           throw new ProvisioningError(
             `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} changed its ` +
@@ -6441,50 +6480,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * AWS-authored (created out of band, or by a sibling), which is the #1498
    * class.
    *
-   * Known residual, deliberately NOT covered, because covering it costs more
-   * than it buys: a table whose template DOES declare indexes keeps comparing,
-   * so its already-written observed baseline reports a one-sided
-   * `GlobalSecondaryIndexes` difference until the next deploy re-captures it
-   * (or `cdkd drift --accept` does). `cdkd drift --revert` is the third thing a
-   * user may reach for on that report, and for the shapes measured here it
-   * applies NOTHING to AWS — which is a property of three separate skips, not
-   * "by construction", and the distinction is load-bearing because this PR
-   * briefly broke it. The index names match, so no Create / Delete is derived;
-   * the stale blob's `{0, 0}` capacity is refused by
-   * {@link skipZeroCapacityIndexUpdate}; and its per-index `WarmThroughput` —
-   * which the same PR taught `applyGsiUpdates` to SEND (issue #1768), turning
-   * an earlier "by construction" wording false the moment it landed — is
-   * refused by {@link warmThroughputAlreadyMatches}, since a stale blob carries
-   * exactly what AWS holds. Remove any of the three and the residual stops
-   * being harmless: the revert starts issuing one redundant `UpdateTable` plus
-   * a full index-ACTIVE wait per GSI, or a doomed one.
-   *
-   * "Applies nothing" is NOT the same as "reaches those skips" (PR review round
-   * 5). `applyGsiUpdates` compares `KeySchema` / `Projection` between the
-   * recorded previous and the desired entry BEFORE any of them and THROWS on a
-   * difference, because DynamoDB cannot modify either in place. On this path
-   * that compare is a trimmed readback against a stale full description, and
-   * both members survive the #1767 reverse-map unchanged — `KeySchema`
-   * verbatim, `Projection` rebuilt member-for-member — so for every shape
-   * exercised here it matches and the throw does not fire. It is named because
-   * it is the outcome an enumeration of skips would otherwise hide: a stale
-   * blob whose `Projection` AWS has since re-normalized would fail the revert
-   * loudly rather than no-op it. Suppressing the residual instead would mean ignoring the
-   * whole array for the population that HAS indexes — i.e. never detecting an
-   * out-of-band index add / remove / capacity change again, permanently, to
-   * remove a one-time report. No PATH can express the middle ground:
+   * A table whose template DOES declare indexes keeps comparing the list, so
+   * an observed baseline an earlier binary wrote — the whole SDK description
+   * per index — is converged by {@link canonicalizeDriftProperties} instead of
+   * by a path here: no PATH can express a per-member suppression, because
    * `isIgnoredPath` is never asked about a path that crosses an array
-   * (`diffAt` compares arrays wholesale via `deepEqual`), so a per-MEMBER
-   * ignore path does not exist — the same wall issue #1742 records for the
-   * `AWS::DynamoDB::GlobalTable` twin. **A non-path seam now EXISTS**:
-   * `ResourceProvider.canonicalizeDriftProperties`, applied to BOTH comparison
-   * sides, landed in [#1799](https://github.com/go-to-k/cdkd/pull/1799) (which
-   * closed issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)) and can
-   * strip the AWS-managed member from each bag — converging an already-written
-   * record with a post-fix readback, with no ignore-path and no lost
-   * detection. It is deliberately NOT adopted here yet: doing so is its own
-   * change with its own real-AWS verification, tracked as issue
-   * [#1812](https://github.com/go-to-k/cdkd/issues/1812).
+   * (`diffAt` compares arrays wholesale), and ignoring the whole list would
+   * stop detecting an out-of-band index add / remove / capacity change.
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
@@ -6501,6 +6503,53 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
     return paths;
+  }
+
+  /**
+   * Converge a pre-#1767 `observedProperties` record with the reverse-mapped
+   * readback (issue #1812). Such a record holds each index's raw
+   * `DescribeTable` description, so a table whose template declares indexes
+   * reported a one-sided `GlobalSecondaryIndexes` difference on every
+   * `cdkd drift` until the next deploy re-captured it. Convergence needs a
+   * non-empty recorded bag: with an empty one the readback emits every
+   * throughput block (see {@link reverseMapSecondaryIndex}), so a stale
+   * baseline still reports.
+   *
+   * Keyed on members only an SDK description carries — never on the desired
+   * side, which this hook does not see — so a bag written by the current
+   * readback, or a template, comes back by identity and loses no detection:
+   *  - `IndexStatus` / `Backfilling` / `IndexSizeBytes` / `ItemCount` /
+   *    `IndexArn` are not CFn members and are dropped.
+   *  - A `ProvisionedThroughput` carrying `NumberOfDecreasesToday` (or the
+   *    two `Last*DateTime` members) is trimmed to its capacities, and dropped
+   *    when both are 0: that is AWS's on-demand placeholder, which no template
+   *    can declare (the minimum is 1) and the readback emits only when the
+   *    template declares the block.
+   *  - A `WarmThroughput` carrying `Status` is dropped WHOLE, not just its
+   *    `Status`. AWS reports a computed per-index value for every GSI, and the
+   *    readback emits it only when the template declares one, which is rare;
+   *    stripping `Status` alone would leave the common undeclared case
+   *    drifting. A stale record whose template DOES declare it reports once,
+   *    until the next deploy or `--accept`, as it did before.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::DynamoDB::Table') return properties;
+    let result = properties;
+    for (const listKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
+      const list = result[listKey];
+      if (!Array.isArray(list)) continue;
+      let changed = false;
+      const canonical = list.map((element) => {
+        const next = canonicalizeStaleIndexDescription(element);
+        if (next !== element) changed = true;
+        return next;
+      });
+      if (changed) result = { ...result, [listKey]: canonical };
+    }
+    return result;
   }
 
   /**

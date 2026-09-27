@@ -30,6 +30,10 @@
 #      members, `cdkd drift` reports the table CLEAN (not "drift unknown"), and
 #      it stays clean against the TEMPLATE baseline once `observedProperties` is
 #      stripped.
+#   2c. Assert (issue #1812): with gsi1's observed entry rewritten to the RAW
+#      `DescribeTable` description a pre-#1767 cdkd recorded, `cdkd drift`
+#      still reports the table CLEAN, and an out-of-band per-index change
+#      behind that baseline IS reported.
 #   2e. Assert (issue #1782): the per-index ContributorInsightsSpecification
 #      declared on gsi1 — an index this very update ADDED — reached AWS.
 #   I1-I5. The per-index Contributor Insights arms (issue #1782) on their OWN
@@ -176,7 +180,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${DRIFT_JSON}" "${DESTROY_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -532,6 +536,77 @@ if [ "$(table_outcome_count clean)" != "1" ]; then
 fi
 echo "    observed baseline: table reported CLEAN"
 
+# --- Phase 2c: a STALE observed baseline converges (issue #1812) -------------
+# A record an older cdkd wrote (before issue #1767) holds each index's RAW
+# `DescribeTable` description in `observedProperties`. No fresh deploy can
+# produce one, so the record is rewritten here: gsi1's observed entry becomes the
+# raw description AWS returns right now. Two members are carried over from the
+# CFn capture instead of the raw description: `ContributorInsightsSpecification`
+# (a raw description has none) and `WarmThroughput` (gsi1 declares one, and the
+# fix drops a Status-bearing block WHOLE, so a DECLARED one reports once by
+# design). Everything else — IndexStatus, Backfilling, IndexSizeBytes,
+# ItemCount, IndexArn, the on-demand `{0, 0}` ProvisionedThroughput — is raw,
+# and that is the member set `canonicalizeDriftProperties` must strip on both
+# sides. With the fix reverted the table drifts on GlobalSecondaryIndexes.
+#
+# Then a REAL per-index change must still be reported behind that baseline. The
+# table is PAY_PER_REQUEST, so gsi1 has no capacity to change, and an undeclared
+# OnDemandThroughput is not read back; a WarmThroughput raise is billed, cannot
+# be undone, and leaves the index UPDATING before the Phase 3a race. The change
+# is therefore an out-of-band DISABLE of gsi1's declared Contributor Insights,
+# the per-index member Phase I3 already proves is reported, re-enabled after.
+echo "==> Phase 2c: a stale (pre-#1767) observed baseline reports the table CLEAN (issue #1812)"
+RAW_GSI="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'] | [0]" --output json)"
+jq --arg l "${TABLE_LID}" --arg n "${GSI_NAME}" --argjson raw "${RAW_GSI}" '
+  .resources[$l].observedProperties.GlobalSecondaryIndexes |= map(
+    if .IndexName == $n
+    then ($raw | del(.WarmThroughput)) + {WarmThroughput, ContributorInsightsSpecification}
+    else . end)' "${STATE_JSON}" > "${STATE_JSON}.stale"
+# Vacuity guard: the rewritten entry must really carry the SDK-only members.
+STALE_GSI_KEYS="$(jq -r --arg l "${TABLE_LID}" --arg n "${GSI_NAME}" \
+  '(.resources[$l].observedProperties.GlobalSecondaryIndexes[] | select(.IndexName == $n)) | keys | join(",")' \
+  "${STATE_JSON}.stale")"
+case ",${STALE_GSI_KEYS}," in
+  *,IndexArn,*IndexStatus,*) ;;
+  *)
+    echo "FAIL (issue #1812): the rewritten observed entry lacks IndexArn / IndexStatus ('${STALE_GSI_KEYS}') — the stale-baseline arm would be vacuous" >&2
+    exit 1
+    ;;
+esac
+aws s3 cp "${STATE_JSON}.stale" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+echo "    observed gsi1 entry rewritten to the raw description (${STALE_GSI_KEYS})"
+
+run_drift_json "stale observed baseline"
+if [ "$(table_outcome_count notSupported)" != "0" ] || [ "$(table_outcome_count drifted)" != "0" ] \
+  || [ "$(table_outcome_count clean)" != "1" ]; then
+  echo "FAIL (issue #1812): expected the table CLEAN against a stale observed baseline:" >&2
+  jq '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table")]' "${DRIFT_JSON}" >&2
+  echo "  rewritten gsi1 entry:" >&2
+  jq --arg l "${TABLE_LID}" '.resources[$l].observedProperties.GlobalSecondaryIndexes' "${STATE_JSON}.stale" >&2
+  exit 1
+fi
+echo "    stale observed baseline: table reported CLEAN"
+
+aws dynamodb update-contributor-insights --table-name "${TABLE_NAME}" --index-name "${GSI_NAME}" \
+  --contributor-insights-action DISABLE --region "${REGION}" >/dev/null
+wait_insights_status "${TABLE_NAME}" "${GSI_NAME}" DISABLED "out-of-band DISABLE behind a stale baseline"
+run_drift_json "stale baseline, after out-of-band DISABLE"
+STALE_DRIFT_PATHS="$(jq -r '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table") | .changes[].path] | join(" ")' \
+  "${DRIFT_JSON}")"
+case " ${STALE_DRIFT_PATHS} " in
+  *" GlobalSecondaryIndexes"*) ;;
+  *)
+    echo "FAIL (issue #1812): a real per-index change behind a stale baseline was not reported on GlobalSecondaryIndexes (drifted paths: '${STALE_DRIFT_PATHS}')" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+    ;;
+esac
+echo "    out-of-band change reported as drift on: ${STALE_DRIFT_PATHS}"
+aws dynamodb update-contributor-insights --table-name "${TABLE_NAME}" --index-name "${GSI_NAME}" \
+  --contributor-insights-action ENABLE --region "${REGION}" >/dev/null
+wait_insights_status "${TABLE_NAME}" "${GSI_NAME}" ENABLED "re-enabled after the stale-baseline arm"
+
 # Now the binding half. Dropping the capture makes the comparison run against
 # the TEMPLATE `properties` baseline — the real user condition after a
 # reverse-replacement rollback (which strips observedProperties) or on a record
@@ -560,7 +635,7 @@ if [ -n "${OTHER_DRIFT_PATHS}" ]; then
 fi
 echo "    properties baseline: no GlobalSecondaryIndexes / LocalSecondaryIndexes drift"
 
-rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
+rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${DRIFT_JSON}"
 
 # --- Phases I1-I5: per-index ContributorInsightsSpecification (issue #1782) ---
 # CFn's `GlobalSecondaryIndex.ContributorInsightsSpecification` is not a member
@@ -907,4 +982,4 @@ echo "    table deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
+echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767) even against a stale pre-#1767 baseline (issue #1812), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
