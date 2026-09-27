@@ -675,7 +675,9 @@ command errors at boot. Surrounding whitespace is trimmed.
 instead of using one global default: it tries the synthesized template's
 literal-ARN `Properties.Role`, then a deployed-state lookup (pair it with
 `--from-state` or `--from-cfn-stack`), then warns and passes the developer
-credentials through on a miss. Boot is slower — one STS call per Lambda — but
+credentials through on a miss. A role ARN that is found but is not a
+well-formed role ARN stops startup instead, naming the Lambda: a broken ARN is
+not treated as a missing one. Boot is slower — one STS call per Lambda — but
 it is the right shape when each Lambda's deployed role differs.
 
 `--assume-role-auto` is mutually exclusive with the global-default

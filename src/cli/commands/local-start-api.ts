@@ -1731,6 +1731,10 @@ export function resolveStartApiAssumeRoleArn(args: {
  */
 function malformedAutoRoleError(logicalId: string, detail: string): Error {
   return new Error(
+    // cdkd-raw-beside-safe: `detail` is built by this function's two callers
+    // entirely from `displayIdent` renders and fixed prose (the template arm
+    // here, `classifyExecutionRoleArnFromState`'s `description`), so it is
+    // already-sanitized text rather than a raw value.
     `--assume-role-auto: ${detail}. Refusing to start rather than fall back to your shell ` +
       `credentials for this Lambda. Fix the deployed role ARN, or pin one explicitly with ` +
       `--assume-role ${displayIdent(logicalId)}=<arn>.`
