@@ -8,7 +8,8 @@ or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
 §5 will create plus the opening report's `LANE_TREE`, never
-`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout.
+`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout;
+a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
 Write "the branch §5 will create in `<LANE_TREE>`" and post now — a claim that
