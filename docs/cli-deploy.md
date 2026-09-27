@@ -158,7 +158,13 @@ still-`deleting` gateway blocks `DeleteSubnet`, `DeleteInternetGateway` and
 `DeleteVpc` with `DependencyViolation` — and the other eligible types (RDS,
 ElastiCache) are leaves on the destroy DAG, so their providers do not wait
 there anyway. CloudFront's destroy-side disable-then-wait is an API
-requirement and is unaffected by any wait flag.
+requirement and is unaffected by any wait flag. A Kinesis stream or a
+Firehose delivery stream delete also waits until the stream is gone, whatever
+the flags: both services keep the stream's name while it is `DELETING` (up to
+about two minutes for Firehose) and refuse a create of that name with the same
+`already exists` error a live stream gets, so a redeploy right after a destroy
+would fail. The wait warns and moves on rather than failing the delete if it
+runs out.
 
 ## What `--full-wait` adds
 

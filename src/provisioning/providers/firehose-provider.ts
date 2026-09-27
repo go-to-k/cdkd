@@ -48,6 +48,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 
 /**
  * CFn destination property names that this provider can apply
@@ -69,6 +70,15 @@ const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
   'SnowflakeDestinationConfiguration',
   'SplunkDestinationConfiguration',
 ]);
+
+/**
+ * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
+ * DELETING window measured ~103-107s (us-east-1), so the cap is generous
+ * headroom, not an estimate, and sits well under the 30-min per-resource
+ * deadline.
+ */
+const FIREHOSE_DELETE_POLL_INTERVAL_MS = 5_000;
+const FIREHOSE_DELETE_MAX_WAIT_MS = 10 * 60 * 1000;
 
 /**
  * SDK Provider for AWS Kinesis Firehose resources
@@ -832,7 +842,6 @@ export class FirehoseProvider implements ResourceProvider {
           DeliveryStreamName: physicalId,
         })
       );
-      this.logger.debug(`Successfully deleted Firehose delivery stream ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.getClient().config.region();
@@ -856,6 +865,34 @@ export class FirehoseProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+
+    // Issue #3872: the delivery stream keeps its NAME while it is DELETING
+    // (~100s measured), and a CreateDeliveryStream of that name is refused with
+    // the same `already exists` text a live stream gets, so the delete is
+    // complete only once the stream is gone. Outside the try: the wait never
+    // throws.
+    await waitForGoneAfterDelete({
+      what: `Firehose delivery stream ${physicalId}`,
+      resourceType,
+      describe: () => this.readDeliveryStreamStatusForDelete(physicalId),
+      logger: this.logger,
+      pollIntervalMs: FIREHOSE_DELETE_POLL_INTERVAL_MS,
+      maxWaitMs: FIREHOSE_DELETE_MAX_WAIT_MS,
+    });
+    this.logger.debug(`Successfully deleted Firehose delivery stream ${logicalId}`);
+  }
+
+  /** The delivery stream's status, or `undefined` once `DescribeDeliveryStream` reports it gone. */
+  private async readDeliveryStreamStatusForDelete(streamName: string): Promise<string | undefined> {
+    try {
+      const response = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
+      );
+      return response.DeliveryStreamDescription?.DeliveryStreamStatus ?? 'UNKNOWN';
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
     }
   }
 

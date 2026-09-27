@@ -242,32 +242,11 @@ echo "    diff reports no changes; neither backfilled property appears (both sid
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-# Kinesis DeleteStream is ASYNC: the stream enters DELETING and
-# describe-stream-summary keeps returning it for a few seconds after a clean
-# destroy. Accept DELETING and poll until it is fully gone (ResourceNotFound),
-# rather than asserting an immediate disappearance.
-stream_gone=""
-for attempt in $(seq 1 15); do
-  # `|| true`: once the stream is fully gone, describe-stream-summary exits
-  # non-zero (ResourceNotFoundException), which would trip `set -e` on the
-  # assignment before we can inspect the captured message.
-  STATUS="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
-    --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1 || true)"
-  if echo "${STATUS}" | grep -q "ResourceNotFoundException"; then
-    stream_gone="yes"
-    break
-  fi
-  if [ "${STATUS}" != "DELETING" ]; then
-    echo "FAIL: stream ${STREAM_NAME} in unexpected status '${STATUS}' after destroy" >&2
-    exit 1
-  fi
-  echo "    stream still DELETING (attempt ${attempt}/15), waiting..."
-  sleep 4
-done
-if [ -z "${stream_gone}" ]; then
-  echo "FAIL: stream ${STREAM_NAME} did not finish deleting within ~60s" >&2
-  exit 1
-fi
+# No polling: DeleteStream is async (the stream sits in DELETING for a few
+# seconds), but cdkd's delete() returns only once the stream is gone (issue
+# #3872), so it must already be gone when destroy returns.
+assert_gone "stream ${STREAM_NAME} still exists after destroy" \
+  aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}"
 echo "    stream deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

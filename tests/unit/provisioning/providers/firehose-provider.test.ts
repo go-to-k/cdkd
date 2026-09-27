@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -32,6 +32,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  DescribeDeliveryStreamCommand,
+  ResourceNotFoundException,
+} from '@aws-sdk/client-firehose';
 import { FirehoseProvider } from '../../../../src/provisioning/providers/firehose-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
@@ -203,8 +207,15 @@ describe('FirehoseProvider', () => {
   });
 
   describe('delete', () => {
+    const notFound = () =>
+      new ResourceNotFoundException({ $metadata: {}, message: 'Delivery stream not found' });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it('should delete delivery stream', async () => {
-      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}).mockRejectedValueOnce(notFound());
 
       await provider.delete(
         'MyDeliveryStream',
@@ -212,11 +223,68 @@ describe('FirehoseProvider', () => {
         'AWS::KinesisFirehose::DeliveryStream'
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
 
       const cmd = mockSend.mock.calls[0][0];
       expect(cmd.constructor.name).toBe('DeleteDeliveryStreamCommand');
       expect(cmd.input.DeliveryStreamName).toBe('test-stream');
+    });
+
+    // Issue #3872: the delivery stream holds its NAME while DELETING (~100s
+    // measured), and a create of that name is refused with the live-stream
+    // text, so delete() must not return until DescribeDeliveryStream reports
+    // the stream gone.
+    it('waits through DELETING until DescribeDeliveryStream reports the stream gone', async () => {
+      vi.useFakeTimers();
+      const deleting = { DeliveryStreamDescription: { DeliveryStreamStatus: 'DELETING' } };
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(deleting)
+        .mockResolvedValueOnce(deleting)
+        .mockRejectedValueOnce(notFound());
+
+      let settled = false;
+      const done = provider
+        .delete('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream')
+        .then(() => {
+          settled = true;
+        });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await done;
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      for (const call of mockSend.mock.calls.slice(1)) {
+        expect(call[0]).toBeInstanceOf(DescribeDeliveryStreamCommand);
+        expect(call[0].input).toEqual({ DeliveryStreamName: 'test-stream' });
+      }
+    });
+
+    it('stops waiting at its cap without throwing when the stream never disappears', async () => {
+      vi.useFakeTimers();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DescribeDeliveryStreamCommand
+          ? Promise.resolve({ DeliveryStreamDescription: { DeliveryStreamStatus: 'DELETING' } })
+          : Promise.resolve({})
+      );
+
+      let settled = false;
+      const done = provider
+        .delete('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream')
+        .then(() => {
+          settled = true;
+        });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 - 5_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await done;
+
+      const describes = mockSend.mock.calls.filter(
+        (call: unknown[]) => call[0] instanceof DescribeDeliveryStreamCommand
+      );
+      // One poll every 5s across the 10-minute cap, plus the one at the cap.
+      expect(describes).toHaveLength(121);
     });
 
     it('should handle ResourceNotFoundException gracefully (idempotent)', async () => {
@@ -235,6 +303,7 @@ describe('FirehoseProvider', () => {
         'AWS::KinesisFirehose::DeliveryStream'
       );
 
+      // Already gone: no gone-wait follows the idempotent arm.
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });

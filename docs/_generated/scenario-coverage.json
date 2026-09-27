@@ -2177,6 +2177,11 @@
       "scenarios": []
     },
     {
+      "name": "stream-delete-redeploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "synthetics-canary",
       "annotated": false,
       "scenarios": []
@@ -3094,6 +3099,7 @@
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",
+    "stream-delete-redeploy",
     "synthetics-canary",
     "unrecognized-key-autoroute"
   ]
