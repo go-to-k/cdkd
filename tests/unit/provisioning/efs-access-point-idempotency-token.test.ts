@@ -109,6 +109,12 @@ class FakeEfs {
    * (the one minute in the EFS User Guide is about file-system CREATION
    * tokens), so this flag selects the arm rather than modelling a duration.
    * Flipping it is how the adopt arm is reached.
+   *
+   * Only the REFUSAL arm has been observed on real EFS (issue #2442, us-east-1):
+   * a repeat seconds after the first create was refused whether its parameters
+   * matched or not, with the first access point's id in the error's
+   * `AccessPointId`, and `DescribeAccessPoints` echoed the `ClientToken`. The
+   * replay arm stays modelled because nothing documents that it cannot happen.
    */
   replayWindowClosed = false;
   /** The next create provisions the access point and then loses its response. */
@@ -321,6 +327,31 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
       CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
     });
     expect(sent['Tags']).toEqual([{ Key: 'Name', Value: 'cdkd-ap' }]);
+  });
+
+  it('sends neither PosixUser nor RootDirectory when the template omits both (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+    });
+
+    expect(aws.createInputs).toHaveLength(1);
+    const sent = aws.createInputs[0]!;
+    expect(sent['FileSystemId']).toBe('fs-0123456789abcdef0');
+    // `undefined`, not `{}`: an empty object would be serialised as a block
+    // with no Uid/Gid rather than omitted.
+    expect(sent).toHaveProperty('PosixUser', undefined);
+    expect(sent).toHaveProperty('RootDirectory', undefined);
+  });
+
+  it('sends a RootDirectory without CreationInfo when the template gives only a Path (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+      RootDirectory: { Path: '/data' },
+    });
+
+    const sent = aws.createInputs[0]!;
+    expect(sent['RootDirectory']).toEqual({ Path: '/data', CreationInfo: undefined });
+    expect(sent).toHaveProperty('PosixUser', undefined);
   });
 
   it('a retried create whose 500 hid a successful CreateAccessPoint produces exactly ONE access point', async () => {
