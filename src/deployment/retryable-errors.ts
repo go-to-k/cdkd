@@ -74,6 +74,14 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // fails fast instead of burning the retry budget, which a bare
   // 'security token included in the request is invalid' pattern would break.
   'security token included in the request is invalid. (Service:',
+  // FOURTH wording, Lambda's (issue #3853): CreateEventSourceMapping on a
+  // DynamoDB stream (the only source observed) reads the stream with the
+  // function's just-created role, and relays the not-yet-valid session as
+  // "Received Exception while reading from provided stream. The security token
+  // included in the request is invalid." — no `(Service:` trailer, so the anchor above misses it. The
+  // Lambda prefix is what keeps cdkd's OWN expired credentials (the bare
+  // sentence) failing fast.
+  'Received Exception while reading from provided stream. The security token included in the request is invalid',
   'role defined for the function',
   'not authorized to perform',
   'execution role',

@@ -120,6 +120,13 @@ describe('isRetryableTransientError', () => {
         'Failed to create Glue Crawler EventsCrawler: The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: UnrecognizedClientException; Request ID: abc; Proxy: null)',
         'Glue assumed-session token propagation',
       ],
+      // Lambda's wording of the same race on a stream-source ESM create
+      // (issue #3853, observed on the dynamodb-stream-filter integ): no
+      // `(Service:` trailer, anchored on Lambda's own prefix instead.
+      [
+        'Failed to create event source mapping ConsumerDynamoDBEventSource: Received Exception while reading from provided stream. The security token included in the request is invalid.',
+        'Lambda ESM stream-read token propagation',
+      ],
       // Step Functions same-stack role IAM-propagation race: CreateStateMachine
       // is issued before the just-created role's trust policy propagates to
       // Step Functions' assume layer (surfaced by a bug-hunt sweep on an
@@ -1307,6 +1314,10 @@ describe('isIamPropagationError', () => {
     [
       'The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Error Code: UnrecognizedClientException)',
       'Glue assumed-session token',
+    ],
+    [
+      'Received Exception while reading from provided stream. The security token included in the request is invalid.',
+      'Lambda ESM stream-read token',
     ],
     ['User: arn:aws:iam::1:user/x is not authorized to perform: sts:AssumeRole', 'authz'],
     ['Invalid principal in policy', 'S3 bucket policy'],
