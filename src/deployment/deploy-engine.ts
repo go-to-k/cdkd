@@ -5146,9 +5146,7 @@ export class DeployEngine {
         );
         this.logger.info(
           `Partial state saved (${Object.keys(newResources).length} resources). ` +
-            this.recoveryHint(
-              "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
-            )
+            "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
         );
         throw error;
       }
@@ -5789,18 +5787,21 @@ export class DeployEngine {
   }
 
   /**
-   * The recovery sentence a failed or interrupted deploy ends on. A NESTED
-   * child engine does not name a command: a stack-less `cdkd rollback`
-   * resolves to the top-level stack, and the top-level engine's own failure,
-   * which follows this one, prints the recovery that applies — the child is
-   * reverted through the top-level stack's rollback (go-to-k/cdkd#3864).
+   * The recovery sentence a `--no-rollback` failure ends on. A NESTED child
+   * engine does not name a command: a stack-less `cdkd rollback` resolves to
+   * the top-level stack, and the child's failure fails the parent's row, whose
+   * engine (sharing `noRollback` through the option spread) prints its own
+   * `--no-rollback` message right after (go-to-k/cdkd#3864). NOT used on the
+   * interrupted path: a child's poll `InterruptedError` reaches the parent
+   * wrapped and is not recognised as an interrupt there (go-to-k/cdkd#3875),
+   * so no message of the parent's can be promised to follow.
    */
   private recoveryHint(topLevel: string): string {
     const parent = this.options.parentStackInfo;
     if (parent === undefined) return topLevel;
     return (
-      `This is a nested stack of ${quotedOrDescribed(parent.parentStack, 'stack name')}: recover ` +
-      `it through the top-level stack, whose own message follows.`
+      `This is a nested stack: recover it through its top-level stack ` +
+      `${quotedOrDescribed(parent.parentStack.split('~')[0]!, 'stack name')}, whose own message follows.`
     );
   }
 
