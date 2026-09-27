@@ -130,9 +130,10 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       undecided,
       'A client here inherits a `--role-arn` assumed for cdkd\'s own calls unless it says ' +
         'otherwise. If what it resolves reaches the user\'s emulated code — credentials, a ' +
-        'role it assumes for the container, secret values, an account id substituted into ' +
-        'the environment — pass `awsClientDefaults({ ignoreAssumedRole: true })`. If it is ' +
-        'genuinely cdkd calling AWS as itself, write a ' +
+        'role it assumes for the container, secret values — pass ' +
+        '`awsClientDefaults({ ignoreAssumedRole: true })`. An account id substituted under ' +
+        '`--from-state` is the exception: it follows the state READER (issue #3230) and takes ' +
+        'the comment. If it is genuinely cdkd calling AWS as itself, write a ' +
         '`cdkd-local-role-identity: <reason>` comment above it. A `new AwsClients({...})` ' +
         'bag has no opt-out to pass and therefore takes the comment.'
     ).toEqual([]);
