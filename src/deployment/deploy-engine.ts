@@ -5794,10 +5794,6 @@ export class DeployEngine {
       // opt-out the engine's own delete sites use.
       finalSnapshotClients: this.options.finalSnapshotClients,
       skipFinalSnapshot: this.options.skipFinalSnapshot,
-      // A nested child's own rollback: no `cdkd rollback --orphan` reaches its
-      // ops, and the parent's rollback replays its failure segment again
-      // (go-to-k/cdkd#3845).
-      ...(this.options.parentStackInfo && { nestedChildReplay: 'own-rollback' as const }),
       // Issue #2057: the producer regions this stack reads across, so the
       // replay refuses a region-LESS `{{resolve:...}}` expression rather than
       // re-resolving it here and writing a same-named foreign secret to a live

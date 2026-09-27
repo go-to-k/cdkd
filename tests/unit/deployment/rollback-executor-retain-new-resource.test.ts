@@ -457,10 +457,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(text).not.toContain('`cdkd deploy`');
     }, 120_000);
 
-    it.each([
-      ['parent-revert', "inside a nested stack's revert for its parent's rollback"],
-      ['own-rollback', "in a nested stack's own rollback inside its parent's deploy"],
-    ] as const)('in a nested child replay (%s), neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async (mode, where) => {
+    it('inside a nested child revert, neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async () => {
       // `cdkd rollback --orphan` reaches only the replay of the stack it is
       // run on, and a direct rollback of the child is refused while the
       // parent's run is unsettled, so a printed command would send the
@@ -469,7 +466,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const errors: string[] = [];
       const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
       const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
-      ctx.nestedChildReplay = mode;
+      ctx.nestedChildRevert = true;
       ctx.recordEvent = (e) => {
         if (e.error?.message) errors.push(e.error.message);
       };
@@ -502,14 +499,13 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         expect(message).not.toContain('To orphan it:');
         expect(message).not.toContain('command below');
         expect(message).toContain(
-          `This op is reverted ${where}, where cdkd rollback --orphan cannot reach it: resolve ` +
-            "the cause and re-run the top-level stack's rollback"
+          "where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level stack's rollback"
         );
       }
       // The collision text stays in the prose, and the unroutable refusal's
       // fix-forward pointer ends its sentence rather than offering the command.
       expect(collision).toContain('Underlying collision: Queue already exists');
-      expect(unrouted).toContain(`fix forward with cdkd deploy. This op is reverted ${where}`);
+      expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
     });
 
     it('the collision refusal names the pinning policy and the recovery path', async () => {
