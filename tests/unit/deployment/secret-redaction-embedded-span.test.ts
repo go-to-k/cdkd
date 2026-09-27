@@ -355,6 +355,37 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
     });
   });
 
+  it('keeps a conflict merged into a map with NO pairs yet, so a later valid pair cannot restore vouching (issue #2546)', () => {
+    // The deploy engine's FIRST stack merges its pass map into a still-empty
+    // `outputSecrets`: every case above merges into a map that already carries
+    // pairs, so none reaches the branch that creates the target's pair table
+    // for a CONFLICT. A later stack's valid pair for the same expression must
+    // then find the conflict already there.
+    const conflicted = collapsedOnto(NAME_V1);
+    recordResolvedPair(conflicted, NAME, PW);
+    recordResolvedPair(conflicted, NAME, 'a-different-region-value');
+    const outputsBag: RecordedSecretValues = new Map();
+    for (const [value, expr] of conflicted) outputsBag.set(value, expr);
+    mergeResolvedPairs(conflicted, outputsBag);
+
+    const laterStack = collapsedOnto(NAME_V1);
+    recordResolvedPair(laterStack, NAME, PW);
+    // Premise: on its own the later stack's pair DOES vouch, so a lost conflict
+    // would show as the embedded source below rather than the survivor.
+    expect(
+      redactSecretsForState({ Dsn: `${PREFIX}${PW}${SUFFIX}` }, laterStack, {
+        Dsn: EMBEDDED_SOURCE,
+      })
+    ).toEqual({ Dsn: EMBEDDED_SOURCE });
+    mergeResolvedPairs(laterStack, outputsBag);
+
+    expect(
+      redactSecretsForState({ Dsn: `${PREFIX}${PW}${SUFFIX}` }, outputsBag, {
+        Dsn: EMBEDDED_SOURCE,
+      })
+    ).toEqual({ Dsn: `${PREFIX}${NAME_V1}${SUFFIX}` });
+  });
+
   it('writes the source token over a previous-generation middle that EQUALS this pass\'s plaintext — the class of answer the value scan already gave', () => {
     // A scrub walking an old record against today's template: the old leaf
     // framed the same plaintext today's token resolves to. The value scan
