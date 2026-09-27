@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { STSClient } from '@aws-sdk/client-sts';
 import { parseSync } from 'vite-plus';
 
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+
 /**
  * Issue #2348 (following cdk-local#607): a role ARN is shape- and
  * length-checked before cdkd sends it to STS.
@@ -364,25 +366,32 @@ describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)'
   }
 
   const files = walk(SRC).map((f) => ({ rel: path.relative(SRC, f), text: readFileSync(f, 'utf8') }));
+  // Parsing every file under src/ takes seconds, so it happens ONCE, lazily,
+  // and each case that walks the tree gets the contended-case timeout.
+  let parsed: Map<string, Array<{ line: number; text: string }>> | undefined;
+  const linesOf = (rel: string): Array<{ line: number; text: string }> => {
+    parsed ??= new Map(files.map((f) => [f.rel, codeLines(f.text, f.rel)]));
+    return parsed.get(rel)!;
+  };
 
   it('finds the builder\'s callers it claims to police (floor)', () => {
     // A literal the fence does not read: seven sends in six files when #2348
     // landed. A walk that found nothing must not pass the case below.
     const callers = files.flatMap(({ rel, text }) =>
-      codeLines(text, rel)
+      linesOf(rel)
         .filter((l) => /\bsendableAssumeRoleCommand\(/.test(l.text))
         .filter((l) => !/export function sendableAssumeRoleCommand/.test(l.text))
         .map((l) => `${rel}:${l.line}`)
     );
     expect(callers.length).toBeGreaterThanOrEqual(7);
     expect(new Set(callers.map((c) => c.split(':')[0])).size).toBeGreaterThanOrEqual(6);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('has no assume-role construct outside src/utils/role-arn.ts', () => {
     const offenders = files
       .filter(({ rel }) => rel !== ROLE_ARN_MODULE)
       .flatMap(({ rel, text }) =>
-        codeLines(text, rel)
+        linesOf(rel)
           .filter((l) => ASSUME_CONSTRUCT.test(l.text))
           .map((l) => `src/${rel}:${l.line}  ${l.text.trim()}`)
       );
@@ -391,33 +400,31 @@ describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)'
       'Build the command with `sendableAssumeRoleCommand(...)` from src/utils/role-arn.ts, ' +
         'which refuses a malformed or unbounded RoleArn before it can be sent.'
     ).toEqual([]);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('allows role-arn.ts only its import and the builder -- no other assume-role construct', () => {
-    const text = files.find((f) => f.rel === ROLE_ARN_MODULE)!.text;
     const allowed = [
       /^import \{[^}]*\bAssumeRoleCommand\b[^}]*\} from '@aws-sdk\/client-sts';$/,
       /^\s*return new AssumeRoleCommand\(input\);$/,
       /^\s*input: AssumeRoleCommandInput,$/,
       /^\s*\): AssumeRoleCommand \{$/,
     ];
-    const extra = codeLines(text)
+    const extra = linesOf(ROLE_ARN_MODULE)
       .filter((l) => ASSUME_CONSTRUCT.test(l.text))
       .filter((l) => !allowed.some((re) => re.test(l.text)))
       .map((l) => `src/${ROLE_ARN_MODULE}:${l.line}  ${l.text.trim()}`);
     expect(extra).toEqual([]);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('constructs AssumeRoleCommand exactly once in role-arn.ts, inside the builder, after the guard', () => {
-    const text = files.find((f) => f.rel === ROLE_ARN_MODULE)!.text;
-    const code = codeLines(text).map((l) => l.text).join('\n');
+    const code = linesOf(ROLE_ARN_MODULE).map((l) => l.text).join('\n');
     expect(code.match(/new AssumeRoleCommand\s*\(/g)).toHaveLength(1);
     const body = /export function sendableAssumeRoleCommand\([\s\S]*?\n\}/.exec(code)?.[0] ?? '';
     const guardAt = body.indexOf('assertSendableRoleArn(input.RoleArn');
     const buildAt = body.indexOf('new AssumeRoleCommand(input)');
     expect(guardAt).toBeGreaterThanOrEqual(0);
     expect(buildAt).toBeGreaterThan(guardAt);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('the builder refuses a malformed RoleArn and builds a well-formed one', () => {
     expect(() => sendableAssumeRoleCommand({ RoleArn: `${PREFIX}x\n`, RoleSessionName: 's' })).toThrow(
