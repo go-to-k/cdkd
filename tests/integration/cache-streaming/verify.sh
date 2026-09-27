@@ -65,6 +65,27 @@ DEPLOY_LOG="$(mktemp -t cache-streaming.XXXXXX)"
 export AWS_RETRY_MODE=adaptive
 export AWS_MAX_ATTEMPTS=10
 
+# Lambda auto-creates /aws/lambda/<fn> log groups on invoke (the ESM invokes
+# the processor, and CDK's LogRetention singleton runs at deploy); neither CFn
+# nor cdkd deletes them, so they are swept here. Guarded so an empty STACK can
+# never widen the listing to every Lambda log group in the account.
+sweep_log_groups() {
+  ( set +eu
+    case "${STACK}" in
+      CacheStreaming?*)
+        for lg in $(aws logs describe-log-groups --region "${REGION}" \
+          --log-group-name-prefix "/aws/lambda/${STACK}-" \
+          --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+          aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+        done
+        ;;
+      *)
+        echo "WARN: teardown sweep refused: STACK='${STACK}' does not match CacheStreaming?*" >&2
+        ;;
+    esac
+  )
+}
+
 cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
@@ -75,6 +96,7 @@ cleanup() {
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
+  sweep_log_groups
   rm -f "${DEPLOY_LOG}" 2>/dev/null || true
   set -e
   exit "${rc}"
@@ -193,7 +215,14 @@ if [ "${CACHE_LEFT}" != "0" ]; then
   echo "FAIL: ${CACHE_LEFT} ElastiCache cluster(s) still exist after destroy (orphan)" >&2
   exit 1
 fi
-echo "    OK: 0 orphans (state + Kinesis + Lambda + ElastiCache all gone)"
+sweep_log_groups
+LG_LEFT=$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "/aws/lambda/${STACK}-" --query 'logGroups[].logGroupName' --output text)
+if [ -n "${LG_LEFT}" ] && [ "${LG_LEFT}" != "None" ]; then
+  echo "FAIL: Lambda log groups still exist after the sweep: ${LG_LEFT}" >&2
+  exit 1
+fi
+echo "    OK: 0 orphans (state + Kinesis + Lambda + ElastiCache + Lambda log groups all gone)"
 
 echo ""
 echo "==> cache-streaming test passed: GetAtt Redis endpoint resolved, VPC/ElastiCache/Kinesis/Lambda deployed + wired, clean destroy 0 orphans"
