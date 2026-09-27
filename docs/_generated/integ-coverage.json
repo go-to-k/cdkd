@@ -3889,6 +3889,7 @@
         "sns-sqs-event",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -4131,6 +4132,9 @@
         "stepfunctions-s3-definition": [
           "l2"
         ],
+        "stream-delete-redeploy": [
+          "l2"
+        ],
         "synthetics-canary": [
           "l2"
         ],
@@ -4266,7 +4270,8 @@
         "kinesis-stream-mode-switch",
         "log-pipeline",
         "replacement-immutable-name",
-        "sdk-ccapi-crossref"
+        "sdk-ccapi-crossref",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "cache-streaming": [
@@ -4290,16 +4295,25 @@
         ],
         "sdk-ccapi-crossref": [
           "literal"
+        ],
+        "stream-delete-redeploy": [
+          "l2",
+          "literal"
         ]
       }
     },
     {
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
-        "log-pipeline"
+        "log-pipeline",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "log-pipeline": [
+          "l1",
+          "literal"
+        ],
+        "stream-delete-redeploy": [
           "l1",
           "literal"
         ]
@@ -5236,6 +5250,7 @@
         "s3-replication-and-filter",
         "s3-subconfig-removal",
         "state-destroy",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
@@ -5397,6 +5412,9 @@
           "literal"
         ],
         "state-destroy": [
+          "l2"
+        ],
+        "stream-delete-redeploy": [
           "l2"
         ],
         "synthetics-canary": [

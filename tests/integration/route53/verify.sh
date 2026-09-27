@@ -540,22 +540,22 @@ if [ -z "${ZONE_LOGICAL_ID}" ]; then
 fi
 echo "    Hosted zone logical id: ${ZONE_LOGICAL_ID}"
 
-# --- 2.5a: auto mode DECLINES this zone, and that is the documented shape --
-# Auto mode gives the zone no `--resource`, so `importHostedZone` would take
-# its name-lookup branch. It cannot here, and the reason is worth pinning
-# rather than working around: this fixture's zone name embeds the account
+# --- 2.5a: auto mode RESOLVES this zone by its intrinsic Name (#1897) ------
+# Auto mode gives the zone no `--resource`, so `importHostedZone` takes its
+# name-lookup branch. This fixture's zone name embeds the account
 # (`cdkd-test-${this.account}.internal`), so on an env-agnostic stack the
-# synthesized `Name` is an unresolved `Fn::Join` over `{Ref: AWS::AccountId}`
-# rather than a string -- measured, not assumed. `import.ts` pre-substitutes
-# only single-key `{Ref}` intrinsics before calling a provider, so the
-# provider sees the Join, `typeof zoneName !== 'string'` holds, and the row is
-# correctly reported `skipped-not-found`.
+# synthesized `Name` is an `Fn::Join` over `{Ref: AWS::AccountId}` rather than
+# a string. Before issue #1897 the provider saw that Join, its
+# `typeof zoneName !== 'string'` guard declined, and the row came back
+# `skipped-not-found`; this arm asserted that skip as a tripwire. `import.ts`
+# now resolves intrinsics built only from literals and the account / region
+# pseudo-parameters before calling a provider, so the name route must find
+# the zone deployed above -- and this arm asserts exactly that id.
 #
-# So the NAME-lookup branch has no live coverage in THIS fixture and is
-# covered by unit tests only; 2.5b below is the live arm. Asserting the skip
-# keeps that honest and doubles as a tripwire: if intrinsic-Name auto
-# resolution ever lands (issue #1897), this assertion goes red and whoever
-# lands it should upgrade this arm to assert resolution instead.
+# The fix is not Route 53's: it sits in front of every provider. So the arm
+# also asserts the fixture's query-log group, whose `LogGroupName` is the same
+# account-built Join read through `import-helpers.ts`' `readNameProperty` -- a
+# second, independent provider on the same path.
 #
 # It runs under --dry-run because whole-stack auto mode REBUILDS the resource
 # map: three of this fixture's types (Route53::HealthCheck,
@@ -563,8 +563,11 @@ echo "    Hosted zone logical id: ${ZONE_LOGICAL_ID}"
 # and have no SDK provider, hence no import(), so a persisted auto import
 # would drop their rows and destroy would leak them. --dry-run still runs
 # every provider's import() for real against AWS and still writes the
-# resolved mapping (both happen before the early return), so the decline is
-# genuinely measured while state is left untouched.
+# resolved mapping (both happen before the early return), so the resolution is
+# genuinely measured while state is left untouched. The attributes the name
+# route records are therefore not observable here (the mapping carries ids
+# only); the --resource branch below persists and asserts them, and the
+# name route's attribute read is unit-tested.
 IMPORT_MAP=$(mktemp)
 IMPORT_STDERR=$(mktemp)
 # Keep stdout too: the per-row import summary (imported / skipped / failed and
@@ -600,37 +603,45 @@ if ! jq -e 'type == "object"' "${IMPORT_MAP}" >/dev/null 2>&1; then
   exit 1
 fi
 MAPPED_ZONE_RAW=$(jq -r --arg k "${ZONE_LOGICAL_ID}" '.[$k] // empty' "${IMPORT_MAP}")
-if [ -n "${MAPPED_ZONE_RAW}" ]; then
-  echo "FAIL: auto import resolved ${ZONE_LOGICAL_ID} to '${MAPPED_ZONE_RAW}'" >&2
-  echo "  This fixture's zone Name synthesizes to an unresolved Fn::Join, so the" >&2
-  echo "  name-lookup branch cannot see a string and the row must be skipped." >&2
-  echo "  A resolution here means intrinsic-Name auto import landed (issue #1897):" >&2
-  echo "  good news, but this arm must then be upgraded to assert the resolved id" >&2
-  echo "  and the NameServers it records -- coverage this file does not yet have." >&2
-  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
-  exit 1
-fi
-
-# The absence above is only meaningful if the import actually PROCESSED the
-# zone, so anchor it on the plan line rather than on a count of other rows.
-# A row-count floor would be the wrong anchor here: every name in this fixture
-# is account-derived, so auto mode legitimately resolves ZERO rows and a
-# `>= 1` floor fails on a healthy run (measured). The plan line is the direct
-# evidence -- it exists only because the zone was walked and its provider's
-# import() was called.
-ZONE_PLAN_LINE=$(grep -F "${ZONE_LOGICAL_ID} (AWS::Route53::HostedZone)" "${IMPORT_STDOUT}" || true)
-if [ -z "${ZONE_PLAN_LINE}" ]; then
-  echo "FAIL: the import plan has no row for ${ZONE_LOGICAL_ID} -- the zone was never walked," >&2
-  echo "  so its absence from the mapping proves nothing" >&2
+if [ "${MAPPED_ZONE_RAW}" != "${ZONE_ID}" ]; then
+  echo "FAIL: auto import mapped ${ZONE_LOGICAL_ID} to '${MAPPED_ZONE_RAW}', expected the deployed zone ${ZONE_ID}" >&2
+  echo "  The zone Name synthesizes to an Fn::Join over AWS::AccountId; the import" >&2
+  echo "  pre-pass must resolve it so the name lookup finds the zone (issue #1897)." >&2
+  echo "  If the plan shows the row FAILED as ambiguous, a zone of the same name leaked" >&2
+  echo "  from an earlier run is the likelier cause (the name route refuses to guess)." >&2
+  echo "  The import plan said:" >&2
   cat "${IMPORT_STDOUT}" >&2
   rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
   exit 1
 fi
-# And the row must be the DECLINE, not a failure: a provider error would also
-# keep the zone out of the mapping, for an entirely different reason.
-if ! printf '%s' "${ZONE_PLAN_LINE}" | grep -qF 'no matching AWS resource'; then
-  echo "FAIL: ${ZONE_LOGICAL_ID} was not declined as not-found; the plan said:" >&2
-  echo "  ${ZONE_PLAN_LINE}" >&2
+
+# The second provider on the same path: the query-log group, looked up by its
+# account-built LogGroupName. Its logical id is read from state rather than
+# spelled, since CDK derives it.
+LOG_GROUP_LOGICAL_ID=$(echo "${STATE}" | jq -r '
+  .resources | to_entries[]
+  | select(.value.resourceType == "AWS::Logs::LogGroup") | .key' | head -1)
+if [ -z "${LOG_GROUP_LOGICAL_ID}" ]; then
+  echo "FAIL: no AWS::Logs::LogGroup row in state to check the import mapping against" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+EXPECTED_LOG_GROUP_NAME="/aws/route53/cdkd-test-${ACCOUNT_ID}.internal"
+MAPPED_LOG_GROUP=$(jq -r --arg k "${LOG_GROUP_LOGICAL_ID}" '.[$k] // empty' "${IMPORT_MAP}")
+if [ "${MAPPED_LOG_GROUP}" != "${EXPECTED_LOG_GROUP_NAME}" ]; then
+  echo "FAIL: auto import mapped ${LOG_GROUP_LOGICAL_ID} to '${MAPPED_LOG_GROUP}', expected '${EXPECTED_LOG_GROUP_NAME}'" >&2
+  echo "  The LogGroupName is the same account-built Fn::Join (issue #1897). The import plan said:" >&2
+  cat "${IMPORT_STDOUT}" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+
+# And the printed plan -- what a user reads -- must report the zone with that
+# id too, not only the mapping file.
+ZONE_PLAN_LINE=$(grep -F "${ZONE_LOGICAL_ID} (AWS::Route53::HostedZone)" "${IMPORT_STDOUT}" || true)
+if ! printf '%s' "${ZONE_PLAN_LINE}" | grep -qF "(${ZONE_ID})"; then
+  echo "FAIL: the import plan does not report ${ZONE_LOGICAL_ID} imported as ${ZONE_ID}; it said:" >&2
+  echo "  ${ZONE_PLAN_LINE:-<no row>}" >&2
   rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
   exit 1
 fi
@@ -644,7 +655,7 @@ if [ "${STATE_BEFORE_DRYRUN}" != "${STATE_AFTER_DRYRUN}" ]; then
   echo "FAIL: --dry-run import mutated the state document" >&2
   exit 1
 fi
-echo "    OK: auto mode DECLINED the intrinsic-Name zone (issue #1897) and wrote no state"
+echo "    OK: auto mode resolved the intrinsic-Name zone and log group (issue #1897) and wrote no state"
 
 # --- 2.5b: the --resource branch, PERSISTED --------------------------------
 # Selective mode (an override, no --auto) is a non-destructive merge: only the

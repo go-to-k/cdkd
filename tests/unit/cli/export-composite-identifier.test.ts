@@ -1050,7 +1050,13 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     // AWS::IAM::Policy also lacks a `read` handler, but cdkd has a real answer
     // for it: pre-delete + phase-2 CREATE. The pre-flight must not steal it.
     const state = stateWith({
-      Policy: { resourceType: 'AWS::IAM::Policy', physicalId: 'MyRole:MyPolicy' },
+      // A recorded attachment: a policy with none is refused at plan time
+      // (go-to-k/cdkd#3857), which is not the ordering this case fences.
+      Policy: {
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'MyRole:MyPolicy',
+        properties: { Roles: ['MyRole'] },
+      },
     });
     const template = { Resources: { Policy: { Type: 'AWS::IAM::Policy', Properties: {} } } };
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');

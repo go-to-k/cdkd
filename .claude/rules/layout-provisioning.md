@@ -50,6 +50,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
 
+- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; issue [#3872](https://github.com/go-to-k/cdkd/issues/3872)). The delete was ACCEPTED, so the cap, a Ctrl-C and an unreadable status warn and RETURN; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws, marked as an abandoned wait so the state record is kept.
+
 - **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON; CI fails on drift. `--allow-unsupported-types` routes named types through CC.
 
 - **property-coverage.ts** + **.generated.ts** - Property-level REPORTING and routing, NOT a rejection; the generated per-type `{ handled, silentDrop }` map is built offline from the committed schema fixtures (CI fails on drift). `--allow-unsupported-properties` opts named entries back INTO the drop, keeping the SDK path. **An accepted drop is not RECORDED either** (issue [#2750](https://github.com/go-to-k/cdkd/issues/2750)): the allow set is per `<Type>:<Prop>` but the ROUTE is per RESOURCE, so ONE un-allowed drop routes the whole resource through CC and nothing is dropped. Both narrowings must KEEP an un-allowed drop, and neither removes a CREATE-ONLY drop, which would become an ADDITION next deploy — a replacement of a resource nobody touched. A property in NEITHER map (unrecognized) ROUTES like a drop unless read-only, allow-listed, on a type with no CC route, or held unchanged by the state record — that baseline is what keeps an existing deployment on its route, so every existing-resource caller threads the record's bag, and the narrowings stay schema-known only ([design](../../docs/design/3713-route-unrecognized-properties.md)).
@@ -79,4 +81,4 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 ## SDK Providers
 
-SDK Providers live in `src/provisioning/providers/`, registered in `register-providers.ts`; Cloud Control is the fallback for types without one. Full list: [docs/supported-resources.md](../../docs/supported-resources.md).
+SDK Providers live in `src/provisioning/providers/`; Cloud Control is the fallback for types without one. Full list: [docs/supported-resources.md](../../docs/supported-resources.md).
