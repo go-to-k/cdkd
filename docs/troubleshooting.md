@@ -949,11 +949,14 @@ cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the mem
 
 **Cause:**
 
-CloudFormation accepts `ConsumptionMode` (`Stream` or `Queue`) on a self-managed
-Kafka event source mapping, but the AWS SDK cdkd calls Lambda through does not
-model it yet and drops it from the request. Rather than deploy a mapping without
-the mode you asked for, cdkd refuses a create that declares it, and an update
-that adds or changes it, before calling Lambda. A `cdkd rollback` or
+The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
+self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
+through does not model it yet and drops it from the request. Lambda itself
+currently rejects the member through CloudFormation's own handler too
+(`Unsupported 'ConsumptionMode' parameter for given event source mapping type`),
+so switching the resource to Cloud Control does not help. Rather than deploy a
+mapping without the mode you asked for, cdkd refuses a create that declares it,
+and an update that adds or changes it, before calling Lambda. A `cdkd rollback` or
 `cdkd drift --revert` only warns, because those paths replay a recorded
 configuration you cannot edit from the template.
 

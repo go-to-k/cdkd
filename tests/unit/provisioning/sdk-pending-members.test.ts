@@ -44,7 +44,8 @@ async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Prom
 const PENDING_MEMBERS: readonly PendingMember[] = [
   {
     cfnPath: 'AWS::Lambda::EventSourceMapping SelfManagedKafkaEventSourceConfig.ConsumptionMode',
-    refusedBy: 'src/provisioning/providers/lambda-eventsource-provider.ts (issue #3848)',
+    refusedBy:
+      'src/provisioning/providers/lambda-eventsource-provider.ts (issue #3848; forward it per #3850, after update() sends the block per #3851)',
     member: 'ConsumptionMode',
     sentinel: 'group-sentinel',
     serialize: () =>

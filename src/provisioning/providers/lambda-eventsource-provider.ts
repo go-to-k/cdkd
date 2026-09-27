@@ -222,11 +222,18 @@ function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
  *
  * Deliberate parity divergence: CloudFormation forwards the member, cdkd
  * refuses it on the template path. No shape of it can be delivered through the
- * SDK — measured 2026-09-26 by serializing, offline, a `CreateEventSourceMappingCommand` carrying
- * `ConsumptionMode: 'Queue'`; the request body held `ConsumerGroupId`
- * only. `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
- * installed client sends the member, which is when this refusal comes out and
- * the member is forwarded and read back instead.
+ * SDK — measured 2026-09-26 by serializing, offline, a
+ * `CreateEventSourceMappingCommand` carrying `ConsumptionMode: 'Queue'`; the
+ * request body held `ConsumerGroupId` only. Cloud Control (CloudFormation's own
+ * handler, and cdkd's `--recreate-via-cc-api` route) is no alternative either:
+ * probed live 2026-09-27 in us-east-1 on a disabled self-managed Kafka mapping,
+ * Lambda rejected `Stream` and `Queue`, on-demand and with
+ * `ProvisionedPollerConfig`, every time with "Unsupported 'ConsumptionMode'
+ * parameter for given event source mapping type".
+ * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
+ * installed client sends the member. Lifting the refusal then also needs
+ * update() to send the block at all (issue #3851), plus the readback (issue
+ * #3850); forwarding it on create alone reopens the drop on update.
  */
 const KAFKA_CONSUMPTION_MODE_KEY = 'ConsumptionMode';
 
@@ -241,9 +248,12 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
   return (
     `AWS::Lambda::EventSourceMapping ${logicalId}: ` +
     `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be sent by cdkd yet — ` +
-    `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
-    `${mode === 'create' ? 'CreateEventSourceMapping' : 'UpdateEventSourceMapping'} request ` +
-    `without an error (issue #3848). Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
+    (mode === 'create'
+      ? `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
+        `CreateEventSourceMapping request without an error (issue #3848). `
+      : `cdkd does not send SelfManagedKafkaEventSourceConfig on UpdateEventSourceMapping, so ` +
+        `the change would not be applied (issues #3848, #3851). `) +
+    `Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
     `SelfManagedKafkaEventSourceConfig to deploy the mapping without it.`
   );
 }
