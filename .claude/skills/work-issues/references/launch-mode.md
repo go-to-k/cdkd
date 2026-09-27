@@ -104,7 +104,7 @@ it has exactly ONE working tree:
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one (go-to-k/cdkd#2390). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run times out | §3 |
+| 1 | Lanes in THIS tree run serially. A CONCURRENT lane gets a SIBLING worktree, `git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<b> -b <b> origin/main`, never one NESTED inside this tree (go-to-k/cdkd#3902's lane ran that way). Integ runs and merges stay serialized; each tree runs its integ from its OWN `dist/` and `integ-destroy` marker; §9 removes a sibling with the MAIN-CHECKOUT arm | §3, §5, §9 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
 | 3 | The claim names the tree checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
 | 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH` | §5 |

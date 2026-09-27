@@ -123,9 +123,10 @@ git worktree list                                # every worktree THIS run added
 git branch --list '<your prefix>*'               # ...and so is every branch it added
 ```
 
-IN-PLACE — run THIS block INSTEAD, never both. **An IN-PLACE run created no
-worktree, so it removes none**: it must not remove the tree it runs in. It owes
-the BRANCH — put back the one it found, delete the one it made.
+IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
+tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
+block above, via `git -C <MAIN_CHECKOUT>`). It owes the BRANCH — put back the
+one it found, delete the one it made.
 `<LAUNCH_BRANCH>` and `<each branch this run created>` are SUBSTITUTION
 PLACEHOLDERS, not shell variables (`references/launch-mode.md`):
 
