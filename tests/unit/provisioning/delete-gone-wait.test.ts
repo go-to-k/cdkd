@@ -143,6 +143,33 @@ describe('waitForGoneAfterDelete (#3872)', () => {
     expect(h.logger.warn).not.toHaveBeenCalled();
   });
 
+  it('does not trust a failed status on the FIRST read, and waits through it when the re-delete moves it on', async () => {
+    // The re-run the DELETING_FAILED error asks for re-deletes a stream still
+    // in that status; the read straight after can show the stale status.
+    const h = makeHarness(['DELETING_FAILED', 'DELETING', undefined]);
+    const failure = new Error('stream s1 entered DELETING_FAILED');
+    await expect(
+      waitUntilGone(h, (s) => (s === 'DELETING_FAILED' ? failure : undefined))
+    ).resolves.toBeUndefined();
+    expect(h.describe).toHaveBeenCalledTimes(3);
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('throws on a failed status that persists one poll interval past the first read', async () => {
+    const h = makeHarness(['DELETING_FAILED', 'DELETING_FAILED', undefined]);
+    const failure = new Error('stream s1 entered DELETING_FAILED');
+    let caught: unknown;
+    try {
+      await waitUntilGone(h, (s) => (s === 'DELETING_FAILED' ? failure : undefined));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBe(failure);
+    expect(isWaitAbandonedError(caught)).toBe(true);
+    expect(h.describe).toHaveBeenCalledTimes(2);
+    expect(h.sleeps).toEqual([5_000]);
+  });
+
   it('keeps waiting through a status the failedStatus predicate does not name', async () => {
     const h = makeHarness(['DELETING', undefined]);
     await expect(waitUntilGone(h, () => undefined)).resolves.toBeUndefined();

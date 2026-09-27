@@ -30,7 +30,8 @@ type WaitLogger = { debug(message: string): void; warn(message: string): void };
  *  - The exception is a status the caller names TERMINAL through
  *    `failedStatus` (Firehose `DELETING_FAILED`): there the delete will NOT
  *    complete on its own, so returning would drop the state record of a live
- *    resource. The caller's error is thrown, marked as an abandoned wait
+ *    resource. It is not trusted on the FIRST read of a wait that has seen
+ *    nothing else (see the loop). The caller's error is thrown, marked as an abandoned wait
  *    (`wait-abandoned.ts`) so no already-deleted classifier can read its text
  *    — which interpolates user-chosen names — as success.
  *  - `describe()` resolving `undefined` means GONE (the caller maps its
@@ -79,6 +80,7 @@ export async function waitForGoneAfterDelete(opts: {
   const watch = startInterruptWatch(`${opts.what} deletion wait`);
   try {
     let lastStatus: string | undefined;
+    let sawNonFailedStatus = false;
     for (;;) {
       if (watch.isInterrupted()) {
         opts.logger.warn(`${stopped} (interrupted). ${consequence}`);
@@ -91,7 +93,18 @@ export async function waitForGoneAfterDelete(opts: {
           return;
         }
         const failure = opts.failedStatus?.(status);
-        if (failure !== undefined) throw markWaitAbandoned(failure);
+        // A failed status is TERMINAL only once the delete had a chance to
+        // move it: the re-run the caller's error asks for sends a fresh delete
+        // to a resource ALREADY in that status, and a read straight after it
+        // can still report the old status. So it counts after a non-failed
+        // status was seen, or on a read at least one poll interval in.
+        if (failure !== undefined) {
+          if (sawNonFailedStatus || now() - startedAt >= opts.pollIntervalMs) {
+            throw markWaitAbandoned(failure);
+          }
+        } else {
+          sawNonFailedStatus = true;
+        }
         lastStatus = status;
         opts.logger.debug(`${opts.what} status: ${status}, waiting for it to disappear`);
       } catch (error) {
