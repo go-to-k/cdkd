@@ -305,7 +305,7 @@ describe('rollback replay refuses a region-ambiguous secret reference (issue #20
     expect(result.failures).toBe(1);
     const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
     expect(refusal).toContain(
-      're-run the rollback of the nested stack Top~Child itself (not of the top-level stack).'
+      "re-run the rollback of the nested stack 'Top~Child' itself."
     );
     expect(refusal).not.toContain("re-run 'cdkd rollback'");
   });

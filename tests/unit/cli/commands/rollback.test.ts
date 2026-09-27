@@ -3201,8 +3201,9 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
 describe('rollbackCommand — a nested child engine own-rollback segment (go-to-k/cdkd#3859)', () => {
   // A nested child engine's own in-process rollback leaves an
   // `auto-rollback-started` segment in the CHILD's journal, under the parent's
-  // run id, and the parent's rollback never replays it: the child's row is one
-  // of the parent's FAILED ops. The remedy a refusal in that replay prints
+  // run id; the child's row is one of the parent's FAILED ops, so the parent's
+  // rollback replays it only through `--revert-failed`, as a child revert
+  // `--orphan` does not reach. The remedy a refusal in that replay prints
   // names the child stack, so this pins what it rests on — a direct
   // `cdkd rollback <parent>~<child> --orphan <id>` proceeds over such a journal
   // (it is not a `nested-pending-parent` record) and honours the id.

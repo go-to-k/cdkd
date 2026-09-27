@@ -502,10 +502,10 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // stack-less `cdkd rollback` resolves to the parent.
       expect(collision).not.toContain('re-run cdkd rollback —');
       expect(collision).toContain(
-        'then re-run the rollback of the nested stack Top~Child itself (not of the top-level stack) — the journal is kept'
+        "then re-run the rollback of the nested stack 'Top~Child' itself — the journal is kept"
       );
       for (const message of [collision!, unrouted!]) {
-        expect(message).toContain("This is the nested stack's own rollback, so the command must name the nested stack");
+        expect(message).toContain("This is the nested stack's own rollback, and only a rollback of the nested stack itself honours --orphan for this op");
         expect(message).toContain('command below');
       }
 

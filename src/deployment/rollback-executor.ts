@@ -46,7 +46,12 @@
  *    replays each op exactly once).
  */
 
-import { commandHole, pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  quotedOrDescribed,
+  withheldTargetClause,
+} from '../utils/pasteable-command.js';
 import { SHORT_NAME_MAX_CODE_POINTS } from '../state/malformed-resources-bag.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
@@ -414,10 +419,11 @@ function orphanRemedy(
     : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
       `so a pasted command could be reshaped by the shell or name a different resource — read ` +
       `it from cdkd events and fill the quoted hole.`;
-  // A nested child's own rollback: its journal is replayed only by a rollback
-  // of the CHILD, so the command names it — a stack-less one resolves to the
-  // parent, which never replays the child's failure segment
-  // (go-to-k/cdkd#3859).
+  // A nested child's own rollback: only a rollback of the CHILD honours
+  // `--orphan` for its ops, so the command names it (go-to-k/cdkd#3859). A
+  // stack-less one resolves to the parent, which refuses (a failed UPDATE row,
+  // the #3754 guard), replays the child without `--orphan` (`--revert-failed`),
+  // or never replays it (a failed CREATE row).
   const target =
     ctx.nestedChildStack === undefined
       ? undefined
@@ -433,8 +439,8 @@ function orphanRemedy(
   const stackClause =
     target === undefined
       ? ''
-      : ` This is the nested stack's own rollback, so the command must name the nested stack: a ` +
-        `rollback of the top-level stack does not replay it.` +
+      : ` This is the nested stack's own rollback, and only a rollback of the nested stack ` +
+        `itself honours --orphan for this op, so the command names it.` +
         withheldTargetClause(target, 'stack', 'cdkd rollback', "The nested stack's name");
   const rollbackVerb = target?.command ?? 'cdkd rollback';
   return {
@@ -445,12 +451,13 @@ function orphanRemedy(
 }
 
 /**
- * How a message in this replay names "re-run the rollback". A nested child
- * engine's OWN rollback is replayed only by a rollback of the CHILD, and a
- * stack-less `cdkd rollback` resolves to the parent, which never replays it
- * (go-to-k/cdkd#3859) — so there the phrase names the nested stack, as a
- * DISPLAYED name, never as a command: the one pasteable command a refusal
- * carries is {@link orphanRemedy}'s labelled line.
+ * How a message in this replay names "re-run the rollback". In a nested child
+ * engine's OWN rollback a stack-less `cdkd rollback` resolves to the parent,
+ * which does not resume this op as the message means (go-to-k/cdkd#3859), so
+ * there the phrase names the nested stack — as a DISPLAYED name, never as a
+ * command: the one pasteable command a refusal carries is
+ * {@link orphanRemedy}'s labelled line. `quotedOrDescribed`, not `safe()`: the
+ * name sits beside that labelled line, so a padded one must not be printed.
  */
 function rerunRollbackPhrase(
   ctx: Pick<RollbackExecutorContext, 'nestedChildStack'>,
@@ -458,8 +465,7 @@ function rerunRollbackPhrase(
 ): string {
   return ctx.nestedChildStack === undefined
     ? topLevel
-    : `the rollback of the nested stack ${safe(ctx.nestedChildStack)} itself (not of the ` +
-        `top-level stack)`;
+    : `the rollback of the nested stack ${quotedOrDescribed(ctx.nestedChildStack, 'nested stack name')} itself`;
 }
 
 /**
@@ -1016,9 +1022,11 @@ export interface RollbackExecutorContext {
   /**
    * The nested child's stack name (`<parent>~<id>`) when this replay is that
    * child engine's OWN in-process rollback inside its parent's deploy. Its
-   * segment stays in the child's journal and the parent's rollback never
-   * replays it (the child's row is one of the parent's FAILED ops), so the two
-   * refusals' `--orphan` command names the child stack (go-to-k/cdkd#3859).
+   * segment stays in the child's journal, and only a rollback of the child
+   * honours `--orphan` for its ops (the parent's replays it only through
+   * `--revert-failed`, as a child revert `--orphan` does not reach), so the
+   * two refusals' `--orphan` command names the child stack
+   * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;
 }

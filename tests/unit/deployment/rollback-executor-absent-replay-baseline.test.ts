@@ -449,8 +449,7 @@ describe('a replay arm refuses an ABSENT desired bag instead of sending {} (issu
       const warn = warnLines.join('\n');
       expect(warn).toContain('not a property bag');
       expect(warn).toContain(
-        're-running the rollback of the nested stack Top~Child itself (not of the top-level stack) ' +
-          'retries this op'
+        "re-running the rollback of the nested stack 'Top~Child' itself retries this op"
       );
       expect(warn).not.toContain('re-running `cdkd rollback` retries this op');
     }
