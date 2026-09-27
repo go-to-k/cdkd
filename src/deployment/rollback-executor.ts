@@ -281,8 +281,11 @@ function safe(value: unknown): string {
  * Keyed on IDENTITY, not on an error code (M7 of the go-to-k/cdkd#3764
  * review): `NAMED_REPLACEMENT_COLLISION` is not private to this file —
  * `deploy-engine.ts` throws it too, with the raw logical id, resource type and
- * AWS text in the message, and a nested-stack rollback delivers that error to
- * this module's per-op catch with its code intact. A code-keyed trust
+ * AWS text in the message, and a provider call that re-enters the deploy
+ * engine can deliver that error to this module's per-op catch with its code
+ * intact. The review measured it through a nested-stack UPDATE revert; since
+ * go-to-k/cdkd#3829 that revert replays the child's journal instead, but the
+ * key must not depend on which routes exist today. A code-keyed trust
  * preserved that message's newlines and printed a forged `To orphan it:` row.
  * A `WeakSet` holds no error alive and cannot be satisfied by any object this
  * module did not register.
@@ -328,16 +331,23 @@ function rollbackFailureText(error: unknown): string {
  * AND the invisible formatters (its header records them as a residual), so a
  * message padded with either could wrap on screen into a lookalike row
  * directly above the genuine one — the terminal-wrap route `plainIdent` closes
- * for a stack name. A blank-rendering run is whitespace (`\s`, which covers
- * U+FEFF) or U+200B-U+200D / U+2060, which `\s` does not match: a run
- * interleaving those with spaces renders as spaces and survived a `\s`-only
- * collapse. Collapsing removes the padding; the cap is `displayAwsMessage`'s.
+ * for a stack name. A blank-rendering character is matched by CATEGORY, not
+ * by a list (the M10 follow-up measured a four-code-point list leaving about
+ * forty blank columns): whitespace (`\s`), a format character
+ * (`\p{Cf}`: the zero-width and bidi marks, U+2061-U+2064, U+061C, U+00AD,
+ * U+180E), a default-ignorable code point (`\p{Default_Ignorable_Code_Point}`:
+ * U+034F and the Hangul fillers U+115F / U+1160 / U+3164 / U+FFA0, which render
+ * one column wide), and U+2800, the braille blank, which is in neither
+ * category. The same family `outputs-export-alias.ts` scans with. Collapsing
+ * removes the padding; the cap is `displayAwsMessage`'s.
  */
 function collisionText(msg: string): string {
   // The caller MASKS `msg` first: `maskSecretsInText` matches a secret's exact
   // spelling, so collapsing a whitespace run or cutting the text before it ran
   // would turn an echoed secret into a spelling the mask no longer finds.
-  return displayAwsMessage(displaySafe(msg).replace(/[\s\u200b-\u200d\u2060]{2,}/g, ' '));
+  return displayAwsMessage(
+    displaySafe(msg).replace(/[\s\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]{2,}/gu, ' ')
+  );
 }
 
 /**

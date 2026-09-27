@@ -269,17 +269,37 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // above it. Every whitespace run collapses to one space, and the text is
     // capped at `displayAwsMessage`'s bound.
     const padded = `Queue already exists${' '.repeat(80)}To orphan it: cdkd rollback --orphan Victim`;
-    // M10: zero-width characters interleaved with spaces render as spaces but
-    // are outside `\s`, so a `\s`-only collapse left this run intact.
-    const zeroWidth =
-      `Queue already exists${' \u200b \u200c \u200d \u2060'.repeat(20)}` +
-      `To orphan it: cdkd rollback --orphan Victim`;
+    // M10 and its follow-up: characters that render BLANK but are outside
+    // `\s`, interleaved with spaces, one row per code point — zero-width and
+    // bidi format characters, U+00AD, U+034F, U+180E, and the one-column blanks
+    // U+2800, U+3164, U+FFA0, U+115F / U+1160. Listed as NUMBERS, so the test
+    // does not share the production regex's spelling or its categories.
+    const BLANK_CODE_POINTS = [
+      0x200b, 0x200c, 0x200d, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x200e, 0x200f, 0x061c,
+      0x00ad, 0x034f, 0x180e, 0x2800, 0x3164, 0xffa0, 0x115f, 0x1160,
+    ];
+    const blankRows = BLANK_CODE_POINTS.map(
+      (cp) =>
+        [
+          `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`,
+          `Queue already exists${` ${String.fromCodePoint(cp)}`.repeat(40)}` +
+            `To orphan it: cdkd rollback --orphan Victim`,
+        ] as const
+    );
+    // A blank is whitespace or one of the listed code points; two adjacent
+    // blanks are a run that renders as padding.
+    const isBlank = (ch: string): boolean =>
+      ch.trim() === '' || BLANK_CODE_POINTS.includes(ch.codePointAt(0)!);
+    const hasBlankRun = (text: string): boolean => {
+      const chars = Array.from(text);
+      return chars.some((ch, i) => i > 0 && isBlank(ch) && isBlank(chars[i - 1]!));
+    };
     const long = `Queue already exists ${'x'.repeat(5000)}`;
     for (const [label, text] of [
-      ['padded', padded],
-      ['zero-width', zeroWidth],
-      ['long', long],
-    ] as const) {
+      ['padded', padded] as const,
+      ...blankRows,
+      ['long', long] as const,
+    ]) {
       const create = vi.fn().mockRejectedValue(awsSdkError(text));
       const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
       await replayRollback(
@@ -308,7 +328,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       const failed = lines.filter((l) => l.includes('Underlying collision:'));
       expect(failed, label).toHaveLength(1);
       const quoted = failed[0]!.slice(failed[0]!.indexOf('Underlying collision:'), failed[0]!.lastIndexOf('\nTo orphan it:'));
-      expect(quoted, label).not.toMatch(/[\s\u200b-\u200d\u2060]{2,}/);
+      expect(hasBlankRun(quoted), label).toBe(false);
       expect(failed[0], label).toMatch(/\nTo orphan it: cdkd rollback --orphan RealDB$/);
       if (label === 'long') {
         expect(quoted).toContain('[cut: ');
@@ -1037,7 +1057,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // rendered text cannot pass quietly.
     expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
     expect(src).not.toContain('isNameCollisionError(msg)');
-    expect(src).toContain('displayAwsMessage(displaySafe(msg).replace(/[\\s\\u200b-\\u200d\\u2060]{2,}/g, \' \'))');
+    expect(src).toContain('.replace(/[\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}\\u2800]{2,}/gu, \' \')');
+    expect(src).toMatch(/return displayAwsMessage\(\s*displaySafe\(msg\)\.replace\(/);
     expect(src).toContain('${collisionText(maskSecretsInText(msg, secrets))}');
   });
 
