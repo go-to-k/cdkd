@@ -13769,10 +13769,12 @@
             "AWS::Lambda::EventSourceMapping"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {

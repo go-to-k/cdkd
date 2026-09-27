@@ -196,6 +196,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'GlueProvider',
       'IAMAccessKeyProvider',
       'KinesisStreamProvider',
+      'LambdaEventSourceMappingProvider',
       'LambdaFunctionProvider',
       'LambdaUrlProvider',
       'LogsLogGroupProvider',

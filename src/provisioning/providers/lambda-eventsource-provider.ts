@@ -16,11 +16,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -210,6 +212,42 @@ function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
   );
 }
 
+/**
+ * `SelfManagedKafkaEventSourceConfig.ConsumptionMode` (`Stream` | `Queue`) is in
+ * the CFn registry schema but in no `@aws-sdk/client-lambda` release yet
+ * (installed 3.1135.0, latest published 3.1141.0, issue #3848). The SDK v3
+ * serializer drops members it does not model, so a forwarded value never
+ * reaches Lambda: create() would build a mapping without the requested mode and
+ * report success, and update() does not send the block at all.
+ *
+ * Deliberate parity divergence: CloudFormation forwards the member, cdkd
+ * refuses it on the template path. No shape of it can be delivered through the
+ * SDK — measured 2026-09-26 by serializing, offline, a `CreateEventSourceMappingCommand` carrying
+ * `ConsumptionMode: 'Queue'`; the request body held `ConsumerGroupId`
+ * only. `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
+ * installed client sends the member, which is when this refusal comes out and
+ * the member is forwarded and read back instead.
+ */
+const KAFKA_CONSUMPTION_MODE_KEY = 'ConsumptionMode';
+
+/** The declared `ConsumptionMode`, or `undefined` when the template omits it. */
+function declaredConsumptionMode(properties: Record<string, unknown>): unknown {
+  const config = properties['SelfManagedKafkaEventSourceConfig'];
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
+  return (config as Record<string, unknown>)[KAFKA_CONSUMPTION_MODE_KEY];
+}
+
+function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'update'): string {
+  return (
+    `AWS::Lambda::EventSourceMapping ${logicalId}: ` +
+    `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be sent by cdkd yet — ` +
+    `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
+    `${mode === 'create' ? 'CreateEventSourceMapping' : 'UpdateEventSourceMapping'} request ` +
+    `without an error (issue #3848). Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
+    `SelfManagedKafkaEventSourceConfig to deploy the mapping without it.`
+  );
+}
+
 const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
   'sqs',
   'kinesis',
@@ -307,7 +345,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating event source mapping ${logicalId}`);
 
@@ -317,6 +356,19 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         `FunctionName is required for event source mapping ${logicalId}`,
         resourceType,
         logicalId
+      );
+    }
+
+    // Outside the `try` so the typed refusal is not re-wrapped below. A state
+    // replay only warns: the record's value was dropped the same way when it
+    // was first deployed, so the restored mapping matches what it replaces.
+    if (declaredConsumptionMode(properties) !== undefined) {
+      const message = consumptionModeRefusalMessage(logicalId, 'create');
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(message, resourceType, logicalId);
+      }
+      this.logger.warn(
+        `${message} Proceeding without it: this create replays a cdkd state record.`
       );
     }
 
@@ -479,8 +531,26 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // update() never sends SelfManagedKafkaEventSourceConfig, so only a CHANGED
+    // value is lost; an unchanged one (a record an older cdkd wrote) sends
+    // nothing either way. Refused before the first AWS call on the template
+    // path, warned on a state replay or a drift revert.
+    const desiredMode = declaredConsumptionMode(properties);
+    if (
+      desiredMode !== undefined &&
+      JSON.stringify(desiredMode) !== JSON.stringify(declaredConsumptionMode(previousProperties))
+    ) {
+      const message = consumptionModeRefusalMessage(logicalId, 'update');
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw new ProvisioningError(message, resourceType, logicalId, physicalId);
+      }
+      this.logger.warn(
+        `${message} Proceeding without it: this update restores a recorded or read-back configuration.`
+      );
+    }
     try {
       return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
     } catch (error) {

@@ -268,7 +268,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'KMSProvider',
   'KinesisStreamConsumerProvider',
   'LambdaEventInvokeConfigProvider',
-  'LambdaEventSourceMappingProvider',
   'LambdaLayerVersionProvider',
   'LambdaMicrovmImageProvider',
   'LambdaPermissionProvider',
