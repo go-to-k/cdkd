@@ -126,8 +126,9 @@ export const IAM_ROLE_ARN_MAX_LENGTH = 2048;
  * `\u007F`, i.e. `( ) ! # $ % & * [ ]` that `IAM_ROLE_ARN_RE`'s `[\w+=,.@-]`
  * rejects. The class here is `[!-~]`, one character SHORT of that: DEL
  * (`\u007F`) is refused deliberately, since it is a terminal control
- * character and a role path carrying it is not worth rendering or sending, and the account stays `[0-9]+` because AWS rejects a wrong account
- * far better than a regex can. The partition is `[A-Za-z0-9-]+`, open-ended so a
+ * character and a role path carrying it is not worth rendering or sending.
+ * The account stays `[0-9]+` because AWS rejects a wrong account far better
+ * than a regex can. The partition is `[A-Za-z0-9-]+`, open-ended so a
  * partition AWS has not launched yet is not refused by name.
  *
  * ANCHORED AT BOTH ENDS. The pattern this replaced for `--assume-role`
@@ -163,6 +164,8 @@ export function isIamRoleArn(value: unknown): boolean {
  * shape test accepted, so it is the most untrusted text on the line.
  */
 export function refusedRoleArnMessage(value: unknown): string {
+  // An EMPTY value (`--role-arn ""`) says so, rather than `displayIdent`'s
+  // generic `<unrenderable>`, which reads as if the value were binary.
   return (
     // cdkd-raw-beside-safe: `IAM_ROLE_ARN_MAX_LENGTH` is this module's own
     // numeric constant, so it carries no caller-controlled bytes; the refused
@@ -172,8 +175,13 @@ export function refusedRoleArnMessage(value: unknown): string {
     // ARN; its name carries `ROLE_ARN` only because it bounds one.
     `AssumeRole refused: the role ARN is not a well-formed IAM role ARN ` +
     `(expected arn:<partition>:iam::<account>:role/<name>, at most ${IAM_ROLE_ARN_MAX_LENGTH} characters): ` +
-    `${displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Nothing was sent to STS.`
+    `${shownRefusedValue(value)}. Nothing was sent to STS.`
   );
+}
+
+function shownRefusedValue(value: unknown): string {
+  if (value === '') return '(empty)';
+  return displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
 }
 
 /**

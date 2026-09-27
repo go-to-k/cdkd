@@ -3,6 +3,7 @@ import * as path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { STSClient } from '@aws-sdk/client-sts';
+import { parseSync } from 'vite-plus';
 
 /**
  * Issue #2348 (following cdk-local#607): a role ARN is shape- and
@@ -149,6 +150,12 @@ describe('refusedRoleArnMessage', () => {
     expect(message).not.toContain('\r');
   });
 
+  it('names an EMPTY value as empty, not unrenderable', () => {
+    const message = refusedRoleArnMessage('');
+    expect(message).toContain('characters): (empty). Nothing was sent to STS.');
+    expect(message).not.toContain('unrenderable');
+  });
+
   it('bounds an oversized value and says how much it withheld', () => {
     const huge = `${PREFIX}${'a'.repeat(1_000_000)}`;
     const message = refusedRoleArnMessage(huge);
@@ -276,47 +283,33 @@ const ASSUME_CONSTRUCT = /\bAssumeRole\w*Command\b|\bfromTemporaryCredentials\b|
 const ROLE_ARN_MODULE = path.join('utils', 'role-arn.ts');
 
 /**
- * Code lines only, with comments REMOVED rather than whole lines skipped: a
- * mention in a comment is prose, but a line that opens with a closed block
- * comment and then builds the command is code behind a comment. Block-comment state carries across lines. A `//`
- * starts a line comment only at the start or after whitespace, so a URL inside
- * a string does not hide the code after it.
+ * Code lines only, with every comment REMOVED by a real parser.
+ *
+ * A mention in a comment is prose, but code after a closed block comment on
+ * the same line is still code. The comment spans come from oxc (`parseSync`,
+ * re-exported by `vite-plus`), which knows strings, template literals and
+ * regular expressions. A hand-rolled stripper read the `/*` inside the string
+ * `'MyStage/*'` as a comment opener and dropped the rest of several real files.
+ * (TypeScript's own scanner is not available: the repo's `typescript@7` has no
+ * JS API.)
+ *
+ * Each comment is blanked to spaces, keeping its newlines, so line numbers
+ * survive. A file oxc cannot parse throws rather than being skipped.
  */
-function codeLines(text: string): Array<{ line: number; text: string }> {
-  const out: Array<{ line: number; text: string }> = [];
-  let inBlock = false;
-  text.split('\n').forEach((raw, i) => {
-    let code = '';
-    let rest = raw;
-    while (rest.length > 0) {
-      if (inBlock) {
-        const close = rest.indexOf('*/');
-        if (close === -1) {
-          rest = '';
-        } else {
-          inBlock = false;
-          rest = rest.slice(close + 2);
-        }
-        continue;
-      }
-      const open = rest.indexOf('/*');
-      const line = /(^|\s)\/\//.exec(rest);
-      const lineAt = line ? line.index + line[1]!.length : -1;
-      if (lineAt !== -1 && (open === -1 || lineAt < open)) {
-        code += rest.slice(0, lineAt);
-        rest = '';
-      } else if (open !== -1) {
-        code += rest.slice(0, open);
-        inBlock = true;
-        rest = rest.slice(open + 2);
-      } else {
-        code += rest;
-        rest = '';
-      }
-    }
-    if (code.trim() !== '') out.push({ line: i + 1, text: code });
-  });
-  return out;
+function codeLines(text: string, file = 'input.ts'): Array<{ line: number; text: string }> {
+  const parsed = parseSync(file, text);
+  if (parsed.errors.length > 0) {
+    throw new Error(`role-arn fence: cannot parse ${file}: ${parsed.errors[0]!.message}`);
+  }
+  let code = text;
+  for (const c of parsed.comments) {
+    const blank = text.slice(c.start, c.end).replace(/[^\n]/g, ' ');
+    code = code.slice(0, c.start) + blank + code.slice(c.end);
+  }
+  return code
+    .split('\n')
+    .map((t, i) => ({ line: i + 1, text: t }))
+    .filter((l) => l.text.trim() !== '');
 }
 
 describe('codeLines strips comments without hiding code behind them', () => {
@@ -331,6 +324,29 @@ describe('codeLines strips comments without hiding code behind them', () => {
     ].join('\n');
     const hits = codeLines(text).filter((l) => ASSUME_CONSTRUCT.test(l.text));
     expect(hits.map((l) => l.line)).toEqual([4, 6]);
+  });
+
+  it.each([
+    ["a `/*` inside a string", "const p = 'MyStage/*';"],
+    ["a ` //` inside a string", "const p = ' //';"],
+    ['a `/*` inside a template literal', 'const p = `arn:aws:s3:::${b}/*`;'],
+    ['a `/*` inside a regular expression', 'const r = /[/*]x/;'],
+  ])('still sees a construct after %s', (_label, before) => {
+    const text = [before, 'const late = new AssumeRoleCommand({ RoleArn: x });'].join('\n');
+    const hits = codeLines(text).filter((l) => ASSUME_CONSTRUCT.test(l.text));
+    expect(hits.map((l) => l.line)).toEqual([2]);
+  });
+
+  it('ignores a construct inside a real block or line comment', () => {
+    const text = [
+      '/* new AssumeRoleCommand({ RoleArn: x }) */ const a = 1;',
+      'const b = 2; // new AssumeRoleCommand({ RoleArn: x })',
+    ].join('\n');
+    expect(codeLines(text).filter((l) => ASSUME_CONSTRUCT.test(l.text))).toEqual([]);
+  });
+
+  it('refuses a file it cannot parse rather than skipping it', () => {
+    expect(() => codeLines('const = ;', 'broken.ts')).toThrow(/cannot parse broken\.ts/);
   });
 });
 
@@ -353,7 +369,7 @@ describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)'
     // A literal the fence does not read: seven sends in six files when #2348
     // landed. A walk that found nothing must not pass the case below.
     const callers = files.flatMap(({ rel, text }) =>
-      codeLines(text)
+      codeLines(text, rel)
         .filter((l) => /\bsendableAssumeRoleCommand\(/.test(l.text))
         .filter((l) => !/export function sendableAssumeRoleCommand/.test(l.text))
         .map((l) => `${rel}:${l.line}`)
@@ -366,7 +382,7 @@ describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)'
     const offenders = files
       .filter(({ rel }) => rel !== ROLE_ARN_MODULE)
       .flatMap(({ rel, text }) =>
-        codeLines(text)
+        codeLines(text, rel)
           .filter((l) => ASSUME_CONSTRUCT.test(l.text))
           .map((l) => `src/${rel}:${l.line}  ${l.text.trim()}`)
       );
