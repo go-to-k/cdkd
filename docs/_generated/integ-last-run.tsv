@@ -183,6 +183,7 @@ lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Ver
 launchtemplate-asg-inplace	2026-09-24T22:46:12Z	PASS	82	verify.sh	rc ok, 0 orphans (#3663)
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
+list-parameters	2026-09-27T08:48:52Z	PASS	100	verify.sh	maintainer merge-gate run of PR #3779; rc ok, orph clean
 local-ecs-service-connect	2026-09-24T13:18:12Z	PASS	30	verify.sh	rc ok, docker clean, aws clean; #3597 PR 3654 (cdk-local 0.149.3); DOCKER_CONFIG={} override
 local-invoke	2026-09-26T00:27:28Z	PASS	40	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-agentcore	2026-09-26T00:06:20Z	PASS	125	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
