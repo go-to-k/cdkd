@@ -90,6 +90,23 @@ export const SECRET_MASK = '***';
  */
 const resolvedPairsOf = new WeakMap<RecordedSecretValues, Map<string, string | symbol>>();
 
+/** Poison for an expression this pass recorded against two different plaintexts. */
+const CONFLICTING_PLAINTEXT = Symbol('conflicting plaintext');
+
+/**
+ * The pair table of the pass that owns `secrets`, created on first use. One
+ * place for the lazy init, so no writer can create the table and forget to
+ * `set` it — a table that is never registered records evidence nobody reads.
+ */
+function pairsFor(secrets: RecordedSecretValues): Map<string, string | symbol> {
+  let pairs = resolvedPairsOf.get(secrets);
+  if (pairs === undefined) {
+    pairs = new Map();
+    resolvedPairsOf.set(secrets, pairs);
+  }
+  return pairs;
+}
+
 /**
  * Record that `expression` resolved to `plaintext` in the pass that owns
  * `secrets` — the resolver's recording seam calls this beside its
@@ -104,11 +121,7 @@ export function recordResolvedPair(
   expression: string,
   plaintext: string
 ): void {
-  let pairs = resolvedPairsOf.get(secrets);
-  if (pairs === undefined) {
-    pairs = new Map();
-    resolvedPairsOf.set(secrets, pairs);
-  }
+  const pairs = pairsFor(secrets);
   const previous = pairs.get(expression);
   if (previous === undefined) pairs.set(expression, plaintext);
   else if (previous !== plaintext) pairs.set(expression, CONFLICTING_PLAINTEXT);
@@ -140,14 +153,7 @@ export function mergeResolvedPairs(from: RecordedSecretValues, to: RecordedSecre
   if (pairs === undefined) return;
   for (const [expression, plaintext] of pairs) {
     if (typeof plaintext === 'string') recordResolvedPair(to, expression, plaintext);
-    else {
-      let target = resolvedPairsOf.get(to);
-      if (target === undefined) {
-        target = new Map();
-        resolvedPairsOf.set(to, target);
-      }
-      target.set(expression, CONFLICTING_PLAINTEXT);
-    }
+    else pairsFor(to).set(expression, CONFLICTING_PLAINTEXT);
   }
 }
 
@@ -3658,9 +3664,6 @@ function intrinsicSkeletonSegments(
   return undefined;
 }
 
-/** Poison for an expression this pass recorded against two different plaintexts. */
-const CONFLICTING_PLAINTEXT = Symbol('conflicting plaintext');
-
 /**
  * Walk a {@link RecordedSecretValues} the OTHER way: every expression the pass
  * recorded, against the plaintext it actually resolved to.
@@ -5673,10 +5676,11 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
  *
  * - the resolver's unsupported-service arm leaves a `{{resolve:...}}` token it
  *   has no arm for LITERAL (`ssm-secure:` was one until issue #2482), so AWS
- *   echoes it back and the source leaf EQUALS the bag leaf. The string arm returns `source` — a decision — and the equality made
- *   it look like no decision at all. (A BARE such token takes the whole-token
- *   arm and one embedded in text takes the mixed-leaf arm; both decide, and
- *   both were misread.)
+ *   echoes it back and the source leaf EQUALS the bag leaf. The string arm
+ *   returns `source` — a decision — and the equality made it look like no
+ *   decision at all. (A BARE such token takes the whole-token arm and one
+ *   embedded in text takes the mixed-leaf arm; both decide, and both were
+ *   misread.)
  * - the empty-map arm that deliberately KEEPS a leaf returns `bag` by design.
  *
  * A symbol cannot be produced by any walk of JSON, so no readback value can
@@ -5997,25 +6001,29 @@ function learnWholeTokenNeedle(
  * The caller is about to persist `source` over `bag`, i.e. it has already
  * decided the two are the same leaf one resolution apart. Extracting the
  * plaintext is then arithmetic rather than inference, PROVIDED the extraction
- * is unambiguous, which is what the guards below establish:
+ * is unambiguous — which is exactly the frame {@link singleSpanFrame} accepts,
+ * and this function inherits every refusal it makes rather than restating
+ * them. What each refusal means HERE:
  *
- * - EXACTLY ONE span. With two references the text between them cannot be
- *   split between the two resolved values without guessing. This one is
- *   CONSERVATIVE rather than a correctness guard, and saying so is what stops
- *   the next reader treating it as load-bearing: with two RESOLVED references
- *   the frame check below refuses independently, because the computed SUFFIX
- *   would then contain a whole `{{resolve:...}}` token and a resolved readback
- *   cannot end with one. The shape it genuinely decides is a second reference
- *   that survives LITERALLY in the readback — the resolver's
- *   unsupported-service arm produces exactly that (`ssm-secure:` did until
- *   issue #2482; a spelling with no arm still does) — where the
- *   extraction would in fact be right and is declined anyway. Measured: a
- *   both-resolved fixture leaves this line unfenced.
- * - the source's literal PREFIX and SUFFIX must both be present at the ends of
- *   the bag. That is what proves the leaf really is this source resolved; AWS
- *   normalising any of the surrounding text refuses instead of yielding a
- *   needle sliced at the wrong offsets.
- * - the two must not overlap, and something must remain between them.
+ * - its one-span rule is CONSERVATIVE rather than a correctness guard for this
+ *   caller, and saying so is what stops the next reader treating it as
+ *   load-bearing: with two RESOLVED references the prefix / suffix anchoring
+ *   refuses independently, because the computed SUFFIX would then contain a
+ *   whole `{{resolve:...}}` token and a resolved readback cannot end with one.
+ *   The shape it genuinely decides is a second reference that survives
+ *   LITERALLY in the readback — the resolver's unsupported-service arm produces
+ *   exactly that (`ssm-secure:` did until issue #2482; a spelling with no arm
+ *   still does) — where the extraction would in fact be right and is declined
+ *   anyway. Measured: a both-resolved fixture leaves that rule unfenced.
+ * - its prefix / suffix anchoring is what proves the leaf really is this
+ *   source resolved; AWS normalising any of the surrounding text refuses
+ *   instead of yielding a needle sliced at the wrong offsets.
+ * - its non-overlap floor leaves a non-empty middle, so there is something to
+ *   slice at all.
+ * - its middle-is-a-token refusal keeps an already-redacted record (a
+ *   re-scrub, a second `refresh-observed`) out of the needle set, where a
+ *   reference string would be paired as if it were a plaintext — the
+ *   asymmetry with the whole-token arm the security review found.
  *
  * Anchoring at the ENDS rather than searching is deliberate: a secret whose own
  * text repeats the suffix (`abc@h` inside `postgres://u:abc@h@h`) still slices
@@ -6026,16 +6034,9 @@ function learnMixedLeafNeedle(
   bag: string,
   source: string
 ): void {
-  // The frame — one span, prefix / suffix anchored at the ends, a non-empty
-  // middle that is not itself a complete token — is `singleSpanFrame`, shared
-  // with `positionByEmbeddedSpan` and `positionByIntrinsicFrame` so the three
-  // refusals cannot drift. The token
-  // refusal it carries is the one this function used to spell out here: a
-  // slice that is ITSELF a complete `{{resolve:...}}` token is not a
-  // plaintext, it is an already-redacted record (a re-scrub, a second
-  // `refresh-observed`), and pairing it would put a reference string in the
-  // needle set — the asymmetry with the whole-token arm the security review
-  // found.
+  // The frame is `singleSpanFrame`, shared with `positionByEmbeddedSpan` and
+  // `positionByIntrinsicFrame` so the three refusals cannot drift; what each
+  // refusal means for this caller is in the docstring above.
   const frame = singleSpanFrame(bag, source);
   if (frame === undefined) return;
   // The TOKEN, never the whole leaf. The needle's replacement is what gets
