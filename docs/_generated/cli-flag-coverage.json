@@ -1024,6 +1024,12 @@
       ]
     },
     {
+      "flag": "--role-arn",
+      "integs": [
+        "local-invoke-from-state"
+      ]
+    },
+    {
       "flag": "--skip-assets",
       "integs": [
         "asset-auto-create",
@@ -1618,7 +1624,6 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--prefix-user-supplied-names",
-    "--role-arn",
     "--stack",
     "--strict"
   ],
@@ -1890,6 +1895,7 @@
     "--reverts",
     "--rm",
     "--role-name",
+    "--role-session-name",
     "--route-id",
     "--route-table-id",
     "--route-table-ids",
