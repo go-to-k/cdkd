@@ -17,9 +17,14 @@
 # Phases:
 #   1. Deploy. Assert the ESM exists and AWS reports the endpoints under the
 #      SDK enum key with both broker strings.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20). Assert the
-#      UUID is unchanged (in-place UpdateEventSourceMapping, no replacement)
-#      and the endpoints survived the update.
+#   2. Re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20, provisioned
+#      mode, and a schema registry ADDED to SelfManagedKafkaEventSourceConfig).
+#      Assert the UUID is unchanged (in-place UpdateEventSourceMapping, no
+#      replacement), the endpoints survived, the schema registry reached AWS
+#      (update() never sent the block before issue #3851) and drift is clean.
+#   2b. Re-deploy with CDKD_TEST_REMOVAL=true too: the block leaves the
+#      template. Assert the schema registry is gone from AWS while provisioned
+#      mode and batchSize 20 (the retained siblings) stay.
 #   3. Destroy + assert the function, the ESM and the state file are gone.
 #
 # Required env vars:
@@ -131,7 +136,7 @@ esm_brokers() {
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy (self-managed Kafka ESM; create FAILED outright before #1384)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P1="$(esm_uuid)"
@@ -189,24 +194,26 @@ fi
 echo "    OK: no drift"
 
 # --- Phase 2: in-place update -----------------------------------------
-# Wait out `Creating`: UpdateEventSourceMapping rejects a mapping that is still
-# being created with ResourceInUseException, which is NOT in cdkd's retryable
-# pattern table.
+# Wait out an in-flight state: UpdateEventSourceMapping rejects a mapping that
+# is still Creating / Updating with ResourceInUseException, which is NOT in
+# cdkd's retryable pattern table. Gate on the TERMINAL set, not on "not
+# Creating": Enabling / Disabling are also in-flight states.
+wait_settled() {
+  local state="" settled=""
+  for _ in $(seq 1 24); do
+    state="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
+      --query 'State' --output text)" || return 1
+    case "${state}" in
+      Enabled | Disabled) settled=1; break ;;
+    esac
+    sleep 5
+  done
+  [ -z "${settled}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${state})" >&2; return 1; }
+  echo "    ESM settled (State=${state})"
+}
 echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
-SETTLED=""
-for _ in $(seq 1 24); do
-  ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
-    --query 'State' --output text)"
-  # Gate on the TERMINAL set, not on "not Creating": Enabling / Disabling are
-  # also in-flight states that would break the loop early.
-  case "${ESM_STATE}" in
-    Enabled | Disabled) SETTLED=1; break ;;
-  esac
-  sleep 5
-done
-[ -z "${SETTLED}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${ESM_STATE})" >&2; exit 1; }
-echo "    ESM settled (State=${ESM_STATE})"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P2="$(esm_uuid)"
@@ -226,6 +233,55 @@ if [ "${BROKERS_P2}" != "${EXPECTED_BROKERS}" ]; then
   exit 1
 fi
 echo "    OK: in-place update kept the UUID and the endpoints"
+
+# The schema registry this phase ADDED (issue #3851). Read the URI and the
+# validation attribute AWS holds; before the fix update() never sent the block,
+# so both came back empty while the deploy reported success.
+esm_json() { aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" --output json; }
+SR_URI_P2="$(esm_json | jq -r '.SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaRegistryURI // ""')"
+SR_ATTR_P2="$(esm_json | jq -r '[.SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs[]?.Attribute] | join(",")')"
+if [ "${SR_URI_P2}" != "https://schema-registry.cdkd-integ.example.com" ] || [ "${SR_ATTR_P2}" != "VALUE" ]; then
+  echo "FAIL: after update, SchemaRegistryConfig URI='${SR_URI_P2}' attributes='${SR_ATTR_P2}' — the added schema registry did not reach AWS (issue #3851)" >&2
+  esm_json >&2
+  exit 1
+fi
+echo "    OK: the added schema registry reached AWS"
+
+# Belt-and-braces only, for the reason Phase 1.5 gives: the baseline is the
+# readback captured by this same deploy. The AWS assertions above are the proof.
+DRIFT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" = "1" ]; then
+  echo "FAIL: cdkd drift reported drift right after the schema-registry update" >&2
+  exit 1
+elif [ "${DRIFT_RC}" != "0" ]; then
+  echo "FAIL: cdkd drift errored (exit ${DRIFT_RC}) — result undetermined" >&2
+  exit 1
+fi
+echo "    OK: no drift after the update"
+
+# --- Phase 2b: remove the schema registry -------------------------------
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (the schema registry leaves the template)"
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
+  echo "FAIL: ESM was REPLACED on the schema-registry removal, expected an in-place update" >&2
+  exit 1
+fi
+SR_P3="$(esm_json | jq -c '.SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig // "ABSENT"')"
+MIN_POLLERS_P3="$(esm_json | jq -r '.ProvisionedPollerConfig.MinimumPollers // ""')"
+BATCH_P3="$(esm_json | jq -r '.BatchSize')"
+if [ "${SR_P3}" != '"ABSENT"' ]; then
+  echo "FAIL: after removing it from the template, AWS still holds SchemaRegistryConfig=${SR_P3} (issue #3851)" >&2
+  exit 1
+fi
+if [ "${MIN_POLLERS_P3}" != "1" ] || [ "${BATCH_P3}" != "20" ]; then
+  echo "FAIL: the retained siblings changed on the removal (MinimumPollers='${MIN_POLLERS_P3}', BatchSize='${BATCH_P3}')" >&2
+  exit 1
+fi
+echo "    OK: the schema registry was removed; provisioned mode and batchSize 20 stayed"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
