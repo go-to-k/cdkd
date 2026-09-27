@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesSameResource,
@@ -5146,7 +5146,9 @@ export class DeployEngine {
         );
         this.logger.info(
           `Partial state saved (${Object.keys(newResources).length} resources). ` +
-            "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
+            this.recoveryHint(
+              "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
+            )
         );
         throw error;
       }
@@ -5164,8 +5166,10 @@ export class DeployEngine {
         );
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
         this.logger.warn(
-          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, " +
-            'or destroy to clean up.'
+          'Partial state has been saved. ' +
+            this.recoveryHint(
+              "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+            )
         );
       } else {
         // Automatic in-process rollback. Write a journal segment FIRST so a
@@ -5734,7 +5738,9 @@ export class DeployEngine {
     } catch (err) {
       this.logger.warn(
         `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
-          `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
+          // No command named: a nested child's stack-less `cdkd rollback` would
+          // resolve to the top-level stack (go-to-k/cdkd#3864).
+          `The journal keeps the full segment; a later rollback replay is idempotent.`
       );
       return false;
     }
@@ -5780,6 +5786,22 @@ export class DeployEngine {
       runId: this.options.eventRecorder?.runId,
       logger: this.logger,
     });
+  }
+
+  /**
+   * The recovery sentence a failed or interrupted deploy ends on. A NESTED
+   * child engine does not name a command: a stack-less `cdkd rollback`
+   * resolves to the top-level stack, and the top-level engine's own failure,
+   * which follows this one, prints the recovery that applies — the child is
+   * reverted through the top-level stack's rollback (go-to-k/cdkd#3864).
+   */
+  private recoveryHint(topLevel: string): string {
+    const parent = this.options.parentStackInfo;
+    if (parent === undefined) return topLevel;
+    return (
+      `This is a nested stack of ${quotedOrDescribed(parent.parentStack, 'stack name')}: recover ` +
+      `it through the top-level stack, whose own message follows.`
+    );
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */

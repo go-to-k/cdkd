@@ -24,6 +24,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
+import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -480,6 +481,83 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     const err = await deployAndCatch(makeEngine({ noRollback: true }), template);
     expect(chainText(err)).toContain('name-idempotent');
     expect(providerFor(SAME_TYPE).delete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a top-level engine', undefined],
+    ['a nested child engine', { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' }],
+  ])(
+    '--no-rollback: %s ends on the recovery that applies to it (go-to-k/cdkd#3864)',
+    async (_label, parentStackInfo) => {
+      // A nested child's stack-less `cdkd rollback` resolves to the top-level
+      // stack, whose own failure message follows, so the child names none.
+      const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+      arrangedChanges.set('Boom', {
+        logicalId: 'Boom',
+        changeType: 'CREATE',
+        resourceType: 'AWS::Test::Boom',
+        desiredProperties: {},
+      });
+      (template.Resources as Record<string, unknown>)['Boom'] = { Type: 'AWS::Test::Boom', Properties: {} };
+      providerFor('AWS::Test::Boom').create.mockRejectedValue(new Error('boom'));
+      Object.assign(mockStateBackend, { appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined) });
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+
+      const err = await deployAndCatch(
+        makeEngine({ noRollback: true, ...(parentStackInfo && { parentStackInfo }) }),
+        template
+      );
+
+      expect(err, 'the deploy did not fail').toBeDefined();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      const hint = lines.find((l) => l.startsWith('Partial state has been saved.'));
+      expect(hint, 'the --no-rollback arm was not reached').toBeDefined();
+      if (parentStackInfo === undefined) {
+        expect(hint).toBe(
+          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+        );
+      } else {
+        expect(hint).toBe(
+          "Partial state has been saved. This is a nested stack of 'Top': recover it through the " +
+            'top-level stack, whose own message follows.'
+        );
+        expect(hint).not.toContain('cdkd rollback');
+      }
+    }
+  );
+
+  it.each([
+    ['a top-level engine', undefined],
+    ['a nested child engine', { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' }],
+  ])('interrupted: %s ends on the recovery that applies to it (go-to-k/cdkd#3864)', async (_label, parentStackInfo) => {
+    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+    arrangedChanges.set('Boom', {
+      logicalId: 'Boom',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Test::Boom',
+      desiredProperties: {},
+    });
+    (template.Resources as Record<string, unknown>)['Boom'] = { Type: 'AWS::Test::Boom', Properties: {} };
+    providerFor('AWS::Test::Boom').create.mockRejectedValue(new InterruptedWaitError('create of Boom'));
+    Object.assign(mockStateBackend, { appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined) });
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+
+    const err = await deployAndCatch(makeEngine(parentStackInfo ? { parentStackInfo } : {}), template);
+
+    expect(err, 'the deploy did not fail').toBeDefined();
+    const hint = info.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Partial state saved ('));
+    expect(hint, 'the interrupted arm was not reached').toBeDefined();
+    if (parentStackInfo === undefined) {
+      expect(hint).toMatch(/\. Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up\.$/);
+    } else {
+      expect(hint).toMatch(
+        /\. This is a nested stack of 'Top': recover it through the top-level stack, whose own message follows\.$/
+      );
+    }
   });
 
   it('journals BOTH types, so a rollback can re-create the old one through its own provider', async () => {
