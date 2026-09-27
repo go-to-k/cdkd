@@ -2935,9 +2935,9 @@ export function parseStickyCcMigrationExempt(registrySource) {
  * `ProviderRegistry.getProviderFor` THROWS `buildUnroutableSilentDropMessage`
  * for such a type instead of auto-routing it, so a fragment that told the
  * issue-614 story about one would describe the opposite of what the deploy
- * does — a pre-flight refusal, not a value reaching AWS. Seven providers opt
- * out today and their fixtures are all captured by the refresh, so this is a
- * population the renderer meets, not a hypothetical.
+ * does — a pre-flight refusal, not a value reaching AWS. Several providers opt
+ * out and their fixtures are captured by the refresh, so this is a population
+ * the renderer meets, not a hypothetical.
  *
  * Unreadable provider files are REPORTED rather than swallowed: a type whose
  * source could not be read is of unknown routing, and the caller words it as

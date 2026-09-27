@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **86**
-- Wrapped: **80**
+- Provider classes with `update()`: **87**
+- Wrapped: **81**
 - No AWS call in update(): **6**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -50,6 +50,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `CustomResourceProvider` | `custom-resource-provider.ts` | wrapped |
 | `DLMLifecyclePolicyProvider` | `dlm-lifecycle-policy-provider.ts` | wrapped |
 | `DocDBProvider` | `docdb-provider.ts` | wrapped |
+| `DocDBSubnetGroupProvider` | `docdb-subnet-group-provider.ts` | wrapped |
 | `DynamoDBGlobalTableProvider` | `dynamodb-globaltable-provider.ts` | wrapped |
 | `DynamoDBTableProvider` | `dynamodb-table-provider.ts` | wrapped |
 | `EC2Provider` | `ec2-provider.ts` | wrapped |

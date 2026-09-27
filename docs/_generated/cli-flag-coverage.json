@@ -683,6 +683,8 @@
       "flag": "--prefer-sdk-route",
       "integs": [
         "cc-api-fallback-transitions",
+        "codebuild-project",
+        "docdb-neptune",
         "nested-stack-replace-guard",
         "sdk-to-cc-autoroute",
         "unrecognized-key-autoroute"

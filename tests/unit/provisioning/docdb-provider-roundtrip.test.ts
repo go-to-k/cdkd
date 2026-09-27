@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,7 +58,7 @@ describe('DocDBProvider', () => {
   describe('DBSubnetGroup', () => {
     it('create returns the DBSubnetGroupName as physicalId', async () => {
       mockSend.mockResolvedValueOnce({});
-      const provider = new DocDBProvider();
+      const provider = new DocDBSubnetGroupProvider();
       const result = await provider.create('MySG', 'AWS::DocDB::DBSubnetGroup', {
         DBSubnetGroupName: 'my-sg',
         DBSubnetGroupDescription: 'desc',
@@ -77,7 +78,7 @@ describe('DocDBProvider', () => {
         .mockResolvedValueOnce({
           DBSubnetGroups: [{ DBSubnetGroupArn: 'arn:aws:rds:us-east-1:123:subgrp:my-sg' }],
         });
-      const provider = new DocDBProvider();
+      const provider = new DocDBSubnetGroupProvider();
       await provider.update(
         'MySG',
         'my-sg',
@@ -94,7 +95,7 @@ describe('DocDBProvider', () => {
 
     it('delete issues DeleteDBSubnetGroup', async () => {
       mockSend.mockResolvedValueOnce({});
-      const provider = new DocDBProvider();
+      const provider = new DocDBSubnetGroupProvider();
       await provider.delete('MySG', 'my-sg', 'AWS::DocDB::DBSubnetGroup');
       const cmd = mockSend.mock.calls[0]![0];
       expect(cmd).toBeInstanceOf(DeleteDBSubnetGroupCommand);
@@ -105,7 +106,7 @@ describe('DocDBProvider', () => {
       const err = new Error('not found') as Error & { name: string };
       err.name = 'DBSubnetGroupNotFoundFault';
       mockSend.mockRejectedValueOnce(err);
-      const provider = new DocDBProvider();
+      const provider = new DocDBSubnetGroupProvider();
       await expect(
         provider.delete('MySG', 'my-sg', 'AWS::DocDB::DBSubnetGroup')
       ).resolves.toBeUndefined();
@@ -458,7 +459,7 @@ describe('DocDBProvider', () => {
           ],
         })
         .mockResolvedValueOnce({ TagList: [] });
-      const provider = new DocDBProvider();
+      const provider = new DocDBSubnetGroupProvider();
       const state = await provider.readCurrentState!(
         'my-sg',
         'SG',
@@ -526,7 +527,9 @@ describe('DocDBProvider', () => {
     });
 
     it('DBSubnetGroup returns null without any AWS call when no override / name is supplied', async () => {
-      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBSubnetGroup'));
+      const result = await new DocDBSubnetGroupProvider().import!(
+        importInput('AWS::DocDB::DBSubnetGroup')
+      );
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
     });

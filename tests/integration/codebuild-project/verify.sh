@@ -16,6 +16,10 @@
 #
 # Then destroys and confirms a clean teardown.
 #
+# Phase 0 first deploys with CDKD_TEST_NONPROV_REFUSAL=true, which adds a
+# `Visibility` property the SDK provider does not handle, and asserts the
+# deploy is refused pre-flight with nothing provisioned (issue #3866).
+#
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   - defaults to us-east-1
@@ -145,6 +149,50 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
   fi
   echo "    ok: ${desc} = ${got}"
 }
+
+# --- Phase 0: issue #3866 pre-flight refusal --------------------------
+# AWS::CodeBuild::Project is NON_PROVISIONABLE (Cloud Control has no handlers),
+# so a property its SDK provider does not handle must stop the deploy BEFORE
+# anything is provisioned. Before #3866 the resource was auto-routed to Cloud
+# Control, which failed mid-deploy with UnsupportedActionException after the
+# role had been created -- also a non-zero exit, so the rc alone proves
+# nothing: the refusal's own wording is the discriminator.
+echo "==> Phase 0: a Visibility property is refused pre-flight (issue #3866)"
+if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1)"; then
+  printf '%s\n' "${REFUSAL_OUT}" >&2
+  echo "FAIL: Phase 0 deploy exited 0; a Visibility property on AWS::CodeBuild::Project must be refused" >&2
+  exit 1
+fi
+REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "${REFUSAL_PLAIN}" >&2
+if printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF 'UnsupportedActionException'; then
+  echo "FAIL: Phase 0 routed the project to Cloud Control (the pre-#3866 behavior) instead of refusing pre-flight" >&2
+  exit 1
+fi
+for needle in \
+  'AWS::CodeBuild::Project uses properties' \
+  'cannot fall back to Cloud Control API' \
+  '- Visibility: ' \
+  '--prefer-sdk-route AWS::CodeBuild::Project:Visibility'; do
+  if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
+    echo "FAIL: Phase 0 output lacks the pre-flight refusal wording: '${needle}'" >&2
+    exit 1
+  fi
+done
+# Nothing may be provisioned by a pre-flight refusal. Unsilenced, so a
+# throttle / auth failure aborts under `set -e` instead of reading as absent.
+NOT_FOUND_P0="$(aws codebuild batch-get-projects --names "${PROJECT_NAME}" \
+  --region "${REGION}" --query 'length(projectsNotFound)' --output text)"
+if [ "${NOT_FOUND_P0}" != "1" ]; then
+  echo "FAIL: Phase 0 created CodeBuild project ${PROJECT_NAME} (projectsNotFound=${NOT_FOUND_P0}); the refusal must precede provisioning" >&2
+  exit 1
+fi
+assert_gone "Phase 0 wrote state file ${STATE_KEY}; the refusal must precede provisioning" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    ok: refused pre-flight, no project created, no state written"
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
