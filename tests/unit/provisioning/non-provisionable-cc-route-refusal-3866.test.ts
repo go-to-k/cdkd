@@ -72,7 +72,7 @@ describe('NON_PROVISIONABLE SDK types refuse the Cloud Control auto-route (#3866
         const message = (error as Error).message;
         expect(message).toContain(`${resourceType} uses properties`);
         expect(message).toContain('cannot fall back to Cloud Control API');
-        expect(message).toContain('disableCcApiFallback');
+        expect(message).toContain('ProvisioningType: NON_PROVISIONABLE');
         expect(message).toContain(`  - ${property}: `);
         expect(message).toContain(`--prefer-sdk-route ${resourceType}:${property}`);
       });

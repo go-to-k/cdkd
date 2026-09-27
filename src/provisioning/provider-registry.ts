@@ -2,7 +2,11 @@ import type { ResourceProvider } from '../types/resource.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
-import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
+import {
+  hasNoCloudControlHandlers,
+  isNonProvisionable,
+  unsupportedTypeIssueUrl,
+} from './unsupported-types.js';
 import {
   containsIntrinsic,
   findAcceptedSilentDrops,
@@ -516,13 +520,13 @@ export class ProviderRegistry {
         return { provider: specificProvider, provisionedBy: 'sdk' };
       }
       // The CC auto-route target must actually be able to manage the type.
-      // Providers for NON_PROVISIONABLE types (no Cloud Control handlers)
-      // declare `disableCcApiFallback` — e.g. FSxFileSystemProvider, whose
-      // Windows/ONTAP/OpenZFS config blocks are deliberately unhandled;
-      // routing them to CC would fail at provisioning time with an opaque
+      // A NON_PROVISIONABLE type (no Cloud Control handlers) with an SDK
+      // provider is listed in SDK_PROVIDER_NON_PROVISIONABLE_TYPES, per type,
+      // and a provider may also opt out wholesale via `disableCcApiFallback`;
+      // routing either to CC would fail at provisioning time with an opaque
       // UnsupportedActionException. Throw the clear error here instead.
-      // (`isNonProvisionable` additionally covers the mid-transition window
-      // where a provider is registered but the Tier 3 regen hasn't run.)
+      // (The Tier 3 set additionally covers the mid-transition window where a
+      // provider is registered but the Tier 3 regen hasn't run.)
       const unroutable = this.ccRouteUnavailableReason(resourceType);
       if (unroutable !== undefined) {
         throw new Error(
@@ -574,7 +578,7 @@ export class ProviderRegistry {
    * disagree with the refusal that deploy then hits (issue #2792).
    */
   private ccRouteUnavailableReason(resourceType: string): string | undefined {
-    if (isNonProvisionable(resourceType)) {
+    if (hasNoCloudControlHandlers(resourceType)) {
       return 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it';
     }
     if (this.providers.get(resourceType)?.disableCcApiFallback === true) {

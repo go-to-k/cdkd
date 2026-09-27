@@ -66,6 +66,7 @@ const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 const REGISTER_PROVIDERS_FILE = resolve(repoRoot, 'src/provisioning/register-providers.ts');
 const PROVIDER_REGISTRY_FILE = resolve(repoRoot, 'src/provisioning/provider-registry.ts');
+const UNSUPPORTED_TYPES_FILE = resolve(repoRoot, 'src/provisioning/unsupported-types.ts');
 const OUT_FILE = resolve(
   repoRoot,
   'src/provisioning/property-coverage.generated.ts'
@@ -339,6 +340,30 @@ export function parseCcBrokenTypes(registrySource: string): Set<string> {
 }
 
 /**
+ * `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`, read from `unsupported-types.ts` as
+ * TEXT for the same bootstrap-free reason as {@link parseCcBrokenTypes}
+ * (issue #3871): registered types Cloud Control has no handlers for, so an
+ * unrecognized property on one must not route there. Bound to the runtime set
+ * by `property-coverage-cc-fallback-binding.test.ts`. An unread or empty set
+ * REFUSES — it would silently reopen the Cloud Control route for every member.
+ */
+export function parseSdkNonProvisionableTypes(unsupportedTypesSource: string): Set<string> {
+  const table =
+    /SDK_PROVIDER_NON_PROVISIONABLE_TYPES[^=]*=\s*new Set(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
+      unsupportedTypesSource
+    );
+  if (!table) {
+    throw new Error('could not read SDK_PROVIDER_NON_PROVISIONABLE_TYPES out of unsupported-types.ts');
+  }
+  const code = table[1]!.replace(/\/\/.*$/gm, '');
+  const types = [...code.matchAll(/'(AWS::[\w]+::[\w]+)'/g)].map((m) => m[1]!);
+  if (types.length === 0) {
+    throw new Error('SDK_PROVIDER_NON_PROVISIONABLE_TYPES parsed to zero types');
+  }
+  return new Set(types);
+}
+
+/**
  * Registry-vs-output cross-check (issue #1034): every type registered in
  * `register-providers.ts` that HAS a CFn schema fixture on disk MUST end up
  * in the generated coverage map. A miss means the provider's
@@ -390,8 +415,9 @@ interface PerTypeCoverage {
   readOnly: string[];
   /**
    * Cloud Control cannot take an unrecognized property for this type (issue
-   * #3713): its SDK provider declares `disableCcApiFallback`, or the type is a
-   * `'cc-broken'` sticky-CC exemption whose handler cannot manage it.
+   * #3713): it is in `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` (#3871), its SDK
+   * provider declares `disableCcApiFallback`, or the type is a `'cc-broken'`
+   * sticky-CC exemption whose handler cannot manage it.
    */
   ccRouteUnavailable: boolean;
 }
@@ -422,6 +448,9 @@ function main(): void {
   }
 
   const ccBroken = parseCcBrokenTypes(readFileSync(PROVIDER_REGISTRY_FILE, 'utf8'));
+  const sdkNonProvisionable = parseSdkNonProvisionableTypes(
+    readFileSync(UNSUPPORTED_TYPES_FILE, 'utf8')
+  );
   const coverageByType = new Map<string, PerTypeCoverage>();
   let totalHandled = 0;
   let totalDrops = 0;
@@ -455,7 +484,10 @@ function main(): void {
       silentDrop,
       createOnlyDrops,
       readOnly: [...readOnly].sort((a, b) => a.localeCompare(b)),
-      ccRouteUnavailable: combinedCcFallbackDisabled.has(type) || ccBroken.has(type),
+      ccRouteUnavailable:
+        sdkNonProvisionable.has(type) ||
+        combinedCcFallbackDisabled.has(type) ||
+        ccBroken.has(type),
     });
     totalHandled += handled.size;
     totalDrops += silentDrop.length;
@@ -559,7 +591,8 @@ export interface PropertyCoverage {
    */
   readonly readOnly: ReadonlySet<string>;
   /**
-   * Cloud Control cannot take an unrecognized key for this type — its SDK
+   * Cloud Control cannot take an unrecognized key for this type — AWS reports it
+   * NON_PROVISIONABLE (\`SDK_PROVIDER_NON_PROVISIONABLE_TYPES\`), its SDK
    * provider declares \`disableCcApiFallback\`, or it is a \`'cc-broken'\`
    * sticky-CC exemption. Such a key stays on the SDK route with a warn instead
    * of routing (issue #3713).
