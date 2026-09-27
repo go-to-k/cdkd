@@ -3,10 +3,10 @@
     "targetCount": 24,
     "nestedKeyCount": 1223,
     "sameSpelling": 1131,
-    "providerHandled": 70,
+    "providerHandled": 71,
     "allowListed": 21,
     "caseDivergence": 0,
-    "noSdkMember": 1,
+    "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 15,
     "shapeClean": 148,
@@ -7434,7 +7434,7 @@
           "nestedKey": "SelfManagedKafkaEventSourceConfig.ConsumptionMode",
           "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
           "terminalKey": "ConsumptionMode",
-          "bucket": "no-sdk-member"
+          "bucket": "provider-handled"
         },
         {
           "resourceType": "AWS::Lambda::EventSourceMapping",

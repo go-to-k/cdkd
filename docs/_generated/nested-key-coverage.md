@@ -15,10 +15,10 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Audited targets: **24**
 - Nested CFn key paths audited: **1223**
 - Same spelling in SDK model: **1131**
-- Explicitly handled in provider: **70**
+- Explicitly handled in provider: **71**
 - Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
-- **No SDK member (blocks CI): 1**
+- **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **15**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **148**
@@ -28,13 +28,9 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **0**
 
-## Divergences — BLOCKS CI
+## Divergences
 
-Each key below is templated by CFn but never reaches AWS: either it maps to no SDK member at all, or (for a fresh-object target) the SDK member exists and the provider never writes it. Add the CFn->SDK conversion to the provider (naming the CFn spelling, and WRITING the SDK member), or add a `NESTED_KEY_ALLOW_LIST` entry with a rationale in scripts/gen-nested-key-coverage.ts.
-
-| Resource type | CFn nested key / path | Bucket | SDK detail |
-| --- | --- | --- | --- |
-| `AWS::Lambda::EventSourceMapping` | `SelfManagedKafkaEventSourceConfig.ConsumptionMode` | no-sdk-member | — |
+None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
 
 ## Allow-listed pass-throughs
 
@@ -104,6 +100,7 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::Glue::SecurityConfiguration` | `EncryptionConfiguration.S3Encryptions` |
 | `AWS::Glue::Table` | `OpenTableFormatInput.IcebergInput.IcebergTableInput` |
 | `AWS::Lambda::EventSourceMapping` | `SelfManagedEventSource.Endpoints.KafkaBootstrapServers` |
+| `AWS::Lambda::EventSourceMapping` | `SelfManagedKafkaEventSourceConfig.ConsumptionMode` |
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
 | `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault` |
