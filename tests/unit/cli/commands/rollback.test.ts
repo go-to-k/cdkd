@@ -3197,3 +3197,126 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     await expect(rollbackCommand(undefined, { ...baseOpts })).rejects.toThrow(/Multiple stacks/);
   });
 });
+
+describe('rollbackCommand — a nested child engine own-rollback segment (go-to-k/cdkd#3859)', () => {
+  // A nested child engine's own in-process rollback leaves an
+  // `auto-rollback-started` segment in the CHILD's journal, under the parent's
+  // run id, and the parent's rollback never replays it: the child's row is one
+  // of the parent's FAILED ops. The remedy a refusal in that replay prints
+  // names the child stack, so this pins what it rests on — a direct
+  // `cdkd rollback <parent>~<child> --orphan <id>` proceeds over such a journal
+  // (it is not a `nested-pending-parent` record) and honours the id.
+  beforeEach(() => vi.clearAllMocks());
+
+  it('proceeds and orphans the named op instead of reverting it', async () => {
+    replayProvider.delete.mockClear();
+    const child = 'Top~Child';
+    const bucketOp = {
+      logicalId: 'Bucket',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-Bucket',
+    };
+    const journals: Record<string, unknown> = {
+      [child]: {
+        journalVersion: 1,
+        stackName: child,
+        region: 'us-east-1',
+        segments: [
+          { runId: 'run-1', timestamp: 2, reason: 'auto-rollback-started', initialDeploy: false, operations: [bucketOp] },
+        ],
+      },
+      Top: {
+        journalVersion: 1,
+        stackName: 'Top',
+        region: 'us-east-1',
+        segments: [
+          {
+            runId: 'run-1',
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [
+              { logicalId: 'Child', changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack', physicalId: child },
+            ],
+          },
+        ],
+      },
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([
+        { stackName: 'Top', region: 'us-east-1' },
+        { stackName: child, region: 'us-east-1' },
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: child,
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn(async (name: string) => journals[name] ?? null),
+    });
+
+    await expect(rollbackCommand(child, { ...baseOpts, orphan: ['Bucket'] })).resolves.toBeUndefined();
+
+    // The replay ran on the child's journal and honoured the id: the resource
+    // is left in AWS, not deleted, and its row leaves the child's state
+    // (`--orphan` on a CREATE mints no record, issue #2934).
+    expect(backend.loadRollbackJournal).toHaveBeenCalledWith(child, 'us-east-1');
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    const saved = backend.saveState.mock.calls.at(-1)![2] as { resources: Record<string, unknown> };
+    expect(saved.resources).not.toHaveProperty('Bucket');
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+  });
+
+  it('CONTROL: without --orphan the same replay deletes the resource', async () => {
+    replayProvider.delete.mockClear();
+    const child = 'Top~Child';
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: child, region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: child,
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn(async (name: string) =>
+        name === child
+          ? {
+              journalVersion: 1,
+              stackName: child,
+              region: 'us-east-1',
+              segments: [
+                {
+                  runId: 'run-1',
+                  timestamp: 2,
+                  reason: 'auto-rollback-started',
+                  initialDeploy: false,
+                  operations: [
+                    { logicalId: 'Bucket', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-Bucket' },
+                  ],
+                },
+              ],
+            }
+          : null
+      ),
+    });
+    await expect(rollbackCommand(child, { ...baseOpts })).resolves.toBeUndefined();
+    expect(replayProvider.delete).toHaveBeenCalled();
+  });
+});

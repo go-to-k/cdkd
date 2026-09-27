@@ -46,7 +46,7 @@
  *    replays each op exactly once).
  */
 
-import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
@@ -395,9 +395,9 @@ const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
  */
 function orphanRemedy(
   logicalId: unknown,
-  nestedChildRevert: boolean | undefined
+  ctx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack'>
 ): { readonly offered: boolean; readonly clause: string; readonly line: string } {
-  if (nestedChildRevert === true) {
+  if (ctx.nestedChildRevert === true) {
     return {
       offered: false,
       clause:
@@ -408,14 +408,32 @@ function orphanRemedy(
     };
   }
   const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);
+  const idClause = pasteable
+    ? ''
+    : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
+      `so a pasted command could be reshaped by the shell or name a different resource — read ` +
+      `it from cdkd events and fill the quoted hole.`;
+  // A nested child's own rollback: its journal is replayed only by a rollback
+  // of the CHILD, so the command names it — a stack-less one resolves to the
+  // parent, which never replays the child's failure segment
+  // (go-to-k/cdkd#3859).
+  const target =
+    ctx.nestedChildStack === undefined
+      ? undefined
+      : pasteableCommand('cdkd rollback', [
+          { value: ctx.nestedChildStack, hole: 'stack', opts: { plainIdent: true } },
+        ]);
+  const stackClause =
+    target === undefined
+      ? ''
+      : ` This is the nested stack's own rollback, so the command names the nested stack: a ` +
+        `rollback of the top-level stack does not replay it.` +
+        withheldTargetClause(target, 'stack', 'cdkd rollback', "The nested stack's name");
+  const rollbackVerb = target?.command ?? 'cdkd rollback';
   return {
     offered: true,
-    clause: pasteable
-      ? ''
-      : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
-        `so a pasted command could be reshaped by the shell or name a different resource — read ` +
-        `it from cdkd events and fill the quoted hole.`,
-    line: `\nTo orphan it: cdkd rollback --orphan ${pasteable ? logicalId : commandHole('id')}`,
+    clause: `${stackClause}${idClause}`,
+    line: `\nTo orphan it: ${rollbackVerb} --orphan ${pasteable ? logicalId : commandHole('id')}`,
   };
 }
 
@@ -949,7 +967,7 @@ export interface RollbackExecutorContext {
    *  - `cdkd rollback` (`src/cli/commands/rollback.ts`) passes
    *    `producerRegionsFromState(baseState)` — whatever the last save
    *    persisted.
-   *  - `DeployEngine.rollbackExecutorContext(previousState)` passes the UNION
+   *  - `DeployEngine.rollbackExecutorContext(previousState, stackName)` passes the UNION
    *    of the pre-deploy snapshot and THIS session's `recordedImports` /
    *    `recordedOutputReads` (`crossStackReadsForPartialSave`). That union is
    *    not belt-and-braces: a rollback journal exists only after a FAILED
@@ -970,6 +988,14 @@ export interface RollbackExecutorContext {
    * (go-to-k/cdkd#3845).
    */
   nestedChildRevert?: boolean | undefined;
+  /**
+   * The nested child's stack name (`<parent>~<id>`) when this replay is that
+   * child engine's OWN in-process rollback inside its parent's deploy. Its
+   * segment stays in the child's journal and the parent's rollback never
+   * replays it (the child's row is one of the parent's FAILED ops), so the two
+   * refusals' `--orphan` command names the child stack (go-to-k/cdkd#3859).
+   */
+  nestedChildStack?: string | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
@@ -1169,11 +1195,11 @@ export function resolveReplacementOldType(
 function unroutableReplacementError(
   op: CompletedOperation,
   reason: string,
-  nestedChildRevert: boolean | undefined
+  remedyCtx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack'>
 ): Error {
   // The remedy is a labelled last line built by `orphanRemedy`, which owns
   // the gate on the id and the sentence for a withheld one.
-  const remedy = orphanRemedy(op.logicalId, nestedChildRevert);
+  const remedy = orphanRemedy(op.logicalId, remedyCtx);
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
@@ -2430,7 +2456,7 @@ async function replaySingle(
         throw unroutableReplacementError(
           op,
           routing.ok ? 'its old type could not be routed' : routing.reason,
-          ctx.nestedChildRevert
+          ctx
         );
       }
 
@@ -2835,7 +2861,7 @@ async function replaySingle(
         // is for a caller that reaches this arm without it.
         const oldTypeRouting = resolveReplacementOldType(op);
         if (!oldTypeRouting.ok) {
-          throw unroutableReplacementError(op, oldTypeRouting.reason, ctx.nestedChildRevert);
+          throw unroutableReplacementError(op, oldTypeRouting.reason, ctx);
         }
         const oldType = oldTypeRouting.oldType;
         const typeChanged = oldType !== op.resourceType;
@@ -3166,7 +3192,7 @@ async function replaySingle(
             // inside a retried call, an unmarked refusal would burn the whole
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
-            const remedy = orphanRemedy(op.logicalId, ctx.nestedChildRevert);
+            const remedy = orphanRemedy(op.logicalId, ctx);
             throw ownRemedyError(
               markNonRetryable(
                 new CdkdError(

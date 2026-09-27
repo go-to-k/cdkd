@@ -195,3 +195,33 @@ describe('DeployEngine rollback context threading (#1363)', () => {
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 });
+
+describe('DeployEngine rollback context: a nested child names itself for the remedy (go-to-k/cdkd#3859)', () => {
+  // A nested child engine's own in-process rollback keeps its segment in the
+  // child's journal, replayed only by a rollback of the CHILD, so the
+  // executor's `--orphan` command must name the child stack.
+  function contextOf(options: Record<string, unknown>, stackName: string): Record<string, unknown> {
+    const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, options, 'us-east-1');
+    const build = (
+      engine as unknown as {
+        rollbackExecutorContext: (s: StackState, name: string) => Record<string, unknown>;
+      }
+    ).rollbackExecutorContext.bind(engine);
+    return build(
+      { version: 8, stackName, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 } as StackState,
+      stackName
+    );
+  }
+
+  it('a nested child engine passes its own stack name', () => {
+    const ctx = contextOf(
+      { parentStackInfo: { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' } },
+      'Top~Child'
+    );
+    expect(ctx['nestedChildStack']).toBe('Top~Child');
+  });
+
+  it('a top-level engine passes none, so its remedy keeps the stack-less command', () => {
+    expect('nestedChildStack' in contextOf({}, 'Top')).toBe(false);
+  });
+});
