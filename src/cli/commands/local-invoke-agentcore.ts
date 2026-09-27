@@ -1708,8 +1708,8 @@ function describeIntrinsic(value: unknown): string {
 }
 
 /**
- * Build the `--from-cfn-stack` image-resolution context + return the loaded
- * state record (loaded once, reused by env substitution + role resolution).
+ * Build the state-source (`--from-state` / `--from-cfn-stack`) image-resolution
+ * context + return the loaded state record (loaded once, reused by env substitution + role resolution).
  * Mirrors `run-task`'s `buildEcsImageResolutionContext`: pseudo parameters
  * (region + STS account id), the deployed resources, and SSM template
  * parameters (decrypted SecureString logical ids flagged sensitive).
@@ -1729,10 +1729,10 @@ export async function buildAgentCoreImageContext(
 
   let accountId: string | undefined;
   try {
-    accountId = await resolveCallerAccountId(region, options.profile);
+    accountId = await resolveStackAccountId(region, options.profile, options.fromState);
   } catch (err) {
     logger.warn(
-      `--from-cfn-stack: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${stateProvider.label}: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
     );
   }
@@ -1755,17 +1755,35 @@ export async function buildAgentCoreImageContext(
   return { context, loaded: loaded ?? undefined };
 }
 
-/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`). */
-async function resolveCallerAccountId(
+/**
+ * STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter
+ * (threads `--profile`). The account follows the SOURCE the stack was read
+ * from (issue go-to-k/cdkd#3230): under `--from-state` it is the account of the
+ * identity that read the state record — the `--role-arn` role when one is
+ * published — and under `--from-cfn-stack` it stays the caller's own.
+ */
+async function resolveStackAccountId(
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  fromState: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({
-    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated agent sees,
-    // so it must be the caller's own identity, never a `--role-arn` assumed
+  let accountIdentity: ReturnType<typeof awsClientDefaults>;
+  if (fromState) {
+    // cdkd-local-role-identity: `--from-state` read the state record through
+    // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
+    // `ExpectedBucketOwner` pins that bucket to the reader's own account — the
+    // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
+    // is taken; no credential reaches the emulated agent.
+    accountIdentity = awsClientDefaults({ profile });
+  } else {
+    // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
+    // emulated agent sees stays the caller's own, never a `--role-arn` assumed
     // for cdkd's own calls. See that option's JSDoc.
-    ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+    accountIdentity = awsClientDefaults({ profile, ignoreAssumedRole: true });
+  }
+  const sts = new STSClient({
+    ...accountIdentity,
     ...(region && { region }),
     ...(profile && { profile }),
   });
