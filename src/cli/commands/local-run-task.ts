@@ -413,11 +413,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
             `Pass the ARN explicitly: --assume-task-role <arn>`
         );
       }
-      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, {
-        region: options.region,
-        profile: options.profile,
-        fromState: options.fromState,
-      });
+      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options);
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     } else if (typeof options.assumeTaskRole === 'string') {
       resolvedRoleArn = options.assumeTaskRole;
@@ -515,8 +511,8 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
  * `--profile` that source reads through.
  */
 interface StackAccountSource {
-  region: string | undefined;
-  profile: string | undefined;
+  region?: string | undefined;
+  profile?: string | undefined;
   fromState: boolean;
 }
 

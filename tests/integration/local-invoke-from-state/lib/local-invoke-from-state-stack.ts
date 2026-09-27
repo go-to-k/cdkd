@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * the integ teardown is fully self-contained.
  *
  * `ACCOUNT_TAG` splices `${AWS::AccountId}`, and `LocalReadRole` is a
- * read-only role the verify script passes as `--role-arn`, so the
+ * state-read role the verify script passes as `--role-arn`, so the
  * `--from-state` pseudo-parameter account is exercised with a role published
  * (issue go-to-k/cdkd#3230). Same account as the caller: this arm proves the
  * role path resolves, not that the account differs — that half is unit-tested.
@@ -54,11 +54,26 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // The `--role-arn` the verify script reads state through. Read-only is
-    // enough for everything `cdkd local invoke --from-state` asks as the role.
-    new iam.Role(this, 'LocalReadRole', {
+    // The `--role-arn` the verify script reads state through, scoped to the
+    // state bucket: `cdkd local invoke --from-state` asks the role only for
+    // that bucket's location, listing and objects (and `GetCallerIdentity`,
+    // which needs no grant). The bucket name follows the verify script's.
+    const stateBucketName =
+      process.env['STATE_BUCKET'] || `cdkd-state-${cdk.Aws.ACCOUNT_ID}`;
+    const readRole = new iam.Role(this, 'LocalReadRole', {
       assumedBy: new iam.AccountRootPrincipal(),
-      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess')],
     });
+    readRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetBucketLocation', 's3:ListBucket'],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}`],
+      })
+    );
+    readRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}/*`],
+      })
+    );
   }
 }

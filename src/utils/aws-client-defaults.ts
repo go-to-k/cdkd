@@ -282,8 +282,8 @@ const MULTIPLE_CREDENTIAL_SOURCES_WARNING = 'Multiple credential sources detecte
  * into `process.env.AWS_PROFILE` BEFORE any command action runs, so a
  * `--profile` run is shape 1 at every site from its first client onward.
  *
- * **That hook is the whole argument, which is why it is named.** Only 2 of the
- * 19 opt-out sites pass `profile` to this helper, so "a `--profile` run passes
+ * **That hook is the whole argument, which is why it is named.** Only a minority
+ * of the opt-out sites pass `profile` to this helper, so "a `--profile` run passes
  * the key to every site" is NOT what makes the claim true — and moving the
  * mirror into the individual commands, or dropping it because the SDK reads the
  * flag anyway, would kill the reachability argument with nothing in THIS file's

@@ -39,11 +39,11 @@ const stsFailure = vi.hoisted(() => ({ on: false }));
 /** The account the mocked STS reports for the identity a client was built with. */
 function accountFor(config: Record<string, unknown>): string {
   const creds = config['credentials'] as { accessKeyId?: string } | undefined;
-  if (creds?.accessKeyId === 'role-access-key-id') return '222222222222';
-  if (creds?.accessKeyId === 'caller-access-key-id') return '111111111111';
+  if (creds?.accessKeyId === ROLE.accessKeyId) return ROLE_ACCOUNT;
+  if (creds?.accessKeyId === CALLER.accessKeyId) return CALLER_ACCOUNT;
   if (creds !== undefined) throw new Error('unexpected credentials shape in STS config');
-  if (config['profile'] === 'dev') return '333333333333';
-  return '999999999999';
+  if (config['profile'] === 'dev') return PROFILE_ACCOUNT;
+  return DEFAULT_CHAIN_ACCOUNT;
 }
 
 vi.mock('@aws-sdk/client-sts', () => ({

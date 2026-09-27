@@ -371,12 +371,13 @@ environment afterwards. What cdkd does for *itself* still uses the role,
 including reading state and pulling the container image (which leaves an ECR
 login for the role's account in your Docker config).
 
-The `${AWS::AccountId}` substituted into the workload follows the stack it was
-read from, since it names where the stack lives rather than granting anything.
-Under `--from-state` it is the account the state was read in — the role's, when
-`--role-arn` is set — so the ARNs, image URIs and the bare `--assume-task-role`
-ARN it completes name the stack's own account. Under `--from-cfn-stack` it is
-your own account.
+The `${AWS::AccountId}` substituted into the workload is an identifier, not a
+permission, and depends on the state source. Under `--from-state` it is the
+account the state was read in — the role's, when `--role-arn` is set — so the
+ARNs, image URIs and the bare `--assume-task-role` ARN it completes name the
+stack's own account. Under `--from-cfn-stack` it is your own account — which,
+with `--role-arn` and no profile selected, is not the account the engine read
+the stack from (the last row of the table below).
 
 Read "what cdkd resolves" strictly — the next section is what it excludes.
 

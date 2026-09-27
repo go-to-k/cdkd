@@ -454,7 +454,8 @@ async function localInvokeAgentCoreCommand(
         ),
     });
 
-    // Build a `--from-cfn-stack` image-resolution context BEFORE resolving the
+    // Build a state-source (`--from-state` / `--from-cfn-stack`) image-resolution
+    // context BEFORE resolving the
     // target, so a same-stack AWS::ECR::Repository Fn::Join ContainerUri (or an
     // Fn::Sub asset URI) reduces to the deployed image URI. The state load is
     // shared with the env-substitution + role-from-state steps below.
