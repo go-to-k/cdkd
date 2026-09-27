@@ -218,7 +218,7 @@ function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
  * (installed 3.1135.0, latest published 3.1141.0, issue #3848). The SDK v3
  * serializer drops members it does not model, so a forwarded value never
  * reaches Lambda: create() would build a mapping without the requested mode and
- * report success, and update() does not send the block at all.
+ * report success, and update() (see {@link kafkaConfigForUpdate}) never names it.
  *
  * Deliberate parity divergence: CloudFormation forwards the member, cdkd
  * refuses it on the template path. No shape of it can be delivered through the
@@ -232,8 +232,8 @@ function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
  * parameter for given event source mapping type".
  * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
  * installed client sends the member. Lifting the refusal then also needs
- * update() to send the block at all (issue #3851), plus the readback (issue
- * #3850); forwarding it on create alone reopens the drop on update.
+ * {@link kafkaConfigForUpdate} to send it, plus the readback (issue #3850);
+ * forwarding it on create alone reopens the drop on update.
  */
 const KAFKA_CONSUMPTION_MODE_KEY = 'ConsumptionMode';
 
@@ -248,14 +248,55 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
   return (
     `AWS::Lambda::EventSourceMapping ${logicalId}: ` +
     `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be sent by cdkd yet — ` +
-    (mode === 'create'
-      ? `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
-        `CreateEventSourceMapping request without an error (issue #3848). `
-      : `cdkd does not send SelfManagedKafkaEventSourceConfig on UpdateEventSourceMapping, so ` +
-        `the change would not be applied (issues #3848, #3851). `) +
+    `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
+    `${mode === 'create' ? 'CreateEventSourceMapping' : 'UpdateEventSourceMapping'} request ` +
+    `without an error (issue #3848). ` +
     `Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
     `SelfManagedKafkaEventSourceConfig to deploy the mapping without it.`
   );
+}
+
+/**
+ * The `UpdateEventSourceMapping` value for `SelfManagedKafkaEventSourceConfig` /
+ * `AmazonManagedKafkaEventSourceConfig`, or `undefined` to send nothing
+ * (issue #3851). Neither block is create-only, so CloudFormation updates it in
+ * place. Measured live 2026-09-27 in us-east-1 on a disabled mapping of each
+ * kind, with identical results for both blocks:
+ *
+ * - `ConsumerGroupId` is rejected on update even when UNCHANGED ("Unsupported
+ *   '<block>.consumerGroupId' parameter"), so it is sent only when it changed,
+ *   leaving AWS to refuse that change as it does under CloudFormation.
+ * - `SchemaRegistryConfig` is applied as sent (AWS itself requires provisioned
+ *   mode and `SchemaValidationConfigs`), so it is sent only when it changed.
+ * - An omitted block, and an empty block `{}`, both leave the live
+ *   `SchemaRegistryConfig` in place; `{ SchemaRegistryConfig: {} }` removes it,
+ *   so that is what a removal from the template sends.
+ *
+ * A present-but-non-object desired block is left alone rather than read as a
+ * removal. `ConsumptionMode` is never named: it is refused before this runs.
+ */
+function kafkaConfigForUpdate(
+  desired: unknown,
+  previous: unknown
+): Record<string, unknown> | undefined {
+  const asObject = (v: unknown): Record<string, unknown> | undefined =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : undefined;
+  if (desired !== undefined && asObject(desired) === undefined) return undefined;
+  const want = asObject(desired) ?? {};
+  const had = asObject(previous) ?? {};
+  const changed = (key: string): boolean => JSON.stringify(want[key]) !== JSON.stringify(had[key]);
+  const out: Record<string, unknown> = {};
+  if (want['ConsumerGroupId'] !== undefined && changed('ConsumerGroupId')) {
+    out['ConsumerGroupId'] = want['ConsumerGroupId'];
+  }
+  if (want['SchemaRegistryConfig'] !== undefined) {
+    if (changed('SchemaRegistryConfig')) out['SchemaRegistryConfig'] = want['SchemaRegistryConfig'];
+  } else if (had['SchemaRegistryConfig'] !== undefined) {
+    out['SchemaRegistryConfig'] = {};
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
@@ -544,10 +585,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // update() never sends SelfManagedKafkaEventSourceConfig, so only a CHANGED
-    // value is lost; an unchanged one (a record an older cdkd wrote) sends
-    // nothing either way. Refused before the first AWS call on the template
-    // path, warned on a state replay or a drift revert.
+    // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a
+    // CHANGED value is lost; an unchanged one (a record an older cdkd wrote)
+    // sends nothing either way. Refused before the first AWS call on the
+    // template path, warned on a state replay or a drift revert.
     const desiredMode = declaredConsumptionMode(properties);
     if (
       desiredMode !== undefined &&
@@ -637,6 +678,15 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.DocumentDBEventSourceConfig = properties[
         'DocumentDBEventSourceConfig'
       ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
+    // Kafka config blocks (issue #3851): only the members that changed, and the
+    // documented reset for a removed SchemaRegistryConfig.
+    for (const key of [
+      'SelfManagedKafkaEventSourceConfig',
+      'AmazonManagedKafkaEventSourceConfig',
+    ] as const) {
+      const block = kafkaConfigForUpdate(properties[key], previousProperties[key]);
+      if (block !== undefined) updateParams[key] = block;
+    }
     // #609 backfill — the 4 mutable props (Queues / Topics /
     // StartingPositionTimestamp are create-only and intentionally NOT
     // forwarded here; AWS would reject the field and a template change
