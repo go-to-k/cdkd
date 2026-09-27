@@ -807,10 +807,19 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       // raw, so there is nothing to copy out of the line.
       expect(message).not.toContain('prod-api');
       expect(message).not.toContain('ap-northeast-1');
-      // ...and offers no command against one. `state list --long` is the way
-      // to see the records AS STORED.
+      // ...and offers no command against one. `state list --json` is the way
+      // to see the records AS STORED — `--long` renders through `displayIdent`,
+      // which trims `'prod-api '` back to the healthy sibling's spelling
+      // (go-to-k/cdkd#3420).
       expect(message).not.toContain('cdkd state orphan');
-      expect(message).toContain('cdkd state list --long');
+      expect(message).toContain(
+        "List the records as stored with 'cdkd state list --json', which writes each name raw"
+      );
+      expect(message).not.toContain('--long');
+      // The hole remedy, and NOT "shell-quote it": the command below already
+      // quotes the hole, and quoting inside it splits a padded name.
+      expect(message).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(message).not.toContain('shell-quote it');
       // Still the same refusal, and still withholding the body value.
       expect(message).toContain('(a string)');
       expect(message).not.toContain('eu-west-1');

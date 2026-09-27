@@ -870,8 +870,8 @@ export class FirehoseProvider implements ResourceProvider {
     // Issue #3872: the delivery stream keeps its NAME while it is DELETING
     // (~100s measured), and a CreateDeliveryStream of that name is refused with
     // the same `already exists` text a live stream gets, so the delete is
-    // complete only once the stream is gone. Outside the try: the wait never
-    // throws.
+    // complete only once the stream is gone. Outside the try: the wait's only
+    // throw is the DELETING_FAILED error below, which must not be re-wrapped.
     await waitForGoneAfterDelete({
       what: `Firehose delivery stream ${physicalId}`,
       resourceType,
@@ -885,8 +885,9 @@ export class FirehoseProvider implements ResourceProvider {
           ? new ProvisioningError(
               `Firehose delivery stream ${logicalId} entered DELETING_FAILED after the delete ` +
                 `was accepted, so AWS will not finish it on its own (commonly a customer-managed ` +
-                `KMS key the stream can no longer use). Fix the key or delete the stream with ` +
-                `AllowForceDelete, then re-run; the state record is kept.`,
+                `KMS key the stream can no longer use). Fix the key and re-run, or delete the ` +
+                `stream outside cdkd with AllowForceDelete (cdkd never sends it); the state ` +
+                `record is kept.`,
               resourceType,
               logicalId,
               physicalId

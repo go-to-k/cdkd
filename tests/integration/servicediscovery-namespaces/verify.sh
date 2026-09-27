@@ -2,8 +2,7 @@
 # verify.sh — cdkd Cloud Map HttpNamespace / PublicDnsNamespace SDK provider
 # integ test (issue #1044).
 #
-# Both types are ProvisioningType: NON_PROVISIONABLE, so this fixture proves
-# the SDK provider's async operation-based create (OperationId -> GetOperation
+# This fixture proves the SDK provider's async operation-based create (OperationId -> GetOperation
 # polling -> Targets.NAMESPACE) and delete paths work end to end. The
 # PublicDnsNamespace creates a public Route 53 hosted zone alongside the
 # namespace — verify.sh captures its HostedZoneId after deploy and asserts

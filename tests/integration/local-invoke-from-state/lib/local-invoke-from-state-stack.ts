@@ -69,10 +69,12 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
         resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}`],
       })
     );
+    // Objects under THIS stack's state prefix only, so the role cannot read
+    // any other stack's state while the fixture is live.
     readRole.addToPolicy(
       new iam.PolicyStatement({
         actions: ['s3:GetObject'],
-        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}/*`],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}/cdkd/${this.stackName}/*`],
       })
     );
   }

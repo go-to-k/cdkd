@@ -1773,7 +1773,7 @@ async function resolveStackAccountId(
   if (fromState) {
     // cdkd-local-role-identity: `--from-state` read the state record through
     // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
-    // `ExpectedBucketOwner` pins that bucket to the reader's own account — the
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
     // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
     // is taken; no credential reaches the emulated agent.
     sts = new STSClient({
