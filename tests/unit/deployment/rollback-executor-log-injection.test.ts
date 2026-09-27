@@ -224,7 +224,9 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // module registers, keyed on identity (M7 of the go-to-k/cdkd#3764
     // review): `deploy-engine.ts` throws a `CdkdError` with the same
     // `NAMED_REPLACEMENT_COLLISION` code and the raw AWS text in its message,
-    // and a nested-stack rollback delivers it here with the code intact. The
+    // and a provider call that re-enters the deploy engine can deliver it here
+    // with the code intact (the review measured it through a nested-stack
+    // UPDATE revert, a route go-to-k/cdkd#3829 replaced). The
     // maintainer's measured payload is driven as that shape, and as an
     // ordinary `Error` and a `CdkdError` with the other owned code, each with
     // a planted newline spelling the genuine remedy's own label — every one
@@ -272,11 +274,13 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // M10 and its follow-up: characters that render BLANK but are outside
     // `\s`, interleaved with spaces, one row per code point — zero-width and
     // bidi format characters, U+00AD, U+034F, U+180E, and the one-column blanks
-    // U+2800, U+3164, U+FFA0, U+115F / U+1160. Listed as NUMBERS, so the test
-    // does not share the production regex's spelling or its categories.
+    // U+2800, U+3164, U+FFA0, U+115F / U+1160, and U+FFFB, a format character
+    // that is not default-ignorable (the one row only `\p{Cf}` collapses).
+    // Listed as NUMBERS, so the test does not share the production regex's
+    // spelling or its categories.
     const BLANK_CODE_POINTS = [
       0x200b, 0x200c, 0x200d, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x200e, 0x200f, 0x061c,
-      0x00ad, 0x034f, 0x180e, 0x2800, 0x3164, 0xffa0, 0x115f, 0x1160,
+      0x00ad, 0x034f, 0x180e, 0x2800, 0x3164, 0xffa0, 0x115f, 0x1160, 0xfffb,
     ];
     const blankRows = BLANK_CODE_POINTS.map(
       (cp) =>

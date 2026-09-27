@@ -333,12 +333,14 @@ function rollbackFailureText(error: unknown): string {
  * directly above the genuine one — the terminal-wrap route `plainIdent` closes
  * for a stack name. A blank-rendering character is matched by CATEGORY, not
  * by a list (the M10 follow-up measured a four-code-point list leaving about
- * forty blank columns): whitespace (`\s`), a format character
- * (`\p{Cf}`: the zero-width and bidi marks, U+2061-U+2064, U+061C, U+00AD,
- * U+180E), a default-ignorable code point (`\p{Default_Ignorable_Code_Point}`:
- * U+034F and the Hangul fillers U+115F / U+1160 / U+3164 / U+FFA0, which render
- * one column wide), and U+2800, the braille blank, which is in neither
- * category. The same family `outputs-export-alias.ts` scans with. Collapsing
+ * forty blank columns): whitespace (`\s`), a default-ignorable code point
+ * (`\p{Default_Ignorable_Code_Point}`: the zero-width and bidi marks,
+ * U+2061-U+2064, U+061C, U+00AD, U+180E, U+034F, and the Hangul fillers
+ * U+115F / U+1160 / U+3164 / U+FFA0, which render one column wide), a format
+ * character (`\p{Cf}`, for the ones that are NOT default-ignorable, such as
+ * the interlinear annotation anchors U+FFF9-U+FFFB), and U+2800, the braille
+ * blank, which is in neither category. The class overlaps the one
+ * `outputs-export-alias.ts` scans with, but is not the same. Collapsing
  * removes the padding; the cap is `displayAwsMessage`'s.
  */
 function collisionText(msg: string): string {
