@@ -393,11 +393,12 @@ function inspectTail(
  * They are {@link commandHole}'s QUOTED form rather than a bare `<stack>`, and
  * the difference is not cosmetic. A bare `<name>` is two shell redirections:
  * pasted, `<stack` reads stdin from a file and the `>` takes the NEXT WORD as
- * an output target and CREATES it. This template is inert today only because
- * it ends on its second hole, so the trailing `>` faces the newline and bash
- * refuses the line — a property of where the command happens to stop, not a
- * decision anyone made, and it goes away the moment a flag is appended. That
- * is how go-to-k/cdkd#3363 met this shape (M4 of its review). Measured on
+ * an output target and CREATES it. The bare spelling this template once had was
+ * inert only because it ended on its second hole, so the trailing `>` faced the
+ * newline and bash refused the line — a property of where the command happened
+ * to stop, not a decision anyone made, and it would have gone away the moment a
+ * flag was appended. That is how go-to-k/cdkd#3363 met this shape (M4 of its
+ * review). The quoted form redirects nothing, whatever follows it. Measured on
  * go-to-k/cdkd#3436: the quoted form passes both holes through as literal
  * argv (`ARGV: state orphan <stack> --stack-region <region>`).
  */
