@@ -496,17 +496,23 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const unrouted = named.find((m) => m.includes('replacement of U ('));
       expect(collision).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
       expect(unrouted).toContain('so cdkd will not guess which provider re-creates');
-      expect(collision).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --orphan B$/);
-      expect(unrouted).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --orphan U$/);
+      expect(collision).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan B$/);
+      expect(unrouted).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan U$/);
+      // The collision's own resume sentence names the nested stack too: a
+      // stack-less `cdkd rollback` resolves to the parent.
+      expect(collision).not.toContain('re-run cdkd rollback —');
+      expect(collision).toContain(
+        'then re-run the rollback of the nested stack Top~Child itself (not of the top-level stack) — the journal is kept'
+      );
       for (const message of [collision!, unrouted!]) {
-        expect(message).toContain("This is the nested stack's own rollback, so the command names the nested stack");
+        expect(message).toContain("This is the nested stack's own rollback, so the command must name the nested stack");
         expect(message).toContain('command below');
       }
 
       // A child name the gate will not print becomes a quoted hole, explained.
       const held = await run('Top~Child; touch OWNED');
       for (const message of held) {
-        expect(message).toMatch(/\nTo orphan it: cdkd rollback '<stack>' --orphan [BU]$/);
+        expect(message).toMatch(/\nTo orphan it: cdkd rollback '<stack>' --stack-region us-east-1 --orphan [BU]$/);
         expect(message).toContain("The nested stack's name");
       }
 

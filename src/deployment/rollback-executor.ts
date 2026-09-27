@@ -47,6 +47,7 @@
  */
 
 import { commandHole, pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
+import { SHORT_NAME_MAX_CODE_POINTS } from '../state/malformed-resources-bag.js';
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
@@ -395,7 +396,7 @@ const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
  */
 function orphanRemedy(
   logicalId: unknown,
-  ctx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack'>
+  ctx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack' | 'region'>
 ): { readonly offered: boolean; readonly clause: string; readonly line: string } {
   if (ctx.nestedChildRevert === true) {
     return {
@@ -422,11 +423,17 @@ function orphanRemedy(
       ? undefined
       : pasteableCommand('cdkd rollback', [
           { value: ctx.nestedChildStack, hole: 'stack', opts: { plainIdent: true } },
+          {
+            flag: '--stack-region',
+            value: ctx.region,
+            hole: 'region',
+            opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+          },
         ]);
   const stackClause =
     target === undefined
       ? ''
-      : ` This is the nested stack's own rollback, so the command names the nested stack: a ` +
+      : ` This is the nested stack's own rollback, so the command must name the nested stack: a ` +
         `rollback of the top-level stack does not replay it.` +
         withheldTargetClause(target, 'stack', 'cdkd rollback', "The nested stack's name");
   const rollbackVerb = target?.command ?? 'cdkd rollback';
@@ -435,6 +442,24 @@ function orphanRemedy(
     clause: `${stackClause}${idClause}`,
     line: `\nTo orphan it: ${rollbackVerb} --orphan ${pasteable ? logicalId : commandHole('id')}`,
   };
+}
+
+/**
+ * How a message in this replay names "re-run the rollback". A nested child
+ * engine's OWN rollback is replayed only by a rollback of the CHILD, and a
+ * stack-less `cdkd rollback` resolves to the parent, which never replays it
+ * (go-to-k/cdkd#3859) — so there the phrase names the nested stack, as a
+ * DISPLAYED name, never as a command: the one pasteable command a refusal
+ * carries is {@link orphanRemedy}'s labelled line.
+ */
+function rerunRollbackPhrase(
+  ctx: Pick<RollbackExecutorContext, 'nestedChildStack'>,
+  topLevel: string
+): string {
+  return ctx.nestedChildStack === undefined
+    ? topLevel
+    : `the rollback of the nested stack ${safe(ctx.nestedChildStack)} itself (not of the ` +
+        `top-level stack)`;
 }
 
 /**
@@ -1195,7 +1220,7 @@ export function resolveReplacementOldType(
 function unroutableReplacementError(
   op: CompletedOperation,
   reason: string,
-  remedyCtx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack'>
+  remedyCtx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack' | 'region'>
 ): Error {
   // The remedy is a labelled last line built by `orphanRemedy`, which owns
   // the gate on the id and the sentence for a withheld one.
@@ -1942,7 +1967,8 @@ function regionAmbiguousReplaySecretError(
   propertyPath: string,
   secretName: string,
   foreignProducerRegions: readonly string[],
-  consumerRegion: string
+  consumerRegion: string,
+  execCtx: Pick<RollbackExecutorContext, 'nestedChildStack'>
 ): CdkdError {
   const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
   return new CdkdError(
@@ -1954,7 +1980,7 @@ function regionAmbiguousReplaySecretError(
       `independent values, so replaying this would write the WRONG secret to a live resource. ` +
       `Refusing instead. Resolve the reference in its own region and set the property ` +
       `directly (or spell it as a full ARN, which names its region and is resolved there), ` +
-      `then re-run 'cdkd rollback'.`,
+      `then re-run ${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
     'ROLLBACK_SECRET_REGION_AMBIGUOUS'
   );
 }
@@ -2014,7 +2040,8 @@ async function resolveLeafByRegion(
         propertyPath,
         verdict.secretName,
         verdict.foreignProducerRegions,
-        execCtx.region
+        execCtx.region,
+        execCtx
       );
     }
   }
@@ -2873,7 +2900,7 @@ async function replaySingle(
             logicalId: op.logicalId,
             consequence: 'create a default-configured resource and then delete the live one',
             remedy: 'Re-run `cdkd deploy` to re-converge it.',
-            retry: 're-running `cdkd rollback` retries this op',
+            retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
           })
         ) {
           result.warnings++;
@@ -3223,8 +3250,8 @@ async function replaySingle(
                       `name still held by the new one (${safe(current.physicalId)}), and ` +
                       `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                       `not delete it to free the name. Delete the new resource yourself, or ` +
-                      `remove UpdateReplacePolicy: Retain, then re-run cdkd rollback — the ` +
-                      `journal is kept, so the revert resumes from here.` +
+                      `remove UpdateReplacePolicy: Retain, then re-run ${rerunRollbackPhrase(ctx, 'cdkd rollback')} ` +
+                      `— the journal is kept, so the revert resumes from here.` +
                       (remedy.offered
                         ? ` To leave THIS resource alone and let the rest of the rollback ` +
                           `proceed, re-run with the command below: one op failure stops the ` +
@@ -3614,7 +3641,7 @@ async function replaySingle(
             consequence:
               'be applied as a complete desired state: a patch provider removes every property, and an SDK provider may reset a subset or replace the resource',
             remedy: 'Re-run `cdkd deploy` to re-converge it.',
-            retry: 're-running `cdkd rollback` retries this op',
+            retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
           })
         ) {
           result.warnings++;

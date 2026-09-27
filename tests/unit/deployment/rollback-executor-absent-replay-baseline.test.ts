@@ -415,6 +415,47 @@ describe('a replay arm refuses an ABSENT desired bag instead of sending {} (issu
     );
   });
 
+  it.each([
+    ['in-place update', 'up'],
+    ['reverse-replacement', 'rr'],
+  ])(
+    "in a nested child's own rollback, the %s arm's retry names the nested stack (go-to-k/cdkd#3859)",
+    async (_label, arm) => {
+      // A stack-less `cdkd rollback` resolves to the parent, which never
+      // replays a nested child's own failure segment, so the retry names the
+      // child, as a displayed name rather than a command.
+      const update = vi.fn();
+      const create = vi.fn();
+      const ctx = makeCtx({ update, create, delete: vi.fn() });
+      ctx.nestedChildStack = 'Top~Child';
+      const prev = { ...res({ physicalId: 'phys-old' }), properties: 'abc' } as unknown as ResourceState;
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'Q',
+          changeType: 'UPDATE',
+          resourceType: QUEUE,
+          physicalId: arm === 'rr' ? 'phys-new' : 'phys-old',
+          previousState: prev,
+          ...(arm === 'rr' && { oldResourceRetained: false }),
+        },
+      ];
+      const state = {
+        Q: res({ physicalId: arm === 'rr' ? 'phys-new' : 'phys-old', properties: { DelaySeconds: '30' } }),
+      };
+      const result = await replayRollback(ops, state, 'Top~Child', ctx, { isInterrupted: () => false });
+      expect(update).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+      const warn = warnLines.join('\n');
+      expect(warn).toContain('not a property bag');
+      expect(warn).toContain(
+        're-running the rollback of the nested stack Top~Child itself (not of the top-level stack) ' +
+          'retries this op'
+      );
+      expect(warn).not.toContain('re-running `cdkd rollback` retries this op');
+    }
+  );
+
   it('a PRESENT but empty bag is still replayed: absent and empty are different states', async () => {
     // The distinction the guard must keep. `properties: {}` on a resource that
     // really has none is a legitimate desired state the operator recorded;
