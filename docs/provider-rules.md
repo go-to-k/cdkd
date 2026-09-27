@@ -2078,7 +2078,10 @@ instead of failing at provisioning time with an opaque
 `UnsupportedActionException`. It matters for every such type, fully handled
 or not: a property missing from the schema snapshot also triggers the
 auto-route, and the flag is what keeps it on the SDK provider with a warning
-instead.
+instead. The flag covers every type the provider class serves, so a type Cloud
+Control CAN manage gets a provider class of its own rather than losing its
+route — `AWS::DocDB::DBSubnetGroup` is served by `DocDBSubnetGroupProvider`,
+apart from the opted-out DocDB cluster and instance (issue #3866).
 
 ### Workflow when adding a new provider
 
