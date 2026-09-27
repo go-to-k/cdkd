@@ -80,20 +80,20 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-27T17:08:26Z	PASS	1533	verify.sh	rc ok, orph clean (#3871)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-27T19:00:18Z	PASS	171	verify.sh	rc ok, orph clean (#3887)
-drift-revert-arrays	2026-09-25T15:49:51Z	PASS	180	verify.sh	rc ok, orph clean (#3595 lane)
-drift-revert-vpc	2026-09-27T19:00:18Z	PASS	281	verify.sh	rc ok, orph clean (#3887)
+drift-revert	2026-09-27T21:10:49Z	PASS	161	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+drift-revert-arrays	2026-09-27T21:13:53Z	PASS	180	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+drift-revert-vpc	2026-09-27T21:18:28Z	PASS	271	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
-dynamodb-autoscaling	2026-09-27T19:50:55Z	PASS	80	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-globaltable	2026-09-25T20:11:20Z	PASS	1443	verify.sh	rc ok, orph clean (#3740 final sha)
-dynamodb-gsi-update	2026-09-27T19:39:53Z	PASS	1808	verify.sh	PR #3901 merge-gate run; rc ok, orph clean; Phase 2f (#3777) 3/3
-dynamodb-ondemand	2026-09-27T19:48:46Z	PASS	250	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
-dynamodb-sse	2026-09-27T19:49:33Z	PASS	45	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
-dynamodb-stream-filter	2026-09-27T19:54:25Z	PASS	65	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
-dynamodb-streams	2026-09-27T19:44:33Z	PASS	275	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
-dynamodb-tableclass-switch	2026-09-27T19:52:11Z	PASS	70	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
-dynamodb-ttl-attr-change	2026-09-27T19:53:18Z	PASS	65	verify.sh	PR #3901 merge-gate run; rc ok, orph clean
+dynamodb-gsi-update	2026-09-27T20:52:47Z	PASS	1358	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean; Phase 2f (#3777) 3/3
+dynamodb-ondemand	2026-09-27T21:02:28Z	PASS	291	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-sse	2026-09-27T21:03:18Z	PASS	50	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-streams	2026-09-27T20:57:37Z	PASS	290	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
@@ -139,7 +139,7 @@ iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #386
 iam-managed-policy	2026-09-27T16:47:18Z	PASS	35	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-09-27T16:48:35Z	PASS	75	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
-iam-role-policies-drift-clean	2026-09-27T16:46:41Z	PASS	75	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
+iam-role-policies-drift-clean	2026-09-27T21:19:43Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 iam-role-prefixed-name-update	2026-09-27T14:13:26Z	PASS	70	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
