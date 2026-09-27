@@ -690,7 +690,11 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  *    same-name create succeeds. The code only ever means a LIVE target group
  *    with different settings (`A target group with the same name '<name>'
  *    exists, but with different settings`), which is a terminal collision and
- *    already classified as one ({@link NAME_COLLISION_ERROR_NAMES}).
+ *    already classified as one by exception NAME
+ *    (`DuplicateTargetGroupNameException` in
+ *    {@link NAME_COLLISION_ERROR_NAMES}, read by
+ *    {@link isNameCollisionErrorFrom}) — not by message, so the message-only
+ *    {@link isRecreateRetryableError} does not retry it.
  */
 export const NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // SQS, error-CODE spelling: `AWS.SimpleQueueService.QueueDeletedRecently`.
