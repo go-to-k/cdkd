@@ -120,10 +120,8 @@ eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 stalen
 eventbridge-pipes	2026-09-25T13:49:20Z	PASS	170	verify.sh	rc ok, orph clean; sha 0c502fe99 (#3718, post-rebase)
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
-eventsourcemapping-race	2026-09-27T10:10:30Z	PASS	85	verify.sh	rc ok, orph clean (#3849)
-export	2026-09-27T12:48:31Z	PASS	251	verify.sh	PR #3863 head f5976fe6f: rc 0, CFn stack deleted, 0 state versions, orph clean
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-09-27T11:19:01Z	PASS	230	verify.sh	rc ok, orph clean (#3858)
+export	2026-09-27T12:48:31Z	PASS	251	verify.sh	PR #3863 head f5976fe6f: rc 0, CFn stack deleted, 0 state versions, orph clean
 export-nested-stack	2026-09-26T02:11:41Z	PASS	165	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
