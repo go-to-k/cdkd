@@ -220,7 +220,7 @@ loggroup-kms-associate	2026-09-24T03:51:15Z	PASS	60	verify.sh	rc ok, orph clean 
 loggroup-never-expire-guard	2026-09-06T08:17:58Z	PASS	110	verify.sh	PR2695 gate run; 9 phases incl. new 4b string-retention + 4c observed-only arms, destroy 3 deleted 0 errors, 0 orphans
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-08-13T18:47:41Z	PASS	44	standard	Issue #1874 broad integ at rebased head 133a9660 (merged PR #1884 region fold + PR #1885); 19 created / 19 deleted, 0 errors, 0 orphans
-migrate-from-cfn	2026-09-27T15:33:16Z	PASS	366	run.sh	PR #3876 merge-gate run; rc ok, orph clean
+migrate-from-cfn	2026-09-27T16:24:11Z	PASS	351	run.sh	rc ok, orph clean (PR #3880 import pre-pass)
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
@@ -264,7 +264,7 @@ rollback-replacement-retain	2026-09-27T14:08:33Z	PASS	66	verify.sh	PR #3874 head
 rollback-replay-cc-generated-name	2026-09-26T02:40:00Z	PASS	160	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 rollback-replay-effective-props	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 rollback-sqs-cooldown	2026-09-26T02:40:00Z	PASS	175	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
-route53	2026-09-26T03:20:00Z	PASS	451	verify.sh	maintainer merge-gate run of PR #3825 (restoring main after #3812 x #3822); rc ok, orph clean, #3741 CNAME rollback via the marker
+route53	2026-09-27T16:24:11Z	PASS	421	verify.sh	rc ok, orph clean; Phase 2.5a auto-resolves intrinsic Name (PR #3880)
 s3-analytics-inventory	2026-09-25T20:11:20Z	PASS	185	verify.sh	rc ok, orph clean (#3740 final sha)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
