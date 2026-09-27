@@ -2563,31 +2563,17 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       NoSuchEntityException,
     } = await import('@aws-sdk/client-iam');
 
-    // physicalId is either the bare policy name (SDK provider format) or
-    // legacy `policyName:roleName` (CC API pre-SDK-provider state). The
-    // SDK provider's own delete normalizes via the same split; mirror it
-    // so pre-v0.74-ish state still produces the correct policy name.
-    const policyName = entry.physicalId.includes(':')
-      ? entry.physicalId.split(':')[0]
-      : entry.physicalId;
-    if (!policyName) {
+    // The SAME verdict the plan printed before the confirmation
+    // (go-to-k/cdkd#3857): one predicate, so the plan cannot name principals
+    // this handler would not act on.
+    const targets = policyDetachTargets(entry);
+    if ('refusal' in targets) {
       throw new Error(
-        `cdkd state's physicalId for ${entry.logicalId} (${entry.resourceType}) is empty / invalid`
+        `cdkd state for ${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) ` +
+          `cannot be pre-deleted: ${targets.refusal}`
       );
     }
-
-    const roles = entry.properties['Roles'] as string[] | undefined;
-    const users = entry.properties['Users'] as string[] | undefined;
-    const groups = entry.properties['Groups'] as string[] | undefined;
-    const hasAttachment = (roles?.length ?? 0) + (users?.length ?? 0) + (groups?.length ?? 0) > 0;
-    if (!hasAttachment) {
-      throw new Error(
-        `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) has no ` +
-          `Roles/Users/Groups attachment recorded — cannot pre-delete the inline policy. ` +
-          `State may be from a pre-v0.74 cdkd binary; re-run \`cdkd state refresh-observed\` ` +
-          `before export.`
-      );
-    }
+    const { policyName, roles, users, groups } = targets;
 
     const client = new IAMClient({ ...awsClientDefaults() });
 
@@ -2605,17 +2591,17 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       }
     };
 
-    for (const roleName of roles ?? []) {
+    for (const roleName of roles) {
       await deleteSafely(() =>
         client.send(new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName }))
       );
     }
-    for (const userName of users ?? []) {
+    for (const userName of users) {
       await deleteSafely(() =>
         client.send(new DeleteUserPolicyCommand({ UserName: userName, PolicyName: policyName }))
       );
     }
-    for (const groupName of groups ?? []) {
+    for (const groupName of groups) {
       await deleteSafely(() =>
         client.send(new DeleteGroupPolicyCommand({ GroupName: groupName, PolicyName: policyName }))
       );
@@ -3071,10 +3057,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             `IMPORT-unsupported resource(s) after cdkd deletes the AWS-side resource:`
         );
         for (const r of recreateBeforePhase2) {
-          logger.info(
-            `  ${displayIdent(r.logicalId)} (${displayIdent(r.resourceType)}) — physicalId: ` +
-              showRecordValue(r.physicalId)
-          );
+          for (const line of preDeleteListingLines(r)) logger.info(`  ${line}`);
         }
         logger.info(
           '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
@@ -3773,6 +3756,124 @@ function showRecordValue(value: unknown): string {
  */
 export function preDeletedLine(physicalId: unknown): string {
   return `✓ deleted ${showRecordValue(physicalId)}`;
+}
+
+/** The most detach targets {@link preDeleteListingLines} names per kind. */
+const DETACH_TARGETS_SHOWN = 20;
+
+/**
+ * An IAM role, user or group NAME: IAM's own character set, and at most 128
+ * characters (AWS caps a group name at 128, a role or user name at 64). A
+ * recorded target outside it is not a principal name, so it is refused
+ * rather than handed to `Delete*Policy`, where IAM would reject it between
+ * phases.
+ */
+const IAM_PRINCIPAL_NAME = /^[\w+=,.@-]{1,128}$/;
+
+/** What {@link policyDetachTargets} returns for a policy it will act on. */
+interface PolicyDetachTargets {
+  policyName: string;
+  roles: string[];
+  users: string[];
+  groups: string[];
+}
+
+/**
+ * THE decision for an `AWS::IAM::Policy` pre-delete: which inline policy is
+ * removed from which principals, or why the pre-delete refuses. Shared by the
+ * handler that acts on it and by {@link preDeleteListingLines}, which prints
+ * it in the plan the operator confirms from, so the two cannot disagree
+ * (go-to-k/cdkd#3857).
+ *
+ * The physicalId is the bare policy name (SDK provider format) or the legacy
+ * `policyName:roleName` (Cloud Control, pre-SDK-provider state); the SDK
+ * provider's own delete takes the first segment, and so does this.
+ *
+ * Each of `Roles` / `Users` / `Groups` must be ABSENT or a list of
+ * {@link IAM_PRINCIPAL_NAME}s. The record is
+ * read unvalidated, and the handler used to cast and iterate whatever it
+ * found: a string was walked character by character, deleting a same-named
+ * inline policy from one-letter roles the plan never showed. Anything else
+ * now refuses before any AWS call.
+ */
+function policyDetachTargets(
+  entry: RecreateBeforePhase2Entry
+): PolicyDetachTargets | { refusal: string } {
+  const physicalId = typeof entry.physicalId === 'string' ? entry.physicalId : '';
+  const policyName = physicalId.includes(':') ? physicalId.split(':')[0]! : physicalId;
+  if (!policyName) {
+    return { refusal: 'its physicalId names no policy' };
+  }
+  const read = (key: 'Roles' | 'Users' | 'Groups'): string[] | { refusal: string } => {
+    const value = entry.properties[key];
+    if (value === undefined) return [];
+    if (
+      !Array.isArray(value) ||
+      !value.every((v) => typeof v === 'string' && IAM_PRINCIPAL_NAME.test(v))
+    ) {
+      return {
+        refusal:
+          `its recorded properties.${key} is not a list of ${key.slice(0, -1).toLowerCase()} names ` +
+          (Array.isArray(value)
+            ? `(a ${value.length}-element list holding a non-name entry)`
+            : `(found ${value === null ? 'null' : typeof value})`),
+      };
+    }
+    return value as string[];
+  };
+  const roles = read('Roles');
+  if ('refusal' in roles) return roles;
+  const users = read('Users');
+  if ('refusal' in users) return users;
+  const groups = read('Groups');
+  if ('refusal' in groups) return groups;
+  if (roles.length + users.length + groups.length === 0) {
+    return {
+      refusal:
+        // Not 'cdkd state refresh-observed': that command rewrites only
+        // `observedProperties`, never the `properties` this reads.
+        'no Roles/Users/Groups attachment is recorded. State may be from a pre-v0.74 cdkd ' +
+        "binary; record the policy's Roles, Users or Groups in its cdkd state record, then " +
+        're-run cdkd export',
+    };
+  }
+  return { policyName, roles, users, groups };
+}
+
+/**
+ * The plan lines for one `recreateBeforePhase2` entry: the resource, and for
+ * an `AWS::IAM::Policy` the inline policy and the roles, users and groups its
+ * pre-delete removes it from — or why that pre-delete will refuse — from
+ * {@link policyDetachTargets}, the handler's own decision (go-to-k/cdkd#3857).
+ * The confirmation printed after the plan says to "see plan above" for what
+ * cdkd deletes between phases, and these targets come from the state RECORD.
+ * Every recorded value goes through {@link showRecordValue}; each kind is
+ * capped at {@link DETACH_TARGETS_SHOWN} names with the rest counted. Shared
+ * by the single-stack plan and the nested-tree summary. Exported for the unit
+ * cases.
+ */
+export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[] {
+  const head =
+    `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) — physicalId: ` +
+    showRecordValue(entry.physicalId);
+  if (entry.resourceType !== 'AWS::IAM::Policy') return [head];
+  const targets = policyDetachTargets(entry);
+  if ('refusal' in targets) return [head, `  the pre-delete will refuse: ${targets.refusal}`];
+  const parts: string[] = [];
+  for (const [label, names] of [
+    ['roles', targets.roles],
+    ['users', targets.users],
+    ['groups', targets.groups],
+  ] as const) {
+    if (names.length === 0) continue;
+    const shown = names.slice(0, DETACH_TARGETS_SHOWN).map((v) => showRecordValue(v));
+    const more = names.length - shown.length;
+    parts.push(`${label}: ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`);
+  }
+  return [
+    head,
+    `  removes inline policy ${showRecordValue(targets.policyName)} from ${parts.join('; ')}`,
+  ];
 }
 
 /**
@@ -4571,12 +4672,27 @@ export async function buildImportPlan(
     // flag `--no-recreate-import-unsupported` blocks them instead.
     if (IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType)) {
       if (options.recreateImportUnsupported) {
-        recreateBeforePhase2.push({
+        const entry: RecreateBeforePhase2Entry = {
           logicalId,
           resourceType,
           physicalId: stateEntry.physicalId,
           properties: stateEntry.properties ?? {},
-        });
+        };
+        // A pre-delete that would refuse is refused HERE, before the lock and
+        // before phase 1: the handler's refusal would otherwise fire between
+        // phases, after the CloudFormation stack exists (go-to-k/cdkd#3857).
+        // The handler keeps the same check as its backstop.
+        const targets =
+          resourceType === 'AWS::IAM::Policy' ? policyDetachTargets(entry) : undefined;
+        if (targets && 'refusal' in targets) {
+          blocked.push({
+            logicalId,
+            resourceType,
+            reason: `the pre-delete of this inline policy would refuse: ${targets.refusal}`,
+          });
+          continue;
+        }
+        recreateBeforePhase2.push(entry);
       } else {
         blocked.push({
           logicalId,
@@ -7180,6 +7296,11 @@ export async function runPerStackImportLoop(args: {
           ? `, ${plan.recreateBeforePhase2.length} pre-delete + re-CREATE`
           : '')
     );
+    // Each pre-delete named, as the single-stack plan does: the tree-wide
+    // confirmation below DELETES these between phases (go-to-k/cdkd#3857).
+    for (const r of plan.recreateBeforePhase2) {
+      for (const line of preDeleteListingLines(r)) logger.info(`    ${line}`);
+    }
   }
   logger.info('');
 

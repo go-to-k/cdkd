@@ -119,6 +119,13 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
     docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     docdbCluster.addDependency(docdbSubnetGroup);
+    // Issue #3866 refusal phase (verify.sh step 1b): `CopyTagsToSnapshot` is a
+    // property the SDK provider does not handle, on a type Cloud Control has
+    // no handlers for, so cdkd must refuse the deploy pre-flight rather than
+    // route the cluster to Cloud Control. Never set on a deploy that succeeds.
+    if (process.env.CDKD_TEST_NONPROV_REFUSAL === 'true') {
+      docdbCluster.addPropertyOverride('CopyTagsToSnapshot', true);
+    }
 
     const docdbInstance = new docdb.CfnDBInstance(this, 'DocdbInstance', {
       dbClusterIdentifier: docdbCluster.ref,

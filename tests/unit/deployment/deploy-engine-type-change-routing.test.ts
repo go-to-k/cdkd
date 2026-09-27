@@ -482,6 +482,52 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     expect(providerFor(SAME_TYPE).delete).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a top-level engine', undefined],
+    ['a nested child engine', { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' }],
+    ['a grandchild engine', { parentStack: 'Top~Child', parentLogicalId: 'Grand', parentRegion: 'us-east-1' }],
+  ])(
+    '--no-rollback: %s ends on the recovery that applies to it (go-to-k/cdkd#3864)',
+    async (_label, parentStackInfo) => {
+      // A nested child's stack-less `cdkd rollback` resolves to the top-level
+      // stack, whose own failure message follows, so the child names none.
+      const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+      arrangedChanges.set('Boom', {
+        logicalId: 'Boom',
+        changeType: 'CREATE',
+        resourceType: 'AWS::Test::Boom',
+        desiredProperties: {},
+      });
+      (template.Resources as Record<string, unknown>)['Boom'] = { Type: 'AWS::Test::Boom', Properties: {} };
+      providerFor('AWS::Test::Boom').create.mockRejectedValue(new Error('boom'));
+      Object.assign(mockStateBackend, { appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined) });
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+
+      const err = await deployAndCatch(
+        makeEngine({ noRollback: true, ...(parentStackInfo && { parentStackInfo }) }),
+        template
+      );
+
+      expect(err, 'the deploy did not fail').toBeDefined();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      const hint = lines.find((l) => l.startsWith('Partial state has been saved.'));
+      expect(hint, 'the --no-rollback arm was not reached').toBeDefined();
+      if (parentStackInfo === undefined) {
+        expect(hint).toBe(
+          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+        );
+      } else {
+        expect(hint).toBe(
+          "Partial state has been saved. This is a nested stack: recover it through its top-level " +
+            "stack 'Top', whose own message follows."
+        );
+        expect(hint).not.toContain('cdkd rollback');
+      }
+    }
+  );
+
   it('journals BOTH types, so a rollback can re-create the old one through its own provider', async () => {
     // `resourceType` on the op is the template's type; without the second field
     // the journal names only the NEW one.

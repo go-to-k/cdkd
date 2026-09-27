@@ -829,7 +829,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -959,7 +959,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceDBClusterIdentifier',
       ]),
       readOnly: new Set<string>(['ClusterResourceId', 'Endpoint', 'Id', 'ReadEndpoint']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -981,7 +981,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Endpoint', 'Id', 'Port']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
