@@ -97,7 +97,10 @@ export async function waitForGoneAfterDelete(opts: {
         // move it: the re-run the caller's error asks for sends a fresh delete
         // to a resource ALREADY in that status, and a read straight after it
         // can still report the old status. So it counts after a non-failed
-        // status was seen, or on a read at least one poll interval in.
+        // status was seen, or on a read at least one poll interval in. Both
+        // arms are needed: under a cap SHORTER than one interval every later
+        // read lands before the interval, and only the first arm keeps a
+        // fresh DELETING -> DELETING_FAILED from being dropped at the cap.
         if (failure !== undefined) {
           if (sawNonFailedStatus || now() - startedAt >= opts.pollIntervalMs) {
             throw markWaitAbandoned(failure);

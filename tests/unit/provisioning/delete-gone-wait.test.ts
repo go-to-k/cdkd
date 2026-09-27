@@ -170,6 +170,20 @@ describe('waitForGoneAfterDelete (#3872)', () => {
     expect(h.sleeps).toEqual([5_000]);
   });
 
+  it('throws on DELETING -> DELETING_FAILED even under a cap shorter than one poll interval', async () => {
+    const h = makeHarness(['DELETING', 'DELETING_FAILED', undefined]);
+    const failure = new Error('stream s1 entered DELETING_FAILED');
+    let caught: unknown;
+    try {
+      await h.run(3_000, 5_000, (s) => (s === 'DELETING_FAILED' ? failure : undefined));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBe(failure);
+    expect(h.sleeps).toEqual([3_000]);
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
   it('keeps waiting through a status the failedStatus predicate does not name', async () => {
     const h = makeHarness(['DELETING', undefined]);
     await expect(waitUntilGone(h, () => undefined)).resolves.toBeUndefined();
