@@ -73,9 +73,7 @@ const SITES: ReadonlyArray<{
         template(assetPath) as unknown as Record<string, unknown>,
         dir
       ),
-    // `export.ts` still renders its logical id in cdkd's own quotes: it was
-    // held by another PR when go-to-k/cdkd#3617's identifier sites converted.
-    subject: /nested-stack 'Grandchild'/,
+    subject: /nested-stack Grandchild has/,
     shownValue: '../outside.json',
   },
 ];
