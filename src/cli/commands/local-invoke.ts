@@ -1301,27 +1301,30 @@ export async function resolvePseudoParametersForInvoke(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    let accountIdentity: ReturnType<typeof awsClientDefaults>;
+    let sts: InstanceType<typeof STSClient>;
     if (options.fromState) {
       // cdkd-local-role-identity: `--from-state` read the state record through
       // `awsClientDefaults`, so as a `--role-arn` role when one is published,
       // and `ExpectedBucketOwner` pins that bucket to the reader's own account
       // — the account the stack lives in (issue go-to-k/cdkd#3230). Only the
       // account ID is taken; no credential reaches the emulated function.
-      accountIdentity = awsClientDefaults({ profile: options.profile });
+      sts = new STSClient({
+        ...awsClientDefaults({ profile: options.profile }),
+        ...(region && { region }),
+        // `--profile` is the identity both state sources read through when no
+        // role is published, so the account must be asked as it too.
+        ...(options.profile && { profile: options.profile }),
+      });
     } else {
       // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
       // emulated function sees stays the caller's own, never a `--role-arn`
       // assumed for cdkd's own calls. See that option's JSDoc.
-      accountIdentity = awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true });
+      sts = new STSClient({
+        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
+        ...(region && { region }),
+        ...(options.profile && { profile: options.profile }),
+      });
     }
-    const sts = new STSClient({
-      ...accountIdentity,
-      ...(region && { region }),
-      // `--profile` is the identity both state sources read through when no
-      // role is published, so the account must be asked as it too.
-      ...(options.profile && { profile: options.profile }),
-    });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

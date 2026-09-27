@@ -22,6 +22,9 @@
 #      --stack-region against the canonically-keyed state record, plus the
 #      canonical counter-case asserting byte-identical output. No extra
 #      deploy — it reuses the stack from step 2.
+#   4e (issue #3230): --from-state --role-arn <the stack's read-only role> —
+#      the state is read as the role, and ACCOUNT_TAG's ${AWS::AccountId}
+#      must still resolve (the role's account, which is the caller's here).
 #   5. cdkd destroy --force
 #
 # Run via `/run-integ local-invoke-from-state` (recommended) or directly:
@@ -130,6 +133,10 @@ echo "${RESULT_PR1}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in response, got: ${RESULT_PR1}"
   exit 1
 }
+echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
+  exit 1
+}
 
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
 RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
@@ -140,6 +147,10 @@ echo "${RESULT_PR2}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
 }
 echo "${RESULT_PR2}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-state, got: ${RESULT_PR2}"
+  exit 1
+}
+echo "${RESULT_PR2}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
 
@@ -195,6 +206,40 @@ echo "${RESULT_ENV_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || 
   echo "[verify] FAIL: an upper-cased AWS_REGION must answer byte-identically to the canonical run"
   echo "[verify]   upper env: ${RESULT_ENV_UPPER}"
   echo "[verify]   canonical: ${RESULT_CANON}"
+  exit 1
+}
+
+# Step 4e — `--from-state --role-arn` (issue #3230). The state is read as the
+# role, and `${AWS::AccountId}` is now asked as the state reader too. This
+# account holds only one identity's account, so the role's account IS the
+# caller's: the arm proves the role-published path resolves the account (and
+# still reads the state), not that the two differ — the unit suite covers that.
+echo "[verify] step 4e: --from-state --role-arn <LocalReadRole> — expect acct-${ACCOUNT_ID} + BUCKET_NAME"
+READ_ROLE_NAME="$(${CLI} state resources "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);for(const r of j){if(r.resourceType==="AWS::IAM::Role"&&r.logicalId.startsWith("LocalReadRole")){console.log(r.physicalId);process.exit(0)}}process.exit(1)})')"
+[ -n "${READ_ROLE_NAME}" ] || { echo "[verify] FAIL: could not read LocalReadRole from cdkd state"; exit 1; }
+READ_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${READ_ROLE_NAME}"
+# A just-created role is not assumable until IAM propagates. Wait for it with
+# the caller's own credentials, bounded, so the invoke below never races it.
+role_ready=0
+for _ in $(seq 1 30); do
+  if aws sts assume-role --role-arn "${READ_ROLE_ARN}" --role-session-name cdkd-3230-probe \
+       --query 'Credentials.AccessKeyId' --output text >/dev/null 2>&1; then
+    role_ready=1
+    break
+  fi
+  sleep 3
+done
+[ "${role_ready}" = 1 ] || { echo "[verify] FAIL: ${READ_ROLE_ARN} never became assumable"; exit 1; }
+RESULT_ROLE=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --role-arn "${READ_ROLE_ARN}" \
+  --no-pull --state-bucket "${STATE_BUCKET}")
+echo "[verify]   response: ${RESULT_ROLE}"
+echo "${RESULT_ROLE}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+  echo "[verify] FAIL: --role-arn must still read the state record; expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ROLE}"
+  exit 1
+}
+echo "${RESULT_ROLE}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+  echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state --role-arn, got: ${RESULT_ROLE}"
   exit 1
 }
 

@@ -1768,25 +1768,28 @@ async function resolveStackAccountId(
   fromState: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  let accountIdentity: ReturnType<typeof awsClientDefaults>;
+  let sts: InstanceType<typeof STSClient>;
   if (fromState) {
     // cdkd-local-role-identity: `--from-state` read the state record through
     // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
     // `ExpectedBucketOwner` pins that bucket to the reader's own account — the
     // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
     // is taken; no credential reaches the emulated agent.
-    accountIdentity = awsClientDefaults({ profile });
+    sts = new STSClient({
+      ...awsClientDefaults({ profile }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
   } else {
     // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
     // emulated agent sees stays the caller's own, never a `--role-arn` assumed
     // for cdkd's own calls. See that option's JSDoc.
-    accountIdentity = awsClientDefaults({ profile, ignoreAssumedRole: true });
+    sts = new STSClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
   }
-  const sts = new STSClient({
-    ...accountIdentity,
-    ...(region && { region }),
-    ...(profile && { profile }),
-  });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

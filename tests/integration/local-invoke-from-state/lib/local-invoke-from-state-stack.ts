@@ -2,6 +2,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 
@@ -18,6 +19,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Bucket carries `removalPolicy: DESTROY` + `autoDeleteObjects: true` so
  * the integ teardown is fully self-contained.
+ *
+ * `ACCOUNT_TAG` splices `${AWS::AccountId}`, and `LocalReadRole` is a
+ * read-only role the verify script passes as `--role-arn`, so the
+ * `--from-state` pseudo-parameter account is exercised with a role published
+ * (issue go-to-k/cdkd#3230). Same account as the caller: this arm proves the
+ * role path resolves, not that the account differs — that half is unit-tested.
  */
 export class LocalInvokeFromStateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -40,8 +47,18 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
         // A literal env var to confirm --from-state doesn't break
         // normal-case behavior on its way through.
         STATIC_VALUE: 'always-the-same',
+        // `${AWS::AccountId}` inside a Fn::Join, substituted only under
+        // --from-state from the account the state was read in.
+        ACCOUNT_TAG: cdk.Fn.join('', ['acct-', cdk.Aws.ACCOUNT_ID]),
       },
       timeout: cdk.Duration.seconds(10),
+    });
+
+    // The `--role-arn` the verify script reads state through. Read-only is
+    // enough for everything `cdkd local invoke --from-state` asks as the role.
+    new iam.Role(this, 'LocalReadRole', {
+      assumedBy: new iam.AccountRootPrincipal(),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess')],
     });
   }
 }
