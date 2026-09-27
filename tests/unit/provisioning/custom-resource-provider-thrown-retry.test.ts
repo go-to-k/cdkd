@@ -1030,6 +1030,9 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "is unable to assume provided role",
       "is unable to assume the role",
       "security token included in the request is invalid. (Service:",
+      // Issue #3853: Lambda's synchronous CreateEventSourceMapping rejection,
+      // decided before any function runs — front-door where it originates.
+      "Received Exception while reading from provided stream. The security token included in the request is invalid",
       "role defined for the function",
       "not authorized to perform",
       "execution role",
