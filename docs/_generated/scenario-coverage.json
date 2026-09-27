@@ -1110,6 +1110,11 @@
       "scenarios": []
     },
     {
+      "name": "healthimaging-stateful-update-fallback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-access-key",
       "annotated": true,
       "scenarios": []
@@ -3033,6 +3038,7 @@
     "fifo-sqs-event-source",
     "getatt-fallback-guard",
     "glue-securityconfig-replace",
+    "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
