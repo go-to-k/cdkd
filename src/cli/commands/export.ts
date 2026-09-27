@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
   STACK_REF_MAX_CODE_POINTS,
+  displayAwsMessage,
+  displayIdent,
   displaySafe,
   isPasteableIdent,
   truncateCodePoints,
@@ -378,7 +380,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = id.split('|');
     if (parts.length !== 3) {
       throw new Error(
-        `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: '${id}'`
+        `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: ${showRecordValue(id)}`
       );
     }
     const map = { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
@@ -416,13 +418,13 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length > 2) {
       throw new Error(
-        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: '${physicalId}'`
+        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     if (parts.length === 2) {
       const [restApiId, resourceId] = parts as [string, string];
       if (!restApiId || !resourceId) {
-        throw new Error(`empty part in 'restApiId|resourceId': '${physicalId}'`);
+        throw new Error(`empty part in 'restApiId|resourceId': ${showRecordValue(physicalId)}`);
       }
       return {
         resourceIdentifier: { RestApiId: restApiId, ResourceId: resourceId },
@@ -454,12 +456,12 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     if (parts.length !== 2) {
       throw new Error(
         `expected 2 parts ('<gatewayId>|<vpcId>' or '<AttachmentType>|<vpcId>'), ` +
-          `got ${parts.length}: '${physicalId}'`
+          `got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [first, vpcId] = parts as [string, string];
     if (!first || !vpcId) {
-      throw new Error(`empty part in composite physical id: '${physicalId}'`);
+      throw new Error(`empty part in composite physical id: ${showRecordValue(physicalId)}`);
     }
     return {
       resourceIdentifier: {
@@ -511,16 +513,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|').map((p) => p.trim());
     if (parts.length > 2) {
       throw new Error(
-        `expected a bare '<Id>' or '<Id>|<VpcId>', got ${parts.length} parts: '${physicalId}'`
+        `expected a bare '<Id>' or '<Id>|<VpcId>', got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     const id = parts[0]!;
     if (!id) {
-      throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+      throw new Error(`empty part in '<Id>|<VpcId>': ${showRecordValue(physicalId)}`);
     }
     if (!id.startsWith(VPC_CIDR_ASSOCIATION_ID_PREFIX)) {
       throw new Error(
-        `'${physicalId}' does not start with an association id: CloudFormation identifies an ` +
+        `${showRecordValue(physicalId)} does not start with an association id: CloudFormation identifies an ` +
           `AWS::EC2::VPCCidrBlock by [Id, VpcId], so the first segment must be a ` +
           `'${VPC_CIDR_ASSOCIATION_ID_PREFIX}…' id. State entry may be corrupt, or the segments ` +
           `may be reversed; re-deploy the resource to refresh state`
@@ -532,7 +534,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       // Only reachable on THIS branch — `readStringProperty` already refuses an
       // empty / non-string recorded value on the bare-id branch below.
       if (!vpcId) {
-        throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+        throw new Error(`empty part in '<Id>|<VpcId>': ${showRecordValue(physicalId)}`);
       }
     } else {
       vpcId = readStringProperty(properties, 'VpcId', 'AWS::EC2::VPCCidrBlock');
@@ -542,8 +544,8 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     // nothing. Checking one side only is not a discriminator.
     if (!VPC_ID_PATTERN.test(vpcId)) {
       throw new Error(
-        `'${vpcId}' is not a VPC id (expected 'vpc-…', not an association id): ` +
-          `'${physicalId}' may have its segments reversed`
+        `${showRecordValue(vpcId)} is not a VPC id (expected 'vpc-…', not an association id): ` +
+          `${showRecordValue(physicalId)} may have its segments reversed`
       );
     }
     return {
@@ -585,14 +587,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<routeTableId>|<destination>'), got ${parts.length}: '${physicalId}'`
+        `expected 2 parts ('<routeTableId>|<destination>'), got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [routeTableId, destination] = parts as [string, string];
     // `.trim()`, not truthiness: `'  |  '` is two non-empty segments by
     // truthiness and would ship `RouteTableId: '  '` into the changeset.
     if (!routeTableId.trim() || !destination.trim()) {
-      throw new Error(`empty part in '<routeTableId>|<destination>': '${physicalId}'`);
+      throw new Error(
+        `empty part in '<routeTableId>|<destination>': ${showRecordValue(physicalId)}`
+      );
     }
     return {
       resourceIdentifier: {
@@ -623,14 +627,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<publicIp>|<allocationId>'), got ${parts.length}: '${physicalId}'. ` +
+        `expected 2 parts ('<publicIp>|<allocationId>'), got ${parts.length}: ${showRecordValue(physicalId)}. ` +
           `CloudFormation identifies an AWS::EC2::EIP by BOTH fields, and neither can be ` +
           `recovered from the other; re-deploy the resource to refresh state`
       );
     }
     const [first, second] = parts as [string, string];
     if (!first.trim() || !second.trim()) {
-      throw new Error(`empty part in '<publicIp>|<allocationId>': '${physicalId}'`);
+      throw new Error(`empty part in '<publicIp>|<allocationId>': ${showRecordValue(physicalId)}`);
     }
     // Bind by SHAPE, not by position. `eipPhysicalId` writes publicIp first and
     // every writer goes through it, but that ordering is the ONE thing here
@@ -654,7 +658,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       !EIP_PUBLIC_IP_PATTERN.test(publicIp)
     ) {
       throw new Error(
-        `'${physicalId}' is not an '<publicIp>|<allocationId>' pair: CloudFormation identifies ` +
+        `${showRecordValue(physicalId)} is not an '<publicIp>|<allocationId>' pair: CloudFormation identifies ` +
           `an AWS::EC2::EIP by [PublicIp, AllocationId], so one segment must be an allocation ` +
           `id ('${EIP_ALLOCATION_ID_PREFIX}…') and the other a dotted-quad public IP. State ` +
           `entry may be corrupt or written by an older cdkd binary; re-deploy the resource to ` +
@@ -785,12 +789,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: '${physicalId}'`
+        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [tableBucketARN, namespace] = parts as [string, string];
     if (!tableBucketARN || !namespace) {
-      throw new Error(`empty part in '<tableBucketARN>|<namespaceName>': '${physicalId}'`);
+      throw new Error(
+        `empty part in '<tableBucketARN>|<namespaceName>': ${showRecordValue(physicalId)}`
+      );
     }
     return { resourceIdentifier: { TableBucketARN: tableBucketARN, Namespace: namespace } };
   },
@@ -846,7 +852,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     // splitters trim the WHOLE id only, not each segment — this is the stricter
     // per-segment check, matching `AWS::EC2::Route` / `AWS::EC2::EIP`.
     if (!functionName.trim() || !qualifier.trim()) {
-      throw new Error(`empty part in '<functionName>|<qualifier>': '${physicalId}'`);
+      throw new Error(`empty part in '<functionName>|<qualifier>': ${showRecordValue(physicalId)}`);
     }
     return { resourceIdentifier: { FunctionName: functionName, Qualifier: qualifier } };
   },
@@ -922,20 +928,20 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     }
     if (trimmed.startsWith('arn:')) {
       throw new Error(
-        `'${physicalId}' looks like an ARN but is not an AppSync API key ARN ` +
+        `${showRecordValue(physicalId)} looks like an ARN but is not an AppSync API key ARN ` +
           `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>)`
       );
     }
     const parts = trimmed.split('|');
     if (parts.length > 2) {
       throw new Error(
-        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: '${physicalId}'`
+        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     if (parts.length === 2) {
       const [apiId, apiKeyId] = parts as [string, string];
       if (!apiId.trim() || !apiKeyId.trim()) {
-        throw new Error(`empty part in 'apiId|apiKeyId': '${physicalId}'`);
+        throw new Error(`empty part in 'apiId|apiKeyId': ${showRecordValue(physicalId)}`);
       }
       return {
         resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },
@@ -1064,7 +1070,7 @@ function resolveGatewayAttachmentType(
   throw new Error(
     `cannot determine AttachmentType for AWS::EC2::VPCGatewayAttachment: cdkd state's ` +
       `properties carry neither 'InternetGatewayId' nor 'VpnGatewayId', and the physical id ` +
-      `segment '${firstSegment}' is not a recognized gateway id. State entry may be corrupt ` +
+      `segment ${showRecordValue(firstSegment)} is not a recognized gateway id. State entry may be corrupt ` +
       `or written by an older cdkd binary; re-deploy the resource to refresh state.`
   );
 }
@@ -1150,11 +1156,11 @@ function resolveRouteDestination(segment: string, properties: Record<string, unk
     return identifier;
   }
 
-  const recorded = declared.map((key) => `${key}='${String(properties[key])}'`).join(', ');
+  const recorded = declared.map((key) => `${key}=${showRecordValue(properties[key])}`).join(', ');
   const shared =
     `AWS::EC2::Route: cdkd state's recorded properties declare ${recorded}, but the physical ` +
-    `id's destination segment is '${segment}'. CloudFormation identifies the route by the ` +
-    `destination, so IMPORT would adopt whatever route currently sits at '${identifier}' — and ` +
+    `id's destination segment is ${showRecordValue(segment)}. CloudFormation identifies the route by the ` +
+    `destination, so IMPORT would adopt whatever route currently sits at ${showRecordValue(identifier)} — and ` +
     `if that is a DIFFERENT route than the template declares, phase 2 would then REPLACE ` +
     `(delete) it. The state entry is stale; re-deploy the resource to refresh it`;
 
@@ -1169,11 +1175,15 @@ function resolveRouteDestination(segment: string, properties: Record<string, unk
     throw new Error(`${shared}.`);
   }
 
+  // Bounded as a whole: each value is capped, but up to five of them share
+  // this one line (a throw of the same text is bounded by `groupBlockedReasons`).
   getLogger().warn(
-    `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
-      `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
-      `CIDR, whose AWS-side canonicalization cdkd does not model — so the difference may be ` +
-      `benign.`
+    displayAwsMessage(
+      `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
+        `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
+        `CIDR, whose AWS-side canonicalization cdkd does not model — so the difference may be ` +
+        `benign.`
+    )
   );
   return identifier;
 }
@@ -1240,7 +1250,7 @@ function restApiChildSplitter(options: {
     if (parts.length > 2) {
       throw new Error(
         `expected a bare ${childField} or '${compositeShape}', got ${parts.length} parts: ` +
-          `'${physicalId}'`
+          `${showRecordValue(physicalId)}`
       );
     }
 
@@ -1249,7 +1259,7 @@ function restApiChildSplitter(options: {
     if (parts.length === 2) {
       const [a, b] = parts as [string, string];
       if (!a || !b) {
-        throw new Error(`empty part in '${compositeShape}': '${physicalId}'`);
+        throw new Error(`empty part in '${compositeShape}': ${showRecordValue(physicalId)}`);
       }
       [restApiId, childValue] = childFirstInCompositeId ? [b, a] : [a, b];
     } else {
@@ -1641,7 +1651,7 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
       }
       const recordedNote =
         typeof recorded === 'string' && recorded.trim()
-          ? `attributes.Id is recorded as '${recorded.trim()}', which is not an 'sgr-…' ` +
+          ? `attributes.Id is recorded as ${showRecordValue(recorded)}, which is not an 'sgr-…' ` +
             `security-group rule id`
           : `attributes.Id is missing or empty`;
       throw new Error(
@@ -1870,7 +1880,7 @@ async function describeAllSecurityGroupRules(
               ...(nextToken && { NextToken: nextToken }),
             })
           ),
-        `DescribeSecurityGroupRules(${groupId})`,
+        `DescribeSecurityGroupRules(${showRecordValue(groupId)})`,
         {
           maxRetries: MAX_SG_RULE_THROTTLE_RETRIES,
           isRetryable: (_message, error) => isThrottlingError(error),
@@ -1998,7 +2008,7 @@ async function backfillSecurityGroupIngressRuleId(
   if (!tuple) {
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and its ` +
-        `physical id '${physicalId}' is not cdkd's ` +
+        `physical id ${showRecordValue(physicalId)} is not cdkd's ` +
         `'<groupId>|<ipProtocol>|<fromPort>|<toPort>' composite either, so cdkd cannot look the ` +
         `rule up in AWS to recover the id CloudFormation IMPORT needs. Repair the record's ` +
         `physicalId (or its attributes.Id, which may be the 'sgr-...' id verbatim) and re-run ` +
@@ -2008,14 +2018,14 @@ async function backfillSecurityGroupIngressRuleId(
 
   const portRange =
     tuple.fromPort === tuple.toPort ? `${tuple.fromPort}` : `${tuple.fromPort}-${tuple.toPort}`;
-  const tupleNote = `protocol '${tuple.ipProtocol}', ports ${portRange} on security group '${tuple.groupId}'`;
+  const tupleNote = `protocol ${showRecordValue(tuple.ipProtocol)}, ports ${portRange} on security group ${showRecordValue(tuple.groupId)}`;
 
   const lookup = await cachedSecurityGroupRules(tuple.groupId, deps);
   if (!lookup.ok) {
     if (lookup.kind === 'truncated') {
       throw new Error(
         `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and the ` +
-          `DescribeSecurityGroupRules lookup on '${tuple.groupId}' was still paginating after ` +
+          `DescribeSecurityGroupRules lookup on ${showRecordValue(tuple.groupId)} was still paginating after ` +
           `${MAX_SG_RULE_PAGES} pages — cdkd cannot prove a match is unique without seeing the ` +
           `whole group, and adopting an unproven id would name the wrong rule. ` +
           `${sgIngressExportEscapeHatch(logicalId)}`
@@ -2345,7 +2355,7 @@ function recordedArnIdentifier(options: {
       }
       const recordedNote =
         typeof recorded === 'string' && recorded.trim()
-          ? `attributes.${field} is recorded as '${recorded.trim()}', which is not a ` +
+          ? `attributes.${field} is recorded as ${showRecordValue(recorded)}, which is not a ` +
             `${arnServiceSegment} ARN`
           : `attributes.${field} is missing or empty`;
       // "composite" vs "bare": `AWS::AppSync::GraphQLApi` stores a single
@@ -3061,7 +3071,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             `IMPORT-unsupported resource(s) after cdkd deletes the AWS-side resource:`
         );
         for (const r of recreateBeforePhase2) {
-          logger.info(`  ${r.logicalId} (${r.resourceType}) — physicalId: ${r.physicalId}`);
+          logger.info(
+            `  ${displayIdent(r.logicalId)} (${displayIdent(r.resourceType)}) — physicalId: ` +
+              showRecordValue(r.physicalId)
+          );
         }
         logger.info(
           '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
@@ -3279,12 +3292,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           );
           try {
             await handler(entry);
-            logger.info(`  ✓ deleted ${entry.physicalId}`);
+            logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
-                `(${entry.resourceType}, physicalId: ${entry.physicalId}) failed: ${msg}\n\n` +
+                `(${entry.resourceType}, physicalId: ${showRecordValue(entry.physicalId)}) failed: ` +
+                `${displayAwsMessage(msg)}\n\n` +
                 `The CloudFormation stack '${cfnStackName}' contains the phase-1 imports ` +
                 `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +
                 `still exist in AWS unmanaged. cdkd state is UNCHANGED. Re-running ` +
@@ -3671,6 +3685,97 @@ function safeDetail(value: unknown): string {
 }
 
 /**
+ * The longest legitimate value {@link showRecordValue} renders uncut: AWS's
+ * documented ARN ceiling. A physical id is a name, an id, a URL or an ARN, and
+ * the ARN is the longest of them; a record carrying more than this is not one
+ * of those.
+ *
+ * Counted in code points for a plain value and in ESCAPED characters for any
+ * other, so a value escaping heavily is cut sooner: every BMP character past
+ * ASCII costs six, an astral one twelve. A 255-character all-emoji name is
+ * therefore cut, with the cut marked; a flood stop, not a formatting rule.
+ */
+const RECORD_VALUE_MAX_CODE_POINTS = 2048;
+
+/**
+ * The shape of a record value that renders BARE: `displayIdent`'s plain set
+ * (`src/utils/display-safe.ts`) plus four characters real AWS identifiers carry
+ * and that printed bare here before go-to-k/cdkd#3375, so quoting them would
+ * change legitimate output (the `export` integ fixture greps
+ * `Qualifier=$LATEST`):
+ *
+ * - `$`: a Lambda qualifier (`$LATEST`), an API Gateway v2 stage or route key
+ *   (`$default`, `$connect`, `$disconnect`);
+ * - `|`: cdkd's own composite physical ids (`<restApiId>|<resourceId>`);
+ * - `#`: a CloudWatch Logs log-group name (`[.\-_/#A-Za-z0-9]+`);
+ * - `*`: a Route 53 wildcard record name (`*.example.com`).
+ *
+ * None of the four can plant what the boundary exists to stop: no space,
+ * quote, bracket or parenthesis, so a bare value cannot close a quote or spell
+ * a `(type)` / `-- reason` annotation, and every character is printable ASCII.
+ * Not `displayIdent`'s own set widened, because that set also decides what
+ * cdkd names bare beside a pasteable command, where `$` and `*` are shell
+ * syntax.
+ */
+const RECORD_VALUE_PLAIN = /^[A-Za-z0-9:_@./+=,~$|#*-]+$/;
+
+/**
+ * Render a value read out of a state record's BODY — a `physicalId`, a
+ * `properties` or `attributes` value, or a segment split out of one — into a
+ * message (go-to-k/cdkd#3375). Nothing validates these on read, so the value
+ * is anyone's who can write the record. The caller writes NO quotes of its own
+ * around the result, since a hand-written `'...'` is exactly what a planted
+ * `'` closes.
+ *
+ * A value in {@link RECORD_VALUE_PLAIN} within the cap renders bare, exactly
+ * as it always did. Anything else renders as a JSON string literal whose every character outside
+ * printable ASCII is a `\uXXXX` escape: the boundary is visible, no byte can
+ * move the cursor or reorder the line, and — unlike `displayIdent`'s
+ * allowlist, which maps non-ASCII to a space — the value stays RECOVERABLE. A
+ * legitimate id may be UTF-8 (a CloudWatch `AlarmName`, a Step Functions
+ * state-machine name), and this is the plan an operator confirms a migration
+ * from, so two distinct ids must never print as the same text. The cap bounds
+ * the ESCAPED payload; the cut counts withheld code points, in `displayIdent`'s
+ * marker shape.
+ */
+function showRecordValue(value: unknown): string {
+  const cap = { maxCodePoints: RECORD_VALUE_MAX_CODE_POINTS };
+  // A non-string was never written as an id; `displayIdent`'s total coercion
+  // is the right answer for it.
+  if (typeof value !== 'string') return displayIdent(value, cap);
+  if (value.length <= RECORD_VALUE_MAX_CODE_POINTS && RECORD_VALUE_PLAIN.test(value)) {
+    // ASCII by construction, so `.length` counts code points.
+    return value;
+  }
+  // The cap is on the ESCAPED text, so an escape cannot multiply it (a
+  // non-ASCII code point escapes to six characters, an astral one to twelve).
+  // Built one code point at a time, so the cut never splits an escape or a
+  // surrogate pair.
+  const codePoints = Array.from(value);
+  let body = '';
+  let kept = 0;
+  for (const cp of codePoints) {
+    const piece = JSON.stringify(cp)
+      .slice(1, -1)
+      .replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    if (body.length + piece.length > RECORD_VALUE_MAX_CODE_POINTS) break;
+    body += piece;
+    kept += 1;
+  }
+  const withheld = codePoints.length - kept;
+  return withheld === 0 ? `"${body}"` : `"${body}" [cut: ${withheld} more characters withheld]`;
+}
+
+/**
+ * The success line for one pre-deleted `recreateBeforePhase2` resource, shared
+ * by the single-stack and nested-stack paths so the two cannot render the
+ * recorded physical id differently. Exported for the unit cases.
+ */
+export function preDeletedLine(physicalId: unknown): string {
+  return `✓ deleted ${showRecordValue(physicalId)}`;
+}
+
+/**
  * A `cdkd state orphan` line for a record-derived stack name — PASTEABLE only
  * when that name renders EXACTLY, and a template otherwise (issue
  * [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round 3).
@@ -3720,7 +3825,8 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
       `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
       `spelled out because this record's ` +
       `name or region does NOT render exactly, so another record may render identically; ` +
-      `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
+      `list them as stored with 'cdkd state list --json' and act on the one whose key matches, ` +
+      `replacing each quoted hole, quotes included, with the shell-quoted value`
     );
   }
   return `cdkd state orphan ${shellQuote(shownStack)} --stack-region ${shellQuote(safeSegment(region))}`;
@@ -4119,7 +4225,7 @@ export function indexNestedTemplatePaths(
     if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
     if (nodePath.isAbsolute(assetPath)) {
       throw new Error(
-        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+        `cdkd export: nested-stack ${displayIdent(logicalId)} has ` +
           `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} ` +
           `which is absolute. CDK emits relative asset paths for nested templates.`
       );
@@ -4132,7 +4238,7 @@ export function indexNestedTemplatePaths(
     const resolved = resolveAssemblyPath(templateDir, assetPath);
     if (!resolved.contained) {
       throw new Error(
-        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+        `cdkd export: nested-stack ${displayIdent(logicalId)} has ` +
           `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
           `${renderAssemblyPathEscape(resolved, templateDir)}`
       );
@@ -4667,8 +4773,10 @@ export function groupBlockedReasons(blocked: readonly BlockedResource[]): string
     // state values (resolver messages echo physical ids and attributes), and
     // a newline in any of them would otherwise start a counterfeit labelled
     // row. The one labelled line a reason may carry is appended here, from
-    // the gated `repair` field (go-to-k/cdkd#3736).
-    const text = displaySafe(b.reason);
+    // the gated `repair` field (go-to-k/cdkd#3736). BOUNDED too: a reason can
+    // quote a record's values back, and a planted multi-kilobyte one would
+    // otherwise push the rest of the refusal off screen (go-to-k/cdkd#3375).
+    const text = displayAwsMessage(b.reason);
     entry.reasons.push(b.repair === undefined ? text : `${text}\nRepair with: ${b.repair}`);
     byResource.set(b.logicalId, entry);
   }
@@ -5326,8 +5434,9 @@ function overlayResourceIdentifierOnProperties(
         // template, and their next `cdk deploy` diffs against it — so say so
         // rather than truncating silently.
         getLogger().warn(
-          `${entry.logicalId} (${entry.resourceType}): rewriting the identifier property ` +
-            `'${field}' from ${describeOverlayValueShape(current)} to the scalar '${value}' ` +
+          `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}): rewriting ` +
+            `the identifier property ${displayIdent(field)} from ` +
+            `${describeOverlayValueShape(current)} to the scalar ${showRecordValue(value)} ` +
             `recorded in cdkd state. CloudFormation types this property as a string; the ` +
             `exported template will carry the scalar.`
         );
@@ -5375,10 +5484,12 @@ function unrepresentableOverlayMessage(
   value: string
 ): string {
   return (
-    `${entry.logicalId} (${entry.resourceType}): the identifier property '${field}' is ` +
+    `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}): the identifier ` +
+    `property ${displayIdent(field)} is ` +
     `${describeOverlayValueShape(current)}, but CloudFormation types it as a string. ` +
     `${refusalReason(current)}. ` +
-    `Declare '${field}' as the scalar '${value}' (or drop the addPropertyOverride that ` +
+    `Declare ${displayIdent(field)} as the scalar ${showRecordValue(value)} (or drop the ` +
+    `addPropertyOverride that ` +
     `made it a list) and re-run 'cdkd export'.`
   );
 }
@@ -5868,7 +5979,8 @@ export function reportDriftBaselineGaps(
         (inspect.exact
           ? ''
           : `A quoted '<...>' hole in the command at the end of this line stands for a value cdkd could not ` +
-            `print safely; fill it from 'cdkd state list --long'. `) +
+            `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
+            `included, with the shell-quoted value. `) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
@@ -6059,10 +6171,18 @@ function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   logger.info('');
   logger.info(`Import plan for CloudFormation stack '${cfnStackName}':`);
   for (const entry of plan) {
+    // Every value on this row is rendered with its own boundary: the plan is
+    // printed directly above the destructive confirmation, and each identifier
+    // VALUE is the state record's `physicalId` (or a segment of it), which
+    // nothing validates on read (go-to-k/cdkd#3375). The key and the row's
+    // logical id and type are template- or schema-supplied and plain in every
+    // real template, so they render unchanged there.
     const idStr = Object.entries(entry.resourceIdentifier)
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => `${displayIdent(k)}=${showRecordValue(v)}`)
       .join(', ');
-    logger.info(`  ${entry.logicalId} (${entry.resourceType}) ← ${idStr}`);
+    logger.info(
+      `  ${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) ← ${idStr}`
+    );
   }
   logger.info('');
 }
@@ -6293,7 +6413,7 @@ export async function submitImportChangeSet(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to create IMPORT changeset: ${msg}`);
+      throw new Error(`Failed to create IMPORT changeset: ${displayAwsMessage(msg)}`);
     }
 
     try {
@@ -6317,7 +6437,9 @@ export async function submitImportChangeSet(
         await cfnClient
           .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
           .catch(() => {});
-        throw new Error(`IMPORT changeset FAILED: ${reason}`);
+        // CloudFormation's reason can QUOTE the submitted ResourceIdentifier,
+        // i.e. a state record's physical id, back verbatim.
+        throw new Error(`IMPORT changeset FAILED: ${displayAwsMessage(reason)}`);
       } catch (innerErr) {
         if (innerErr instanceof Error && innerErr.message.startsWith('IMPORT changeset FAILED')) {
           throw innerErr;
@@ -6403,7 +6525,14 @@ async function collectImportFailureSummary(
     if (failures.length >= 5) break;
   }
   if (failures.length === 0) return '';
-  return failures.map((f) => `  - ${f.logicalId} (${f.type}): ${f.reason}`).join('\n');
+  // One row per failure, so each field is kept to its row: a reason can quote a
+  // state record's physical id back verbatim.
+  return failures
+    .map(
+      (f) =>
+        `  - ${displayIdent(f.logicalId)} (${displayIdent(f.type)}): ${displayAwsMessage(f.reason)}`
+    )
+    .join('\n');
 }
 
 /**
@@ -7510,7 +7639,7 @@ export async function runPerStackImportLoop(args: {
                 `so CFn can re-CREATE in phase 2...`
             );
             await handler(entry);
-            logger.info(`    ✓ deleted ${entry.physicalId}`);
+            logger.info(`    ${preDeletedLine(entry.physicalId)}`);
           }
         }
 
@@ -7799,7 +7928,7 @@ export async function executeUpdateChangeSet(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to create UPDATE changeset: ${msg}`);
+      throw new Error(`Failed to create UPDATE changeset: ${displayAwsMessage(msg)}`);
     }
 
     try {
@@ -7818,7 +7947,8 @@ export async function executeUpdateChangeSet(
         await cfnClient
           .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
           .catch(() => {});
-        throw new Error(`UPDATE changeset FAILED: ${reason}`);
+        // As on the IMPORT side: the reason can quote a recorded value back.
+        throw new Error(`UPDATE changeset FAILED: ${displayAwsMessage(reason)}`);
       } catch (innerErr) {
         if (innerErr instanceof Error && innerErr.message.startsWith('UPDATE changeset FAILED')) {
           throw innerErr;

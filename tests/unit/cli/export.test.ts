@@ -2429,6 +2429,13 @@ describe('reportDriftBaselineGaps', () => {
       expect(stackHole).toMatch(
         /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
       );
+      // The listing it points at is the RAW one: `--long` trims through
+      // `displayIdent`, so it would hand back the spelling the gate refused
+      // (go-to-k/cdkd#3420).
+      expect(stackHole).toContain(
+        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the shell-quoted value."
+      );
+      expect(stackHole).not.toContain('--long');
       // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
       // exactness alone would have named it shell-quoted (M2 of the
       // go-to-k/cdkd#3764 review).
@@ -3961,7 +3968,12 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // WITHHELD: `displaySafe` trims, so `Root~A ` renders as `Root~A` and a
         // substituted command would delete the intact record of that name.
         expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
-        expect(m).toContain('cdkd state list --long');
+        // `--json`, not `--long`: the long listing renders through
+        // `displayIdent`, which trims, so it hands back the very spelling this
+        // arm refused (go-to-k/cdkd#3420).
+        expect(m).toContain('cdkd state list --json');
+        expect(m).not.toContain('--long');
+        expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
       },
     ],
@@ -4060,13 +4072,10 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
    * them raw. When adding a helper that returns a record-derived value, add its
    * binding here too; the derived half covers only values read off a receiver.
    *
-   * WHAT IT DOES NOT COVER, named so this is not read as "the record-derived
-   * class is closed": the record's `physicalId` / `properties` / `attributes`
-   * are body content at the same trust boundary and are rendered raw at ~40
-   * sites, including the plan printed directly above the destructive
-   * confirmation — go-to-k/cdkd#3375. That population needs a different
-   * instrument (a `properties` bag is an object, not an identifier), which is
-   * why it is a separate issue rather than a wider list here.
+   * The record's `physicalId` / `properties` / `attributes` are body content at
+   * the same trust boundary and have their own case below
+   * (go-to-k/cdkd#3375), since those values are not names and render through
+   * `showRecordValue` rather than `safeSegment`.
    *
    * SCOPE, stated because it is narrower than "every value in every message":
    * only the names `walkCdkdStateStackTree` MINTS from a record's own
@@ -4173,6 +4182,51 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     expect(
       carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(/.test(w)),
       'a list of record-derived names is joined into a message without a sanitizer'
+    ).toEqual([]);
+  });
+
+  /**
+   * The BODY-value half of the class (go-to-k/cdkd#3375): every interpolation
+   * that READS a record's `physicalId`, a `properties[...]` / `attributes[...]`
+   * value or a `resourceIdentifier` / `propertiesOverlay` map goes through a
+   * renderer that gives it a boundary and a cap.
+   *
+   * ITS LIMITS, the same kind the case above states: it matches NAMES inside a
+   * `${...}`, so it cannot see a value that reaches a message under another
+   * name — split out of a physical id into a local (`segment`, `vpcId`,
+   * `tuple.groupId`), bound by a loop (`printPlan`'s `v`, the overlay's
+   * `value`), returned by a helper — or one appended with `+` rather than
+   * interpolated, or an interpolation whose expression holds a `{` or a
+   * backtick. Those sites are pinned per message in
+   * `export-record-value-display.test.ts` and `export-plan-record-display.test.ts`.
+   * `displayAwsMessage` is deliberately NOT an accepted renderer: it bounds a
+   * value but gives it no boundary.
+   */
+  it('renders no record BODY value without a boundary in any message (go-to-k/cdkd#3375)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
+      'utf-8'
+    );
+    const reads = /\bphysicalId\b|\b(?:properties|attributes)\[|\bresourceIdentifier\b|\bpropertiesOverlay\b/;
+    const rendered = /^(?:showRecordValue|preDeletedLine|commandHole)\(/;
+    const interpolations = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
+      .map((m) => ({ expr: (m[1] as string).trim(), at: m.index ?? 0 }))
+      .filter(({ expr }) => reads.test(expr))
+      // `Object.keys(...)` of a `resourceIdentifier` lists the splitter's own
+      // field-name constants, never a recorded value.
+      .filter(({ expr }) => !expr.startsWith('Object.keys('));
+    // Non-vacuity: the shape this case watches exists, and is rendered, at
+    // many sites — a regex that stopped matching cannot pass.
+    expect(interpolations.filter(({ expr }) => rendered.test(expr)).length).toBeGreaterThanOrEqual(
+      20
+    );
+    expect(
+      interpolations
+        .filter(({ expr }) => !rendered.test(expr))
+        .map(({ expr, at }) => `${expr} at offset ${at}`),
+      'a record body value is interpolated without a boundary'
     ).toEqual([]);
   });
 
