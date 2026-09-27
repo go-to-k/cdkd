@@ -38,14 +38,11 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const REPO_ROOT = process.cwd();
 const PROVIDERS_DIR = resolve(REPO_ROOT, 'src/provisioning/providers');
-// ONE walk of the real providers tree, at collection time, shared by every case
-// that grades the SHIPPED tree (go-to-k/cdkd#3607). Three cases each called
-// `loadReport(PROVIDERS_DIR)` themselves under Vitest's 5 s default, and that
-// walk is what timed out whenever another suite shared the machine; the
-// `assessBaseline` describe walked it a second time at collection. Collection
-// runs before any case and carries no per-case bound. Nothing here mutates the
-// report — every case that alters one spreads a copy. Still the SHIPPED
-// `loadReport()`, never a test-local re-walk (see 'real-repo coverage floors').
+// The real providers tree, walked ONCE at collection time (no per-case bound
+// applies there) and shared by every case that grades the SHIPPED tree
+// (go-to-k/cdkd#3607). Cases must not mutate it: one that alters a report
+// spreads a copy. Still the SHIPPED `loadReport()`, never a test-local re-walk
+// (see 'real-repo coverage floors').
 const SHIPPED_REPORT = loadReport(PROVIDERS_DIR);
 const SCRIPT = resolve(REPO_ROOT, 'scripts/gen-handled-property-wiring.ts');
 const providerSource = (file: string): string =>
@@ -2343,7 +2340,7 @@ describe('unusable-baseline refusal predicate (#1842)', () => {
 
 describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
   const live = SHIPPED_REPORT;
-  const pair =(className: string, name: string) => ({
+  const pair = (className: string, name: string) => ({
     file: 'p.ts',
     className,
     bucket: 'wired' as const,

@@ -320,11 +320,9 @@ class P {
 });
 
 describe('withRetry interrupt critic — the real tree', () => {
-  // ONE scan of the real tree, at collection time, shared by the two cases that
-  // read it (go-to-k/cdkd#3607). Each used to call `buildReport(SCAN_DIR)` itself,
-  // under Vitest's 5 s default, and that walk is what timed out whenever another
-  // suite shared the machine. Collection runs before any case and carries no
-  // per-case bound, so the report still describes the tree as checked out.
+  // The real tree, scanned ONCE at collection time (no per-case bound applies
+  // there) and shared by the cases below (go-to-k/cdkd#3607); they must not
+  // mutate it.
   const report = buildReport(SCAN_DIR);
 
   it('finds every site interrupt-threaded today', () => {

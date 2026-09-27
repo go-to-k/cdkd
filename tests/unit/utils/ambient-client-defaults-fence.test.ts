@@ -295,11 +295,9 @@ describe('awsClientDefaults()-only client construction fence (#3588)', () => {
     });
 
     // The two probes below swap ONE file's text. They reuse the tree walk above
-    // and reclassify only that file, rather than walking all of `src/` again per
-    // case (go-to-k/cdkd#3607): the walk is what ran into Vitest's 5 s default
-    // whenever another suite shared the machine. Equivalent by construction —
-    // `scanSrc({ file, text })` yields the same sites for every other file,
-    // since `classifySites` reads nothing but its own (file, text).
+    // and reclassify only that file (go-to-k/cdkd#3607). Equivalent by
+    // construction — `scanSrc({ file, text })` yields the same sites for every
+    // other file, since `classifySites` reads nothing but its own (file, text).
     const withOverride = (file: string, text: string): Site[] => [
       ...scan.filter((site) => site.file !== file),
       ...classifySites(file, text),

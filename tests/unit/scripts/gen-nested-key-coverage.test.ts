@@ -98,7 +98,7 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 //
 // RAISED 60s -> CONTENDED_CASE_TIMEOUT_MS (300s), with the new numbers
 // (go-to-k/cdkd#3607, 2026-09-26). Alone, this file's slowest per-case times are
-// now 33.5s (the hygiene probe below, on its own 120s bound) and 11.3-11.5s for
+// now 33.5s (the hygiene probe below, then on a 120s bound) and 11.3-11.5s for
 // the opt-in-table and S3 reason-(C) fences. In a full suite with another
 // session's suite on the same machine, three cases blew the 60s cap at 72.1s,
 // 82.0s and 90.5s: the contention factor is about 8x, not the ~3x this note
