@@ -543,7 +543,7 @@ export async function resolvePlaceholderAccount(
   if (fromState) {
     // cdkd-local-role-identity: `--from-state` read the state record through
     // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
-    // `ExpectedBucketOwner` pins that bucket to the reader's own account — the
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
     // account the task role lives in (issue go-to-k/cdkd#3230). Only the account
     // ID is taken; the ARN it completes is assumed as the caller.
     sts = new STSClient({
@@ -847,7 +847,7 @@ async function resolveStackAccountId(source: StackAccountSource): Promise<string
   if (fromState) {
     // cdkd-local-role-identity: `--from-state` read the state record through
     // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
-    // `ExpectedBucketOwner` pins that bucket to the reader's own account — the
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
     // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
     // is taken; no credential reaches the emulated task.
     sts = new STSClient({

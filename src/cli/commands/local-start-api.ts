@@ -3434,7 +3434,7 @@ export async function resolvePseudoParametersForStartApi(
     if (options.fromState) {
       // cdkd-local-role-identity: `--from-state` read the state record through
       // `awsClientDefaults`, so as a `--role-arn` role when one is published,
-      // and `ExpectedBucketOwner` pins that bucket to the reader's own account
+      // and `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account
       // — the account the stack lives in (issue go-to-k/cdkd#3230). Only the
       // account ID is taken; no credential reaches the emulated function.
       sts = new STSClient({
