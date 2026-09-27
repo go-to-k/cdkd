@@ -193,7 +193,7 @@ local-invoke-container	2026-09-26T00:08:25Z	PASS	35	verify.sh	rc ok, docker swee
 local-invoke-dotnet	2026-09-26T00:21:13Z	PASS	45	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-from-cfn-stack	2026-09-27T17:01:58Z	PASS	101	verify.sh	#3230 caller arm; cdk destroy clean
 local-invoke-from-cfn-stack-multi-stack	2026-09-26T00:14:21Z	PASS	136	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
-local-invoke-from-state	2026-09-27T17:01:58Z	PASS	100	verify.sh	#3230 role-arn arm + ACCOUNT_TAG; destroy 0 err, orph clean
+local-invoke-from-state	2026-09-27T18:28:02Z	PASS	100	verify.sh	rc ok, orph clean, docker clean; #3889 follow-up (read role scoped to own state prefix)
 local-invoke-java	2026-09-26T00:20:38Z	PASS	35	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-layers	2026-09-26T00:09:00Z	PASS	20	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-provided	2026-09-26T00:19:48Z	PASS	50	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
