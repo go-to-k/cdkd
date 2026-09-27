@@ -102,6 +102,16 @@ describe('waitForGoneAfterDelete (#3872)', () => {
     expect(h.logger.warn).not.toHaveBeenCalled();
   });
 
+  it('keeps polling through a transient 5xx status read', async () => {
+    const err = new Error('Service Unavailable');
+    err.name = 'ServiceUnavailableException';
+    (err as unknown as Record<string, unknown>)['$metadata'] = { httpStatusCode: 503 };
+    const h = makeHarness(['DELETING', err, undefined]);
+    await h.run();
+    expect(h.describe).toHaveBeenCalledTimes(3);
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
   it('stops watching with a warning, without throwing, on a non-throttle status-read failure', async () => {
     const h = makeHarness(['DELETING', accessDenied(), undefined]);
     await expect(h.run()).resolves.toBeUndefined();

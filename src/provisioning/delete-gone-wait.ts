@@ -1,5 +1,5 @@
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { isThrottlingError } from '../deployment/retryable-errors.js';
+import { isThrottlingError, isTransientServerError } from '../deployment/retryable-errors.js';
 import { startInterruptWatch } from './interrupt-watch.js';
 import { resolvedResourceTimeoutMs } from './resource-timeout-registry.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
@@ -35,8 +35,8 @@ type WaitLogger = { debug(message: string): void; warn(message: string): void };
  *    — which interpolates user-chosen names — as success.
  *  - `describe()` resolving `undefined` means GONE (the caller maps its
  *    service's not-found error to it); any string is the still-present status.
- *  - A THROTTLED describe keeps polling — a destroy deleting many streams at
- *    once must not forfeit the wait to its own concurrency.
+ *  - A THROTTLED or transient-5xx describe keeps polling — a destroy deleting
+ *    many streams at once must not forfeit the wait to its own concurrency.
  *  - Any other describe failure (e.g. a least-privilege caller without the
  *    describe permission) stops watching with a warning: the permission the
  *    DELETE needed is not the one the wait needs, and lacking the latter must
@@ -96,7 +96,7 @@ export async function waitForGoneAfterDelete(opts: {
         opts.logger.debug(`${opts.what} status: ${status}, waiting for it to disappear`);
       } catch (error) {
         if (isWaitAbandonedError(error)) throw error;
-        if (!isThrottlingError(error)) {
+        if (!isThrottlingError(error) && !isTransientServerError(error)) {
           // The warn carries the redacted summary; the AWS text it withholds
           // goes to debug, which is where `--verbose` points.
           opts.logger.debug(
@@ -108,7 +108,7 @@ export async function waitForGoneAfterDelete(opts: {
           );
           return;
         }
-        opts.logger.debug(`${opts.what}: status read throttled, re-polling`);
+        opts.logger.debug(`${opts.what}: status read throttled or failed transiently, re-polling`);
       }
       const remainingMs = maxWaitMs - (now() - startedAt);
       if (remainingMs <= 0) {

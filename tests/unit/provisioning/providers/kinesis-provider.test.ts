@@ -190,6 +190,9 @@ describe('KinesisStreamProvider', () => {
 
     afterEach(() => {
       vi.useRealTimers();
+      // The cap cases install a DELETING-forever implementation, which
+      // clearAllMocks() does not remove.
+      mockSend.mockReset();
     });
 
     it('should delete stream with EnforceConsumerDeletion', async () => {

@@ -157,10 +157,10 @@ echo "    destroy took $(( $(date +%s) - T0 ))s"
 # pre-fix binary runs it too and the failure message carries BOTH facts.
 STILL_PRESENT=""
 if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"; then
-  STILL_PRESENT="${STILL_PRESENT} firehose($(firehose_status))"
+  STILL_PRESENT="${STILL_PRESENT} firehose($(firehose_status || echo gone-now))"
 fi
 if ! gone_probe aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"; then
-  STILL_PRESENT="${STILL_PRESENT} kinesis($(kinesis_status))"
+  STILL_PRESENT="${STILL_PRESENT} kinesis($(kinesis_status || echo gone-now))"
 fi
 echo "    streams still present right after destroy:${STILL_PRESENT:- none}"
 
