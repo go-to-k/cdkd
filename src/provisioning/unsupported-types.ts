@@ -62,6 +62,13 @@ export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set
 ]);
 
 /**
+ * The reason text for a type {@link hasNoCloudControlHandlers} answers true
+ * for — ONE spelling for the routing refusal and the recreate refusal (#3887).
+ */
+export const NO_CC_HANDLERS_REASON =
+  'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it';
+
+/**
  * True when Cloud Control has no handlers for the type, whether or not cdkd
  * registers an SDK provider for it: the Tier 3 set plus
  * {@link SDK_PROVIDER_NON_PROVISIONABLE_TYPES}. The predicate the Cloud Control

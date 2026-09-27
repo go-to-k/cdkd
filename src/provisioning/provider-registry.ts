@@ -5,6 +5,7 @@ import { getLogger } from '../utils/logger.js';
 import {
   hasNoCloudControlHandlers,
   isNonProvisionable,
+  NO_CC_HANDLERS_REASON,
   unsupportedTypeIssueUrl,
 } from './unsupported-types.js';
 import {
@@ -575,11 +576,13 @@ export class ProviderRegistry {
    * `undefined` when it can. The ONE predicate both refusal sites
    * (`getProviderFor` and `reportSilentDropDecisions`) and the accepted-drop
    * warn read, so the warn that predicts what a flag-less deploy does cannot
-   * disagree with the refusal that deploy then hits (issue #2792).
+   * disagree with the refusal that deploy then hits (issue #2792). Public for
+   * `validateRecreateTargets`, which refuses `--recreate-via-cc-api` on such a
+   * type before the recreate deletes anything (issue #3887).
    */
-  private ccRouteUnavailableReason(resourceType: string): string | undefined {
+  ccRouteUnavailableReason(resourceType: string): string | undefined {
     if (hasNoCloudControlHandlers(resourceType)) {
-      return 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it';
+      return NO_CC_HANDLERS_REASON;
     }
     if (this.providers.get(resourceType)?.disableCcApiFallback === true) {
       return "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)";

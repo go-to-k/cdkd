@@ -702,6 +702,7 @@
       "flag": "--recreate-via-cc-api",
       "integs": [
         "cc-to-sdk-reroute",
+        "codebuild-project",
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
