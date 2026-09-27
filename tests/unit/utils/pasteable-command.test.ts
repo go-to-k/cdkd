@@ -86,6 +86,60 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     });
   });
 
+  it('takes a caller-supplied cap through maxCodePoints, on both sides of it', () => {
+    // A REGION is displayed at 128 where a stack name is displayed at 1152, and
+    // a command must not name a value its own message renders cut — so the two
+    // `--stack-region` callers pass 128 here rather than gating on it
+    // themselves (go-to-k/cdkd#3436's second half; without it a fold-in widens
+    // the cap silently and a 200-character region is named in full). Plain
+    // letters, so only the cap can decide.
+    const at = 'r'.repeat(128);
+    expect(
+      pasteableCommand('cdkd state show', [
+        { flag: '--stack-region', value: at, hole: 'region', opts: { maxCodePoints: 128 } },
+      ])
+    ).toEqual({ command: `cdkd state show --stack-region ${at}`, exact: true, withheld: [] });
+    const over = 'r'.repeat(129);
+    expect(
+      pasteableCommand('cdkd state show', [
+        { flag: '--stack-region', value: over, hole: 'region', opts: { maxCodePoints: 128 } },
+      ])
+    ).toEqual({
+      command: "cdkd state show --stack-region '<region>'",
+      exact: false,
+      withheld: [{ hole: 'region', reason: 'too-long' }],
+    });
+    // ...and without the option the default cap still applies to that value.
+    expect(
+      pasteableCommand('cdkd state show', [{ flag: '--stack-region', value: over, hole: 'region' }])
+        .exact
+    ).toBe(true);
+    // The cap is floored at 1 and defaulted when not finite, as `displayIdent`
+    // treats its own: `0` names a one-character value rather than holing
+    // everything, and `NaN` falls back to the stack-ref cap.
+    const floored = (value: string, maxCodePoints: number): boolean =>
+      pasteableCommand('cdkd state show', [{ value, hole: 'stack', opts: { maxCodePoints } }]).exact;
+    expect(floored('a', 0)).toBe(true);
+    expect(floored('ab', 0)).toBe(false);
+    // ...and so does anything below 1: negative, or a fraction under one
+    // (a `cap === 0 ? 1 : cap` mutant passed the zero case alone).
+    for (const low of [-1, 0.5]) {
+      expect(floored('a', low), String(low)).toBe(true);
+      expect(floored('ab', low), String(low)).toBe(false);
+    }
+    // A fractional cap behaves as its integer part (no rounding clause in the
+    // gate -- `truncateCodePoints` already does; an equivalent mutation).
+    expect(floored('a', 1.5)).toBe(true);
+    expect(floored('ab', 1.5)).toBe(false);
+    // A non-finite cap -- NaN OR Infinity -- falls back to the default cap
+    // rather than disabling it, pinned at the default's boundary for both
+    // (an `isNaN`-only fallback let `Infinity` lift the cap; Codex).
+    for (const cap of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(floored('q'.repeat(1152), cap), String(cap)).toBe(true);
+      expect(floored('q'.repeat(1153), cap), String(cap)).toBe(false);
+    }
+  });
+
   it('prints a HOLE, never the altered spelling and never nothing, for a value sanitizing changes', () => {
     // One name per forgery class `displaySafe({ asciiOnly: true })` drops, plus
     // the two shapes that are not characters at all: empty, and past the cap.
