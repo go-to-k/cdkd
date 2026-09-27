@@ -271,11 +271,13 @@ implementation. Three details are worth copying:
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
     fences for this read the context's key set rather than the call's arity.)
   - **Do not re-create inside `update()` if you have a create-side refusal.**
-    Several providers call `this.create(logicalId, resourceType, properties)`
-    from their own `update()` (ACM certificate, IAM managed policy, IAM role,
-    Lambda permission, SNS subscription). Those internal re-creates CANNOT
-    receive a `CreateContext` — `update()`'s own context is an `UpdateContext`,
-    and none of the five builds one from it — and the
+    Several providers call `this.create(...)` from their own `update()` (ACM
+    certificate, IAM managed policy, IAM role, Lambda permission, SNS
+    subscription). Those internal re-creates never receive `replayingState` —
+    `update()`'s own context is an `UpdateContext`, and the most any of the
+    five builds from it is a `CreateContext` carrying only `maskSecrets` (IAM
+    role and IAM managed policy, issue
+    [#2177](https://github.com/go-to-k/cdkd/issues/2177)) — and the
     `properties` they forward ARE a state record during a rollback replay. So
     the refusal would fire on a replay with no way to detect it. None of those
     providers has a pre-flight refusal today (they validate required fields
@@ -353,7 +355,12 @@ implementation. Three details are worth copying:
     string leaf before interpolating (catches escaped and short secrets), and
     route the assembled message through the masker too (catches interpolations
     added later, and text the leaf pass never sees). The mask is idempotent, so
-    the layers compose.
+    the layers compose. `createMaskedLogSinks` (in `masked-retry-logger.ts`,
+    below) builds both halves for one operation: a raw `value` masker plus
+    masked `debug` / `warn` sinks. A physical name derived from a secret by
+    `generateResourceNameWithFallback` (stack prefix, folded characters,
+    truncation) no longer OCCURS literally, so `withDerivedNameMasks` adds the
+    derived spelling as a needle when its raw value is a secret.
     **Use `maskDeep` from
     [src/provisioning/masked-retry-logger.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/masked-retry-logger.ts)
     for the leaf pass — do NOT hand-roll one.** Issue

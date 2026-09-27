@@ -157,24 +157,26 @@ const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * issue #1932 every create site REACHED FROM THE ENGINE carries a
  * `maskSecrets` capability — so the invariant is "no `replayingState`", not
  * "no context object". (A provider that re-creates inside its own `update()`
- * still passes none; see `CreateContext`.)
+ * passes none, or one carrying only the masker; see `CreateContext`.)
  *
  * The remaining call sites are the providers that re-create inside their own
  * `update()` (`this.create(...)` in ACM certificate / IAM managed policy / IAM
  * role / Lambda permission / SNS subscription). Those are NOT template-driven
  * — this executor's `revert` arm calls `provider.update(...)` with
  * `previousState.properties`, so they forward a STATE record on a replay — and
- * they still pass NO `CreateContext`, so a create-side pre-flight refusal
- * would still fire there. The constraint that follows is on providers, not on
- * this constant: a provider with a create-side pre-flight refusal must not
- * re-create inside `update()`. See `CreateContext` in `src/types/resource.ts`.
+ * they still pass no `replayingState` (IAM role / IAM managed policy forward
+ * only the masker, issue #2177; the rest pass no `CreateContext` at all), so
+ * a create-side pre-flight refusal would still fire there. The constraint that
+ * follows is on providers, not on this constant: a provider with a create-side
+ * pre-flight refusal must not re-create inside `update()`. See `CreateContext`
+ * in `src/types/resource.ts`.
  *
  * What issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) changed is
  * that the INFORMATION now exists on that path — `UpdateContext` carries its
  * own `replayingState`, set by both revert arms below — so such a provider
  * could build a `CreateContext` from it instead of relying on the constraint.
- * None does today; the five sites are untouched. Read that as a route that
- * opened, not as a constraint that lifted.
+ * None does today: none of the five sites forwards `replayingState`. Read
+ * that as a route that opened, not as a constraint that lifted.
  */
 const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
 

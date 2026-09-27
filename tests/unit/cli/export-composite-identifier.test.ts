@@ -359,7 +359,7 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
         'AWS::S3Tables::Table',
         ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: 'arn:aws:s3:::my-bucket' } })
       )
-    ).toThrow(/recorded as 'arn:aws:s3:::my-bucket', which is not a s3tables ARN/);
+    ).toThrow(/recorded as arn:aws:s3:::my-bucket, which is not a s3tables ARN/);
   });
 
   it('refuses a non-ARN value that merely contains the service segment', () => {
@@ -1558,7 +1558,7 @@ describe('resolveCompositePhysicalIdIdentifier — AWS::AppSync::GraphQLApi (iss
           attributes: { Arn: 'arn:aws:lambda:us-east-1:123456789012:function:not-an-api' },
         })
       )
-    ).toThrow(/attributes\.Arn is recorded as '.*', which is not a appsync ARN/);
+    ).toThrow(/attributes\.Arn is recorded as \S+, which is not a appsync ARN/);
   });
 });
 

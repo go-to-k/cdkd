@@ -8921,8 +8921,8 @@ export class IntrinsicFunctionResolver {
     //
     // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
     // actually ABOUT this token: `secretsmanager` / `ssm-secure` by spelling,
-    // or an `ssm` reference this process PROVED to be a `SecureString`. A plain `String`
-    // parameter answers false — for the consumer's own region, where a
+    // or an `ssm` reference this process PROVED to be a `SecureString`. A plain
+    // `String` parameter answers false — for the consumer's own region, where a
     // definitive public verdict RETRACTS a stale memo.
     //
     // NOT for a CROSS-REGION producer, and the exception belongs here rather
@@ -12221,13 +12221,12 @@ export class IntrinsicFunctionResolver {
           // cache already recorded whatever it was entitled to pin, and a second
           // add could only ever be a no-op or an un-pinning it explicitly avoided
           // (issue #1916).
-          if (cached.secret && cached.value) {
-            context?.recordedSecretValues?.set(cached.value, fullMatch);
+          const recorded = context?.recordedSecretValues;
+          if (cached.secret && cached.value && recorded) {
+            recorded.set(cached.value, fullMatch);
             // The uncollapsed twin of that entry (issue #2485) — see the
             // fresh-resolution seam below.
-            if (context?.recordedSecretValues) {
-              recordResolvedPair(context.recordedSecretValues, fullMatch, cached.value);
-            }
+            recordResolvedPair(recorded, fullMatch, cached.value);
           }
           // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
           // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
@@ -12425,15 +12424,18 @@ export class IntrinsicFunctionResolver {
           });
         }
         if (isSecret && resolved) {
-          context?.recordedSecretValues?.set(resolved, fullMatch);
-          // The same pair keyed by EXPRESSION, per map instance (issue #2485):
-          // the map above keeps one expression per plaintext, and the redaction
-          // path needs to know what THIS token resolved to in THIS pass to
-          // position a literal leaf that embeds it beside a sibling sharing the
-          // value. Recorded here, beside the `set`, so the two cannot disagree
-          // about which pass the evidence belongs to.
-          if (context?.recordedSecretValues) {
-            recordResolvedPair(context.recordedSecretValues, fullMatch, resolved);
+          // The map is bound ONCE and both writes go through that binding: the
+          // entry, and the same pair keyed by EXPRESSION, per map instance
+          // (issue #2485) — the map keeps one expression per plaintext, and the
+          // redaction path needs to know what THIS token resolved to in THIS
+          // pass to position a literal leaf that embeds it beside a sibling
+          // sharing the value. One binding makes it structurally impossible for
+          // the entry and the pair to disagree about which pass the evidence
+          // belongs to.
+          const recorded = context?.recordedSecretValues;
+          if (recorded) {
+            recorded.set(resolved, fullMatch);
+            recordResolvedPair(recorded, fullMatch, resolved);
           }
           // The value-keyed map above COLLAPSES a group of expressions sharing a
           // resolved value down to its last member; this set does not, which is

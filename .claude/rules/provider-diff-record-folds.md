@@ -31,7 +31,7 @@ Optional; an `update()` that does not read it needs no change. Its fields assert
 
 **Normalize BOTH comparison sides** — a record written before the narrowing still carries every key, so a one-sided pass flips the difference into a REMOVAL — and **wire `cdkd diff` too**, or a preview forecasts a change the deploy never makes. `makeCanonicalizePropertiesFn` (`src/provisioning/canonicalize-properties.ts`) is the one builder both commands use.
 
-**A create-side pre-flight refusal forbids re-creating inside `update()`.** The five providers that call their own `create()` from `update()` pass no `CreateContext`, and the properties they forward ARE a state record during a rollback replay — so the refusal would fire on a replay undetectably.
+**A create-side pre-flight refusal forbids re-creating inside `update()`.** The five providers that call their own `create()` from `update()` pass no `replayingState` (at most the masker), and the properties they forward ARE a state record during a rollback replay — so the refusal would fire on a replay undetectably.
 
 ## Retiring what a FAILING create already materialized
 
