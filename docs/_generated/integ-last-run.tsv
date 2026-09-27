@@ -122,8 +122,6 @@ eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
 export	2026-09-27T16:04:14Z	PASS	230	verify.sh	PR #3884 head f82d7669b: rc 0, CFn stack deleted, 0 state versions, orph clean
-export-nested-stack	2026-09-27T13:35:10Z	PASS	160	verify.sh	PR #3854 merge-gate run; rc ok, orph clean
-export	2026-09-27T15:24:20Z	PASS	221	verify.sh	PR #3876 merge-gate run; rc ok, orph clean
 export-nested-stack	2026-09-27T15:27:10Z	PASS	170	verify.sh	PR #3876 merge-gate run; rc ok, orph clean
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
