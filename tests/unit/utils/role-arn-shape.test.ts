@@ -303,12 +303,16 @@ function codeLines(text: string, file = 'input.ts'): Array<{ line: number; text:
   if (parsed.errors.length > 0) {
     throw new Error(`role-arn fence: cannot parse ${file}: ${parsed.errors[0]!.message}`);
   }
-  let code = text;
-  for (const c of parsed.comments) {
-    const blank = text.slice(c.start, c.end).replace(/[^\n]/g, ' ');
-    code = code.slice(0, c.start) + blank + code.slice(c.end);
+  // One pass, one join: re-slicing the whole file per comment was quadratic.
+  const chunks: string[] = [];
+  let at = 0;
+  for (const c of [...parsed.comments].sort((x, y) => x.start - y.start)) {
+    chunks.push(text.slice(at, c.start), text.slice(c.start, c.end).replace(/[^\n]/g, ' '));
+    at = c.end;
   }
-  return code
+  chunks.push(text.slice(at));
+  return chunks
+    .join('')
     .split('\n')
     .map((t, i) => ({ line: i + 1, text: t }))
     .filter((l) => l.text.trim() !== '');
@@ -366,8 +370,9 @@ describe('every AssumeRoleCommand is built by the guarded builder (issue #2348)'
   }
 
   const files = walk(SRC).map((f) => ({ rel: path.relative(SRC, f), text: readFileSync(f, 'utf8') }));
-  // Parsing every file under src/ takes seconds, so it happens ONCE, lazily,
-  // and each case that walks the tree gets the contended-case timeout.
+  // Every file under src/ is parsed ONCE, lazily, and shared by the cases
+  // below. Each case keeps the contended-case timeout because it walks the
+  // real tree (`.claude/rules/testing.md`), not because the parse is slow.
   let parsed: Map<string, Array<{ line: number; text: string }>> | undefined;
   const linesOf = (rel: string): Array<{ line: number; text: string }> => {
     parsed ??= new Map(files.map((f) => [f.rel, codeLines(f.text, f.rel)]));
