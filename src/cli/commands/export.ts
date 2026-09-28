@@ -4210,8 +4210,9 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
  * sanitize THEN shell-quote, and gate the substituted form on the identity
  * rendering exactly — `displaySafe` TRIMS, so a name ending in a space renders
  * byte-identically to a healthy sibling, and `state orphan` DELETES a record.
- * Every caller emits the result LAST and unwrapped so the quoting composes; that
- * is an instruction to the CALLER and must not leak into the message it builds.
+ * Every caller emits the command unwrapped on a line of its own so the quoting
+ * composes (the layout is spelled out below); that is an instruction to the
+ * CALLER and must not leak into the message it builds.
  *
  * `region` is REQUIRED even though the flag is optional on the command: omitting
  * `--stack-region` makes `state orphan` drop the record for that name in EVERY
