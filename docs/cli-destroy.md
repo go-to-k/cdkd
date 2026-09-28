@@ -370,36 +370,49 @@ AWS exposes a synchronous "flip protection off" API call.
   delete whatever replace flags were passed. Clear the protection flag first:
   [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
 
-### Restoring a DynamoDB guard after a failed destroy
+### Restoring a guard after a failed destroy
 
-On `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable`, a flip followed by
-a **terminal** delete failure — or by a Ctrl-C landing after the flip — is
-compensated: cdkd re-enables `DeletionProtectionEnabled` before reporting the
-failure, so a destroy that did not happen does not leave a live table with its
-guard stripped. Four limits are deliberate:
+On these types a flip followed by a **terminal** delete failure is
+compensated: cdkd turns the guard back on before reporting the failure, so a
+destroy that did not happen does not leave a live resource with its guard
+stripped.
 
-- It only restores a guard **cdkd itself turned off in this run**. A table
+| Type | Guard |
+| --- | --- |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` |
+| `AWS::RDS::DBCluster`, `AWS::RDS::DBInstance` | `DeletionProtection` |
+| `AWS::DocDB::DBCluster` | `DeletionProtection` |
+| `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance` | `DeletionProtection` |
+
+On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
+too. Four limits are deliberate:
+
+- It only restores a guard **cdkd itself turned off in this run**. A resource
   whose protection was already disabled beforehand, or whose pre-flip read
   failed, is left alone.
 - It keys on how the delete ENDS, not on individual retries, and it does not
-  run once AWS has ACCEPTED the `DeleteTable` — a failure after that point is a
-  wait giving up on a table that is already being deleted.
+  run once AWS has ACCEPTED the delete call — a failure after that point is a
+  wait giving up on a resource that is already being deleted.
 - It does not run when a retryable failure exhausts the destroy loop's attempt
   cap, nor when a per-resource `--resource-timeout` fires. Both leave the guard
   off.
 - It is best-effort. The delete failure stays the reported outcome, and a
   re-enable that itself fails is reported as a separate ERROR line naming the
-  table and the restore command below. A re-enable that fails with
-  `ResourceNotFoundException` is reported at **warn** instead and names a
-  `describe-table` check first, because DynamoDB returns that error both for a
-  table that is gone and for one whose status is merely not `ACTIVE`.
+  resource and its restore command. A re-enable that fails with the service's
+  not-found error is reported at **warn** instead and names a `describe-*`
+  check first, because that error also covers a resource that is still live —
+  in another region, or (DynamoDB) whose status is merely not `ACTIVE`.
 
 To restore the guard by hand:
 
 ```bash
-aws dynamodb describe-table --table-name <table>
 aws dynamodb update-table --table-name <table> --deletion-protection-enabled
+aws rds modify-db-cluster --db-cluster-identifier <id> --deletion-protection --apply-immediately
+aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection --apply-immediately
 ```
+
+DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
+form under `aws docdb` / `aws neptune`.
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

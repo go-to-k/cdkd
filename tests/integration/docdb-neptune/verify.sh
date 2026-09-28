@@ -26,10 +26,18 @@
 #   3d. poll describe-db-clusters until both clusters settle back to the
 #       CFn defaults (DeletionProtection=false, BackupRetentionPeriod=1,
 #       Neptune IAMDatabaseAuthenticationEnabled=false)
-#   4. cdkd destroy --force with the same long per-type timeouts (DocDB
-#      / Neptune deletes can also take 5-10 min). Deliberately NO
-#      --remove-protection: the destroy succeeding is itself live proof
-#      the #1160 DeletionProtection reset landed.
+#   3g. --remove-protection compensation (issue #2204): re-enable
+#       DeletionProtection on both clusters out of band, add one
+#       out-of-band instance to each (DeleteDBCluster then refuses: the
+#       cluster still has a member cdkd does not own — a TERMINAL
+#       failure), run `cdkd destroy --remove-protection`, which must FAIL,
+#       and assert DeletionProtection is back ON on both clusters: cdkd
+#       turned it off, the delete failed, so cdkd must put it back. Then
+#       delete the out-of-band instances.
+#   4. cdkd destroy --force --remove-protection with the same long
+#      per-type timeouts (DocDB / Neptune deletes can also take 5-10 min).
+#      The #1160 reset is proven by step 3d's readback; step 3g left the
+#      guard ON, so this is also the flip's live SUCCESS path.
 #   5. cdkd state list — must report empty for the stack
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
@@ -90,6 +98,23 @@ TIMEOUT_OVERRIDES=(
 # the cleanup flip-offs can target the live clusters.
 DOCDB_CLUSTER_ID=""
 NEPTUNE_CLUSTER_ID=""
+# Step 3g's out-of-band cluster members (issue #2204). Not in cdkd state, so
+# cdkd's destroy cannot remove them: cleanup deletes them FIRST, or the retry
+# destroy below cannot delete their clusters. Set just before each create.
+OOB_DOCDB_INSTANCE_ID=""
+OOB_NEPTUNE_INSTANCE_ID=""
+# Step 3g's captured destroy output; removed by cleanup too, since a signal
+# landing mid-destroy never reaches the step's own `rm`.
+DESTROY_3G_LOG=""
+
+# Delete one out-of-band instance and wait for it to be gone. A member still
+# `creating` refuses the delete, so wait for `available` first. Best-effort:
+# callers decide what a failure means.
+delete_oob_instance() { # usage: delete_oob_instance <docdb|neptune> <instance id>
+  aws "$1" wait db-instance-available --db-instance-identifier "$2" --region "${REGION}" || true
+  aws "$1" delete-db-instance --db-instance-identifier "$2" --region "${REGION}" >/dev/null || return 1
+  aws "$1" wait db-instance-deleted --db-instance-identifier "$2" --region "${REGION}"
+}
 
 echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -106,8 +131,17 @@ fi
 # which would refuse the delete otherwise (#1160 fixture shape).
 cleanup() {
   rc=$?
+  [ -n "${DESTROY_3G_LOG}" ] && rm -f "${DESTROY_3G_LOG}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup destroy"
+    # Step 3g's out-of-band members first: while one stands, its cluster's
+    # DeleteDBCluster refuses and the destroy below leaks the whole stack.
+    if [ -n "${OOB_DOCDB_INSTANCE_ID}" ]; then
+      delete_oob_instance docdb "${OOB_DOCDB_INSTANCE_ID}" || true
+    fi
+    if [ -n "${OOB_NEPTUNE_INSTANCE_ID}" ]; then
+      delete_oob_instance neptune "${OOB_NEPTUNE_INSTANCE_ID}" || true
+    fi
     if [ -n "${DOCDB_CLUSTER_ID}" ]; then
       aws docdb modify-db-cluster \
         --db-cluster-identifier "${DOCDB_CLUSTER_ID}" \
@@ -341,10 +375,147 @@ echo "[verify] step 3d ok: both clusters reset to DeletionProtection=false + Bac
 echo "[verify] step 3f: endpoint Fn::GetAtt values after the UPDATE redeploy (issue #3650)"
 check_endpoints "step 3f"
 
-echo "[verify] step 4: cdkd destroy --force (no --remove-protection — proves the #1160 reset landed)"
+# --- Step 3g: --remove-protection compensation (issue #2204) -------------
+# The failure has to be TERMINAL (a retryable one is retried, and a sequence
+# that exhausts its attempts is a deliberate non-compensated case) and has to
+# land AFTER the flip but BEFORE AWS accepts the delete. A cluster member cdkd
+# does not own gives exactly that: cdkd deletes its own instance, flips the
+# cluster's guard off, and DeleteDBCluster refuses (InvalidDBClusterStateFault,
+# "still contains DB instances"), which matches no retryable pattern.
+#
+# The discriminator is the READBACK, not cdkd's output: before #2204 the flip
+# was never undone, so both clusters read DeletionProtection=false here.
+#
+# COST, stated so a slow run is not read as a hang. cdkd's destroy has no
+# per-resource target and its level loop does not stop at a failure, so this
+# destroy deletes everything it can and keeps going below the refused
+# clusters. Their subnet groups, the shared SG, the subnets and the VPC are
+# still held by the out-of-band members' ENIs and answer DependencyViolation,
+# which the EC2 provider and the destroy loop both retry: expect this step to
+# add tens of minutes. The failure-set assertion below proves nothing ELSE
+# failed along the way, and step 4 deletes what is left.
+echo "[verify] step 3g: --remove-protection compensation after a terminal delete failure (issue #2204)"
+aws docdb modify-db-cluster --db-cluster-identifier "${DOCDB_CLUSTER_ID}" \
+  --region "${REGION}" --deletion-protection --apply-immediately >/dev/null
+aws neptune modify-db-cluster --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
+  --region "${REGION}" --deletion-protection --apply-immediately >/dev/null
+
+# PREMISE: the guard is ON before the destroy. Without it the arm is vacuous --
+# a guard that was already off must be LEFT off, so "false afterwards" would
+# then be the correct answer rather than the bug.
+cluster_protection() { # usage: cluster_protection <docdb|neptune> <cluster id>
+  local out
+  out=$(aws "$1" describe-db-clusters --db-cluster-identifier "$2" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json) || return 1
+  echo "${out}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end'
+}
+DOCDB_PRE=$(cluster_protection docdb "${DOCDB_CLUSTER_ID}")
+NEPTUNE_PRE=$(cluster_protection neptune "${NEPTUNE_CLUSTER_ID}")
+if [ "${DOCDB_PRE}" != "true" ] || [ "${NEPTUNE_PRE}" != "true" ]; then
+  echo "[verify] FAIL: step 3g premise: DeletionProtection not ON before the destroy (docdb='${DOCDB_PRE}', neptune='${NEPTUNE_PRE}')" >&2
+  exit 1
+fi
+
+# Run-unique names, so a leftover from an aborted run cannot collide. Each id
+# is recorded BEFORE its create: a create AWS accepted but the CLI reported as
+# failed must still be deleted by cleanup (deleting an absent one is absorbed).
+OOB_SUFFIX="$(date +%s)"
+OOB_DOCDB_INSTANCE_ID="cdkd-dn-oob-docdb-${OOB_SUFFIX}"
+aws docdb create-db-instance --db-instance-identifier "${OOB_DOCDB_INSTANCE_ID}" \
+  --db-instance-class db.t3.medium --engine docdb \
+  --db-cluster-identifier "${DOCDB_CLUSTER_ID}" --region "${REGION}" >/dev/null
+OOB_NEPTUNE_INSTANCE_ID="cdkd-dn-oob-neptune-${OOB_SUFFIX}"
+aws neptune create-db-instance --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_ID}" \
+  --db-instance-class db.t3.medium --engine neptune \
+  --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" >/dev/null
+# Wait for both to be `available`: a member still `creating` also blocks the
+# cluster delete, but waiting takes the create's own timing out of the arm, and
+# cleanup can only delete an available member anyway.
+aws docdb wait db-instance-available --db-instance-identifier "${OOB_DOCDB_INSTANCE_ID}" --region "${REGION}"
+aws neptune wait db-instance-available --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_ID}" --region "${REGION}"
+
+DESTROY_3G_LOG="$(mktemp)"
+if ${CLI} destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --force \
+  --remove-protection \
+  "${TIMEOUT_OVERRIDES[@]}" >"${DESTROY_3G_LOG}" 2>&1; then
+  cat "${DESTROY_3G_LOG}" >&2
+  echo "[verify] FAIL: step 3g destroy exited 0; both clusters still hold an out-of-band member, so DeleteDBCluster must refuse" >&2
+  exit 1
+fi
+DESTROY_3G_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_3G_LOG}")"
+rm -f "${DESTROY_3G_LOG}"
+DESTROY_3G_LOG=""
+printf '%s\n' "${DESTROY_3G_PLAIN}" >&2
+# PREMISE: the failure is the engineered one. A destroy that died earlier (a
+# credential error, a region refusal) never reached the flip, so a guard still
+# ON afterwards would pass the readback below while testing nothing.
+if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_3G_PLAIN}"; then
+  echo "[verify] FAIL: step 3g destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
+  exit 1
+fi
+# The FAILURE SET: both clusters, and nothing but them and what the
+# out-of-band members' ENIs hold (subnet groups, the shared SG, the VPC and its
+# subnets). Anything else failing here would otherwise be absorbed silently by
+# step 4's destroy.
+FAILED_3G="$(printf '%s\n' "${DESTROY_3G_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
+for cluster_lid in DocdbCluster NeptuneCluster; do
+  if ! printf '%s\n' "${FAILED_3G}" | grep -qx "${cluster_lid}"; then
+    echo "[verify] FAIL: step 3g: ${cluster_lid} is not among the failed deletes (got: $(printf '%s ' ${FAILED_3G}))" >&2
+    exit 1
+  fi
+done
+UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
+if [ -n "${UNEXPECTED_3G}" ]; then
+  echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
+  exit 1
+fi
+
+# The assertion under test. ModifyDBCluster(DeletionProtection) applies
+# immediately, but read it back under a short bounded poll rather than once.
+DOCDB_POST="" NEPTUNE_POST=""
+for i in $(seq 1 12); do
+  DOCDB_POST=$(cluster_protection docdb "${DOCDB_CLUSTER_ID}")
+  NEPTUNE_POST=$(cluster_protection neptune "${NEPTUNE_CLUSTER_ID}")
+  if [ "${DOCDB_POST}" = "true" ] && [ "${NEPTUNE_POST}" = "true" ]; then
+    break
+  fi
+  if [ "${i}" -lt 12 ]; then
+    sleep 5
+  fi
+done
+if [ "${DOCDB_POST}" != "true" ] || [ "${NEPTUNE_POST}" != "true" ]; then
+  echo "[verify] FAIL: step 3g: a failed destroy left DeletionProtection stripped (docdb='${DOCDB_POST}', neptune='${NEPTUNE_POST}', expected true/true) -- the --remove-protection flip was not compensated (issue #2204)" >&2
+  exit 1
+fi
+# The narration names each cluster. Its sentinel is the readback above: a
+# restored guard with no line means the wording drifted, not the behavior.
+for cluster in "DocDB DBCluster" "Neptune DBCluster"; do
+  if ! grep -qF -- "${cluster}" <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g: no line names ${cluster} in the destroy output" >&2
+    exit 1
+  fi
+done
+for id in "${DOCDB_CLUSTER_ID}" "${NEPTUNE_CLUSTER_ID}"; do
+  if ! grep -qF -- "--remove-protection had turned DeletionProtection off, so it was re-enabled on ${id}." <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g: DeletionProtection is back ON, but no restore line names ${id} -- the compensation wording drifted" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 3g ok: both clusters' DeletionProtection restored after the terminal delete failure"
+
+delete_oob_instance docdb "${OOB_DOCDB_INSTANCE_ID}"
+OOB_DOCDB_INSTANCE_ID=""
+delete_oob_instance neptune "${OOB_NEPTUNE_INSTANCE_ID}"
+OOB_NEPTUNE_INSTANCE_ID=""
+echo "[verify] step 3g cleanup ok: out-of-band instances deleted"
+
+echo "[verify] step 4: cdkd destroy --force --remove-protection (step 3g left both guards ON)"
 ${CLI} destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --force \
+  --remove-protection \
   "${TIMEOUT_OVERRIDES[@]}"
 
 echo "[verify] step 5: cdkd state list (stack should be gone)"
