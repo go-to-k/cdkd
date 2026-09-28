@@ -5207,9 +5207,9 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
 
     describe('a name or region beginning with - (go-to-k/cdkd#3436, through the shared gate)', () => {
       const NO_FILL =
-        "the stack name above begins with a '-', which 'cdkd state orphan' could parse as an " +
-        'option, so the command lines below leave it a quoted hole that must NOT be filled with ' +
-        'that name: repair or remove the record by hand';
+        "but the stack name above begins with a '-', which 'cdkd state orphan' could parse as " +
+        'an option, so that second way is not available for this record: repair it by hand, and ' +
+        "do NOT fill the 'Drop the record' command's stack hole with that name";
       const inspectOf = (text: string) =>
         /^Inspect the record: (cdkd state show .*)$/m.exec(text)?.[1];
 
@@ -5259,7 +5259,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         const text = malformedOrphanResourcePropertiesRefusalMessage('-x', 'us-east-1 ', ['A']);
         expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
         expect(text).toContain(
-          `${NO_FILL}, taking the region from the 'Find the exact name' command below.`
+          `${NO_FILL}; its region is a hole too, to be taken from the 'Find the exact name' command below.`
         );
         expect(text).toMatch(/^Find the exact name: cdkd state list --json$/m);
       });
@@ -5312,6 +5312,33 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         const mixed = malformedOrphanResourcePropertiesRefusalMessage('S ', over, ['A']);
         expect(mixed).toContain('the stack name or region above did not render exactly');
         expect(mixed).not.toContain('too long to name in a command');
+        // And the reverse: an overlong NAME beside an altered REGION. Either
+        // altered value keeps the rendering sentence.
+        const reverse = malformedOrphanResourcePropertiesRefusalMessage(over, 'us-east-1 ', ['A']);
+        expect(reverse).toContain('the stack name or region above did not render exactly');
+        expect(reverse).not.toContain('too long to name in a command');
+      });
+
+      it('holds a region at ITS prose cap (128), not the stack-ref cap (go-to-k/cdkd#3973 R2)', () => {
+        // `safeRegion` cuts the prose at 128, so a gate at 1152 named in full a
+        // region the sentence showed cut — the "borrow a gate only downward" rule.
+        const named = malformedOrphanResourcePropertiesRefusalMessage('S', 'r'.repeat(128), ['A']);
+        expect(dropOf(named)).toBe(`cdkd state orphan S --stack-region ${'r'.repeat(128)}`);
+        for (const len of [129, 200, 1152]) {
+          const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'r'.repeat(len), ['A']);
+          expect(dropOf(text), String(len)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
+          expect(inspectOf(text), String(len)).toBe(
+            "cdkd state show '<stack>' --stack-region '<region>' --json"
+          );
+          expect(text).toContain('the stack name or region above is too long to name in a command');
+          expect(text).not.toContain('r'.repeat(129));
+        }
+      });
+
+      it('still NAMES a short value ending in ..., which is not a cut (go-to-k/cdkd#3973 o4)', () => {
+        const text = malformedOrphanResourcePropertiesRefusalMessage('abc...', 'us-east-1', ['A']);
+        expect(dropOf(text)).toBe('cdkd state orphan abc... --stack-region us-east-1');
+        expect(text).not.toContain('too long to name');
       });
 
       it('pastes nothing runnable from the remedy sentence and its command lines, named or withheld', () => {
@@ -5343,6 +5370,39 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
           }
         });
       }, 120_000);
+    });
+
+    describe('every orphanRefusal builder says the drop is not available for a -name (go-to-k/cdkd#3973 R3)', () => {
+      // The sentence is spliced right after the one offering the drop as the
+      // SECOND way out; it must retract that way for this record rather than
+      // leave it offered beside a hole that must not be filled, and it must
+      // say REPAIR, since the `orphans` refusals forbid deleting the record.
+      const REMEDY =
+        "Two ways out need no CDK app: repair the record by hand, or drop it whole with the 'Drop " +
+        "the record' command below, which leaves the live AWS resources standing";
+      const RETRACT =
+        " — but the stack name above begins with a '-', which 'cdkd state orphan' could parse " +
+        'as an option, so that second way is not available for this record: repair it by hand, ' +
+        "and do NOT fill the 'Drop the record' command's stack hole with that name.";
+      const ORPHANS_CAVEAT =
+        "; it also discards the 'orphans' list, the only record of resources an earlier failed " +
+        'deploy left live in AWS';
+      for (const [label, build, caveat] of [
+        ['properties', () => malformedOrphanResourcePropertiesRefusalMessage('--all', 'us-east-1', ['A']), ''],
+        ['entries', () => malformedOrphanResourceEntriesRefusalMessage('--all', 'us-east-1', ['A']), ''],
+        ['attributes', () => malformedOrphanResourceAttributesRefusalMessage('--all', 'us-east-1', ['A']), ''],
+        ['orphan records', () => malformedOrphanRecordsRefusalMessage('--all', 'us-east-1', ['A']), ORPHANS_CAVEAT],
+        ['orphan records (destroy)', () => malformedOrphanRecordsForDestroyRefusalMessage('--all', 'us-east-1', ['A']), ORPHANS_CAVEAT],
+        ['orphans list (container)', () => malformedOrphansForOrphanRefusalMessage('--all', 'us-east-1', undefined), ORPHANS_CAVEAT],
+        ['orphans list (records)', () => malformedOrphansForOrphanRefusalMessage('--all', 'us-east-1', ['A']), ORPHANS_CAVEAT],
+      ] as const) {
+        it(label, () => {
+          const text = build();
+          expect(text).toContain(REMEDY + caveat + RETRACT);
+          expect(text).not.toContain('remove the record by hand');
+          expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region us-east-1");
+        });
+      }
     });
 
     it('CHARACTERISES the ungated forgery this message still carries (go-to-k/cdkd#3523)', () => {
@@ -5487,7 +5547,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       });
 
       it('says a RECOVERY fragment is a hole, which no identity clause covers', () => {
-        // `identityWithheld` reads the stack name and the region only, so a run
+        // `withheldVerdict` reads the stack name and the region only, so a run
         // whose PREFIX or BUCKET was the inexact value printed
         // `--state-prefix '<prefix>'` with nothing saying it was a hole — and
         // the object-path note is suppressed whenever a prefix WAS supplied.
@@ -5639,7 +5699,9 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // it (the reason `dropRecordCommand` records, m5 of go-to-k/cdkd#3363's
       // review). A source fence is the only thing that can hold it in place.
       const src = code('src/state/malformed-resources-bag.ts');
-      for (const fn of ['function dropRecordCommand(', 'function identityWithheld(']) {
+      // `withheldVerdict` is `identityWithheld` renamed when it began returning
+      // the verdict (o2 of go-to-k/cdkd#3973's review); the floors are the same.
+      for (const fn of ['function dropRecordCommand(', 'function withheldVerdict(']) {
         const at = src.indexOf(fn);
         expect(at, `${fn} was renamed; this fence reads nothing`).toBeGreaterThan(-1);
         const body = src.slice(at, src.indexOf('\n}\n', at));

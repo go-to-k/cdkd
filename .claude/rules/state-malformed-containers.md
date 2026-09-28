@@ -196,8 +196,10 @@ the behaviour is pinned). The gate withholds an altered, capped or
 leading-`-` name; a label-spelling name still substitutes. Its `cdkd state show`
 line and withheld-identity clause read the SAME verdict, and a name beginning
 with `-` is never to be filled back in (go-to-k/cdkd#3436). It serves every
-`cdkd orphan` refusal built on `orphanRefusal` (the `properties`, entry and
-`attributes` refusals and the three over a malformed `orphans` list). Every
+refusal built on `orphanRefusal`: `cdkd orphan`'s `properties`, entry,
+`attributes` and `orphans`-list refusals, and the `orphans`-records refusals
+`cdkd deploy`, `import`, `rollback`, `scrub` and `destroy` raise. The region
+takes its own 128 cap there, the one the prose renders at. Every
 other message here offers a read ONLY: `inspectCommand` builds it through the
 shared gate with `plainIdent` on BOTH values, so an altered, capped,
 option-shaped or non-plain name prints as a hole rather than as its sanitized

@@ -1120,7 +1120,7 @@ export function malformedRenderedContainersWarning(
  * of `<unrenderable>`. That is why the per-site note is one line — the reason
  * lives here.
  *
- * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
+ * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `withheldVerdict` and
  * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
  * is not the module's only floor — but a floor in the SHARED helpers was tried
  * here and removed, and the reason is NOT that nothing reaches them: three
@@ -2009,8 +2009,9 @@ function stackClause(
  * `pickStackRegion`'s answer, so omitting the region is the wider action. Two
  * opposite precedents in one module; neither is the general rule.
  *
- * **Substitution is GATED through the shared `pasteableCommand` gate, at
- * `STACK_REF_MAX_CODE_POINTS`** (go-to-k/cdkd#3360, the M0 finding of the
+ * **Substitution is GATED through the shared `pasteableCommand` gate, the name
+ * at `STACK_REF_MAX_CODE_POINTS` and the region at `SHORT_NAME_MAX_CODE_POINTS`,
+ * the cap its prose renders at** (go-to-k/cdkd#3360, the M0 finding of the
  * go-to-k/cdkd#3363 review, and go-to-k/cdkd#3436's fold-in, which added the
  * leading-`-` refusal this module's own exactness copy lacked). The synthesized name is not validated: a prebuilt
  * cloud assembly's manifest reaches `cdkd orphan` unread, so a name `safeIdentifier`
@@ -2063,7 +2064,10 @@ function dropRecordCommand(
 }
 
 /**
- * The shared gate's verdict on the `cdkd orphan` properties refusal's identity
+ * The shared gate's verdict on the identity of every refusal built on
+ * {@link orphanRefusal} — `cdkd orphan`'s `properties`, entry, `attributes`
+ * and `orphans`-list refusals, and the `orphans`-records refusals `cdkd
+ * deploy`, `import`, `rollback`, `scrub` and `destroy` raise
  * (go-to-k/cdkd#3436's fold-in of this module's own copy): why it WITHHOLDS the
  * stack name and the region, each `undefined` when it would name it. The drop
  * command, the `cdkd state show` line and the withheld-identity clause all read
@@ -2076,8 +2080,10 @@ function dropRecordCommand(
  * option whatever the quoting. And a value past the cap that ENDS in `...`:
  * `safeIdentifier` marks a cut with `...`, so `'q'.repeat(1152) + '...'`
  * compared equal to its own truncation and was named in full, where the gate
- * measures the cap itself and says `too-long`. The cap is the same (`STACK_REF_MAX_CODE_POINTS`
- * for both values, as before), and no `plainIdent`: that would withhold the
+ * measures the cap itself and says `too-long`. The stack name keeps
+ * `STACK_REF_MAX_CODE_POINTS`; the region now takes `SHORT_NAME_MAX_CODE_POINTS`,
+ * the cap its prose renders at (see `orphanRegionArg`), where the copy used
+ * 1152 for both. No `plainIdent`: that would withhold the
  * go-to-k/cdkd#3359 path from `It's Legacy`, which go-to-k/cdkd#3523 records as
  * the reason this message is not gated like the template sites.
  */
@@ -2087,7 +2093,7 @@ function orphanIdentityVerdict(
 ): { readonly stack: WithholdReason | undefined; readonly region: WithholdReason | undefined } {
   const { withheld } = pasteableCommand('cdkd state orphan', [
     { value: stackName, hole: 'stack' },
-    ...(region === undefined ? [] : [{ flag: '--stack-region', value: region, hole: 'region' }]),
+    ...(region === undefined ? [] : [orphanRegionArg(region)]),
   ]);
   return {
     stack: withheld.find((w) => w.hole === 'stack')?.reason,
@@ -2106,8 +2112,24 @@ function orphanIdentityArgs(stackName: string, region: string | undefined): Comm
   const regionWithheld = orphanIdentityVerdict(stackName, region).region !== undefined;
   return [
     regionWithheld ? { hole: 'stack' } : { value: stackName, hole: 'stack' },
-    { flag: '--stack-region', value: region, hole: 'region' },
+    orphanRegionArg(region),
   ];
+}
+
+/**
+ * The region's argument, at the cap its PROSE renders it at: `safeRegion`
+ * cuts at `SHORT_NAME_MAX_CODE_POINTS`, so a gate at the stack-ref cap would
+ * name a 200-character region in full under a clause showing it cut — the
+ * "borrowing a gate UPWARD" `.claude/rules/state-malformed-containers.md`
+ * forbids, and what `maxCodePoints` exists for (review of go-to-k/cdkd#3973).
+ */
+function orphanRegionArg(region: string): CommandArg {
+  return {
+    flag: '--stack-region',
+    value: region,
+    hole: 'region',
+    opts: { maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+  };
 }
 
 /**
@@ -2126,7 +2148,9 @@ function orphanIdentityArgs(stackName: string, region: string | undefined): Comm
  * ({@link dropRecordCommand}) and the `cdkd state show` line
  * ({@link orphanInspectCommand}) — moved onto the shared gate through
  * {@link orphanIdentityVerdict} (go-to-k/cdkd#3436), which refuses everything
- * this does plus a leading `-`; a name beginning with `-` is still a real key,
+ * this does plus a leading `-`, a value past the cap ending in `...` (which
+ * this compares equal to its own truncation) and a region of 129 to 1152
+ * characters (the region's own cap is 128); a name beginning with `-` is still a real key,
  * so the object path may print it while both commands hole it. The shared {@link inspectCommand}
  * builds through the shared gate for its other callers, which offer a read
  * only: an altered, capped, empty, option-shaped or non-plain name is a quoted
@@ -2550,9 +2574,11 @@ export function malformedResourcePropertiesRefusalMessage(
  * instruction that dies on `Construct path '...' not found in template`, which
  * is the misstating-the-remedy class this module's own notes record (security
  * review of go-to-k/cdkd#3318). The remedy is now stated with its condition and
- * the two unconditional ways out beside it — hand repair, and
+ * the two template-free ways out beside it — hand repair, and
  * `cdkd state orphan <stack>`, which needs no CDK app and drops the whole
- * record with the live resources left standing.
+ * record with the live resources left standing. The second is not available
+ * for a stack name beginning with `-`, and the message says so for that
+ * record (go-to-k/cdkd#3436, R3 of the go-to-k/cdkd#3973 review).
  *
  * So the recovery-path objection is answered for the common case by the
  * exemption and for the rest by naming commands that do not depend on the
@@ -2705,22 +2731,28 @@ function orphanRefusal(
  * reads as a hole to fill.
  */
 function withheldIdentityClause(stackName: string | undefined, region: string | undefined): string {
-  if (stackName === undefined || !identityWithheld(stackName, region)) return '';
-  const known = region === '' ? undefined : region;
-  const verdict = orphanIdentityVerdict(stackName, known);
+  const verdict = withheldVerdict(stackName, region);
+  if (stackName === undefined || verdict === undefined) return '';
   // A name beginning with `-` must NOT be filled back in: quoted or not,
   // Commander could read it in the positional as the option, so the fill-in
   // instruction below would rebuild the command the gate refused. Keyed on the
   // RAW `-`, not on the reason, because the gate reports `altered` /
   // `too-long` first (go-to-k/cdkd#3436).
+  //
+  // Spliced right after the sentence offering the drop as the SECOND way out,
+  // so it says that way is not available for this record rather than leaving
+  // it offered beside a hole that must not be filled; and it says REPAIR, not
+  // "remove", because the `orphans` refusals' third way out forbids deleting
+  // the record (review of go-to-k/cdkd#3973, R3). One drop command, so
+  // "command", singular.
   if (stackName.startsWith('-')) {
     return (
-      ` — the stack name above begins with a '-', which 'cdkd state orphan' could parse as an ` +
-      `option, so the command lines below leave it a quoted hole that must NOT be filled with ` +
-      `that name: repair or remove the record by hand` +
+      ` — but the stack name above begins with a '-', which 'cdkd state orphan' could parse ` +
+      `as an option, so that second way is not available for this record: repair it by hand, ` +
+      `and do NOT fill the 'Drop the record' command's stack hole with that name` +
       (verdict.region === undefined
         ? ''
-        : `, taking the region from the 'Find the exact name' command below`)
+        : `; its region is a hole too, to be taken from the 'Find the exact name' command below`)
     );
   }
   // A region beginning with `-` is `--stack-region`'s VALUE, which Commander
@@ -2765,7 +2797,7 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
  *
  * Without this, a run whose PREFIX or BUCKET was the inexact value printed
  * `--state-prefix '<prefix>'` with nothing in the message saying the hole was a
- * hole: `identityWithheld` reads the stack name and the region only, and the
+ * hole: `withheldVerdict` reads the stack name and the region only, and the
  * object-path note is suppressed whenever a prefix WAS supplied. That is
  * {@link withheldIdentityClause}'s own defect class, one fragment over.
  */
@@ -2790,30 +2822,36 @@ function withheldIdentityListCommand(
   region: string | undefined,
   recovery?: LockRecoveryContext
 ): string | undefined {
-  if (stackName === undefined || !identityWithheld(stackName, region)) return undefined;
+  const verdict = withheldVerdict(stackName, region);
+  if (stackName === undefined || verdict === undefined) return undefined;
   // Not for a `-`-leading name whose region was named: the clause sends the
   // operator to fix that record by hand, and a listing would only hand back
   // the name they must not paste.
-  const known = region === '' ? undefined : region;
-  if (stackName.startsWith('-') && orphanIdentityVerdict(stackName, known).region === undefined) {
-    return undefined;
-  }
+  if (stackName.startsWith('-') && verdict.region === undefined) return undefined;
   return ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
 }
 
-/** A name WAS known, and the shared gate withheld it or the region beside it. */
-function identityWithheld(stackName: string | undefined, region: string | undefined): boolean {
+/**
+ * The shared gate's verdict when a name WAS known and the gate withheld it or
+ * the region beside it; `undefined` otherwise. Each of the clause and the
+ * listing takes the verdict from this one call instead of computing it a
+ * second time (review of go-to-k/cdkd#3973, o2).
+ */
+function withheldVerdict(
+  stackName: string | undefined,
+  region: string | undefined
+): ReturnType<typeof orphanIdentityVerdict> | undefined {
   // `''` is no identity either, as in {@link dropRecordCommand}: otherwise a
   // later direct caller gets the withheld clause while the drop command beside
   // it takes the no-identity arm.
-  if (stackName === undefined || stackName === '') return false;
+  if (stackName === undefined || stackName === '') return undefined;
   // The same `''` floor {@link dropRecordCommand} carries, so the two agree on
   // whether a region was supplied at all. Unreachable through the one builder
   // that calls this (it normalises `''` at entry) and kept for the reason
   // `dropRecordCommand` gives: a later caller inherits the floor.
   const known = region === '' ? undefined : region;
   const verdict = orphanIdentityVerdict(stackName, known);
-  return verdict.stack !== undefined || verdict.region !== undefined;
+  return verdict.stack !== undefined || verdict.region !== undefined ? verdict : undefined;
 }
 
 /**
@@ -2825,8 +2863,9 @@ function identityWithheld(stackName: string | undefined, region: string | undefi
  * the name did not render exactly, pointed at `cdkd state list --json`, and then
  * printed `cdkd state show prod-api ...` with the trimmed spelling of
  * `'prod-api '`, naming the healthy sibling (the M2 finding of the
- * go-to-k/cdkd#3363 review). Holes follow {@link dropRecordCommand}'s rule: an
- * altered region makes both a hole, an altered name only the name.
+ * go-to-k/cdkd#3363 review). Holes follow {@link dropRecordCommand}'s rule,
+ * through {@link orphanIdentityArgs}: a WITHHELD region makes both a hole, a
+ * withheld name only the name.
  *
  * Built here rather than by widening {@link inspectCommand}, which serves four
  * other builders whose identities come from different sources (and this one no
@@ -2882,10 +2921,10 @@ function orphanInspectClause(
   recovery?: LockRecoveryContext
 ): { command?: string; sentence?: string; locations?: string[] } {
   // `''` is no identity either, the floor {@link dropRecordCommand} and
-  // {@link identityWithheld} both carry. Without it a direct caller passing
+  // {@link withheldVerdict} both carry. Without it a direct caller passing
   // `''` got an inspect COMMAND here while the drop line beside it took its
-  // no-identity arm — the disagreement {@link rendersExactly}'s note says the
-  // shared predicate rules out. Unreachable through the one builder that calls
+  // no-identity arm — the disagreement one shared verdict
+  // ({@link orphanIdentityVerdict}) exists to rule out. Unreachable through the one builder that calls
   // this (it normalises `''` at entry), which is the condition the other two
   // floors are under as well.
   if (stackName === undefined || stackName === '') {
