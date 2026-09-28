@@ -620,7 +620,8 @@
         "nested-stack-replace-guard",
         "nested-stack-rollback",
         "nested-stack-secret",
-        "recreate-nested-logical-id-collision"
+        "recreate-nested-logical-id-collision",
+        "scrub-nested-child"
       ],
       "signals": {
         "custom-resource-noecho-nested": [
@@ -654,6 +655,9 @@
           "literal"
         ],
         "recreate-nested-logical-id-collision": [
+          "literal"
+        ],
+        "scrub-nested-child": [
           "literal"
         ]
       }
@@ -6139,6 +6143,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration",
+        "scrub-nested-child",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
         "stale-attribute-heal",
@@ -6389,6 +6394,10 @@
         ],
         "schema-v9-to-v10-migration": [
           "l1",
+          "literal"
+        ],
+        "scrub-nested-child": [
+          "l2",
           "literal"
         ],
         "sdk-ccapi-crossref": [

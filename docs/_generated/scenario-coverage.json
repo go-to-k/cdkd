@@ -2039,6 +2039,13 @@
       ]
     },
     {
+      "name": "scrub-nested-child",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
       "name": "sdk-ccapi-crossref",
       "annotated": true,
       "scenarios": [
@@ -2504,6 +2511,7 @@
         "dynamic-ref-cross-region",
         "nested-stack-secret",
         "rollback-cross-region-secret",
+        "scrub-nested-child",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "ssm-secure-dynamic-ref"
