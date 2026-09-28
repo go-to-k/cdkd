@@ -528,6 +528,72 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     }
   );
 
+  it.each([
+    ['a user interrupt (SIGINT fired first)', 'user', 'interrupted', false],
+    ['no interrupt (CONTROL)', null, 'auto-rollback-started', true],
+    ['a sibling-failure abort (CONTROL)', 'sibling-failure', 'auto-rollback-started', true],
+  ] as const)(
+    'a WRAPPED InterruptedError after %s: journal %s, rollback %s (go-to-k/cdkd#3875)',
+    async (_label, cause, reason, rollsBack) => {
+      // A Ctrl-C raised by the engine's retry backoff, or by a NESTED child
+      // engine's poll, reaches the outer catch wrapped in
+      // `provisionResource`'s `ProvisioningError`, where neither the class
+      // test nor the `InterruptedWaitError` cause walk sees it. The engine's
+      // own SIGINT handler has set `interruptCause = 'user'` before either can
+      // observe the signal, so that is what the branch keys on. A real SIGINT
+      // is not emitted here because it races the test runner's own listeners;
+      // the user row calls the engine's registered listener instead.
+      const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+      arrangedChanges.set('Boom', {
+        logicalId: 'Boom',
+        changeType: 'CREATE',
+        resourceType: 'AWS::Test::Boom',
+        desiredProperties: {},
+      });
+      (template.Resources as Record<string, unknown>)['Boom'] = { Type: 'AWS::Test::Boom', Properties: {} };
+      mockDagBuilder.getDirectDependencies.mockImplementation((_dag: unknown, id: string) =>
+        id === 'Boom' ? [LOGICAL_ID] : []
+      );
+      const engine = makeEngine();
+      const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+      // The user row fires the SIGINT listener `deploy()` itself registered —
+      // found by diffing the listener list, so no real signal is raised — which
+      // proves the handler-to-branch link, not only the branch condition.
+      const before = new Set(process.listeners('SIGINT'));
+      providerFor('AWS::Test::Boom').create.mockImplementation(async () => {
+        if (cause === 'user') {
+          const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
+          expect(registered, 'deploy() registered no SIGINT listener').toHaveLength(1);
+          (registered[0] as () => void)();
+          expect(fields.interruptCause).toBe('user');
+        } else if (cause !== null) {
+          fields.interrupted = true;
+          fields.interruptCause = cause;
+        }
+        // The shape a child engine's poll or a backoff's `onInterrupted`
+        // produces: this module's private `InterruptedError`, spelled by name.
+        const inner = new Error('Deployment interrupted by user (Ctrl+C)');
+        inner.name = 'InterruptedError';
+        throw inner;
+      });
+      const appendRollbackJournalSegment = vi.fn().mockResolvedValue(undefined);
+      Object.assign(mockStateBackend, { appendRollbackJournalSegment });
+      const performRollback = vi.spyOn(
+        engine as unknown as { performRollback: (...a: unknown[]) => Promise<unknown> },
+        'performRollback'
+      );
+
+      const err = await deployAndCatch(engine, template);
+
+      expect(err, 'the deploy did not fail').toBeDefined();
+      const reasons = appendRollbackJournalSegment.mock.calls.map(
+        (c) => (c[2] as { reason: string }).reason
+      );
+      expect(reasons).toContain(reason);
+      expect(performRollback).toHaveBeenCalledTimes(rollsBack ? 1 : 0);
+    }
+  );
+
   it('journals BOTH types, so a rollback can re-create the old one through its own provider', async () => {
     // `resourceType` on the op is the template's type; without the second field
     // the journal names only the NEW one.
