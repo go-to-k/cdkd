@@ -229,7 +229,9 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         "drop this bucket's record with 'cdkd orphan <StackPath>/<Path/To/Bucket>', which removes " +
           'only that record'
       );
-      expect(error?.message).toContain("creates the bucket the template declares, in this stack's region");
+      expect(error?.message).toContain(
+        "first giving it a BucketName unique to that region if the template fixes this one"
+      );
       expect(error?.message).not.toContain('cdkd state orphan');
     });
 

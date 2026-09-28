@@ -6222,8 +6222,9 @@ export class S3BucketProvider implements ResourceProvider {
         ? `Confirm which bucket you mean, then either rerun this stack against ` +
           `${probe.region}, or — if the recorded id is stale — drop this bucket's record with ` +
           `'cdkd orphan <StackPath>/<Path/To/Bucket>', which removes only that record (and ` +
-          `rewrites the references to it) without touching any AWS resource; the next deploy ` +
-          `then creates the bucket the template declares, in this stack's region.`
+          `rewrites the references to it) without touching any AWS resource, then deploy again ` +
+          `to create the bucket in this stack's region — first giving it a BucketName unique to ` +
+          `that region if the template fixes this one, since S3 names are global.`
         : `Confirm which bucket you mean. If ${displaySafe(physicalId)} is genuinely yours to delete, ` +
           `delete it deliberately in ${probe.region}; if this record is simply stale, drop it ` +
           `with 'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the ` +
