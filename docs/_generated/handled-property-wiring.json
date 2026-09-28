@@ -3069,10 +3069,12 @@
             "AWS::AutoScaling::AutoScalingGroup"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "retireFailedCreate",
             "update"
           ]
         },

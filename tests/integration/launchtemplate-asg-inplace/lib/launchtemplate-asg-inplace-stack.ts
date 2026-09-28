@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
+import * as sns from 'aws-cdk-lib/aws-sns';
 
 /**
  * LaunchTemplate + AutoScalingGroup in-place GetAtt propagation fixture (issue #985)
@@ -65,6 +66,11 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
     // ASG consumes the LaunchTemplate. CDK renders LaunchTemplate.Version as
     // Fn::GetAtt [Lt, LatestVersionNumber]. Capacity is pinned to 0 so no EC2
     // instances are ever launched.
+    // Issue #3995 leg: `MetricsCollection` and `NotificationConfigurations` are
+    // not CreateAutoScalingGroup members, so cdkd must send them itself on the
+    // FIRST deploy. Identical in every phase, so the #985 leg's ASG template
+    // stays unchanged across phases 1 and 2.
+    const topic = new sns.Topic(this, 'AsgNotifications');
     const asg = new autoscaling.AutoScalingGroup(this, 'Asg', {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
@@ -72,6 +78,21 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
       minCapacity: 0,
       maxCapacity: 0,
       desiredCapacity: 0,
+      groupMetrics: [
+        new autoscaling.GroupMetrics(
+          autoscaling.GroupMetric.MIN_SIZE,
+          autoscaling.GroupMetric.MAX_SIZE
+        ),
+      ],
+      notifications: [
+        {
+          topic,
+          scalingEvents: new autoscaling.ScalingEvents(
+            autoscaling.ScalingEvent.INSTANCE_LAUNCH,
+            autoscaling.ScalingEvent.INSTANCE_TERMINATE
+          ),
+        },
+      ],
     });
 
     // Issue #1160 removal leg: set non-default values for three optional

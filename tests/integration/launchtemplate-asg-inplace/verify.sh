@@ -18,8 +18,9 @@
 #
 # This test asserts:
 #   1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
-#      LaunchTemplate.Version resolves to "1", and the three non-default ASG
-#      properties are live.
+#      LaunchTemplate.Version resolves to "1", the three non-default ASG
+#      properties are live, and the group metrics and SNS notifications are
+#      live after this FIRST deploy (issue #3995: create never sent them).
 #   2. UPDATE phase (change only instanceType): the LaunchTemplate advances to
 #      version 2 AND the ASG's live LaunchTemplate.Version is "2" in the SAME
 #      deploy (NOT "1" -- the #985 symptom is a one-deploy-behind "1"). The
@@ -180,6 +181,11 @@ if [ -z "${ASG_NAME}" ] || [ "${ASG_NAME}" = "null" ]; then
   exit 1
 fi
 echo "    resolved ASG name: ${ASG_NAME}"
+TOPIC_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SNS::Topic") | .value.physicalId] | first')
+if [ -z "${TOPIC_ARN}" ] || [ "${TOPIC_ARN}" = "null" ]; then
+  echo "FAIL: could not resolve the notification SNS topic ARN from state" >&2
+  exit 1
+fi
 
 LT_V1=$(lt_latest_version)
 if [ "${LT_V1}" != "1" ]; then
@@ -197,6 +203,27 @@ echo "    OK: ASG LaunchTemplate.Version == 1"
 
 # Issue #1160 baseline: the three non-default properties must be live.
 assert_nondefault_props "Phase 1" "${ASG_NAME}"
+
+# Issue #3995: MetricsCollection / NotificationConfigurations are not
+# CreateAutoScalingGroup members, so before the fix a FIRST deploy left both
+# unset (only a later update sent them). Assert both are live after Phase 1,
+# which is a pure create.
+ENABLED_METRICS=$(aws autoscaling describe-auto-scaling-groups \
+  --auto-scaling-group-names "${ASG_NAME}" --region "${REGION}" \
+  --query "join(' ', sort(AutoScalingGroups[0].EnabledMetrics[].Metric || \`[]\`))" --output text)
+if [ "${ENABLED_METRICS}" != "GroupMaxSize GroupMinSize" ]; then
+  echo "FAIL: Phase 1: expected EnabledMetrics 'GroupMaxSize GroupMinSize' after the first deploy, got '${ENABLED_METRICS}' (issue #3995)" >&2
+  exit 1
+fi
+echo "    OK: Phase 1: EnabledMetrics == GroupMaxSize GroupMinSize (issue #3995)"
+NOTIFICATION_TYPES=$(aws autoscaling describe-notification-configurations \
+  --auto-scaling-group-names "${ASG_NAME}" --region "${REGION}" \
+  --query "join(' ', sort(NotificationConfigurations[].NotificationType || \`[]\`))" --output text)
+if [ "${NOTIFICATION_TYPES}" != "autoscaling:EC2_INSTANCE_LAUNCH autoscaling:EC2_INSTANCE_TERMINATE" ]; then
+  echo "FAIL: Phase 1: expected notification types 'autoscaling:EC2_INSTANCE_LAUNCH autoscaling:EC2_INSTANCE_TERMINATE' after the first deploy, got '${NOTIFICATION_TYPES}' (issue #3995)" >&2
+  exit 1
+fi
+echo "    OK: Phase 1: notifications live for EC2_INSTANCE_LAUNCH / EC2_INSTANCE_TERMINATE (issue #3995)"
 
 # --- Phase 2: UPDATE (change only instanceType -> LT v2) --------------
 echo "==> Phase 2: UPDATE (instanceType t3.micro -> t3.small; LT v1 -> v2)"
@@ -281,8 +308,11 @@ echo "    OK: AutoScalingGroup is gone"
 assert_gone "LaunchTemplate ${LT_NAME} still exists after destroy" aws ec2 describe-launch-templates --launch-template-names "${LT_NAME}" --region "${REGION}"
 echo "    OK: LaunchTemplate is gone"
 
+assert_gone "notification SNS topic ${TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}"
+echo "    OK: notification SNS topic is gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults + clean destroy)"
+echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults; issue #3995: group metrics and notifications live after the first deploy + clean destroy)"

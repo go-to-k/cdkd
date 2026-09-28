@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { AppSyncClient } from '@aws-sdk/client-appsync';
+import { AutoScalingClient } from '@aws-sdk/client-auto-scaling';
 import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { CodeCommitClient } from '@aws-sdk/client-codecommit';
@@ -64,6 +65,7 @@ import {
 } from '../../../src/provisioning/auxiliary-failure.js';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
+import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
@@ -820,6 +822,31 @@ const CASES: Case[] = [
     mainAwsError: { name: 'ParameterAlreadyExists', message: 'The parameter already exists. To overwrite this value, set the overwrite option in the request to true.' },
     aux: 'AddTagsToResourceCommand',
     responses: { GetCallerIdentityCommand: { Account: '123456789012' } },
+  },
+  {
+    // #3995: the group's metrics and notifications ride their own APIs after
+    // CreateAutoScalingGroup; a failure there retires the group and is marked.
+    name: 'asg AWS::AutoScaling::AutoScalingGroup',
+    provider: () => new ASGProvider(),
+    resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+    properties: {
+      AutoScalingGroupName: 'asg',
+      MinSize: 0,
+      MaxSize: 1,
+      MetricsCollection: [{ Granularity: '1Minute' }],
+      NotificationConfigurations: [
+        { TopicARN: 'arn:aws:sns:us-east-1:123456789012:t', NotificationTypes: ['x'] },
+      ],
+    },
+    clients: [AutoScalingClient],
+    main: 'CreateAutoScalingGroupCommand',
+    mainAwsError: {
+      name: 'AlreadyExists',
+      message: 'AutoScalingGroup by this name already exists - A group with the name asg already exists',
+    },
+    aux: 'EnableMetricsCollectionCommand',
+    alsoAux: ['PutNotificationConfigurationCommand'],
+    responses: { DescribeAutoScalingGroupsCommand: { AutoScalingGroups: [] } },
   },
 ];
 

@@ -5645,6 +5645,7 @@
         "importvalue-chain",
         "intrinsics-torture",
         "intrinsics-torture-2",
+        "launchtemplate-asg-inplace",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -5733,6 +5734,9 @@
           "l2"
         ],
         "intrinsics-torture-2": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "microservices": [
