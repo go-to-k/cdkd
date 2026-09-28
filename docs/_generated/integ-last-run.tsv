@@ -43,7 +43,7 @@ ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-cloudwatch-anomaly-detector	2026-09-28T14:47:10Z	PASS	65	verify.sh	PR #3983 (#3978) @72a0a271; rc ok, create + in-place Configuration update + drift arm, 2 deleted 0 errors, orph clean
+cloudwatch-anomaly-detector	2026-09-28T17:22:43Z	PASS	76	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 codebuild-project	2026-09-27T19:00:18Z	PASS	116	verify.sh	rc ok, orph clean (#3887)
 codecommit	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
@@ -64,9 +64,9 @@ cross-stack-cfn-fallback	2026-09-25T09:36:54Z	PASS	120	verify.sh	PR 3725 lane: i
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-09-25T11:43:35Z	PASS	400	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 custom-resource-getatt-data	2026-09-28T09:01:57Z	PASS	90	verify.sh	rc ok, orph clean, embedded arm (#2453)
-custom-resource-masked-service-token	2026-09-28T11:43:33Z	PASS	146	verify.sh	rc ok, orph clean; pre-fix probe RED at the #3938 row assertion
+custom-resource-masked-service-token	2026-09-28T17:22:43Z	PASS	110	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 custom-resource-noecho-nested	2026-09-26T03:05:30Z	PASS	852	verify.sh	rc ok, orph clean (#3803 PR #3818 final)
-custom-resource-provider	2026-09-28T07:22:06Z	PASS	701	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run (6 own groups swept)
+custom-resource-provider	2026-09-28T17:22:43Z	PASS	652	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 data-analytics	2026-09-28T10:21:55Z	PASS	105	verify.sh	#3939 PR #3947 rebased head 06245f7f7, stdin /dev/null; phase 2 Changes 0/3/0 + Updated: 3 printed, rc 0, no lock.json left, no stall-guard line; orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-09-24T18:20:06Z	PASS	65	verify.sh	rc ok, orph clean; PR #3668 head
@@ -140,9 +140,9 @@ iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #386
 iam-managed-policy	2026-09-28T09:54:14Z	PASS	100	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-09-28T14:47:10Z	PASS	81	verify.sh	PR #3983 (#3978) @72a0a271; rc ok, 4 race edges clean, 13 deleted 0 errors, orph clean
-iam-role-policies-drift-clean	2026-09-27T21:19:43Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+iam-role-policies-drift-clean	2026-09-28T17:22:43Z	PASS	95	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 iam-role-prefixed-name-update	2026-09-27T14:13:26Z	PASS	70	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
-iam-secret-derived-principals	2026-09-28T09:52:34Z	PASS	135	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
+iam-secret-derived-principals	2026-09-28T17:22:43Z	PASS	145	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
@@ -166,7 +166,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-28T13:52:31Z	PASS	125	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
+lambda	2026-09-28T17:22:43Z	PASS	116	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -273,7 +273,7 @@ s3-analytics-inventory	2026-09-28T08:58:07Z	PASS	171	verify.sh	rc ok, orph clean
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 s3-directory-bucket	2026-09-24T22:46:12Z	PASS	89	verify.sh	rc ok, 0 orphans (#3663)
-s3-event-notification	2026-09-28T08:59:37Z	PASS	81	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
+s3-event-notification	2026-09-28T17:22:43Z	PASS	96	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 s3-lifecycle	2026-09-28T08:54:54Z	PASS	336	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-object-lock	2026-09-28T08:47:22Z	PASS	60	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-replication-and-filter	2026-09-28T08:46:11Z	PASS	105	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
