@@ -822,13 +822,25 @@ describe('the rewriting-types table matches every caller of generateResourceName
       ].sort()
     );
     expect([...seen].sort()).toEqual(Object.keys(table).sort());
-    // Nothing reaches the generator under another name, and no provider
-    // applies the user-supplied prefix rule by calling the inner generator.
+    // Nothing reaches the generator under another name: outside comments and
+    // import statements, every mention of it is a call (no alias, no
+    // destructuring, no bare reference handed on). And nothing in
+    // provisioning but the generator's own module sets `userSupplied`, so no
+    // provider applies the prefix rule by calling the inner generator.
     for (const f of (readdirSync(src, { recursive: true }) as string[]).filter((x) => x.endsWith('.ts'))) {
-      const text = readFileSync(join(src, f), 'utf8');
-      expect(/generateResourceNameWithFallback\s+as\s/.test(text), `${f}: aliased import`).toBe(false);
-      if (f.startsWith('provisioning/providers/') || f.startsWith('provisioning\\providers\\')) {
-        expect(/userSupplied:\s*true/.test(text), `${f}: a direct userSupplied rewrite`).toBe(false);
+      const rel = f.split('\\').join('/');
+      if (rel === 'provisioning/resource-name.ts') continue;
+      const raw = readFileSync(join(src, f), 'utf8');
+      expect(/generateResourceNameWithFallback\s+as\s/.test(raw), `${rel}: aliased import`).toBe(false);
+      const code = raw
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '')
+        .replace(/^import\s[\s\S]*?;$/gm, '');
+      const mentions = code.split(/\bgenerateResourceNameWithFallback\b/).length - 1;
+      const calls = code.split('generateResourceNameWithFallback(').length - 1;
+      expect(mentions, `${rel}: a reference to the generator that is not a call`).toBe(calls);
+      if (rel.startsWith('provisioning/')) {
+        expect(/\buserSupplied\b/.test(code), `${rel}: sets userSupplied itself`).toBe(false);
       }
     }
   });

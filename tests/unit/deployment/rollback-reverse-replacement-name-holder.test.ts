@@ -572,7 +572,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
   });
 });
 
-describe('the rewrite rule applies only to the SDK route (#3979)', () => {
+describe('on the Cloud Control route the sent name is the requested one (#3979)', () => {
   it('a Cloud Control re-create sends the recorded name verbatim, so a new role holding it is deleted first', async () => {
     // Cloud Control never prefixes: the bag it sends IS the name asked for.
     // Were the route not passed, the SDK rewrite would derive `CdkdX-my-role`
