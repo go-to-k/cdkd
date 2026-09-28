@@ -101,7 +101,7 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     expect(message).toContain(
       'If you are certain no other process is active, inspect the lock object directly'
     );
-    expect(message).toContain('would address a different lock');
+    expect(message).toContain('could address a different lock');
   });
 
   it('SANITIZES the head as well, so the suppressed command cannot be forged above it', async () => {
@@ -132,7 +132,7 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     expect(payloadAt).toBeGreaterThan(-1);
     expect(payloadAt).toBeLessThan(message.indexOf('" (us-east-1)'));
     // ...and the suppression branch still fires, so no command is offered.
-    expect(message).toContain('would address a different lock');
+    expect(message).toContain('could address a different lock');
   });
 
   it('sanitizes the REGION on the same sentence', async () => {
