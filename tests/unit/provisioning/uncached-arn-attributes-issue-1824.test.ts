@@ -505,7 +505,7 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
         // selector verifies fine and then breaks every later write, exactly like
         // an ARN. One predicate (a colon) covers both shapes.
         const msg = await refusalMessage('/adopted:2');
-        expect(msg).toContain("from a version / label selector ('/adopted:2')");
+        expect(msg).toContain('from a version / label selector (/adopted:2)');
         // The ARN-specific why-not-derived note must NOT appear here: there is no
         // ARN to derive a name from, and saying so would misdescribe the refusal.
         expect(msg).not.toContain('hierarchical name "/foo"');

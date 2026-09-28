@@ -17,6 +17,7 @@ import {
   displayIdent,
   displaySafe,
   isPasteableIdent,
+  SECRET_REF_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { commandHole } from '../../utils/pasteable-command.js';
@@ -863,15 +864,19 @@ export class SSMParameterProvider implements ResourceProvider {
         ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
         'safely on a command line, so any command shown here would read a different parameter.';
     throw new ProvisioningError(
-      // The quoted `explicit` clause is PROSE, not a pasteable span, so it is
-      // display-sanitized in place rather than suppressed (issue #3269). The
+      // The `explicit` clause is PROSE, not a pasteable span, so it is
+      // displayed rather than suppressed (issue #3269). The
       // logical id beside it takes `displayIdent`'s boundary rather than bare
       // `displaySafe` (go-to-k/cdkd#3436's paste fence measured the bare form:
       // an id `x; touch OWNED; #` ran when this sentence was pasted, the `#`
       // commenting out everything after it). A plain id still renders bare, and
       // the cap is the stack-ref one the `--resource` fragment's gate uses, so a
       // 256-1152 code-point id is not named there under prose that cuts it.
-      `Cannot adopt SSM parameter ${displayIdent(input.logicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} from ${shape} ('${displaySafe(explicit)}'): cdkd records ` +
+      // `explicit` takes the same boundary, inside cdkd's parenthesis and NOT
+      // inside a hand-written `'...'` (go-to-k/cdkd#3950): a `'` in the value
+      // closed that quote and left the rest of a pasted clause as bare shell.
+      // Its cap is the ARN ceiling, so a legitimate ARN is never cut.
+      `Cannot adopt SSM parameter ${displayIdent(input.logicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} from ${shape} (${displayIdent(explicit, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): cdkd records ` +
         `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
         `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
         `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +

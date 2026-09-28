@@ -74,7 +74,7 @@ deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destr
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	241	verify.sh	#3455 fix round 2: rc ok, orph clean, no CC DeleteResource for 3 volumes
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
-deployment-events	2026-09-26T00:08:31Z	PASS	40	verify.sh	rc 0, state clean, PR 3800 (run list renders real fields unchanged)
+deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#3950 lane B)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-09-28T14:53:31Z	PASS	401	verify.sh	rc ok, orph clean; Phase 1c state destroy --all refusal (PR #3987)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
@@ -152,10 +152,10 @@ import-auto-mode	2026-09-25T10:50:52Z	PASS	85	verify.sh	maintainer merge-gate re
 import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, orph clean; #2872 stale-baseline arm (pre-fix probe red at 6c RootPwParam marked)
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
-import-migrate-vpc	2026-09-25T05:37:37Z	PASS	335	verify.sh	rc ok, orph clean; 31 imported 0 failed; VPCCidrBlock recorded as <assoc>|<vpc> (#3672)
+import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
 import-nested-stack	2026-09-28T13:50:26Z	PASS	146	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
 import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
-import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
+import-secret-observed	2026-09-28T17:42:30Z	PASS	151	verify.sh	rc ok, orph clean (#3950 lane B)
 import-value-strong-ref	2026-09-28T10:13:08Z	PASS	150	verify.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
@@ -260,7 +260,7 @@ replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #26
 replacement-immutable-name	2026-09-28T16:33:26Z	PASS	131	verify.sh	PR #3983 (#3978 ambiguous-create latch) @0307f604 on c3826dbd; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
-rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800
+rollback-command	2026-09-28T17:39:59Z	PASS	160	verify.sh	rc ok, orph clean (#3950 lane B)
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 fix round 2: rc ok, orph clean
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing

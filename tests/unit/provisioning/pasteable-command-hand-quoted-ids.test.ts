@@ -364,6 +364,34 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
         }
       });
     }, 120_000);
+
+    it('bounds the EXPLICIT value in prose by JSON, never by cdkd quotes (go-to-k/cdkd#3950)', async () => {
+      // The `('<explicit>')` clause used to wrap the value in a hand-written
+      // `'...'`, which a `'` in the value closes. Each payload family rides in
+      // the ARN's name segment, so the `:` still trips the refusal.
+      const rendered: Array<{ explicit: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) {
+        const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${value}`;
+        rendered.push({ explicit, message: await refusalMessage(explicit) });
+      }
+      withPasteDir((dir) => {
+        for (const { explicit, message } of rendered) {
+          expect(message, explicit).toContain(`from an ARN (${JSON.stringify(explicit)})`);
+          // The PROSE, not the `aws ssm get-parameter` command after it, which
+          // shell-quotes the value on purpose.
+          const prose = message.split(' Read the name AWS holds')[0]!;
+          expect(prose, explicit).not.toContain(`'${explicit}'`);
+          expect(spansThatRun(message, dir), explicit).toEqual([]);
+        }
+      });
+      // A plain ARN prints bare, byte-identical to the value -- a long one too,
+      // at the ARN ceiling rather than the 255 default.
+      expect(await refusalMessage(ARN)).toContain(`from an ARN (${ARN})`);
+      const long = `arn:aws:ssm:us-east-1:111122223333:parameter/${'n'.repeat(1900)}`;
+      const longMessage = await refusalMessage(long);
+      expect(longMessage).toContain(`from an ARN (${long})`);
+      expect(longMessage).not.toContain('withheld');
+    }, 120_000);
   });
 
   describe('S3BucketProvider partial-create cleanup, both arms', () => {

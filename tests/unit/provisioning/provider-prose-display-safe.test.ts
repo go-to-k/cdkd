@@ -215,15 +215,21 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       throw new Error('import() did not refuse the unwritable physical id');
     };
 
-    it('sanitizes the quoted prose value', async () => {
+    it('sanitizes the prose value, behind a JSON boundary rather than cdkd quotes', async () => {
       const message = await refusal(`arn:aws:ssm:us-east-1:111122223333:parameter/${HOSTILE}`);
       expectNoForgers(message);
-      expect(message).toContain(`('arn:aws:ssm:us-east-1:111122223333:parameter/${HOSTILE_SHOWN}')`);
+      // `displayIdent`'s boundary (go-to-k/cdkd#3950): an altered value is
+      // JSON-quoted, never wrapped in a hand-written `'...'` it could close.
+      expect(message).toContain(
+        `(${JSON.stringify(`arn:aws:ssm:us-east-1:111122223333:parameter/${HOSTILE_SHOWN}`)})`
+      );
     });
 
-    it('renders a clean value byte-identically', async () => {
+    it('renders a clean value byte-identically, and bare', async () => {
       const arn = 'arn:aws:ssm:us-east-1:111122223333:parameter/clean';
-      expect(await refusal(arn)).toContain(`('${arn}')`);
+      const message = await refusal(arn);
+      expect(message).toContain(`(${arn})`);
+      expect(message).not.toContain(`'${arn}'`);
     });
   });
 
