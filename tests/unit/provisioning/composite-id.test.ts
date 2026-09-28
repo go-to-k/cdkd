@@ -125,7 +125,9 @@ describe('composite-id', () => {
       expect(message).toContain('AWS::Glue::Table MyTable');
       expect(message).toContain("tableName 'a|b'");
       expect(message).toContain('<databaseName>|<tableName>');
-      expect(message).toContain('https://github.com/go-to-k/cdkd/issues/3892');
+      // AWS::Glue::Table no longer packs through this helper (issue #3892),
+      // so it has no parity sentence: the neutral one is used.
+      expect(message).toContain("cdkd cannot record a value containing '|' in this position.");
       // The clean sibling must NOT be blamed.
       expect(message).not.toContain("databaseName 'mydb'");
     });
@@ -133,10 +135,7 @@ describe('composite-id', () => {
     // The parity clause is per TYPE: only a type whose refused value AWS
     // accepts names a tracking issue. #1672 is closed, so no message may send a
     // user there.
-    it.each([
-      ['AWS::Glue::Table', 'issues/3892'],
-      ['AWS::Route53::RecordSet', 'issues/3890'],
-    ])('names the open parity issue for %s', (resourceType, issue) => {
+    it.each([['AWS::Route53::RecordSet', 'issues/3890']])('names the open parity issue for %s', (resourceType, issue) => {
       const message = compositeIdSeparatorRefusal(resourceType, 'R', [
         { name: 'a', value: 'x|y' },
         { name: 'b', value: 'z' },
@@ -263,59 +262,6 @@ describe('composite-id', () => {
       // One message builder for both entry points, so the probe and the action
       // can never describe the refusal differently.
       expect(thrown).toBe(refusal);
-    });
-  });
-
-  // Issue #1672: the FINAL segment may carry the separator when every reader of
-  // the type places it by the leading segments (`AWS::Glue::Table`'s table name).
-  describe('mayContainSeparator', () => {
-    it('packs a separator in the exempt final segment without refusing', () => {
-      const onRefusal = vi.fn();
-      expect(
-        packCompositeId(
-          'AWS::Glue::Table',
-          'MyTable',
-          [
-            { name: 'databaseName', value: 'mydb' },
-            { name: 'tableName', value: 'a|b', mayContainSeparator: true },
-          ],
-          { onRefusal }
-        )
-      ).toBe('mydb|a|b');
-      expect(onRefusal).not.toHaveBeenCalled();
-    });
-
-    it('still refuses a separator in a leading segment beside an exempt final one', () => {
-      expect(() =>
-        packCompositeId('AWS::Glue::Table', 'MyTable', [
-          { name: 'databaseName', value: 'my|db' },
-          { name: 'tableName', value: 'a|b', mayContainSeparator: true },
-        ])
-      ).toThrow(/^AWS::Glue::Table MyTable: databaseName 'my\|db' contains '\|'/);
-    });
-
-    it('rejects the exemption on any segment but the last, as a programming error', () => {
-      const segments = [
-        { name: 'databaseName', value: 'mydb', mayContainSeparator: true as const },
-        { name: 'tableName', value: 'orders' },
-      ];
-      // A plain Error, not a ProvisioningError: this is cdkd's own mistake, and
-      // it must fire even though no segment actually carries the separator.
-      expect(() => packCompositeId('AWS::Glue::Table', 'MyTable', segments)).toThrow(
-        /only the last segment may carry/
-      );
-      expect(() => compositeIdSeparatorRefusal('AWS::Glue::Table', 'MyTable', segments)).toThrow(
-        /only the last segment may carry/
-      );
-    });
-
-    it('leaves the predicate silent for the exempt segment', () => {
-      expect(
-        compositeIdSeparatorRefusal('AWS::Glue::Table', 'MyTable', [
-          { name: 'databaseName', value: 'mydb' },
-          { name: 'tableName', value: 'a|b', mayContainSeparator: true },
-        ])
-      ).toBeUndefined();
     });
   });
 

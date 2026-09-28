@@ -2,6 +2,7 @@ import { getLogger } from '../utils/logger.js';
 import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  equalIdNamesDifferentResources,
   equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -7546,6 +7547,11 @@ export class DeployEngine {
             oldType: oldResourceType,
             newType: resourceType,
             createLayer: replaceDecision.provisionedBy,
+            // Issue #3892: a Glue table's id is placed by DatabaseName, so an
+            // equal id can be a genuinely new table in another database.
+            oldProperties: currentResource.properties,
+            newProperties: resolvedProps,
+            physicalId: currentResource.physicalId,
           });
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
@@ -8727,7 +8733,16 @@ export class DeployEngine {
                 // without the new properties ever being applied — so fail
                 // before any state bookkeeping runs. The property-driven twin
                 // makes the same call with the same code.
-                if (createResult.physicalId === currentResource.physicalId) {
+                if (
+                  createResult.physicalId === currentResource.physicalId &&
+                  // Issue #3892: an equal id can still be a NEW table (Glue).
+                  !equalIdNamesDifferentResources({
+                    resourceType,
+                    physicalId: currentResource.physicalId,
+                    oldProperties: currentResource.properties,
+                    newProperties: resolvedProps,
+                  })
+                ) {
                   const idempotentNameOrigin = this.replacementNameOrigin(
                     logicalId,
                     currentResource.physicalId
@@ -10051,7 +10066,7 @@ export class DeployEngine {
      * export blocker DO recognise. Firing there would silently change the
      * pre-existing issue #2274 behaviour (an output that published `'***'`
      * would vanish) for no safety gain, and would render this message's
-     * "would publish the resource's raw physical id" over a read for which
+     * "would publish a value cdkd cannot confirm" over a read for which
      * there is no physical-id fall-through — the wrong-advice class this PR
      * has spent three rounds removing.
      *
@@ -10087,8 +10102,9 @@ export class DeployEngine {
       throw markNonRetryable(
         new Error(
           `Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
-            `holds only the redaction mask there, so this output would publish the resource's ` +
-            `raw physical id instead of the value CloudFormation's Ref returns — a wrong value ` +
+            `holds only the redaction mask there, so this output would publish a value cdkd ` +
+            `cannot confirm (for most such types the resource's raw physical id) instead of the ` +
+            `value CloudFormation's Ref returns — a possibly wrong value ` +
             `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
             `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
         )

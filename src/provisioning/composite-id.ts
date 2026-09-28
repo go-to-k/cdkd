@@ -27,30 +27,28 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * pair (or warn-and-skips, reporting success while the real resource stays
  * alive and billing), and `cdkd drift` reads back `undefined` forever.
  *
- * AWS itself can accept such a segment — `glue:CreateTable` with
- * `TableInput.Name: 'a|b'` succeeds — and CloudFormation manages the resource
- * fine. The limitation is cdkd's own, so the honest answer is to REFUSE at
- * deploy time with a message that says so, rather than to record an id that
- * silently names something else.
+ * Where AWS itself accepts such a segment (the `AWS::Route53::RecordSet`
+ * record name, #3890) and CloudFormation manages the resource fine, the
+ * limitation is cdkd's own, so the honest answer is to REFUSE at deploy time
+ * with a message that says so, rather than to record an id that silently names
+ * something else — unless every reader of the type can place the segments,
+ * as below.
  *
- * ## The one segment that may carry it: the LAST, when every reader can say so
+ * ## A type whose readers anchor does not pack through here
  *
- * A separator inside the FINAL segment is not ambiguous by itself. If every
- * earlier segment is refused a `|`, the first `|` in the id is always a real
- * separator, and everything after the last real separator is the final
- * segment — `mydb|a|b` can only be table `a|b` in database `mydb`. What makes
- * it ambiguous is a READER that splits differently: a bare `split('|')`
- * destructuring, or a `lastIndexOf('|')`.
+ * The separator is ambiguous only to a READER that splits: a bare
+ * `split('|')` destructuring, or a `lastIndexOf('|')`. A reader that knows
+ * one segment's value from elsewhere can place the rest exactly —
+ * {@link segmentAfterAnchor} takes `mydb|a|b` with the recorded anchor `mydb`
+ * as `a|b`, and `x|y|t` with the anchor `x|y` as `t`.
  *
- * So {@link CompositeIdSegment.mayContainSeparator} exempts the final segment,
- * and it is a claim about the type's READERS rather than about the value: set
- * it only once every decode site of the type takes the final segment as
- * "everything after the leading segments" (or anchors on a recorded leading
- * segment with {@link segmentAfterAnchor}), and its `Ref` extraction does the
- * same. `AWS::Glue::Table` is the one type that sets it (issue #1672): a table
- * name may contain `|` (the API accepts it; live probe, us-east-1 2026-08-12),
- * its decode sites anchor on the recorded `DatabaseName`, and its `Ref` takes
- * the table name the same way. The database name is still refused (issue #3892).
+ * `AWS::Glue::Table` is such a type (issues #1672, #3892). Glue accepts `|` in
+ * both a table name (live probe, us-east-1 2026-08-12) and a database name
+ * (live probe through the `glue-update-hardening` fixture, 2026-09-28), and
+ * every reader of its `<databaseName>|<tableName>` id anchors on the recorded
+ * `DatabaseName`: the provider's decode sites (which SKIP an id they cannot
+ * anchor rather than guess) and the `Ref` resolver. So `createTable` builds
+ * the id directly and refuses neither segment; nothing here guards it.
  *
  * The per-type audit (2026-09-28, issue #1672) found no other type whose
  * AWS-accepted segment values can contain `|`, apart from
@@ -112,18 +110,13 @@ export const COMPOSITE_ID_SEPARATOR = '|';
  * The sentence naming the open parity issue, for each type whose refused
  * value the AWS API admits — where the refusal is a cdkd limitation rather
  * than a value no deploy could use. The per-type audit behind this list is
- * issue #1672 (comment 5857791844, amended for the Glue database name). It
+ * issue #1672 (comment 5857791844, amended for the Glue database name, which
+ * #3892 then lifted: `AWS::Glue::Table` no longer refuses at all). It
  * covers cdkd's SDK packers only; a type absent from it gets a NEUTRAL
  * sentence (`parityClause`), since `cc-import-identifier.ts` also calls the
  * refusal for arbitrary Cloud Control types nobody audited.
  */
 const PARITY_GAP: ReadonlyMap<string, string> = new Map([
-  // Only the DATABASE name is refused; the table name is exempt (see above).
-  [
-    'AWS::Glue::Table',
-    `The Glue API's name pattern admits '|' in a database name (not live-probed), and cdkd ` +
-      `does not support it yet: tracked in https://github.com/go-to-k/cdkd/issues/3892.`,
-  ],
   [
     'AWS::Route53::RecordSet',
     `Route 53's domain-name format admits '|' in a record name (per its docs), and cdkd ` +
@@ -163,16 +156,6 @@ export interface CompositeIdSegment {
    * a way that decodes to a DIFFERENT resource.
    */
   readonly value: unknown;
-  /**
-   * Exempt this segment from the separator refusal. Only the FINAL segment may
-   * set it — {@link packCompositeId} throws on any other position, since a `|`
-   * inside a leading segment moves every separator after it.
-   *
-   * It is a claim about the type's READERS, not about the value: set it only
-   * once every decode site and the `Ref` extraction of the type take the final
-   * segment as everything after the leading ones. See the module header.
-   */
-  readonly mayContainSeparator?: true;
 }
 
 /** Options shared by {@link packCompositeId}. */
@@ -213,33 +196,15 @@ export interface CompositeIdOptions {
 }
 
 /**
- * True when the segment at `index` may carry the separator.
- *
- * @throws Error when a segment other than the last claims the exemption — a
- *   programming error in the caller, since a `|` in a leading segment shifts
- *   every separator after it and no reader can undo that.
- */
-function exemptFromRefusal(segment: CompositeIdSegment, index: number, count: number): boolean {
-  if (segment.mayContainSeparator !== true) return false;
-  if (index !== count - 1) {
-    throw new Error(
-      `Internal: composite id segment '${segment.name}' claims mayContainSeparator, but only ` +
-        `the last segment may carry '${COMPOSITE_ID_SEPARATOR}'`
-    );
-  }
-  return true;
-}
-
-/**
  * The final segment of a composite id whose leading segments are exactly
  * `anchor`, or `undefined` when `anchor` does not prefix it.
  *
- * This is how a reader takes a final segment that may itself contain the
- * separator ({@link CompositeIdSegment.mayContainSeparator}) without guessing
- * where the leading segments end: the anchor is the leading part as recorded
- * somewhere else (a state record's property), so `mydb|a|b` with anchor `mydb`
- * is `a|b`. Returns `undefined` for a non-string or empty anchor, an id that
- * does not start with `<anchor>|`, and an empty remainder — each is "this
+ * This is how a reader places segments that may themselves contain the
+ * separator without guessing where the leading ones end: the anchor is the
+ * leading part as recorded somewhere else (a state record's property), so
+ * `mydb|a|b` with anchor `mydb` is `a|b`, and `x|y|t` with anchor `x|y` is `t`.
+ * Returns `undefined` for a non-string or empty anchor, an id that does not
+ * start with `<anchor>|`, and an empty remainder — each is "this
  * anchor cannot place the separator", and the caller falls back.
  */
 export function segmentAfterAnchor(physicalId: string, anchor: unknown): string | undefined {
@@ -272,10 +237,8 @@ export function compositeIdSeparatorRefusal(
   // The STRINGIFIED form, not `typeof value === 'string'` — identical for a
   // real string, and the only spelling that catches the array / boxed shapes an
   // unvalidated `as string` cast lets through. See {@link CompositeIdSegment.value}.
-  const offending = segments.filter(
-    (segment, index) =>
-      !exemptFromRefusal(segment, index, segments.length) &&
-      String(segment.value).includes(COMPOSITE_ID_SEPARATOR)
+  const offending = segments.filter((segment) =>
+    String(segment.value).includes(COMPOSITE_ID_SEPARATOR)
   );
   if (offending.length === 0) return undefined;
 

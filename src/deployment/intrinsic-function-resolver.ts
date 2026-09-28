@@ -446,12 +446,14 @@ export type RefStateLookup = (
 /** Per-call options for a {@link RefStateLookup}. */
 export interface RefStateLookupOptions {
   /**
-   * `false` when the caller has a CORRECT answer without the key, so a masked
-   * leaf must not be reported as a redacted read (which refuses the deploy or
-   * the output). Only {@link glueTableRefFromPhysicalId} passes it: its
-   * fallback is exact for every id the current binary records. Default: report.
+   * For a caller with NO redaction bag: keep scanning past a masked leaf and
+   * return a clean value from a later bag when one exists, the mask only when
+   * none does. Without it such a caller gets the first mask it meets, even
+   * beside a clean `attributes` value. Only {@link glueTableRefFromPhysicalId}
+   * passes it, for the `DatabaseName` anchor `cdkd import` records in both
+   * bags (issue #3892). A caller WITH a bag already skips masks; unchanged.
    */
-  readonly reportMasked?: boolean;
+  readonly preferCleanValue?: boolean;
 }
 
 /**
@@ -547,6 +549,9 @@ export function refStateLookupFromResource(
   onMaskedValue?: (key: string) => void
 ): RefStateLookup {
   return (keys, options) => {
+    // Only for a caller with no bag that asked for it: the first mask seen,
+    // returned if no clean value follows.
+    let deferredMask: string | undefined;
     // THE KEY AND ITS NOTIFIER ARE RECORDED TOGETHER, so the invariant is
     // type-level rather than a comment: a skipped mask exists only where there
     // is a callback to report it to. An earlier revision kept a bare
@@ -566,7 +571,11 @@ export function refStateLookupFromResource(
             // A caller that passed no `onMaskedValue` gets `main`'s behaviour
             // byte for byte: the mask is RETURNED, four readers recognise it,
             // and this function has changed nothing for them.
-            if (onMaskedValue === undefined) return value;
+            if (onMaskedValue === undefined) {
+              if (options?.preferCleanValue !== true) return value;
+              deferredMask ??= value;
+              continue;
+            }
             masked ??= { key, notify: onMaskedValue };
             continue;
           }
@@ -574,7 +583,8 @@ export function refStateLookupFromResource(
         }
       }
     }
-    if (masked !== undefined && options?.reportMasked !== false) masked.notify(masked.key);
+    if (deferredMask !== undefined) return deferredMask;
+    if (masked !== undefined) masked.notify(masked.key);
     return undefined;
   };
 }
@@ -584,33 +594,38 @@ export function refStateLookupFromResource(
  * `<databaseName>|<tableName>` physical id, or `undefined` for a pipe-free id
  * (which the caller passes through unchanged).
  *
- * A table name may itself contain `|` (issue #1672: AWS accepts one, and
- * CloudFormation manages such a table), so neither after-LAST-pipe nor a bare
- * split can find it: `mydb|a|b` is table `a|b`. The id is read the way
+ * EITHER name may contain `|` (a table name since issue #1672, a database name
+ * since #3892; AWS accepts both and CloudFormation manages such tables), so
+ * neither after-LAST-pipe nor a bare split can find it: `mydb|a|b` is table
+ * `a|b`, `x|y|t` in database `x|y` is table `t`. The id is read the way
  * `GlueProvider`'s decode sites read it (`decodeTableId`), so a `{Ref}` names
  * the table they address:
  *
- * 1. With more than one `|`, anchor on the `DatabaseName` recorded in state —
- *    the table name is everything after `<DatabaseName>|`. This is also what
- *    reads a record whose DATABASE name carries a `|` (an older binary, or a
- *    rollback replay, which downgrades `createTable`'s refusal to a warning).
- * 2. Otherwise everything after the FIRST `|`: `createTable` and `import()`
- *    refuse a `|` in the database name, so on every id they write the first
- *    `|` is the boundary. A two-segment id never consults state, so an
- *    ordinary table's `Ref` reads nothing but its id, as it always has.
+ * 1. With more than one `|`, anchor on the `DatabaseName` recorded in state
+ *    (`properties`, then `attributes`) — the table name is everything after
+ *    `<DatabaseName>|`. Every current writer records it: `createTable` in
+ *    `properties`, resolved; `importTable` also in `attributes`, for a record
+ *    whose `properties` keep an unresolved intrinsic.
+ * 2. Otherwise everything after the FIRST `|`. For a two-segment id that is
+ *    exact, and a two-segment id never consults state, so an ordinary table's
+ *    `Ref` reads nothing but its id, as it always has. For a longer id it is a
+ *    guess, reached only by a record no current writer produces (an older
+ *    binary's import or replay, or a hand edit) — where the decode sites SKIP
+ *    the same record loudly, so the stack is already flagged.
  *
- * Unlike the decode sites, which WRITE and so skip an id they cannot anchor,
- * this must return SOME value, and step 2 is the right one for everything the
- * current binary records.
+ * A MASKED `DatabaseName` in step 1 is handled as for every state-recovered
+ * `Ref`: with database names allowed to carry `|`, the step 2 fallback can no
+ * longer be trusted for a longer id. A caller with a redaction bag gets a
+ * redacted read reported (the deploy or output refuses); a caller without one
+ * gets the MASK itself back, which its downstream readers recognise — never
+ * the guess, which they would not.
  *
- * A MASKED `DatabaseName` in step 1 is never used as the anchor: the mask
- * prefixes nothing, so step 2 answers. It is deliberately NOT reported as a
- * redacted read (`reportMasked: false`), unlike every other state-recovered
- * `Ref`: those have only the raw physical id to fall back to — the wrong value
- * the refusal's message warns about — while step 2 here is exact for every id
- * the current binary records. Only a legacy record whose DATABASE name
- * carries a `|` and whose `DatabaseName` is masked would read wrong, and
- * refusing every such deploy to guard it would refuse correct values too.
+ * The lookup returns the first string `DatabaseName` it meets (`properties`,
+ * then `attributes`), so an anchor that does not prefix the id ends the search
+ * there; the decode sites try each bag instead. A `DatabaseName` that does not
+ * prefix the id is recorded by `cdkd import`'s two-segment composite reading
+ * (`a|b` beside a template `DatabaseName` of `x`); such an id has one `|`, so
+ * step 1 never runs for it and both readers take `b`.
  */
 export function glueTableRefFromPhysicalId(
   physicalId: string,
@@ -619,10 +634,16 @@ export function glueTableRefFromPhysicalId(
   const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
   if (firstPipe < 0) return undefined;
   if (physicalId.includes(COMPOSITE_ID_SEPARATOR, firstPipe + 1) && stateLookup) {
-    const tableName = segmentAfterAnchor(
-      physicalId,
-      stateLookup(['DatabaseName'], { reportMasked: false })
-    );
+    // `preferCleanValue`: an imported record can carry a masked property beside
+    // a clean `attributes.DatabaseName` (issue #3892); the clean one anchors.
+    const anchor = stateLookup(['DatabaseName'], { preferCleanValue: true });
+    // A caller with no redaction bag gets the MASK back from the lookup (the
+    // lookup's opt-in). Serve it rather than the first-`|` guess: the mask is
+    // what `refuseMaskedReplayBaseline`, `cdkd export`'s blocker and drift
+    // recognise, while a guess — wrong for a database name carrying `|` —
+    // passes all of them.
+    if (anchor !== undefined && carriesSecretMask(anchor)) return anchor;
+    const tableName = segmentAfterAnchor(physicalId, anchor);
     if (tableName !== undefined) return tableName;
   }
   return physicalId.substring(firstPipe + 1);
@@ -4817,9 +4838,9 @@ export class IntrinsicFunctionResolver {
    * they have no SDK provider, or the #614 silent-drop routing sent an
    * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
    * — `AWS::S3Tables::Namespace` / `::Table` — are compound because their own
-   * SDK provider packs the segments. (`AWS::Glue::Table` packs one too, but
-   * takes {@link glueTableRefFromPhysicalId}: its last segment may contain `|`.) The Set's
-   * header records the split per type; examples:
+   * SDK provider packs the segments. (`AWS::Glue::Table` builds one too, but
+   * takes {@link glueTableRefFromPhysicalId}: either of its segments may
+   * contain `|`.) The Set's header records the split per type; examples:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
    *     `RequestModels: { "application/json": { "Ref": <Model> } }` would
@@ -4941,9 +4962,8 @@ export class IntrinsicFunctionResolver {
    *
    * `key` is never masked before interpolation because it is not template text:
    * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
-   * (`TableName` / `Name` / `SelectionId` / `RepositoryId` / the AppSync ARN
-   * attributes), all cdkd literals. (`AWS::Glue::Table`'s `DatabaseName` read
-   * passes `reportMasked: false` and never reaches here.)
+   * (`TableName` / `Name` / `DatabaseName` / `SelectionId` / `RepositoryId` /
+   * the AppSync ARN attributes), all cdkd literals.
    */
   private noteRefStateMask(logicalId: string, key: string, context: ResolverContext): void {
     this.pushRedactedAttributeRead(context, {

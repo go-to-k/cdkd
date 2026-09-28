@@ -918,6 +918,13 @@ equal id is the existing resource, and the replacement is refused with
 `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created
 (`--replace` deletes the old resource first instead, as for any name-idempotent
 create).
+Within one type an equal id is the same resource, with one exception: two
+`AWS::Glue::Table` records in DIFFERENT databases can share an id when either
+name contains `|` (table `db|orders` in database `my`, table `orders` in
+database `my|db`). When both records' `DatabaseName` prefix the shared id and
+differ, cdkd treats them as two tables, so such a replacement keeps the new
+table and deletes the old one through its own record, and a rollback reverses
+it.
 When the new resource's create collides on a name instead, the error says that
 the holder may be an unrelated resource of the new type, which `--replace`
 cannot free.

@@ -546,15 +546,14 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.reason).toContain('TableName');
   });
 
-  // Issue #1672: a Glue table name may contain `|`, and for an id with more
-  // than one `|` the `Ref` anchors on the recorded DatabaseName. A masked
-  // anchor is NOT a refusal there (the lookup reads with `reportMasked: false`):
-  // the fallback after the first `|` is exact for every id cdkd records, so the
-  // reference is rewritten to the table name, never to the mask.
+  // Issue #1672 / #3892: for an id with more than one `|` the Glue `Ref` anchors
+  // on the recorded DatabaseName. A masked anchor is the same refusal as any
+  // masked recovery key; an ordinary two-segment id never reads state and
+  // rewrites normally.
   it.each([
-    ['a `|`-named table with a masked anchor', 'mydb|a|b', 'a|b'],
-    ['a two-segment Glue id with a masked anchor', 'mydb|orders', 'orders'],
-  ])('rewrites %s to the table name', async (_n, physicalId, tableName) => {
+    ['refuses a masked DatabaseName anchor on a `|`-bearing id', 'mydb|a|b', 1],
+    ['rewrites a two-segment Glue id without reading the masked anchor', 'mydb|orders', 0],
+  ])('%s', async (_n, physicalId, unresolvable) => {
     const state = baseState({
       Tbl: {
         physicalId,
@@ -570,8 +569,13 @@ describe('rewriteResourceReferences', () => {
 
     const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
 
-    expect(result.unresolvable).toHaveLength(0);
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: tableName });
+    expect(result.unresolvable).toHaveLength(unresolvable);
+    if (unresolvable === 1) {
+      expect(result.unresolvable[0]?.reason).toContain('DatabaseName');
+      expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
+    } else {
+      expect(result.state.resources['Other']?.properties).toEqual({ Value: 'orders' });
+    }
   });
 
   it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {

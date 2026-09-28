@@ -87,10 +87,10 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
   compositeIdSkipResult,
-  packCompositeId,
   segmentAfterAnchor,
   type CompositeIdFormat,
 } from '../composite-id.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import {
   replayWarn,
@@ -123,12 +123,11 @@ const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
  * Decode an `AWS::Glue::Table` physicalId `<databaseName>|<tableName>`.
  *
  * The separator is unescaped (issue #1672), so a bare split of an id whose
- * table name carries a `|` returns a DIFFERENT table — `mydb|a|b` splits to
- * `mydb.a`, both halves non-empty, and a delete of it would hit the wrong
- * table. Such ids are ordinary since issue #1672 lifted `createTable`'s refusal
- * of a `|` in the TABLE name (the database name is still refused), and older
- * ones exist too: a state-replay create warns and packs one anyway, and
- * binaries before the #1719 refusal recorded them. The recorded `DatabaseName`
+ * table or database name carries a `|` returns a DIFFERENT table — `mydb|a|b`
+ * splits to `mydb.a`, both halves non-empty, and a delete of it would hit the
+ * wrong table. Such ids are ordinary since `createTable` accepts a `|` in the
+ * table name (issue #1672) and in the database name (#3892), and older ones
+ * exist too: binaries before the #1719 refusal recorded them. The recorded `DatabaseName`
  * disambiguates the id without re-deriving the identity from the bag: it is
  * used only when the id starts with it, and the table name is the remainder
  * ({@link segmentAfterAnchor}). The `Ref` resolver anchors the same way
@@ -140,10 +139,44 @@ const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
  * anything longer returns `undefined`, the malformed-id arm every caller
  * already has. That is deliberately stricter than the `Ref` fallback (which
  * takes everything after the FIRST `|`): these sites WRITE — `deleteTable`
- * deletes what they decode — and a record left by an older binary or a replay
- * may carry the `|` in its database name, where the first-`|` reading names a
- * different table. A loud skip is the safe failure for a write.
+ * deletes what they decode — and a database name may carry the `|` (#3892),
+ * where the first-`|` reading names a different table. A loud skip is the safe
+ * failure for a write.
  */
+/**
+ * The message for an id {@link decodeTableId} could not place.
+ *
+ * An id with ONE `|` that fails is malformed (an empty half), and the shared
+ * wording's remedy — repair the id — is right. An id with MORE than one `|`
+ * whose bags carry no string `DatabaseName` is usually NOT malformed: cdkd
+ * places it by that value, and `cdkd import` can record it as an unresolved
+ * intrinsic. There the remedy is the property, not the id, and saying
+ * otherwise would send the user to edit a correct id.
+ */
+function tableIdDecodeFailure(
+  logicalId: string,
+  physicalId: string,
+  bags: readonly (Record<string, unknown> | undefined)[],
+  options?: { readonly skipping?: boolean }
+): string {
+  const head = compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, options);
+  const longId = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
+  // A MASKED string is no anchor either: it prefixes nothing.
+  const anchorless = bags.every((bag) => {
+    const databaseName = bag?.['DatabaseName'];
+    return typeof databaseName !== 'string' || carriesSecretMask(databaseName);
+  });
+  if (!longId || !anchorless) return head;
+  return (
+    `${head}${head.endsWith('.') ? '' : '.'} NOTE: this id carries more than one '|', which ` +
+    `cdkd places by the recorded DatabaseName, and this record's DatabaseName is not a usable ` +
+    `string (an unresolved intrinsic, as cdkd import can record it, or a redaction mask). The ` +
+    `id itself may be correct: set the record's properties.DatabaseName in state.json to the ` +
+    `table's database, EXACTLY — cdkd takes the table name as everything after it, so a shorter ` +
+    `prefix of the real name would address a different table.`
+  );
+}
+
 function decodeTableId(
   physicalId: string,
   ...bags: (Record<string, unknown> | undefined)[]
@@ -377,17 +410,17 @@ function logCatalogScopedDeleteSkip(
  * 2026-08-12): `glue:CreateTable` ACCEPTS a table literally named `a|b`, and
  * CloudFormation manages it, reporting the bare `a|b` as its physical id.
  *
- * Such a table IS adoptable since issue #1672, on one condition: the record
- * must decode back to the same table. A `|` in the TABLE name is decodable —
+ * Such a table IS adoptable (issue #1672 for a table name, #3892 for a
+ * database name; Glue accepts `|` in both), on one condition: the record must
+ * decode back to the same table. A `|` in either name is decodable —
  * `updateTable` / `deleteTable` / `readTable` anchor on the recorded
  * `DatabaseName` ({@link decodeTableId}) and so does the `Ref` resolver — but
  * only when that recorded `DatabaseName` IS the database probed. Import records
- * the template's bag, so a table name carrying `|` is accepted only paired with
- * the template's own `DatabaseName`; paired with anything else (a composite
- * naming another database, or an unresolved template intrinsic) the record
- * would carry no anchor, and without one the writers decode only the exact
- * two-segment form. A `|` in the DATABASE name is refused everywhere, as
- * `createTable` refuses it: it is what would make the first `|` a lie.
+ * the template's bag, so a name carrying `|` is accepted only paired with the
+ * template's own `DatabaseName`; paired with anything else (a composite naming
+ * another database, or an unresolved template intrinsic) the record would
+ * carry no anchor, and without one the writers decode only the exact
+ * two-segment form.
  *
  * A `|`-bearing known id that EQUALS the template's `TableInput.Name` is read
  * only as that bare name in the template's database: it is CloudFormation's id
@@ -436,9 +469,9 @@ const GLUE_NAME_MAX_LENGTH = 255;
 type TableIdentityResult =
   | { ok: true; candidates: readonly TableReading[] }
   /**
-   * The id cannot be placed: a database name contains `|`, or a `|`-bearing id
-   * that the template's `DatabaseName` neither anchors nor pairs with has more
-   * than two segments.
+   * The id cannot be placed: a `|`-bearing id that the template's
+   * `DatabaseName` neither anchors nor pairs with has more than two segments,
+   * or equals the template's table name with no usable `DatabaseName`.
    */
   | { ok: false; reason: 'pipe-in-name' }
   /** An id was supplied but no usable `(database, table)` pair came out of it. */
@@ -455,27 +488,22 @@ function resolveTableIdentity(input: {
 
   const candidates: TableReading[] = [];
   let sawPipeInName = false;
-  // Every pair goes through here. A database name carrying `|` puts a
-  // separator where every reader expects the boundary, so it is refused
-  // whichever branch produced it, as `createTable` refuses it.
+  // Every pair goes through here.
   //
-  // The other condition — a `|` table name must be paired with the TEMPLATE's
-  // `DatabaseName`, the value later readers anchor on — holds by construction
-  // rather than by a check here: the only branches that can yield such a name
-  // (template, anchored, bare) all pair it with `templateDatabaseName`, and the
-  // two-segment composite yields pipe-free halves. A new branch must keep it
-  // so. (The anchor then depends on `cdkd import` recording that value
-  // resolved; see `importTable` for what happens when it cannot.)
+  // The one condition a record needs — a `|` in EITHER name must be paired
+  // with the TEMPLATE's `DatabaseName`, the value later readers anchor on —
+  // holds by construction rather than by a check here: the only branches that
+  // can yield such a name (template, anchored, bare) all pair it with
+  // `templateDatabaseName`, and the two-segment composite yields pipe-free
+  // halves. A new branch must keep it so. (`importTable` records the probed
+  // database as an attribute too, so the `Ref` resolver can anchor even when
+  // `cdkd import` records the property unresolved.)
   const consider = (
     databaseName: string | undefined,
     tableName: string | undefined,
     reading: TableReading['reading']
   ): void => {
     if (databaseName === undefined || tableName === undefined) return;
-    if (databaseName.includes('|')) {
-      sawPipeInName = true;
-      return;
-    }
     candidates.push({ databaseName, tableName, reading });
   };
 
@@ -1229,42 +1257,40 @@ export class GlueProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
 
-    // The id is `<databaseName>|<tableName>` (issue #1672). A `|` in the TABLE
-    // name is accepted, as CloudFormation accepts it: `glue:CreateTable` with
-    // `TableInput.Name: 'a|b'` SUCCEEDS (probe, us-east-1 2026-08-12), and every
-    // reader places the table name by the recorded `DatabaseName` — this
-    // provider's decode sites through `decodeTableId`, the `Ref` resolver
-    // through `glueTableRefFromPhysicalId` — so `<db>|a|b` reads back as table
-    // `a|b`. A `|` in the DATABASE name is still REFUSED, before `CreateTable`
-    // runs so the refusal cannot orphan a table: when the recorded
-    // `DatabaseName` is unusable (masked, or an unresolved intrinsic on an
-    // imported record) the `Ref` resolver falls back to the FIRST `|` as the
-    // boundary, which a database name carrying one would make a lie. (The decode
-    // sites fall back to the exact two-segment form, and skip anything longer.)
-    // `import()` applies the same rule via `resolveTableIdentity`, which is why
-    // the composite it builds needs no second guard.
-    const physicalId = packCompositeId(
-      resourceType,
-      logicalId,
-      [
-        { name: 'databaseName', value: databaseName },
-        { name: 'tableName', value: tableName, mayContainSeparator: true },
-      ],
-      // A reverse-replacement rollback creates from a STATE record, so the
-      // refusal downgrades to a warning: the user cannot edit a state record
-      // from their template, and a table recorded by an older binary under the
-      // ambiguous id must still be restorable.
-      {
-        // Issue #2176: the refusal QUOTES the offending segment value, on the
-        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
-        // goes through unconditionally -- it is absent on the paths that have no
-        // context, where it degrades to identity.
-        maskSecrets: context?.maskSecrets,
-        ...(context?.replayingState === true && {
-          onRefusal: (message: string) => this.logger.warn(message),
-        }),
+    // The id is `<databaseName>|<tableName>`, and EITHER name may contain `|`,
+    // as CloudFormation allows: Glue accepts it in a table name (probe,
+    // us-east-1 2026-08-12, issue #1672) and in a database name (probe through
+    // the `glue-update-hardening` fixture, 2026-09-28, issue #3892). The id is
+    // therefore not split by any reader. The provider's decode sites
+    // (`decodeTableId`) and the `Ref` resolver (`glueTableRefFromPhysicalId`)
+    // place the table name by the recorded `DatabaseName` — which this create
+    // always records as a resolved string. Without a usable anchor the decode
+    // sites read only an id with exactly one `|` and SKIP or refuse anything
+    // longer, and `Ref` reports a masked anchor as a redacted read. So nothing
+    // is refused here and nothing is packed through `packCompositeId`.
+    // `import()` pairs a `|`-bearing name with the template's own
+    // `DatabaseName` for the same reason (`resolveTableIdentity`).
+    //
+    // Both names must be STRINGS: the reads above are unvalidated casts, and a
+    // template can put an array or object there (`Name: ['a|b']` is truthy and
+    // passes the presence checks). Stringified into the id it would record a
+    // value no reader can place, and `CreateTable` rejects it anyway — so this
+    // refuses on every path, a state replay included: no replay of such a
+    // value could have succeeded.
+    for (const [field, value] of [
+      ['DatabaseName', databaseName],
+      ['TableInput.Name', tableName],
+    ] as const) {
+      if (typeof value !== 'string') {
+        throw new ProvisioningError(
+          `Glue Table ${logicalId}: ${field} must be a string, got ` +
+            `${describeUnresolvedName(value)}. Set it to the ${field === 'DatabaseName' ? 'database' : 'table'} name.`,
+          resourceType,
+          logicalId
+        );
       }
-    );
+    }
+    const physicalId = `${databaseName}|${tableName}`;
 
     try {
       await this.getClient().send(
@@ -1338,7 +1364,7 @@ export class GlueProvider implements ResourceProvider {
     const decoded = decodeTableId(physicalId, previousProperties, properties);
     if (!decoded) {
       throw new ProvisioningError(
-        compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId),
+        tableIdDecodeFailure(logicalId, physicalId, [previousProperties, properties]),
         resourceType,
         logicalId,
         physicalId
@@ -1514,7 +1540,7 @@ export class GlueProvider implements ResourceProvider {
     const decoded = decodeTableId(physicalId, properties);
     if (!decoded) {
       this.logger.warn(
-        compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
+        tableIdDecodeFailure(logicalId, physicalId, [properties], { skipping: true })
       );
       // Issue #1752: report the SKIP rather than returning void. A bare
       // `return` here is indistinguishable from a completed delete, so the
@@ -2667,11 +2693,10 @@ export class GlueProvider implements ResourceProvider {
           this.logger.warn(
             `AWS::Glue::Table ${input.logicalId}: cannot be imported because the '|' in a name ` +
               `cannot be placed. cdkd records this type's physical id as ` +
-              `<databaseName>|<tableName>, with '|' as the separator: a table name containing ` +
-              `'|' is adopted only with the template's own DatabaseName (which is how cdkd later ` +
-              `tells the two apart), and a database name containing '|' is not supported. ` +
-              `Set the template's DatabaseName to the table's database, rename the database to ` +
-              `omit '|', or manage this resource outside cdkd.`
+              `<databaseName>|<tableName>, with '|' as the separator: a name containing '|' is ` +
+              `adopted only with the template's own DatabaseName (which is how cdkd later tells ` +
+              `the two apart). Set the template's DatabaseName to the table's database, or ` +
+              `manage this resource outside cdkd.`
           );
           break;
         case 'unpairable':
@@ -2759,12 +2784,22 @@ export class GlueProvider implements ResourceProvider {
     // the provider cannot use — trading a visible not-found for a silent one.
     // That is the #1658 failure mode (`AWS::Route53::RecordSet` accepted CFn's
     // id verbatim and the stack became undestroyable). The composite is built
-    // from the pair actually PROBED. A `|` table name is only ever paired with
-    // the template's `DatabaseName`, which later readers anchor on — provided
+    // from the pair actually PROBED. A `|` in either name is only ever paired
+    // with the template's `DatabaseName`, which later readers anchor on — provided
     // the recorded bag carries it resolved; when `cdkd import` cannot resolve
     // it, a three-segment record has no anchor and destroy SKIPS it (loudly,
     // keeping the record) rather than guessing.
-    return { physicalId: `${adopted.databaseName}|${adopted.tableName}`, attributes: {} };
+    const physicalId = `${adopted.databaseName}|${adopted.tableName}`;
+    // An id with more than one `|` is read only by anchoring on `DatabaseName`.
+    // `cdkd import` records the TEMPLATE's bag, where that property can stay an
+    // unresolved intrinsic, so the probed database also rides as an attribute:
+    // the `Ref` resolver reads `properties` then `attributes`. (The decode sites
+    // read only `properties`; without it they skip such a record loudly.)
+    const needsAnchor = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
+    return {
+      physicalId,
+      attributes: needsAnchor ? { DatabaseName: adopted.databaseName } : {},
+    };
   }
 }
 
