@@ -89,7 +89,8 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "sg-circular-dependency",
-        "ssm-secure-dynamic-ref"
+        "ssm-secure-dynamic-ref",
+        "stage-assets"
       ]
     },
     {
