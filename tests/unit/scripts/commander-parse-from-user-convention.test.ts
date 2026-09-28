@@ -407,6 +407,7 @@ interface ArgFunction {
   readonly params: string[];
   /** Each parameter's default expression, as written. */
   readonly defaults: (string | undefined)[];
+  readonly rest: boolean[];
   readonly headerAt: number;
   /** Offsets of the body's braces; an expression-bodied arrow has none. */
   readonly body?: readonly [number, number];
@@ -443,11 +444,12 @@ function functionHeaders(source: string): ArgFunction[] {
       continue;
     }
     const parsed = splitTopLevel(source.slice(open + 1, close)).map((p) =>
-      /^(\.\.\.)?(\w+)\??\s*(?::[^=]*)?(?:=\s*([\s\S]*))?$/.exec(p)
+      /^(\.\.\.)?(\w+)\??\s*(?::(?:[^=]|=>)*)?(?:=(?!>)\s*([\s\S]*))?$/.exec(p)
     );
     out.push({
       name: (m[1] ?? m[2])!,
       params: parsed.map((p) => p?.[2] ?? ''),
+      rest: parsed.map((p) => p?.[1] !== undefined),
       // A rest parameter left empty is `[]`.
       defaults: parsed.map((p) => (p?.[1] ? '[]' : p?.[3]?.trim())),
       headerAt: m.index,
@@ -616,7 +618,12 @@ function expandSite(
       const next = elements.flatMap((e): Element[] => {
         const index = param(e);
         if (index < 0) return [{ ...e, live: false }];
-        const given = callArgs[index];
+        // A rest parameter collects every argument from its position on.
+        const given = fn.rest[index]
+          ? callArgs.length > index
+            ? `[${callArgs.slice(index).join(', ')}]`
+            : undefined
+          : callArgs[index];
         // An omitted argument takes the parameter's default, which is written
         // in the callee's scope, not the caller's; with no default it is opaque.
         const value = given ?? fn.defaults[index];
@@ -904,6 +911,29 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
       'run();',
     ].join('\n');
     expect(texts(defaults, '[stack, ...more]')).toEqual([['lit:MyStack', 'spread:more']]);
+    // A default is written in the callee's scope, so a caller's same-named
+    // parameter must not replace it.
+    const scopedDefault = [
+      "const DEFAULT_ARGS = ['S'];",
+      'function inner(extra = DEFAULT_ARGS) {',
+      "  cmd.parse([...extra], { from: 'user' });",
+      '}',
+      'function outer(DEFAULT_ARGS: string[]) {',
+      '  inner();',
+      '}',
+      "outer(['A', 'B']);",
+    ].join('\n');
+    expect(texts(scopedDefault, '[...extra]')).toEqual([['lit:S']]);
+    // A rest parameter takes every argument from its position on, and a
+    // function-typed parameter's `=>` is not read as a default.
+    const rest = [
+      'function run(cb: () => void, ...args: string[]) {',
+      "  cmd.parse([...args], { from: 'user' });",
+      '}',
+      "run(() => {}, 'A', 'B');",
+    ].join('\n');
+    expect(texts(rest, '[...args]')).toEqual([['lit:A', 'lit:B']]);
+    expect(functionHeaders(rest)[0]!.defaults).toEqual([undefined, '[]']);
     // A parameter still untraced at the hop cap stays opaque even when a
     // file-level array shares its name.
     const capped = [
