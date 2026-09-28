@@ -28,6 +28,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-policy-name DELETE arm
@@ -505,8 +506,14 @@ export class IAMPolicyProvider implements ResourceProvider {
     // non-string `PolicyName` (a number, an unresolved intrinsic object) would
     // otherwise be handed to `DeleteRolePolicy` as-is, while an empty string is
     // already falsy and falls through the `||` to the skip below.
+    // go-to-k/cdkd#3952: a redacted PolicyName names nothing; the physicalId
+    // stays the first source, and a redacted fallback is a named skip below.
+    const recordedPolicyName = properties?.['PolicyName'];
+    const policyNameRedacted = isRedactedRecordedValue(recordedPolicyName);
     const policyNameFromProperties =
-      typeof properties?.['PolicyName'] === 'string' ? properties['PolicyName'] : undefined;
+      typeof recordedPolicyName === 'string' && !policyNameRedacted
+        ? recordedPolicyName
+        : undefined;
     const policyName = policyNameFromPhysicalId || policyNameFromProperties;
 
     // Target lists, hoisted out of the try below so the no-target guard can see
@@ -526,6 +533,11 @@ export class IAMPolicyProvider implements ResourceProvider {
       !roles && !groups && !users && physicalId.includes(':')
         ? physicalId.split(':')[1]
         : undefined;
+
+    if (!policyName && policyNameRedacted) {
+      const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'IAM policy', ['PolicyName']);
+      if (skip) return skip;
+    }
 
     if (!policyName) {
       this.logger.warn(

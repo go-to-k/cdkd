@@ -450,7 +450,7 @@ cdkd destroy MyStack --purge-events -y
 ## Skipped resources on destroy
 
 A **skipped** resource is one cdkd could not address, so it may still exist and
-still be billing. Four causes today:
+still be billing. The causes:
 
 - **A composite `physicalId` that does not decode** (`AWS::Glue::Table`,
   `AWS::AppSync::{DataSource,Resolver,ApiKey}`, `AWS::EC2::NetworkAclEntry`).
@@ -494,6 +494,19 @@ still be billing. Four causes today:
   nothing to repair and every destroy skips it again. Remove the attachment or
   the memberships by hand; the rest of the stack is still destroyed, so once
   this is the stack's last record, `cdkd state orphan '<stack>'` clears it.
+
+- **A state record whose address property cdkd redacted** — a property the
+  delete names the resource by (an API id, a cluster, a group, a Route 53 record
+  value, a security-group rule, an anomaly detector's metric) that is stored as
+  the `***` mask of a `NoEcho` value the resource read, or as a secret
+  `{{resolve:...}}` reference. Neither names anything in AWS, and on several of
+  these APIs an unknown name answers "not found", which used to read as already
+  deleted and drop the record over a live resource. Where a second source holds
+  the value (a Lambda permission's function or an ECS service's cluster in its
+  `physicalId`, an IAM policy's name, an access key's owner looked up from IAM,
+  a Route 53 record's hosted zone in its `physicalId`) it is used instead; otherwise
+  no AWS call is issued. A re-deploy records the same redaction again, so remove
+  the resource by hand and drop the record with `cdkd state orphan '<stack>'`.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted

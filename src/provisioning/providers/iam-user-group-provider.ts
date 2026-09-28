@@ -67,6 +67,10 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties
@@ -1808,6 +1812,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
       );
       return { outcome: 'skipped', reason: MEMBERSHIP_MISSING_FIELDS_SKIP_REASON };
     }
+
+    // go-to-k/cdkd#3952: Users is read below (a redacted entry is malformed
+    // there); GroupName is the other half of the address.
+    const redactedGroup = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'UserToGroupAddition',
+      redactedDeleteAddressFields({ GroupName: properties['GroupName'] })
+    );
+    if (redactedGroup) return redactedGroup;
 
     // A present `Users` that is not a list of IAM user names (go-to-k/cdkd#3888):
     // refused before any call rather than guessing which users it names.

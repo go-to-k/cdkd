@@ -42,6 +42,7 @@ import {
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -52,6 +53,10 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -442,7 +447,7 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
         return this.deleteHostedZone(logicalId, physicalId, resourceType, context);
@@ -1409,7 +1414,7 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Route 53 record set ${logicalId}: ${physicalId}`);
 
     // We need the full record details for DELETE action
@@ -1421,6 +1426,34 @@ export class Route53Provider implements ResourceProvider {
         physicalId
       );
     }
+
+    // go-to-k/cdkd#3952: a record-set DELETE must match the live record set
+    // EXACTLY, so every field `buildResourceRecordSet` sends is part of the
+    // address, and the InvalidChangeBatch arm below reads any mismatch as
+    // "already deleted" -- a TXT value (or a HealthCheckId, a Weight) holding
+    // the mask of a NoEcho value would DROP the record over a live DNS record.
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'Route 53 record set',
+      redactedDeleteAddressFields({
+        Name: properties['Name'],
+        Type: properties['Type'],
+        TTL: properties['TTL'],
+        ResourceRecords: properties['ResourceRecords'],
+        AliasTarget: properties['AliasTarget'],
+        SetIdentifier: properties['SetIdentifier'],
+        Weight: properties['Weight'],
+        Region: properties['Region'],
+        Failover: properties['Failover'],
+        MultiValueAnswer: properties['MultiValueAnswer'],
+        HealthCheckId: properties['HealthCheckId'],
+        GeoLocation: properties['GeoLocation'],
+        GeoProximityLocation: properties['GeoProximityLocation'],
+        CidrRoutingConfig: properties['CidrRoutingConfig'],
+      })
+    );
+    if (redactedSkip) return redactedSkip;
 
     // Parse composite ID: hostedZoneId|name|type. A physicalId that is NOT
     // the composite is CloudFormation's own form (the record name alone —
@@ -1446,6 +1479,18 @@ export class Route53Provider implements ResourceProvider {
     if (composite) {
       hostedZoneId = composite.hostedZoneId;
     } else {
+      // The zone comes from the recorded properties only on this arm; a
+      // composite physicalId above already addresses it (#3952).
+      const redactedZoneSkip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'Route 53 record set',
+        redactedDeleteAddressFields({
+          HostedZoneId: properties['HostedZoneId'],
+          HostedZoneName: properties['HostedZoneName'],
+        })
+      );
+      if (redactedZoneSkip) return redactedZoneSkip;
       try {
         hostedZoneId = await this.resolveHostedZoneId(
           properties,

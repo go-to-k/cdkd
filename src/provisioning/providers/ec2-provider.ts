@@ -124,6 +124,14 @@ import type {
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  isRedactedRecordedValue,
+  REDACTED_DELETE_ADDRESS_SKIP_REASON,
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -3641,12 +3649,34 @@ export class EC2Provider implements ResourceProvider {
 
     // SecurityGroupIngress updates require replacement: revoke old, authorize new
     try {
-      await this.deleteSecurityGroupIngress(
+      const revoked = await this.deleteSecurityGroupIngress(
         logicalId,
         physicalId,
         resourceType,
         previousProperties
       );
+      // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
+      // skipped (provider-delete-path.md): authorizing the new rule would leave
+      // the old one live beside it with no record of it.
+      const revokeSkip = deleteSkipReason(revoked);
+      if (revokeSkip !== undefined) {
+        const why =
+          revokeSkip === REDACTED_DELETE_ADDRESS_SKIP_REASON
+            ? 'its recorded permission is redacted in state'
+            : 'its delete was skipped';
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Cannot update SecurityGroupIngress ${logicalId}: the previous rule could not be ` +
+              `revoked because ${why}, so the new rule was ` +
+              `NOT authorized. Revoke the old rule by hand, then clear the stack's records with ` +
+              `'cdkd state orphan <stack>' — that command drops EVERY record for the stack, not ` +
+              `just this one — and re-deploy.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
       const createResult = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
@@ -3693,13 +3723,31 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * `permission` with every `Description` whose value cdkd redacted removed
+   * (go-to-k/cdkd#3952). A revoke does not match on the description, so
+   * leaving it out addresses the same rule without sending the redaction.
+   */
+  private withoutRedactedDescription<T>(value: T): T {
+    if (Array.isArray(value)) {
+      return value.map((item: unknown) => this.withoutRedactedDescription(item)) as T;
+    }
+    if (value === null || typeof value !== 'object') return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'Description' && isRedactedRecordedValue(child)) continue;
+      out[key] = this.withoutRedactedDescription(child);
+    }
+    return out as T;
+  }
+
   private async deleteSecurityGroupIngress(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
     // Parse composite physicalId: GroupId|Protocol|FromPort|ToPort
@@ -3716,8 +3764,31 @@ export class EC2Provider implements ResourceProvider {
     const [groupId, ipProtocol, fromPortStr, toPortStr] = parts;
 
     // Build IpPermission from properties if available, otherwise from physicalId
+    // go-to-k/cdkd#3952: RevokeSecurityGroupIngress matches the rule by its
+    // permission, and a not-found below reads as "already deleted". NOT
+    // `Description`: a revoke does not match on it, so a redacted one is
+    // simply left out of the permission below rather than blocking the delete.
+    if (properties) {
+      const redactedSkip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'SecurityGroupIngress',
+        redactedDeleteAddressFields({
+          IpProtocol: properties['IpProtocol'],
+          FromPort: properties['FromPort'],
+          ToPort: properties['ToPort'],
+          CidrIp: properties['CidrIp'],
+          CidrIpv6: properties['CidrIpv6'],
+          SourceSecurityGroupId: properties['SourceSecurityGroupId'],
+          SourceSecurityGroupOwnerId: properties['SourceSecurityGroupOwnerId'],
+          SourcePrefixListId: properties['SourcePrefixListId'],
+        })
+      );
+      if (redactedSkip) return redactedSkip;
+    }
+
     const ipPermission = properties
-      ? this.buildIpPermission(properties)
+      ? this.withoutRedactedDescription(this.buildIpPermission(properties))
       : {
           IpProtocol: ipProtocol,
           FromPort: fromPortStr !== '-1' ? Number(fromPortStr) : undefined,

@@ -19,6 +19,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -26,6 +27,10 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * AWS CloudWatch AnomalyDetector Provider (issue #1304)
@@ -195,7 +200,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting CloudWatch anomaly detector ${logicalId}: ${physicalId}`);
 
     if (!properties) {
@@ -208,6 +213,26 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
         physicalId
       );
     }
+
+    // go-to-k/cdkd#3952: DeleteAnomalyDetector addresses the model by its whole
+    // metric descriptor, and a ResourceNotFoundException below reads as
+    // "already deleted" -- so any redacted part of it would DROP the record.
+    // The physicalId encodes the same descriptor, but its `,` / `=` separators
+    // are unescaped, so it is not a lossless second source and is not used.
+    const skip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'CloudWatch anomaly detector',
+      redactedDeleteAddressFields({
+        Namespace: properties['Namespace'],
+        MetricName: properties['MetricName'],
+        Stat: properties['Stat'],
+        Dimensions: properties['Dimensions'],
+        SingleMetricAnomalyDetector: properties['SingleMetricAnomalyDetector'],
+        MetricMathAnomalyDetector: properties['MetricMathAnomalyDetector'],
+      })
+    );
+    if (skip) return skip;
 
     try {
       await this.cloudWatchClient.send(
