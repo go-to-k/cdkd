@@ -1110,6 +1110,11 @@
       "scenarios": []
     },
     {
+      "name": "healthimaging-stateful-update-fallback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-access-key",
       "annotated": true,
       "scenarios": []
@@ -1399,6 +1404,11 @@
       "scenarios": [
         "state-schema-migration"
       ]
+    },
+    {
+      "name": "list-parameters",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "local-ecs-service-connect",
@@ -2168,6 +2178,11 @@
     },
     {
       "name": "stepfunctions-s3-definition",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "stream-delete-redeploy",
       "annotated": false,
       "scenarios": []
     },
@@ -3023,6 +3038,7 @@
     "fifo-sqs-event-source",
     "getatt-fallback-guard",
     "glue-securityconfig-replace",
+    "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
@@ -3043,6 +3059,7 @@
     "lambda-microvm-image",
     "lambda-reserved-concurrency",
     "launchtemplate-asg-inplace",
+    "list-parameters",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
@@ -3088,6 +3105,7 @@
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",
+    "stream-delete-redeploy",
     "synthetics-canary",
     "unrecognized-key-autoroute"
   ]

@@ -36,6 +36,7 @@ import {
   PROPERTY_COVERAGE_BY_TYPE,
   UNRECOGNIZED_PROPERTY_RATIONALE,
 } from '../../../src/provisioning/property-coverage.js';
+import { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } from '../../../src/provisioning/unsupported-types.js';
 
 /** A property name no CFn schema will ever carry. */
 const UNKNOWN_PROP = 'CdkdTotallyNewPropertyFromTheFuture';
@@ -183,6 +184,9 @@ function pickUnroutableType(): string {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     if (!cov.ccRouteUnavailable) continue;
     if (STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken') continue;
+    // Its reason comes from the registry's NON_PROVISIONABLE arm, not the
+    // coverage flag's arm this picker is for (issue #3871).
+    if (SDK_PROVIDER_NON_PROVISIONABLE_TYPES.has(resourceType)) continue;
     return resourceType;
   }
   throw new Error('No Tier 1 type is ccRouteUnavailable — update this picker.');

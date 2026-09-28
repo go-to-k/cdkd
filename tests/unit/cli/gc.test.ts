@@ -107,6 +107,12 @@ import {
 } from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import {
+  PASTE_PAYLOADS,
+  expectOnlyDisplayResidual,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { applyRoleArnIfSet } from '../../../src/utils/role-arn.js';
 import { derivePartitionAndUrlSuffix, PARTITION_TABLE } from '../../../src/utils/aws-partition.js';
@@ -693,6 +699,9 @@ describe('cdkd gc', () => {
           'a command carrying the planted segment was handed to the operator'
         ).not.toMatch(/cdkd state show/);
         expect(message).toMatch(/not safe to paste/);
+        // Withheld means NO labelled line either -- not a line with a hole the
+        // operator fills from the KEY this message also prints.
+        expect(message).not.toMatch(/^Inspect it with: /m);
       });
     }
 
@@ -700,13 +709,42 @@ describe('cdkd gc', () => {
       // The control. Without it every assertion above is satisfied by a site
       // that never offers a command at all.
       const message = await messageFor('MyStack');
-      expect(message).toMatch(/cdkd state show MyStack --stack-region /);
+      // On a LABELLED LINE of its own since go-to-k/cdkd#3436's fold-in, not
+      // inside the sentence's `'...'`. The sentence points at it instead.
+      expect(message).toMatch(/^Inspect it with: cdkd state show MyStack --stack-region \S+$/m);
+      expect(message).toContain('see the command below');
       expect(message).not.toMatch(/not safe to paste/);
+      // Nothing runnable left in prose. This message also carries an
+      // apostrophe earlier on (`this file's references`), which is the
+      // quote-parity flip go-to-k/cdkd#3436 records as its shape C — a command
+      // in a prose `'...'` span here is not merely untidy.
+      expect(message).not.toMatch(/'cdkd state show[^']*'/);
     });
+
+    it('pastes an inert NAMED command, and only display residuals for a withheld key, through the REAL renderer', async () => {
+      // The paste fence for THIS site, rendered by `runGc` itself rather than
+      // by a synthetic copy of its message: the ordinary name (the command is
+      // NAMED, and nothing may run) and each payload family (the command is
+      // WITHHELD and the KEY is still displayed in prose, so the per-block
+      // criterion applies). Lines, sentences and clauses, with decoys planted
+      // for every hole name — `tests/unit/utils/paste-harness.ts`. Rendered
+      // one at a time: the mocks are module-level, and a `Promise.all` here
+      // rendered every message from the LAST key (measured).
+      const named = await messageFor('MyStack');
+      const withheld: Array<{ value: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) withheld.push({ value, message: await messageFor(value) });
+      withPasteDir((dir) => {
+        expect(spansThatRun(named, dir)).toEqual([]);
+        for (const { value, message } of withheld) {
+          expect(message).not.toMatch(/^Inspect it with: /m);
+          expectOnlyDisplayResidual(message, dir, value);
+        }
+      });
+    }, 120_000);
 
     it('takes the region-less arm for a legacy key, both polarities', async () => {
       const ok = await messageFor('MyStack', 'legacy');
-      expect(ok).toContain('cdkd state show MyStack');
+      expect(ok).toMatch(/^Inspect it with: cdkd state show MyStack$/m);
       expect(ok, 'a legacy key carries no region to name').not.toMatch(/--stack-region/);
       const hostile = await messageFor('$(whoami)', 'legacy');
       expect(hostile).not.toMatch(/cdkd state show/);

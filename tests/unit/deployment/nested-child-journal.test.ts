@@ -224,6 +224,9 @@ describe('revertNestedChildFromJournal (#3754)', () => {
       // name the forward create did.
       stackScope: CHILD,
     });
+    // No `cdkd rollback --orphan` reaches this replay, so its refusals must not
+    // print one (go-to-k/cdkd#3845).
+    expect(replay.calls[0]!.ctx['nestedChildRevert']).toBe(true);
   });
 
   it('restores the OLDEST matching segment previous outputs and republishes the exports', async () => {

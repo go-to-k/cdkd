@@ -254,7 +254,7 @@ describe('overlayResourceIdentifierOnProperties non-string literals (issue #1787
     // wrote. So the command stops before submitting anything.
     expect(() =>
       filterTemplateForImport(namespaceTemplate([{ Ref: 'ParentBucket' }]), [namespaceEntry])
-    ).toThrow(/Ns \(AWS::S3Tables::Namespace\).*'Namespace'.*will not rewrite it.*analytics/s);
+    ).toThrow(/Ns \(AWS::S3Tables::Namespace\).*property Namespace .*will not rewrite it.*analytics/s);
 
     // The phase-2 site must refuse identically — a refusal on only one of the
     // two would let the same template through on the other path.
@@ -268,7 +268,7 @@ describe('overlayResourceIdentifierOnProperties non-string literals (issue #1787
     // sentence: an empty list carries no intrinsic to protect, so asserting
     // that rewriting "would discard the intrinsic it carries" would be false.
     expect(() => filterTemplateForImport(namespaceTemplate([]), [namespaceEntry])).toThrow(
-      /'Namespace' is an empty list.*will not invent a scalar where the template declared no value/s
+      /property Namespace is an empty list.*will not invent a scalar where the template declared no value/s
     );
     expect(() => filterTemplateForImport(namespaceTemplate([]), [namespaceEntry])).not.toThrow(
       /discard the intrinsic/
@@ -369,7 +369,7 @@ describe('the refusal is a PLANNING verdict, not a preprocessing throw (issue #1
     expect(plan.phase1Imports).toHaveLength(0);
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.logicalId).toBe('Ns');
-    expect(plan.blocked[0]!.reason).toMatch(/'Namespace'.*will not rewrite it.*analytics/s);
+    expect(plan.blocked[0]!.reason).toMatch(/property Namespace .*will not rewrite it.*analytics/s);
   });
 
   it('does NOT block a template the overlay can legitimately rewrite', async () => {
@@ -519,7 +519,7 @@ describe('the LIST -> scalar rewrite warns once per export (issue #1787)', () =>
       // Phase 1 owns the message.
       filterTemplateForImport(templateWithArray(), [namespaceEntry]);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0]![0]).toMatch(/rewriting the identifier property 'Namespace'/);
+      expect(warn.mock.calls[0]![0]).toMatch(/rewriting the identifier property Namespace from/);
 
       // The phase-2 overlay re-runs over the SAME entries; announcing every
       // rewrite a second time is noise, not information.
@@ -577,7 +577,7 @@ describe('the LIST -> scalar rewrite warns once per export (issue #1787)', () =>
       );
       expect(warn).toHaveBeenCalledTimes(1);
       const message = String(warn.mock.calls[0]![0]);
-      expect(message).toMatch(/rewriting the identifier property 'Namespace'/);
+      expect(message).toMatch(/rewriting the identifier property Namespace from/);
       // The point of the case.
       expect(LONE_SURROGATE.test(message)).toBe(false);
       // ...and it is still a bounded PREVIEW, not the whole value — a fix that

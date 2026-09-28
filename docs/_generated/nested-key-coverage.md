@@ -13,9 +13,9 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **24**
-- Nested CFn key paths audited: **1222**
+- Nested CFn key paths audited: **1223**
 - Same spelling in SDK model: **1131**
-- Explicitly handled in provider: **70**
+- Explicitly handled in provider: **71**
 - Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
@@ -100,6 +100,7 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::Glue::SecurityConfiguration` | `EncryptionConfiguration.S3Encryptions` |
 | `AWS::Glue::Table` | `OpenTableFormatInput.IcebergInput.IcebergTableInput` |
 | `AWS::Lambda::EventSourceMapping` | `SelfManagedEventSource.Endpoints.KafkaBootstrapServers` |
+| `AWS::Lambda::EventSourceMapping` | `SelfManagedKafkaEventSourceConfig.ConsumptionMode` |
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
 | `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault` |
@@ -216,7 +217,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::SecurityConfiguration` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 9 | 0 |
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
-| `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 37 | 6 |
+| `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 193 | 15 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |
 

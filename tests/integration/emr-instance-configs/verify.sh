@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd AWS::EMR::InstanceGroupConfig SDK provider integ (issue #1070).
 #
-# InstanceGroupConfig / InstanceFleetConfig are ProvisioningType:
-# NON_PROVISIONABLE, so there is no Cloud Control fallback. This fixture proves
+# InstanceFleetConfig is ProvisioningType: NON_PROVISIONABLE, so it has no
+# Cloud Control fallback (InstanceGroupConfig does). This fixture proves
 # the InstanceGroupConfig SDK provider end to end: a group-based cluster
 # (1x m5.xlarge master + 1x m5.xlarge core) + a standalone TASK instance group
 # (1x m5.xlarge) added via AddInstanceGroups. The core node is required — EMR

@@ -82,7 +82,9 @@ interface FakeAccessPoint {
  * A fake EFS that models the two behaviours the fix depends on, and nothing
  * else: inside the replay window a `CreateAccessPoint` carrying a `ClientToken`
  * AWS has already seen returns the access point that token minted, and outside
- * it the same token is refused with `AccessPointAlreadyExists`.
+ * it the same token is refused with `AccessPointAlreadyExists`. The in-window
+ * replay is the fake's DEFAULT but has never been observed on real EFS (see
+ * `replayWindowClosed`).
  *
  * `created` is the discriminator issue #2080's acceptance item 2 asks for. It
  * counts RESOURCES, not calls — a retry is ALLOWED to repeat the call, and a
@@ -109,6 +111,13 @@ class FakeEfs {
    * (the one minute in the EFS User Guide is about file-system CREATION
    * tokens), so this flag selects the arm rather than modelling a duration.
    * Flipping it is how the adopt arm is reached.
+   *
+   * Only the REFUSAL arm has been observed on real EFS (issue #2442, us-east-1):
+   * a repeat seconds after the first create was refused whether its parameters
+   * matched or not, with the first access point's id in the error's
+   * `AccessPointId`, and `DescribeAccessPoints` echoed the `ClientToken`. The
+   * replay arm stays modelled because no retirement window is documented, so a
+   * replay after some window is not ruled out; it has never been observed.
    */
   replayWindowClosed = false;
   /** The next create provisions the access point and then loses its response. */
@@ -321,6 +330,32 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
       CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
     });
     expect(sent['Tags']).toEqual([{ Key: 'Name', Value: 'cdkd-ap' }]);
+  });
+
+  it('sends neither PosixUser nor RootDirectory when the template omits both (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+    });
+
+    expect(aws.createInputs).toHaveLength(1);
+    const sent = aws.createInputs[0]!;
+    expect(sent['FileSystemId']).toBe('fs-0123456789abcdef0');
+    // `undefined`, not `{}`: an empty object would be serialised as a block
+    // with no Uid/Gid rather than omitted.
+    expect(sent['PosixUser']).toBeUndefined();
+    expect(sent['RootDirectory']).toBeUndefined();
+  });
+
+  it('sends a RootDirectory without CreationInfo when the template gives only a Path (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+      RootDirectory: { Path: '/data' },
+    });
+
+    expect(aws.createInputs).toHaveLength(1);
+    const sent = aws.createInputs[0]!;
+    expect(sent['RootDirectory']).toEqual({ Path: '/data', CreationInfo: undefined });
+    expect(sent['PosixUser']).toBeUndefined();
   });
 
   it('a retried create whose 500 hid a successful CreateAccessPoint produces exactly ONE access point', async () => {

@@ -613,6 +613,7 @@
         "custom-resource-noecho-nested",
         "export-nested-stack",
         "import-nested-stack",
+        "list-parameters",
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
@@ -629,6 +630,9 @@
           "literal"
         ],
         "import-nested-stack": [
+          "literal"
+        ],
+        "list-parameters": [
           "literal"
         ],
         "nested-stack": [
@@ -1747,8 +1751,7 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -2190,6 +2193,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2313,6 +2317,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -2606,6 +2614,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2742,6 +2751,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -3844,6 +3857,7 @@
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
+        "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-provided",
         "local-invoke-ruby",
@@ -3875,6 +3889,7 @@
         "sns-sqs-event",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -4019,6 +4034,9 @@
         "local-invoke-dotnet": [
           "l2"
         ],
+        "local-invoke-from-state": [
+          "l2"
+        ],
         "local-invoke-java": [
           "l2"
         ],
@@ -4115,6 +4133,9 @@
           "l2"
         ],
         "stepfunctions-s3-definition": [
+          "l2"
+        ],
+        "stream-delete-redeploy": [
           "l2"
         ],
         "synthetics-canary": [
@@ -4252,7 +4273,8 @@
         "kinesis-stream-mode-switch",
         "log-pipeline",
         "replacement-immutable-name",
-        "sdk-ccapi-crossref"
+        "sdk-ccapi-crossref",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "cache-streaming": [
@@ -4276,16 +4298,25 @@
         ],
         "sdk-ccapi-crossref": [
           "literal"
+        ],
+        "stream-delete-redeploy": [
+          "l2",
+          "literal"
         ]
       }
     },
     {
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
-        "log-pipeline"
+        "log-pipeline",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "log-pipeline": [
+          "l1",
+          "literal"
+        ],
+        "stream-delete-redeploy": [
           "l1",
           "literal"
         ]
@@ -5123,6 +5154,7 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "import-attribute-readback-final",
+        "list-parameters",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack"
@@ -5130,6 +5162,10 @@
       "signals": {
         "import-attribute-readback-final": [
           "l1"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "rds-aurora": [
           "l2"
@@ -5217,6 +5253,7 @@
         "s3-replication-and-filter",
         "s3-subconfig-removal",
         "state-destroy",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
@@ -5349,6 +5386,7 @@
           "literal"
         ],
         "rollback-replay-effective-props": [
+          "l1",
           "literal"
         ],
         "s3-analytics-inventory": [
@@ -5378,6 +5416,9 @@
           "literal"
         ],
         "state-destroy": [
+          "l2"
+        ],
+        "stream-delete-redeploy": [
           "l2"
         ],
         "synthetics-canary": [
@@ -6028,6 +6069,7 @@
         "intrinsics-torture-2",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
+        "list-parameters",
         "local-invoke-from-cfn-stack-multi-stack",
         "microservices",
         "multi-region-same-stack",
@@ -6207,6 +6249,10 @@
         ],
         "legacy-state-migration": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
@@ -6606,6 +6652,7 @@
     "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
+    "AWS::HealthImaging::Datastore",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",

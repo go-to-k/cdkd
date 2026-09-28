@@ -275,7 +275,7 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.logicalId).toBe('SshIn');
     expect(plan.blocked[0]!.reason).toMatch(
-      /'SshIn'.*found NO ingress rule matching protocol 'tcp', ports 443 on security group 'sg-0abc0def0'/s
+      /'SshIn'.*found NO ingress rule matching protocol tcp, ports 443 on security group sg-0abc0def0/s
     );
     // The two live causes, and the escape hatch — a message that only said
     // "not found" would leave the user with nothing to do.
@@ -305,8 +305,8 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.reason).toMatch(
       new RegExp(
-        `'SshIn'.*found 2 ingress rules matching protocol 'tcp', ports 443 on security group ` +
-          `'${GROUP_ID}' \\(${SG_RULE_ID}, ${OTHER_RULE_ID}\\)`,
+        `'SshIn'.*found 2 ingress rules matching protocol tcp, ports 443 on security group ` +
+          `${GROUP_ID} \\(${SG_RULE_ID}, ${OTHER_RULE_ID}\\)`,
         's'
       )
     );
@@ -418,7 +418,7 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.reason).toMatch(
-      /found 2 ingress rule\(s\) matching protocol 'tcp', ports 443 on security group 'sg-0abc0def0', but 2 of them carry no usable 'sgr-\.\.\.' rule id/
+      /found 2 ingress rule\(s\) matching protocol tcp, ports 443 on security group sg-0abc0def0, but 2 of them carry no usable 'sgr-\.\.\.' rule id/
     );
     // The raw values, so the user can see WHAT AWS reported.
     expect(plan.blocked[0]!.reason).toMatch(/AWS reported '', <absent>/);

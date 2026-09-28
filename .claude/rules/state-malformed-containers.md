@@ -192,9 +192,15 @@ KEY region at the state-record cap (go-to-k/cdkd#3328).
 `dropRecordCommand` is the EXCEPTION and it is open: it SUBSTITUTES rather than
 templating and still gates on `rendersExactly` alone — a trade-off, not an
 oversight (go-to-k/cdkd#3523 carries why, and the behaviour is pinned). Every
-other message here offers a read ONLY and is ungated. Borrowing a gate across
+other message here offers a read ONLY: `inspectCommand` builds it through the
+shared gate with `plainIdent` on BOTH values, so an altered, capped,
+option-shaped or non-plain name prints as a hole rather than as its sanitized
+spelling — nothing substitutes a sanitized spelling. Its no-name arm
+(`stackName === undefined`, which the destroy refusals take for an inexact
+identity) returns a two-hole template on purpose. Borrowing a gate across
 sites is safe only DOWNWARD: a 128-capped gate at a 1152-capped site withholds;
-the reverse names a region its own clause renders truncated.
+the reverse names a region its own clause renders truncated — which is why
+`inspectCommand` hands the shared gate the region's 128 as `maxCodePoints`.
 
 Where a site's two caps DIFFER, fence that operand — the pasteability half needs a row
 that is exact yet unpasteable, which no truncation row reaches. Where they are

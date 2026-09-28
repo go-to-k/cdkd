@@ -26,9 +26,9 @@ region and `options.profile` alone, never seeing `ignoreAssumedRole`, so with
    metadata sidecar.
 2. **ECS task SECRETS** (`start-service` / `start-alb`) via cdk-local's
    `resolveEcsSecrets`; cdkd's own opts out.
-3. **`${AWS::AccountId}`**: `resolveCallerAccountId` takes `options.profile`
-   only, so the id in the container env, `secrets` refs and ECR URIs is the
-   ROLE's.
+3. **`${AWS::AccountId}`**: cdk-local's `resolveCallerAccountId` takes
+   `options.profile` only, so the id in the container env, `secrets` refs and
+   ECR URIs is the ROLE's.
 4. **`--from-cfn-stack`, on ALL EIGHT commands** — its SSM client calls
    `GetParameters` with `WithDecryption: true`.
 
@@ -38,4 +38,6 @@ Either profile spelling mitigates 2-4. No warning fires: it lives in
 cdkd's `--from-state` twin runs as the role **deliberately** (its
 `cdkd-local-role-identity:` sites); do NOT "fix" them — the bucket name is
 derived in the ROLE's account and the calls carry `ExpectedBucketOwner`, so
-caller credentials 403.
+caller credentials 403. The four cdkd-owned commands' `${AWS::AccountId}`
+follows the same reader under `--from-state` and stays the caller's under
+`--from-cfn-stack` (go-to-k/cdkd#3230).

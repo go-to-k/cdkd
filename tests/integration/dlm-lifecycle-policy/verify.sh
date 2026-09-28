@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd AWS::DLM::LifecyclePolicy SDK provider integ (issue #1040).
 #
-# The type is ProvisioningType: NON_PROVISIONABLE, so there is no Cloud
-# Control fallback — this fixture proves the new SDK provider end to end.
+# This fixture proves the SDK provider end to end.
 #
 # Phases:
 #   1. Deploy a minimal EBS-snapshot lifecycle policy (+ its DLM execution

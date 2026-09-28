@@ -503,8 +503,12 @@ target only in that stack. Resources that live inside a nested stack
   to trigger the initial destroy and recreate.
 - **NOT** compatible with cross-account or cross-region migration. The flag
   operates within the current deploy's environment only.
-- **NOT** compatible with Tier 3 (`NON_PROVISIONABLE`) types — Cloud Control
-  cannot handle them either, and the Tier 3 rejection fires first.
+- **NOT** available for a type Cloud Control cannot create: a
+  `NON_PROVISIONABLE` type (such as `AWS::CodeBuild::Project` or
+  `AWS::IAM::Policy`, which cdkd manages through its SDK provider), or a type
+  whose SDK provider opts out of the Cloud Control fallback. The recreate
+  deletes the existing resource before creating it through Cloud Control, so
+  cdkd refuses the deploy before anything is touched. There is no bypass flag.
 - **NOT** compatible with multi-region types such as
   `AWS::DynamoDB::GlobalTable`. See
   [Multi-region types are refused outright](#multi-region-types-are-refused-outright).

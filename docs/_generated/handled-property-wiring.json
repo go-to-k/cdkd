@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 84,
-    "declaredProperties": 1140,
-    "wiredProperties": 1138,
-    "wired": 82,
+    "classifiedCount": 85,
+    "declaredProperties": 1142,
+    "wiredProperties": 1140,
+    "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 23
+    "classesWithBlindSpots": 25
   },
   "classes": [
     {
@@ -5371,7 +5371,7 @@
       "file": "docdb-provider.ts",
       "className": "DocDBProvider",
       "bucket": "wired",
-      "declaredCount": 21,
+      "declaredCount": 19,
       "properties": [
         {
           "name": "AutoMinorVersionUpgrade",
@@ -5489,28 +5489,10 @@
           ]
         },
         {
-          "name": "DBSubnetGroupDescription",
-          "status": "wired",
-          "types": [
-            "AWS::DocDB::DBSubnetGroup"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "create",
-            "createDBSubnetGroup",
-            "update",
-            "updateDBSubnetGroup"
-          ]
-        },
-        {
           "name": "DBSubnetGroupName",
           "status": "wired",
           "types": [
-            "AWS::DocDB::DBCluster",
-            "AWS::DocDB::DBSubnetGroup"
+            "AWS::DocDB::DBCluster"
           ],
           "evidence": [
             "delegated",
@@ -5518,8 +5500,7 @@
           ],
           "seededBy": [
             "create",
-            "createDBCluster",
-            "createDBSubnetGroup"
+            "createDBCluster"
           ]
         },
         {
@@ -5673,29 +5654,11 @@
           ]
         },
         {
-          "name": "SubnetIds",
-          "status": "wired",
-          "types": [
-            "AWS::DocDB::DBSubnetGroup"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "create",
-            "createDBSubnetGroup",
-            "update",
-            "updateDBSubnetGroup"
-          ]
-        },
-        {
           "name": "Tags",
           "status": "wired",
           "types": [
             "AWS::DocDB::DBCluster",
-            "AWS::DocDB::DBInstance",
-            "AWS::DocDB::DBSubnetGroup"
+            "AWS::DocDB::DBInstance"
           ],
           "evidence": [
             "delegated",
@@ -5706,11 +5669,9 @@
             "create",
             "createDBCluster",
             "createDBInstance",
-            "createDBSubnetGroup",
             "update",
             "updateDBCluster",
-            "updateDBInstance",
-            "updateDBSubnetGroup"
+            "updateDBInstance"
           ]
         },
         {
@@ -5728,6 +5689,73 @@
             "createDBCluster",
             "update",
             "updateDBCluster"
+          ]
+        }
+      ],
+      "gaps": [],
+      "blindSpots": []
+    },
+    {
+      "file": "docdb-subnet-group-provider.ts",
+      "className": "DocDBSubnetGroupProvider",
+      "bucket": "wired",
+      "declaredCount": 4,
+      "properties": [
+        {
+          "name": "DBSubnetGroupDescription",
+          "status": "wired",
+          "types": [
+            "AWS::DocDB::DBSubnetGroup"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "DBSubnetGroupName",
+          "status": "wired",
+          "types": [
+            "AWS::DocDB::DBSubnetGroup"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "SubnetIds",
+          "status": "wired",
+          "types": [
+            "AWS::DocDB::DBSubnetGroup"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "Tags",
+          "status": "wired",
+          "types": [
+            "AWS::DocDB::DBSubnetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "buildTags",
+            "create",
+            "update"
           ]
         }
       ],
@@ -6027,6 +6055,7 @@
             "table-loop"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState",
@@ -6071,6 +6100,7 @@
             "table-loop"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState"
@@ -6227,6 +6257,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftPair",
             "create",
             "getDriftUnknownPaths",
             "readCurrentState",
@@ -6235,7 +6266,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in canonicalizeDriftPair()",
+        "object spread in canonicalizeDriftProperties()"
+      ]
     },
     {
       "file": "ec2-provider.ts",
@@ -12327,7 +12361,8 @@
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -12504,6 +12539,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -12550,6 +12586,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -12566,6 +12603,7 @@
             "AWS::IAM::Policy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -12916,7 +12954,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in derivedNamePairs()"
+      ]
     },
     {
       "file": "kinesis-provider.ts",
@@ -13440,10 +13480,14 @@
             "AWS::Lambda::EventSourceMapping"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "applyUpdate",
+            "create",
+            "update"
           ]
         },
         {
@@ -13765,10 +13809,14 @@
             "AWS::Lambda::EventSourceMapping"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "applyUpdate",
+            "create",
+            "update"
           ]
         },
         {

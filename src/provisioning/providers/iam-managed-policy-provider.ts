@@ -27,7 +27,14 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -103,15 +110,29 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM managed policy ${logicalId}`);
-
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), and every bag-derived value masked RAW as well. The ARN is
+    // AWS-minted but EMBEDS the template-chosen name and path, so it is masked
+    // like one. Absent context means identity.
     const policyName = generateResourceNameWithFallback(
       properties['ManagedPolicyName'] as string | undefined,
       logicalId,
       { maxLength: 128 }
     );
+    // The physical name is REWRITTEN from the template value (stack prefix,
+    // charset folding, truncation), so the masker cannot recognise it by
+    // itself: add it as a needle when the value it came from is a secret.
+    // The needle also matches the name INSIDE the policy ARN.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[properties['ManagedPolicyName'], policyName]]
+    );
+    const { value: v } = log;
+    log.debug(`Creating IAM managed policy ${logicalId}`);
     const policyDocument = properties['PolicyDocument'];
 
     if (!policyDocument) {
@@ -158,7 +179,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           policyName
         );
       }
-      this.logger.debug(`Created IAM managed policy: ${policyArn}`);
+      log.debug(`Created IAM managed policy: ${v(policyArn)}`);
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
       // attachments next; if any fail, AWS-side cleanup mirrors `delete()`
@@ -169,23 +190,26 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           policyArn,
           properties['Groups'] as string[] | undefined,
           properties['Roles'] as string[] | undefined,
-          properties['Users'] as string[] | undefined
+          properties['Users'] as string[] | undefined,
+          log
         );
       } catch (innerError) {
         try {
           await this.detachAllPrincipals(policyArn);
           await this.deleteAllNonDefaultVersions(policyArn);
           await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
-          this.logger.debug(
-            `Cleaned up partially-created managed policy ${logicalId} (${policyArn}) after attachment failure`
+          log.debug(
+            `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
           );
         } catch (cleanupError) {
           // The ARN is AWS-minted but embeds the TEMPLATE-chosen name and path,
           // so every command below renders through `pasteableAwsCommand`
           // (issue #3136): withheld when it cannot be printed exactly.
-          const aws = pasteableAwsCommand();
-          this.logger.warn(
-            `Failed to clean up partially-created managed policy ${logicalId} (${policyArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
+          // The masker is handed over too (issue #2177), so a secret-bearing
+          // name withholds the command rather than printing it.
+          const aws = pasteableAwsCommand(log.mask);
+          log.warn(
+            `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
           );
         }
         throw innerError;
@@ -203,7 +227,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM managed policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM managed policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         policyName,
@@ -217,16 +241,27 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM managed policy ${logicalId}: ${physicalId}`);
-
     const newPolicyName = generateResourceNameWithFallback(
       properties['ManagedPolicyName'] as string | undefined,
       logicalId,
       { maxLength: 128 }
     );
     const oldPolicyName = derivePolicyNameFromArn(physicalId);
+    // Issue #2177 -- see `create()`, including the derived-name needles. The
+    // recorded ARN's name is paired with the PREVIOUS value it was derived from.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        [properties['ManagedPolicyName'], newPolicyName],
+        [previousProperties['ManagedPolicyName'], oldPolicyName],
+      ]
+    );
+    const { value: v } = log;
+    log.debug(`Updating IAM managed policy ${logicalId}: ${v(physicalId)}`);
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
     const newDescription = properties['Description'] as string | undefined;
@@ -245,11 +280,16 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           : newPath !== oldPath
             ? 'Path'
             : 'Description';
-      this.logger.debug(
-        `${reason} changed, replacing managed policy: ${physicalId} (${reason} mutation)`
+      log.debug(
+        `${reason} changed, replacing managed policy: ${v(physicalId)} (${reason} mutation)`
       );
 
-      const createResult = await this.create(logicalId, resourceType, properties);
+      // The masker is forwarded (issue #2177) and NOTHING else: this context
+      // never carries `replayingState`, so a create-side pre-flight refusal
+      // would still fire on a rollback replay (see `CreateContext`).
+      const createResult = await this.create(logicalId, resourceType, properties, {
+        maskSecrets: log.mask,
+      });
       // What the inner delete left behind, if anything (issue #1819). The new
       // policy already exists, so the replacement cannot be aborted — the
       // honest outcome is "updated, and the old policy survives", which is what
@@ -268,16 +308,20 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         // resource", so it sails straight past the catch below — the one path
         // that would have told the user the old policy is still there.
         if (deleteResult?.outcome === 'skipped') {
-          orphanReason = `old managed policy ${physicalId} was not deleted: ${deleteResult.reason}`;
-          this.logger.warn(
-            `Skipped deleting old managed policy ${physicalId} during replacement: ${deleteResult.reason}. ` +
+          orphanReason = log.mask(
+            `old managed policy ${v(physicalId)} was not deleted: ${deleteResult.reason}`
+          );
+          log.warn(
+            `Skipped deleting old managed policy ${v(physicalId)} during replacement: ${deleteResult.reason}. ` +
               `The old policy may be orphaned and require manual cleanup.`
           );
         }
       } catch (error) {
-        orphanReason = `old managed policy ${physicalId} could not be deleted: ${safeStringify(error)}`;
-        this.logger.warn(
-          `Failed to delete old managed policy ${physicalId} during replacement: ${safeStringify(error)}. ` +
+        orphanReason = log.mask(
+          `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
+        );
+        log.warn(
+          `Failed to delete old managed policy ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
             `The old policy may be orphaned and require manual cleanup.`
         );
       }
@@ -309,7 +353,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             : JSON.stringify(oldDocument)
           : '';
         if (newDocStr !== oldDocStr) {
-          await this.ensureVersionCapacity(physicalId);
+          await this.ensureVersionCapacity(physicalId, log);
           await this.iamClient.send(
             new CreatePolicyVersionCommand({
               PolicyArn: physicalId,
@@ -317,7 +361,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
               SetAsDefault: true,
             })
           );
-          this.logger.debug(`Updated PolicyDocument for ${physicalId}`);
+          log.debug(`Updated PolicyDocument for ${v(physicalId)}`);
         }
       }
 
@@ -329,7 +373,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         properties['Roles'] as string[] | undefined,
         previousProperties['Roles'] as string[] | undefined,
         properties['Users'] as string[] | undefined,
-        previousProperties['Users'] as string[] | undefined
+        previousProperties['Users'] as string[] | undefined,
+        log
       );
 
       // Diff tags.
@@ -349,7 +394,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM managed policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM managed policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -592,14 +637,16 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     policyArn: string,
     groups: string[] | undefined,
     roles: string[] | undefined,
-    users: string[] | undefined
+    users: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     if (groups && Array.isArray(groups)) {
       for (const groupName of groups) {
         await this.iamClient.send(
           new AttachGroupPolicyCommand({ GroupName: groupName, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to group ${groupName}`);
+        log.debug(`Attached ${v(policyArn)} to group ${v(groupName)}`);
       }
     }
     if (roles && Array.isArray(roles)) {
@@ -607,7 +654,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(
           new AttachRolePolicyCommand({ RoleName: roleName, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to role ${roleName}`);
+        log.debug(`Attached ${v(policyArn)} to role ${v(roleName)}`);
       }
     }
     if (users && Array.isArray(users)) {
@@ -615,7 +662,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(
           new AttachUserPolicyCommand({ UserName: userName, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to user ${userName}`);
+        log.debug(`Attached ${v(policyArn)} to user ${v(userName)}`);
       }
     }
   }
@@ -627,8 +674,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     newRoles: string[] | undefined,
     oldRoles: string[] | undefined,
     newUsers: string[] | undefined,
-    oldUsers: string[] | undefined
+    oldUsers: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newGroupSet = new Set(newGroups || []);
     const oldGroupSet = new Set(oldGroups || []);
     for (const g of newGroupSet) {
@@ -636,7 +685,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(
           new AttachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to group ${g}`);
+        log.debug(`Attached ${v(policyArn)} to group ${v(g)}`);
       }
     }
     for (const g of oldGroupSet) {
@@ -645,7 +694,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.iamClient.send(
             new DetachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
           );
-          this.logger.debug(`Detached ${policyArn} from group ${g}`);
+          log.debug(`Detached ${v(policyArn)} from group ${v(g)}`);
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
@@ -659,7 +708,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(
           new AttachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to role ${r}`);
+        log.debug(`Attached ${v(policyArn)} to role ${v(r)}`);
       }
     }
     for (const r of oldRoleSet) {
@@ -668,7 +717,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.iamClient.send(
             new DetachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
           );
-          this.logger.debug(`Detached ${policyArn} from role ${r}`);
+          log.debug(`Detached ${v(policyArn)} from role ${v(r)}`);
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
@@ -682,7 +731,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(
           new AttachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
         );
-        this.logger.debug(`Attached ${policyArn} to user ${u}`);
+        log.debug(`Attached ${v(policyArn)} to user ${v(u)}`);
       }
     }
     for (const u of oldUserSet) {
@@ -691,7 +740,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.iamClient.send(
             new DetachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
           );
-          this.logger.debug(`Detached ${policyArn} from user ${u}`);
+          log.debug(`Detached ${v(policyArn)} from user ${v(u)}`);
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
@@ -789,7 +838,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * AWS caps managed policies at 5 versions. Before creating a new version,
    * prune the oldest non-default version if at the cap.
    */
-  private async ensureVersionCapacity(policyArn: string): Promise<void> {
+  private async ensureVersionCapacity(policyArn: string, log: MaskedLogSinks): Promise<void> {
+    const { value: v } = log;
     const resp = await this.iamClient.send(new ListPolicyVersionsCommand({ PolicyArn: policyArn }));
     const versions = resp.Versions ?? [];
     if (versions.length < 5) return;
@@ -802,7 +852,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     await this.iamClient.send(
       new DeletePolicyVersionCommand({ PolicyArn: policyArn, VersionId: victim.VersionId })
     );
-    this.logger.debug(`Pruned oldest non-default version ${victim.VersionId} of ${policyArn}`);
+    log.debug(`Pruned oldest non-default version ${v(victim.VersionId)} of ${v(policyArn)}`);
   }
 
   private async updateTags(
