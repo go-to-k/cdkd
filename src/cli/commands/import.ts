@@ -70,6 +70,7 @@ import {
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
 import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -292,20 +293,36 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // stack when the assembly carries exactly one. Multi-stack assemblies must
     // disambiguate — imports are per-stack and ambiguity here is
     // worth a clear error rather than guessing.
+    //
+    // Both refusals go through the shared `renderNoStackMatch`, so a stack
+    // dropped with a CDK Stage that failed to load is reported as such rather
+    // than as "not found" (issue go-to-k/cdkd#3507). The zero-stack check sits
+    // BEFORE the chain: with no argument the `else` arm would otherwise answer
+    // `Multiple stacks found: .` -- and zero stacks is exactly what an app
+    // whose only stacks live in a failed Stage synthesizes.
+    const stackPatterns = stackArg ? [stackArg] : [];
+    if (result.stacks.length === 0) {
+      throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result));
+    }
     let stackInfo;
     if (stackArg) {
       stackInfo = result.stacks.find((s) => s.stackName === stackArg || s.displayName === stackArg);
       if (!stackInfo) {
-        throw new Error(
-          `Stack '${stackArg}' not found in synthesized app. ` +
-            `Available: ${result.stacks.map((s) => s.stackName).join(', ')}`
-        );
+        // The shared message says "matching" and attributes a failed Stage by
+        // glob, while import matches EXACTLY: say so when the argument carries
+        // a star, or a Stage wildcard argument reads as contradicting the
+        // list. (Spelled out in words: tests/unit/state lexes this file, and a
+        // slash-star inside a line comment opens a block comment to it.)
+        const exactOnly = stackArg.includes('*')
+          ? ". cdkd import matches a stack name exactly, so '*' is not a wildcard here"
+          : '';
+        throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result) + exactOnly);
       }
     } else if (result.stacks.length === 1) {
       stackInfo = result.stacks[0]!;
     } else {
       throw new Error(
-        `Multiple stacks found: ${result.stacks.map((s) => s.stackName).join(', ')}. ` +
+        `Multiple stacks found: ${result.stacks.map(describeStack).join(', ')}. ` +
           `Specify the stack name as a positional argument.`
       );
     }

@@ -34,6 +34,8 @@
 #      the Stage and leaves the stack in state (go-to-k/cdkd#3507).
 #   3c. (Phase 2c) the same for `scrub --dry-run`, after a control over the
 #      intact assembly (go-to-k/cdkd#3507).
+#   3d. (Phase 2d) the same for `import`, which must refuse at selection and
+#      leave the stack's state untouched (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -98,7 +100,7 @@ cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  # An interrupt inside Phase 2b or 2c would otherwise leave cdk.out with the
+  # An interrupt inside Phase 2b, 2c or 2d would otherwise leave cdk.out with the
   # Stage's manifest hidden.
   if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
     mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
@@ -356,6 +358,43 @@ if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} fo
   exit 1
 fi
 echo "    OK: control selected the stack; hidden Stage named"
+
+# --- Phase 2d: import while the Stage fails to load names the Stage ---------
+# The import twin (go-to-k/cdkd#3507). Selection refuses before any state read
+# or write, so the stack deployed in Phase 1 keeps its state object byte for
+# byte -- compared by ETag, since import's write path would replace it.
+echo "==> Phase 2d: import with the Stage manifest hidden names the Stage"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2d" >&2
+  exit 1
+fi
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+# `import` takes no `--region`: AWS_REGION, which verify.sh already runs
+# under, is how it picks one.
+HIDDEN_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK_PATH}" --app cdk.out \
+  --yes --state-bucket "${STATE_BUCKET}" 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -eq 0 ]; then
+  echo "FAIL: import with the Stage hidden exited 0, expected a selection refusal" >&2
+  exit 1
+fi
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} found in assembly. The assembly has no stacks. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: import did not name the pattern and the Stage that failed to load" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across a refused import (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Stage named, state untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"
