@@ -290,7 +290,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       process.emit('SIGINT', 'SIGINT');
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     const dispatched = mockRunDestroyForStack.mock.calls.map((c) => c[0] as string);
     expect(dispatched).toEqual(['StackA']);
@@ -299,7 +299,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
   });
 
   it('still reports a clean multi-stack run when NO signal arrives', async () => {
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // The negative control for the case above: without it, a fix that simply
     // always broke after the first stack would pass that one.
@@ -313,7 +313,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
   it('still honours the runner-reported interrupt, which was the only channel before', async () => {
     mockRunDestroyForStack.mockResolvedValueOnce({ ...cleanRunResult(), interrupted: true });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
     expect(exitSpy).toHaveBeenCalledWith(2);
@@ -327,7 +327,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       return { state: makeStackState(stackName), etag: 'etag' };
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(2);
@@ -370,7 +370,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       return cleanRunResult();
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     // The runner's handler saw both signals and the command NEVER force-quit.
     expect(runnerHandler).toHaveBeenCalledTimes(2);
@@ -390,7 +390,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     // purge runs over an interrupted stack's post-mortem.
     mockRunDestroyForStack.mockResolvedValueOnce({ ...cleanRunResult(), interrupted: true });
 
-    await expect(runDestroy(['destroy', '--all', '--yes', '--purge-events'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes', '--purge-events'])).rejects.toThrow();
 
     expect(mockPruneRuns).not.toHaveBeenCalled();
     // Positive marker that the run took the interrupted path rather than
@@ -411,7 +411,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     });
 
     // Must NOT throw: every stack was destroyed.
-    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+    await runDestroy(['--all', '--yes', '--purge-events']);
 
     // Both stacks purged — including the one the tail signal landed on.
     expect(mockPruneRuns).toHaveBeenCalledTimes(2);
@@ -431,7 +431,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       cancelled: true,
     });
 
-    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+    await runDestroy(['--all', '--yes', '--purge-events']);
 
     // Neither stack purged — both still exist.
     expect(mockPruneRuns).not.toHaveBeenCalled();
@@ -454,7 +454,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       cancelled: false,
     });
 
-    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+    await runDestroy(['--all', '--yes', '--purge-events']);
 
     expect(mockPruneRuns).toHaveBeenCalledTimes(2);
   });
@@ -462,7 +462,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
   it('DOES purge when the run is clean, so the case above is not vacuous', async () => {
     // The negative control. Without it, a fix that never purges at all would
     // satisfy the assertion above.
-    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+    await runDestroy(['--all', '--yes', '--purge-events']);
 
     expect(mockPruneRuns).toHaveBeenCalledTimes(2);
   });
@@ -475,7 +475,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       process.emit('SIGTERM', 'SIGTERM');
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
     expect(exitSpy).toHaveBeenCalledWith(2);
@@ -483,7 +483,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
 
   it('leaves no SIGINT listener behind after the command finishes', async () => {
     const before = process.listenerCount('SIGINT');
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
     expect(process.listenerCount('SIGINT')).toBe(before);
   });
 
@@ -499,7 +499,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     // live and that handler is armed for the whole command.
     mockRunDestroyForStack.mockImplementationOnce(emptyStateRunTakingASignal);
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
     // StackB was never reached, so `stoppedEarly` is the honest verdict here.
@@ -519,7 +519,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     mockRunDestroyForStack.mockImplementationOnce(emptyStateRunTakingASignal);
 
     // Must NOT throw.
-    await runDestroy(['destroy', 'StackA', '--yes']);
+    await runDestroy(['StackA', '--yes']);
 
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
     expect(exitSpy).not.toHaveBeenCalled();
@@ -539,7 +539,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     });
 
     // Must NOT throw: no `rejects`, so a PartialFailureError fails the test.
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // The positive marker that the run really completed rather than failing
     // early for some unrelated reason: EVERY stack was dispatched.
@@ -560,7 +560,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       process.emit('SIGINT', 'SIGINT');
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
     // Exit 2 is `PartialFailureError`'s own code, i.e. the interrupted-destroy
@@ -584,7 +584,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       return { state: makeStackState(stackName), etag: 'etag' };
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(2);
@@ -607,7 +607,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     });
 
     // Must NOT throw.
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // The positive marker that this is the one-target shape rather than an
     // early return before the loop: StackA really was destroyed.
@@ -625,7 +625,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
       throw new Error('SIGTERM forwarder blew up');
     };
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     // Exit 1, the generic-failure code: the throw propagated out of the command
     // rather than being swallowed or mapped to the interrupted contract...

@@ -212,7 +212,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
 
-    await expect(runDestroy(['destroy', 'Protected', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Protected', '--yes'])).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
     // Per-stack guard fires BEFORE the runner is invoked.
@@ -239,7 +239,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       { stackName: 'Multi', region: forged },
     ]);
 
-    await expect(runDestroy(['destroy', 'Multi', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Multi', '--yes'])).rejects.toThrow();
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     // Positive control: the multi-region refusal fired, naming the plain region.
     expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
@@ -274,7 +274,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
         { stackName: name, region: 'eu-west-1' },
       ]);
 
-      await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+      await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
       const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
       // Positive control: the multi-region refusal fired.
       expect(messages, name).toContain(
@@ -296,7 +296,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       { stackName: 'Multi', region: 'us-east-1' },
       { stackName: 'Multi', region: 'eu-west-1' },
     ]);
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
     const plain = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
     expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
@@ -312,7 +312,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
     mockGetState.mockResolvedValue(null);
 
-    await runDestroy(['destroy', '--all', '--yes']).catch(() => undefined);
+    await runDestroy(['--all', '--yes']).catch(() => undefined);
     const infos = infoSpy.mock.calls.map((c) => String(c[0] ?? ''));
     const preparing = infos.filter((l) => l.includes('Preparing to destroy stack:'));
     const skipped = warnSpy.mock.calls
@@ -338,7 +338,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
     mockGetState.mockResolvedValue(null);
 
-    await runDestroy(['destroy', '--all', '--yes', '--remove-protection']).catch(() => undefined);
+    await runDestroy(['--all', '--yes', '--remove-protection']).catch(() => undefined);
     const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? ''));
     // Positive control: the bypass fired, naming the folded stack.
     expect(warned.filter((l) => l.includes('terminationProtection'))).toEqual([
@@ -367,7 +367,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // Both stacks flow through the runner — guard does not fire.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
@@ -401,7 +401,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       interrupted: false,
     });
 
-    await expect(runDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Skipper', '--yes'])).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('skipped 1 entry');
@@ -444,7 +444,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       interrupted: false,
     });
 
-    await runDestroy(['destroy', 'Clean', '--yes']);
+    await runDestroy(['Clean', '--yes']);
 
     expect(exitSpy).not.toHaveBeenCalled();
     const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
@@ -480,7 +480,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
 
-    await runDestroy(['destroy', 'Protected', '--yes', '--remove-protection']);
+    await runDestroy(['Protected', '--yes', '--remove-protection']);
 
     // The runner runs (bypass) and the runner gets removeProtection=true.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -513,7 +513,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     // Unprotected stack went through the runner; protected one did not.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -612,7 +612,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
@@ -650,7 +650,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     // tolerates pre-v6 states (parentStack is undefined on them).
     mockGetState.mockResolvedValue({ state: makeStackState('Plain'), etag: '"x"' });
 
-    await runDestroy(['destroy', 'Plain', '--yes']);
+    await runDestroy(['Plain', '--yes']);
 
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Plain');
@@ -676,7 +676,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
       return { state: makeStackState(name), etag: '"x"' };
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     // Parent destroyed; child refused.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -715,7 +715,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
       return { state: makeStackState(name), etag: '"x"' };
     });
 
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // Parent dispatched to runner; child invisible to --all in synth-success.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -754,7 +754,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
@@ -805,7 +805,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     // Wildcard miss — falls through to generic "no matching" log, no exit.
-    await runDestroy(['destroy', 'Nope~*', '--yes']);
+    await runDestroy(['Nope~*', '--yes']);
 
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -834,7 +834,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     mockGetState.mockResolvedValue({ state: childStateNoLogicalId, etag: '"x"' });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
