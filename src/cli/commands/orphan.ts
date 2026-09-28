@@ -539,41 +539,51 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
  * Resolve every user-supplied construct path to a `(stack, logicalId)`
  * pair, enforcing that all paths reference the same stack.
  *
- * The first segment of each path must be a synthesized stack's
- * `displayName` (or `stackName`); the remainder is the path that CDK
- * encodes into the `aws:cdk:path` Metadata tag (e.g.
- * `MyStack/MyTable/Resource`). We index the template by that tag and
- * look the rest up there.
+ * Each path must START with a synthesized stack's `displayName` (or
+ * `stackName`) followed by `/`; the whole path is what CDK encodes into the
+ * `aws:cdk:path` Metadata tag (e.g. `MyStack/MyTable/Resource`), so we index
+ * the template by that tag and look the path up there.
+ *
+ * The stack is found by PREFIX, not by the first segment: a stack under a CDK
+ * Stage has a hierarchical display path (`MyStage/Api`, `Outer/Inner/Api`), so
+ * splitting at the first `/` named the Stage and never matched a stack
+ * (go-to-k/cdkd#3943). See {@link stackForConstructPath}.
  */
 function resolveConstructPaths(
   paths: string[],
   stacks: StackInfo[]
 ): { stack: StackInfo; logicalIds: string[] } {
-  const byStackName = new Map<string, StackInfo>();
-  const byDisplayName = new Map<string, StackInfo>();
-  for (const s of stacks) {
-    byStackName.set(s.stackName, s);
-    byDisplayName.set(s.displayName, s);
-  }
-
   let stack: StackInfo | undefined;
   const logicalIds: string[] = [];
 
   for (const p of paths) {
+    // A trailing `/` is malformed at ANY depth: `MyStage/Api/` would
+    // otherwise resolve to the stack and fail later as a template miss.
     const slash = p.indexOf('/');
-    if (slash <= 0 || slash === p.length - 1) {
-      throw new Error(`Invalid construct path '${p}'. Expected '<StackName>/<Path/To/Resource>'.`);
+    if (slash <= 0 || p.endsWith('/')) {
+      throw new Error(`Invalid construct path '${p}'. Expected '<StackPath>/<Path/To/Resource>'.`);
     }
-    const head = p.slice(0, slash);
-    const candidate = byDisplayName.get(head) ?? byStackName.get(head);
+    // A path that IS a stack's display path names the stack itself, which
+    // `cdkd state orphan` handles. Checked BEFORE the prefix lookup: a shorter
+    // stack path can prefix it (a Stack nested in a Stack displays as
+    // `Parent/Child` beside `Parent`), which would report a template miss in
+    // the wrong stack. `stackName` takes no part: a CloudFormation stack name
+    // holds no `/`, so the check above has already refused it.
+    if (stacks.some((s) => s.displayName === p)) {
+      throw new Error(
+        `Invalid construct path '${p}': it names a stack, not a resource inside one. ` +
+          `Expected '<StackPath>/<Path/To/Resource>'.`
+      );
+    }
+    const candidate = stackForConstructPath(p, stacks);
     if (!candidate) {
       const available = displayIdentList(
         stacks.map((s) => s.displayName ?? s.stackName),
         ', '
       );
       throw new Error(
-        `Construct path '${p}': stack '${head}' not found in synthesized app. ` +
-          `Available: ${available}`
+        `Construct path '${p}' does not start with the path of any stack in the ` +
+          `synthesized app. Available: ${available}`
       );
     }
     if (stack === undefined) {
@@ -611,6 +621,37 @@ function resolveConstructPaths(
     throw new Error('No construct paths supplied.');
   }
   return { stack, logicalIds };
+}
+
+/**
+ * The stack a construct path addresses: the one whose `displayName` (or
+ * `stackName`) followed by `/` is the LONGEST prefix of `path`.
+ *
+ * Longest wins because a Stage nests: `Outer/Inner/Api/Bucket` must pick
+ * `Outer/Inner/Api` even if a stack displayed `Outer` exists. The trailing `/`
+ * keeps `MyStage/Api` from claiming `MyStage/ApiV2/Bucket`. On a tie in length
+ * a `displayName` beats another stack's `stackName`, the precedence the
+ * first-segment lookup this replaced gave the two maps (go-to-k/cdkd#3943).
+ */
+function stackForConstructPath(path: string, stacks: readonly StackInfo[]): StackInfo | undefined {
+  let best: StackInfo | undefined;
+  let bestRank = -1;
+  for (const s of stacks) {
+    const names: Array<[string | undefined, number]> = [
+      [s.displayName, 1],
+      [s.stackName, 0],
+    ];
+    for (const [name, preference] of names) {
+      if (typeof name !== 'string' || name.length === 0) continue;
+      if (!path.startsWith(`${name}/`)) continue;
+      const rank = name.length * 2 + preference;
+      if (rank > bestRank) {
+        best = s;
+        bestRank = rank;
+      }
+    }
+  }
+  return best;
 }
 
 /**

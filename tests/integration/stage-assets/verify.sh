@@ -36,6 +36,8 @@
 #      intact assembly (go-to-k/cdkd#3507).
 #   3d. (Phase 2d) the same for `import`, which must refuse at selection and
 #      leave the stack's state untouched (go-to-k/cdkd#3507).
+#   3e. (Phase 2e) `orphan --dry-run` by a construct path that starts with
+#      the Stage resolves the Stage stack and writes nothing (go-to-k/cdkd#3943).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -395,6 +397,43 @@ if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
   exit 1
 fi
 echo "    OK: Stage named, state untouched"
+
+# --- Phase 2e: orphan by a construct path under the Stage -------------------
+# A Stage stack's construct paths start with the Stage (`CdkdStageAssets/
+# Stack/...`); cdkd once split the path at its FIRST `/` and looked up
+# `CdkdStageAssets` as a stack, which never matched (go-to-k/cdkd#3943).
+# `--dry-run` resolves the path against the deployed state and returns before
+# the lock and the save, so Phase 3 still destroys everything. The ZipFn L2
+# covers its role and function, and nothing else references either, so there
+# is no reference rewrite to fail on.
+echo "==> Phase 2e: orphan --dry-run by a construct path under the Stage"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2e" >&2
+  exit 1
+fi
+set +e
+ORPHAN_OUT=$(node "${LOCAL_DIST}" orphan "${STACK_PATH}/ZipFn" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+ORPHAN_RC=$?
+set -e
+printf '%s\n' "${ORPHAN_OUT}"
+if [ "${ORPHAN_RC}" -ne 0 ]; then
+  echo "FAIL: orphan --dry-run by a Stage construct path exited ${ORPHAN_RC}, expected 0" >&2
+  exit 1
+fi
+if ! printf '%s' "${ORPHAN_OUT}" | grep -qF "Target: ${STACK} (${REGION}); orphaning 2 resource(s)"; then
+  echo "FAIL: orphan did not resolve ${STACK_PATH}/ZipFn to ${STACK}'s two ZipFn resources" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across orphan --dry-run (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Stage construct path resolved, state untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"
