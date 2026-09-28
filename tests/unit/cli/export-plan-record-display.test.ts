@@ -164,6 +164,8 @@ import { createExportCommand } from '../../../src/cli/commands/export.js';
 
 const STACK = 'Exported';
 const REGION = 'us-east-1';
+/** The region the run is keyed on; a case overrides it to drive a withheld value. */
+let region = REGION;
 
 let tmp: string;
 let templatePath: string;
@@ -190,7 +192,7 @@ function stateRecord(): { state: Record<string, unknown>; etag: string } {
     state: {
       version: 9,
       stackName: STACK,
-      region: REGION,
+      region,
       resources: {
         MyBucket: {
           physicalId: bucketPhysicalId,
@@ -257,6 +259,7 @@ beforeEach(() => {
   setStdinIsTty(true);
   bucketPhysicalId = 'my-bucket-phys';
   stagePhysicalId = 'stage-phys';
+  region = REGION;
   policyRoles = undefined;
   cfnState.phase1Succeeds = false;
   cfnState.describeStacksCalls = 0;
@@ -269,7 +272,7 @@ beforeEach(() => {
   writeFileSync(templatePath, JSON.stringify(TEMPLATE), 'utf-8');
 
   mockVerifyBucketExists.mockResolvedValue(undefined);
-  mockListStacks.mockResolvedValue([{ stackName: STACK, region: REGION }]);
+  mockListStacks.mockResolvedValue([{ stackName: STACK, region }]);
   mockGetState.mockImplementation(async () => stateRecord());
   mockLoadRollbackJournal.mockResolvedValue(null);
   mockAcquireLock.mockResolvedValue(true);
@@ -295,7 +298,7 @@ function dryRunArgs(): string[] {
     '--state-bucket',
     'test-bucket',
     '--stack-region',
-    REGION,
+    region,
     '--skip-import-support-preflight',
   ];
 }
@@ -309,6 +312,13 @@ function infoLines(): string[] {
   expect(mockSaveState).not.toHaveBeenCalled();
   return infoSpy.mock.calls.map((c) => String(c[0]));
 }
+
+/** `orphanCommandFor`'s note for a region `displaySafe` alters (go-to-k/cdkd#3436). */
+const REGION_ALT_NOTE =
+  "The next line's command names neither value, because its record's region does NOT " +
+  'render exactly (another record may render identically). List the records as stored with ' +
+  "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
+  'each quoted hole, quotes included, with the shell-quoted value.';
 
 describe('cdkd export --dry-run renders recorded ids in the plan with their own boundary', () => {
   it('renders an ordinary record exactly as before', async () => {
@@ -406,6 +416,58 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
     );
     expect(message).toContain('more characters withheld]');
     expect(message).not.toContain('e'.repeat(4097));
+  });
+
+  it('ends the pre-delete refusal on its orphan command, alone on a labelled line (go-to-k/cdkd#3436)', async () => {
+    deleteStage.mockRejectedValue(new Error('AccessDenied'));
+    const message = await runExport(realRunArgs());
+    expect(message).toBeDefined();
+    // The sentence first, then the command LAST on a line of its own: on the
+    // sentence's line an apostrophe (`cdkd's`) would flip the shell quote
+    // around a shell-quoted name.
+    expect(
+      message!.endsWith(
+        "  4. Once phase 2 succeeds, clean up cdkd's stale state record.\n" +
+          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION}`
+      )
+    ).toBe(true);
+  });
+
+  it.each([
+    ['pre-delete', '4', () => deleteStage.mockRejectedValue(new Error('AccessDenied'))],
+    ['phase-2', '3', () => deleteStage.mockResolvedValue({})],
+  ])(
+    'puts the gate reason BEFORE the withheld orphan command in the %s refusal (go-to-k/cdkd#3436)',
+    async (_, step, arrange) => {
+      // A region `displaySafe` alters (a zero-width space) is WITHHELD, so the
+      // note is non-empty and has to sit before the labelled command line.
+      region = 'us-east-1\u200b';
+      mockListStacks.mockResolvedValue([{ stackName: STACK, region }]);
+      arrange();
+      const message = await runExport(realRunArgs());
+      expect(message).toBeDefined();
+      expect(
+        message!.endsWith(
+          `  ${step}. Once phase 2 succeeds, clean up cdkd's stale state record. ` +
+            REGION_ALT_NOTE +
+            '\n' +
+            "     Run: cdkd state orphan '<stack>' --stack-region '<region>'"
+        )
+      ).toBe(true);
+    }
+  );
+
+  it('ends the phase-2 refusal on its orphan command, alone on a labelled line (go-to-k/cdkd#3436)', async () => {
+    deleteStage.mockResolvedValue({});
+    // Phase 2 fails against the stub once the pre-delete succeeded.
+    const message = await runExport(realRunArgs());
+    expect(message).toContain('phase 2 (UPDATE) failed');
+    expect(
+      message!.endsWith(
+        "  3. Once phase 2 succeeds, clean up cdkd's stale state record.\n" +
+          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION}`
+      )
+    ).toBe(true);
   });
 });
 

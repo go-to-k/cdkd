@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const sink = { setLevel: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -1437,5 +1439,297 @@ describe('nested parameter values carry through a grandparent chain', () => {
       options: { ...OPTIONS, dryRun: true, yes: true },
     });
     expect(r).toEqual({ outcome: 'dry-run', importedStacks: [] });
+  });
+});
+
+/**
+ * The nested resume tail's orphan lines (go-to-k/cdkd#3924 review, M2): one
+ * command per line, and a WITHHELD plan's note on the line directly above its
+ * own command, so the "do not fill" rule and the reason survive a list.
+ */
+describe('the nested resume tail notes each withheld orphan command above it (go-to-k/cdkd#3436)', () => {
+  const WITHHELD = 'us-east-1​';
+  const NOTE_BODY =
+    "The next line's command names neither value, because its record's region does NOT " +
+    'render exactly (another record may render identically). List the records as stored with ' +
+    "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
+    'each quoted hole, quotes included, with the shell-quoted value.';
+  /** The note line for the plan migrated to CloudFormation stack `cfn`. */
+  const noteLine = (cfn: string) =>
+    `  For the record targeting CloudFormation stack ${cfn}: ${NOTE_BODY}`;
+  const HOLES = "  cdkd state orphan '<stack>' --stack-region '<region>'";
+  /**
+   * The INVARIANT, not one instance of it: EVERY both-hole line in the tail
+   * has its own note directly above it, however many records the list holds.
+   */
+  const expectEveryHoleNoted = (message: string): number => {
+    const lines = message.split('\n');
+    const holes = lines.flatMap((l, i) => (l === HOLES ? [i] : []));
+    for (const i of holes) {
+      expect(lines[i - 1], `line ${i}`).toMatch(/^ {2}For the record targeting /);
+    }
+    return holes.length;
+  };
+
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-tail-'));
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  /**
+   * Root over children A and B (in that order); each region is the caller's.
+   * `names` renames the root and the children's logical ids, with explicit
+   * CFn-name overrides — which BYPASS `cdkd2cfnStackName`, so a hostile or
+   * `-`-leading cdkd name reaches the tail only this way.
+   */
+  async function runTree(
+    regions: { A: string; B: string },
+    failAt: number,
+    names: { root?: string; A?: string; B?: string; rootCfn?: string } = {}
+  ): Promise<Error> {
+    const rootName = names.root ?? 'Root';
+    const idA = names.A ?? 'A';
+    const idB = names.B ?? 'B';
+    const leaf = { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } } };
+    const aPath = join(tmp, 'A.template.json');
+    const bPath = join(tmp, 'B.template.json');
+    writeFileSync(aPath, JSON.stringify(leaf), 'utf-8');
+    writeFileSync(bPath, JSON.stringify(leaf), 'utf-8');
+    // Changeset waits succeed until the `failAt`-th, which fails its stack's 1A.
+    for (let n = 1; n < failAt; n++) waitChangeSetCreate.mockResolvedValueOnce(undefined);
+    waitChangeSetCreate.mockRejectedValueOnce(new Error('boom'));
+    const row = (id: string) => ({
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { TemplateURL: `https://x/${id}.template.json` },
+      Metadata: { 'aws:asset:path': `${id}.template.json` },
+    });
+    const stackRecord = {
+      physicalId: 'arn:x',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes: {},
+      dependencies: [],
+    };
+    const ids = { A: idA, B: idB };
+    const child = (key: 'A' | 'B') => ({
+      stackName: `${rootName}~${ids[key]}`,
+      region: regions[key],
+      state: state(`${rootName}~${ids[key]}`, { B: bucket(`${key}1`) }, {
+        stack: rootName,
+        logicalId: ids[key],
+      }),
+      nestedChildren: new Map(),
+    });
+    return runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: rootName,
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { [idA]: aPath, [idB]: bPath },
+      rootTemplateFormat: 'json',
+      tree: {
+        stackName: rootName,
+        region: 'us-east-1',
+        state: state(rootName, { [idA]: stackRecord, [idB]: stackRecord } as unknown as StackState['resources']),
+        nestedChildren: new Map([
+          [idA, child('A')],
+          [idB, child('B')],
+        ]),
+      },
+      rootTemplate: { Resources: { [idA]: row('A'), [idB]: row('B') } },
+      cfnStackNameOverrides: {
+        ...(names.root !== undefined && { root: names.rootCfn ?? 'RootCfn' }),
+        childMap: new Map(
+          Object.keys(names).length > 0
+            ? [
+                [`${rootName}~${idA}`, 'ChildACfn'],
+                [`${rootName}~${idB}`, 'ChildBCfn'],
+              ]
+            : []
+        ),
+      },
+      rootParameters: [],
+      deps: deps(cfnClient({ describeChangeSetThrows: true })),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+  }
+
+  it('phase 1: a withheld plan among several named ones gets its note directly above its command', async () => {
+    // A and B import; the root's 1A (the third wait) fails, so the finished
+    // list holds BOTH children and only A's region is withheld.
+    const err = await runTree({ A: WITHHELD, B: 'us-east-1' }, 3);
+    expect(expectEveryHoleNoted(err.message)).toBe(1);
+    const lines = err.message.split('\n');
+    // The note NAMES its record, so a list of both-hole lines stays readable.
+    const noteAt = lines.indexOf(noteLine('Root-A'));
+    expect(noteAt).toBeGreaterThan(-1);
+    expect(lines[noteAt + 1]).toBe(HOLES);
+    // Exactly ONE note: the named sibling gets its command and nothing else.
+    expect(lines.filter((l) => l.includes(NOTE_BODY))).toHaveLength(1);
+    expect(lines).toContain("  cdkd state orphan 'Root~B' --stack-region us-east-1");
+    expect(lines).toContain('  cdkd state orphan Root --stack-region us-east-1');
+  });
+
+  it('phase 1: the FAILING stack\'s own line takes the note when its region is withheld', async () => {
+    // A imports; B's 1A (the second wait) fails with B's region withheld.
+    const err = await runTree({ A: 'us-east-1', B: WITHHELD }, 2);
+    const lines = err.message.split('\n');
+    const noteAt = lines.indexOf(noteLine('Root-B'));
+    expect(lines[noteAt - 1]).toMatch(/clean up its record the same way:$/);
+    expect(lines[noteAt + 1]).toBe(HOLES);
+  });
+
+  it('a ROOT name beginning with - (reachable through the CFn-name override) gets the no-fill note above its line', async () => {
+    const err = await runTree({ A: 'us-east-1', B: 'us-east-1' }, 3, { root: '--all' });
+    const lines = err.message.split('\n');
+    // The ROOT's own block, after its "clean up its record" line — not the
+    // children's, which share the both-hole command.
+    const block = lines.findIndex((l) => l.includes('clean up its record the same way'));
+    expect(block).toBeGreaterThan(-1);
+    const at = block + 2;
+    expect(lines[at]).toBe(HOLES);
+    expect(lines[at - 1]).toMatch(/^ {2}For the record targeting CloudFormation stack RootCfn: /);
+    expect(lines[at - 1]).toContain(
+      "this stack name begins with a '-' and could parse as an option in that position, so do " +
+        'not fill a hole with it.'
+    );
+    expect(lines[at - 1]).not.toContain('replacing each quoted hole');
+  });
+
+  it('names a withheld record by its CFn name only when that name is plain, and pastes inert either way', async () => {
+    // An operator's override is not validated here. A non-plain one is
+    // DESCRIBED: JSON quotes would still let a `$(...)` one run in a pasted
+    // clause, and a padded one could spell a line.
+    const messages: string[] = [];
+    for (const rootCfn of ['Root Cfn', 'x$(touch OWNED)', 'x`touch OWNED`']) {
+      waitChangeSetCreate.mockReset();
+      const message = (
+        await runTree({ A: 'us-east-1', B: 'us-east-1' }, 3, { root: '--all', rootCfn })
+      ).message;
+      expect(message).toContain(
+        '\n  For the record targeting a CloudFormation stack whose name is not a plain identifier: '
+      );
+      expect(message).not.toContain(`For the record targeting CloudFormation stack ${rootCfn}`);
+      messages.push(message);
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        const at = message.indexOf('Re-running `cdkd export`');
+        expect(spansThatRun(message.slice(at), dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
+
+  it('pastes nothing runnable from the tail for payload NAMES, named or withheld', async () => {
+    const messages: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      // A child id carrying the payload (named, shell-quoted), and the same
+      // payload behind a leading `-` on the root (withheld).
+      for (const names of [{ A: `A${value}` }, { root: `-${value}` }]) {
+        waitChangeSetCreate.mockReset();
+        const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 3, names)).message;
+        // The premise of each case, pinned, so the paste result is not
+        // satisfied by a gate that stopped naming or stopped withholding.
+        if ('A' in names) {
+          expect(message).toContain(
+            `  cdkd state orphan ${shellQuote(`Root~A${value}`)} --stack-region us-east-1\n`
+          );
+          expect(message).not.toContain('For the record targeting');
+        } else {
+          expect(message).toMatch(
+            /\n {2}For the record targeting CloudFormation stack RootCfn: [^\n]*do not fill a hole with it\.\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
+          );
+          // The root AND both children (`-…~A`, `-…~B`) are withheld.
+          expect(expectEveryHoleNoted(message)).toBe(3);
+        }
+        messages.push(message);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        const at = message.indexOf('Re-running `cdkd export`');
+        expect(at, message).toBeGreaterThan(-1);
+        const tail = message.slice(at);
+        expect(tail).toContain('cdkd state orphan');
+        expect(spansThatRun(tail, dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
+
+  it('pastes nothing runnable from the tail, named or withheld', async () => {
+    const messages: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const region of [`us-east-1${value}`, `-${value}`]) {
+        waitChangeSetCreate.mockReset();
+        const message = (await runTree({ A: region, B: 'us-east-1' }, 3)).message;
+        if (region.startsWith('-')) {
+          expect(message).toMatch(
+            /\n {2}For the record targeting CloudFormation stack Root-A: [^\n]*cdkd refuses to print as an argument[^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
+          );
+        } else {
+          expect(message).toContain(
+            `  cdkd state orphan 'Root~A' --stack-region ${shellQuote(region)}\n`
+          );
+        }
+        messages.push(message);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        const at = message.indexOf('Re-running `cdkd export`');
+        expect(at, message).toBeGreaterThan(-1);
+        const tail = message.slice(at);
+        expect(tail).toContain('cdkd state orphan');
+        expect(spansThatRun(tail, dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
+});
+
+describe('the single-root pre-delete and phase-2 tails note a withheld orphan command (go-to-k/cdkd#3436)', () => {
+  it.each([
+    ['pre-delete', () => iamSend.mockRejectedValue(new Error('denied'))],
+    [
+      'phase 2',
+      () => {
+        iamSend.mockResolvedValue({});
+        waitStackUpdate.mockRejectedValue(new Error('update failed'));
+      },
+    ],
+  ])('%s', async (_, arrange) => {
+    arrange();
+    const { tree, rootTemplate } = policyTree();
+    const withheldTree = { ...tree, region: 'us-east-1​' };
+    const err = await runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: withheldTree,
+      rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: deps(cfnClient()),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+    expect(err.message).toContain(
+      'clean up its record the same way:\n  For the record targeting CloudFormation stack Root: ' +
+        "The next line's command names neither value, because " +
+        "its record's region does NOT render exactly (another record may render identically). " +
+        "List the records as stored with 'cdkd state list --json' and act on the one whose " +
+        'stackName and region match, replacing each quoted hole, quotes included, with the ' +
+        "shell-quoted value.\n  cdkd state orphan '<stack>' --stack-region '<region>'\n"
+    );
   });
 });
