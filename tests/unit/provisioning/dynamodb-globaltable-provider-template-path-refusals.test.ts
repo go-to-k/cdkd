@@ -245,6 +245,9 @@ describe('DynamoDBGlobalTableProvider template-path refusals (issue #3740)', () 
       )
     ).resolves.toBeDefined();
     expect(commandNames()).toContain('TagResourceCommand');
+    await expect(
+      edit('GlobalSecondaryIndexes', { IndexName: 'g', Projection: {} }, { Projection: {}, IndexName: 'g' })
+    ).resolves.toBeDefined();
   });
 
   it('refuses the FIRST failing arm only, in read order (BillingMode before StreamSpecification)', async () => {
