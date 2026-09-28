@@ -409,6 +409,11 @@ describe('reverseReplacementNewHoldsName — types', () => {
       ask({ requested: { QueueName: `q-${secret}` }, recorded: { QueueName: 'q-new' }, physicalId: 'x', mask })
     );
     expect(quotedSecret.diagnosis).not.toContain('SECRETVALUE');
+    // The same order for an identifier rendered bare (the new physical id).
+    const idSecret = refusal(
+      ask({ recorded: { QueueName: 'q-new' }, physicalId: `id-${secret}`, mask })
+    );
+    expect(idSecret.diagnosis).not.toContain('SECRETVALUE');
     const long = 'L'.repeat(300);
     const cut = refusal(
       ask({
