@@ -50,6 +50,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **remove-protection-types.ts** - The ONE list both `--remove-protection` help strings render from (SDK types, then the CC registry). `remove-protection-types.test.ts` binds it to the provider files that read `removeProtection`, in both directions ([#2660](https://github.com/go-to-k/cdkd/issues/2660)).
 
+- **providers/deletion-protection-compensation.ts** - Undoes a `--remove-protection` flip whose delete then failed TERMINALLY ([#2204](https://github.com/go-to-k/cdkd/issues/2204)). A new flip site wraps its delete in `deleteWithProtectionCompensation`, flips through `observeThenDisableProtection` (a pre-flip readback, never state) and sets `flip.deleteAccepted` once AWS takes the delete; otherwise a failed destroy leaves the guard silently stripped.
+
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`. The modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. A CC-routed ASG cannot `ForceDelete`, so `CloudControlProvider.delete` delegates that case to `ASGProvider.delete`.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.

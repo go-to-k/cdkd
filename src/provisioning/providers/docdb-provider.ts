@@ -27,6 +27,14 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  rdsFamilyProtectionSite,
+  type ProtectionFlipRecord,
+} from './deletion-protection-compensation.js';
 
 /**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
@@ -108,6 +116,12 @@ export class DocDBProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DocDBProvider');
+  /**
+   * What a `--remove-protection` flip did, per resource, across the outer
+   * retry loop's re-entries (issue #2204; the mechanism is
+   * `./deletion-protection-compensation.ts`).
+   */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   /**
    * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
@@ -435,11 +449,54 @@ export class DocDBProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The compensation boundary (issue #2204): a `--remove-protection` flip whose
+   * delete then fails terminally is undone here, so a destroy that did not
+   * happen does not leave a live cluster with its guard stripped. DocDB
+   * instances carry no guard of their own, so the cluster is the only site.
+   */
   private async deleteDBCluster(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
+  ): Promise<void> {
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => this.deleteDBClusterOnce(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: rdsFamilyProtectionSite({
+          cliService: 'docdb',
+          serviceLabel: 'DocDB',
+          kind: 'cluster',
+          physicalId,
+          region: context?.expectedRegion,
+          notFoundFault: 'DBClusterNotFoundFault',
+          isNotFound: (error) => isDocDBNotFoundError(error, 'DBClusterNotFoundFault'),
+        }),
+        reEnable: async () => {
+          await this.getClient().send(
+            new ModifyDBClusterCommand({
+              DBClusterIdentifier: physicalId,
+              DeletionProtection: true,
+              ApplyImmediately: true,
+            })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteDBClusterOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting DocDB DBCluster ${logicalId}: ${physicalId}`);
 
@@ -448,15 +505,27 @@ export class DocDBProvider implements ResourceProvider {
       // before delete. Idempotent — DocDB accepts the call when protection
       // is already disabled. Non-fatal: log at debug if the flip-off
       // errors (e.g. NotFound) so the actual delete still proceeds.
+      // The pre-flip readback is what lets a terminal failure restore ONLY a
+      // guard this run turned off (issue #2204).
       if (context?.removeProtection === true) {
         try {
-          await this.getClient().send(
-            new ModifyDBClusterCommand({
-              DBClusterIdentifier: physicalId,
-              DeletionProtection: false,
-              ApplyImmediately: true,
-            })
-          );
+          await observeThenDisableProtection({
+            flip,
+            logger: this.logger,
+            physicalId,
+            guardName: 'DeletionProtection',
+            observe: async () =>
+              (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
+            disable: async () => {
+              await this.getClient().send(
+                new ModifyDBClusterCommand({
+                  DBClusterIdentifier: physicalId,
+                  DeletionProtection: false,
+                  ApplyImmediately: true,
+                })
+              );
+            },
+          });
           this.logger.debug(
             `Disabled DeletionProtection on DocDB DBCluster ${logicalId} before delete`
           );
@@ -480,6 +549,9 @@ export class DocDBProvider implements ResourceProvider {
             : { SkipFinalSnapshot: true }),
         })
       );
+      // AWS took the delete: a later throw is the WAIT failing, and the guard
+      // must not be put back on a cluster that is being deleted.
+      flip.deleteAccepted = true;
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting DocDB DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`

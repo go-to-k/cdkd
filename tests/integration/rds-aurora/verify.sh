@@ -20,9 +20,14 @@
 # input field means "no change"), so before the #1160 fix the removed fields
 # silently kept their old live values — worst case DeletionProtection, which
 # would make the destroy fail. Phase 2 asserts both reset to their CFn
-# defaults (false / false) via DescribeDBClusters, and the phase-3 destroy
-# succeeding WITHOUT --remove-protection is itself proof the
-# DeletionProtection reset landed.
+# defaults (false / false) via DescribeDBClusters.
+#
+# #2204 (--remove-protection compensation): phase 2b turns DeletionProtection
+# back ON out of band, adds an out-of-band member instance to the
+# SecurityCluster so DeleteDBCluster refuses TERMINALLY, runs
+# `cdkd destroy --remove-protection` (which must fail) and asserts the guard
+# is back ON — cdkd turned it off and the delete failed, so cdkd must restore
+# it. The phase-3 destroy then passes --remove-protection too.
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -83,6 +88,21 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Auto-generated physical name; resolved from cdkd state after deploy.
 DB_CLUSTER_ID=""
+# Phase 2b's out-of-band cluster member (issue #2204). Not in cdkd state, so no
+# cdkd destroy removes it: cleanup deletes it FIRST, or the SecurityCluster
+# (and the VPC under it) cannot be deleted. Set just before the create.
+OOB_INSTANCE_ID=""
+# Phase 2b's captured destroy output; removed by cleanup too, since a signal
+# landing mid-destroy never reaches the phase's own `rm`.
+DESTROY_2B_LOG=""
+
+# Delete the out-of-band member and wait for it to be gone. One still
+# `creating` refuses the delete, so wait for `available` first.
+delete_oob_instance() { # usage: delete_oob_instance <instance id>
+  aws rds wait db-instance-available --db-instance-identifier "$1" --region "${REGION}" || true
+  aws rds delete-db-instance --db-instance-identifier "$1" --region "${REGION}" >/dev/null || return 1
+  aws rds wait db-instance-deleted --db-instance-identifier "$1" --region "${REGION}"
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS RDS resources"
@@ -93,6 +113,10 @@ cleanup() {
   # (state destroy already handled it on the happy path) and the `s3 rm`
   # calls are expected to NotFound after state destroy succeeds.
   set +eu
+  [ -n "${DESTROY_2B_LOG}" ] && rm -f "${DESTROY_2B_LOG}"
+  if [ -n "${OOB_INSTANCE_ID}" ]; then
+    delete_oob_instance "${OOB_INSTANCE_ID}" || true
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
@@ -284,14 +308,135 @@ if [ -z "${RESET_OK}" ]; then
 fi
 echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
 
+# --- Phase 2b: --remove-protection compensation (issue #2204) ---------
+# The failure has to be TERMINAL (a retryable one is retried, and a sequence
+# that exhausts its attempts is a deliberate non-compensated case) and has to
+# land AFTER the flip but BEFORE AWS accepts the delete. A cluster member cdkd
+# does not own gives exactly that: cdkd flips the SecurityCluster's guard off
+# and DeleteDBCluster refuses (InvalidDBClusterStateFault, "still contains DB
+# instances"), which matches no retryable pattern.
+#
+# The discriminator is the READBACK, not cdkd's output: before #2204 the flip
+# was never undone, so the cluster reads DeletionProtection=false here.
+#
+# COST, stated so a slow run is not read as a hang. cdkd's destroy has no
+# per-resource target and its level loop does not stop at a failure, so this
+# destroy deletes everything it can (the L2 AuroraCluster, the proxy family,
+# both IAM roles) and keeps going below the refused SecurityCluster. Its
+# subnet group, the shared SG, the subnets and the VPC are still held by the
+# out-of-band member's ENI and answer DependencyViolation, which the EC2
+# provider and the destroy loop both retry: expect this phase to add tens of
+# minutes. The failure-set assertion below proves nothing ELSE failed along
+# the way, and phase 3 deletes what is left.
+echo "==> Phase 2b: --remove-protection compensation after a terminal delete failure (issue #2204)"
+aws rds modify-db-cluster --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" --deletion-protection --apply-immediately >/dev/null
+
+cluster_protection() { # usage: cluster_protection <cluster id>
+  local out
+  out=$(aws rds describe-db-clusters --db-cluster-identifier "$1" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json) || return 1
+  echo "${out}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end'
+}
+# PREMISE: the guard is ON before the destroy. A guard that was already off
+# must be LEFT off, so without this "false afterwards" would be correct.
+PRE_PROTECTION=$(cluster_protection "${DB_CLUSTER_ID}")
+if [ "${PRE_PROTECTION}" != "true" ]; then
+  echo "FAIL: phase 2b premise: DeletionProtection is '${PRE_PROTECTION}' before the destroy, expected 'true'" >&2
+  exit 1
+fi
+
+# The destroy below deletes SecurityMonitoringRole (a lower DAG level than the
+# refused cluster), after which phase 3 has to MODIFY a cluster whose
+# MonitoringRoleArn names a role that no longer exists. Turn Enhanced
+# Monitoring off first, so phase 3's flip and cleanup's raw flip-off never
+# depend on RDS accepting a cluster in that state. The #609 monitoring
+# assertions ran in phase 1, so nothing later reads these fields.
+aws rds modify-db-cluster --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" --monitoring-interval 0 --apply-immediately >/dev/null
+aws rds wait db-cluster-available --db-cluster-identifier "${DB_CLUSTER_ID}" --region "${REGION}"
+
+# A run-unique name, so a leftover from an aborted run cannot collide. The id
+# is recorded BEFORE the create: a create AWS accepted but the CLI reported as
+# failed must still be deleted by cleanup (deleting an absent one is absorbed).
+OOB_INSTANCE_ID="cdkd-ra-oob-member-$(date +%s)"
+aws rds create-db-instance --db-instance-identifier "${OOB_INSTANCE_ID}" \
+  --db-instance-class db.serverless --engine aurora-postgresql \
+  --db-cluster-identifier "${DB_CLUSTER_ID}" --region "${REGION}" >/dev/null
+# Waiting takes the create's own timing out of the arm, and cleanup can only
+# delete an available member anyway.
+aws rds wait db-instance-available --db-instance-identifier "${OOB_INSTANCE_ID}" --region "${REGION}"
+
+DESTROY_2B_LOG="$(mktemp)"
+if node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force \
+  --remove-protection >"${DESTROY_2B_LOG}" 2>&1; then
+  cat "${DESTROY_2B_LOG}" >&2
+  echo "FAIL: phase 2b destroy exited 0; the SecurityCluster still holds an out-of-band member, so DeleteDBCluster must refuse" >&2
+  exit 1
+fi
+DESTROY_2B_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_2B_LOG}")"
+rm -f "${DESTROY_2B_LOG}"
+DESTROY_2B_LOG=""
+printf '%s\n' "${DESTROY_2B_PLAIN}" >&2
+# PREMISE: the failure is the engineered one. A destroy that died before the
+# flip leaves the guard ON too, which would pass the readback while testing
+# nothing.
+if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_2B_PLAIN}"; then
+  echo "FAIL: phase 2b destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
+  exit 1
+fi
+# The FAILURE SET: the SecurityCluster, and nothing but it and what the
+# out-of-band member's ENI holds (its subnet group, the shared SG, the VPC and
+# its subnets). Anything else failing here would otherwise be absorbed silently
+# by phase 3's destroy.
+FAILED_2B="$(printf '%s\n' "${DESTROY_2B_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
+if ! printf '%s\n' "${FAILED_2B}" | grep -qx SecurityCluster; then
+  echo "FAIL: phase 2b: SecurityCluster is not among the failed deletes (got: $(printf '%s ' ${FAILED_2B}))" >&2
+  exit 1
+fi
+UNEXPECTED_2B="$(printf '%s\n' "${FAILED_2B}" | grep -vE '^(SecurityCluster|SecuritySubnetGroup|AuroraSecurityGroup[0-9A-F]{8}|AuroraVpc[A-Za-z0-9]*)$' || true)"
+if [ -n "${UNEXPECTED_2B}" ]; then
+  echo "FAIL: phase 2b: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_2B})" >&2
+  exit 1
+fi
+
+POST_PROTECTION=""
+for i in $(seq 1 12); do
+  POST_PROTECTION=$(cluster_protection "${DB_CLUSTER_ID}")
+  [ "${POST_PROTECTION}" = "true" ] && break
+  if [ "${i}" -lt 12 ]; then
+    sleep 5
+  fi
+done
+if [ "${POST_PROTECTION}" != "true" ]; then
+  echo "FAIL: phase 2b: a failed destroy left DeletionProtection='${POST_PROTECTION}' on ${DB_CLUSTER_ID} (expected true) -- the --remove-protection flip was not compensated (issue #2204)" >&2
+  exit 1
+fi
+# The narration's sentinel is the readback above: a restored guard with no
+# line means the wording drifted, not the behavior.
+if ! grep -qF -- "--remove-protection had turned DeletionProtection off, so it was re-enabled on ${DB_CLUSTER_ID}." <<<"${DESTROY_2B_PLAIN}"; then
+  echo "FAIL: phase 2b: DeletionProtection is back ON, but no restore line names ${DB_CLUSTER_ID} -- the compensation wording drifted" >&2
+  exit 1
+fi
+echo "    OK: SecurityCluster DeletionProtection restored after the terminal delete failure (#2204)"
+
+delete_oob_instance "${OOB_INSTANCE_ID}"
+OOB_INSTANCE_ID=""
+echo "    OK: out-of-band member deleted"
+
 # --- Phase 3: destroy -------------------------------------------------
-# Deliberately NO --remove-protection: the destroy succeeding is itself
-# proof the #1160 DeletionProtection reset landed on AWS.
-echo "==> Phase 3: destroy (no --remove-protection — proves the reset landed)"
+# --remove-protection: phase 2b left the SecurityCluster's guard ON, so this is
+# also the flip's live SUCCESS path. The #1160 reset is proven by phase 2's
+# readback above.
+echo "==> Phase 3: destroy --remove-protection (phase 2b left the guard ON)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force
+  --force \
+  --remove-protection
 
 # RDS Delete* is async: resources linger in 'deleting' for a few minutes
 # before describe returns *NotFoundFault. cdkd's delete path waits for the

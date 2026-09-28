@@ -318,6 +318,8 @@ describe('RDSProvider', () => {
 
     describe('delete', () => {
       it('with removeProtection=true: disables deletion protection then deletes with SkipFinalSnapshot=true', async () => {
+        // DescribeDBClusters (pre-flip readback, issue #2204)
+        mockSend.mockResolvedValueOnce({ DBClusters: [{ DeletionProtection: true }] });
         // ModifyDBClusterCommand (disable deletion protection)
         mockSend.mockResolvedValueOnce({});
         // DeleteDBClusterCommand
@@ -331,13 +333,14 @@ describe('RDSProvider', () => {
           removeProtection: true,
         });
 
-        expect(mockSend).toHaveBeenCalledTimes(3);
+        expect(mockSend).toHaveBeenCalledTimes(4);
 
-        const modifyCall = mockSend.mock.calls[0][0];
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeDBClustersCommand');
+        const modifyCall = mockSend.mock.calls[1][0];
         expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
         expect(modifyCall.input.DeletionProtection).toBe(false);
 
-        const deleteCall = mockSend.mock.calls[1][0];
+        const deleteCall = mockSend.mock.calls[2][0];
         expect(deleteCall.constructor.name).toBe('DeleteDBClusterCommand');
         expect(deleteCall.input.DBClusterIdentifier).toBe('my-cluster');
         expect(deleteCall.input.SkipFinalSnapshot).toBe(true);
@@ -861,6 +864,8 @@ describe('RDSProvider', () => {
 
     describe('delete', () => {
       it('with removeProtection=true: disables deletion protection then deletes with SkipFinalSnapshot=true', async () => {
+        // DescribeDBInstances (pre-flip readback, issue #2204)
+        mockSend.mockResolvedValueOnce({ DBInstances: [{ DeletionProtection: true }] });
         // ModifyDBInstanceCommand (disable deletion protection)
         mockSend.mockResolvedValueOnce({});
         // DeleteDBInstanceCommand
@@ -874,14 +879,15 @@ describe('RDSProvider', () => {
           removeProtection: true,
         });
 
-        expect(mockSend).toHaveBeenCalledTimes(3);
+        expect(mockSend).toHaveBeenCalledTimes(4);
 
-        const modifyCall = mockSend.mock.calls[0][0];
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeDBInstancesCommand');
+        const modifyCall = mockSend.mock.calls[1][0];
         expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
         expect(modifyCall.input.DeletionProtection).toBe(false);
         expect(modifyCall.input.ApplyImmediately).toBe(true);
 
-        const deleteCall = mockSend.mock.calls[1][0];
+        const deleteCall = mockSend.mock.calls[2][0];
         expect(deleteCall.constructor.name).toBe('DeleteDBInstanceCommand');
         expect(deleteCall.input.DBInstanceIdentifier).toBe('my-instance');
         expect(deleteCall.input.SkipFinalSnapshot).toBe(true);

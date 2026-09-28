@@ -15827,7 +15827,8 @@
             "createDBCluster",
             "createDBInstance",
             "delete",
-            "deleteDBInstance"
+            "deleteDBInstance",
+            "deleteDBInstanceOnce"
           ]
         },
         {
