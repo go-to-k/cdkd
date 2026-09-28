@@ -508,6 +508,12 @@ interface ScrubWorkItem {
    * is a per-stack failure inside the loop's boundary, not a run abort.
    */
   load: () => { stack: StackInfo; nestedChild?: NestedChildScrubTarget };
+  /**
+   * For a nested child that was scrubbed with its parent's inputs: the parent
+   * and the row, whose `Outputs.<Name>` attributes mirror this child's outputs
+   * (go-to-k/cdkd#3961).
+   */
+  parentRow?: { stackName: string; logicalId: string };
 }
 
 /**
@@ -568,6 +574,7 @@ function nestedChildWorkItem(
   return {
     stackName: child.stackName,
     region,
+    ...(child.input && { parentRow: { stackName: parent.stackName, logicalId: child.logicalId } }),
     load: () => {
       const templatePath = parent.nestedTemplates?.[child.logicalId];
       if (child.refusal !== undefined || templatePath === undefined) {
@@ -612,6 +619,135 @@ function nestedChildWorkItem(
       };
     },
   };
+}
+
+/**
+ * Rewrite a parent row's `Outputs.<Name>` attributes that hold this child's
+ * output plaintext (go-to-k/cdkd#3961). Returns how many it changed (under
+ * `dryRun`, would change).
+ *
+ * NON-FABRICATING by construction: an attribute is rewritten only when the
+ * child's scrubbed output under that name, with every expression this run
+ * recorded replaced by the plaintext it resolved to, is EXACTLY the stored
+ * attribute — so the attribute is that output's plaintext, and it is rewritten
+ * to the output itself, the value `buildOutputsAttributes` would copy there on
+ * the child's next deploy. No positioning rule is involved, so a key the
+ * child's own pass positioned (two stages of one secret) or repaired only by
+ * the widened union is recognised alike, and an unrelated value never matches.
+ * An attribute that still holds a recorded plaintext but matches no output is
+ * returned in `unmatched`, for the caller to report.
+ *
+ * Under the PARENT's lock, since it rewrites the parent's record (its own
+ * scrub released that lock before the child ran). An absent record or row is
+ * nothing to do; a record whose resources cannot be read was already reported
+ * by the parent's own scrub.
+ */
+async function repairParentOutputAttributes(
+  parentRow: { stackName: string; logicalId: string },
+  region: string,
+  stateBackend: S3StateBackend,
+  lockManager: LockManager,
+  child: Pick<
+    ScrubStackResult,
+    'outputs' | 'resolveRecordedExpressions' | 'holdsRecordedPlaintext'
+  >,
+  dryRun: boolean,
+  logger: ReturnType<typeof getLogger>
+): Promise<{ changed: number; unmatched: string[] }> {
+  const none = { changed: 0, unmatched: [] as string[] };
+  const childOutputs = child.outputs;
+  if (childOutputs === undefined || !isReadableBag(childOutputs)) return none;
+  // The rewrite this record needs, and the attributes holding a recorded
+  // plaintext that no child output accounts for EXACTLY.
+  const plan = async (): Promise<
+    | {
+        state: StackState;
+        etag: string;
+        attributes: Record<string, unknown>;
+        changed: number;
+        unmatched: string[];
+      }
+    | undefined
+  > => {
+    const loaded = await stateBackend.getState(parentRow.stackName, region);
+    if (!loaded || !hasReadableResources(loaded.state)) return undefined;
+    const row = loaded.state.resources[parentRow.logicalId];
+    const rowAttributes = row?.attributes;
+    if (!row || row.resourceType !== NESTED_STACK_TYPE || !isReadableBag(rowAttributes)) {
+      return undefined;
+    }
+    const attributes: Record<string, unknown> = { ...rowAttributes };
+    let changed = 0;
+    const unmatched: string[] = [];
+    for (const [attributeName, stored] of Object.entries(
+      rowAttributes as Record<string, unknown>
+    )) {
+      if (!attributeName.startsWith('Outputs.')) continue;
+      const outputKey = attributeName.slice('Outputs.'.length);
+      const expected = Object.hasOwn(childOutputs, outputKey) ? childOutputs[outputKey] : undefined;
+      // Already the child's value: nothing to rewrite and nothing to report.
+      // Load-bearing, not tidiness: where this run recorded no pair for the
+      // expression (an unreadable secret, a collapsed stage on a clean record),
+      // resolving it returns it unchanged, and the test below would then
+      // "repair" a clean attribute onto itself — a write and a false claim.
+      if (expected !== undefined && JSON.stringify(stored) === JSON.stringify(expected)) continue;
+      // EXACTLY what the child's output expression resolves to in this run —
+      // then the attribute is that output's plaintext, and the child's next
+      // deploy would copy `expected` over it.
+      if (carriesDynamicReference(expected)) {
+        const resolved = child.resolveRecordedExpressions(expected);
+        if (JSON.stringify(resolved) === JSON.stringify(stored)) {
+          attributes[attributeName] = expected;
+          changed++;
+          continue;
+        }
+      }
+      // Not rewritable, but not clean either: it still holds a plaintext this
+      // run recorded. Reported, so the run is not called clean over it.
+      if (child.holdsRecordedPlaintext(stored)) unmatched.push(attributeName);
+    }
+    return changed > 0 || unmatched.length > 0
+      ? { state: loaded.state, etag: loaded.etag, attributes, changed, unmatched }
+      : undefined;
+  };
+  // Decided WITHOUT the lock first: the common case has nothing to rewrite,
+  // and locking the parent again for that would be a write for nothing.
+  const preview = await plan();
+  if (!preview) return none;
+  if (dryRun || preview.changed === 0) {
+    return { changed: preview.changed, unmatched: preview.unmatched };
+  }
+  await lockManager.acquireLockWithRetry(parentRow.stackName, region, undefined, 'scrub');
+  try {
+    // Re-planned under the lock, so the write is against what the lock guards.
+    const locked = await plan();
+    if (!locked) return none;
+    if (locked.changed > 0) {
+      const row = locked.state.resources[parentRow.logicalId]!;
+      await stateBackend.saveState(
+        parentRow.stackName,
+        region,
+        {
+          ...locked.state,
+          resources: {
+            ...locked.state.resources,
+            [parentRow.logicalId]: { ...row, attributes: locked.attributes },
+          },
+          lastModified: Date.now(),
+        },
+        { expectedEtag: locked.etag }
+      );
+    }
+    return { changed: locked.changed, unmatched: locked.unmatched };
+  } finally {
+    await lockManager.releaseLock(parentRow.stackName, region).catch((err: unknown) => {
+      // Warned like `scrubStack`'s own release: a lock left behind blocks the
+      // next deploy of the parent, and a silent one gives no hint why.
+      logger.warn(
+        safeMsg`Failed to release lock for ${displayStackName(parentRow.stackName)}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+  }
 }
 
 /**
@@ -924,6 +1060,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
+  // Stack names already counted in `totalStacksScrubbed`: a parent whose row
+  // attributes are repaired after a child's scrub (go-to-k/cdkd#3961) may have
+  // been counted for its own records already.
+  const rewrittenStacks = new Set<string>();
+  // Parent-row `Outputs.<Name>` attributes holding a recorded plaintext no
+  // child output accounts for (go-to-k/cdkd#3961): a finding, never clean.
+  let totalParentAttributesUnmatched = 0;
   // Counted SEPARATELY from the stacks actually rewritten. A key-holding-
   // plaintext finding is a finding the command cannot remedy (issue #1919), and
   // folding it into the scrubbed count made the summary claim a remediation it
@@ -1303,12 +1446,57 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         );
       }
     }
+    // THE PARENT ROW (go-to-k/cdkd#3961). A child output sourced from the
+    // CHILD's own `{{resolve:...}}` was copied into the parent row's
+    // `Outputs.<Name>` attribute by `buildOutputsAttributes`; the parent was
+    // scrubbed first, with no needle for it. Repaired here, now that this
+    // child's needles exist, and before the verdict below so a finding counts.
+    if (item.parentRow) {
+      try {
+        const repaired = await repairParentOutputAttributes(
+          item.parentRow,
+          stackRegion,
+          stateBackend,
+          lockManager,
+          scrubbed,
+          options.dryRun ?? false,
+          logger
+        );
+        const parentName = item.parentRow.stackName;
+        const row = `${displayStackName(parentName)} (row ${displayIdent(item.parentRow.logicalId)})`;
+        if (repaired.changed > 0) {
+          if (!rewrittenStacks.has(parentName)) totalStacksScrubbed++;
+          rewrittenStacks.add(parentName);
+          logger.info(
+            safeMsg`${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${repaired.changed} nested-stack output attribute(s) in ${row}, from ${shownStack}'s outputs`
+          );
+        }
+        if (repaired.unmatched.length > 0) {
+          // A FINDING like an unverifiable read: a recorded plaintext is still
+          // there and no child output accounts for it exactly, so nothing was
+          // written and the run is not reported clean.
+          totalParentAttributesUnmatched += repaired.unmatched.length;
+          logger.warn(
+            safeMsg`${repaired.unmatched.length} nested-stack output attribute(s) in ${row} (${repaired.unmatched.map((n) => displayIdent(n)).join(', ')}) hold a plaintext this run recorded but are not exactly any of ${shownStack}'s outputs, so scrub did NOT rewrite them. Deploying ${shownStack} rewrites them from its outputs.`
+          );
+        }
+      } catch (err) {
+        // Labelled apart from the parent's own scrub, which DID run, and once
+        // per parent however many of its children fail here.
+        const label = `${item.parentRow.stackName} (nested-stack output attributes)`;
+        if (!failures.some((f) => f.stackName === label)) failures.push({ stackName: label });
+        logger.error(
+          safeMsg`Scrub of ${displayStackName(item.parentRow.stackName)}'s nested-stack output attributes for ${shownStack} failed: ${describeFailure(err)}`
+        );
+      }
+    }
     // The verdict keys on records-that-CHANGED (state actually held plaintext),
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
     // rewrite. Only a state record still holding the plaintext counts.
     if (scrubbed.recordsChanged > 0) {
-      totalStacksScrubbed++;
+      if (!rewrittenStacks.has(stackName)) totalStacksScrubbed++;
+      rewrittenStacks.add(stackName);
       logger.info(
         // `resource record(s)` is LOOSE -- this count has included outputs and
         // orphans for some time and now includes cross-stack read entries too
@@ -1345,7 +1533,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // already prevents for a key holding plaintext. The warning below still
       // fires either way; this only stops the two lines contradicting each
       // other.
-      logger.info(`No plaintext secrets found in ${shownStack}`);
+      // A stack with nested children is not done yet: its row attributes that
+      // mirror a child's outputs are checked after that child (go-to-k/cdkd#3961),
+      // so the line says which records it covers rather than contradicting a
+      // repair line printed a moment later.
+      logger.info(
+        // The SAME test `nestedChildWorkItem` uses to give a child its
+        // `parentRow`, so the wording cannot drift from when the repair runs.
+        scrubbed.nestedChildren.some((child) => Boolean(child.input))
+          ? `No plaintext secrets found in ${shownStack}'s own records; its nested-stack ` +
+              `output attributes are checked after each nested stack`
+          : `No plaintext secrets found in ${shownStack}`
+      );
     }
     // Either shape of `resources` damage lands in ONE list, for the reason the
     // orphan pair below shares one (go-to-k/cdkd#3202): the verdict is one —
@@ -1467,6 +1666,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
+    totalParentAttributesUnmatched === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
     indexUnreadable.length === 0 &&
@@ -1544,6 +1744,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `plaintext that scrub could NOT repair, most likely a secret's value from before a ` +
         `rotation — see the warnings above.`
       : '';
+  const parentAttributeNote =
+    totalParentAttributesUnmatched > 0
+      ? ` ${totalParentAttributesUnmatched} nested-stack output attribute(s) in a parent record ` +
+        `hold a plaintext scrub could NOT match to its child's output — see the warnings above.`
+      : '';
   // The exports index half (issue #2667). Three separate statements, because
   // they carry different obligations: an entry this run wrote, an entry it
   // read a name for and wrote nothing, and an entry it never read. Kept out of
@@ -1586,11 +1791,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1659,11 +1864,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -1708,6 +1913,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     (totalStacksWithUnscrubbableKeys > 0 ||
       totalStacksWithUnverifiableReads > 0 ||
       totalStacksWithUnrepairedReadNames > 0 ||
+      totalParentAttributesUnmatched > 0 ||
       totalStacksWithUnverifiableLeaves > 0)
   ) {
     throw new ScrubNeededError();
@@ -5351,6 +5557,16 @@ export interface ScrubStackResult {
    */
   nestedChildren: NestedChildScrubTarget[];
   /**
+   * Replace every `{{resolve:...}}` expression THIS run recorded with the
+   * plaintext it resolved to (go-to-k/cdkd#3961) — what the parent-row repair uses to test that a
+   * parent's `Outputs.<Name>` attribute is exactly the plaintext of this
+   * child's output. A closure, like {@link exportNameDisplay}, so the bags
+   * are never handed out as data.
+   */
+  resolveRecordedExpressions: (value: unknown) => unknown;
+  /** Whether a value holds any plaintext THIS run recorded (go-to-k/cdkd#3961). */
+  holdsRecordedPlaintext: (value: unknown) => boolean;
+  /**
    * The stack has no state record at all — so a `<stack>~...` record under it
    * is reached by no row, and the refusal says why in those words.
    */
@@ -5440,6 +5656,8 @@ export async function scrubStack(
       unverifiableLeaves: 0,
       unrepairedReadNames: 0,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, new Map()),
+      resolveRecordedExpressions: (value) => value,
+      holdsRecordedPlaintext: () => false,
       nestedChildren: [],
       noRecord: true,
     };
@@ -5577,6 +5795,8 @@ export async function scrubStack(
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
         exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        resolveRecordedExpressions: (value) => value,
+        holdsRecordedPlaintext: () => false,
         nestedChildren: [],
         noRecord: true,
       };
@@ -6789,6 +7009,73 @@ export async function scrubStack(
       });
     }
 
+    // The inverse of this run's redaction (go-to-k/cdkd#3961): every
+    // `{{resolve:...}}` expression this run recorded, replaced by the plaintext
+    // it resolved to. The
+    // parent-row repair asks "is the stored attribute exactly what the child's
+    // output expression resolves to", which needs no positioning rule and so
+    // can neither miss a positioned key nor fabricate onto an unrelated value.
+    // Read at CALL time, when every bag it closes over is complete.
+    //
+    // `outputRewrites` adds the pairs the plaintext-keyed bags LOSE: where two
+    // expressions resolve to one plaintext, the bag keeps one of them, while
+    // this run's positioned output pass still rewrote each output from that
+    // plaintext onto its OWN expression. Filled once the output passes have
+    // run (below); empty on the zero-needle return, where nothing was rewritten.
+    // Keyed by EXPRESSION, the one side that does not collapse.
+    const outputRewrites = new Map<string, string>();
+    const resolveRecordedExpressions = (value: unknown): unknown => {
+      // FIRST pair wins for an expression recorded twice. Which one is
+      // immaterial to the caller: it rewrites an attribute only onto the
+      // expression itself, and only when the attribute equals a value that
+      // expression resolved to in this run.
+      const plaintextByExpression = new Map<string, string>();
+      const bags: RecordedSecretValues[] = [
+        outputSecrets,
+        ...perResourceSecrets.values(),
+        ...orphanSecrets.values(),
+      ];
+      const pairs: Array<readonly [string, string]> = [
+        ...bags.flatMap((bag) =>
+          [...bag].map(([plaintext, expression]) => [expression, plaintext] as const)
+        ),
+        ...outputRewrites,
+      ];
+      for (const [expression, plaintext] of pairs) {
+        if (!plaintextByExpression.has(expression))
+          plaintextByExpression.set(expression, plaintext);
+      }
+      const walk = (v: unknown): unknown => {
+        if (typeof v === 'string') {
+          let out = v;
+          for (const [expression, plaintext] of plaintextByExpression) {
+            if (out.includes(expression)) out = out.split(expression).join(plaintext);
+          }
+          return out;
+        }
+        if (Array.isArray(v)) return v.map(walk);
+        if (v !== null && typeof v === 'object') {
+          const out: Record<string, unknown> = nullPrototypeRecord();
+          for (const [k, inner] of Object.entries(v as Record<string, unknown>)) {
+            out[k] = walk(inner);
+          }
+          return out;
+        }
+        return v;
+      };
+      return walk(value);
+    };
+    // Whether a value holds any plaintext this run recorded (go-to-k/cdkd#3961),
+    // for the parent-row repair to REPORT an attribute it could not match
+    // rather than pass over it silently.
+    const holdsRecordedPlaintext = (value: unknown): boolean => {
+      const needles = new Map([
+        ...allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets),
+        ...outputSecrets,
+      ]);
+      return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
+    };
+
     const totalSecrets =
       outputSecrets.size +
       [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0) +
@@ -6834,6 +7121,8 @@ export async function scrubStack(
         // state, which is the case the index step exists to finish.
         outputs: state.outputs,
         exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        resolveRecordedExpressions,
+        holdsRecordedPlaintext,
         nestedChildren,
       };
     }
@@ -7119,6 +7408,24 @@ export async function scrubStack(
     );
     emitAbandonedScanNotes();
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
+    // Whole-value rewrites of this record's outputs, as expression -> plaintext
+    // pairs for `resolveRecordedExpressions` (see `outputRewrites`).
+    if (isReadableBag(state.outputs) && isReadableBag(newOutputs)) {
+      const before = state.outputs as Record<string, unknown>;
+      const after = newOutputs as Record<string, unknown>;
+      for (const key of Object.keys(after)) {
+        const was = before[key];
+        const now = after[key];
+        if (
+          typeof was === 'string' &&
+          typeof now === 'string' &&
+          now.includes(DYNAMIC_REFERENCE_OPENING) &&
+          !was.includes(DYNAMIC_REFERENCE_OPENING)
+        ) {
+          outputRewrites.set(now, was);
+        }
+      }
+    }
     if (outputsChanged) recordsChanged++;
 
     if (recordsChanged > 0 && !opts.dryRun) {
@@ -7183,6 +7490,8 @@ export async function scrubStack(
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+      resolveRecordedExpressions,
+      holdsRecordedPlaintext,
       nestedChildren,
     };
   } catch (err) {

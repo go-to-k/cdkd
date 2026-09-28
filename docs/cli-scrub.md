@@ -223,12 +223,19 @@ A child that never had a record is skipped silently. A stack argument spelled
 like a child's state name that matches nothing is warned about even when other
 arguments matched, since it was not scrubbed.
 
-One residual is worth knowing: on a parent record older than the redaction of
-nested-stack outputs, the parent's own row can hold, as an `Outputs.<Name>`
-attribute, the plaintext of a child output that came from the CHILD's own
-`{{resolve:...}}` rather than from a parameter. The parent is scrubbed before
-its children and does not learn their secrets, so that attribute is not
-rewritten. A value the parent itself passed in as a parameter is.
+The parent's own row mirrors each child output as an `Outputs.<Name>`
+attribute, and on a parent record older than the redaction of nested-stack
+outputs that attribute can hold the plaintext of a child output sourced from
+the CHILD's own `{{resolve:...}}`. The parent is scrubbed before its children
+and has no needle for it, so after each child's scrub `scrub` re-opens the
+parent's record, under the parent's lock, and rewrites such an attribute to
+the child's output — reported as `Scrubbed N nested-stack output attribute(s)
+in <Parent>`. It rewrites one only when the attribute is EXACTLY what the
+child's output resolves to in this run, so an unrelated value is never
+touched. An attribute that still holds a plaintext this run recorded but does
+not match any output exactly is reported instead, and like the rewrite it keeps
+`--dry-run --fail` red; deploying the child rewrites it. The parent's own
+per-stack line says it covers the parent's own records only.
 
 A nested template tree
 that is cyclic or points outside the assembly is refused for the whole stack

@@ -155,7 +155,10 @@ function nestedRow(
 }
 
 /** The child: one consumer of the parameter, one bystander, one output. */
-function childTemplate(extraResources: Record<string, unknown> = {}): CloudFormationTemplate {
+function childTemplate(
+  extraResources: Record<string, unknown> = {},
+  extraOutputs: Record<string, unknown> = {}
+): CloudFormationTemplate {
   return {
     Parameters: { DbPassword: { Type: 'String' } },
     Resources: {
@@ -172,7 +175,7 @@ function childTemplate(extraResources: Record<string, unknown> = {}): CloudForma
       },
       ...extraResources,
     },
-    Outputs: { PwOut: { Value: { Ref: 'DbPassword' } } },
+    Outputs: { PwOut: { Value: { Ref: 'DbPassword' } }, ...extraOutputs },
   } as CloudFormationTemplate;
 }
 
@@ -732,6 +735,270 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
     expect(logLines.join('\n')).toContain(
       `matched no stack and was NOT scrubbed. A nested stack is scrubbed with its parent: name ${PARENT}`
     );
+  });
+
+  it("repairs the PARENT row's Outputs.<Name> attribute holding a child-sourced plaintext (issue #3961)", async () => {
+    // The child's OWN secret, published as an output. `buildOutputsAttributes`
+    // copied it into the parent row's attributes; a record from before #1899
+    // holds it there in plaintext, and the parent's own bag has no needle for it.
+    const childPath = writeTemplate(
+      'ChildStack.nested.template.json',
+      childTemplate({}, { ApiOut: { Value: API_EXPR } })
+    );
+    synthStacks.push(
+      parentStack(
+        { ChildStack: nestedRow(path.basename(childPath), { DbPassword: SECRET_EXPR }) },
+        { ChildStack: childPath }
+      )
+    );
+    const parent = parentRecord();
+    parent.resources['ChildStack']!.attributes = {
+      'Outputs.PwOut': DB_PASSWORD,
+      'Outputs.ApiOut': API_KEY,
+      // A plain output the child's needles do not match stays as it is.
+      'Outputs.Plain': 'not-a-secret',
+    };
+    seed(PARENT, parent);
+    const child = leakyChildRecord();
+    child.outputs = { PwOut: DB_PASSWORD, ApiOut: API_KEY, Plain: 'not-a-secret' };
+    seed(CHILD, child);
+
+    const err = await run([PARENT]);
+
+    expect(err).toBeUndefined();
+    expect(stored(CHILD)!.outputs).toEqual({
+      PwOut: SECRET_EXPR,
+      ApiOut: API_EXPR,
+      Plain: 'not-a-secret',
+    });
+    expect(stored(PARENT)!.resources['ChildStack']!.attributes).toEqual({
+      'Outputs.PwOut': SECRET_EXPR,
+      'Outputs.ApiOut': API_EXPR,
+      'Outputs.Plain': 'not-a-secret',
+    });
+    expect(JSON.stringify(stored(PARENT))).not.toContain(API_KEY);
+    // The parent is locked AGAIN, for the row rewrite, after the child ran.
+    expect(lockCalls).toEqual([PARENT, CHILD, PARENT]);
+    expect(logLines.join('\n')).toContain(
+      // ONE: the parameter-fed `PwOut` was already rewritten by the parent's own pass.
+      `Scrubbed 1 nested-stack output attribute(s) in ${PARENT} (row ChildStack), from ${CHILD}'s outputs`
+    );
+  });
+
+  describe('the parent-row repair (issue #3961)', () => {
+    function appWithChildSecretOutput(): void {
+      const childPath = writeTemplate(
+        'ChildStack.nested.template.json',
+        childTemplate({}, { ApiOut: { Value: API_EXPR } })
+      );
+      synthStacks.push(
+        parentStack(
+          { ChildStack: nestedRow(path.basename(childPath), { DbPassword: SECRET_EXPR }) },
+          { ChildStack: childPath }
+        )
+      );
+    }
+    function cleanChild(): StackState {
+      const child = leakyChildRecord();
+      child.resources['Fn']!.properties = { Environment: { Variables: { PW: SECRET_EXPR } } };
+      child.outputs = { PwOut: SECRET_EXPR, ApiOut: API_EXPR, Embedded: API_EXPR };
+      return child;
+    }
+
+    it('rewrites each of two outputs resolving to ONE plaintext onto its OWN expression', async () => {
+      // Two version stages of one secret: the plaintext-keyed bag collapses
+      // them, and only the child's positioned output pass can tell them apart.
+      const STAGED_API_EXPR = '{{resolve:secretsmanager:app/api:SecretString:key:AWSCURRENT}}';
+      const childPath = writeTemplate(
+        'ChildStack.nested.template.json',
+        childTemplate({}, { Cur: { Value: API_EXPR }, Staged: { Value: STAGED_API_EXPR } })
+      );
+      synthStacks.push(
+        parentStack(
+          { ChildStack: nestedRow(path.basename(childPath), { DbPassword: SECRET_EXPR }) },
+          { ChildStack: childPath }
+        )
+      );
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.Cur': API_KEY,
+        'Outputs.Staged': API_KEY,
+      };
+      seed(PARENT, parent);
+      const child = cleanChild();
+      child.outputs = { PwOut: SECRET_EXPR, Cur: API_KEY, Staged: API_KEY };
+      seed(CHILD, child);
+
+      const err = await run([PARENT]);
+
+      expect(err).toBeUndefined();
+      expect(stored(CHILD)!.outputs).toEqual({
+        PwOut: SECRET_EXPR,
+        Cur: API_EXPR,
+        Staged: STAGED_API_EXPR,
+      });
+      expect(stored(PARENT)!.resources['ChildStack']!.attributes).toEqual({
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.Cur': API_EXPR,
+        'Outputs.Staged': STAGED_API_EXPR,
+      });
+    });
+
+    it('turns --dry-run --fail RED when ONLY the parent attribute holds the plaintext', async () => {
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+
+      const err = await run([PARENT], { dryRun: true, fail: true });
+
+      expect(err).toBeInstanceOf(ScrubNeededError);
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+      expect(lockCalls).toEqual([]);
+      const log = logLines.join('\n');
+      expect(log).toContain(`Would scrub 1 nested-stack output attribute(s) in ${PARENT}`);
+      // The parent's own line does not claim the record clean ahead of that.
+      expect(log).not.toContain(`No plaintext secrets found in ${PARENT}\n`);
+      expect(log).toContain(
+        `No plaintext secrets found in ${PARENT}'s own records; its nested-stack output attributes are checked after each nested stack`
+      );
+    });
+
+    it('labels a failed parent-row repair apart from the parent scrub, once', async () => {
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+      const realGetState = stateBackend.getState.getMockImplementation()!;
+      let parentReads = 0;
+      stateBackend.getState.mockImplementation((stack: string, region: string) => {
+        if (stack === PARENT && ++parentReads > 1) return Promise.reject(new Error('throttled'));
+        return realGetState(stack, region);
+      });
+
+      const err = await run([PARENT]);
+
+      expect((err as { exitCode?: number }).exitCode).toBe(2);
+      expect((err as Error).message).toContain(`${PARENT} (nested-stack output attributes)`);
+      expect((err as Error).message).not.toContain(`${PARENT}, `);
+    });
+
+    it('leaves an attribute that does not redact to the child output EXACTLY, and takes no lock', async () => {
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        // Carries no plaintext this run recorded. The child's own POSITIONED
+        // pass would write the expression over any value at this position; the
+        // parent attribute is not positioned, so it must be left.
+        'Outputs.ApiOut': 'unrelated-value',
+        // Embeds the plaintext, but is not EXACTLY what the output resolves to.
+        'Outputs.Embedded': `prefix-${API_KEY}`,
+        // A name the child's outputs do not carry at all.
+        'Outputs.Gone': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+
+      const err = await run([PARENT]);
+
+      expect(err).toBeUndefined();
+      expect(stored(PARENT)!.resources['ChildStack']!.attributes).toEqual({
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': 'unrelated-value',
+        'Outputs.Embedded': `prefix-${API_KEY}`,
+        'Outputs.Gone': API_KEY,
+      });
+      expect(lockCalls).toEqual([PARENT, CHILD]);
+      const log = logLines.join('\n');
+      expect(log).not.toContain('Scrubbed 1 nested-stack output attribute(s)');
+      // Not rewritten, but REPORTED: both still hold a recorded plaintext.
+      expect(log).toContain(
+        `2 nested-stack output attribute(s) in ${PARENT} (row ChildStack) (Outputs.Embedded, Outputs.Gone) hold a plaintext`
+      );
+      expect(log).not.toContain('Outputs.ApiOut)');
+      expect(log).not.toContain(API_KEY);
+    });
+
+    it('never "repairs" an attribute that already IS the expression (clean record, collapsed stages)', async () => {
+      // Two stages of one secret on a CLEAN child and parent: the bag keeps one
+      // expression, no output changed, so the other stage has no recorded pair.
+      const STAGED_API_EXPR = '{{resolve:secretsmanager:app/api:SecretString:key:AWSCURRENT}}';
+      const childPath = writeTemplate(
+        'ChildStack.nested.template.json',
+        childTemplate({}, { Cur: { Value: API_EXPR }, Staged: { Value: STAGED_API_EXPR } })
+      );
+      synthStacks.push(
+        parentStack(
+          { ChildStack: nestedRow(path.basename(childPath), { DbPassword: SECRET_EXPR }) },
+          { ChildStack: childPath }
+        )
+      );
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.Cur': API_EXPR,
+        'Outputs.Staged': STAGED_API_EXPR,
+      };
+      seed(PARENT, parent);
+      const child = cleanChild();
+      child.outputs = { PwOut: SECRET_EXPR, Cur: API_EXPR, Staged: STAGED_API_EXPR };
+      seed(CHILD, child);
+
+      expect(await run([PARENT], { dryRun: true, fail: true })).toBeUndefined();
+      expect(await run([PARENT])).toBeUndefined();
+
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+      expect(lockCalls).toEqual([PARENT, CHILD]);
+      expect(logLines.join('\n')).not.toContain('nested-stack output attribute(s)');
+    });
+
+    it('never "repairs" a clean attribute when the child secret is unreadable', async () => {
+      appWithChildSecretOutput();
+      secretValues.delete('app/api');
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': API_EXPR,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+
+      await run([PARENT], { dryRun: true, fail: true });
+      await run([PARENT]);
+
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+      expect(logLines.join('\n')).not.toContain('nested-stack output attribute(s)');
+    });
+
+    it('turns --dry-run --fail RED over an attribute it can report but not rewrite', async () => {
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.Gone': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+
+      const err = await run([PARENT], { dryRun: true, fail: true });
+
+      expect(err).toBeInstanceOf(ScrubNeededError);
+      expect(logLines.join('\n')).not.toContain('No plaintext secrets found in any target stack state');
+
+      // A REAL run cannot fix it either, so --fail exits non-zero there too.
+      logLines.length = 0;
+      expect(await run([PARENT], { fail: true })).toBeInstanceOf(ScrubNeededError);
+    });
   });
 
   it('REFUSES a child whose row the parent template dropped, when its record exists', async () => {
