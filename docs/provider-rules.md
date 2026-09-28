@@ -894,7 +894,8 @@ above, and — since issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) 
 eight same-class arms outside the composite-id family: both malformed
 `LayerVersionArn` arms in `lambda-layer-provider.ts`, the missing-`FunctionName`
 arm in `lambda-permission-provider.ts`, the no-properties / no-`ServiceToken`
-arms in `custom-resource-provider.ts`, the empty-policy-name arm in
+arms in `custom-resource-provider.ts` (and, since issue
+[#3938](https://github.com/go-to-k/cdkd/issues/3938), its masked-`ServiceToken` arm), the empty-policy-name arm in
 `iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
 `iam-user-group-provider.ts`. Issue
 [#3878](https://github.com/go-to-k/cdkd/issues/3878) added the

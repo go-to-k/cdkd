@@ -4429,6 +4429,7 @@
         "cognito-lambda-triggers",
         "composite-stack",
         "custom-resource-getatt-data",
+        "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
         "custom-resource-provider",
         "data-pipeline",
@@ -4576,6 +4577,10 @@
         ],
         "custom-resource-getatt-data": [
           "l2"
+        ],
+        "custom-resource-masked-service-token": [
+          "l2",
+          "literal"
         ],
         "custom-resource-noecho-nested": [
           "l2",
