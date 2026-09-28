@@ -1850,6 +1850,7 @@
     "--message-body",
     "--message-group-id",
     "--metric-name",
+    "--metrics",
     "--mfa-configuration",
     "--migrate-from-cloudformation",
     "--min-count",

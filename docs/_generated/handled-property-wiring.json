@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 25
+    "classesWithBlindSpots": 26
   },
   "classes": [
     {
@@ -3392,7 +3392,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in canonicalizeDriftProperties()",
+        "object spread in canonicalizeDriftProperties()"
+      ]
     },
     {
       "file": "budgets-budget-provider.ts",

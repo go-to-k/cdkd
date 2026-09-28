@@ -122,7 +122,11 @@ const LIST_KINDS: readonly ListKind[] = [
   'NotificationConfigurations',
 ];
 
-type ListRead = { kind: 'list'; items: unknown[] } | { kind: 'malformed'; secretDerived: boolean };
+type ListRead =
+  | { kind: 'list'; items: unknown[] }
+  // `onlySecret`: the list is well-shaped, and refused ONLY because a member
+  // holds a dynamic reference or its mask.
+  | { kind: 'malformed'; secretDerived: boolean; onlySecret: boolean };
 
 function isAttachmentKind(kind: ListKind): kind is AttachmentKind {
   return kind === 'LoadBalancerNames' || kind === 'TargetGroupARNs';
@@ -138,7 +142,14 @@ function isAttachmentKind(kind: ListKind): kind is AttachmentKind {
  */
 type ListSide = 'desired' | 'recorded';
 
-function isWellFormedEntry(kind: ListKind, entry: unknown, side: ListSide): boolean {
+function isWellFormedEntry(
+  kind: ListKind,
+  entry: unknown,
+  side: ListSide,
+  // Ask the SHAPE question alone, as if no member held a secret: used to tell
+  // a list refused only for a dynamic reference from a malformed one.
+  ignoreSecrets = false
+): boolean {
   if (isAttachmentKind(kind)) {
     return (
       typeof entry === 'string' &&
@@ -147,7 +158,7 @@ function isWellFormedEntry(kind: ListKind, entry: unknown, side: ListSide): bool
       !/\s/.test(entry) &&
       // A dynamic reference is a well-formed STRING but not a name AWS holds:
       // sending it would Detach / Attach a literal `{{resolve:...}}`.
-      !holdsSecretDerivedEntry(entry)
+      (ignoreSecrets || !holdsSecretDerivedEntry(entry))
     );
   }
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
@@ -155,10 +166,20 @@ function isWellFormedEntry(kind: ListKind, entry: unknown, side: ListSide): bool
   const record = entry as Record<string, unknown>;
   const id = record[identity];
   if (typeof id !== 'string' || id.length === 0) return false;
-  if (side === 'desired' && holdsSecretDerivedEntry(id)) return false;
+  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
   if (stringList !== undefined) {
     const list = record[stringList];
     if (list != null && !(Array.isArray(list) && list.every((v) => typeof v === 'string'))) {
+      return false;
+    }
+    // A desired metric / notification type holding a dynamic reference names
+    // nothing AWS accepts; a RECORDED one is filtered by `removableRecorded`.
+    if (
+      side === 'desired' &&
+      !ignoreSecrets &&
+      Array.isArray(list) &&
+      list.some((v) => holdsSecretDerivedEntry(v))
+    ) {
       return false;
     }
   }
@@ -171,7 +192,28 @@ function readList(kind: ListKind, value: unknown, side: ListSide): ListRead {
   if (Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side))) {
     return { kind: 'list', items: value };
   }
-  return { kind: 'malformed', secretDerived: holdsSecretDerivedEntry(value) };
+  return {
+    kind: 'malformed',
+    secretDerived: holdsSecretDerivedEntry(value),
+    onlySecret:
+      Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side, true)),
+  };
+}
+
+/**
+ * The cause clause for DESIRED lists refused because a member holds a dynamic
+ * reference or its mask: "not a list of ..." alone reads as a shape error. It
+ * names the property only, never the value.
+ */
+function secretDerivedCause(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
+  const secret = kinds.filter((k) => {
+    const r = read[k];
+    return r.kind === 'malformed' && r.onlySecret;
+  });
+  return secret.length === 0
+    ? ''
+    : ` (${secret.join(' / ')} holds a dynamic reference or its mask where a name belongs, ` +
+        `which names nothing Auto Scaling accepts)`;
 }
 
 function listWhat(kind: ListKind): string {
@@ -201,8 +243,23 @@ function malformedKinds(read: Record<ListKind, ListRead>): ListKind[] {
  */
 function removableRecorded(kind: ListKind, items: unknown[]): unknown[] {
   if (isAttachmentKind(kind)) return items;
-  const { identity } = ENTRY_SHAPE[kind];
-  return items.filter((e) => !holdsSecretDerivedEntry((e as Record<string, unknown>)[identity]));
+  const { identity, stringList } = ENTRY_SHAPE[kind];
+  return items
+    .filter((e) => !holdsSecretDerivedEntry((e as Record<string, unknown>)[identity]))
+    .flatMap((e) => {
+      // A secret-derived MEMBER of a recorded string list (a metric name, a
+      // notification type) is dropped too, so no call names the literal
+      // reference. Only for `MetricsCollection` is an entry left with no
+      // members dropped whole: there an empty list means ALL. A notification
+      // entry is KEPT (its TopicARN alone addresses the Delete).
+      if (stringList === undefined) return [e];
+      const record = e as Record<string, unknown>;
+      const list = record[stringList];
+      if (!Array.isArray(list) || !list.some((v) => holdsSecretDerivedEntry(v))) return [e];
+      const kept = list.filter((v) => !holdsSecretDerivedEntry(v));
+      if (kept.length === 0 && kind === 'MetricsCollection') return [];
+      return [{ ...record, [stringList]: kept }];
+    });
 }
 
 function itemsOf(read: ListRead): unknown[] {
@@ -265,6 +322,57 @@ function itemsOf(read: ListRead): unknown[] {
  *
  * Each helper is a no-op when the before/after JSON is identical.
  */
+/** An entry `foldMetricsCollection` reads faithfully (string Granularity, string-list or absent Metrics). */
+function isFoldableMetricsEntry(entry: unknown): boolean {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const { Granularity, Metrics } = entry as { Granularity?: unknown; Metrics?: unknown };
+  return (
+    typeof Granularity === 'string' &&
+    Granularity.length > 0 &&
+    (Metrics == null || (Array.isArray(Metrics) && Metrics.every((m) => typeof m === 'string')))
+  );
+}
+
+/** One granularity of a folded `MetricsCollection`; `Metrics` absent = ALL. */
+type FoldedMetrics = { Granularity: string; Metrics?: string[] };
+
+/**
+ * Fold a `MetricsCollection` list to the shape AWS holds (go-to-k/cdkd#4013):
+ * ONE entry per granularity, its `Metrics` the sorted UNION of every entry's
+ * metrics at that granularity, or absent (ALL) when any entry there omits
+ * `Metrics` or lists none — AWS's "no metrics means all metrics". Sorted by
+ * granularity, so two lists enabling the same metrics fold equal whatever
+ * their entry split or order. Entries with no string `Granularity` are skipped
+ * (the update path refuses them before this runs); a non-array folds to `[]`.
+ * Pure: shared by the update diff and the drift canonicalization.
+ */
+export function foldMetricsCollection(value: unknown): FoldedMetrics[] {
+  if (!Array.isArray(value)) return [];
+  const byGranularity = new Map<string, Set<string> | 'ALL'>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const entry = raw as { Granularity?: unknown; Metrics?: unknown };
+    if (typeof entry.Granularity !== 'string' || entry.Granularity.length === 0) continue;
+    const metrics = Array.isArray(entry.Metrics)
+      ? entry.Metrics.filter((m): m is string => typeof m === 'string')
+      : [];
+    const current = byGranularity.get(entry.Granularity);
+    if (metrics.length === 0 || current === 'ALL') {
+      byGranularity.set(entry.Granularity, 'ALL');
+      continue;
+    }
+    const set = current ?? new Set<string>();
+    for (const m of metrics) set.add(m);
+    byGranularity.set(entry.Granularity, set);
+  }
+  return [...byGranularity.keys()].sort().map((granularity) => {
+    const metrics = byGranularity.get(granularity)!;
+    return metrics === 'ALL'
+      ? { Granularity: granularity }
+      : { Granularity: granularity, Metrics: [...metrics].sort() };
+  });
+}
+
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
@@ -327,6 +435,29 @@ export class ASGProvider implements ResourceProvider {
       ]),
     ],
   ]);
+
+  /**
+   * Fold `MetricsCollection` on BOTH drift sides (go-to-k/cdkd#4013):
+   * `readCurrentState` reports one entry per granularity, while a template-
+   * shaped baseline (a record deployed before observed-capture) carries one
+   * entry per CDK `GroupMetrics`, so the same enabled set would otherwise
+   * drift forever. Same helper as the update diff, so the two cannot disagree.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return properties;
+    const key = 'MetricsCollection';
+    const metrics = properties[key];
+    // Fold only a list every entry of which is readable: the fold would read
+    // an unreadable `Metrics` as ALL and hide the difference (and `--accept`
+    // would persist that ALL).
+    if (!Array.isArray(metrics) || !metrics.every(isFoldableMetricsEntry)) return properties;
+    const folded = foldMetricsCollection(metrics);
+    if (JSON.stringify(folded) === JSON.stringify(metrics)) return properties;
+    return { ...properties, [key]: folded };
+  }
 
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
@@ -405,7 +536,8 @@ export class ASGProvider implements ResourceProvider {
       throw markNonRetryable(
         new ProvisioningError(
           `${malformedOnCreate.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
-            `${malformedOnCreate.map(listWhat).join(' / ')} — the group was not created`,
+            `${malformedOnCreate.map(listWhat).join(' / ')}` +
+            `${secretDerivedCause(malformedOnCreate, lists)} — the group was not created`,
           resourceType,
           logicalId
         )
@@ -1653,7 +1785,8 @@ export class ASGProvider implements ResourceProvider {
       throw markNonRetryable(
         new ProvisioningError(
           `${which.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
-            `${what.join(' / ')} — nothing was attached, detached or removed` +
+            `${what.join(' / ')}${secretDerivedCause(badNext, nextRead)} — nothing was attached, ` +
+            `detached or removed` +
             (badPrev.length > 0 ? `: ${this.recordedListRepair(badPrev, prevRead)}` : ''),
           resourceType,
           logicalId,
@@ -1956,67 +2089,78 @@ export class ASGProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * Diff `MetricsCollection` as AWS holds it (go-to-k/cdkd#4013): a SET of
+   * enabled metrics per granularity, where CDK renders one entry per
+   * `GroupMetrics`, all at `1Minute`. Both sides are folded with
+   * {@link foldMetricsCollection} first; keying the raw entries by granularity
+   * kept only the LAST entry on each side, so several `GroupMetrics` enabled
+   * only one group's metrics on update and never disabled the others' removals.
+   *
+   * Per granularity: dropped entirely -> Disable its metrics (all of them when
+   * it was ALL); now ALL -> one Enable without `Metrics`; now a set -> Disable
+   * what left the set (every metric first, when it was ALL) and Enable the
+   * whole set (Enable is additive and idempotent, so re-sending the kept
+   * members also re-applies anything changed out of band). No-op when the
+   * folded sides are equal.
+   */
   private async applyMetricsCollectionDiff(
     physicalId: string,
     next: unknown[],
     prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    const nextEntries = next as Array<{
-      Granularity?: string;
-      Metrics?: string[];
-    }>;
-    const prevEntries = prev as Array<{
-      Granularity?: string;
-      Metrics?: string[];
-    }>;
-    const prevByGranularity = new Map<string, string[] | undefined>();
-    for (const e of prevEntries) {
-      if (e.Granularity) prevByGranularity.set(e.Granularity, e.Metrics);
-    }
-    const nextByGranularity = new Map<string, string[] | undefined>();
-    for (const e of nextEntries) {
-      if (e.Granularity) nextByGranularity.set(e.Granularity, e.Metrics);
-    }
-    // Disable removed granularities first, then issue Enable for the
-    // intended state of every Granularity in `next`. AWS treats Enable as
-    // additive within a Granularity, so a remove-then-add pattern works
-    // even when the Metrics list shrinks.
-    for (const [granularity, metrics] of prevByGranularity) {
-      if (!nextByGranularity.has(granularity)) {
-        await this.getClient().send(
-          new DisableMetricsCollectionCommand({
-            AutoScalingGroupName: physicalId,
-            ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
-          })
-        );
-      }
-    }
-    for (const [granularity, metrics] of nextByGranularity) {
-      const before = prevByGranularity.get(granularity);
-      if (JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
-      // If the Metrics list shrunk, disable the removed metrics first
-      // (AWS Enable is additive). When `metrics` is undefined or empty,
-      // AWS treats that as "all metrics" — disable any prior subset
-      // before re-enabling the full set.
-      if (before && before.length > 0) {
-        const removed = metrics ? before.filter((m) => !metrics.includes(m)) : [];
-        if (removed.length > 0) {
-          await this.getClient().send(
-            new DisableMetricsCollectionCommand({
-              AutoScalingGroupName: physicalId,
-              Metrics: removed,
-            })
-          );
-        }
-      }
+    const nextFold = foldMetricsCollection(next);
+    const prevFold = foldMetricsCollection(prev);
+    if (JSON.stringify(nextFold) === JSON.stringify(prevFold)) return;
+    const toMap = (fold: FoldedMetrics[]): Map<string, string[] | undefined> =>
+      new Map(fold.map((e) => [e.Granularity, e.Metrics]));
+    const prevBy = toMap(prevFold);
+    const nextBy = toMap(nextFold);
+    const disable = async (metrics: string[] | undefined): Promise<void> => {
+      await this.getClient().send(
+        new DisableMetricsCollectionCommand({
+          AutoScalingGroupName: physicalId,
+          ...(metrics !== undefined ? { Metrics: metrics } : {}),
+        })
+      );
+    };
+    const enable = async (granularity: string, metrics: string[] | undefined): Promise<void> => {
       await this.getClient().send(
         new EnableMetricsCollectionCommand({
           AutoScalingGroupName: physicalId,
           Granularity: granularity,
-          ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
+          ...(metrics !== undefined ? { Metrics: metrics } : {}),
         })
       );
+    };
+    // DisableMetricsCollection takes no Granularity, so a Disable for one
+    // granularity also turns a metric off at another. Every Disable therefore
+    // goes out FIRST, and once any has, every desired granularity is enabled
+    // again (Enable is additive and idempotent); otherwise only the changed ones.
+    const disables: Array<string[] | undefined> = [];
+    const changed = new Set<string>();
+    for (const [granularity, metrics] of prevBy) {
+      if (!nextBy.has(granularity)) disables.push(metrics);
+    }
+    for (const [granularity, metrics] of nextBy) {
+      const had = prevBy.has(granularity);
+      const before = prevBy.get(granularity);
+      if (had && JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
+      changed.add(granularity);
+      if (metrics !== undefined && had) {
+        // ALL -> a subset: clear everything, then enable the subset. A subset
+        // that shrank: disable only what left it.
+        if (before === undefined) {
+          disables.push(undefined);
+        } else {
+          const removed = before.filter((m) => !metrics.includes(m));
+          if (removed.length > 0) disables.push(removed);
+        }
+      }
+    }
+    for (const metrics of disables) await disable(metrics);
+    for (const [granularity, metrics] of nextBy) {
+      if (disables.length > 0 || changed.has(granularity)) await enable(granularity, metrics);
     }
   }
 

@@ -50,6 +50,18 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
    the live values return to the CFn defaults — `HealthCheckGracePeriod` 0,
    `MaxInstanceLifetime` cleared, `TerminationPolicies` `['Default']` (the
    issue #1160 assertion).
+   Issue #4013: the ASG carries two `GroupMetrics` (all at `1Minute`) and
+   this phase drops `GroupMaxSize` from the FIRST; `EnabledMetrics` must be
+   exactly `GroupDesiredCapacity GroupMinSize`. Then `cdkd drift` must report
+   the ASG clean against its observed baseline, against a template-shaped
+   observed `MetricsCollection`, and on a legacy record with no
+   `observedProperties` (no `MetricsCollection` change). While the
+   template-shaped observed baseline is planted, `GroupMinSize` is disabled out
+   of band, `cdkd drift` must report it, and `cdkd drift --revert` must restore
+   the exact set from that two-entry baseline (pre-fix it keyed to the last
+   entry and sent nothing); drift must then be clean on the original record.
+   Every planted state record is restored, by the cleanup trap on a failure
+   too.
 4. Clean destroy (ASG gone, LaunchTemplate gone, state gone).
 
 ## Run
