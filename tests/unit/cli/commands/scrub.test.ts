@@ -360,6 +360,9 @@ describe('cdkd scrub - scrubStack', () => {
       // flag that words the refusal of any `<stack>~` record left under it.
       nestedChildren: [],
       noRecord: true,
+      // The parent-row repair's redactor (go-to-k/cdkd#3961), a closure.
+      resolveRecordedExpressions: expect.any(Function),
+      holdsRecordedPlaintext: expect.any(Function),
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });

@@ -14,14 +14,15 @@ import { Construct } from 'constructs';
  * A deploy by the current binary persists the EXPRESSION in the child record;
  * verify.sh then rewrites that record the way a binary older than issue #1903
  * wrote it (plaintext in both places) and proves `cdkd scrub <parent>` finds
- * and repairs it. The child's template carries no `{{resolve:` at all, so the
- * only needle source is the parent's resolution of the row's `Parameters`.
+ * and repairs it. The `DbPassword` needle comes only from the parent's
+ * resolution of the row's `Parameters`; the `ApiOut` output is the child's own
+ * reference, mirrored into the parent row's attributes (issue #3961).
  */
 class SecretChild extends cdk.NestedStack {
   constructor(
     scope: Construct,
     id: string,
-    names: { parameterName: string },
+    names: { parameterName: string; apiReference: string },
     props: cdk.NestedStackProps
   ) {
     super(scope, id, props);
@@ -39,6 +40,12 @@ class SecretChild extends cdk.NestedStack {
 
     const output = new cdk.CfnOutput(this, 'PwOut', { value: password.valueAsString });
     output.overrideLogicalId('PwOut');
+
+    // An output sourced from the CHILD's own reference (issue #3961). The
+    // parent row mirrors it as `attributes['Outputs.ApiOut']`, and the parent's
+    // own bag has no needle for it: only the child's scrub learns one.
+    const apiOutput = new cdk.CfnOutput(this, 'ApiOut', { value: names.apiReference });
+    apiOutput.overrideLogicalId('ApiOut');
   }
 }
 
@@ -54,7 +61,10 @@ export class ScrubNestedChildStack extends cdk.Stack {
     new SecretChild(
       this,
       'Child',
-      { parameterName: `cdkd-scrub-nested-child-pw-${account}` },
+      {
+        parameterName: `cdkd-scrub-nested-child-pw-${account}`,
+        apiReference: `{{resolve:secretsmanager:${secretName}:SecretString:api::}}`,
+      },
       {
         parameters: {
           DbPassword: `{{resolve:secretsmanager:${secretName}:SecretString:password::}}`,
