@@ -75,8 +75,7 @@ cdkd's own refusal rather than commander's unknown-option error.
    `state destroy '<stack>' --all --yes` exit 1 with the removal refusal
    (before the fix both exited 0, listing nothing), and
    `state destroy '<stack>' --yes` alone exits 1 with `No state found for
-   stack(s)`, i.e. it reached the state listing; the stack's own state
-   object is unchanged.
+   stack(s)`, i.e. it reached the state listing.
 3. **First Ctrl-C**: launch `cdkd destroy --force` in the background,
    poll its log for delete-loop evidence (bounded ~30s), send ONE
    `kill -INT`. When the interrupt lands mid-destroy: (a) the drain

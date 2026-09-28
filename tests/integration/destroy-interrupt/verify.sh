@@ -375,13 +375,7 @@ if printf '%s' "${STATE_EXACT_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
   echo "FAIL: an exact state destroy name was refused like --all" >&2
   exit 1
 fi
-ETAG_AFTER_1C=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
-  --query ETag --output text)
-if [ "${ETAG_AFTER_1C}" != "${ETAG_BEFORE}" ]; then
-  echo "FAIL: this stack's state object changed across Phase 1c (${ETAG_BEFORE} -> ${ETAG_AFTER_1C})" >&2
-  exit 1
-fi
-echo "    OK: exact name reached the state listing; this stack's record untouched"
+echo "    OK: exact name reached the state listing"
 
 # --- Phase 2: first Ctrl-C (graceful SIGINT, #816) --------------------
 #

@@ -783,7 +783,7 @@ record without touching the AWS resources.
 | `0` | Success, including a declined confirmation prompt and a no-op run. |
 | `1` | The command failed — missing record, ambiguous region, lock contention, a refused prompt in a non-interactive shell, or an AWS/S3 error. |
 | `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource readback failures. |
-| `130` | Interrupted by a second Ctrl-C during a destroy. |
+| `130` | Force-quit by Ctrl-C during a destroy: a second one, or one that arrived before the stack's own graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
 
 Every mutating subcommand refuses its confirmation prompt with exit `1` in a
 non-interactive shell rather than hanging or assuming yes — pass `-y` / `--yes`
