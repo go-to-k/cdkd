@@ -1147,6 +1147,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-secret-derived-principals",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-attribute-readback",
       "annotated": true,
       "scenarios": [
@@ -3042,6 +3047,7 @@
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "iam-secret-derived-principals",
     "import-secret-observed",
     "inplace-attr-propagation",
     "kinesis-esm-filter",

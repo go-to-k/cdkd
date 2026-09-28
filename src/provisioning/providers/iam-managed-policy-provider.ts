@@ -44,6 +44,17 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  onlySecretDerived,
+  readPrincipalLists,
+  recordedPrincipalsRepair,
+  SECRET_DERIVED_READ_LIVE,
+} from '../iam-policy-targets.js';
+
+/** A bag's three principal lists, read by literal key (see `readPrincipalLists`). */
+const principalsOf = (bag: Record<string, unknown>) =>
+  readPrincipalLists({ Groups: bag['Groups'], Roles: bag['Roles'], Users: bag['Users'] });
+const PRINCIPAL_NAMES = 'group / role / user names';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -144,6 +155,20 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       );
     }
 
+    // Read before any call (go-to-k/cdkd#3906): a cast iterated a string by
+    // character, attaching the policy to one-letter principals. A replacement
+    // inside `update()` and a rollback's reverse-replacement create both pass
+    // a recorded bag here, so this is not only a template-side check.
+    const principals = principalsOf(properties);
+    if ('malformed' in principals) {
+      throw new ProvisioningError(
+        `${principals.malformed.join(' / ')} of IAM managed policy ${logicalId} is not a list ` +
+          `of IAM names — no managed policy was created or attached`,
+        resourceType,
+        logicalId
+      );
+    }
+
     const policyDoc =
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
@@ -189,9 +214,9 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       try {
         await this.attachToPrincipals(
           policyArn,
-          properties['Groups'] as string[] | undefined,
-          properties['Roles'] as string[] | undefined,
-          properties['Users'] as string[] | undefined,
+          principals.lists.Groups,
+          principals.lists.Roles,
+          principals.lists.Users,
           log
         );
       } catch (innerError) {
@@ -265,6 +290,43 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating IAM managed policy ${logicalId}: ${v(physicalId)}`);
+    // BOTH sides before any call (go-to-k/cdkd#3906). The previous side is the
+    // state record, and a rollback revert or `drift --revert` replays this
+    // method with a recorded bag as the DESIRED side: a string there was
+    // walked by character, ATTACHING the policy to one-letter principals.
+    const newPrincipals = principalsOf(properties);
+    const oldPrincipals = principalsOf(previousProperties);
+    // A recorded list cdkd redacted (a dynamic reference or its mask) cannot be
+    // repaired in state. With a well-formed desired side it is not refused:
+    // the in-place arm below reads that kind from IAM, ADD-only
+    // (go-to-k/cdkd#3906).
+    const liveKinds =
+      !('malformed' in newPrincipals) && onlySecretDerived(oldPrincipals)
+        ? oldPrincipals.malformed
+        : [];
+    if (liveKinds.length === 0 && ('malformed' in newPrincipals || 'malformed' in oldPrincipals)) {
+      const which = [
+        ...('malformed' in newPrincipals ? newPrincipals.malformed.map((k) => `desired ${k}`) : []),
+        ...('malformed' in oldPrincipals
+          ? oldPrincipals.malformed.map((k) => `recorded ${k}`)
+          : []),
+      ];
+      throw new ProvisioningError(
+        `${which.join(' / ')} of IAM managed policy ${logicalId} is not a list of IAM names — ` +
+          `no managed policy was attached, detached or replaced` +
+          ('malformed' in oldPrincipals
+            ? `: ${recordedPrincipalsRepair(
+                oldPrincipals.malformed,
+                oldPrincipals.secretDerived,
+                PRINCIPAL_NAMES,
+                SECRET_DERIVED_READ_LIVE
+              )}`
+            : ''),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
     const newDescription = properties['Description'] as string | undefined;
@@ -341,6 +403,44 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         : base;
     }
 
+    // The secret-derived recorded kinds come from IAM, and only to decide what
+    // to ADD: IAM's list also holds attachments made elsewhere (a Role's
+    // `ManagedPolicyArns`, another stack, the console), so nothing is detached
+    // on its evidence. The well-formed recorded kinds keep the record.
+    const oldLists = { ...oldPrincipals.lists };
+    if (liveKinds.length > 0) {
+      let live: Record<'Groups' | 'Roles' | 'Users', string[]>;
+      try {
+        live = await this.readLivePrincipals(physicalId);
+      } catch (error) {
+        throw new ProvisioningError(
+          `the recorded ${liveKinds.join(' / ')} of IAM managed policy ${logicalId} is ` +
+            `secret-derived and the policy's attachments could not be read from IAM — no ` +
+            `managed policy was attached or detached`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+      // Warned only where IAM holds a name the template does not: the one case
+      // the ADD-only diff leaves something the user may need to detach.
+      const unmatched: string[] = [];
+      for (const kind of liveKinds) {
+        const desired = newPrincipals.lists[kind] ?? [];
+        oldLists[kind] = live[kind].filter((name) => desired.includes(name));
+        if (live[kind].some((name) => !desired.includes(name))) unmatched.push(kind);
+      }
+      if (unmatched.length > 0) {
+        log.warn(
+          `The recorded ${unmatched.join(' / ')} of IAM managed policy ${logicalId} is ` +
+            `secret-derived, and IAM lists attachments the template does not name: cdkd ` +
+            `detaches none of them, since IAM's list includes attachments made elsewhere. Detach ` +
+            `by hand any that this list used to name.`
+        );
+      }
+    }
+
     try {
       // Update PolicyDocument by creating a new version + setting as default.
       // AWS caps managed policies at 5 versions; prune the oldest non-default
@@ -371,12 +471,12 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       // Diff principal attachments.
       await this.updatePrincipals(
         physicalId,
-        properties['Groups'] as string[] | undefined,
-        previousProperties['Groups'] as string[] | undefined,
-        properties['Roles'] as string[] | undefined,
-        previousProperties['Roles'] as string[] | undefined,
-        properties['Users'] as string[] | undefined,
-        previousProperties['Users'] as string[] | undefined,
+        newPrincipals.lists.Groups,
+        oldLists.Groups,
+        newPrincipals.lists.Roles,
+        oldLists.Roles,
+        newPrincipals.lists.Users,
+        oldLists.Users,
         log
       );
 
@@ -749,6 +849,27 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         }
       }
     }
+  }
+
+  /** Every group, role and user the policy is attached to, read from IAM. */
+  private async readLivePrincipals(
+    policyArn: string
+  ): Promise<{ Groups: string[]; Roles: string[]; Users: string[] }> {
+    const live = { Groups: [] as string[], Roles: [] as string[], Users: [] as string[] };
+    let marker: string | undefined;
+    do {
+      const resp = await this.iamClient.send(
+        new ListEntitiesForPolicyCommand({
+          PolicyArn: policyArn,
+          ...(marker && { Marker: marker }),
+        })
+      );
+      for (const g of resp.PolicyGroups ?? []) if (g.GroupName) live.Groups.push(g.GroupName);
+      for (const r of resp.PolicyRoles ?? []) if (r.RoleName) live.Roles.push(r.RoleName);
+      for (const u of resp.PolicyUsers ?? []) if (u.UserName) live.Users.push(u.UserName);
+      marker = resp.IsTruncated ? resp.Marker : undefined;
+    } while (marker);
+    return live;
   }
 
   private async detachAllPrincipals(policyArn: string): Promise<void> {

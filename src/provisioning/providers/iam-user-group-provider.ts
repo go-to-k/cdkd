@@ -50,6 +50,13 @@ import {
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  onlySecretDerived,
+  readPrincipalLists,
+  recordedPrincipalsRepair,
+  SECRET_DERIVED_READ_LIVE,
+} from '../iam-policy-targets.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -82,6 +89,107 @@ export const MEMBERSHIP_NO_PROPERTIES_SKIP_REASON =
  */
 export const MEMBERSHIP_MISSING_FIELDS_SKIP_REASON =
   'GroupName/Users missing from state — membership not removed';
+
+/**
+ * Sibling of {@link MEMBERSHIP_MISSING_FIELDS_SKIP_REASON} for a record whose
+ * `Users` is present but not a list of IAM user names (go-to-k/cdkd#3888). A
+ * cast iterated a string by character, removing one-letter users from the
+ * group and never the recorded one; it is refused before any call.
+ */
+export const MEMBERSHIP_MALFORMED_USERS_SKIP_REASON =
+  'malformed Users in state — membership not removed';
+
+/**
+ * What an `AWS::IAM::UserToGroupAddition` update or delete says about a
+ * secret-derived recorded `Users`: it has no live source (IAM lists a group's
+ * members, not which of them this resource added), so cdkd cannot diff it, and
+ * editing state is not the repair. `cdkd orphan` drops just this record, and
+ * the next deploy re-creates it from the template (`AddUserToGroup` is
+ * idempotent).
+ */
+const MEMBERSHIP_SECRET_DERIVED_REPAIR =
+  'cdkd cannot diff it, so make the membership change by hand, then drop this record with ' +
+  "'cdkd orphan <constructPath>' so the next deploy re-creates it from the template";
+
+/**
+ * Read a desired and a recorded principal list, refusing either when it is not
+ * a list of IAM names, before any write (go-to-k/cdkd#3888). The previous side
+ * is the state record, and a rollback revert or `drift --revert` replays
+ * `update()` with a recorded bag as the desired side. With `readLive`, a
+ * recorded list cdkd redacted (a dynamic reference or its mask) is read from
+ * IAM instead when the desired side is well-formed (go-to-k/cdkd#3906) — ADD-
+ * only: IAM's list also holds memberships made elsewhere (a
+ * `UserToGroupAddition`, another stack, by hand), so the returned previous side
+ * is IAM's list narrowed to the desired names, and nothing is removed on its
+ * evidence. `unmatchedKinds` names the kinds read that way where IAM holds a
+ * name the desired side does not, for the caller's warning.
+ */
+async function readPrincipalSides<K extends string>(opts: {
+  desired: Record<K, unknown>;
+  recorded: Record<K, unknown>;
+  subject: string;
+  nothingDone: string;
+  names: string;
+  secretDerivedRepair: string;
+  readLive?: () => Promise<Record<K, string[]>>;
+  resourceType: string;
+  logicalId: string;
+  physicalId: string;
+}): Promise<{
+  next: Record<K, string[] | undefined>;
+  prev: Record<K, string[] | undefined>;
+  unmatchedKinds: K[];
+}> {
+  const { subject, nothingDone, names, resourceType, logicalId, physicalId } = opts;
+  const next = readPrincipalLists(opts.desired);
+  let prev = readPrincipalLists(opts.recorded);
+  const unmatchedKinds: K[] = [];
+  if (opts.readLive && !('malformed' in next) && onlySecretDerived(prev)) {
+    const kinds = prev.malformed.join(' / ');
+    let live: Record<K, string[]>;
+    try {
+      live = await opts.readLive();
+    } catch (error) {
+      throw new ProvisioningError(
+        `the recorded ${kinds} of ${subject} ${logicalId} is secret-derived and could not be ` +
+          `read from IAM — ${nothingDone}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+    const lists = { ...prev.lists };
+    for (const kind of prev.malformed) {
+      const desired = next.lists[kind] ?? [];
+      lists[kind] = live[kind].filter((name) => desired.includes(name));
+      if (live[kind].some((name) => !desired.includes(name))) unmatchedKinds.push(kind);
+    }
+    prev = { lists };
+  }
+  if ('malformed' in next || 'malformed' in prev) {
+    const which = [
+      ...('malformed' in next ? next.malformed.map((k) => `desired ${k}`) : []),
+      ...('malformed' in prev ? prev.malformed.map((k) => `recorded ${k}`) : []),
+    ];
+    throw new ProvisioningError(
+      `${which.join(' / ')} of ${subject} ${logicalId} is not a list of ${names} — ` +
+        nothingDone +
+        ('malformed' in prev
+          ? `: ${recordedPrincipalsRepair(
+              prev.malformed,
+              prev.secretDerived,
+              names,
+              opts.secretDerivedRepair
+            )}`
+          : ''),
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+  return { next: next.lists, prev: prev.lists, unmatchedKinds };
+}
 
 /**
  * The deploy-side caveat both `UserToGroupAddition` skip warnings carry (issue
@@ -323,6 +431,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
       logicalId,
       { maxLength: USER_NAME_MAX_LENGTH }
     );
+    // Read before any call (go-to-k/cdkd#3888): a rollback's
+    // reverse-replacement create passes a recorded bag here.
+    const groups = readPrincipalLists({ Groups: properties['Groups'] });
+    if ('malformed' in groups) {
+      throw new ProvisioningError(
+        `Groups of IAM user ${logicalId} is not a list of IAM group names — no user was created`,
+        resourceType,
+        logicalId
+      );
+    }
 
     try {
       const createParams: {
@@ -399,8 +517,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         }
 
         // Add user to groups if specified
-        const userGroups = properties['Groups'] as string[] | undefined;
-        if (userGroups && Array.isArray(userGroups)) {
+        const userGroups = groups.lists.Groups;
+        if (userGroups) {
           for (const groupName of userGroups) {
             await this.iamClient.send(
               new AddUserToGroupCommand({
@@ -501,6 +619,41 @@ export class IAMUserGroupProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     const { value: v } = log;
     log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
+    // `Groups` on BOTH sides before any call (go-to-k/cdkd#3888): a string was
+    // walked by character, removing the user from one-letter groups.
+    const groups = await readPrincipalSides({
+      desired: { Groups: properties['Groups'] },
+      recorded: { Groups: previousProperties['Groups'] },
+      subject: 'IAM user',
+      nothingDone: 'no group membership, tag, policy or login profile was changed',
+      names: 'group names',
+      secretDerivedRepair: SECRET_DERIVED_READ_LIVE,
+      // `deleteUser` reads the same list (`removeUserFromAllGroups`).
+      readLive: async () => {
+        try {
+          return { Groups: await this.readLiveGroups(physicalId) };
+        } catch (error) {
+          throw new ProvisioningError(
+            `ListGroupsForUser failed for IAM user ${logicalId}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+      },
+      resourceType,
+      logicalId,
+      physicalId,
+    });
+    if (groups.unmatchedKinds.length > 0) {
+      log.warn(
+        `The recorded Groups of IAM user ${logicalId} is secret-derived, and IAM lists ` +
+          `memberships the template does not name: cdkd removes the user from none of them, ` +
+          `since IAM's list includes memberships made elsewhere. Remove the user by hand from ` +
+          `any that this list used to name.`
+      );
+    }
 
     try {
       // Apply tag diff. IAM User uses TagUser/UntagUser keyed by UserName.
@@ -576,12 +729,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       );
 
       // Update groups
-      await this.updateUserGroups(
-        physicalId,
-        properties['Groups'] as string[] | undefined,
-        previousProperties['Groups'] as string[] | undefined,
-        log
-      );
+      await this.updateUserGroups(physicalId, groups.next.Groups, groups.prev.Groups, log);
 
       // Update inline policies
       await this.updateUserInlinePolicies(
@@ -694,6 +842,20 @@ export class IAMUserGroupProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /** Every group the user belongs to, read from IAM (paginated). */
+  private async readLiveGroups(userName: string): Promise<string[]> {
+    const groups: string[] = [];
+    let marker: string | undefined;
+    do {
+      const resp = await this.iamClient.send(
+        new ListGroupsForUserCommand({ UserName: userName, ...(marker && { Marker: marker }) })
+      );
+      for (const g of resp.Groups ?? []) if (g.GroupName) groups.push(g.GroupName);
+      marker = resp.IsTruncated ? resp.Marker : undefined;
+    } while (marker);
+    return groups;
   }
 
   private async removeUserFromAllGroups(
@@ -1430,7 +1592,17 @@ export class IAMUserGroupProvider implements ResourceProvider {
     log.debug(`Creating IAM UserToGroupAddition ${logicalId}`);
 
     const groupName = properties['GroupName'] as string;
-    const users = properties['Users'] as string[];
+    const read = readPrincipalLists({ Users: properties['Users'] });
+    if ('malformed' in read) {
+      // Before any call (go-to-k/cdkd#3888).
+      throw new ProvisioningError(
+        `Users of IAM UserToGroupAddition ${logicalId} is not a list of IAM user names — no ` +
+          `user was added to the group`,
+        resourceType,
+        logicalId
+      );
+    }
+    const users = read.lists.Users;
 
     if (!groupName) {
       throw new ProvisioningError(
@@ -1439,7 +1611,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
         logicalId
       );
     }
-    if (!users || !Array.isArray(users) || users.length === 0) {
+    if (!users || users.length === 0) {
       throw new ProvisioningError(`Users is required for ${logicalId}`, resourceType, logicalId);
     }
 
@@ -1483,10 +1655,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
     const { value: v } = log;
     log.debug(`Updating IAM UserToGroupAddition ${logicalId}`);
 
+    const users = await readPrincipalSides({
+      desired: { Users: properties['Users'] },
+      recorded: { Users: previousProperties['Users'] },
+      subject: 'IAM UserToGroupAddition',
+      nothingDone: 'no user was added to or removed from a group',
+      names: 'user names',
+      secretDerivedRepair: MEMBERSHIP_SECRET_DERIVED_REPAIR,
+      resourceType,
+      logicalId,
+      physicalId,
+    });
     const groupName = properties['GroupName'] as string;
-    const newUsers = new Set((properties['Users'] as string[]) || []);
+    const newUsers = new Set(users.next.Users ?? []);
     const oldGroupName = previousProperties['GroupName'] as string;
-    const oldUsers = new Set((previousProperties['Users'] as string[]) || []);
+    const oldUsers = new Set(users.prev.Users ?? []);
 
     try {
       // If group changed, remove from old group and add to new group
@@ -1588,8 +1771,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     // An empty `Users: []` is a genuinely different shape and stays a
     // `deleted`: an array is truthy, so it falls through to the loop below and
     // correctly does nothing. Its producer is UPDATE, not create —
-    // `updateUserToGroupAddition` reads `(properties['Users'] as string[]) || []`,
-    // removes every old user when the new list is empty, and records `[]`.
+    // `updateUserToGroupAddition` diffs against the new list, so an EMPTY desired
+    // `Users: []` removes every old user and records `[]`.
     // (Create cannot produce it: it rejects `users.length === 0`.)
     this.logger.debug(`Deleting IAM UserToGroupAddition ${logicalId}`);
 
@@ -1626,8 +1809,29 @@ export class IAMUserGroupProvider implements ResourceProvider {
       return { outcome: 'skipped', reason: MEMBERSHIP_MISSING_FIELDS_SKIP_REASON };
     }
 
+    // A present `Users` that is not a list of IAM user names (go-to-k/cdkd#3888):
+    // refused before any call rather than guessing which users it names.
+    const read = readPrincipalLists({ Users: properties['Users'] });
+    if ('malformed' in read) {
+      // The same parent clause the missing-fields arm carries: a group or users
+      // deleted by this destroy remove exactly these memberships.
+      const repair =
+        read.secretDerived.length > 0
+          ? 'The recorded Users is secret-derived (cdkd keeps the dynamic reference or its mask ' +
+            'in state), so do not write the name into state.json: cdkd will keep skipping this ' +
+            'record. Remove the users from the group by hand; on cdkd destroy every other ' +
+            "resource is still deleted, so once this is the stack's last record " +
+            "'cdkd state orphan <stack>' clears it."
+          : 'Repair the recorded Users in state.json to a list of user names and re-run, or ' +
+            'remove the users from the group by hand.';
+      this.logger.warn(
+        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ${repair} ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: MEMBERSHIP_MALFORMED_USERS_SKIP_REASON };
+    }
+
     try {
-      for (const userName of users) {
+      for (const userName of read.lists.Users ?? []) {
         try {
           await this.iamClient.send(
             new RemoveUserFromGroupCommand({

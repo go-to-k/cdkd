@@ -444,7 +444,7 @@ cdkd destroy MyStack --purge-events -y
 ## Skipped resources on destroy
 
 A **skipped** resource is one cdkd could not address, so it may still exist and
-still be billing. Three causes today:
+still be billing. Four causes today:
 
 - **A composite `physicalId` that does not decode** (`AWS::Glue::Table`,
   `AWS::AppSync::{DataSource,Resolver,ApiKey}`, `AWS::EC2::NetworkAclEntry`).
@@ -470,6 +470,22 @@ still be billing. Three causes today:
   group / user — that parent's own delete removes the skipped resource anyway,
   so AWS ends clean and only the cdkd record is stale. The warning says so, and
   `cdkd state orphan '<stack>'` clears it.
+
+- **A state record whose principal list is not a list of IAM names** — a
+  string or object where a list belongs, or an entry that is not an IAM name.
+  cdkd refuses to guess which principals it names, so no AWS call is issued:
+
+  | Record | What survives |
+  | --- | --- |
+  | `AWS::IAM::Policy` whose `Roles` / `Groups` / `Users` is not a list of IAM names | The inline policy stays attached wherever it is. |
+  | `AWS::IAM::UserToGroupAddition` whose `Users` is not a list of IAM user names | The users keep every permission the group grants. |
+
+  A plain malformed list is repaired in `state.json`, after which a re-run
+  deletes it. A list holding a dynamic reference or its mask is
+  secret-derived: cdkd keeps the reference in state by design, so there is
+  nothing to repair and every destroy skips it again. Remove the attachment or
+  the memberships by hand; the rest of the stack is still destroyed, so once
+  this is the stack's last record, `cdkd state orphan '<stack>'` clears it.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted

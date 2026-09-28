@@ -3715,10 +3715,18 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "infra-security"
       ],
       "signals": {
+        "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-secret-derived-principals": [
+          "l2"
+        ],
         "import-attribute-readback-misc": [
           "l1"
         ],
@@ -3734,6 +3742,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "iam-managed-policy",
         "import-attribute-readback-misc",
         "propagation-races-2",
         "remove-protection"
@@ -3754,6 +3763,10 @@
           "l1",
           "literal"
         ],
+        "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-misc": [
           "l1"
         ],
@@ -3769,11 +3782,16 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attributes",
         "import-auto-mode"
       ],
       "signals": {
         "iam-managed-policy": [
+          "literal"
+        ],
+        "iam-secret-derived-principals": [
+          "l1",
           "literal"
         ],
         "import-attributes": [
@@ -3846,6 +3864,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
+        "iam-secret-derived-principals",
         "import-attribute-readback",
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
@@ -3999,6 +4018,9 @@
         "iam-role-prefixed-name-update": [
           "l2",
           "literal"
+        ],
+        "iam-secret-derived-principals": [
+          "l2"
         ],
         "import-attribute-readback": [
           "l2",
@@ -4162,6 +4184,8 @@
       "resourceType": "AWS::IAM::User",
       "integs": [
         "iam-access-key",
+        "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "import-heal-prefix-record",
         "infra-security"
@@ -4169,6 +4193,13 @@
       "signals": {
         "iam-access-key": [
           "l2"
+        ],
+        "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-secret-derived-principals": [
+          "l1",
+          "literal"
         ],
         "import-attribute-readback-misc": [
           "l1"
@@ -4184,9 +4215,14 @@
     {
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
+        "iam-managed-policy",
         "infra-security"
       ],
       "signals": {
+        "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
         "infra-security": [
           "literal"
         ]
