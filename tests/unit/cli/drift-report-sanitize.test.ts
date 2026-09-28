@@ -90,20 +90,27 @@ function render(...reports: Report[]): { joined: string; lines: string[] } {
  * line discipline does not see) and RIGHT-TO-LEFT OVERRIDE (reorders what the
  * reader sees).
  */
-const PLANTED: ReadonlyArray<[name: string, char: string]> = [
-  ['ESC', '\x1b'],
-  ['newline', '\n'],
-  ['ENQ', '\x05'],
-  ['LINE SEPARATOR', '\u2028'],
-  ['RIGHT-TO-LEFT OVERRIDE', '\u202e'],
+const PLANTED: ReadonlyArray<[name: string, char: string, inQuotedValue: string]> = [
+  // The third element is what a property VALUE, which is JSON-quoted when it
+  // carries such a character, prints in its place: its `\uXXXX` / `\n` escape
+  // text, whether JSON writes it or `escapeJsonLiterals` does. Spelled by
+  // concatenation so no editor turns the escape text into the character.
+  ['ESC', '\x1b', '\\' + 'u001b'],
+  ['newline', '\n', '\\' + 'n'],
+  ['ENQ', '\x05', '\\' + 'u0005'],
+  ['LINE SEPARATOR', '\u2028', '\\' + 'u2028'],
+  ['RIGHT-TO-LEFT OVERRIDE', '\u202e', '\\' + 'u202e'],
 ];
 
 /**
  * Every (field, row) pair the report prints a record- or readback-derived value
- * on. The value is `A<char>FORGED`; a sanitized row carries `A FORGED` and no
+ * on. The value is `A<char>FORGED`; a sanitized identifier row carries
+ * `A FORGED`, a sanitized value row the JSON-quoted `"A<escape>FORGED"`, and no
  * line begins with `FORGED`.
  */
-const SCENARIOS: ReadonlyArray<[name: string, build: (v: string) => Report, row: string]> = [
+const SCENARIOS: ReadonlyArray<
+  [name: string, build: (v: string) => Report, row: string, quoted?: 'quoted']
+> = [
   ['stack name on the ✓ heading', (v) => report({ stackName: v, outcomes: [clean()] }), '✓ '],
   ['region on the ✓ heading', (v) => report({ region: v, outcomes: [clean()] }), '✓ '],
   [
@@ -152,11 +159,13 @@ const SCENARIOS: ReadonlyArray<[name: string, build: (v: string) => Report, row:
     'state value on the - row',
     (v) => report({ outcomes: [drifted('R', 'T', [{ path: 'P', stateValue: v, awsValue: 2 }])] }),
     '    - ',
+    'quoted',
   ],
   [
     'AWS value on the + row',
     (v) => report({ outcomes: [drifted('R', 'T', [{ path: 'P', stateValue: 1, awsValue: v }])] }),
     '    + ',
+    'quoted',
   ],
   ['logical id on a ! row', (v) => report({ outcomes: [notCompared(v)] }), '    ! '],
   ['resource type on a ! row', (v) => report({ outcomes: [notCompared('Fn', v)] }), '    ! '],
@@ -165,12 +174,13 @@ const SCENARIOS: ReadonlyArray<[name: string, build: (v: string) => Report, row:
 ];
 
 describe('writeHumanReport treats record- and readback-derived values as untrusted text (go-to-k/cdkd#3232)', () => {
-  for (const [scenario, build, row] of SCENARIOS) {
-    for (const [name, char] of PLANTED) {
-      it(`${scenario}: ${name} is replaced by a space and forges no row`, () => {
+  for (const [scenario, build, row, quoted] of SCENARIOS) {
+    for (const [name, char, inQuotedValue] of PLANTED) {
+      const shown = quoted ? `"A${inQuotedValue}FORGED"` : 'A FORGED';
+      it(`${scenario}: ${name} prints as ${quoted ? 'quoted escape text' : 'a space'} and forges no row`, () => {
         const { joined, lines } = render(build(`A${char}FORGED`));
         // The forged text stays on the row it was planted in.
-        const carrier = lines.filter((l) => l.startsWith(row) && l.includes('A FORGED'));
+        const carrier = lines.filter((l) => l.startsWith(row) && l.includes(shown));
         expect(carrier, joined).toHaveLength(1);
         // Asserted per LINE: no line begins with the text a newline would have
         // put at column 0, and no line carries the character itself.
@@ -223,31 +233,121 @@ describe('writeHumanReport treats record- and readback-derived values as untrust
     );
   });
 
-  it('keeps a value\'s own padding, so a drift that differs only by whitespace shows two sides', () => {
-    // Padding on EACH side in turn, so a trim on either arm reds a case.
+  it('quotes a value whose edges are whitespace or that carries a tab or a newline, so a drift that differs only there shows two sides', () => {
+    // Each pair on EACH side in turn, so a trim, or a quoting rule applied to
+    // one arm only, reds a case. Asserted as exact lines AND as the two sides
+    // differing, which is the property the reader needs.
+    const NL_JSON = '\\' + 'n';
+    const TAB_JSON = '\\' + 't';
+    const BS = '\\';
+    const pairs: Array<[path: string, stateValue: string, awsValue: string, minus: string, plus: string]> = [
+      ['P', ' value ', 'value', '" value "', 'value'],
+      ['Q', 'value', ' value ', 'value', '" value "'],
+      ['TrailingNewline', 'abc\n', 'abc', `"abc${NL_JSON}"`, 'abc'],
+      ['LeadingNewline', 'abc', '\nabc', 'abc', `"${NL_JSON}abc"`],
+      ['Tab', 'a\tb', 'a b', `"a${TAB_JSON}b"`, 'a b'],
+      ['TabOnPlus', 'a b', 'a\tb', 'a b', `"a${TAB_JSON}b"`],
+      ['TrailingSpace', 'abc ', 'abc', '"abc "', 'abc'],
+      ['LeadingSpace', 'abc', ' abc', 'abc', '" abc"'],
+      // Both sides quoted: the characters JSON leaves literal are escaped too,
+      // so they never print like a space or like each other.
+      ['LsVsSpace', 'abc\u2028', 'abc ', `"abc${BS}u2028"`, '"abc "'],
+      ['DelVsC1', 'a\u007fb', 'a\u009fb', `"a${BS}u007fb"`, `"a${BS}u009fb"`],
+      ['TwoLiterals', 'a\u2028b\u2028', 'a\u2028b ', `"a${BS}u2028b${BS}u2028"`, `"a${BS}u2028b "`],
+      ['BidiVsBidi', 'a\u202a', 'a\u2066', `"a${BS}u202a"`, `"a${BS}u2066"`],
+      ['NoBreakSpace', 'abc', 'abc\u00a0', 'abc', '"abc\u00a0"'],
+    ];
+    const { lines } = render(
+      report({
+        outcomes: [
+          drifted(
+            'R',
+            'T',
+            pairs.map(([path, stateValue, awsValue]) => ({ path, stateValue, awsValue }))
+          ),
+        ],
+      })
+    );
+    for (const [path, , , minus, plus] of pairs) {
+      const minusLine = lines.find((l) => l.startsWith(`    - ${path}: `));
+      const plusLine = lines.find((l) => l.startsWith(`    + ${path}: `));
+      expect(minusLine).toBe(`    - ${path}: ${minus}`);
+      expect(plusLine).toBe(`    + ${path}: ${plus}`);
+      expect(minusLine?.slice(6)).not.toBe(plusLine?.slice(6));
+    }
+  });
+
+  it('quotes a value carrying any character safeMsg alters, at every edge of every range', () => {
+    // One case per range END of the set `reportValue` quotes for, so narrowing
+    // any range reds a case. JSON escapes the C0 ones and `escapeJsonLiterals`
+    // the ones JSON leaves literal, so each prints as its own escape text and
+    // no two of them print alike.
+    const edges: Array<[char: string, shown: string]> = [
+      ['\u0000', '\\' + 'u0000'],
+      ['\u001f', '\\' + 'u001f'],
+      ['\u007f', '\\' + 'u007f'],
+      ['\u009f', '\\' + 'u009f'],
+      ['\u2028', '\\' + 'u2028'],
+      ['\u2029', '\\' + 'u2029'],
+      ['\u202a', '\\' + 'u202a'],
+      ['\u202e', '\\' + 'u202e'],
+      ['\u2066', '\\' + 'u2066'],
+      ['\u2069', '\\' + 'u2069'],
+    ];
+    const { lines } = render(
+      report({
+        outcomes: [
+          drifted(
+            'R',
+            'T',
+            edges.map(([char], i) => ({ path: `P${i}`, stateValue: `a${char}b`, awsValue: 'a b' }))
+          ),
+        ],
+      })
+    );
+    edges.forEach(([, shown], i) => {
+      expect(lines).toContain(`    - P${i}: "a${shown}b"`);
+      expect(lines).toContain(`    + P${i}: a b`);
+    });
+    // And the character just outside a range is left alone.
+    const { lines: outside } = render(
+      report({
+        outcomes: [drifted('R', 'T', [{ path: 'P', stateValue: 'a\u00a0b\u2065c', awsValue: 1 }])],
+      })
+    );
+    expect(outside).toContain('    - P: a\u00a0b\u2065c');
+  });
+
+  it('quotes a value that already starts with a double quote, so it cannot pass for a quoted one', () => {
+    // Without this, the RAW text `"abc\n"` (quote, abc, backslash, n, quote)
+    // would print exactly as the quoted form of `abc` plus a newline.
+    const NL_JSON = '\\' + 'n';
     const { lines } = render(
       report({
         outcomes: [
           drifted('R', 'T', [
-            { path: 'P', stateValue: ' value ', awsValue: 'value' },
-            { path: 'Q', stateValue: 'value', awsValue: ' value ' },
+            { path: 'P', stateValue: 'abc\n', awsValue: `"abc${NL_JSON}"` },
+            { path: 'Q', stateValue: '"', awsValue: 'a"b' },
           ]),
         ],
       })
     );
-    expect(lines).toContain('    - P:  value ');
-    expect(lines).toContain('    + P: value');
-    expect(lines).toContain('    - Q: value');
-    expect(lines).toContain('    + Q:  value ');
+    expect(lines).toContain(`    - P: "abc${NL_JSON}"`);
+    expect(lines).toContain(`    + P: "\\"abc\\${NL_JSON}\\""`);
+    expect(lines).toContain('    - Q: "\\""');
+    // A quote INSIDE a value is not at its start and changes nothing.
+    expect(lines).toContain('    + Q: a"b');
   });
 
-  it('JSON-encodes a structured value first, so a nested control arrives as escape text and a nested LINE SEPARATOR is replaced', () => {
-    // `formatScalar` runs before `safeMsg`: JSON escapes a C0 control and a
-    // newline (inert text, kept), and leaves U+2028 / U+2029 and the bidi
-    // overrides literal (replaced like anywhere else). The escape text is
-    // spelled by concatenation so no editor turns it into the character.
+  it('JSON-encodes a structured value first, so every nested control, LINE SEPARATOR included, arrives as escape text', () => {
+    // `formatScalar` then `escapeJsonLiterals` run before `safeMsg`: JSON
+    // escapes a C0 control and a newline, and `escapeJsonLiterals` the U+2028
+    // / U+2029 and bidi characters JSON leaves literal, so the text is inert
+    // and a nested LINE SEPARATOR cannot print like a nested space. The escape
+    // text is spelled by concatenation so no editor turns it into the character.
     const NL_JSON = '\\' + 'n';
     const ESC_JSON = '\\' + 'u001b';
+    const LS_JSON = '\\' + 'u2028';
     const { joined, lines } = render(
       report({
         outcomes: [
@@ -257,47 +357,89 @@ describe('writeHumanReport treats record- and readback-derived values as untrust
               stateValue: { k: 'a\u2028FORGED', n: 'x\ny\x1bz' },
               awsValue: 'x\x1b[2JFORGED',
             },
+            { path: 'Q', stateValue: { k: 'a\u2028' }, awsValue: { k: 'a ' } },
+            // A LIST, and a control on the AWS side of each shape.
+            { path: 'L', stateValue: ['a', 'b'], awsValue: ['a\u2028', 'b\u202e'] },
+            { path: 'O', stateValue: { k: 'a' }, awsValue: { k: 'a\u2066\x1b' } },
           ]),
         ],
       })
     );
     expect(joined).not.toContain('\u2028');
     expect(joined).not.toContain('\x1b');
-    expect(lines).toContain(`    - P: {"k":"a FORGED","n":"x${NL_JSON}y${ESC_JSON}z"}`);
-    expect(lines).toContain('    + P: xFORGED');
+    expect(lines).toContain(`    - P: {"k":"a${LS_JSON}FORGED","n":"x${NL_JSON}y${ESC_JSON}z"}`);
+    // A string value with a control is quoted the same way (go-to-k/cdkd#3921 M0).
+    expect(lines).toContain(`    + P: "x${ESC_JSON}[2JFORGED"`);
+    // A nested LINE SEPARATOR and a nested space print differently.
+    expect(lines).toContain(`    - Q: {"k":"a${LS_JSON}"}`);
+    expect(lines).toContain('    + Q: {"k":"a "}');
+    const RLO_JSON = '\\' + 'u202e';
+    const LRI_JSON = '\\' + 'u2066';
+    expect(lines).toContain('    - L: ["a","b"]');
+    expect(lines).toContain(`    + L: ["a${LS_JSON}","b${RLO_JSON}"]`);
+    expect(lines).toContain('    - O: {"k":"a"}');
+    expect(lines).toContain(`    + O: {"k":"a${LRI_JSON}${ESC_JSON}"}`);
   });
 
-  it("keeps a colour or styling code cdkd's own output uses inside a value, as every logger line does", () => {
+  it("keeps a colour or styling code cdkd's own output uses inside an identifier, as every logger line does, and quotes one in a value", () => {
     // `safeMsg`'s allowlist (go-to-k/cdkd#3479: cdkd's colours, bold, dim,
-    // reset): such a sequence in the value is kept — and, unreset, styles the
-    // rows after it too, since nothing here adds a reset — while any other
+    // reset): such a sequence in an identifier is kept — and, unreset, styles
+    // the rows after it too, since nothing here adds a reset — while any other
     // CSI or terminated OSC is removed whole, a colour code outside the set
     // becomes a reset, and the ESC of a sequence `safeMsg` does not parse
     // (`ESC 7`, an unterminated OSC) becomes a space with the rest kept.
-    // Pinned here so the docs' "with one allowance" sentence is derived from a
-    // case rather than asserted; the reset in the fixture is the value's own.
-    // An allowed code on EACH side, and a forbidden one on each, so a strip
-    // applied to one completed line reds a case.
+    // Pinned here so the docs' "one allowance" sentence is derived from a case
+    // rather than asserted; the reset in the fixture is the identifier's own.
+    // The path prints on BOTH lines of a change, so a strip applied to one
+    // completed line reds a case. A property VALUE carrying the same code is
+    // JSON-quoted first, so its ESC prints as escape text, never as colour.
+    const ESC_JSON = '\\' + 'u001b';
+    const paths: Array<[planted: string, shown: string]> = [
+      ['a\x1b[31mb\x1b[0m', 'a\x1b[31mb\x1b[0m'],
+      ['c\x1b[1md\x1b[0m', 'c\x1b[1md\x1b[0m'],
+      ['a\x1b[2Jb', 'ab'],
+      ['a\x1b[38;5;1mb', 'a\x1b[0mb'],
+      ['c\x1b]8;;u\x07d', 'cd'],
+      ['a\x1b7b', 'a 7b'],
+      ['c\x1b]8;;ud', 'c ]8;;ud'],
+    ];
     const { lines } = render(
       report({
         outcomes: [
           drifted('R', 'T', [
-            { path: 'P', stateValue: 'a\x1b[31mb\x1b[0m', awsValue: 'c\x1b[1md\x1b[0m' },
-            { path: 'Q', stateValue: 'a\x1b[2Jb', awsValue: 'c\x1b[2Jd' },
-            { path: 'S', stateValue: 'a\x1b[38;5;1mb', awsValue: 'c\x1b]8;;u\x07d' },
-            { path: 'U', stateValue: 'a\x1b7b', awsValue: 'c\x1b]8;;ud' },
+            ...paths.map(([path]) => ({ path, stateValue: 1, awsValue: 2 })),
+            { path: 'V', stateValue: 'a\x1b[31mb\x1b[0m', awsValue: 'ab' },
           ]),
         ],
       })
     );
-    expect(lines).toContain('    - P: a\x1b[31mb\x1b[0m');
-    expect(lines).toContain('    + P: c\x1b[1md\x1b[0m');
-    expect(lines).toContain('    - Q: ab');
-    expect(lines).toContain('    + Q: cd');
-    expect(lines).toContain('    - S: a\x1b[0mb');
-    expect(lines).toContain('    + S: cd');
-    expect(lines).toContain('    - U: a 7b');
-    expect(lines).toContain('    + U: c ]8;;ud');
+    for (const [, shown] of paths) {
+      expect(lines).toContain(`    - ${shown}: 1`);
+      expect(lines).toContain(`    + ${shown}: 2`);
+    }
+    expect(lines).toContain(`    - V: "a${ESC_JSON}[31mb${ESC_JSON}[0m"`);
+    expect(lines).toContain('    + V: ab');
+  });
+
+  it('sanitizes a resource that is both drifted and only partially compared on both of its rows', () => {
+    // A drifted outcome carrying `notComparedCause` prints on the `~` row AND
+    // on the `!` row; each goes through `reportResource`.
+    const { joined, lines } = render(
+      report({
+        outcomes: [
+          drifted(
+            'A\nFORGED',
+            'T\x1b[2J',
+            [{ path: 'P', stateValue: 1, awsValue: 2 }],
+            'refused'
+          ),
+        ],
+      })
+    );
+    expect(lines.filter((l) => l.startsWith('  ~ A FORGED (T)')), joined).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith('    ! A FORGED (T) — ')), joined).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith('FORGED'))).toEqual([]);
+    expect(joined).not.toContain('\x1b');
   });
 
   it('caps every identifier, and never a property value', () => {
@@ -330,9 +472,9 @@ describe('writeHumanReport treats record- and readback-derived values as untrust
     expect(lines).toContain(`    + ${'p'.repeat(IDENT_MAX_CODE_POINTS)}...: ${longAwsValue}`);
   });
 
-  it("keeps an identifier's padding and styling exactly as it keeps a value's", () => {
-    // ONE rule for identifier and value alike (the `reportIdent` doc): no
-    // trim, and `safeMsg`'s SGR allowance. Pinned on every helper, so a
+  it("keeps an identifier's padding and cdkd's own styling on every helper", () => {
+    // No trim, and `safeMsg`'s SGR allowance (the `reportIdent` doc; a
+    // property VALUE is quoted instead, pinned above). Pinned on every helper, so a
     // `.trim()` or a `displaySafe` pass added to `reportIdent` reds a case.
     // Padding AND an allowed sequence on every helper's inputs — heading,
     // resource row, change line — so a strip applied to any one helper's

@@ -7109,12 +7109,11 @@ function writeJsonReport(reports: StackDriftReport[]): void {
  *
  * Sanitizing is deliberately NOT done here: every row of the report is a
  * `safeMsg` template, which flattens each interpolated value to one line and
- * strips terminal control from it, identifier and property value alike. One
- * rule for every value the report prints, applied where the row is built, so a
- * row cannot take an identifier through one filter and a value through another
- * — and a property value keeps its own padding, which `displaySafe` would trim
- * and which is the whole difference between `" value "` and `"value"` on a
- * real drift.
+ * strips terminal control from it, identifier and property value alike,
+ * applied where the row is built. Nothing is trimmed either: `displaySafe`
+ * would trim, and a property value's padding is the whole difference between
+ * `" value "` and `"value"` on a real drift — which is why a change line
+ * quotes such a value first (`reportValue`), so its edges show.
  */
 function reportIdent(value: string, maxCodePoints: number): string {
   const { text, truncated } = truncateCodePoints(value, maxCodePoints);
@@ -7132,17 +7131,66 @@ function reportResource(outcome: { logicalId: string; resourceType: string }): s
 }
 
 /**
- * One `-` / `+` line of a drifted resource. The VALUE is flattened and
- * control-stripped by `safeMsg` and nothing else — not trimmed, not capped —
- * so an ordinary value renders byte-for-byte as it always did and a drift that
- * differs only by surrounding whitespace still shows two different sides. A
- * structured value is JSON-encoded by `formatScalar` FIRST, so a C0 control or
- * a newline nested in it reaches `safeMsg` as JSON's escape text and stays
- * that way (inert), while U+2028 / U+2029 and the bidi overrides, which JSON
- * leaves literal, are replaced like anywhere else.
+ * The control characters `safeMsg` acts on in a value: C0 (newline, tab and
+ * ESC among them), DEL and C1 (the 8-bit CSI among them), U+2028 / U+2029 and
+ * the bidi overrides. It replaces or removes each, except the ESC that opens
+ * one of cdkd's own colour codes, which it keeps.
+ */
+// eslint-disable-next-line no-control-regex
+const ALTERED_BY_SAFE_MSG = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+/**
+ * JSON text with every character `ALTERED_BY_SAFE_MSG` names written as its
+ * `\uXXXX` escape. `JSON.stringify` escapes only the C0 range; DEL, C1,
+ * U+2028 / U+2029 and the bidi overrides it leaves literal, and `safeMsg`
+ * would then replace each with a space — so `"a\u2028"` and `"a "` would
+ * still print alike. Escaped, the text is still valid JSON for the same value.
+ */
+function escapeJsonLiterals(json: string): string {
+  return json.replace(
+    new RegExp(ALTERED_BY_SAFE_MSG.source, 'g'),
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
+}
+
+/**
+ * A change line's value, as `safeMsg` will be handed it.
+ *
+ * A STRING that carries a character `ALTERED_BY_SAFE_MSG` names (ESC included,
+ * so even a colour code `safeMsg` would keep), whose edges are whitespace, or
+ * that starts with `"`, is printed as its JSON string instead, with every such
+ * character escaped (`escapeJsonLiterals`): flattened, `"abc\n"` and `"abc"`
+ * (or `"a\tb"` and `"a b"`) would print the same `-` and `+` sides, and a
+ * padded value's edges are invisible without the quotes. No character of that
+ * set is then left between the quotes, so two strings that differ in one, or
+ * in whether they have whitespace at an edge, print differently (a zero-width
+ * or look-alike character, or one kind of space for another, is outside that
+ * and prints as itself), and a value's colour code prints as escape text, not
+ * as colour. The leading `"` rule means a value that merely SPELLS a quoted
+ * string cannot pass for one. Any other string renders byte-for-byte as it
+ * always did.
+ *
+ * Every non-string goes through `formatScalar` and the same escaping: a
+ * structured value's JSON, so a control nested in it arrives as escape text
+ * too; a number, boolean, `null` or `undefined`, which has nothing to escape.
+ */
+function reportValue(value: unknown): string {
+  if (typeof value !== 'string') return escapeJsonLiterals(formatScalar(value));
+  if (value === value.trim() && !value.startsWith('"') && !ALTERED_BY_SAFE_MSG.test(value)) {
+    return value;
+  }
+  return escapeJsonLiterals(JSON.stringify(value));
+}
+
+/**
+ * One `-` / `+` line of a drifted resource. The value goes through
+ * `reportValue` and then `safeMsg` — never trimmed, never capped — so an
+ * ordinary value renders byte-for-byte as it always did and a drift that
+ * differs only by a control character, or by whether a value has whitespace
+ * at an edge, still shows two different sides.
  */
 function reportChangeLine(sign: '-' | '+', path: string, value: unknown): string {
-  return safeMsg`    ${sign} ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${formatScalar(value)}\n`;
+  return safeMsg`    ${sign} ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportValue(value)}\n`;
 }
 
 /**
@@ -7159,11 +7207,12 @@ function reportChangeLine(sign: '-' | '+', path: string, value: unknown): string
  * not reach these writes, which go to `process.stdout` directly, so the guard
  * is at the call site — where `safeMsg` also closes the line-forging half the
  * sink cannot tell from cdkd's own newlines. What `safeMsg` keeps, it keeps
- * here too: a value spelling one of cdkd's own colour codes (`terminalSafe`'s
- * SGR allowlist: cdkd's colours, bold, dim and reset) keeps it, and an unreset
- * one styles the rows after it as well — colour and text styling are all such
- * a sequence can do; it cannot move the cursor, clear the screen or plant a
- * link.
+ * here too: an IDENTIFIER spelling one of cdkd's own colour codes
+ * (`terminalSafe`'s SGR allowlist: cdkd's colours, bold, dim and reset) keeps
+ * it, and an unreset one styles the rows after it as well — colour and text
+ * styling are all such a sequence can do; it cannot move the cursor, clear the
+ * screen or plant a link. A property VALUE carrying any control is JSON-quoted
+ * first (`reportValue`), so its ESC prints as escape text instead.
  *
  * `--json` is untouched: a consumer of that mode wants the stored value. And
  * this is the control-character class only — a value that WRAPS into a line
