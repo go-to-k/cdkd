@@ -4172,7 +4172,10 @@ export async function replayFailedOperations(
           // NOT re-resolved (unlike the update/create arms): a delete reads only
           // physical id + these guard opt-ins, never a secret value, so a
           // `{{resolve:...}}` expression left in a non-guard property is inert —
-          // resolving here would only fetch the secret needlessly.
+          // resolving here would only fetch the secret needlessly. The one
+          // property a delete ADDRESSES through is a custom resource's
+          // `ServiceToken`; its provider skips an expression there with a named
+          // reason (go-to-k/cdkd#3960), which `throwIfDeleteSkipped` surfaces.
           const failedCreateDelete = await provider.delete(
             op.logicalId,
             op.physicalId!,
