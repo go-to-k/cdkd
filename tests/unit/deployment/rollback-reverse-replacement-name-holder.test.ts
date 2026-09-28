@@ -572,6 +572,41 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
   });
 });
 
+describe('the rewrite rule applies only to the SDK route (#3979)', () => {
+  it('a Cloud Control re-create sends the recorded name verbatim, so a new role holding it is deleted first', async () => {
+    // Cloud Control never prefixes: the bag it sends IS the name asked for.
+    // Were the route not passed, the SDK rewrite would derive `CdkdX-my-role`
+    // and refuse a genuine holder.
+    const calls: string[] = [];
+    let seen = 0;
+    const provider = {
+      create: vi.fn(async () => {
+        calls.push('create');
+        if (seen++ === 0) throw awsSdkError('Role with name my-role already exists.', 'EntityAlreadyExistsException');
+        return { physicalId: 'my-role', attributes: {} };
+      }),
+      delete: vi.fn(async () => {
+        calls.push('delete');
+        return undefined;
+      }),
+    } as unknown as ResourceProvider;
+    const state: Record<string, ResourceState> = {
+      MyRole: res(ROLE, {
+        physicalId: 'my-role',
+        properties: { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/b/' },
+        provisionedBy: 'cc-api',
+      }),
+    };
+
+    const result = await withStackName('CdkdX', () =>
+      replayRollback([roleOp('role-old', 'my-role')], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
+    );
+
+    expect(calls).toEqual(['create', 'delete', 'create']);
+    expect(result.failures).toBe(0);
+  });
+});
+
 // ─── The Cloud Control route: the SENT bag carries the generated name ─────
 
 describe('a Cloud Control re-create proves a generated name through what it sent (#3979)', () => {
