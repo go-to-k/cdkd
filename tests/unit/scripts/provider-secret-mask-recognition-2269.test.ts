@@ -942,12 +942,13 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     expect(escapes.bareSinkSites).toBe(0);
 
     // The measured population that makes the escape empty TODAY: the corpus
-    // has exactly four calls taking a bare `JSON.stringify` outside the sink
-    // set, and none builds a message — two hashing / encoding sinks; the
-    // `JSON.parse(JSON.stringify(...))` round-trip `asJson` in
-    // `secretsmanager-secret-provider.ts` uses to normalize a
-    // `GenerateSecretString` block for an in-memory comparison (issue #2472;
-    // the result is compared and dropped, never logged or thrown); and
+    // has exactly five calls taking a bare `JSON.stringify` outside the sink
+    // set, and none builds a message — two hashing / encoding sinks; two
+    // `JSON.parse(JSON.stringify(...))` round-trips used only for an in-memory
+    // comparison, whose result is compared and dropped, never logged or
+    // thrown: `asJson` in `secretsmanager-secret-provider.ts` (issue #2472)
+    // and the one inside `deepEqual` in `dynamodb-globaltable-provider.ts`
+    // (issue #3775); and
     // `describeValue` in `s3-bucket-provider.ts`, whose
     // `displaySafe(JSON.stringify(maskDeep(...)))` only sanitizes a value that
     // is still INTERPOLATED, so the site stays a counted, masked sink (issue
@@ -989,6 +990,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     }
     expect(nonSinkCallees.sort()).toEqual([
       'Buffer.from',
+      'JSON.parse',
       'JSON.parse',
       "createHash('sha256').update",
       'displaySafe',

@@ -8918,8 +8918,9 @@ export function diffGlobalSecondaryIndexes(
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
+  const asJson = (v: unknown): unknown => JSON.parse(JSON.stringify(v));
   try {
-    return isDeepStrictEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
+    return isDeepStrictEqual(asJson(a), asJson(b));
   } catch {
     return false;
   }
