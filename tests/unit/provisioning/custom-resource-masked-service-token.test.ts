@@ -50,6 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import {
   CustomResourceProvider,
   CR_MASKED_SERVICE_TOKEN_SKIP_REASON,
+  CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON,
   CR_NO_PROPERTIES_SKIP_REASON,
   CR_NO_SERVICE_TOKEN_SKIP_REASON,
   CR_DELETE_INVOKE_FAILED_SKIP_REASON,
@@ -160,5 +161,116 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
       expect(send).toHaveBeenCalledTimes(1);
       expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#3960: the EXPRESSION channel. State keeps a secret reference's
+ * `{{resolve:...}}` expression rather than its value, so a ServiceToken built
+ * from one is recorded as that expression; the delete path used to send it to
+ * `GetFunction` and the invoke as a function name.
+ */
+describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue #3960)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SECRET_REF = '{{resolve:secretsmanager:provider-arn:SecretString:arn}}';
+
+  it.each([
+    ['a whole secretsmanager reference', SECRET_REF],
+    ['a whole ssm-secure reference', '{{resolve:ssm-secure:/provider/arn}}'],
+    // Issue #2036: a PUBLIC ssm reference embedded in a longer leaf can still
+    // be recorded as its expression; it cannot address the handler either.
+    [
+      'an ARN assembled around a plain ssm reference',
+      'arn:aws:lambda:us-east-1:111122223333:function:{{resolve:ssm:/provider/fn-name}}',
+    ],
+    [
+      'an ARN assembled around a reference',
+      'arn:aws:lambda:us-east-1:111122223333:function:{{resolve:secretsmanager:fn:SecretString:name}}',
+    ],
+  ])('%s is skipped with the reference reason and NO AWS call', async (_label, token) => {
+    const result = await new CustomResourceProvider().delete(
+      'SecretTokenCr',
+      'cr-physical-id',
+      'Custom::Thing',
+      { ServiceToken: token }
+    );
+
+    expect(result).toEqual({ outcome: 'skipped', reason: CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+    expect(deleteSkipReason(result)).toBe(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON);
+  });
+
+  it('warns naming the logical id, the cause and the remedies, never the reference text', async () => {
+    await new CustomResourceProvider().delete('SecretTokenCr', 'cr-physical-id', 'Custom::Thing', {
+      ServiceToken: SECRET_REF,
+    });
+
+    const text = warnText();
+    expect(text).toContain(
+      "ServiceToken for custom resource SecretTokenCr is recorded in state as a '{{resolve:...}}' dynamic reference"
+    );
+    expect(text).toContain(
+      'CloudFormation does not support secure (secretsmanager / ssm-secure) dynamic references'
+    );
+    expect(text).toContain('LEFT IN PLACE');
+    expect(text).toContain("'cdkd state orphan <stack>'");
+    expect(text).toContain('helps only while that handler still exists');
+    expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
+    // The logical id names the record; the expression (which names the
+    // secret) is not repeated into a log line.
+    expect(text).not.toContain('provider-arn');
+    // Not the mask arm's wording.
+    expect(text).not.toContain('redaction mask');
+  });
+
+  it('keeps the reason short, state-named, not-invoked and distinct from its siblings', () => {
+    expect(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON.length).toBeLessThanOrEqual(64);
+    expect(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON).toMatch(/state/);
+    expect(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON).toMatch(/not invoked/);
+    expect([
+      CR_MASKED_SERVICE_TOKEN_SKIP_REASON,
+      CR_NO_PROPERTIES_SKIP_REASON,
+      CR_NO_SERVICE_TOKEN_SKIP_REASON,
+      CR_DELETE_INVOKE_FAILED_SKIP_REASON,
+      CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+    ]).not.toContain(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON);
+    expect(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON).not.toMatch(/not found|does not exist|NotFound/i);
+  });
+
+  it('a malformed, unterminated reference opener is NOT a reference and still reaches AWS', async () => {
+    // `dynamicReferenceTokens` matches complete tokens only; a string that
+    // merely starts like one is not a recorded expression.
+    const token = '{{resolve:secretsmanager:unterminated';
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' })
+    );
+
+    await expect(
+      new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
+        ServiceToken: token,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: token });
+  });
+
+  it('a reference in a NON-token property does not block the delete', async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' })
+    );
+
+    await expect(
+      new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
+        ServiceToken: LAMBDA_ARN,
+        Password: SECRET_REF,
+      })
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });
   });
 });

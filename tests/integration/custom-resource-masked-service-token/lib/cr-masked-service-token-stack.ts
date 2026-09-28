@@ -25,18 +25,19 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * in-fixture negative control.
  *
  * `MaskedDependent` exists only while `CDKD_TEST_UPDATE` names
- * `masked-dependent`: verify.sh deploys it for the skip phase and leaves it out
- * of the final clean deploy / destroy, which is the one the `integ-destroy`
- * gate reads. The stack is re-created fresh for that phase, so dropping the
- * resource there is a fresh template, not a removal.
+ * `masked-dependent`, and `ReferenceDependent` (issue #3960, below) only while
+ * it names `reference-dependent`. verify.sh deploys each for its own skip phase
+ * and leaves both out of the final clean deploy / destroy, which is the one the
+ * `integ-destroy` gate reads. The stack is re-created fresh for that phase, so
+ * dropping them there is a fresh template, not a removal.
  */
 export class CrMaskedServiceTokenStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const withDependent = (process.env.CDKD_TEST_UPDATE ?? '')
-      .split(',')
-      .includes('masked-dependent');
+    const modes = (process.env.CDKD_TEST_UPDATE ?? '').split(',');
+    const withDependent = modes.includes('masked-dependent');
+    const withReferenceDependent = modes.includes('reference-dependent');
 
     // SIMPLE-HANDLER response shape (no `Status`): the shape cdkd re-synthesizes
     // an envelope for, and must copy `NoEcho` across explicitly.
@@ -72,6 +73,25 @@ exports.handler = async (event) => {
       properties: { Role: 'producer' },
     });
 
+    // go-to-k/cdkd#3960: a custom resource whose ServiceToken is a Secrets
+    // Manager dynamic reference. cdkd records a SECRET reference as its
+    // `{{resolve:...}}` expression, so that expression is what the delete path
+    // reads back. CloudFormation does not support secure dynamic references in
+    // custom resources; cdkd deploys it, which is how such a record exists.
+    // verify.sh seeds the secret with the handler's ARN before this deploy.
+    // The explicit dependency matters: a ServiceToken read from a secret
+    // carries no Ref edge to the handler.
+    // allow-mode-gated-drop: every later deploy starts from an orphaned, empty stack, so omitting it drops nothing.
+    if (withReferenceDependent) {
+      const referenceDependent = new cdk.CustomResource(this, 'ReferenceDependent', {
+        serviceToken: cdk.SecretValue.secretsManager(`cdkd-integ/${id}/service-token`).unsafeUnwrap(),
+        resourceType: 'Custom::CdkdSecretTokenDependent',
+        properties: { Role: 'dependent' },
+      });
+      referenceDependent.node.addDependency(handler);
+    }
+
+    // allow-mode-gated-drop: every later deploy starts from an orphaned, empty stack, so omitting it drops nothing.
     if (withDependent) {
       new cdk.CustomResource(this, 'MaskedDependent', {
         serviceToken: handler.functionArn,

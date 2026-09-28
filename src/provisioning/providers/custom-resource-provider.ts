@@ -56,7 +56,11 @@ import type {
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
-import { carriesSecretMask, SECRET_MASK } from '../../deployment/secret-redaction.js';
+import {
+  carriesSecretMask,
+  dynamicReferenceTokens,
+  SECRET_MASK,
+} from '../../deployment/secret-redaction.js';
 
 /**
  * The DELETE path threads NO masker (issue #2178).
@@ -109,6 +113,28 @@ export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
  */
 export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
   'masked ServiceToken in state — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_MASKED_SERVICE_TOKEN_SKIP_REASON} for a record whose
+ * `ServiceToken` holds a `{{resolve:...}}` token (go-to-k/cdkd#3960). State
+ * keeps a SECRET reference's expression rather than its value, so a template
+ * ServiceToken built from `{{resolve:secretsmanager:...}}` /
+ * `{{resolve:ssm-secure:...}}` is recorded as that expression, and the delete
+ * path used to send it to Lambda as a function name. A plain
+ * `{{resolve:ssm:...}}` is normally stored RESOLVED, but one embedded in a
+ * longer leaf can still be recorded as its expression (issue #2036), so the
+ * arm matches any token and its wording does not assume a secret.
+ *
+ * A skip rather than resolving the reference: CloudFormation does not support
+ * SECURE dynamic references in custom resources at all, so the main shape here
+ * exists only because cdkd deployed a template CloudFormation would reject,
+ * and the delete path has no resolver to spend on reviving it. The
+ * "exhaust every addressable source" rule (provider-delete-path.md) does not
+ * reach it: the record holds no address, only a pointer to a secret or
+ * parameter.
+ */
+export const CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON =
+  'dynamic reference as ServiceToken in state — handler not invoked';
 
 /**
  * Third sibling of the two above, for the arm where cdkd HAD everything it
@@ -1557,6 +1583,32 @@ export class CustomResourceProvider implements ResourceProvider {
           safeMsg`${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: CR_MASKED_SERVICE_TOKEN_SKIP_REASON };
+    }
+
+    // go-to-k/cdkd#3960: the other redaction channel. A secret reference is
+    // persisted as its `{{resolve:...}}` EXPRESSION, which names no function
+    // either — it fails `GetFunction`'s name validation exactly as the mask
+    // does, which on #3938's pre-fix run left the issue-#804 pre-check
+    // inconclusive and the readiness waiter polling for its full 10 minutes
+    // before the invoke failed. ANY token, not only a whole-leaf one: an ARN
+    // assembled around a reference cannot be addressed either. The
+    // expression itself is template text, but it is still not interpolated —
+    // the logical id names the record well enough.
+    if (dynamicReferenceTokens(serviceToken).length > 0) {
+      this.logger.warn(
+        safeMsg`ServiceToken for custom resource ${logicalId} is recorded in state as a ` +
+          `'{{resolve:...}}' dynamic reference, which cdkd does not resolve on delete, so it ` +
+          `cannot address the handler; skipping deletion — anything this custom resource ` +
+          `manages is LEFT IN PLACE. CloudFormation does not support secure (secretsmanager / ` +
+          `ssm-secure) dynamic references in custom resources, and for those a re-deploy of the ` +
+          `same template records the same reference again. Tear the resource down by hand, then clear ` +
+          `the stack's records with 'cdkd state orphan <stack>' — that command drops EVERY ` +
+          `record for the stack, not just this one. Restoring ServiceToken (the provider's ` +
+          `Lambda function or SNS topic ARN) in state.json and re-running helps only while that ` +
+          `handler still exists: a destroy goes on to delete its backing Lambda. ` +
+          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON };
     }
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /

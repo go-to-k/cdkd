@@ -12,8 +12,11 @@
 # PHASES. Deploy with the dependent -> assert the PREMISE (dependent's
 # ServiceToken is '***', the producer's is still the ARN) -> destroy #1 (exits
 # 2, the masked-token skip reason, record kept, everything else destroyed) ->
-# the remedy the warning names (`cdkd state orphan`) -> deploy fresh WITHOUT the
-# dependent -> destroy #2, CLEAN.
+# the remedy the warning names (`cdkd state orphan`) -> the #3960 arm (seed a
+# secret with the handler's ARN, deploy a dependent whose ServiceToken is a
+# `{{resolve:secretsmanager:...}}` reference, assert the recorded expression,
+# destroy: exits 2 with the reference skip reason, orphan) -> deploy fresh
+# WITHOUT either dependent -> destroy, CLEAN.
 #
 # WHY DESTROY #2 EXISTS. `/run-integ` flips `integ-destroy` only for a run whose
 # destroy finished with 0 errors and no orphans; destroy #1 skips by design.
@@ -78,8 +81,18 @@ DEPENDENT_ID="MaskedDependent"
 PRODUCER_ID="EchoProducer"
 DEPENDENT_TYPE="Custom::CdkdMaskedTokenDependent"
 SECRET_MASK='***'
+# go-to-k/cdkd#3960's arm: a custom resource whose ServiceToken is a Secrets
+# Manager dynamic reference, recorded in state as its `{{resolve:...}}`
+# expression. The secret holds the handler's ARN — not a credential, but the
+# fixture still sweeps state versions as every secret-seeding fixture must.
+REFERENCE_ID="ReferenceDependent"
+REFERENCE_TYPE="Custom::CdkdSecretTokenDependent"
+TOKEN_SECRET="cdkd-integ/${STACK}/service-token"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+. ../s3-versions.sh
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 # Lambda creates `/aws/lambda/<function>` on first invoke and nothing in the
 # stack owns it (#3885); the handler is named `<stack>-...`.
@@ -113,7 +126,7 @@ cleanup() {
       | jq -r '[.resources // {} | keys[]] | join(",")'); then
       if [ -z "${left}" ]; then
         drop_state=1
-      elif [ "${left}" = "${DEPENDENT_ID}" ]; then
+      elif [ "${left}" = "${DEPENDENT_ID}" ] || [ "${left}" = "${REFERENCE_ID}" ]; then
         if [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state orphan "${STACK}" \
           --state-bucket "${STATE_BUCKET}" \
           --stack-region "${REGION}" \
@@ -133,7 +146,12 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # NONCURRENT only: this also runs pre-run and from the failure traps, where
+    # a kept state.json may be the only record of resources still standing.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent
   fi
+  aws secretsmanager delete-secret --region "${REGION}" --secret-id "${TOKEN_SECRET}" \
+    --force-delete-without-recovery >/dev/null 2>&1
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
 }
@@ -180,6 +198,15 @@ if [ -z "${HANDLER_NAME}" ]; then
   echo "FAIL: no AWS::Lambda::Function in state after deploy" >&2
   exit 1
 fi
+HANDLER_ARN=$(printf '%s' "${STATE}" \
+  | jq -r '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .attributes.Arn // empty] | first // ""')
+case "${HANDLER_ARN}" in
+  arn:aws*:lambda:*:function:*) ;;
+  *)
+    echo "FAIL: the handler's recorded Arn is '${HANDLER_ARN}', expected a Lambda ARN" >&2
+    exit 1
+    ;;
+esac
 echo "    OK: handler Lambda is ${HANDLER_NAME}"
 
 # --- Assertion: the PREMISE -------------------------------------------------
@@ -299,6 +326,141 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after sta
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: the record is gone"
 
+# --- Phase R1: the secret-reference arm (go-to-k/cdkd#3960) -----------------
+# Seed the secret with the handler's ARN, then deploy a fresh stack whose
+# ReferenceDependent takes its ServiceToken from it. The handler's physical
+# name is derived from the stack and logical id, so the fresh deploy re-creates
+# the same ARN. The check below cannot catch a mismatch on its own: the deploy
+# already invokes the ARN in the secret, so a mismatch fails THAT deploy first
+# (a Create invoke of a function that does not exist). It guards the ARN the
+# later phases read.
+echo "==> Phase R1: seed ${TOKEN_SECRET} and deploy the reference dependent"
+seeded=0
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if seed_err=$(aws secretsmanager create-secret --region "${REGION}" --name "${TOKEN_SECRET}" \
+    --secret-string "${HANDLER_ARN}" 2>&1 >/dev/null); then
+    seeded=1
+    break
+  fi
+  # A force-deleted secret's name is released asynchronously; anything other
+  # than that wait is a real failure.
+  if ! printf '%s' "${seed_err}" | grep -q 'scheduled for deletion'; then
+    echo "FAIL: could not create ${TOKEN_SECRET}: ${seed_err}" >&2
+    exit 1
+  fi
+  echo "    (${TOKEN_SECRET} name still held by a deletion — attempt ${attempt}/12)"
+  sleep 5
+done
+if [ "${seeded}" -ne 1 ]; then
+  echo "FAIL: ${TOKEN_SECRET} was never released for re-creation" >&2
+  exit 1
+fi
+CDKD_TEST_UPDATE=reference-dependent node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+STATE_R=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE_R}" ]; then
+  echo "FAIL: no state file after the reference deploy" >&2
+  exit 1
+fi
+HANDLER_R_ARN=$(printf '%s' "${STATE_R}" \
+  | jq -r '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .attributes.Arn // empty] | first // ""')
+if [ "${HANDLER_R_ARN}" != "${HANDLER_ARN}" ]; then
+  echo "FAIL: the re-created handler's ARN is '${HANDLER_R_ARN}', expected '${HANDLER_ARN}'" >&2
+  echo "    => the seeded secret names a function this deploy did not create" >&2
+  exit 1
+fi
+
+# The PREMISE: the recorded ServiceToken is the reference's EXPRESSION.
+REF_TOKEN=$(printf '%s' "${STATE_R}" \
+  | jq -r --arg id "${REFERENCE_ID}" '.resources[$id].properties.ServiceToken // "<absent>"')
+case "${REF_TOKEN}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: PREMISE — ${REFERENCE_ID}'s recorded ServiceToken is the reference expression" ;;
+  *)
+    echo "FAIL: PREMISE not met — ${REFERENCE_ID}'s recorded ServiceToken is '${REF_TOKEN}'," >&2
+    echo "    expected a '{{resolve:secretsmanager:...}}' expression (issue #3960's reproduction)" >&2
+    exit 1
+    ;;
+esac
+
+# --- Phase R2: destroy — skipped by the reference reason --------------------
+echo "==> Phase R2: destroy (the dependent's ServiceToken is a secret reference)"
+set +e
+DESTROY_R_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force 2>&1)
+DESTROY_R_RC=$?
+set -e
+printf '%s\n' "${DESTROY_R_OUT}"
+DESTROY_R_TXT=$(printf '%s' "${DESTROY_R_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+
+if [ "${DESTROY_R_RC}" -ne 2 ]; then
+  echo "FAIL: destroy exited ${DESTROY_R_RC}, expected 2 (one resource skipped)" >&2
+  exit 1
+fi
+R_SUMMARY_SEEN=0
+if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Destroy skipped '; then
+  R_SUMMARY_SEEN=1
+fi
+R_ROW_SEEN=0
+if printf '%s' "${DESTROY_R_TXT}" | grep -q 'skipped (dynamic reference as ServiceToken in state'; then
+  R_ROW_SEEN=1
+fi
+if [ "${R_SUMMARY_SEEN}" -eq 1 ] && [ "${R_ROW_SEEN}" -eq 0 ]; then
+  echo "FAIL: cdkd reported a skipped destroy but no row carried the #3960 reason." >&2
+  if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+    echo "    The row carries the INVOKE-FAILURE reason instead: the reference was sent to" >&2
+    echo "    Lambda as a function name — the pre-#3960 behaviour." >&2
+  else
+    echo "    The reason WORDING has drifted away from this grep — fix verify.sh." >&2
+  fi
+  exit 1
+fi
+if [ "${R_ROW_SEEN}" -eq 0 ]; then
+  echo "FAIL: destroy output carried no 'skipped (dynamic reference as ServiceToken in state' row" >&2
+  exit 1
+fi
+if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+  echo "FAIL: a Delete invoke failed — the reference reached Lambda (pre-#3960 behaviour)" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY_R_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+  echo "FAIL: expected EXACTLY ONE skipped entry (the reference dependent)" >&2
+  exit 1
+fi
+echo "    OK: the row and the summary name the secret-reference ServiceToken"
+
+STATE_R_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+KEPT_R=$(printf '%s' "${STATE_R_AFTER}" | jq -r '[.resources | keys[]] | join(",")')
+if [ "${KEPT_R}" != "${REFERENCE_ID}" ]; then
+  echo "FAIL: state kept '${KEPT_R}', expected only '${REFERENCE_ID}'" >&2
+  exit 1
+fi
+KEPT_R_TYPE=$(printf '%s' "${STATE_R_AFTER}" \
+  | jq -r --arg id "${REFERENCE_ID}" '.resources[$id].resourceType // "<absent>"')
+if [ "${KEPT_R_TYPE}" != "${REFERENCE_TYPE}" ]; then
+  echo "FAIL: the kept record's type is '${KEPT_R_TYPE}', expected '${REFERENCE_TYPE}'" >&2
+  exit 1
+fi
+assert_gone "handler Lambda ${HANDLER_NAME} still exists after the reference teardown" \
+  aws lambda get-function --region "${REGION}" --function-name "${HANDLER_NAME}"
+echo "    OK: only ${REFERENCE_ID} is kept; the rest of the stack was destroyed"
+
+# --- Phase R3: orphan the record, drop the secret ----------------------------
+echo "==> Phase R3: drop the kept record and the seeded secret"
+node "${LOCAL_DIST}" state orphan "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" \
+  --force
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after state orphan" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+aws secretsmanager delete-secret --region "${REGION}" --secret-id "${TOKEN_SECRET}" \
+  --force-delete-without-recovery >/dev/null
+echo "    OK: record orphaned, secret deleted"
+
 # --- Phase 4: deploy fresh WITHOUT the dependent ----------------------------
 echo "==> Phase 4: deploy again without the masked dependent"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -359,6 +521,10 @@ echo "    OK: handler, its role and the state file are gone"
 
 trap - EXIT INT TERM
 sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
+aws secretsmanager delete-secret --region "${REGION}" --secret-id "${TOKEN_SECRET}" \
+  --force-delete-without-recovery >/dev/null 2>&1 || true
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "custom-resource-masked-service-token state teardown"
 
 echo ""
-echo "[verify] PASS — custom-resource-masked-service-token (#3938 masked-ServiceToken skip + clean destroy)"
+echo "[verify] PASS — custom-resource-masked-service-token (#3938 masked + #3960 secret-reference ServiceToken skips + clean destroy)"
