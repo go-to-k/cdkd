@@ -264,8 +264,9 @@ export interface PasteableCommand {
    * one command prints it last; a message LISTING records' commands
    * (`cli/commands/export.ts`'s nested resume tail) prints one per line, each
    * withheld one after a note naming its record, and may carry prose after
-   * the list, even a one-item list (go-to-k/cdkd#3436); a message offering a read AND a destructive
-   * template gives each its own line and ends on the TEMPLATE, so the READ is
+   * the list, even a one-item list (go-to-k/cdkd#3436); a message offering a
+   * read AND a destructive template gives each its own line and ends on the
+   * TEMPLATE, so the READ is
    * legitimately not last (go-to-k/cdkd#3516, and M17 of go-to-k/cdkd#3499's
    * review — this JSDoc is what a caller building the `Inspect it with:` line
    * reads, and telling them LAST there is the wrong ordering).
