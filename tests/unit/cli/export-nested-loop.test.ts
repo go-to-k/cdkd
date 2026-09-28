@@ -2242,7 +2242,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
           recreateImportUnsupported: true,
         },
       })
-    ).rejects.toThrow(/DescribeStacks returned no StackId for 'Root'/);
+    ).rejects.toThrow(/Reading its CloudFormation stack failed for cdkd stack 'Root'[^\n]*DescribeStacks returned no StackId/);
 
     // The failure is post-IMPORT but pre-state-deletion — no state removed.
     expect(deleted).toEqual([]);

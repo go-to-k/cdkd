@@ -8084,15 +8084,21 @@ export async function runPerStackImportLoop(args: {
     const uploadCleanups: Array<() => Promise<void>> = [];
     const importedStacks: ImportedStackRecord[] = [];
 
-    // What a failure of stack i leaves to do (go-to-k/cdkd#3910), shared by the
-    // Phase 1A, Phase 1B, pre-delete and phase-2 failures. `phase1`: stack i's
-    // own IMPORT failed, so its CloudFormation stack may or may not exist;
-    // `phase1b`: it exists, but the adoption of its nested children failed
-    // (go-to-k/cdkd#3967); `phase2`: it exists. A re-run does not resume in any
-    // case; the stacks after i are untouched; and stack i's cdkd record is
-    // cleaned up once it is finished by hand — never before, since before its
-    // phase 2 that record is the only one of what phase 2 would create.
-    const nestedResumeTail = (i: number, failed: 'phase1' | 'phase1b' | 'phase2'): string => {
+    // What a failure of stack i leaves to do (go-to-k/cdkd#3910), shared by
+    // every failure after the loop starts. `phase1`: stack i's own IMPORT
+    // failed, so its CloudFormation stack may or may not exist; `imported`: it
+    // exists, and its nested-child adoption has not happened
+    // (go-to-k/cdkd#3967); `adopted`: it exists and needs only phase 2
+    // (go-to-k/cdkd#3988); `phase2`: its pre-delete or phase 2 failed. A re-run
+    // does not resume in any case; the stacks after i are untouched; and stack
+    // i's cdkd record is cleaned up once it is finished by hand — never before,
+    // since before its phase 2 that record is the only one of what phase 2
+    // would create.
+    const nestedResumeTail = (
+      i: number,
+      failed: 'phase1' | 'imported' | 'adopted' | 'phase2'
+    ): string => {
+      const plan = perStackPlans[i]!;
       const completed = perStackPlans.slice(0, i);
       const notYetImported = perStackPlans
         .slice(i + 1)
@@ -8120,13 +8126,14 @@ export async function runPerStackImportLoop(args: {
           })
           .join('');
       // The WHOLE tree is refused on a re-run: `assertCfnStackAbsent` checks
-      // every stack's CloudFormation name up front.
+      // every stack's CloudFormation name up front. No backticks: pasted, they
+      // would run the command they quote (go-to-k/cdkd#3988).
       const refusal =
         failed !== 'phase1'
-          ? `Re-running \`cdkd export\` is refused for the whole tree: CloudFormation stacks now ` +
+          ? `Re-running cdkd export is refused for the whole tree: CloudFormation stacks now ` +
             `exist for this stack and every one IMPORTed before it. `
           : completed.length > 0
-            ? `Re-running \`cdkd export\` is refused for the whole tree: CloudFormation stacks now ` +
+            ? `Re-running cdkd export is refused for the whole tree: CloudFormation stacks now ` +
               `exist for every stack IMPORTed before this one, and this stack's may exist too ` +
               `(a failed IMPORT can leave it behind). `
             : // Nothing was imported: only this stack's own CloudFormation stack, if
@@ -8135,15 +8142,46 @@ export async function runPerStackImportLoop(args: {
               // IMPORT template carries `DeletionPolicy: Delete`: deleting it
               // would delete them, so the check is printed, not just named.
               `No stack was imported. A failed IMPORT can leave CloudFormation stack ` +
-              `'${safeSegment(perStackPlans[i]!.cfnName)}' behind, and a re-run is refused while ` +
+              `'${safeSegment(plan.cfnName)}' behind, and a re-run is refused while ` +
               `it exists. Check that it holds no resources:\n  ${
                 pasteableCommand('aws cloudformation list-stack-resources', [
-                  { flag: '--stack-name', value: perStackPlans[i]!.cfnName, hole: 'stack-name' },
+                  { flag: '--stack-name', value: plan.cfnName, hole: 'stack-name' },
                 ]).command
               }\nthen delete it, and re-run with: ${
                 pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
               }\n`;
       if (failed === 'phase1' && completed.length === 0) return refusal.trimEnd();
+      // Only the steps stack i still needs (go-to-k/cdkd#3988): a stack with
+      // no phase-2 work is not told to run one.
+      const hasPhase2 = plan.phase2Creates.length + plan.recreateBeforePhase2.length > 0;
+      const steps = [
+        ...(failed === 'phase1' ? ['IMPORT'] : []),
+        ...(failed === 'imported' && plan.nestedStackRows.length > 0
+          ? ['nested-child adoption']
+          : []),
+        ...(failed === 'phase2' || hasPhase2 ? ['phase 2'] : []),
+        // A non-root stack must leave IMPORT_COMPLETE before its parent can
+        // adopt it. A phase-2 UPDATE does that on its own; without one, every
+        // IMPORT (its own, or its adoption of its children) leaves it there,
+        // so the no-op tag update the loop would have run comes LAST.
+        ...(plan.cdkdName !== rootStackName && failed !== 'phase2' && !hasPhase2
+          ? [
+              'closing no-op tag update (which moves it out of IMPORT_COMPLETE, for the adoption by its parent)',
+            ]
+          : []),
+      ];
+      // Phase 2 re-CREATEs the IMPORT-unsupported resources, which only a
+      // delete makes room for: the pre-delete failure prints these deletes in
+      // its head, and every earlier failure must print them here, before the
+      // step that needs them (go-to-k/cdkd#3988).
+      const preDeletes =
+        failed !== 'phase2' && plan.recreateBeforePhase2.length > 0
+          ? `Before this stack's phase 2, delete its IMPORT-unsupported resources by hand, ` +
+            `which phase 2 re-CREATEs:\n` +
+            preDeleteManualCommands(plan.recreateBeforePhase2)
+              .map((line) => `  ${line}\n`)
+              .join('')
+          : '';
       return (
         refusal +
         // Stacks that finished phase 2 keep their cdkd state until the loop's
@@ -8155,29 +8193,25 @@ export async function runPerStackImportLoop(args: {
             `only at its end — clean each up now, so a later cdkd destroy does not delete ` +
             `CloudFormation-managed resources:${orphanLines(completed)}\n`
           : '') +
-        (failed === 'phase2'
-          ? `Once this stack's phase 2 succeeds by hand, clean up its record the same way:`
-          : failed === 'phase1b'
-            ? `Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its ` +
-              `record the same way:`
-            : `Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the ` +
-              `same way` +
-              // Its children finished as standalone stacks and wait for this
-              // stack's Phase 1B adoption, which the by-hand IMPORT must do too.
-              (perStackPlans[i]!.nestedStackRows.length > 0
-                ? ` (its IMPORT must also adopt its already-imported nested children, per the AWS ` +
-                  `docs "Nest an existing stack" procedure)`
-                : '') +
-              `:`) +
-        `${orphanLines([perStackPlans[i]!])}\n` +
+        preDeletes +
+        (steps.length === 0
+          ? `This stack needs no further IMPORT, adoption or phase 2; clean up its record the same way:`
+          : `Once this stack's ${steps.join(' and ')} ` +
+            `${steps.length > 1 ? 'succeed' : 'succeeds'} by hand, clean up its record the ` +
+            `same way` +
+            // Its children finished as standalone stacks and wait for this
+            // stack's Phase 1B adoption, which the by-hand IMPORT must do too.
+            (failed === 'phase1' && plan.nestedStackRows.length > 0
+              ? ` (its IMPORT must also adopt its already-imported nested children, per the AWS ` +
+                `docs "Nest an existing stack" procedure)`
+              : '') +
+            `:`) +
+        `${orphanLines([plan])}\n` +
         `Stacks not yet imported (still cdkd-managed): ${notYetImported || '(none)'}. ` +
         (notYetImported
           ? `cdkd export cannot migrate them now; do it by hand with CloudFormation IMPORT, ` +
             `adopting their nested children per the AWS docs "Nest an existing stack" ` +
-            // In the Phase 1B failure that message is this one.
-            (failed === 'phase1b'
-              ? `procedure.`
-              : `procedure (as the Phase 1B adoption failure message describes).`)
+            `procedure.`
           : '')
       );
     };
@@ -8196,6 +8230,28 @@ export async function runPerStackImportLoop(args: {
         // child's intrinsic-valued Parameters were resolved against its
         // parent's state, with any unresolvable ones already warned about).
         const stackParameters = paramsByCdkdName.get(plan.cdkdName) ?? [];
+
+        // A step between this stack's Phase 1A and its phase 2 that has no
+        // failure message of its own: its CloudFormation stack exists by then,
+        // so a bare SDK error would leave a refused re-run with no recovery
+        // (go-to-k/cdkd#3988). `stage` is how far the stack got.
+        const afterImport = async <T>(
+          what: string,
+          stage: 'imported' | 'adopted',
+          step: () => Promise<T>
+        ): Promise<T> => {
+          try {
+            return await step();
+          } catch (err) {
+            throw new Error(
+              `${what} failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
+                `'${safeSegment(plan.cfnName)}'), after its Phase 1A IMPORT succeeded. ` +
+                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                nestedResumeTail(i, stage),
+              { cause: err instanceof Error ? err : undefined }
+            );
+          }
+        };
 
         // ---- Phase 1A: leaves-only CREATE-via-IMPORT ----
         // Why 2 phases for non-leaf parents (vs. one combined CREATE-via-IMPORT
@@ -8254,16 +8310,23 @@ export async function runPerStackImportLoop(args: {
         // Capture the just-created CFn stack's ARN for the next parent
         // iteration's `ResourceIdentifier.StackId` reference AND for
         // Phase 1B below (UPDATE-IMPORT against this same stack).
-        const desc = await deps.cfnClient.send(
-          new DescribeStacksCommand({ StackName: plan.cfnName })
+        const cfnArn = await afterImport(
+          'Reading its CloudFormation stack',
+          'imported',
+          async () => {
+            const desc = await deps.cfnClient.send(
+              new DescribeStacksCommand({ StackName: plan.cfnName })
+            );
+            const arn = desc.Stacks?.[0]?.StackId;
+            if (!arn) {
+              throw new Error(
+                `DescribeStacks returned no StackId immediately after the Phase 1A IMPORT — AWS ` +
+                  `may be in an unexpected state.`
+              );
+            }
+            return arn;
+          }
         );
-        const cfnArn = desc.Stacks?.[0]?.StackId;
-        if (!cfnArn) {
-          throw new Error(
-            `runPerStackImportLoop: DescribeStacks returned no StackId for '${plan.cfnName}' ` +
-              `immediately after Phase 1A IMPORT — AWS may be in an unexpected state.`
-          );
-        }
         cfnArnByCdkdName.set(plan.cdkdName, cfnArn);
         importedStacks.push({
           cdkdStackName: plan.cdkdName,
@@ -8286,7 +8349,11 @@ export async function runPerStackImportLoop(args: {
             `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
               `nested member by its parent's Phase 1B...`
           );
-          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
+          await afterImport(
+            'The no-op tag update moving its CloudFormation stack out of IMPORT_COMPLETE',
+            'imported',
+            () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+          );
         }
 
         // ---- Phase 1B: UPDATE-via-IMPORT to adopt nested children ----
@@ -8350,16 +8417,21 @@ export async function runPerStackImportLoop(args: {
             // parent's nested-stack row's `TemplateURL` points at the
             // template AWS actually has on file for the child stack — the
             // AWS-docs "Nest an existing stack" template-match requirement.
-            const childTemplateBody = await fetchCfnStackTemplate(deps.cfnClient, childCfnName);
-            const uploaded = await uploadCfnTemplate({
-              bucket: deps.uploadOpts.stateBucket,
-              body: childTemplateBody,
-              stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
-              // GetTemplate(Processed) always returns JSON regardless of
-              // the original synth format; the codec accepts either.
-              format: 'json',
-              ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
-            });
+            const preparing = `Preparing the adoption of nested child ${displayIdent(row.logicalId)}`;
+            const childTemplateBody = await afterImport(preparing, 'imported', () =>
+              fetchCfnStackTemplate(deps.cfnClient, childCfnName)
+            );
+            const uploaded = await afterImport(preparing, 'imported', () =>
+              uploadCfnTemplate({
+                bucket: deps.uploadOpts.stateBucket,
+                body: childTemplateBody,
+                stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
+                // GetTemplate(Processed) always returns JSON regardless of
+                // the original synth format; the codec accepts either.
+                format: 'json',
+                ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
+              })
+            );
             uploadCleanups.push(uploaded.cleanup);
 
             // Fetch the child stack's CURRENT tags — the parent's
@@ -8371,8 +8443,8 @@ export async function runPerStackImportLoop(args: {
             // tag added by `flipStackToUpdateComplete`; forwarding them
             // verbatim ensures the parent template's row matches the
             // AWS-side reality at adoption time.
-            const childTagsDesc = await deps.cfnClient.send(
-              new DescribeStacksCommand({ StackName: childCfnName })
+            const childTagsDesc = await afterImport(preparing, 'imported', () =>
+              deps.cfnClient.send(new DescribeStacksCommand({ StackName: childCfnName }))
             );
             const childActualTags = childTagsDesc.Stacks?.[0]?.Tags ?? [];
 
@@ -8425,9 +8497,9 @@ export async function runPerStackImportLoop(args: {
           } catch (err) {
             // Phase 1A already succeeded — the parent CFn stack exists with
             // its leaf resources. Phase 1B (nested adoption) failed. The
-            // child stack(s) are also standalone CFn stacks at this point
-            // (from prior iterations). cdkd state is preserved across the
-            // tree so the user can recover.
+            // stacks before it are CFn stacks too, standalone or already
+            // adopted by their own parents. cdkd state is preserved across
+            // the tree so the user can recover.
             const importedSummary =
               importedStacks.length > 0
                 ? importedStacks
@@ -8439,7 +8511,7 @@ export async function runPerStackImportLoop(args: {
                 `'${safeSegment(plan.cdkdName)}' (CFn name '${safeSegment(plan.cfnName)}'). The parent CFn stack ` +
                 `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
                 `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
-                `Stacks IMPORTed so far (each is a standalone CFn stack): ${importedSummary}. ` +
+                `Stacks IMPORTed so far (each a CFn stack): ${importedSummary}. ` +
                 `cdkd state for every stack in the tree is preserved. To recover, fix the ` +
                 `underlying cause (typically a template-match validation error per AWS-docs ` +
                 `"Nested stack import validation"), then re-attempt the parent-side nested ` +
@@ -8452,7 +8524,7 @@ export async function runPerStackImportLoop(args: {
                 // region-bearing tail as the other nested failures — never a
                 // bare `cdkd state orphan <stack>`, which drops that name's
                 // record in EVERY region (go-to-k/cdkd#3967).
-                nestedResumeTail(i, 'phase1b'),
+                nestedResumeTail(i, 'imported'),
               { cause: err instanceof Error ? err : undefined }
             );
           }
@@ -8471,7 +8543,12 @@ export async function runPerStackImportLoop(args: {
               `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
                 `Phase 1B can adopt it...`
             );
-            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
+            await afterImport(
+              'The no-op tag update moving its CloudFormation stack back out of IMPORT_COMPLETE ' +
+                'after its nested-child adoption',
+              'adopted',
+              () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+            );
           }
         }
 
@@ -8481,10 +8558,14 @@ export async function runPerStackImportLoop(args: {
             const handler = PRE_DELETE_HANDLERS[entry.resourceType];
             if (!handler) {
               throw new Error(
-                `No pre-delete handler registered for ${entry.resourceType} ` +
-                  `(${entry.logicalId}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
+                `No pre-delete handler registered for ${displayIdent(entry.resourceType)} ` +
+                  `(${displayIdent(entry.logicalId)}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
-                  `PRE_DELETE_HANDLERS entry.`
+                  `PRE_DELETE_HANDLERS entry.\n` +
+                  // Its CloudFormation stack exists by now, so even a cdkd bug
+                  // gives the recovery (go-to-k/cdkd#3988). An earlier entry may
+                  // already be deleted; the by-hand deletes allow for that.
+                  nestedResumeTail(i, 'adopted')
               );
             }
             logger.info(
