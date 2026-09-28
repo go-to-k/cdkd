@@ -49,8 +49,8 @@ the bounded `cause` chain for the error name and the Cloud Control
    logical IDs, so a child sharing the parent stack's id still passes. A
    provider's `create()` puts a failing AUXILIARY write (anything but the
    main create and its cleanup) behind that anchor with `markAuxiliaryFailure`
-   (`src/provisioning/auxiliary-failure.ts`, #3826; Route 53, DynamoDB and
-   Kinesis are residual #3877).
+   (`src/provisioning/auxiliary-failure.ts`, #3826; the DynamoDB GlobalTable
+   is residual #3877).
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

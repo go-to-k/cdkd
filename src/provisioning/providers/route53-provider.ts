@@ -29,6 +29,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
@@ -480,6 +481,11 @@ export class Route53Provider implements ResourceProvider {
       );
     }
 
+    // Set once CreateHostedZone returns (or a replay ADOPTS the zone). No
+    // failure after it is this zone's name collision: it is an auxiliary
+    // call's (AssociateVPCWithHostedZone, UpdateHostedZoneFeatures) or cdkd's
+    // own, so every one is marked (#3826, #3877).
+    let zoneCreated = false;
     try {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
@@ -541,6 +547,7 @@ export class Route53Provider implements ResourceProvider {
             }
           : {}),
       });
+      zoneCreated = true;
 
       const hostedZone = response.HostedZone;
       if (!hostedZone?.Id) {
@@ -654,6 +661,9 @@ export class Route53Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // BEFORE the rethrow: the Accelerated Recovery arm throws its own
+      // ProvisioningError, which must carry the mark too.
+      if (zoneCreated) markAuxiliaryFailure(error, logicalId);
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

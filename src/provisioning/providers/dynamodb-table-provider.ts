@@ -47,6 +47,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -1654,7 +1655,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // Tracks whether CreateTable succeeded this call, so the catch can roll
     // back a table whose post-ACTIVE config step (PITR / TTL) failed —
     // otherwise create() throws before returning the physicalId, the deploy
-    // engine never learns the table exists, and it orphans.
+    // engine never learns the table exists, and it orphans. The same flag
+    // marks every failure after it: each is an auxiliary call's or an ACTIVE
+    // wait's, never this table's name collision (#3826, #3877).
     let tableCreated = false;
 
     try {
@@ -1963,6 +1966,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             }`
           );
         }
+        markAuxiliaryFailure(error, logicalId);
       }
       if (error instanceof ProvisioningError) {
         throw error;
