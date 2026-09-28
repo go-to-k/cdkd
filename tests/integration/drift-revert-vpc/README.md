@@ -40,7 +40,14 @@ against live AWS.
    code **0** (revert succeeds for every drifted resource).
 5. `cdkd drift CdkdDriftRevertVpcExample` again — assert exit code
    **0** (state and AWS are back in sync).
-6. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
+6. Attach `tg2` to the ASG out-of-band, rewrite the recorded ASG
+   `TargetGroupARNs` in `state.json` to an import-style `[{"Ref": ...}]`
+   (what `cdkd import`'s raw-template fallback can record), then
+   `cdkd deploy` — assert `tg1` AND `tg2` are still attached, the
+   retained-entries warning printed, and the record healed to `[tg1.arn]`
+   (issue #3948: a malformed recorded attachment list is read live,
+   ADD-only). `tg2` is then detached before destroy.
+7. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
 
 ## Run
 

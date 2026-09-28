@@ -93,9 +93,10 @@ export function readPrincipalLists<K extends string>(
 
 /**
  * A value holding a dynamic reference or cdkd's mask at ANY depth: a bare
- * string, a list entry, or a nested object or list.
+ * string, a list entry, or a nested object or list. Also read by the Auto
+ * Scaling group and Firehose list reads (go-to-k/cdkd#3948).
  */
-function holdsSecretDerivedEntry(value: unknown): boolean {
+export function holdsSecretDerivedEntry(value: unknown): boolean {
   let text: string | undefined;
   try {
     text = JSON.stringify(value);
