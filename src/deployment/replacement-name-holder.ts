@@ -241,14 +241,42 @@ const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Types whose SDK provider does NOT mint `applyDefaultNameForFallback`'s name
- * verbatim (a log group gets `/cdkd/<name>`, an SSM parameter `/<name>`), so
- * the `generated` bag is not what their create sent and proves nothing — not
- * even a match. Fenced against the providers' wrapped generation sites.
+ * Types whose SDK provider mints `applyDefaultNameForFallback`'s name VERBATIM
+ * for a nameless create (same maxLength, pattern and case, no prefix or
+ * suffix), audited provider by provider. Only for these does the `generated`
+ * bag name what the create sent; every other type ignores it, so a wrap the
+ * audit did not see (a log group's `/cdkd/<name>`, an SSM parameter's
+ * `/<name>`, a directory bucket's `--<az>--x-s3`, an S3 bucket's pattern
+ * keeping `.`) can only refuse, never
+ * prove a holder. Adding a type is a deliberate edit of the pinned literal.
  */
-const GENERATED_NAME_DIVERGES: ReadonlySet<string> = new Set([
-  'AWS::Logs::LogGroup',
-  'AWS::SSM::Parameter',
+const GENERATED_NAME_VERBATIM: ReadonlySet<string> = new Set([
+  'AWS::DocDB::DBCluster',
+  'AWS::DocDB::DBInstance',
+  'AWS::DocDB::DBSubnetGroup',
+  'AWS::ECR::Repository',
+  'AWS::ECS::Cluster',
+  'AWS::ECS::Service',
+  'AWS::ElastiCache::CacheCluster',
+  'AWS::ElastiCache::SubnetGroup',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer',
+  'AWS::ElasticLoadBalancingV2::TargetGroup',
+  'AWS::Events::Rule',
+  'AWS::IAM::Group',
+  'AWS::IAM::User',
+  'AWS::Kinesis::Stream',
+  'AWS::Lambda::Function',
+  'AWS::Neptune::DBCluster',
+  'AWS::Neptune::DBInstance',
+  'AWS::Neptune::DBSubnetGroup',
+  'AWS::RDS::DBCluster',
+  'AWS::RDS::DBInstance',
+  'AWS::RDS::DBSubnetGroup',
+  'AWS::SecretsManager::Secret',
+  'AWS::SNS::Topic',
+  'AWS::SQS::Queue',
+  'AWS::StepFunctions::StateMachine',
+  'AWS::WAFv2::WebACL',
 ]);
 
 /** The case-insensitive name spaces, for the test that pins the list. */
@@ -256,9 +284,14 @@ export function reverseReplacementCaseInsensitiveTypes(): readonly string[] {
   return [...CASE_INSENSITIVE_NAME_TYPES].sort();
 }
 
+/** The audited verbatim-generation types, for the test that pins the list. */
+export function reverseReplacementVerbatimGeneratedTypes(): readonly string[] {
+  return [...GENERATED_NAME_VERBATIM].sort();
+}
+
 /** Does cdkd's generation rule name what this type's nameless create sends? */
 export function reverseReplacementTrustsGeneratedName(resourceType: string): boolean {
-  return !GENERATED_NAME_DIVERGES.has(resourceType);
+  return GENERATED_NAME_VERBATIM.has(resourceType);
 }
 
 /**

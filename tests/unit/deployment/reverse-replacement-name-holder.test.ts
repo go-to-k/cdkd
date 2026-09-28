@@ -4,12 +4,12 @@
  * decide must answer `holds: false`, and only a PROVEN holder may answer true.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readdirSync, readFileSync } from 'node:fs';
 import {
   reverseReplacementCaseInsensitiveTypes,
   reverseReplacementNameKeyKind,
   reverseReplacementNewHoldsName,
   reverseReplacementTrustsGeneratedName,
+  reverseReplacementVerbatimGeneratedTypes,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
@@ -466,20 +466,43 @@ describe('every snapshot type with a name-shaped create-only property is classif
 });
 
 describe('the generated-name mirror is trusted only where the provider mints it verbatim', () => {
-  // A provider that WRAPS cdkd's generation (`/cdkd/${generateResourceName(...)}`)
-  // sends a name the mirror does not spell, so its type must be distrusted.
-  // Read from the providers' SOURCE: a new wrapping site fails here until its
-  // type is added to GENERATED_NAME_DIVERGES.
-  it('every wrapped generation site belongs to a distrusted type', () => {
-    const dir = new URL('../../../src/provisioning/providers/', import.meta.url);
-    const wrapped = readdirSync(dir)
-      .filter((f) => f.endsWith('.ts'))
-      .filter((f) => /`[^`]*\S\$\{generateResourceName/.test(readFileSync(new URL(f, dir), 'utf8')))
-      .sort();
-    expect(wrapped).toEqual(['logs-loggroup-provider.ts', 'ssm-parameter-provider.ts']);
-    expect(reverseReplacementTrustsGeneratedName('AWS::Logs::LogGroup')).toBe(false);
-    expect(reverseReplacementTrustsGeneratedName('AWS::SSM::Parameter')).toBe(false);
-    expect(reverseReplacementTrustsGeneratedName('AWS::ElasticLoadBalancingV2::TargetGroup')).toBe(true);
+  // An ALLOW-list, not a scan: a provider that wraps or re-options cdkd's
+  // generation (a prefix, a suffix, a concatenation, a variable, a different
+  // maxLength) would slip past any text fence, so an unaudited type simply
+  // ignores the generated bag and can only refuse. Changing the list is a
+  // deliberate edit of this literal, after reading the provider's generation.
+  it('is exactly the audited set, and excludes the known wrapping providers', () => {
+    expect(reverseReplacementVerbatimGeneratedTypes()).toEqual([
+      'AWS::DocDB::DBCluster',
+      'AWS::DocDB::DBInstance',
+      'AWS::DocDB::DBSubnetGroup',
+      'AWS::ECR::Repository',
+      'AWS::ECS::Cluster',
+      'AWS::ECS::Service',
+      'AWS::ElastiCache::CacheCluster',
+      'AWS::ElastiCache::SubnetGroup',
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      'AWS::Events::Rule',
+      'AWS::IAM::Group',
+      'AWS::IAM::User',
+      'AWS::Kinesis::Stream',
+      'AWS::Lambda::Function',
+      'AWS::Neptune::DBCluster',
+      'AWS::Neptune::DBInstance',
+      'AWS::Neptune::DBSubnetGroup',
+      'AWS::RDS::DBCluster',
+      'AWS::RDS::DBInstance',
+      'AWS::RDS::DBSubnetGroup',
+      'AWS::SNS::Topic',
+      'AWS::SQS::Queue',
+      'AWS::SecretsManager::Secret',
+      'AWS::StepFunctions::StateMachine',
+      'AWS::WAFv2::WebACL',
+    ]);
+    for (const wrapping of ['AWS::Logs::LogGroup', 'AWS::SSM::Parameter', 'AWS::S3Express::DirectoryBucket', 'AWS::S3::Bucket']) {
+      expect(reverseReplacementTrustsGeneratedName(wrapping)).toBe(false);
+    }
   });
 });
 

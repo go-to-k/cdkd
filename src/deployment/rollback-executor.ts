@@ -3235,8 +3235,9 @@ async function replaySingle(
             // What the create SENT: on a Cloud Control route that already
             // carries the generated name (`replayCreateProps`). An SDK provider
             // mints its own for a nameless bag; `generated` is cdkd's rule for
-            // it, which the helper ignores for a type whose provider does not
-            // mint it verbatim and treats as undecided on a mismatch. The `typeof` gate: a
+            // it, which the helper uses only for a type whose provider was
+            // audited to mint it verbatim, and treats as undecided on a
+            // mismatch. The `typeof` gate: a
             // non-string id (an in-process op the journal parser never saw)
             // must reach the refusal, not throw in the name generator.
             requested: replayCreateProps(),
