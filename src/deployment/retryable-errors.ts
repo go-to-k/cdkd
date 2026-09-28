@@ -1094,6 +1094,133 @@ export function isTransientServerError(error: unknown): boolean {
 }
 
 /**
+ * Node socket error codes that can surface AFTER the request was written, so
+ * the service may have acted on it: a reset or broken pipe mid-exchange, and a
+ * timeout (which Node also raises for a connect that never completed -- counted
+ * anyway, see {@link isAmbiguousOutcomeError}). Taken from
+ * `@smithy/service-error-classification`'s `NODEJS_TIMEOUT_ERROR_CODES` minus
+ * `ECONNREFUSED`, whose connection was never established; its
+ * `NODEJS_NETWORK_ERROR_CODES` (`EHOSTUNREACH`, `ENETUNREACH`, `ENOTFOUND`) are
+ * left out for the same reason.
+ */
+const AMBIGUOUS_SOCKET_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+/**
+ * Cloud Control handler `ErrorCode`s (the CloudFormation resource-handler
+ * contract) that report a CREATE failing AFTER the handler may have made the
+ * resource: the downstream service or the handler failed mid-flight, timed
+ * out, or the resource was made and never stabilized. Read off a
+ * `CloudControlOperationFailedError`'s `ccErrorCode`, which carries no HTTP
+ * status.
+ *
+ * `GeneralServiceException` and the handler's `Throttling` are IN, unlike an
+ * SDK-level throttle: a handler reports either from inside its create, after
+ * the resource may be materialized (`cleanupFailedCreateRemnant` in
+ * `cloud-control-provider.ts` exists for exactly that shape), and when that
+ * cleanup misses, the replay's `AlreadyExists` is the resource colliding with
+ * itself. Arming only withholds a delete-first, per the rule in
+ * {@link isAmbiguousOutcomeError}.
+ *
+ * Excluded: codes stating the request was refused before anything was made
+ * (`InvalidRequest`, `AccessDenied`, `InvalidCredentials`, `AlreadyExists`,
+ * `ServiceLimitExceeded`, `NotFound`, `NotUpdatable`, `ResourceConflict`,
+ * `UnauthorizedTaggingOperation`).
+ */
+const AMBIGUOUS_CC_HANDLER_ERROR_CODES: ReadonlySet<string> = new Set([
+  'InternalFailure',
+  // Not in `@aws-sdk/client-cloudcontrol`'s `HandlerErrorCode` enum; it is the
+  // CloudFormation handler contract's code, kept since a handler can emit it.
+  'HandlerInternalFailure',
+  'ServiceInternalError',
+  'NetworkFailure',
+  'NotStabilized',
+  'ServiceTimeout',
+  'GeneralServiceException',
+  'Throttling',
+]);
+
+/**
+ * True when a call ended WITHOUT telling cdkd whether the service acted on it
+ * (issue [#3978](https://github.com/go-to-k/cdkd/issues/3978)): the request
+ * may have succeeded server-side, so a replay of a create can meet the
+ * resource that very request made.
+ *
+ * Walks the bounded `cause` chain ({@link MAX_CAUSE_CHAIN_DEPTH}). A link is
+ * ambiguous when it carries
+ *
+ *  - a status in {@link TRANSIENT_SERVER_ERROR_STATUS_CODES} (500 / 502 / 503 /
+ *    504) -- the service or a gateway failed after accepting the request; or
+ *  - a socket code in {@link AMBIGUOUS_SOCKET_ERROR_CODES}, or the SDK's
+ *    client-side `TimeoutError` -- the request was sent and no answer was read.
+ *  - a Cloud Control handler code in {@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}
+ *    -- the handler may have made the resource before failing.
+ *
+ * The socket and `TimeoutError` arms reach no replay today: no classifier
+ * `withRetry` runs retries a socket error, so the error that armed the latch
+ * is the one thrown. They are there for when one does.
+ *
+ * NOT ambiguous, because the service declared it did nothing: an SDK-level
+ * THROTTLE, i.e. a link named in {@link THROTTLING_ERROR_NAMES} (S3's
+ * `SlowDown` is a 503) or flagged `$retryable.throttling` by the SDK. (A Cloud
+ * Control HANDLER's `Throttling` is the opposite case: see
+ * {@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}.) A throttle link ends the
+ * walk with `false` even above a 5xx cause. Nor is any 4xx (S3's
+ * `RequestTimeout` included: the server saying it never received the whole
+ * request), 501, or a failure with no status and none of those codes.
+ *
+ * Errs toward TRUE on purpose. Its one reader is `withRetry`'s latch, and a
+ * true verdict only WITHHOLDS the name-collision credit from what that call
+ * throws from then on, the arming attempt's own error included: a false positive leaves a genuine collision refused rather
+ * than deleted-first, while a false negative deletes a live resource.
+ *
+ * Never throws: it runs in a retry loop's `catch`, where an out-throw would
+ * replace the error being handled; an unreadable link reads as not ambiguous.
+ */
+export function isAmbiguousOutcomeError(error: unknown): boolean {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_CAUSE_CHAIN_DEPTH && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      const link = current as {
+        name?: unknown;
+        code?: unknown;
+        ccErrorCode?: unknown;
+        $retryable?: { throttling?: unknown };
+        $metadata?: { httpStatusCode?: unknown };
+        cause?: unknown;
+      };
+      if (typeof link.name === 'string' && THROTTLING_ERROR_NAMES.has(link.name)) return false;
+      if (link.$retryable?.throttling === true) return false;
+      const status = link.$metadata?.httpStatusCode;
+      if (typeof status === 'number' && TRANSIENT_SERVER_ERROR_STATUS_CODES.has(status)) {
+        return true;
+      }
+      if (typeof link.code === 'string' && AMBIGUOUS_SOCKET_ERROR_CODES.has(link.code)) return true;
+      // Deliberately unscoped (any link named so, not only an SDK one): no cdkd
+      // class uses the name, and a false hit only withholds a delete-first.
+      if (link.name === 'TimeoutError') return true;
+      if (
+        typeof link.ccErrorCode === 'string' &&
+        AMBIGUOUS_CC_HANDLER_ERROR_CODES.has(link.ccErrorCode)
+      ) {
+        return true;
+      }
+      current = link.cause;
+    }
+  } catch {
+    // Unreadable chain: not ambiguous, per the doc above.
+  }
+  return false;
+}
+
+/**
  * The signals `isRetryableTransientError` had available when it classified an
  * error, rendered for a log line (issue #2026).
  *
@@ -1594,6 +1721,84 @@ export function markNameCollision<E extends Error>(error: E): E {
   return error;
 }
 
+const REPLAY_MAY_COLLIDE_MARKER = Symbol.for('cdkd.replayMayCollide');
+
+/**
+ * Declare that `error` was thrown by a retry sequence whose EARLIER attempt may
+ * have materialized the resource (issue
+ * [#3978](https://github.com/go-to-k/cdkd/issues/3978)), so an "already exists"
+ * in it can be the resource colliding with ITSELF. Stamped by `withRetry`
+ * beside `markAuxiliaryFailure`, and needed because that mark cannot land on
+ * every chain: it writes the first link WITHOUT its own `logicalId`, and a
+ * Cloud Control `CloudControlOperationFailedError` carries the owner's id and
+ * no `cause`, so its `ccErrorCode: 'AlreadyExists'` stayed credited. Same for
+ * a provider wrapper stamped with {@link markNameCollision}.
+ *
+ * Read by {@link isNameCollisionErrorFrom} ONLY, ahead of its anchor, at every
+ * link -- `deploy-engine.ts` re-wraps a provider failure, so the stamped error
+ * can sit below the top. Deliberately NOT read by
+ * {@link isUpdateUnsupportedError}: withholding a collision's delete-first is
+ * the point, and widening the update-path cost `withRetry` accepts is not.
+ *
+ * A non-enumerable own symbol, like {@link markNonRetryable}'s: it survives
+ * `maskSecretsInError`'s clone and never serializes. Never throws. A
+ * non-extensible error is returned UNSTAMPED, so a frozen collision thrown
+ * after an ambiguous attempt stays credited -- a residual, not wrapped away,
+ * because a fresh wrapper would change the thrown error's class for every
+ * `instanceof` reader; nothing in `src/` freezes, seals or
+ * `preventExtensions` an error today.
+ *
+ * Deliberately NOT anchored to a logical id: a stamp anywhere in the chain
+ * withholds the verdict, which can only err toward not deleting.
+ */
+export function markReplayMayCollide<E>(error: E): E {
+  try {
+    if (
+      (typeof error !== 'object' && typeof error !== 'function') ||
+      error === null ||
+      !Object.isExtensible(error)
+    ) {
+      return error;
+    }
+    Object.defineProperty(error, REPLAY_MAY_COLLIDE_MARKER, {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+  } catch {
+    // Unstampable (a Proxy trap, say): returned as is. `withRetry`'s `catch`
+    // calls this, where an out-throw would replace the error being settled.
+  }
+  return error;
+}
+
+/**
+ * True when `error` or a link of its bounded `cause` chain carries
+ * {@link markReplayMayCollide}'s stamp. Never throws: an unreadable chain reads
+ * as unstamped, since `withRetry`'s `catch` calls it too.
+ */
+export function hasReplayMayCollide(error: unknown): boolean {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_CAUSE_CHAIN_DEPTH &&
+      (typeof current === 'object' || typeof current === 'function') &&
+      current !== null;
+      depth++
+    ) {
+      if (Object.getOwnPropertyDescriptor(current, REPLAY_MAY_COLLIDE_MARKER)?.value === true) {
+        return true;
+      }
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: unstamped.
+  }
+  return false;
+}
+
 /**
  * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
  * message — which is the only way to see an exception NAME (issue #3208).
@@ -1631,6 +1836,10 @@ export function markNameCollision<E extends Error>(error: E): E {
  * nothing.
  */
 export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
+  // Issue #3978: a retry sequence that may have made this very resource, read
+  // ahead of the anchor so no positive arm below -- the Cloud Control code or a
+  // provider's `markNameCollision` on an owner-anchored link -- can credit it.
+  if (hasReplayMayCollide(error)) return false;
   const topRelaysIt =
     error instanceof Error &&
     typeof error.message === 'string' &&
