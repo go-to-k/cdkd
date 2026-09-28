@@ -163,7 +163,7 @@ const bucket = (physicalId: string) => ({
 });
 
 /** Every stack is absent at pre-flight and present afterwards; DescribeChangeSet can be made to throw. */
-function cfnClient(opts: { describeChangeSetThrows?: boolean } = {}) {
+function cfnClient(opts: { describeChangeSetThrows?: boolean; getTemplateThrows?: boolean } = {}) {
   const seen = new Map<string, number>();
   const send = vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
     switch (cmd._name) {
@@ -182,6 +182,7 @@ function cfnClient(opts: { describeChangeSetThrows?: boolean } = {}) {
         if (opts.describeChangeSetThrows) throw new Error('DescribeChangeSet unavailable');
         return {};
       case 'GetTemplate':
+        if (opts.getTemplateThrows) throw new Error('GetTemplate throttled');
         return { TemplateBody: JSON.stringify({ Resources: {} }) };
       case 'DescribeStackEvents':
         return { StackEvents: [] };
@@ -337,14 +338,14 @@ describe('Phase 1A failing after a stack was imported gives the whole-tree recov
     expect(waitChangeSetCreate).toHaveBeenCalledTimes(2);
     expect(err.message).toContain('Phase 1A IMPORT changeset failed for cdkd stack \'Root\'');
     expect(err.message).toContain(
-      'Re-running `cdkd export` is refused for the whole tree: CloudFormation stacks now exist for ' +
+      'Re-running cdkd export is refused for the whole tree: CloudFormation stacks now exist for ' +
         "every stack IMPORTed before this one, and this stack's may exist too"
     );
     expect(err.message).toMatch(
       /still have cdkd state[^\n]*:\n {2}cdkd state orphan '?Root~Child'? --stack-region '?us-east-1'?\n/
     );
     expect(err.message).toMatch(
-      /Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the same way \(its IMPORT must also adopt its already-imported nested children, per the AWS docs "Nest an existing stack" procedure\):\n {2}cdkd state orphan Root --stack-region us-east-1\n/
+      /Once this stack's IMPORT succeeds by hand, clean up its record the same way \(its IMPORT must also adopt its already-imported nested children, per the AWS docs "Nest an existing stack" procedure\):\n {2}cdkd state orphan Root --stack-region us-east-1\n/
     );
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): (none).');
     expect(err.message).not.toContain('Re-run with:');
@@ -414,7 +415,7 @@ describe('Phase 1A failing after a stack was imported gives the whole-tree recov
       (e: unknown) => e as Error
     );
     expect(err.message).toMatch(/Phase 1A IMPORT changeset failed for cdkd stack 'Root~(A|B)'/);
-    expect(err.message).toContain("Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the same way:");
+    expect(err.message).toContain("Once this stack's IMPORT succeeds by hand, clean up its record the same way:");
     expect(err.message).not.toContain('must also adopt');
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
   });
@@ -542,7 +543,7 @@ describe('the nested pre-delete renders its failure like the single-stack path',
     // that re-running does not resume it, and the record clean-up.
     expect(err.message).toContain('Stacks IMPORTed so far (each CFn-managed): Root → Root.');
     expect(err.message).toContain(
-      'Re-running `cdkd export` is refused for the whole tree'
+      'Re-running cdkd export is refused for the whole tree'
     );
     expect(err.message).toContain(
       "Once this stack's phase 2 succeeds by hand, clean up its record the same way:\n" +
@@ -661,7 +662,7 @@ describe('a nested phase-2 failure renders AWS text folded and bounded (go-to-k/
     expect(err.message).toContain("Phase 2 (UPDATE) failed for cdkd stack 'Root' (CFn name 'Root'): ");
     assertRendered(err.message, /Phase 2 \(UPDATE\) failed/);
     // The same resume guidance as the pre-delete failure.
-    expect(err.message).toContain('Re-running `cdkd export` is refused for the whole tree');
+    expect(err.message).toContain('Re-running cdkd export is refused for the whole tree');
     expect(err.message).toContain(
       "clean up its record the same way:\n  cdkd state orphan Root --stack-region us-east-1"
     );
@@ -1158,7 +1159,7 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
       (e: unknown) => e as Error
     );
     expect(err.message).toContain('pre-delete of ChildPolicy');
-    expect(err.message).toContain('Re-running `cdkd export` is refused for the whole tree');
+    expect(err.message).toContain('Re-running cdkd export is refused for the whole tree');
     // Grand finished phase 2 and still holds cdkd state: its clean-up.
     expect(err.message).toMatch(
       /finished phase 2 but still have cdkd state[^\n]*:\n {2}cdkd state orphan '?Root~Child~Grand'? --stack-region '?us-east-1'?\n/
@@ -1170,8 +1171,9 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
     // Root was never imported.
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
     expect(err.message).toContain('"Nest an existing stack"');
-    // Outside a Phase 1B failure, the pointer to that message stays.
-    expect(err.message).toContain('procedure (as the Phase 1B adoption failure message describes).');
+    // No failure points at another message the operator never saw (go-to-k/cdkd#3988).
+    expect(err.message).toContain('"Nest an existing stack" procedure.');
+    expect(err.message).not.toContain('as the Phase 1B adoption failure message describes');
     // Root is not given an orphan command: it is still cdkd's to migrate.
     expect(err.message).not.toMatch(/cdkd state orphan Root --stack-region/);
   });
@@ -1247,7 +1249,8 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
       /finished phase 2 but still have cdkd state[^\n]*:\n {2}cdkd state orphan 'Root~Child~Grand' --stack-region us-east-1\n/
     );
     expect(message).toContain(
-      "Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its record " +
+      // Child has no phase-2 work, so only the adoption is left (go-to-k/cdkd#3988).
+      "Once this stack's nested-child adoption succeeds by hand, clean up its record " +
         "the same way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
     );
     expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
@@ -1715,7 +1718,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     }
     withPasteDir((dir) => {
       for (const message of messages) {
-        const at = message.indexOf('Re-running `cdkd export`');
+        const at = message.indexOf('Re-running cdkd export');
         expect(spansThatRun(message.slice(at), dir), message).toEqual([]);
       }
     });
@@ -1748,7 +1751,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     }
     withPasteDir((dir) => {
       for (const message of messages) {
-        const at = message.indexOf('Re-running `cdkd export`');
+        const at = message.indexOf('Re-running cdkd export');
         expect(at, message).toBeGreaterThan(-1);
         const tail = message.slice(at);
         expect(tail).toContain('cdkd state orphan');
@@ -1769,7 +1772,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     expect(message).toContain('Do NOT run cdkd destroy on the tree');
     expect(message).not.toContain('<stack>');
     expect(message).toContain(
-      'Re-running `cdkd export` is refused for the whole tree: CloudFormation stacks now exist ' +
+      'Re-running cdkd export is refused for the whole tree: CloudFormation stacks now exist ' +
         'for this stack and every one IMPORTed before it.'
     );
     // The children finished phase 2: clean them up now.
@@ -1778,7 +1781,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     );
     // The root's record waits for its adoption AND its phase 2, which never ran.
     expect(message).toContain(
-      "Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its record " +
+      "Once this stack's nested-child adoption succeeds by hand, clean up its record " +
         'the same way:\n  cdkd state orphan Root --stack-region us-east-1\n'
     );
     expect(message).toContain('Stacks not yet imported (still cdkd-managed): (none).');
@@ -1812,7 +1815,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     }
     withPasteDir((dir) => {
       for (const message of messages) {
-        const at = message.indexOf('Re-running `cdkd export`');
+        const at = message.indexOf('Re-running cdkd export');
         expect(at, message).toBeGreaterThan(-1);
         const tail = message.slice(at);
         expect(tail).toContain('cdkd state orphan');
@@ -1841,7 +1844,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     }
     withPasteDir((dir) => {
       for (const message of messages) {
-        const at = message.indexOf('Re-running `cdkd export`');
+        const at = message.indexOf('Re-running cdkd export');
         expect(at, message).toBeGreaterThan(-1);
         const tail = message.slice(at);
         expect(tail).toContain('cdkd state orphan');
@@ -1893,6 +1896,172 @@ describe('the single-root pre-delete and phase-2 tails note a withheld orphan co
         "List the records as stored with 'cdkd state list --json' and act on the one whose " +
         'stackName and region match, replacing each quoted hole, quotes included, with the ' +
         "shell-quoted value.\n  cdkd state orphan '<stack>' --stack-region '<region>'\n"
+    );
+  });
+});
+
+describe('every failure after a Phase 1A IMPORT gives the recovery, and names only the steps left (go-to-k/cdkd#3988)', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-3988-'));
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const LEAF_CHILD = { Resources: { ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} } } };
+  const run = (t: ReturnType<typeof childTree>, client = cfnClient()) =>
+    runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: t.childPath },
+      rootTemplateFormat: 'json',
+      tree: t.tree,
+      rootTemplate: t.rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: deps(client),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+
+  it('A: a failed IMPORT of a stack whose phase 2 re-CREATEs resources lists their deletes before its line', async () => {
+    // Child imports; the root's 1A (the second wait) fails. The root holds an
+    // IAM::Policy, which phase 2 re-CREATEs after a pre-delete.
+    waitChangeSetCreate.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
+    const t = childTree(tmp, LEAF_CHILD, { ChildBucket: bucket('b2') }, {
+      resources: {
+        HandlerPolicy: {
+          physicalId: 'HandlerPolicyName',
+          resourceType: 'AWS::IAM::Policy',
+          properties: { Roles: ['RoleA'] },
+          attributes: {},
+          dependencies: [],
+        },
+      } as unknown as StackState['resources'],
+      template: {
+        HandlerPolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: { PolicyName: 'HandlerPolicyName', Roles: ['RoleA'] },
+        },
+      },
+    });
+    const { message } = await run(t);
+    expect(message).toContain("Phase 1A IMPORT changeset failed for cdkd stack 'Root'");
+    expect(message).toMatch(
+      /Before this stack's phase 2, delete its IMPORT-unsupported resources by hand, which phase 2 re-CREATEs:\n {2}aws iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'\n(?: {2}[^\n]*\n)*Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the same way \(its IMPORT must also adopt[^\n]*:\n {2}cdkd state orphan Root --stack-region us-east-1\n/
+    );
+  });
+
+  it('A: a stack with no phase-2 work is not told to run one', async () => {
+    waitChangeSetCreate.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
+    const { message } = await run(childTree(tmp, LEAF_CHILD, { ChildBucket: bucket('b2') }));
+    expect(message).toContain("Once this stack's IMPORT succeeds by hand");
+    expect(message).not.toContain('and phase 2 succeed');
+    expect(message).not.toContain('Before this stack');
+  });
+
+  it('B: a failed flip of a finished child out of IMPORT_COMPLETE gives the whole-tree tail', async () => {
+    // Child's 1A succeeds; its flip (the first stack-update wait) fails.
+    waitStackUpdate.mockRejectedValueOnce(new Error('UpdateStack throttled'));
+    const { message } = await run(childTree(tmp, LEAF_CHILD, { ChildBucket: bucket('b2') }));
+    expect(message).toContain(
+      "Moving its CloudFormation stack out of IMPORT_COMPLETE (a no-op tag update that the " +
+        'adoption by its parent needs; repeat it by hand before that adoption) failed for cdkd ' +
+        "stack 'Root~Child' (CFn name 'Root-Child'), after its Phase 1A IMPORT succeeded. Cause: "
+    );
+    expect(message).toContain('UpdateStack throttled');
+    expect(message).toContain(
+      'Re-running cdkd export is refused for the whole tree: CloudFormation stacks now exist for ' +
+        'this stack and every one IMPORTed before it.'
+    );
+    // A leaf with no phase-2 work has nothing left but the flip, which the head names.
+    expect(message).toContain(
+      'This stack needs no further IMPORT, adoption or phase 2; clean up its record the same ' +
+        "way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
+    );
+    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+  });
+
+  it("B: a failed read of a child's template while preparing the adoption gives the whole-tree tail", async () => {
+    const { message } = await run(
+      childTree(tmp, LEAF_CHILD, { ChildBucket: bucket('b2') }),
+      cfnClient({ getTemplateThrows: true })
+    );
+    expect(message).toContain(
+      "Preparing the adoption of nested child Child failed for cdkd stack 'Root' (CFn name " +
+        "'Root'), after its Phase 1A IMPORT succeeded. Cause: GetTemplate throttled\n"
+    );
+    expect(message).toMatch(
+      /still have cdkd state[^\n]*:\n {2}cdkd state orphan 'Root~Child' --stack-region us-east-1\n/
+    );
+    expect(message).toContain(
+      "Once this stack's nested-child adoption succeeds by hand, clean up its record the same " +
+        'way:\n  cdkd state orphan Root --stack-region us-east-1\n'
+    );
+  });
+
+  it('B: a failed flip AFTER a successful adoption leaves only what follows the adoption', async () => {
+    // Grand → Child → Root. Grand's flip (update wait 1) and Child's pre-1B
+    // flip (wait 2) succeed; Child's post-1B flip (wait 3) fails.
+    waitStackUpdate
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('UpdateStack throttled'));
+    writeFileSync(
+      join(tmp, 'Grand.template.json'),
+      JSON.stringify({ Resources: { GrandBucket: { Type: 'AWS::S3::Bucket', Properties: {} } } }),
+      'utf-8'
+    );
+    const t = childTree(
+      tmp,
+      {
+        Resources: {
+          ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          Grand: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://x/Grand.template.json' },
+            Metadata: { 'aws:asset:path': 'Grand.template.json' },
+          },
+        },
+      },
+      {
+        ChildBucket: bucket('b2'),
+        Grand: {
+          physicalId: 'arn:g',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      } as unknown as StackState['resources']
+    );
+    t.tree.nestedChildren.get('Child')!.nestedChildren.set('Grand', {
+      stackName: 'Root~Child~Grand',
+      region: 'us-east-1',
+      state: state('Root~Child~Grand', { GrandBucket: bucket('b3') }, {
+        stack: 'Root~Child',
+        logicalId: 'Grand',
+      }),
+      nestedChildren: new Map(),
+    });
+    const { message } = await run(t);
+    expect(waitStackUpdate).toHaveBeenCalledTimes(3);
+    expect(message).toContain(
+      'Moving its CloudFormation stack back out of IMPORT_COMPLETE after the adoption'
+    );
+    expect(message).toContain("failed for cdkd stack 'Root~Child'");
+    // The adoption happened: it is not asked for again.
+    expect(message).not.toContain("Once this stack's nested-child adoption");
+    expect(message).toContain(
+      'This stack needs no further IMPORT, adoption or phase 2; clean up its record the same ' +
+        "way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
+    );
+    expect(message).toMatch(
+      /still have cdkd state[^\n]*:\n {2}cdkd state orphan 'Root~Child~Grand' --stack-region us-east-1\n/
     );
   });
 });

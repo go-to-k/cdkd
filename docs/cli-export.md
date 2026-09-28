@@ -407,14 +407,16 @@ On a per-stack failure, cdkd state is preserved for the failed stack and every
 stack not yet imported, and the error names which stacks moved and which
 remain. Re-running `cdkd export` does not resume: it refuses the whole tree
 while any of its CloudFormation stacks exists, and every stack imported before
-the failure has one. When a stack's IMPORT (Phase 1A), its nested-child
-adoption (Phase 1B), its pre-delete or its phase 2 fails, the error gives the
-by-hand recovery instead:
+the failure has one. When any later step fails — a stack's IMPORT (Phase 1A),
+the steps that prepare and run its nested-child adoption (Phase 1B), its
+pre-delete or its phase 2 — the error gives the by-hand recovery instead:
 
 - a `cdkd state orphan <stack> --stack-region <region>` for each stack that
-  finished, and for the failed stack once you finish it by hand (a failed
-  parent's by-hand IMPORT, or its redone adoption, must adopt its
-  already-imported nested children);
+  finished, and for the failed stack once you finish the steps it still needs
+  by hand, which the error names (a failed parent's by-hand IMPORT, or its
+  redone adoption, must adopt its already-imported nested children);
+- when the failed stack's phase 2 re-creates resources CloudFormation cannot
+  import, the by-hand deletes to run before that phase 2;
 - the stacks not yet imported, to migrate with CloudFormation IMPORT by hand,
   adopting their nested children as AWS's "Nest an existing stack" procedure
   describes.
