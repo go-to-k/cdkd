@@ -65,7 +65,6 @@ cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip afte
 cross-stack-secret-import	2026-09-25T11:43:35Z	PASS	400	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 custom-resource-getatt-data	2026-09-28T09:01:57Z	PASS	90	verify.sh	rc ok, orph clean, embedded arm (#2453)
 custom-resource-masked-service-token	2026-09-28T17:22:43Z	PASS	110	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
-custom-resource-masked-service-token	2026-09-28T17:02:00Z	PASS	165	verify.sh	rc ok, orph clean; #3938 + #3960 arms on the rebased head; pre-#3960 probe RED at the reference row
 custom-resource-noecho-nested	2026-09-26T03:05:30Z	PASS	852	verify.sh	rc ok, orph clean (#3803 PR #3818 final)
 custom-resource-provider	2026-09-28T17:22:43Z	PASS	652	verify.sh	rc ok, orph clean (#3996 orphan-remedy wording)
 data-analytics	2026-09-28T10:21:55Z	PASS	105	verify.sh	#3939 PR #3947 rebased head 06245f7f7, stdin /dev/null; phase 2 Changes 0/3/0 + Updated: 3 printed, rc 0, no lock.json left, no stall-guard line; orph clean
