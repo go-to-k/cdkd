@@ -3963,8 +3963,27 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         expect(m).not.toMatch(/cdkd state orphan [^\n]*curl/);
         expect(m).toContain(
           "its record's stack name is not a plain identifier (a letter or digit, then letters, " +
-            'digits and ~ _ . -), which cdkd does not print on a command line.'
+            "digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
         );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
+      },
+    ],
+    [
+      // The shape go-to-k/cdkd#3997 names: a name padded so a terminal wraps
+      // part of it onto what reads as its own `…with: cdkd …` line. It renders
+      // EXACTLY (medial spaces survive `displaySafe`), so only the
+      // plain-identifier rule withholds it.
+      'medial padding spelling a second command line',
+      `A${' '.repeat(80)}Drop it with: cdkd state orphan X`,
+      (m: string) => {
+        // The command line carries holes, not the padded name. (The prose head
+        // above still names it: the value-in-prose shape, tracked apart.)
+        expect(m.split('\n').at(-1)).toBe(
+          "Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        expect(m).toContain("its record's stack name is not a plain identifier");
         expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
           true
         );
@@ -4107,6 +4126,29 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     }
   );
 
+  it('withholds a REGION that renders exactly but is not a plain identifier, naming only it (go-to-k/cdkd#3997)', async () => {
+    const region = 'us-east-1 x';
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`Root|${region}`]: root }) as S3StateBackend;
+    const message = (
+      (await buildCdkdStateStackTree('Root', region, backend).catch((e: unknown) => e)) as Error
+    ).message;
+    expect(message).toContain(
+      "The next line's command names neither value, because its record's region is not a plain " +
+        "identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd " +
+        'does not print on a command line.'
+    );
+    // Only the region: the stack name is plain and is not blamed.
+    expect(message).not.toContain('stack name is not a plain identifier');
+    // A region is a flag's value, so its hole may be filled.
+    expect(message).toContain('replacing each quoted hole');
+    expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+  });
+
   it.each([
     ['stack name', 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), 'us-east-1', 'is too long to print'],
     ['region', 'Root', '', 'is empty'],
@@ -4201,7 +4243,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         "cannot be printed as an argument to 'cdkd state orphan'"
       );
       expect(orphanWithholdWhy('not-plain', positional)).toBe(
-        'is not a plain identifier (a letter or digit, then letters, digits and ~ _ . -), which ' +
+        "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which " +
           'cdkd does not print on a command line'
       );
     }
@@ -4271,7 +4313,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // spans alone would pass a gate that stopped withholding.
         expect(message).toContain(
           rootName === value
-            ? "is not a plain identifier (a letter or digit, then letters, digits and ~ _ . -), which cdkd does not print on a command line."
+            ? "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
             : 'so do not fill a hole with it.'
         );
         expect(message).toContain(

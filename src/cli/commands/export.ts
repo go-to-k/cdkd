@@ -4308,7 +4308,7 @@ function orphanWithheldPart(
   return `${what} ${orphanWithholdWhy(reason, hole === 'stack')}`;
 }
 
-/** Exported for unit testing: two of its arms are unreachable through {@link orphanCommandFor}. */
+/** Exported for unit testing: its `pattern-shaped` arm is unreachable through {@link orphanCommandFor}. */
 export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): string {
   switch (reason) {
     case 'altered':
@@ -4327,7 +4327,7 @@ export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): 
         : `begins with a '-', which cdkd refuses to print as an argument`;
     case 'not-plain':
       return (
-        `is not a plain identifier (a letter or digit, then letters, digits and ~ _ . -), which cdkd does not ` +
+        `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not ` +
         `print on a command line`
       );
     // Unreachable (this site does not pass `patternMatched`), and answered

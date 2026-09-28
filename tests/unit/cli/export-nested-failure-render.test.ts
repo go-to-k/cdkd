@@ -1857,7 +1857,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
           // Withheld as not a plain identifier (go-to-k/cdkd#3997), or as
           // altered for a payload the sanitizer changes.
           expect(message).toMatch(
-            /\n {2}For the record targeting CloudFormation stack Root-A: [^\n]*region[^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
+            /\n {2}For the record targeting CloudFormation stack Root-A: [^\n]*its record's region (?:is not a plain identifier|does NOT render exactly)[^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
           );
         }
         messages.push(message);
