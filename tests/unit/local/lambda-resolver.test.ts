@@ -1375,3 +1375,65 @@ describe('parseLayerVersionArn (issue #448)', () => {
     ).toBeUndefined();
   });
 });
+
+describe('resolveLambdaTarget: a construct path under a CDK Stage (go-to-k/cdkd#3953)', () => {
+  // A Stage stack displays as `MyStage/Api` and its aws:cdk:path values start
+  // there, so the path form's FIRST segment is the Stage id. The stack is the
+  // longest display-path prefix instead.
+  function stageStack(stackName: string, displayName: string, logicalId: string): StackInfo {
+    return {
+      ...buildStack(
+        stackName,
+        {
+          [logicalId]: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler' },
+            Metadata: {
+              'aws:asset:path': `asset.${logicalId}`,
+              'aws:cdk:path': `${displayName}/Fn/Resource`,
+            },
+          },
+        },
+        tmpRoot
+      ),
+      displayName,
+    };
+  }
+
+  it('resolves a path in a stack under a Stage', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiFn');
+    const top = stageStack('Top', 'Top', 'TopFn');
+    expect(resolveLambdaTarget('MyStage/Api/Fn', [top, api]).logicalId).toBe('ApiFn');
+  });
+
+  it('resolves a path under a NESTED Stage by the longest prefix', () => {
+    const outer = stageStack('Outer', 'Outer', 'OuterFn');
+    const inner = stageStack('Outer-Inner-Api', 'Outer/Inner/Api', 'InnerFn');
+    expect(resolveLambdaTarget('Outer/Inner/Api/Fn', [outer, inner]).logicalId).toBe('InnerFn');
+  });
+
+  it('does not let a stack claim a sibling whose name it prefixes', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiFn');
+    const v2 = stageStack('MyStage-ApiV2', 'MyStage/ApiV2', 'V2Fn');
+    expect(resolveLambdaTarget('MyStage/ApiV2/Fn', [api, v2]).logicalId).toBe('V2Fn');
+  });
+
+  it('leaves the Stack:LogicalId form on the stack pattern it names', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiFn');
+    const top = stageStack('Top', 'Top', 'TopFn');
+    expect(resolveLambdaTarget('MyStage-Api:ApiFn', [top, api]).logicalId).toBe('ApiFn');
+    // The stack a colon form NAMES wins even when its path part starts with
+    // another stack's path: `Top:` means Top.
+    expect(() => resolveLambdaTarget('Top:MyStage/Api/Fn', [top, api])).toThrow(/in Top/);
+  });
+
+  it('still routes a head no stack path prefixes through the stack matcher', () => {
+    // A wildcard head selects the stack through matchStacks as before; the
+    // path itself is then matched literally, so it names no Lambda there.
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiFn');
+    const top = stageStack('Top', 'Top', 'TopFn');
+    expect(() => resolveLambdaTarget('To*/Fn', [api, top])).toThrow(
+      /did not match any Lambda function in Top/
+    );
+  });
+});

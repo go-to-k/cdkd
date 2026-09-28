@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../../src/cli/cdk-path.js';
+import {
+  buildCdkPathIndex,
+  resolveCdkPathToLogicalIds,
+  stackForConstructPath,
+  stackForPathFormTarget,
+} from '../../../src/cli/cdk-path.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 function template(
@@ -72,5 +77,65 @@ describe('resolveCdkPathToLogicalIds', () => {
 
   it('returns an empty array when nothing matches', () => {
     expect(resolveCdkPathToLogicalIds('MyStack/Missing', index)).toEqual([]);
+  });
+});
+
+describe('stackForConstructPath (go-to-k/cdkd#3943, go-to-k/cdkd#3953)', () => {
+  const stack = (stackName: string, displayName?: string) => ({
+    stackName,
+    ...(displayName !== undefined && { displayName }),
+  });
+
+  it('picks the LONGEST display-path prefix, so a nested Stage wins over a shorter one', () => {
+    const outer = stack('Outer', 'Outer');
+    const inner = stack('Outer-Inner-Api', 'Outer/Inner/Api');
+    expect(stackForConstructPath('Outer/Inner/Api/Fn', [outer, inner])).toBe(inner);
+    expect(stackForConstructPath('Outer/Inner/Api/Fn', [inner, outer])).toBe(inner);
+  });
+
+  it('matches only at a `/` boundary', () => {
+    const api = stack('MyStage-Api', 'MyStage/Api');
+    expect(stackForConstructPath('MyStage/ApiV2/Fn', [api])).toBeUndefined();
+    expect(stackForConstructPath('MyStage/Api', [api])).toBeUndefined();
+  });
+
+  it("prefers a displayName over another stack's equal stackName on a length tie", () => {
+    const byDisplay = stack('Bar', 'Foo');
+    const byName = stack('Foo', 'Other');
+    expect(stackForConstructPath('Foo/Fn', [byName, byDisplay])).toBe(byDisplay);
+    expect(stackForConstructPath('Foo/Fn', [byDisplay, byName])).toBe(byDisplay);
+  });
+
+  it('falls back to the physical name, and skips an absent or empty name', () => {
+    const named = stack('Custom-Name', 'Display');
+    expect(stackForConstructPath('Custom-Name/Fn', [named])).toBe(named);
+    expect(stackForConstructPath('/Fn', [stack('', '')])).toBeUndefined();
+  });
+});
+
+describe('stackForPathFormTarget (go-to-k/cdkd#3953)', () => {
+  const api = { stackName: 'MyStage-Api', displayName: 'MyStage/Api' };
+  const top = { stackName: 'Top', displayName: 'Top' };
+
+  it('resolves a path-form target (pathOrId === target) by prefix', () => {
+    const target = 'MyStage/Api/Fn';
+    expect(stackForPathFormTarget({ isPath: true, pathOrId: target }, target, [top, api])).toBe(
+      api
+    );
+  });
+
+  it('leaves the colon form alone, whose pathOrId is shorter than the target', () => {
+    expect(
+      stackForPathFormTarget({ isPath: true, pathOrId: 'MyStage/Api/Fn' }, 'Top:MyStage/Api/Fn', [
+        top,
+        api,
+      ])
+    ).toBeUndefined();
+  });
+
+  it('leaves a non-path target alone', () => {
+    expect(
+      stackForPathFormTarget({ isPath: false, pathOrId: 'Fn' }, 'Fn', [top, api])
+    ).toBeUndefined();
   });
 });

@@ -73,7 +73,9 @@ The positional `<target>` accepts two forms:
 
 - **CDK display path** — `MyStack/MyApi/Handler`. An L2 path resolves to the
   synthesized L1 child (`MyStack/MyApi/Handler/Resource`), the same prefix rule
-  `cdkd orphan` uses.
+  `cdkd orphan` uses. For a stack inside a CDK `Stage` the path starts with
+  the Stage (`MyStage/MyStack/MyApi/Handler`): the stack is the one whose
+  display path is the longest prefix of the target.
 - **Stack-qualified logical ID** — `MyStack:MyApiHandler1234ABCD`. The colon is
   unambiguous, because logical IDs can contain neither `/` nor `:`.
 

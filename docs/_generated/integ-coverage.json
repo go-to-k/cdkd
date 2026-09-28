@@ -4487,6 +4487,7 @@
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy",
@@ -4760,6 +4761,9 @@
         ],
         "local-invoke-ruby": [
           "l1",
+          "l2"
+        ],
+        "local-invoke-stage": [
           "l2"
         ],
         "local-start-api": [

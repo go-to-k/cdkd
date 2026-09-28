@@ -31,7 +31,7 @@ import {
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { readCdkPathOrUndefined } from '../cdk-path.js';
+import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
@@ -505,8 +505,7 @@ async function localStartApiCommand(
     // shape and uses it as a third fallback for stack selection. Targets
     // without a `/` separator (bare logical id) leave this undefined so
     // the existing single-stack auto-pick path is untouched.
-    const targetStackPrefix =
-      target?.includes('/') === true ? target.slice(0, target.indexOf('/')) : undefined;
+    const targetStackPrefix = targetStackHint(target, stacks);
     const targetStacks = pickTargetStacks(
       stacks,
       options.stack,
@@ -1365,6 +1364,29 @@ async function localStartApiCommand(
 }
 
 /**
+ * The stack pattern a positional start-api target implies, or `undefined`
+ * when the target has no `/` (a bare logical id leaves the single-stack
+ * auto-pick untouched).
+ *
+ * It is the STACK whose display path is the LONGEST prefix of the target: a
+ * stack under a CDK Stage displays as `MyStage/Api`, so the target's first
+ * segment is the Stage id and never names a stack (go-to-k/cdkd#3953). The
+ * stack itself is returned, not its name: re-matching a physical name could
+ * select a second stack sharing it (a Stage deployed to two environments).
+ * A head no stack path prefixes -- a wildcard -- is still returned as a
+ * pattern for `matchStacks`.
+ *
+ * @internal exported for unit tests.
+ */
+export function targetStackHint(
+  target: string | undefined,
+  stacks: readonly StackInfo[]
+): StackInfo | string | undefined {
+  if (target?.includes('/') !== true) return undefined;
+  return stackForConstructPath(target, stacks) ?? target.slice(0, target.indexOf('/'));
+}
+
+/**
  * Match the `--stack` pattern (or single-stack auto-detect) to a list
  * of stacks the route-discovery walks. Mirrors the deploy/diff matcher
  * routing rules.
@@ -1375,18 +1397,20 @@ export function pickTargetStacks(
   stacks: StackInfo[],
   pattern: string | undefined,
   cfnStackFallback?: string,
-  targetFallback?: string
+  targetFallback?: StackInfo | string
 ): StackInfo[] {
   // Resolution chain (first non-empty wins):
   //   1. `--stack <pattern>`                            (explicit)
   //   2. `--from-cfn-stack <explicit-name>`             (PR #44 mirror)
   //   3. positional target's stack-name prefix          (PR #45 mirror)
-  //      e.g. `cdkd local start-api MyStack/MyApi` infers `MyStack`.
+  //      e.g. `cdkd local start-api MyStack/MyApi` infers `MyStack`;
+  //      `targetStackHint` passes the prefix-matched stack itself.
   //
   // CDK apps typically deploy each synth stack under its own stack-name,
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
+  if (effective !== undefined && typeof effective !== 'string') return [effective];
   if (effective) {
     return matchStacks(stacks, [effective]);
   }

@@ -3,7 +3,11 @@ import { existsSync, statSync } from 'node:fs';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
-import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
+import {
+  buildCdkPathIndex,
+  resolveCdkPathToLogicalIds,
+  stackForPathFormTarget,
+} from '../cli/cdk-path.js';
 import {
   hasEcrRegistryHostLabels,
   looksLikeEcrHostWithForeignSuffix,
@@ -591,7 +595,7 @@ export function resolveEcsTaskTarget(
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
   }
   const parsed = parseEcsTarget(target);
-  const stack = pickStack(parsed, stacks);
+  const stack = pickStack(parsed, stacks, target);
   const resources = stack.template.Resources ?? {};
 
   let logicalId: string | undefined;
@@ -638,7 +642,7 @@ export function resolveEcsTaskTarget(
   return extractTaskDefinitionProperties(stack, logicalId, resource, context);
 }
 
-function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[]): StackInfo {
+function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string): StackInfo {
   if (parsed.stackPattern === null) {
     if (stacks.length === 1) return stacks[0]!;
     throw new EcsTaskResolutionError(
@@ -647,6 +651,13 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[]): StackInfo {
         `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
     );
   }
+  // A path-form target's stack is the LONGEST display-path prefix, not the
+  // first segment, which is the Stage id for a Stage stack
+  // (go-to-k/cdkd#3953). A head no display path prefixes -- a wildcard such
+  // as `My*` -- still goes to matchStacks.
+  const byPrefix = stackForPathFormTarget(parsed, target, stacks);
+  if (byPrefix) return byPrefix;
+
   const matched = matchStacks(stacks, [parsed.stackPattern]);
   if (matched.length === 0) {
     throw new EcsTaskResolutionError(
