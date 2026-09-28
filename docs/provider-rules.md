@@ -1008,12 +1008,16 @@ Three rules, each of which has a failure mode behind it:
 - **Check what the API does with a repeat, and for how long.** Most return the
   original resource; Route 53 REFUSES a repeated `CallerReference`
   (`HostedZoneAlreadyExists`), so that provider recovers by looking the zone up
-  by its caller reference and adopting it. EFS is both at once: a
-  `CreateAccessPoint` `ClientToken` either replays, or is refused with
-  `AccessPointAlreadyExists` (which names the surviving `AccessPointId`), so
+  by its caller reference and adopting it. EFS refuses too: a repeated
+  `CreateAccessPoint` `ClientToken` is refused with `AccessPointAlreadyExists`
+  (which names the surviving `AccessPointId`) whether or not the repeat's
+  parameters match (measured in #2442), so
   `EFSProvider.createOrAdoptAccessPoint` reads that access point back, confirms
-  BOTH that its `ClientToken` is the one cdkd minted and that it belongs to the
-  file system cdkd asked for, and adopts it. A stable token that turns every
+  that its `ClientToken` is the one cdkd minted, that it belongs to the file
+  system cdkd asked for, and that its `PosixUser` and `RootDirectory` are the
+  ones this create requested (read through EFS's defaults: an absent or `null`
+  POSIX user, a `/` root), and adopts it. Because the refusal ignores the parameters, the
+  token alone would adopt a mismatched access point. A stable token that turns every
   retry into a hard failure is only half a fix. Note EFS documents no
   retirement period for this token -- the "one minute" in the EFS User Guide's
   "Creation token and idempotency" section is about file-system CREATION
