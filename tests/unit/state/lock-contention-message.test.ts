@@ -7,6 +7,7 @@ import {
   forceQuitRecoveryClause,
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { Command } from 'commander';
 import { stateOptions } from '../../../src/cli/options.js';
@@ -93,6 +94,12 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     // name. Suggesting nothing is the honest answer.
     expect(buildForceUnlockCommand('MyStack', '\u0000\u0001')).toBe('');
     expect(buildForceUnlockCommand('\u0000', 'us-east-1')).toBe('');
+    // A LITERAL empty region, not one that sanitizes to empty: only
+    // `undefined` means a legacy key. A `!region` test would read `''` as
+    // legacy and drop `--stack-region`, which the cases above cannot see
+    // because their region reaches the gate through `altered`.
+    expect(buildForceUnlockCommand('MyStack', '')).toBe('');
+    expect(buildForceUnlockCommand('', 'us-east-1')).toBe('');
   });
 
   it('emits NO command when the PROFILE is the value sanitization altered (issue go-to-k/cdkd#3377)', () => {
@@ -313,9 +320,15 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     // The sentence names the new causes beside the old one, and the shared
     // constant does too -- the enumeration test above pins the VALUES list;
     // this pins the REASONS.
+    // `changed by sanitizing` is the `altered` refusal, the most common one
+    // (`myΩstack`, a control character, a non-ASCII region) -- and the head
+    // prints the altered name visibly, so the list must not call it
+    // unrenderable.
     for (const text of [message, UNREPRODUCIBLE_LOCK_CLAUSE]) {
-      expect(text).toContain("beginning with '-', which cdkd refuses rather than risk it parsing as an option");
-      expect(text).toContain('too long');
+      expect(text).toContain(
+        "(changed by sanitizing, unrenderable, empty, too long, or beginning with '-', " +
+          'which cdkd refuses rather than risk it parsing as an option)'
+      );
     }
   });
 
@@ -323,43 +336,51 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     // The paste fence for THIS site (`tests/unit/utils/paste-harness.ts`): the
     // plain-name message is inert in every span; a payload one is held to the
     // per-block criterion whether the gate named or withheld it.
-    const named = await buildLockContentionMessage({
+    const plain = await buildLockContentionMessage({
       lockManager: lockManagerReturning(null),
       stackName: 'MyStack',
       region: 'us-east-1',
       recovery: { profile: 'prod', stateBucket: 'cdkd-state-111122223333' },
     });
-    expect(named).toContain('run: cdkd force-unlock MyStack --stack-region us-east-1 --profile prod');
+    expect(plain).toContain('run: cdkd force-unlock MyStack --stack-region us-east-1 --profile prod');
+    const messageFor = (stackName: string) =>
+      buildLockContentionMessage({
+        lockManager: lockManagerReturning(null),
+        stackName,
+        region: 'us-east-1',
+      });
+    // Every payload family renders EXACTLY (printable ASCII, no leading `-`),
+    // so each is NAMED. Its withheld twins are the two refusals that print the
+    // no-command sentence instead: option-shaped (a leading `-`) and over-cap.
+    const named: Array<{ value: string; message: string }> = [];
     const withheld: Array<{ value: string; message: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
-      withheld.push({
-        value,
-        message: await buildLockContentionMessage({
-          lockManager: lockManagerReturning(null),
-          stackName: value,
-          region: 'us-east-1',
-        }),
-      });
+      named.push({ value, message: await messageFor(value) });
+      for (const twin of [`-${value}`, `${'q'.repeat(1152)}${value}`]) {
+        withheld.push({ value: twin, message: await messageFor(twin) });
+      }
     }
     withPasteDir((dir) => {
-      expect(spansThatRun(named, dir)).toEqual([]);
-      // A payload that renders EXACTLY (printable ASCII, no leading `-`) is
-      // NAMED, shell-quoted, on the command -- the separator and substitution
-      // families are -- and the message still displays it in prose. Measured:
-      // NO span runs for any family here (the `(` of the region parenthesis
-      // aborts every span holding the head before expansion), so the stronger
-      // contract is what is pinned rather than the residual criterion, which
-      // would accept a future running display.
-      for (const { value, message } of withheld) {
-        if (message.includes('cdkd force-unlock')) {
-          expect(message, value).toContain(`run: cdkd force-unlock '`);
-        }
+      expect(spansThatRun(plain, dir)).toEqual([]);
+      // Measured: NO span runs for any family here (the `(` of the region
+      // parenthesis aborts every span holding the head before expansion), so
+      // the stronger contract is what is pinned rather than the residual
+      // criterion, which would accept a future running display.
+      for (const { value, message } of named) {
+        expect(message, value).toContain(
+          `run: cdkd force-unlock ${shellQuote(value)} --stack-region us-east-1`
+        );
         // The head's boundary is pinned DIRECTLY, not only through the paste:
         // a shell-quoted head (`'x; touch OWNED; #'`) is inert under every
         // family here too, so the harness alone would let it back (proxy
         // pass). `displayStackName` JSON-quotes a non-plain value.
         expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
         expect(message, value).not.toContain(`for stack '${value}'`);
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      }
+      for (const { value, message } of withheld) {
+        expect(message, value).not.toContain('cdkd force-unlock');
+        expect(message, value).toContain('No recovery command can be shown');
         expect(spansThatRun(message, dir), value).toEqual([]);
       }
     });
@@ -484,7 +505,7 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     for (const msg of [stack, nested, child]) {
       expect(msg).toContain('Could not acquire lock for');
     }
-    // A plain name renders BARE through `displayIdent`'s boundary since
+    // A plain name renders BARE through `displayStackName`'s boundary since
     // go-to-k/cdkd#3436's second half (a non-plain one is JSON-quoted); the
     // hand-written `'...'` around it is gone.
     expect(stack).toContain('lock for stack MyStack (');

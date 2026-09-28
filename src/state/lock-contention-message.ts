@@ -321,8 +321,9 @@ export const UNREPRODUCIBLE_LOCK_VALUES = 'the name, region, profile, state buck
 
 export const UNREPRODUCIBLE_LOCK_CLAUSE =
   `Inspect the lock object directly: ${UNREPRODUCIBLE_LOCK_VALUES} recorded for ` +
-  `this stack cannot be reproduced safely on a command line (unrenderable, empty, ` +
-  `too long, or beginning with '-', which cdkd refuses rather than risk it parsing ` +
+  `this stack cannot be reproduced safely on a command line (changed by sanitizing, ` +
+  `unrenderable, empty, too long, or beginning with '-', which cdkd refuses rather ` +
+  `than risk it parsing ` +
   `as an option), so no command is shown: one built from it could address a ` +
   `different lock.`;
 
@@ -409,14 +410,16 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // early-return branch for the unrenderable case, and the two had ALREADY
   // drifted (the branch dropped `advice`) — which is the divergence this module
   // exists to end, reproduced inside the module itself.
-  // The stack name in `displayIdent`'s boundary rather than inside cdkd's own
+  // The stack name in `displayStackName`'s boundary rather than inside cdkd's own
   // `'...'` (go-to-k/cdkd#3436's paste fence measured the hand-quoted form: a
   // name `x'$(touch OWNED) #` closed the prose quote and the rest ran when the
   // sentence was pasted — the go-to-k/cdkd#3706 / #3725 convention, applied
   // here). `displayStackName`, not `displayIdent`: the stack-ref cap (1152), the
   // same the command is gated at, so a long nested name is not cut in the head
   // while named whole in the command. A plain name renders bare; the region
-  // stays inside parentheses.
+  // stays inside parentheses. The paste resistance of a `$(...)` or backtick
+  // name inside `displayStackName`'s double quotes currently rests on that
+  // following ` (region)` parenthesis, which aborts the span before expansion.
   const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
   const head =
     `Could not acquire lock for ${subject} ${displayStackName(stackName)} (${safeRegion}) — ${held}.` +
@@ -431,8 +434,9 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
     return (
       `${head} ${advice}. ` +
       `No recovery command can be shown: ${UNREPRODUCIBLE_LOCK_VALUES} recorded ` +
-      `for this lock cannot be reproduced safely on a command line (unrenderable, ` +
-      `empty, too long, or beginning with '-', which cdkd refuses rather than risk it ` +
+      `for this lock cannot be reproduced safely on a command line (changed by ` +
+      `sanitizing, unrenderable, empty, too long, or beginning with '-', which cdkd ` +
+      `refuses rather than risk it ` +
       `parsing as an option), so no command is shown: one built from it could ` +
       `address a different lock — inspect the lock object directly.`
     );
