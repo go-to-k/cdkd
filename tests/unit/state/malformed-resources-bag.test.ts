@@ -39,6 +39,8 @@ import {
   malformedOrphanRowsKeptWarning,
   malformedResourcePropertiesRefusalMessage,
   malformedResourcePropertiesWarning,
+  malformedDriftResourcePropertiesRefusalMessage,
+  malformedDriftResourcePropertiesWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedNestedChildOutputs,
@@ -64,6 +66,7 @@ import {
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceEntriesForDestroy,
   refuseMalformedResourceProperties,
+  refuseMalformedResourcePropertiesForDrift,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
   refuseMalformedResourcesForDestroy,
@@ -3556,7 +3559,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(20);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(21);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3629,8 +3632,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // through the second, for the message and the SCOPE rather than for the
     // verdict — both read `unreadableResourcePropertyBags`, the orphan one
     // subtracting the records its save is deleting.
+    // A THIRD since go-to-k/cdkd#3315: `cdkd drift --accept` / `--revert`,
+    // whose text describes writing the record back rather than a diff.
     expect([...properties].sort()).toEqual([
       'refuseMalformedResourceProperties(',
+      'refuseMalformedResourcePropertiesForDrift(',
       'refuseMalformedResourcePropertiesForOrphan(',
     ]);
     expect(
@@ -4424,6 +4430,10 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
       'the exempt sibling above — `rewriteResourceReferences` is called from nowhere else, so ' +
       'no withRetry encloses it and the marker would fence nothing. Revisit if a retrying ' +
       'caller is added.',
+    'refuseMalformedResourcePropertiesForDrift(':
+      'go-to-k/cdkd#3315. Its ONE caller is `cdkd drift --accept` / `--revert`, raising at the ' +
+      'load beside refuseMalformedResourceEntries — drift retries only the provider update, well ' +
+      'after this refusal. Revisit if a retrying caller is added.',
     'refuseMalformedResourceEntriesForOrphan(':
       'go-to-k/cdkd#3350. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
       'refuseMalformedResourcePropertiesForOrphan, with no withRetry around it. Revisit if a ' +
@@ -4456,7 +4466,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(20);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(21);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -4605,6 +4615,103 @@ describe('refuseMalformedResourceProperties (issue go-to-k/cdkd#3191)', () => {
     // docs warn about; this pins that THIS one stays silent rather than
     // inventing per-character ids.
     expect(() => refuseMalformedResourceProperties(state('ab'), 'S', 'us-east-1')).not.toThrow();
+  });
+});
+
+/**
+ * `cdkd drift`'s pair over the `properties` container (issue
+ * [go-to-k/cdkd#3315](https://github.com/go-to-k/cdkd/issues/3315)). Its own
+ * texts because the deploy / diff ones describe a template diff and a
+ * `--dry-run` drift does not have; the verdict is the shared predicate's.
+ */
+describe('cdkd drift properties refusal and warning (issue go-to-k/cdkd#3315)', () => {
+  for (const [label, value] of UNREADABLE) {
+    it(`refuses a bag that is ${label}, with the shared code and NO retry marker`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedResourcePropertiesForDrift(withProperties(value), 'S', 'us-east-1');
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      // Raised from drift's own flow, outside any withRetry (UNMARKED above).
+      expect(isMarkedNonRetryable(thrown as Error)).toBe(false);
+      expect((thrown as Error).message).toBe(
+        malformedDriftResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])
+      );
+    });
+  }
+
+  it('does not throw for a healthy record, an EMPTY map, or an unreadable BAG', () => {
+    expect(() =>
+      refuseMalformedResourcePropertiesForDrift(withProperties({ K: 'v' }), 'S', 'us-east-1')
+    ).not.toThrow();
+    expect(() =>
+      refuseMalformedResourcePropertiesForDrift(withProperties({}), 'S', 'us-east-1')
+    ).not.toThrow();
+    // The bag is refuseMalformedState's to name; this one stays silent rather
+    // than inventing per-character ids.
+    expect(() =>
+      refuseMalformedResourcePropertiesForDrift(state('ab'), 'S', 'us-east-1')
+    ).not.toThrow();
+  });
+
+  const TEXTS = [
+    ['refusal', malformedDriftResourcePropertiesRefusalMessage],
+    ['warning', malformedDriftResourcePropertiesWarning],
+  ] as const;
+
+  for (const [label, build] of TEXTS) {
+    it(`the ${label} speaks for drift, not for deploy or diff`, () => {
+      const text = build('S', 'us-east-1', ['A']);
+      expect(text).toContain("holds 1 resource record(s) whose 'properties' map cannot be read");
+      // What the bag is to drift, which is the reason either text exists.
+      expect(text).toContain("the baseline wherever no 'observedProperties' is recorded");
+      expect(text).toContain('reports the resource clean');
+      expect(text).toContain('secret positions');
+      // The deploy / diff texts' own claims, false under drift.
+      expect(text).not.toContain("'cdkd deploy' can WRITE");
+      expect(text).not.toContain('--dry-run');
+      expect(text).not.toContain('previews as an');
+      // Nor the template-comparison sentence the deploy / diff / orphan clause
+      // appends: drift compares no template and replaces nothing.
+      expect(text).not.toContain('Comparing a template');
+      expect(text).not.toContain('REPLACEMENT');
+      // Ends ON the read, per the module's paste rule.
+      expect(text.endsWith('cdkd state show S --stack-region us-east-1 --json')).toBe(true);
+    });
+
+    it(`the ${label} names up to five ids, then counts the rest`, () => {
+      const text = build('S', 'us-east-1', ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']);
+      expect(text).toContain('A1, B2, C3, D4, E5 and 1 more');
+      expect(text).not.toContain('F6');
+    });
+  }
+
+  it('the deploy, diff and orphan texts KEEP the template sentence the drift pair drops', () => {
+    // The split must remove the sentence from drift only.
+    for (const text of [
+      malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']),
+      malformedResourcePropertiesWarning('S', 'us-east-1', ['A']),
+      malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']),
+    ]) {
+      expect(text).toContain('a create-only property among them is a REPLACEMENT of the live');
+    }
+  });
+
+  it('the refusal names both write modes and what continuing would do', () => {
+    const text = malformedDriftResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).toContain("'cdkd drift --accept' and '--revert' WRITE this record back");
+    expect(text).toContain("'--revert' push to the live resource");
+    expect(text).toContain('Nothing was written and no AWS resource was modified.');
+  });
+
+  it('the warning says the resources are NOT compared and the run does not exit clean', () => {
+    const text = malformedDriftResourcePropertiesWarning('S', 'us-east-1', ['A']);
+    expect(text).toContain("'cdkd drift' does NOT compare these resources");
+    expect(text).toContain('the run does not exit clean');
+    expect(text).toContain("'cdkd drift --accept' / '--revert' and 'cdkd deploy' REFUSE");
   });
 });
 
@@ -7278,6 +7385,15 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedOrphanResourcePropertiesRefusalMessage',
       (s, r) => malformedOrphanResourcePropertiesRefusalMessage(s, r, ['A']),
     ],
+    // go-to-k/cdkd#3315: `cdkd drift`'s pair over the same container.
+    [
+      'malformedDriftResourcePropertiesRefusalMessage',
+      (s, r) => malformedDriftResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+    [
+      'malformedDriftResourcePropertiesWarning',
+      (s, r) => malformedDriftResourcePropertiesWarning(s, r, ['A']),
+    ],
     [
       'malformedExportNamesWarning',
       (s, r) => malformedExportNamesWarning(s as string, r as string),
@@ -7483,6 +7599,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedResourceEntriesForImportSave',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
+      'refuseMalformedResourcePropertiesForDrift',
       'refuseMalformedResourcePropertiesForOrphan',
       'refuseMalformedResourcesForDeploy',
       'refuseMalformedResourcesForDestroy',
@@ -7576,6 +7693,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
     entry(malformedDeployResourcesRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedDestroyOutputsRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedDestroyResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedDriftResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedDriftResourcePropertiesWarning, (f, s, r) => f(s, r, ['A'])),
     entry(malformedExportNamesWarning, (f, s, r) => f(s, r)),
     entry(malformedExportSourceWarning, (f, s, r) => f(s, r)),
     entry(malformedImportUnrepairedEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),

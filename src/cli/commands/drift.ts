@@ -21,11 +21,14 @@ import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend
 import { LockManager } from '../../state/lock-manager.js';
 import {
   isReadableResourceEntry,
+  malformedDriftResourcePropertiesWarning,
   malformedResourceEntriesWarning,
   malformedResourcesWarning,
   refuseMalformedResourceEntries,
+  refuseMalformedResourcePropertiesForDrift,
   refuseMalformedState,
   repairMalformedResourceEntriesForReadOnly,
+  repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
   UNREADABLE_RESOURCES_MAP_ROW,
 } from '../../state/malformed-resources-bag.js';
@@ -185,10 +188,13 @@ export type NotComparedCause =
    */
   | 'uncertifiedBaseline'
   /**
-   * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018).
+   * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018),
+   * or one whose `properties` map is not an object (go-to-k/cdkd#3315) — a
+   * baseline read as `{}` walks no keys, so comparing it would report CLEAN.
    *
    * Carried as an OUTCOME rather than left as a warning, because `cdkd drift`
-   * is a CI gate: the read-only mode DROPS such a row so the rest of the stack
+   * is a CI gate: the read-only mode DROPS such a row (or, for a torn
+   * `properties` map, repairs it and withholds it from comparison) so the rest of the stack
    * can still be compared, and a dropped row that produced no outcome appeared
    * in no `--json` array and in no count, so the run exited 0 with the only
    * signal on stderr. Before this class was handled at all the same record
@@ -1655,8 +1661,9 @@ function notComparedReason(cause: NotComparedCause): string {
       '(permanent; a re-run cannot clear it)',
     readFailed: 'the read or comparison threw, so NONE of its properties were compared',
     unreadableRecord:
-      'its state record is not readable as a resource — not an object, or carrying no ' +
-      'resource type — so there was nothing to compare (repair or re-import the record)',
+      'its state record is not readable as a resource — not an object, carrying no ' +
+      "resource type, or holding a 'properties' map that is not an object — so there was " +
+      'nothing to compare (repair or re-import the record)',
     baselineRefused:
       'a `cdkd import` run refused to capture its observed baseline, so the only ' +
       'baseline available is the recorded properties that refusal already found ' +
@@ -2497,9 +2504,16 @@ async function runDriftForStack(
     // warning explains. (The FABRICATING failure is `cdkd state resources`'s,
     // one command over, and is what go-to-k/cdkd#3172 fixed; the difference is
     // that this walk dereferences each entry while that one rendered it.)
+    // go-to-k/cdkd#3315: the ids whose `properties` map was repaired to `{}`.
+    // Each is reported `notCompared` in the walk below rather than compared,
+    // because a `{}` baseline walks no keys and would read as CLEAN.
+    let unreadablePropertyBags: ReadonlySet<string> = new Set();
     if (malformedRecordMode === 'refuse') {
       refuseMalformedState(state, stackName, region);
       refuseMalformedResourceEntries(state, stackName, region);
+      // After the entry refusal: a typeless object with a torn map is named by
+      // both, and the entry text is the more precise diagnosis.
+      refuseMalformedResourcePropertiesForDrift(state, stackName, region);
     } else {
       if (repairMalformedResourcesForReadOnly(state)) {
         logger.warn(malformedResourcesWarning(stackName, region));
@@ -2537,6 +2551,15 @@ async function runDriftForStack(
             notComparedCause: 'unreadableRecord',
           });
         }
+      }
+      // AFTER the entry drop, so a typeless object with a torn map is reported
+      // once, as an unreadable entry. The repair keeps the row (its type and
+      // physical id are real) and gives sibling readers a readable map; the
+      // walk below reports it instead of comparing it.
+      const repaired = repairMalformedResourcePropertiesForReadOnly(state);
+      if (repaired.length > 0) {
+        logger.warn(malformedDriftResourcePropertiesWarning(stackName, region, repaired));
+        unreadablePropertyBags = new Set(repaired);
       }
     }
     // Issue #1914: the resolver used to re-resolve the secret expressions this
@@ -2606,6 +2629,19 @@ async function runDriftForStack(
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [logicalId, resource] of entries) {
+      // go-to-k/cdkd#3315. FIRST, above the skip rules: the warning names every
+      // repaired id as not compared, so every one of them gets the outcome —
+      // a type drift never compares included. That exit 2 is intended: the
+      // record is damaged whatever its type, and a CI gate must see it.
+      if (unreadablePropertyBags.has(logicalId)) {
+        outcomes.push({
+          kind: 'notCompared',
+          logicalId,
+          resourceType: resource.resourceType,
+          notComparedCause: 'unreadableRecord',
+        });
+        continue;
+      }
       if (providerRegistry.shouldSkipResource(resource.resourceType)) {
         continue;
       }

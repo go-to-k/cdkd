@@ -5107,6 +5107,357 @@ describe('cdkd drift over a malformed state record (issue #3018)', () => {
 });
 
 /**
+ * Issue [#3315](https://github.com/go-to-k/cdkd/issues/3315): a resource entry
+ * whose `properties` map is not an object. Plain `cdkd drift` repairs it to
+ * `{}`, warns, and reports the resource `notCompared` — a `{}` baseline walks no
+ * keys, so comparing it would report CLEAN having checked nothing. `--accept` /
+ * `--revert` refuse at the load, before any readback or lock.
+ */
+describe('cdkd drift over an unreadable properties map (issue #3315)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  /** Every shape `JSON.parse` yields for a `properties` value that is not a map. */
+  const TORN_MAPS: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ['absent', undefined],
+    ['a string', 'abcdef'],
+    ['an empty string', ''],
+    ['a number', 5],
+    ['zero', 0],
+    ['true', true],
+    ['false', false],
+    ['an empty list', []],
+    ['a populated list', [{ BucketName: 'b' }]],
+  ];
+
+  function torn(properties: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const entry: Record<string, unknown> = {
+      physicalId: 'torn-phys',
+      resourceType: 'AWS::S3::Bucket',
+      ...extra,
+    };
+    if (properties !== undefined) entry['properties'] = properties;
+    return entry;
+  }
+
+  function stateWith(resources: Record<string, unknown>): { state: StackState; etag: string } {
+    return {
+      state: {
+        version: 2,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        resources: resources as StackState['resources'],
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"etag-1"',
+    };
+  }
+
+  const healthy = (): ResourceState =>
+    makeResource({
+      physicalId: 'healthy-phys',
+      resourceType: 'AWS::S3::Bucket',
+      properties: { BucketName: 'b' },
+    });
+
+  /**
+   * A readback that DIFFERS from any baseline, so a torn resource that were
+   * compared against its repaired `{}` would report clean only because the
+   * walk visits no key — the false clean this lane closes. Records every
+   * physical id it was asked about.
+   */
+  function recordingProvider(): { read: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> } {
+    const read = vi.fn(async (physicalId: string) =>
+      physicalId === 'healthy-phys' ? { BucketName: 'b' } : { BucketName: 'live-value' }
+    );
+    const update = vi.fn(async () => ({ physicalId: 'x', wasReplaced: false }));
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: read, update });
+    return { read, update };
+  }
+
+  for (const [shape, value] of TORN_MAPS) {
+    it(`plain drift reports a resource whose map is ${shape} as NOT compared, never clean`, async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        stateWith({ HealthyBucket: healthy(), TornBucket: torn(value) })
+      );
+      const { read } = recordingProvider();
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      // EXIT 2: the resource was not compared. Without the skip it compares a
+      // `{}` baseline, walks no key, and the run exits 0.
+      expect(error).toBeDefined();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnings).toContain("'properties' map cannot be read — TornBucket —");
+      expect(warnings).toContain("'cdkd drift' does NOT compare these resources");
+      expect(warnings).toContain('State for TestStack (us-east-1)');
+      // The row keeps its REAL type — it is not an unreadable entry.
+      expect(output).toContain(
+        '! TornBucket (AWS::S3::Bucket) — its state record is not readable as a resource'
+      );
+      // The reason names THIS defect, not only the entry shapes it was written for.
+      expect(output).toContain("holding a 'properties' map that is not an object");
+      expect(output).toContain('1 of 2 resource');
+      // Never read back: the outcome is decided before any AWS call.
+      expect(read.mock.calls.map((c) => c[0])).not.toContain('torn-phys');
+      expect(read.mock.calls.map((c) => c[0])).toContain('healthy-phys');
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+  }
+
+  it('the notCompared row reaches --json with its real type and the unreadableRecord cause', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ HealthyBucket: healthy(), TornBucket: torn('abcdef') })
+    );
+    recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      notCompared?: Array<Record<string, unknown>>;
+      clean?: Array<{ logicalId: string }>;
+    }>;
+
+    expect(payload[0]!.notCompared).toEqual([
+      {
+        logicalId: 'TornBucket',
+        type: 'AWS::S3::Bucket',
+        referencesUnresolved: false,
+        cause: 'unreadableRecord',
+      },
+    ]);
+    expect((payload[0]!.clean ?? []).map((c) => c.logicalId)).toEqual(['HealthyBucket']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('is NOT compared even when an observed baseline is recorded', async () => {
+    // The map is still where the secret positions come from, so the observed
+    // baseline alone does not license a comparison.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({
+        HealthyBucket: healthy(),
+        TornBucket: torn('abcdef', { observedProperties: { BucketName: 'live-value' } }),
+      })
+    );
+    const { read } = recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{ notCompared?: Array<{ logicalId: string }> }>;
+
+    expect((payload[0]!.notCompared ?? []).map((n) => n.logicalId)).toEqual(['TornBucket']);
+    expect(read.mock.calls.map((c) => c[0])).not.toContain('torn-phys');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a torn SIBLING reaches a provider as an empty map, not as its stored string', async () => {
+    // The repair's second job: `buildReadCurrentStateContext` hands every
+    // sibling's `properties` to the provider being read.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ HealthyBucket: healthy(), TornBucket: torn('abcdef') })
+    );
+    const { read } = recordingProvider();
+
+    await runDrift(['TestStack']);
+
+    const healthyCall = read.mock.calls.find((c) => c[0] === 'healthy-phys');
+    expect(healthyCall).toBeDefined();
+    const context = healthyCall![4] as { siblings: Record<string, { properties: unknown }> };
+    expect(context.siblings['TornBucket']!.properties).toEqual({});
+  });
+
+  it('names EVERY repaired resource and reports each one', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const resources: Record<string, unknown> = { HealthyBucket: healthy() };
+    const ids = ['A1', 'B2', 'C3', 'D4', 'E5', 'F6'];
+    for (const id of ids) resources[id] = torn('x');
+    mockGetState.mockResolvedValueOnce(stateWith(resources));
+    recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{ notCompared?: Array<{ logicalId: string }> }>;
+
+    expect((payload[0]!.notCompared ?? []).map((n) => n.logicalId).sort()).toEqual(ids);
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain('6 resource record(s)');
+    expect(warnings).toContain('and 1 more');
+  });
+
+  it('reports a torn CUSTOM resource as not compared too, as the warning says', async () => {
+    // The check sits ABOVE the skip rules: a Custom Resource would otherwise
+    // route to `skipped` (exit 0) under a warning that named it not compared.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ TornCustom: torn('x', { resourceType: 'Custom::Thing' }) })
+    );
+    recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{ notCompared?: Array<{ logicalId: string }> }>;
+
+    expect((payload[0]!.notCompared ?? []).map((n) => n.logicalId)).toEqual(['TornCustom']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('reports a torn resource of a SKIPPED type as not compared too', async () => {
+    // Above `shouldSkipResource` as well as the Custom Resource routing: a
+    // skipped type would otherwise vanish silently under a warning naming it.
+    mockRegistryShouldSkip.mockImplementation((t: string) => t === 'AWS::CDK::Metadata');
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ TornMeta: torn('x', { resourceType: 'AWS::CDK::Metadata' }) })
+    );
+    recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{ notCompared?: Array<{ logicalId: string }> }>;
+
+    expect((payload[0]!.notCompared ?? []).map((n) => n.logicalId)).toEqual(['TornMeta']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('exits 1, not 2, when a sibling really drifted beside the torn row', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ HealthyBucket: healthy(), TornBucket: torn('abcdef') })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'changed' }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(output).toContain('! TornBucket (AWS::S3::Bucket)');
+  });
+
+  it('a typeless object with a torn map is reported ONCE, as an unreadable entry', async () => {
+    // The entry drop runs first, so the properties pass never sees the row.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ HealthyBucket: healthy(), Typeless: { physicalId: 'p', properties: 'x' } })
+    );
+    recordingProvider();
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      notCompared?: Array<{ logicalId: string; type: string }>;
+    }>;
+
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Typeless', type: 'unreadable record' }),
+    ]);
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).not.toContain("'properties' map cannot be read");
+  });
+
+  it('says NOTHING about a resource whose map is EMPTY — {} is a healthy record', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({
+        HealthyBucket: healthy(),
+        EmptyBucket: { physicalId: 'healthy-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
+      })
+    );
+    recordingProvider();
+
+    const { error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).not.toContain("'properties' map cannot be read");
+  });
+
+  for (const flag of ['--accept', '--revert'] as const) {
+    for (const [shape, value] of TORN_MAPS) {
+      it(`${flag} REFUSES a map that is ${shape}, before any readback or lock`, async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          stateWith({ HealthyBucket: healthy(), TornBucket: torn(value) })
+        );
+        const { read, update } = recordingProvider();
+
+        const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+        expect(error).toBeDefined();
+        // EVERY error line, so the negative assertions below cannot pass by
+        // reading some other message.
+        const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(message).toContain("'properties' map cannot be read — TornBucket —");
+        expect(message).not.toContain('HealthyBucket');
+        expect(message).toContain("'cdkd drift --accept' and '--revert' WRITE this record back");
+        // Not the deploy text, which names the wrong command.
+        expect(message).not.toContain("'cdkd deploy' can WRITE");
+        expect(message).toContain('State for TestStack (us-east-1)');
+        expect(read).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(mockAcquireLock).not.toHaveBeenCalled();
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+    }
+
+    it(`${flag} refuses a typeless object with a torn map through the ENTRY refusal`, async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        stateWith({ HealthyBucket: healthy(), Typeless: { physicalId: 'p', properties: 'x' } })
+      );
+      recordingProvider();
+
+      const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('carry no resource type');
+      expect(message).not.toContain("'properties' map cannot be read");
+    });
+
+    it(`${flag} still runs over an EMPTY map — the refusal is not a blanket one`, async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        stateWith({
+          HealthyBucket: healthy(),
+          EmptyBucket: { physicalId: 'healthy-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
+        })
+      );
+      recordingProvider();
+
+      const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).not.toContain(
+        "'properties' map cannot be read"
+      );
+    });
+  }
+});
+
+/**
  * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018), the SHARED helper.
  *
  * `buildReadCurrentStateContext` is exported and has three callers with three

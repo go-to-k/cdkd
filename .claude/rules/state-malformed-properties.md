@@ -3,6 +3,7 @@ description: REFUSE vs REPAIR over an unreadable resource properties map
 paths:
   - 'src/analyzer/diff-calculator.ts'
   - 'src/cli/commands/diff-recursive.ts'
+  - 'src/cli/commands/drift.ts'
 ---
 
 # The `properties` container
@@ -12,9 +13,10 @@ Issue [#3191](https://github.com/go-to-k/cdkd/issues/3191), in
 [state-malformed-containers.md](state-malformed-containers.md).
 
 `unreadableResourcePropertyBags` is the ONE predicate.
-`refuseMalformedResourceProperties` (`deploy`) and
-`refuseMalformedResourcePropertiesForOrphan` (`orphan`) are the write-capable
-callers, differing in MESSAGE and SCOPE but never the verdict; read-only is
+`refuseMalformedResourceProperties` (`deploy`),
+`refuseMalformedResourcePropertiesForOrphan` (`orphan`) and
+`refuseMalformedResourcePropertiesForDrift` (`drift --accept` / `--revert`) are
+the write-capable callers, differing in MESSAGE and SCOPE but never the verdict; read-only is
 `repairMalformedResourcePropertiesForReadOnly`. It works per ENTRY, so messages
 can NAME damaged records; it SKIPS a non-object entry and returns
 `[]` for an unreadable `resources` bag, so its verdict is independent of the
@@ -56,3 +58,8 @@ refuses them (go-to-k/cdkd#3512).
 `cdkd orphan` runs no diff, and keeps its orphan-set parameter so recovery stays
 open
 ([state-malformed-properties-orphan.md](state-malformed-properties-orphan.md)).
+
+`cdkd drift` (go-to-k/cdkd#3315) refuses at its one load under `--accept` /
+`--revert`. Detection repairs, warns, and reports each id `notCompared`
+(`unreadableRecord`) WITHOUT comparing it: a `{}` baseline walks no keys, so
+comparing the repaired row is a false CLEAN.
