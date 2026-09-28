@@ -64,12 +64,11 @@
  * Re-derive the members with that issue's greps rather than trusting a list:
  * these are kinds of site, and each kind has more members than the examples.
  *
- * - **Its own copy of the gate.** The `cdkd orphan` properties refusal
- *   (`state/malformed-resources-bag.ts`, go-to-k/cdkd#3523), and others in
- *   `deployment/deploy-engine.ts` and `deployment/rollback-executor.ts`
- *   (`cli/commands/gc.ts`, `buildForceUnlockCommand` and `cli/commands/
- *   export.ts`'s `orphanCommandFor` left this list in go-to-k/cdkd#3436's
- *   second half). They behave the same way; they are not this function, so a rule
+ * - **Its own copy of the gate.** Others in `deployment/deploy-engine.ts` and
+ *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts`,
+ *   `buildForceUnlockCommand`, `cli/commands/export.ts`'s `orphanCommandFor`
+ *   and the `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts`
+ *   left this list in go-to-k/cdkd#3436's second half). They behave the same way; they are not this function, so a rule
  *   change reaches them only by hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
  *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
@@ -305,8 +304,9 @@ export interface PasteableCommand {
    * and its `cdkd state show` line, a read, prints the hole.
    * `buildForceUnlockCommand` suppresses `cdkd force-unlock`, which deletes
    * another process's lock, where a filled hole is the wrong-lock harm. The
-   * `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts` still
-   * carries its own copy (go-to-k/cdkd#3523).
+   * `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts` and
+   * `cli/commands/export.ts`'s `orphanCommandFor` print the hole, and read
+   * `withheld` for the sentence around it.
    */
   readonly exact: boolean;
 }

@@ -190,8 +190,14 @@ DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128), and
 KEY region at the state-record cap (go-to-k/cdkd#3328).
 
 `dropRecordCommand` is the EXCEPTION and it is open: it SUBSTITUTES rather than
-templating and still gates on `rendersExactly` alone — a trade-off, not an
-oversight (go-to-k/cdkd#3523 carries why, and the behaviour is pinned). Every
+templating and gates through the shared `pasteableCommand` gate WITHOUT
+`plainIdent` — a trade-off, not an oversight (go-to-k/cdkd#3523 carries why, and
+the behaviour is pinned). The gate withholds an altered, capped or
+leading-`-` name; a label-spelling name still substitutes. Its `cdkd state show`
+line and withheld-identity clause read the SAME verdict, and a name beginning
+with `-` is never to be filled back in (go-to-k/cdkd#3436). It serves every
+`cdkd orphan` refusal built on `orphanRefusal` (the `properties`, entry and
+`attributes` refusals and the three over a malformed `orphans` list). Every
 other message here offers a read ONLY: `inspectCommand` builds it through the
 shared gate with `plainIdent` on BOTH values, so an altered, capped,
 option-shaped or non-plain name prints as a hole rather than as its sanitized
