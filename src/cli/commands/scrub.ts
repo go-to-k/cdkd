@@ -31,7 +31,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
@@ -562,6 +562,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const allStacks = result.stacks;
 
   const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
+  if (allStacks.length === 0) {
+    // Reached before the branch chain below, as in `deploy`: with zero stacks
+    // and no pattern the `else` arm would answer `Multiple stacks found: .`,
+    // and `--all` would answer `No stacks matched.` -- zero stacks being
+    // exactly what an app whose only stacks live in a Stage that failed to
+    // load produces (issue go-to-k/cdkd#3507).
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+  }
   let targetStacks: StackInfo[];
   if (options.all) {
     targetStacks = allStacks;
@@ -576,7 +584,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
   if (targetStacks.length === 0) {
-    throw new Error('No stacks matched.');
+    // The shared renderer names the patterns, the available stacks and a
+    // Stage that failed to load (issue go-to-k/cdkd#3507).
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
   }
 
   // MACROS FIRST, then ordering (issue #2133 review). `expandMacrosForStacks`

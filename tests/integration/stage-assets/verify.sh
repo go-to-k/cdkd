@@ -30,8 +30,10 @@
 #      future CDK change that flattens it turns this into a loud failure
 #      rather than a silently vacuous run.
 #   3. invoke both Lambdas and assert their DISTINCT markers.
-#   3b. hide the Stage's manifest.json and assert destroy names the Stage and
-#      leaves the stack in state (go-to-k/cdkd#3507).
+#   3b. (Phase 2b) hide the Stage's manifest.json and assert destroy names
+#      the Stage and leaves the stack in state (go-to-k/cdkd#3507).
+#   3c. (Phase 2c) the same for `scrub --dry-run`, after a control over the
+#      intact assembly (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -96,7 +98,7 @@ cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  # An interrupt inside Phase 2b would otherwise leave cdk.out with the
+  # An interrupt inside Phase 2b or 2c would otherwise leave cdk.out with the
   # Stage's manifest hidden.
   if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
     mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
@@ -315,6 +317,45 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev
   exit 1
 fi
 echo "    OK: Stage named, stack left in place"
+
+# --- Phase 2c: scrub while the Stage fails to load names the Stage ----------
+# The scrub twin of Phase 2b (go-to-k/cdkd#3507): with the Stage's manifest
+# hidden the display path selects nothing, and scrub must refuse naming the
+# pattern and the Stage rather than answer a bare "No stacks matched.". The
+# control runs first, over the intact assembly, so the refusal is attributable
+# to the hidden manifest and not to a pattern scrub could never select.
+# `--dry-run` on both: this phase asserts selection, and writes no state.
+echo "==> Phase 2c: scrub with the Stage manifest hidden names the Stage"
+set +e
+SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK_PATH}" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+SCRUB_RC=$?
+set -e
+printf '%s\n' "${SCRUB_OUT}"
+if [ "${SCRUB_RC}" -ne 0 ]; then
+  echo "FAIL: control scrub --dry-run over the intact assembly exited ${SCRUB_RC}, expected 0" >&2
+  exit 1
+fi
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+HIDDEN_OUT=$(node "${LOCAL_DIST}" scrub "${STACK_PATH}" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -eq 0 ]; then
+  echo "FAIL: scrub with the Stage hidden exited 0, expected a selection refusal" >&2
+  exit 1
+fi
+# One needle, so it pins the pattern, the zero-stack wording and an UNHEDGED
+# Stage together: the app's only stacks sit under the hidden Stage, and a
+# display-path pattern attributes to it rather than `Possibly unrelated:`.
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} found in assembly. The assembly has no stacks. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: scrub did not name the pattern and the Stage that failed to load" >&2
+  exit 1
+fi
+echo "    OK: control selected the stack; hidden Stage named"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"

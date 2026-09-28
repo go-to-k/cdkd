@@ -44,6 +44,14 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 `--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
 still honored if passed, and it is not a no-op.
 
+A stack argument that matches nothing is refused with the patterns and the
+stacks the app does have, and when a CDK `Stage` failed to load, the Stage is
+named: its stacks are missing from the synthesized app, so they cannot be
+selected ([the failed-Stage note](cli-deploy-safety.md)). The same note is
+appended when the app synthesized no stacks at all. `--all` covers only the
+stacks that did synthesize — a Stage that failed to load is reported by the
+synthesis warning, and its stacks are not examined.
+
 `cdkd scrub` takes no `--parameters`, which is load-bearing in two places
 below: which `Fn::If` branch it evaluates, and which `Export.Name` values it
 can compute.
