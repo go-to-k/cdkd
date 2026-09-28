@@ -96,6 +96,11 @@ cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # An interrupt inside Phase 2b would otherwise leave cdk.out with the
+  # Stage's manifest hidden.
+  if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
+    mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+  fi
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
