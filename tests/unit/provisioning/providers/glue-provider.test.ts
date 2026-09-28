@@ -323,7 +323,7 @@ describe('GlueProvider import', () => {
         makeTableInput({ properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } } })
       );
 
-      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: { DatabaseName: 'mydb' } });
       expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
     });
 
@@ -339,7 +339,7 @@ describe('GlueProvider import', () => {
         makeTableInput({ knownPhysicalId: 'mydb|a|b', properties: { DatabaseName: 'mydb' } })
       );
 
-      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: { DatabaseName: 'mydb' } });
       expect(probes()).toEqual([
         { DatabaseName: 'mydb', Name: 'a|b' },
         { DatabaseName: 'mydb', Name: 'mydb|a|b' },
@@ -359,7 +359,7 @@ describe('GlueProvider import', () => {
         makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
       );
 
-      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: { DatabaseName: 'mydb' } });
       expect(probes()).toEqual([
         { DatabaseName: 'a', Name: 'b' },
         { DatabaseName: 'mydb', Name: 'a|b' },
@@ -486,7 +486,7 @@ describe('GlueProvider import', () => {
         })
       );
 
-      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: { DatabaseName: 'mydb' } });
       expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
     });
 
@@ -523,7 +523,7 @@ describe('GlueProvider import', () => {
           makeTableInput({ knownPhysicalId: ID, properties: PROPS })
         );
 
-        expect(result).toEqual({ physicalId: 'mydb|mydb|a', attributes: {} });
+        expect(result).toEqual({ physicalId: 'mydb|mydb|a', attributes: { DatabaseName: 'mydb' } });
       });
 
       it('adopts the anchored table when only it exists', async () => {
@@ -574,7 +574,11 @@ describe('GlueProvider import', () => {
 
         const result = await provider.import(makeTableInput({ knownPhysicalId: id, properties }));
 
-        expect(result).toEqual({ physicalId: expected, attributes: {} });
+        expect(result?.physicalId).toBe(expected);
+        // An id with more than one `|` carries the anchor attribute (#3892).
+        expect(result?.attributes).toEqual(
+          expected.split('|').length > 2 ? { DatabaseName: 'mydb' } : {}
+        );
         mockGlueSend.mockReset();
       });
 
@@ -733,31 +737,92 @@ describe('GlueProvider import', () => {
       expect(warned).toContain("the '|' in a name cannot be placed");
     });
 
-    // The database-name refusal sits in the one place every reading passes,
-    // so it holds for the anchored and bare readings, not only the template one.
-    it.each([
-      ['anchored', 'my|db|orders'],
-      ['bare', 'x|a|b'],
-    ])('refuses a template database name containing the separator on the %s reading', async (_n, id) => {
-      const result = await provider.import(
-        makeTableInput({ knownPhysicalId: id, properties: { DatabaseName: 'my|db' } })
-      );
+    // Issue #3892: Glue accepts `|` in a DATABASE name too (live probe through
+    // the glue-update-hardening fixture). Such a database is only ever the
+    // template's own DatabaseName — the anchor later readers use — so the
+    // readings below all pair it with that value, and the record carries it
+    // as an attribute too.
+    describe('a template database name containing the separator (issue #3892)', () => {
+      const PROPS = { DatabaseName: 'my|db' };
 
-      expect(result).toBeNull();
-      expect(mockGlueSend).not.toHaveBeenCalled();
-      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain('a database name containing');
+      it('adopts a template-named table in it as <db>|<table>', async () => {
+        mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'orders' } });
+
+        const result = await provider.import(
+          makeTableInput({ properties: { ...PROPS, TableInput: { Name: 'orders' } } })
+        );
+
+        expect(result).toEqual({
+          physicalId: 'my|db|orders',
+          attributes: { DatabaseName: 'my|db' },
+        });
+        expect(probes()).toEqual([{ DatabaseName: 'my|db', Name: 'orders' }]);
+      });
+
+      it('anchors a composite id on it, beside the bare reading', async () => {
+        mockGlueSend
+          .mockResolvedValueOnce({ Table: { Name: 'orders' } })
+          .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: 'my|db|orders', properties: PROPS })
+        );
+
+        expect(result).toEqual({
+          physicalId: 'my|db|orders',
+          attributes: { DatabaseName: 'my|db' },
+        });
+        expect(probes()).toEqual([
+          { DatabaseName: 'my|db', Name: 'orders' },
+          { DatabaseName: 'my|db', Name: 'my|db|orders' },
+        ]);
+      });
+
+      // An id the database does not anchor is read only as a bare name in it:
+      // splitting `x|a|b` would guess where some OTHER database ends.
+      it('reads an id it does not anchor only as a bare name in it', async () => {
+        mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: 'x|a|b', properties: PROPS })
+        );
+
+        expect(result).toBeNull();
+        expect(probes()).toEqual([{ DatabaseName: 'my|db', Name: 'x|a|b' }]);
+      });
+
+      // The adopted record must address the probed table at every later
+      // reader, including when the recorded DatabaseName is an unresolved
+      // intrinsic: the attribute is what the Ref resolver then anchors on.
+      it('records an anchor the Ref reads even when the recorded property is unresolved', async () => {
+        mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'orders' } });
+
+        const result = await provider.import(
+          makeTableInput({ properties: { ...PROPS, TableInput: { Name: 'orders' } } })
+        );
+
+        expect(
+          cfnRefValueFromPhysicalId(
+            'AWS::Glue::Table',
+            result!.physicalId,
+            refStateLookupFromResource({
+              properties: { DatabaseName: { Ref: 'Db' } },
+              attributes: result!.attributes,
+            })
+          )
+        ).toBe('orders');
+      });
     });
 
-    it('refuses a template database name containing the separator', async () => {
+    // An ordinary two-segment id needs no anchor, so it records no attribute.
+    it('records no anchor attribute for an id with a single separator', async () => {
+      mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'orders' } });
+
       const result = await provider.import(
-        makeTableInput({ properties: { DatabaseName: 'my|db', TableInput: { Name: 'orders' } } })
+        makeTableInput({ properties: { DatabaseName: 'mydb', TableInput: { Name: 'orders' } } })
       );
 
-      expect(result).toBeNull();
-      expect(mockGlueSend).not.toHaveBeenCalled();
-      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain('a database name containing');
+      expect(result).toEqual({ physicalId: 'mydb|orders', attributes: {} });
     });
 
     // `db|` is a composite missing its table, not a table named `db|`: the bare

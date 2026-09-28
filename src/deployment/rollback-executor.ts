@@ -65,7 +65,7 @@ import type {
 } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
-import { equalIdNamesSameResource } from './type-change-guard.js';
+import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -1280,7 +1280,17 @@ export function isReplacementOp(op: CompletedOperation): boolean {
   return (
     op.changeType === 'UPDATE' &&
     op.previousState?.physicalId !== undefined &&
-    (op.previousState.physicalId !== op.physicalId || isTypeChangeOp(op))
+    (op.previousState.physicalId !== op.physicalId ||
+      isTypeChangeOp(op) ||
+      // Issue #3892: an equal id can still be two resources (a Glue table
+      // whose id is placed by DatabaseName), and an in-place revert of such
+      // an op would aim the old properties at the NEW table.
+      equalIdNamesDifferentResources({
+        resourceType: op.resourceType,
+        physicalId: op.physicalId,
+        oldProperties: op.previousState.properties,
+        newProperties: op.properties,
+      }))
   );
 }
 
@@ -1356,7 +1366,18 @@ export function classifyRollbackOp(
       oldTypeForCompare === undefined ||
       !nonEmptyString(current.resourceType) ||
       current.resourceType === oldTypeForCompare;
-    if (current.physicalId === op.previousState!.physicalId && sameTypeAsOld) {
+    if (
+      current.physicalId === op.previousState!.physicalId &&
+      sameTypeAsOld &&
+      // Issue #3892: the equal id may be the NEW resource (a Glue table in
+      // another database); it is the old one only when its record says so.
+      !equalIdNamesDifferentResources({
+        resourceType: op.resourceType,
+        physicalId: current.physicalId,
+        oldProperties: op.previousState!.properties,
+        newProperties: current.properties,
+      })
+    ) {
       // State already points at the old physical id — a prior reverse-
       // replacement (or manual fix) already reverted this op.
       return 'skip-already-done';
@@ -3295,6 +3316,34 @@ async function replaySingle(
               )
             );
           }
+          // Issue #3892: this delete exists to free the NAME the re-create
+          // collided on, which assumes the new resource holds it. A Glue table
+          // that shares the id but lives in ANOTHER database does not: the name
+          // the old table needs is held by something else, so deleting the new
+          // table frees nothing and destroys it. Fail the op, keep the journal.
+          if (
+            equalIdNamesDifferentResources({
+              resourceType: op.resourceType,
+              physicalId: current.physicalId,
+              oldProperties: prev.properties,
+              newProperties: current.properties,
+            })
+          ) {
+            throw markNonRetryable(
+              new CdkdError(
+                maskSecretsInText(
+                  `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                    `the re-create of the old table collided, but the new table (${safe(current.physicalId)}) ` +
+                    `is in a different database and does not hold the old table's name, so deleting it ` +
+                    `would free nothing. Remove or rename whatever holds the old table's name, then ` +
+                    `re-run ${rerunRollbackPhrase(ctx, 'cdkd rollback')} — the journal is kept.`,
+                  secrets
+                ),
+                'NAMED_REPLACEMENT_COLLISION',
+                maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
+              )
+            );
+          }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
               `resource (${displaySafe(current.physicalId)}) first...` +
@@ -3453,6 +3502,11 @@ async function replaySingle(
           oldType,
           newType: op.resourceType,
           createLayer: createProvisionedBy,
+          // Issue #3892: what the re-create restored, against the record of
+          // the live new resource.
+          oldProperties: prev.properties,
+          newProperties: current.properties,
+          physicalId: current.physicalId,
         });
         const adoptedLiveNewResource =
           equalIdIsSameResource &&

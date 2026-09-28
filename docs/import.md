@@ -620,7 +620,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::Route53::HostedZone — [see below](#aws-route53-hostedzone)
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
-- AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`. A table name that contains `|` is adopted when it is paired with the template's own `DatabaseName`, either way round. An id with a `|` is also tried as a whole table name in the template's database, and when more than one reading names an existing table the import refuses rather than guess; a database name that contains `|` is not supported)
+- AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`. A table or database name that contains `|` is adopted when it is paired with the template's own `DatabaseName`, either way round. An id with a `|` is also tried as a whole table name in the template's database, and when more than one reading names an existing table the import refuses rather than guess)
 - AWS::Glue::Job
 - AWS::Glue::Crawler
 - AWS::Glue::Connection

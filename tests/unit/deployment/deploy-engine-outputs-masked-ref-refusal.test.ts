@@ -217,6 +217,11 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     expect(warned).toContain('Ref Tbl (state key TableName)');
     // The remedy is computed, not described.
     expect(warned).toContain("--resource 'Tbl=<physicalId>'");
+    // Issue #3892: the value the fall-through would publish is not always the
+    // raw physical id (a Glue table's is a first-`|` guess), so the message
+    // says what it can stand behind.
+    expect(warned).toContain('would publish a value cdkd cannot confirm');
+    expect(warned).not.toContain("would publish the resource's raw physical id");
   });
 
   it('is PROMOTED to a deploy error under --strict-getatt', async () => {
@@ -347,8 +352,8 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     // fall-through — the value IS the mask, which `reresolveCrossStackValue`
     // and the export blocker both reject. Refusing here would silently change
     // the pre-existing issue #2274 behaviour (that output would vanish) and
-    // would render this message's "would publish the resource's raw physical
-    // id" over a read that has none.
+    // would render this message's "would publish a value cdkd cannot confirm"
+    // over a read that has none.
     await makeEngine(SECRET_MASK).deploy(
       stackName,
       templateWith({ CrSecret: { Value: { 'Fn::GetAtt': ['Cr', 'Secret'] } } })

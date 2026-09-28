@@ -4511,8 +4511,9 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
   // CloudFormation manages it and its `Ref` is `a|b`). cdkd records
   // `mydb|a|b`, so after-LAST-pipe would hand consumers `b`. The table name is
   // everything after the recorded DatabaseName — the same anchor the provider's
-  // decode sites use — falling back to after-the-FIRST-pipe, which is right for
-  // every id the current binary writes (it refuses `|` in a database name).
+  // decode sites use — falling back to after-the-FIRST-pipe, which is exact for
+  // a two-segment id and a guess for a longer id no current writer produces
+  // without an anchor (a database name may carry `|` since #3892).
   describe('AWS::Glue::Table Ref with a `|` in the table name (issue #1672)', () => {
     function glueContext(
       physicalId: string,
@@ -4540,9 +4541,9 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       expect(result).toBe('a|b');
     });
 
-    // The one case where the anchor and the first-pipe fallback DISAGREE: a
-    // record whose database name carries the separator (a rollback replay, or
-    // a binary before the #1719 refusal). Without the anchor this reads `db|orders`.
+    // The case where the anchor and the first-pipe fallback DISAGREE: a record
+    // whose database name carries the separator, which a create writes since
+    // #3892. Without the anchor this reads `db|orders`.
     it('anchors on the recorded DatabaseName when the database name carries the separator', async () => {
       const result = await resolver.resolve(
         { Ref: 'MyTable' },
@@ -4575,6 +4576,15 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       expect(lookup).not.toHaveBeenCalled();
     });
 
+    // Issue #3892: `importTable` records the probed database as an attribute,
+    // for a record whose `DatabaseName` property stays an unresolved intrinsic.
+    it('anchors on the DatabaseName attribute when the property is unresolved', async () => {
+      const context = glueContext('x|y|t', { DatabaseName: { Ref: 'Db' } });
+      context.resources['MyTable']!.attributes = { DatabaseName: 'x|y' };
+      const result = await resolver.resolve({ Ref: 'MyTable' }, context);
+      expect(result).toBe('t');
+    });
+
     it('takes everything after the first pipe when no state lookup is supplied', () => {
       expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|a|b')).toBe('a|b');
     });
@@ -4582,7 +4592,7 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     it('consults only the DatabaseName key for a longer id', () => {
       const lookup = vi.fn((_keys: readonly string[], _options?: unknown) => 'mydb');
       expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|a|b', lookup)).toBe('a|b');
-      expect(lookup.mock.calls).toEqual([[['DatabaseName'], { reportMasked: false }]]);
+      expect(lookup.mock.calls).toEqual([[['DatabaseName'], { preferCleanValue: true }]]);
     });
   });
 

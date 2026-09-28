@@ -118,6 +118,7 @@ import { LambdaEventInvokeConfigProvider } from '../../../src/provisioning/provi
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { compositeIdSeparatorRefusal } from '../../../src/provisioning/composite-id.js';
+import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
 /** The context the rollback executor's reverse-replacement create passes. */
 const REPLAY = { replayingState: true } as const;
@@ -161,27 +162,38 @@ describe('AWS::Glue::Table composite id guard', () => {
     expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
-  it('refuses a database name containing the separator, before CreateTable runs', async () => {
+  // Issue #3892: Glue accepts `|` in a DATABASE name too (live probe through the
+  // glue-update-hardening fixture), and every reader anchors on the recorded
+  // DatabaseName, so the create refuses neither name.
+  it.each([
+    ['a database name', 'my|db', 'orders', 'my|db|orders'],
+    ['both names', 'my|db', 'a|b', 'my|db|a|b'],
+  ])('accepts %s containing the separator and records <db>|<table>', async (_n, db, table, id) => {
+    mockGlueSend.mockResolvedValueOnce({});
     const provider = new GlueProvider();
-    const refusal = provider.create('MyTable', 'AWS::Glue::Table', {
-      DatabaseName: 'my|db',
-      TableInput: { Name: 'orders' },
+    const result = await provider.create('MyTable', 'AWS::Glue::Table', {
+      DatabaseName: db,
+      TableInput: { Name: table },
     });
-    await expect(refusal).rejects.toThrow(ProvisioningError);
-    await expect(refusal).rejects.toThrow(/databaseName 'my\|db'/);
-    expect(mockGlueSend).not.toHaveBeenCalled();
+    expect(result.physicalId).toBe(id);
+    const creates = mockGlueSend.mock.calls
+      .map(([c]) => c as { input: Record<string, unknown> })
+      .filter((c) => c instanceof CreateTableCommand);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]!.input).toMatchObject({ DatabaseName: db, TableInput: { Name: table } });
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
-  it('names only the database when both names carry the separator', async () => {
-    // The table-name exemption must not drop the database segment from the
-    // refusal, and must not add the table name to it either.
+  // The names are read through unvalidated casts; a non-string would be
+  // stringified into an id no reader can place (review of #3942).
+  it.each([
+    ['DatabaseName', { DatabaseName: ['my|db'], TableInput: { Name: 'orders' } }],
+    ['TableInput.Name', { DatabaseName: 'mydb', TableInput: { Name: { Ref: 'X' } } }],
+  ])('refuses a non-string %s before CreateTable runs', async (field, props) => {
     const provider = new GlueProvider();
-    const refusal = provider.create('MyTable', 'AWS::Glue::Table', {
-      DatabaseName: 'my|db',
-      TableInput: { Name: 'a|b' },
-    });
-    await expect(refusal).rejects.toThrow(/databaseName 'my\|db' contains/);
-    await expect(refusal).rejects.not.toThrow(/tableName 'a/);
+    await expect(provider.create('MyTable', 'AWS::Glue::Table', props)).rejects.toThrow(
+      `${field} must be a string`
+    );
     expect(mockGlueSend).not.toHaveBeenCalled();
   });
 
@@ -195,21 +207,6 @@ describe('AWS::Glue::Table composite id guard', () => {
     expect(result.physicalId).toBe('mydb|orders');
   });
 
-  it('downgrades the database-name refusal to a warning on a state replay', async () => {
-    // The reverse-replacement rollback arm: the properties are a cdkd STATE
-    // record, so refusing would leave the old table unrestorable with only a
-    // hand-edit of state.json as a remedy.
-    mockGlueSend.mockResolvedValueOnce({});
-    const provider = new GlueProvider();
-    const result = await provider.create(
-      'MyTable',
-      'AWS::Glue::Table',
-      { DatabaseName: 'my|db', TableInput: { Name: 'orders' } },
-      REPLAY
-    );
-    expect(result.physicalId).toBe('my|db|orders');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("databaseName 'my|db'"));
-  });
 });
 
 describe('AWS::Glue::Table composite id decode', () => {
@@ -304,6 +301,106 @@ describe('AWS::Glue::Table composite id decode', () => {
       DatabaseName: { Ref: 'Db' },
     });
     expect(sent(DeleteTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'orders' }]);
+  });
+
+  // Issue #3892: a `|` in the DATABASE name, placed by the recorded anchor at
+  // every decode site (delete is pinned above).
+  it('updates a table in a database whose name carries the separator', async () => {
+    const PIPE_DB = { DatabaseName: 'my|db', TableInput: { Name: 'orders' } };
+    mockGlueSend.mockResolvedValue({ Table: { Name: 'orders' } });
+    await new GlueProvider().update('MyTable', 'my|db|orders', 'AWS::Glue::Table', PIPE_DB, PIPE_DB);
+    expect(sent(UpdateTableCommand)).toEqual([
+      expect.objectContaining({ DatabaseName: 'my|db', TableInput: expect.objectContaining({ Name: 'orders' }) }),
+    ]);
+  });
+
+  // Separate from the update, which sends a GetTable of its own.
+  it('reads a table in a database whose name carries the separator', async () => {
+    mockGlueSend.mockResolvedValue({ Table: { Name: 'orders' } });
+    const state = await new GlueProvider().readCurrentState(
+      'my|db|orders',
+      'MyTable',
+      'AWS::Glue::Table',
+      { DatabaseName: 'my|db', TableInput: { Name: 'orders' } }
+    );
+    expect(sent(GetTableCommand)).toEqual([{ DatabaseName: 'my|db', Name: 'orders' }]);
+    expect(state).toMatchObject({ DatabaseName: 'my|db', Name: 'orders' });
+  });
+
+  // An id with more than one `|` whose record carries no string DatabaseName
+  // (`cdkd import` can leave it unresolved) is usually CORRECT: the message must
+  // point at the property, not tell the user to repair the id.
+  describe('the message for an id with no usable anchor', () => {
+    const warned = () => mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+
+    it('names the unresolved DatabaseName on the delete skip', async () => {
+      const result = await new GlueProvider().delete('MyTable', 'my|db|orders', 'AWS::Glue::Table', {
+        DatabaseName: { Ref: 'Db' },
+      });
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      expect(warned()).toContain("set the record's properties.DatabaseName in state.json");
+      // The skipping head already ends a sentence: no doubled full stop.
+      expect(warned()).toContain('by hand. NOTE: this id');
+      expect(warned()).not.toContain('.. NOTE');
+    });
+
+    it('names it on the update refusal too', async () => {
+      await expect(
+        new GlueProvider().update(
+          'MyTable',
+          'my|db|orders',
+          'AWS::Glue::Table',
+          { DatabaseName: { Ref: 'Db' }, TableInput: {} },
+          { DatabaseName: { Ref: 'Db' } }
+        )
+      ).rejects.toThrow(/set the record's properties\.DatabaseName in state\.json/);
+    });
+
+    // The note must not run into the id: the non-skipping head ends `got "..."`.
+    it('separates the note from the id with a full stop', async () => {
+      await expect(
+        new GlueProvider().update(
+          'MyTable',
+          'my|db|orders',
+          'AWS::Glue::Table',
+          { DatabaseName: { Ref: 'Db' }, TableInput: {} },
+          { DatabaseName: { Ref: 'Db' } }
+        )
+      ).rejects.toThrow(/got "my\|db\|orders"\. NOTE:/);
+    });
+
+    // A redaction mask is no anchor either, so it gets the note.
+    it('names a masked DatabaseName the same way', async () => {
+      await new GlueProvider().delete('MyTable', 'my|db|orders', 'AWS::Glue::Table', {
+        DatabaseName: SECRET_MASK,
+      });
+      expect(warned()).toContain("set the record's properties.DatabaseName in state.json");
+    });
+
+    // The note needs EVERY bag anchorless: one string bag that does not prefix
+    // the id means the record names another database, and the id is what is off.
+    it('keeps the plain wording when only one of the update bags is anchorless', async () => {
+      await expect(
+        new GlueProvider().update(
+          'MyTable',
+          'my|db|orders',
+          'AWS::Glue::Table',
+          { DatabaseName: { Ref: 'Db' }, TableInput: {} },
+          { DatabaseName: 'other' }
+        )
+      ).rejects.toThrow(/^(?![\s\S]*NOTE: this id)[\s\S]*Invalid physicalId format/);
+    });
+
+    // A string DatabaseName that does not anchor, or a one-`|` id, keeps the
+    // plain malformed-id wording: there the id IS what is wrong.
+    it.each([
+      ['a one-separator id', 'mydb|', { DatabaseName: { Ref: 'Db' } }],
+      ['a string DatabaseName that does not anchor', 'my|db|orders', { DatabaseName: 'other' }],
+    ])('keeps the plain wording for %s', async (_n, id, props) => {
+      await new GlueProvider().delete('MyTable', id, 'AWS::Glue::Table', props);
+      expect(warned()).toContain('Invalid physicalId format for Glue Table MyTable');
+      expect(warned()).not.toContain('properties.DatabaseName in state.json');
+    });
   });
 
   describe('with no anchor, an id with more than one separator is ambiguous', () => {

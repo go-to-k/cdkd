@@ -240,10 +240,9 @@ class AttributeFetcher {
     // one cannot arrive HERE: `onMaskedValue` fires only from inside
     // `cfnRefValueFromPhysicalId`'s recovery branches, and every one of them
     // is gated on an exact literal (`=== 'AWS::S3Tables::Table'`,
-    // `=== 'AWS::Backup::BackupSelection'`, `=== 'AWS::CodeCommit::Repository'`,
-    // or a `REF_RETURNS_ARN_FROM_STATE` Map lookup; the `AWS::Glue::Table`
-    // branch reads with `reportMasked: false` and never fires it), so by
-    // construction this
+    // `=== 'AWS::Glue::Table'`, `=== 'AWS::Backup::BackupSelection'`,
+    // `=== 'AWS::CodeCommit::Repository'`, or a `REF_RETURNS_ARN_FROM_STATE`
+    // Map lookup), so by construction this
     // value is one of a handful of cdkd literals. Kept because it costs
     // nothing and a future branch matched by PREFIX would make it live; NOT
     // fenced, because a case proving it would have to fake a reachability that

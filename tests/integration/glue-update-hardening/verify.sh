@@ -52,6 +52,11 @@
 #      reaches that table. (Its absence after destroy is checked too, but proves
 #      nothing about its own DELETE: deleting the database removes its tables.
 #      The anchored delete is pinned by unit tests and by phase 2b.)
+#  12. Table inside a DATABASE whose name contains `|` (issue #3892). Glue
+#      accepts such a database (probed through this fixture, 2026-09-28) and
+#      cdkd refused the table in it. Asserted: the deploy records
+#      `<pipe db>|<table>`, the `Ref` output is the table name (the first-`|`
+#      reading would give `db|<table>`), and the update reaches that table.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -120,6 +125,10 @@ RENAME_FROM="${LOWER}-rename-a"
 RENAME_TO="${LOWER}-rename-b"
 # Assertion 11: the managed table whose name carries the separator.
 SEP_TABLE_NAME="${LOWER}-sep|table"
+# Assertion 12 (issue #3892): the database whose name carries the separator,
+# and the plain-named table inside it.
+PIPE_DB_NAME="${LOWER}-pipe|db"
+PIPE_DB_TABLE_NAME="${LOWER}-in-pipe-db"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -129,6 +138,9 @@ cleanup() {
     aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${t}" \
       --region "${REGION}" >/dev/null 2>&1
   done
+  aws glue delete-table --database-name "${PIPE_DB_NAME}" --name "${PIPE_DB_TABLE_NAME}" \
+    --region "${REGION}" >/dev/null 2>&1
+  aws glue delete-database --name "${PIPE_DB_NAME}" --region "${REGION}" >/dev/null 2>&1
   local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
@@ -446,6 +458,37 @@ assert_separator_table 'separator table initial' 'create' || {
   exit 1
 }
 
+# --- Assertion 12: a Table inside a DATABASE named with '|' (issue #3892) --
+# Before the fix the deploy above REFUSED this table. Its id is
+# `<pipe db>|<table>`; the table name is plain, so the first-`|` reading of the
+# id would be `db|<table>` and only the DatabaseName anchor yields the name.
+assert_pipe_db_table() { # usage: assert_pipe_db_table <want description> <phase label>
+  local want="$1" phase="$2" state got_id got_ref got_desc
+  # `|| return 1` on every capture (#1120): errexit is CLEARED inside `$( )`.
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet) || return 1
+  got_id=$(printf '%s' "${state}" | jq -r '.resources.PipeDbTable.physicalId // "<absent>"') || return 1
+  if [ "${got_id}" != "${PIPE_DB_NAME}|${PIPE_DB_TABLE_NAME}" ]; then
+    echo "FAIL: ${phase}: state records PipeDbTable as '${got_id}', expected '${PIPE_DB_NAME}|${PIPE_DB_TABLE_NAME}' (issue #3892)" >&2
+    exit 1
+  fi
+  got_ref=$(printf '%s' "${state}" | jq -r '.outputs.PipeDbTableRef // "<absent>"') || return 1
+  if [ "${got_ref}" != "${PIPE_DB_TABLE_NAME}" ]; then
+    echo "FAIL: ${phase}: the PipeDbTableRef output (the table's Ref) is '${got_ref}', expected '${PIPE_DB_TABLE_NAME}' (issue #3892)" >&2
+    exit 1
+  fi
+  got_desc=$(aws glue get-table --database-name "${PIPE_DB_NAME}" --name "${PIPE_DB_TABLE_NAME}" \
+    --region "${REGION}" --query 'Table.Description' --output text) || return 1
+  if [ "${got_desc}" != "${want}" ]; then
+    echo "FAIL: ${phase}: table '${PIPE_DB_TABLE_NAME}' in '${PIPE_DB_NAME}' has description '${got_desc}', expected '${want}' (issue #3892)" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: '${PIPE_DB_TABLE_NAME}' in '${PIPE_DB_NAME}' recorded as '${got_id}', Ref '${got_ref}', description '${got_desc}'"
+}
+assert_pipe_db_table 'pipe db table initial' 'create' || {
+  echo "FAIL: create: could not read the pipe-db table or its state record" >&2
+  exit 1
+}
+
 # --- Sanity: trigger exists -------------------------------------------
 if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "    OK: trigger ${TRIGGER_NAME} exists"
@@ -503,6 +546,13 @@ assert_skewed_info 'CA' 'update'
 # '${LOWER}-sep' and fail (or update a different table).
 assert_separator_table 'separator table updated' 'update' || {
   echo "FAIL: update: could not read the separator table or its state record" >&2
+  exit 1
+}
+# The same for the table in the '|'-named database: `UpdateTable` is addressed
+# by the DatabaseName-anchored decode; without the anchor the three-segment id
+# is refused rather than split.
+assert_pipe_db_table 'pipe db table updated' 'update' || {
+  echo "FAIL: update: could not read the pipe-db table or its state record" >&2
   exit 1
 }
 
@@ -749,7 +799,9 @@ for chk in \
   "get-table --database-name ${TABLE_DB_NAME} --name ${SEP_TABLE_NAME}" \
   "get-database --name ${SKEWED_DB_NAME}" \
   "get-database --name ${LINK_DB_NAME}" \
-  "get-database --name ${PERM_DB_NAME}"; do
+  "get-database --name ${PERM_DB_NAME}" \
+  "get-table --database-name ${PIPE_DB_NAME} --name ${PIPE_DB_TABLE_NAME}" \
+  "get-database --name ${PIPE_DB_NAME}"; do
   # Route through gone_probe (issue #1097 pattern 2): Glue get-* not-found is
   # EntityNotFoundException, which matches the canonical signature; any other
   # probe failure (throttle, auth) hard-FAILs instead of reading as "gone".
@@ -785,4 +837,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update/destroy + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + clean destroy)"

@@ -37,12 +37,12 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     named only Description / LocationUri / Parameters, so both blocks were
  *     dropped silently. CDKD_TEST_UPDATE flips the granted permission set so
  *     the update path is covered with a second distinct payload.
- *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
- *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
  *  8. A Glue Table `TableInput.Name` rename (issues #3724, #3750) is a
  *     replacement, never a write onto the table holding the new name;
  *     CDKD_TEST_RENAME flips the name, and `--force-stateful-recreation`
  *     performs it.
+ *  9. A Glue Database `CatalogId` move (issue #3756) is refused rather than
+ *     sent to another account's catalog; CDKD_TEST_CATALOG=foreign sets it.
  * 10. A malformed `DatabaseInput.TargetDatabase` on a template-path update
  *     (issue #3740) is refused before any Glue call, the link intact;
  *     CDKD_TEST_DBINPUT_MALFORMED sets it.
@@ -50,6 +50,12 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     CloudFormation manages: cdkd deploys it (recording `<db>|<name>`),
  *     updates it (CDKD_TEST_UPDATE flips its description) and resolves its
  *     `Ref` to the WHOLE name (the `SeparatorTableRef` output).
+ * 12. A Glue Table inside a DATABASE whose name contains `|` (issue #3892).
+ *     Glue accepts such a database (live probe through this fixture,
+ *     2026-09-28), and cdkd refused the table in it. The table's id is
+ *     `<db>|<name>` with the `|` in the database part, so every reader must
+ *     place the table by the recorded DatabaseName: the `PipeDbTableRef` output
+ *     is the `Ref`, and CDKD_TEST_UPDATE flips the table's description.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -272,6 +278,24 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       linkDb.addPropertyOverride('DatabaseInput.TargetDatabase', 'not-a-block');
     }
 
+    // 12. A table inside a database whose NAME carries `|` (issue #3892). The
+    //     table name itself is plain, so the first-`|` reading of its id
+    //     (`db|<name>`) is WRONG and only the DatabaseName anchor gives `<name>`.
+    const pipeDb = new glue.CfnDatabase(this, 'PipeNamedDatabase', {
+      catalogId: this.account,
+      databaseInput: { name: `${this.stackName}-pipe|db`.toLowerCase() },
+    });
+    const pipeDbTable = new glue.CfnTable(this, 'PipeDbTable', {
+      catalogId: this.account,
+      databaseName: `${this.stackName}-pipe|db`.toLowerCase(),
+      tableInput: {
+        name: `${this.stackName}-in-pipe-db`.toLowerCase(),
+        tableType: 'EXTERNAL_TABLE',
+        description: isUpdate ? 'pipe db table updated' : 'pipe db table initial',
+      },
+    });
+    pipeDbTable.addDependency(pipeDb);
+
     // `CreateTableDefaultPermissions` on its own database. CDKD_TEST_UPDATE
     // flips the granted permission set so the UPDATE path is covered with a
     // second distinct payload — a stale carry-forward cannot pass. The
@@ -317,6 +341,7 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       value: `${this.stackName}-table-db`.toLowerCase(),
     });
     new cdk.CfnOutput(this, 'SeparatorTableRef', { value: separatorTable.ref });
+    new cdk.CfnOutput(this, 'PipeDbTableRef', { value: pipeDbTable.ref });
     new cdk.CfnOutput(this, 'SkewedTableName', {
       value: `${this.stackName}-skewed-table`.toLowerCase(),
     });

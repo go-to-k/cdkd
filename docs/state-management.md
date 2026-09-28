@@ -1524,7 +1524,7 @@ per-type notes.
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>` (`destination` is the `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or `DestinationPrefixListId` the route declares) |
 | `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` (an omitted port is recorded as `-1`) |
 | `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>` (note the order — CloudFormation's own identifier is `VpcId` first) |
-| `AWS::Glue::Table` | `<databaseName>\|<tableName>` (the table name may itself contain `\|`: cdkd reads it as everything after the recorded `DatabaseName`) |
+| `AWS::Glue::Table` | `<databaseName>\|<tableName>` (either name may itself contain `\|`: cdkd reads the table name as everything after the recorded `DatabaseName`) |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` (a bare function name is read as qualifier `$LATEST`) |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
 | `AWS::S3Tables::Namespace` | `<tableBucketARN>\|<namespaceName>` |
@@ -1700,14 +1700,17 @@ Two more types **accept** a composite id without producing one:
 > [!IMPORTANT]
 > The separator is **not escaped**, so a segment that contains a `|` would
 > make the id ambiguous. `cdkd deploy` **refuses at pre-flight**, naming the
-> offending segment, rather than record such an id. The one exception is the
-> `AWS::Glue::Table` table name: a table named `a|b` in database `mydb` is
-> recorded as `mydb|a|b`, and cdkd reads the table name back as everything
-> after the recorded `DatabaseName` — for update, destroy, drift and `Ref`
-> alike. A Glue *database* name that contains `|` is still refused, as is
-> an `AWS::Route53::RecordSet` record name that contains one. For every
-> other type, AWS's own naming rules and generated ids keep `|` out of the
-> value.
+> offending segment, rather than record such an id. The exception is
+> `AWS::Glue::Table`, where both the table name and the database name may
+> contain `|`: a table named `a|b` in database `x|y` is recorded as
+> `x|y|a|b`, and cdkd reads the table name back as everything after the
+> recorded `DatabaseName` — for update, destroy, drift and `Ref` alike. A
+> record whose `DatabaseName` is not a plain string (`cdkd import` can leave
+> it unresolved) cannot be placed that way: destroy then skips it and says to
+> set `properties.DatabaseName` in the state file. An
+> `AWS::Route53::RecordSet` record name that contains `|` is still refused.
+> For every other type, AWS's own naming rules and generated ids keep `|` out
+> of the value.
 
 #### Purpose of attributes
 
