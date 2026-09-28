@@ -7540,3 +7540,207 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     ).toEqual([]);
   });
 });
+
+/**
+ * The `cdkd state show` line's WITHHELD clause (the go-to-k/cdkd#3764 follow-up
+ * recorded on go-to-k/cdkd#3436). `inspectCommand` holes an altered, capped,
+ * option-shaped or non-plain value, and every caller handing it a real
+ * identity now says so BEFORE its label, from the gate's own reasons, so the
+ * operator does not fill the hole with the spelling the prose shows.
+ */
+describe('the inspect command explains a withheld value before its label (go-to-k/cdkd#3436)', () => {
+  const INSPECT_CALLERS: ReadonlyArray<readonly [string, (s: string, r: string) => string]> = [
+    ['malformedDeployResourceEntriesRefusalMessage', (s, r) => malformedDeployResourceEntriesRefusalMessage(s, r, ['A'])],
+    ['malformedDeployResourcesRefusalMessage', (s, r) => malformedDeployResourcesRefusalMessage(s, r)],
+    ['malformedDestroyOutputsRefusalMessage', (s, r) => malformedDestroyOutputsRefusalMessage(s, r)],
+    ['malformedDestroyResourceEntriesRefusalMessage', (s, r) => malformedDestroyResourceEntriesRefusalMessage(s, r, ['A'])],
+    ['malformedExportNamesWarning', (s, r) => malformedExportNamesWarning(s, r)],
+    ['malformedExportSourceWarning', (s, r) => malformedExportSourceWarning(s, r)],
+    ['malformedImportUnrepairedEntriesRefusalMessage', (s, r) => malformedImportUnrepairedEntriesRefusalMessage(s, r, ['A'])],
+    ['malformedLocalOutputsWarning', (s, r) => malformedLocalOutputsWarning(s, r)],
+    ['malformedLocalResourceEntriesWarning', (s, r) => malformedLocalResourceEntriesWarning(s, r, ['A'])],
+    ['malformedLocalResourcesWarning', (s, r) => malformedLocalResourcesWarning(s, r)],
+    ['malformedNestedChildOutputsRefusalMessage', (s, r) => malformedNestedChildOutputsRefusalMessage(s, r)],
+    ['malformedOrphanRecordsWarning', (s, r) => malformedOrphanRecordsWarning(s, r, ['A'], false)],
+    ['malformedOrphanRowsKeptWarning', (s, r) => malformedOrphanRowsKeptWarning(s, r, ['A'])],
+    ['malformedOrphansRefusalMessage', (s, r) => malformedOrphansRefusalMessage(s, r)],
+    ['malformedOrphansWarning', (s, r) => malformedOrphansWarning(s, r)],
+    ['malformedOutputsRefusalMessage', (s, r) => malformedOutputsRefusalMessage(s, r)],
+    ['malformedOutputsWarning', (s, r) => malformedOutputsWarning(s, r)],
+    ['malformedRenderedContainersWarning', (s, r) => malformedRenderedContainersWarning(s, r, ['outputs'])],
+    ['malformedResourceEntriesRefusalMessage', (s, r) => malformedResourceEntriesRefusalMessage(s, r, ['A'])],
+    ['malformedResourceEntriesWarning', (s, r) => malformedResourceEntriesWarning(s, r, ['A'])],
+    ['malformedResourcePropertiesRefusalMessage', (s, r) => malformedResourcePropertiesRefusalMessage(s, r, ['A'])],
+    ['malformedResourcePropertiesWarning', (s, r) => malformedResourcePropertiesWarning(s, r, ['A'])],
+    ['malformedResourcesWarning', (s, r) => malformedResourcesWarning(s, r)],
+    ['malformedScrubResourceEntriesRefusalMessage', (s, r) => malformedScrubResourceEntriesRefusalMessage(s, r, ['A'])],
+    ['malformedStateRefusalMessage', (s, r) => malformedStateRefusalMessage(s, r)],
+  ];
+  const FILL =
+    "Take the values from 'cdkd state list --json', which writes each name raw rather than " +
+    'sanitized, and act on the one whose key matches, replacing each quoted hole in the ' +
+    'command below, quotes included, with the shell-quoted value. ';
+  const NO_FILL =
+    "A value beginning with '-' could parse as an option there, so do not fill the stack " +
+    'hole with it: repair or remove the record by hand. ';
+
+  it('covers every caller: each inspectCommand call handed an identity carries the clause', () => {
+    // DERIVED per CALL from the comment-stripped module, so a new call fails
+    // here until the clause with the SAME arguments sits right before it — a
+    // count would pass one call without it beside a stray spelling.
+    const src = readFileSync(
+      new URL('../../../src/state/malformed-resources-bag.ts', import.meta.url),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    // Every CALL EXPRESSION in the module, whatever declares it (a function,
+    // an arrow const, a branch): the definition itself is the only
+    // `inspectCommand(` that is not a call.
+    // `\s*`: a comment between the name and its parenthesis is stripped to
+    // whitespace above, and must not hide the call from either census.
+    const callAt = [...src.matchAll(/\binspectCommand\s*\(/g)]
+      .map((m) => m.index!)
+      .filter((at) => !src.slice(Math.max(0, at - 9), at).endsWith('function '));
+    const parsed = [...src.matchAll(/\binspectCommand\s*\(([^()]*)\)/g)].filter(
+      (m) => !src.slice(Math.max(0, m.index! - 9), m.index!).endsWith('function ')
+    );
+    // A call whose arguments nest parentheses would slip out of `parsed`.
+    expect(parsed.map((m) => m.index)).toEqual(callAt);
+    const callers: string[] = [];
+    let exempt = 0;
+    for (const call of parsed) {
+      const args = call[1]!;
+      const at = call.index!;
+      // The three that hand the gate an identity their own gate already
+      // cleared (the two DESTROY refusals) or none at all, and explain it.
+      if (/^(exact \?|undefined, undefined)/.test(args)) {
+        exempt++;
+        continue;
+      }
+      // The nearest TOP-LEVEL declaration above names the caller.
+      const decl =
+        [...src.slice(0, at).matchAll(/\n(?:export )?(?:function|const) (\w+)/g)].pop()?.[1] ?? '?';
+      // PER CALL: the clause with the same arguments sits within a few lines
+      // BEFORE this call, with no other call between.
+      const clauseAt = src.lastIndexOf(`\${inspectClause(${args})}`, at);
+      expect(clauseAt, `${decl}: inspectCommand(${args}) has no clause before it`).toBeGreaterThan(-1);
+      expect(at - clauseAt, `${decl}: the clause is not beside its call`).toBeLessThan(400);
+      expect(src.slice(clauseAt, at)).not.toMatch(/\binspectCommand\s*\(/);
+      callers.push(decl);
+    }
+    expect(exempt).toBe(3);
+    // Every DERIVED exported caller is driven below; `inspectTail` is driven
+    // through the two builders that call it.
+    const driven = new Set(INSPECT_CALLERS.map(([n]) => n));
+    for (const name of callers.filter((n) => n !== 'inspectTail')) {
+      expect(driven.has(name), `${name} is not in INSPECT_CALLERS`).toBe(true);
+    }
+    expect(callers.length).toBeGreaterThanOrEqual(24);
+  });
+
+  for (const [label, build] of INSPECT_CALLERS) {
+    it(`${label}: a non-plain name gets the reason, then the fill-in, then the command LAST`, () => {
+      const text = build('a b', 'us-east-1');
+      const clause =
+        "The stack name above is not a plain identifier (a letter or digit, then letters, " +
+        "digits, '~', '_', '.' or '-'), the only shape the command below names, since it sits " +
+        'beside a labelled line, so the command below prints a quoted hole in its place. ';
+      // IMMEDIATELY before the label: after it, the clause would sit inside
+      // the labelled command line.
+      const tail = text.slice(text.indexOf(clause + FILL) + (clause + FILL).length);
+      expect(text).toContain(clause + FILL);
+      expect(tail).toMatch(
+        /^[A-Z][a-z ]+with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+      );
+    });
+
+    it(`${label}: a name beginning with - is never to be filled back in`, () => {
+      const text = build('--all', 'us-east-1');
+      expect(text).toContain(
+        "The stack name above begins with a '-', which 'cdkd state show' could parse as an " +
+          'option, so the command below prints a quoted hole in its place. ' +
+          NO_FILL
+      );
+      expect(text).not.toContain(FILL);
+    });
+
+    it(`${label}: a named identity differs from a withheld one ONLY by the clause and the hole`, () => {
+      // Pinned against the withheld rendering of a region-only hole, with its
+      // clause removed and the hole filled: the rest of the message is the
+      // same text, so clause text on the named path alone is caught. It
+      // cannot see an edit made to BOTH paths; the independent literal below
+      // covers one builder for that, and the PR records a one-off comparison
+      // of every builder's named output against the previous release.
+      const named = build('MyStack', 'us-east-1');
+      const withheld = build('MyStack', 'us-east-1 ');
+      const clause =
+        'The region above did not render exactly, so the command below prints a quoted hole ' +
+        'in its place. ';
+      expect(withheld).toContain(clause + FILL);
+      expect(named).toBe(
+        withheld
+          .replace(clause + FILL, '')
+          .replace("--stack-region '<region>'", '--stack-region us-east-1')
+      );
+    });
+  }
+
+  it('renders a named identity exactly as before, pinned to an independent string', () => {
+    // One representative builder, spelled out: the per-builder parity cases
+    // compare two renderings of the same implementation, which text added to
+    // BOTH paths would pass.
+    expect(malformedOutputsWarning('MyStack', 'us-east-1')).toBe(
+      "State for MyStack (us-east-1) has no readable 'outputs' map — the record is malformed or " +
+        "truncated. Where the stored value is a string or a list, 'Object.entries' walks it as " +
+        'readily as a map, so diffing it INVENTS a REMOVE row per character or element carrying ' +
+        "the record's own characters; where it is a number, a boolean or null, it yields no " +
+        'comparison at all. Continuing with it EMPTY: every output this diff resolves is reported ' +
+        'as an ADD and no stored key is reported as a REMOVE, which is not the same as the record ' +
+        "holding none. 'cdkd deploy' REFUSES this record when it loads it, over this same " +
+        "unreadable 'outputs' map, rather than rebuilding the map over it — repair the stored " +
+        'value before deploying. See the stored value with: cdkd state show MyStack ' +
+        '--stack-region us-east-1 --json'
+    );
+  });
+
+  it('names each withheld value with its own reason (altered, too long, not plain, a leading -; `empty` is unreachable, every caller normalises it away), the region conservatively', () => {
+    const text = malformedOutputsWarning('S ', '-x');
+    expect(text).toContain(
+      'The stack name above did not render exactly, and the region above begins with a ' +
+        "'-', which cdkd refuses to print as an argument, so the command below prints quoted " +
+        'holes in its place. ' +
+        FILL
+    );
+    for (const [region, why] of [
+      ['us-east-1 ', 'did not render exactly'],
+      ['r'.repeat(129), 'is too long to name in a command'],
+      ['us east', 'is not a plain identifier'],
+    ] as const) {
+      const one = malformedOutputsWarning('S', region);
+      expect(one, region.slice(0, 9)).toContain(`The region above ${why}`);
+      expect(one.endsWith("cdkd state show S --stack-region '<region>' --json")).toBe(true);
+      expect(one).toContain(FILL);
+    }
+    // Keyed on the RAW `-`: the gate says `altered` / `too-long` first.
+    // A SINGLE dash as well as two, and a bare `-`: the rule is the leading `-`.
+    for (const name of ['-x', '-']) {
+      const single = malformedOutputsWarning(name, 'us-east-1');
+      expect(single, name).toContain(NO_FILL);
+      expect(single, name).not.toContain(FILL);
+    }
+    // A region-LESS identity takes the clause too (the legacy record the
+    // `resources` warning can name without a region).
+    const legacy = malformedResourcesWarning('a b', undefined);
+    expect(legacy).toContain('The stack name above is not a plain identifier');
+    expect(legacy.endsWith("cdkd state show '<stack>' --json")).toBe(true);
+    const altered = malformedOutputsWarning('--all ', 'us-east-1');
+    expect(altered).toContain('The stack name above did not render exactly');
+    expect(altered).toContain(NO_FILL);
+    expect(altered).not.toContain(FILL);
+    const long = malformedOutputsWarning(`--${'q'.repeat(STACK_REF_MAX_CODE_POINTS)}`, 'us-east-1');
+    expect(long).toContain('The stack name above is too long to name in a command');
+    expect(long).toContain(NO_FILL);
+    expect(long).not.toContain(FILL);
+  });
+});

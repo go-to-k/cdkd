@@ -203,7 +203,11 @@ takes its own 128 cap there, the one the prose renders at. Every
 other message here offers a read ONLY: `inspectCommand` builds it through the
 shared gate with `plainIdent` on BOTH values, so an altered, capped,
 option-shaped or non-plain name prints as a hole rather than as its sanitized
-spelling — nothing substitutes a sanitized spelling. Its no-name arm
+spelling — nothing substitutes a sanitized spelling. A caller handing it a real
+identity says why each hole is there BEFORE its label, through `inspectClause`
+(the same gate verdict, per-reason sentences, and no fill-in instruction for a
+stack name beginning with `-`); a fence in the unit test derives the caller
+population, so a new call without the clause fails (go-to-k/cdkd#3436). Its no-name arm
 (`stackName === undefined`, which the destroy refusals take for an inexact
 identity) returns a two-hole template on purpose. Borrowing a gate across
 sites is safe only DOWNWARD: a 128-capped gate at a 1152-capped site withholds;

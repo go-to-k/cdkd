@@ -6706,16 +6706,21 @@ export function reportDriftBaselineGaps(
         // nearest, and prose after the command is what a paste picks up.
         (inspect.exact
           ? ''
-          : `A quoted '<...>' hole in the command at the end of this line stands for a value cdkd could not ` +
+          : `A quoted '<...>' hole in the command on the line below stands for a value cdkd could not ` +
             `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
             `included, with the shell-quoted value. `) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
         // type, so that claim would contradict the plan printed beside it.
-        `Inspect it with: ` +
-        `${inspect.command} --json`
+        `Inspect it with the command on the line below.`
     );
+    // On a labelled line of its OWN — its own `warn`, so no message carries a
+    // newline for a value to imitate — rather than ending the prose line (the
+    // go-to-k/cdkd#3764 follow-up recorded on go-to-k/cdkd#3436): last on that
+    // line it was inert, but a shell-quoted value sharing a line with prose is
+    // the shape an apostrophe earlier on that line turns inside out.
+    logger.warn(safeMsg`Inspect it with: ${inspect.command} --json`);
     for (const logicalId of unreadable.slice(0, NAMED_BASELINE_IDS)) {
       logger.warn(`  ${displayLogicalId(logicalId)}`);
     }
