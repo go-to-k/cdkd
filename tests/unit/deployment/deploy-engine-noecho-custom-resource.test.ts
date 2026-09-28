@@ -160,6 +160,23 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
     Outputs: { Token: { Value: { 'Fn::GetAtt': ['Cr', 'Secret'] } } },
   };
 
+  /** The same value EMBEDDED in a longer leaf (go-to-k/cdkd#2453). */
+  const embeddedValue = (value: string): string => `postgres://u:${value}@db/app`;
+  const EMBEDDED_PARAM_PROPS = {
+    Name: '/app/url',
+    Type: 'String',
+    Value: { 'Fn::Join': ['', ['postgres://u:', { 'Fn::GetAtt': ['Cr', 'Secret'] }, '@db/app']] },
+  };
+  const embeddedTemplate: CloudFormationTemplate = {
+    Resources: {
+      Cr: template.Resources['Cr']!,
+      Param: { Type: 'AWS::SSM::Parameter', Properties: EMBEDDED_PARAM_PROPS },
+    },
+    Outputs: {
+      Embedded: { Value: { 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Secret'] }, ';']] } },
+    },
+  };
+
   function twoCreates(): Map<string, ResourceChange> {
     return new Map<string, ResourceChange>([
       [
@@ -213,6 +230,117 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
     // ...including the outputs bag, which is exported to consumer stacks.
     expect(state.outputs['Token']).toBe(SECRET_MASK);
     expect(JSON.stringify(state)).not.toContain(GENERATED);
+  });
+
+  it('masks WHOLE a dependent leaf and an output that EMBED the value (go-to-k/cdkd#2453)', async () => {
+    const changes = twoCreates();
+    changes.get('Param')!.desiredProperties = EMBEDDED_PARAM_PROPS;
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+    mockProvider.create.mockImplementation((logicalId: string) =>
+      logicalId === 'Cr'
+        ? Promise.resolve({
+            physicalId: 'cr-phys',
+            attributes: { Secret: GENERATED },
+            noEchoAttributes: true,
+          })
+        : Promise.resolve({ physicalId: 'param-phys' })
+    );
+
+    await makeEngine().deploy(STACK, embeddedTemplate);
+
+    // AWS receives the full string...
+    const paramCall = mockProvider.create.mock.calls.find((c) => c[0] === 'Param')!;
+    expect((paramCall[2] as Record<string, unknown>)['Value']).toBe(embeddedValue(GENERATED));
+    // ...and state holds a WHOLE-leaf mask, the shape every consumer recognises.
+    const state = savedState();
+    expect(state.resources['Param']!.properties['Value']).toBe(SECRET_MASK);
+    expect(state.resources['Param']!.properties['Name']).toBe('/app/url');
+    expect(state.outputs['Embedded']).toBe(SECRET_MASK);
+    expect(JSON.stringify(state)).not.toContain(GENERATED);
+    // The custom resource's own record is not flattened by containment.
+    expect(state.resources['Cr']!.properties['ServiceToken']).toBe('arn:aws:lambda:...');
+  });
+
+  it('does not flatten a dependent leaf that merely contains a piece of the producer ServiceToken', async () => {
+    // A handler echoing the account id under `NoEcho` (the whole response is
+    // declared, not a member) must not flatten every ARN-shaped leaf of the
+    // dependent: the account id is already in state in the clear, inside the
+    // producer's ServiceToken (go-to-k/cdkd#2453).
+    const serviceToken = 'arn:aws:lambda:us-east-1:111122223333:function:CrHandler';
+    const props = {
+      Name: '/app/111122223333/url',
+      Type: 'String',
+      Description: { 'Fn::GetAtt': ['Cr', 'Account'] },
+      Value: { 'Fn::Join': ['', ['u:', { 'Fn::GetAtt': ['Cr', 'Secret'] }, '@h']] },
+    };
+    const changes = twoCreates();
+    changes.get('Cr')!.desiredProperties = { ServiceToken: serviceToken };
+    changes.get('Param')!.desiredProperties = props;
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+    mockProvider.create.mockImplementation((logicalId: string) =>
+      logicalId === 'Cr'
+        ? Promise.resolve({
+            physicalId: 'cr-phys',
+            attributes: { Secret: GENERATED, Account: '111122223333' },
+            noEchoAttributes: true,
+          })
+        : Promise.resolve({ physicalId: 'param-phys' })
+    );
+
+    await makeEngine().deploy(STACK, {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: serviceToken } },
+        Param: { Type: 'AWS::SSM::Parameter', Properties: props },
+      },
+    });
+
+    const param = savedState().resources['Param']!.properties;
+    expect(param['Name']).toBe('/app/111122223333/url');
+    // A leaf EQUAL to the echoed value is still masked, as before.
+    expect(param['Description']).toBe(SECRET_MASK);
+    expect(param['Value']).toBe(SECRET_MASK);
+    expect(JSON.stringify(savedState())).not.toContain(GENERATED);
+  });
+
+  it('does not flatten a leaf built from echoed PUBLIC values: a literal input, the region, the stack name', async () => {
+    // A handler echoing `event.ResourceProperties` (and its environment) under
+    // `NoEcho` returns values the template and the state key already show.
+    const crProps = { ServiceToken: 'arn:aws:lambda:...', Env: 'prod-env-9' };
+    const getAtt = (name: string): unknown => ({ 'Fn::GetAtt': ['Cr', name] });
+    const props = {
+      Name: `/app/prod-env-9/us-east-1/${STACK}/url`,
+      Type: 'String',
+      Description: {
+        'Fn::Join': ['/', [getAtt('Env'), getAtt('Region'), getAtt('Stack')]],
+      },
+      Value: { 'Fn::Join': ['', ['u:', getAtt('Secret'), '@h']] },
+    };
+    const changes = twoCreates();
+    changes.get('Cr')!.desiredProperties = crProps;
+    changes.get('Param')!.desiredProperties = props;
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+    mockProvider.create.mockImplementation((logicalId: string) =>
+      logicalId === 'Cr'
+        ? Promise.resolve({
+            physicalId: 'cr-phys',
+            attributes: { Secret: GENERATED, Env: 'prod-env-9', Region: 'us-east-1', Stack: STACK },
+            noEchoAttributes: true,
+          })
+        : Promise.resolve({ physicalId: 'param-phys' })
+    );
+
+    await makeEngine().deploy(STACK, {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: crProps },
+        Param: { Type: 'AWS::SSM::Parameter', Properties: props },
+      },
+    });
+
+    const param = savedState().resources['Param']!.properties;
+    expect(param['Name']).toBe(`/app/prod-env-9/us-east-1/${STACK}/url`);
+    expect(param['Description']).toBe(`prod-env-9/us-east-1/${STACK}`);
+    expect(param['Value']).toBe(SECRET_MASK);
+    expect(JSON.stringify(savedState())).not.toContain(GENERATED);
   });
 
   it('masks an OBSERVED readback that echoes the value back', async () => {
@@ -550,6 +678,31 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       expect(paramCall).toBeDefined();
       expect((paramCall![3] as Record<string, unknown>)['Value']).toBe(encoded);
       expect(JSON.stringify(savedState())).not.toContain(encoded);
+    });
+
+    it('sends the fresh value to a dependent that EMBEDS it, whose record is *** too (go-to-k/cdkd#2453)', async () => {
+      // The embedding leaf is masked WHOLE, so both sides of the skip compare
+      // `***` here as well; the skip has to ask the containment question.
+      mockStateBackend.getState.mockResolvedValue(stateWithBothMasked());
+      const changes = bothUpdate();
+      changes.get('Param')!.desiredProperties = EMBEDDED_PARAM_PROPS;
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+      mockProvider.update.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId: 'cr-phys', attributes: { Secret: GENERATED }, noEchoAttributes: true }
+            : { physicalId: 'param-phys', wasReplaced: false }
+        )
+      );
+
+      await makeEngine().deploy(STACK, embeddedTemplate);
+
+      const paramCall = mockProvider.update.mock.calls.find((c) => c[0] === 'Param');
+      expect(paramCall).toBeDefined();
+      expect((paramCall![3] as Record<string, unknown>)['Value']).toBe(embeddedValue(GENERATED));
+      const state = savedState();
+      expect(state.resources['Param']!.properties['Value']).toBe(SECRET_MASK);
+      expect(JSON.stringify(state)).not.toContain(GENERATED);
     });
 
     it('still skips the dependent when the upstream value is NOT NoEcho and did not move', async () => {
