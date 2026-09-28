@@ -7601,7 +7601,9 @@ export async function buildResolvedParametersPerStack(args: {
     // The parent's resolved Parameter VALUES are the lookup table for any
     // `Ref: <ParentParam>` in the child's Parameters block. Root-first order
     // guarantees the parent was already processed.
-    const parentParamValues: Record<string, unknown> = {};
+    // Null prototype: a parameter key is template text, and on a `{}` an
+    // assignment to `__proto__` would set the prototype, not an own key.
+    const parentParamValues = Object.create(null) as Record<string, unknown>;
     for (const p of paramsByCdkdName.get(parentStackName) ?? []) {
       if (p.ParameterKey !== undefined) parentParamValues[p.ParameterKey] = p.ParameterValue;
     }
