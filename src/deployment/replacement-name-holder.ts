@@ -219,6 +219,9 @@ const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
  * A type missing here only refuses a case-only rename — the safe direction.
  */
 const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
+  // Each is a service that stores the identifier lower-cased (RDS, DocDB,
+  // Neptune and ElastiCache identifiers and subnet groups) or refuses a second
+  // spelling of it (IAM names). Unverified services stay out.
   'AWS::DocDB::DBCluster',
   'AWS::DocDB::DBInstance',
   'AWS::DocDB::DBSubnetGroup',
@@ -234,10 +237,29 @@ const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
   'AWS::Neptune::DBSubnetGroup',
   'AWS::RDS::DBCluster',
   'AWS::RDS::DBInstance',
-  'AWS::RDS::DBProxy',
-  'AWS::RDS::DBProxyEndpoint',
   'AWS::RDS::DBSubnetGroup',
 ]);
+
+/**
+ * Types whose SDK provider does NOT mint `applyDefaultNameForFallback`'s name
+ * verbatim (a log group gets `/cdkd/<name>`, an SSM parameter `/<name>`), so
+ * the `generated` bag is not what their create sent and proves nothing — not
+ * even a match. Fenced against the providers' wrapped generation sites.
+ */
+const GENERATED_NAME_DIVERGES: ReadonlySet<string> = new Set([
+  'AWS::Logs::LogGroup',
+  'AWS::SSM::Parameter',
+]);
+
+/** The case-insensitive name spaces, for the test that pins the list. */
+export function reverseReplacementCaseInsensitiveTypes(): readonly string[] {
+  return [...CASE_INSENSITIVE_NAME_TYPES].sort();
+}
+
+/** Does cdkd's generation rule name what this type's nameless create sends? */
+export function reverseReplacementTrustsGeneratedName(resourceType: string): boolean {
+  return !GENERATED_NAME_DIVERGES.has(resourceType);
+}
 
 /**
  * Pairs of DIFFERENT types that share one name space, so across a `Type`
@@ -543,7 +565,11 @@ export function reverseReplacementNewHoldsName(input: {
   let generatedName = false;
   let namePath = oldKey.name.find((path) => valueAt(requested, path) !== undefined);
   let wantName = namePath === undefined ? undefined : valueAt(requested, namePath);
-  if (namePath === undefined && input.generated !== undefined) {
+  if (
+    namePath === undefined &&
+    input.generated !== undefined &&
+    reverseReplacementTrustsGeneratedName(oldResourceType)
+  ) {
     namePath = oldKey.name.find((path) => valueAt(input.generated, path) !== undefined);
     wantName = namePath === undefined ? undefined : valueAt(input.generated, namePath);
     generatedName = wantName !== undefined;
@@ -554,9 +580,10 @@ export function reverseReplacementNewHoldsName(input: {
         `${newResource} holds it`
     );
   }
-  const wanted =
-    `the re-create asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}` +
-    (generatedName ? ' (the name cdkd generates)' : '');
+  const wanted = generatedName
+    ? `the re-create named no ${labels}, and cdkd's rule generates ` +
+      `${r.shown(namePath.join('.'))} ${r.quoted(wantName)} for it`
+    : `the re-create asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
   const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
     ? (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
     : (a: string, b: string): boolean => a === b;

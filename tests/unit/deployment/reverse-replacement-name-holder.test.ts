@@ -4,9 +4,12 @@
  * decide must answer `holds: false`, and only a PROVEN holder may answer true.
  */
 import { describe, it, expect } from 'vite-plus/test';
+import { readdirSync, readFileSync } from 'node:fs';
 import {
+  reverseReplacementCaseInsensitiveTypes,
   reverseReplacementNameKeyKind,
   reverseReplacementNewHoldsName,
+  reverseReplacementTrustsGeneratedName,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
@@ -161,8 +164,22 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
       })
     );
     expect(r.known).toBe(false);
-    expect(r.diagnosis).toContain('(the name cdkd generates)');
+    expect(r.diagnosis).toContain('named no LogGroupName');
+    // On a TRUSTED type a generated mismatch is still undecided, and says the
+    // name is cdkd's rule, not what the create asked for.
+    const trusted = refusal(
+      ask({ requested: {}, generated: { QueueName: 'S-Q' }, recorded: { QueueName: 'other' }, physicalId: 'x' })
+    );
+    expect(trusted.known).toBe(false);
+    expect(trusted.diagnosis).toContain(`cdkd's rule generates QueueName "S-Q"`);
     expect(ask({ generated: { QueueName: 'q' }, requested: {}, recorded: {} })).toEqual({ holds: true });
+    // A MATCH on a diverging type proves nothing either: its provider sent
+    // `/cdkd/S-LG`, so a new log group holding `S-LG` is not the holder.
+    const matched = refusal(
+      ask({ ...base, generated: { LogGroupName: 'S-LG' }, recorded: { LogGroupName: 'S-LG' }, physicalId: 'S-LG' })
+    );
+    expect(matched.known).toBe(false);
+    expect(matched.diagnosis).toContain('named no LogGroupName');
     // An explicit name wins over the generated one.
     expect(ask({ generated: { QueueName: 'other' } })).toEqual({ holds: true });
   });
@@ -445,5 +462,49 @@ describe('every snapshot type with a name-shaped create-only property is classif
     expect(named.length).toBeGreaterThanOrEqual(84);
     const unknown = named.filter((type) => reverseReplacementNameKeyKind(type) === 'unknown');
     expect(unknown).toEqual([]);
+  });
+});
+
+describe('the generated-name mirror is trusted only where the provider mints it verbatim', () => {
+  // A provider that WRAPS cdkd's generation (`/cdkd/${generateResourceName(...)}`)
+  // sends a name the mirror does not spell, so its type must be distrusted.
+  // Read from the providers' SOURCE: a new wrapping site fails here until its
+  // type is added to GENERATED_NAME_DIVERGES.
+  it('every wrapped generation site belongs to a distrusted type', () => {
+    const dir = new URL('../../../src/provisioning/providers/', import.meta.url);
+    const wrapped = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => /`[^`]*\S\$\{generateResourceName/.test(readFileSync(new URL(f, dir), 'utf8')))
+      .sort();
+    expect(wrapped).toEqual(['logs-loggroup-provider.ts', 'ssm-parameter-provider.ts']);
+    expect(reverseReplacementTrustsGeneratedName('AWS::Logs::LogGroup')).toBe(false);
+    expect(reverseReplacementTrustsGeneratedName('AWS::SSM::Parameter')).toBe(false);
+    expect(reverseReplacementTrustsGeneratedName('AWS::ElasticLoadBalancingV2::TargetGroup')).toBe(true);
+  });
+});
+
+describe('the case-insensitive name spaces are a reviewed list', () => {
+  // A member folds case into a PROOF that leads to a delete, so a service
+  // that is in fact case-sensitive here deletes the wrong resource. Changing
+  // the list is a deliberate edit of this literal.
+  it('is exactly the audited set', () => {
+    expect(reverseReplacementCaseInsensitiveTypes()).toEqual([
+      'AWS::DocDB::DBCluster',
+      'AWS::DocDB::DBInstance',
+      'AWS::DocDB::DBSubnetGroup',
+      'AWS::ElastiCache::CacheCluster',
+      'AWS::ElastiCache::SubnetGroup',
+      'AWS::IAM::Group',
+      'AWS::IAM::InstanceProfile',
+      'AWS::IAM::ManagedPolicy',
+      'AWS::IAM::Role',
+      'AWS::IAM::User',
+      'AWS::Neptune::DBCluster',
+      'AWS::Neptune::DBInstance',
+      'AWS::Neptune::DBSubnetGroup',
+      'AWS::RDS::DBCluster',
+      'AWS::RDS::DBInstance',
+      'AWS::RDS::DBSubnetGroup',
+    ]);
   });
 });
