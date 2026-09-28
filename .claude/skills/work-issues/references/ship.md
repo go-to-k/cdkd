@@ -48,7 +48,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Keep both, then run
-  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it.
+  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it —
+  after a CLEAN rebase touching the ledger too, before the push (#3981 did not).
 
 ### Merge
 
