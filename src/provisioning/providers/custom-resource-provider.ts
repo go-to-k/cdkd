@@ -127,7 +127,8 @@ export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
  *
  * A skip rather than resolving the reference: CloudFormation does not support
  * SECURE dynamic references in custom resources at all, so the main shape here
- * exists only because cdkd deployed a template CloudFormation would reject,
+ * exists only because cdkd deployed a template CloudFormation does not support
+ * (which it refuses pre-flight since go-to-k/cdkd#3976; an older record stays),
  * and the delete path has no resolver to spend on reviving it. The
  * "exhaust every addressable source" rule (provider-delete-path.md) does not
  * reach it: the record holds no address, only a pointer to a secret or
@@ -1600,8 +1601,8 @@ export class CustomResourceProvider implements ResourceProvider {
           `'{{resolve:...}}' dynamic reference, which cdkd does not resolve on delete, so it ` +
           `cannot address the handler; skipping deletion — anything this custom resource ` +
           `manages is LEFT IN PLACE. CloudFormation does not support secure (secretsmanager / ` +
-          `ssm-secure) dynamic references in custom resources, and for those a re-deploy of the ` +
-          `same template records the same reference again. Tear the resource down by hand, then clear ` +
+          `ssm-secure) dynamic references in custom resources, and cdkd now refuses such a ` +
+          `template at deploy time. Tear the resource down by hand, then clear ` +
           `the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that ` +
           `command drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the provider's ` +
           `Lambda function or SNS topic ARN) in state.json and re-running helps only while that ` +

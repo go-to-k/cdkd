@@ -73,13 +73,12 @@ exports.handler = async (event) => {
       properties: { Role: 'producer' },
     });
 
-    // go-to-k/cdkd#3960: a custom resource whose ServiceToken is a Secrets
-    // Manager dynamic reference. cdkd records a SECRET reference as its
-    // `{{resolve:...}}` expression, so that expression is what the delete path
-    // reads back. CloudFormation does not support secure dynamic references in
-    // custom resources; cdkd deploys it, which is how such a record exists.
-    // verify.sh seeds the secret with the handler's ARN before this deploy.
-    // The explicit dependency matters: a ServiceToken read from a secret
+    // go-to-k/cdkd#3976: a custom resource whose ServiceToken is a Secrets
+    // Manager dynamic reference. CloudFormation does not support secure dynamic
+    // references in custom resources, and cdkd now refuses this template
+    // pre-flight -- verify.sh asserts that refusal, so the secret is never
+    // created and nothing here is provisioned. The explicit dependency keeps
+    // the template honest had it deployed: a ServiceToken read from a secret
     // carries no Ref edge to the handler.
     // allow-mode-gated-drop: every later deploy starts from an orphaned, empty stack, so omitting it drops nothing.
     if (withReferenceDependent) {

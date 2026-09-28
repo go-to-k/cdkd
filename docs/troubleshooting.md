@@ -19,6 +19,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
+  - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Resource already exists" Error](#resource-already-exists-error)
   - [An unsupported resource type](#an-unsupported-resource-type)
@@ -590,6 +591,37 @@ of the two survives resolution:
   "DestinationIpv6CidrBlock": { "Fn::If": ["IsV4", { "Ref": "AWS::NoValue" }, "::/0"] }
 }
 ```
+
+### "The following custom resources pass a secure dynamic reference"
+
+**Symptoms:**
+
+```
+The following custom resources pass a secure dynamic reference ({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:
+  - DbInit: Password
+```
+
+**Causes:**
+
+A custom resource (`Custom::*` or `AWS::CloudFormation::CustomResource`) has a
+property whose value holds a `{{resolve:secretsmanager:...}}` or
+`{{resolve:ssm-secure:...}}` reference, directly or inside an intrinsic --
+including the token CDK splits across `Fn::Join` parts around a same-stack
+secret's `Ref`. CloudFormation does not support secure dynamic references in custom
+resources ("Dynamic references can't be used for secure values ... in custom
+resources", User Guide, dynamic references). cdkd refuses it at pre-flight, before
+anything is resolved, so the reference is never resolved into the handler's
+event. A plain `{{resolve:ssm:...}}` is accepted.
+
+Like the checks above, this fires on every deploy, including one where the
+resource is unchanged, and there is no `--allow-*` escape hatch. `cdkd destroy`
+does not run it, so a stack deployed before this check can still be torn down.
+
+**Solutions:**
+
+- Pass the secret's name or ARN instead, and have the handler read the value
+  itself (grant its role `secretsmanager:GetSecretValue` or `ssm:GetParameter`).
+- For a value that is not secret, use a plain `{{resolve:ssm:...}}` parameter.
 
 ### "The following resources declare a nested property block without a member it requires"
 
