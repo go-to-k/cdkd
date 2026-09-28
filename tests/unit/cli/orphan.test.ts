@@ -1451,3 +1451,228 @@ describe('cdkd orphan (per-resource)', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('cdkd orphan: a construct path under a CDK Stage (go-to-k/cdkd#3943)', () => {
+  // A Stage stack's display path is hierarchical (`MyStage/Api`), and so is
+  // every aws:cdk:path in its template. Splitting at the FIRST `/` looked up
+  // the Stage id as a stack and never matched; the stack is now found by the
+  // longest display-path prefix.
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockSaveState.mockReset();
+    mockSaveState.mockResolvedValue('"new-etag"');
+    mockListStacks.mockReset();
+    mockAcquireLock.mockReset();
+    mockAcquireLock.mockResolvedValue(true);
+    mockReleaseLock.mockReset();
+    mockReleaseLock.mockResolvedValue(undefined);
+    mockSynthesize.mockReset();
+    errorSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  const stageStack = (stackName: string, displayName: string) => ({
+    stackName,
+    displayName,
+    template: templateWith({
+      Bucket: `${displayName}/Bucket/Resource`,
+      Other: `${displayName}/Other/Resource`,
+    }),
+    region: 'us-east-1',
+  });
+
+  function primeState(stackName: string): void {
+    mockListStacks.mockResolvedValue([{ stackName, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName,
+        region: 'us-east-1',
+        resources: {
+          Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} },
+          Other: { physicalId: 'o', resourceType: 'AWS::S3::Bucket', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+  }
+
+  const reported = (): string => String(errorSpy.mock.calls[0]?.[0] ?? '');
+
+  /** Orphan `path`, then return the stack the saved state was written for. */
+  async function orphanedFrom(path: string): Promise<{ stack: string; bucketGone: boolean }> {
+    await runOrphan([path, '--app', 'noop', '--yes']);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [[stack, , saved]] = mockSaveState.mock.calls;
+    return { stack: String(stack), bucketGone: saved.resources.Bucket === undefined };
+  }
+
+  it('resolves a construct path in a stack under a Stage', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('MyStage-Api', 'MyStage/Api'), stageStack('Top', 'Top')],
+    });
+    primeState('MyStage-Api');
+
+    expect(await orphanedFrom('MyStage/Api/Bucket')).toEqual({
+      stack: 'MyStage-Api',
+      bucketGone: true,
+    });
+    expect(mockAcquireLock).toHaveBeenCalledWith(
+      'MyStage-Api',
+      'us-east-1',
+      expect.any(String),
+      'orphan'
+    );
+  });
+
+  it('resolves a stack under a NESTED Stage, preferring the longest prefix', async () => {
+    // `Outer` is a plausible display path of its own; the longer one wins.
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('Outer', 'Outer'), stageStack('Outer-Inner-Api', 'Outer/Inner/Api')],
+    });
+    primeState('Outer-Inner-Api');
+
+    expect((await orphanedFrom('Outer/Inner/Api/Bucket')).stack).toBe('Outer-Inner-Api');
+  });
+
+  it('does not let a stack claim a sibling whose name it prefixes', async () => {
+    // `MyStage/Api` is a string prefix of `MyStage/ApiV2/...` but not a
+    // path prefix: the trailing `/` keeps it out.
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('MyStage-Api', 'MyStage/Api'), stageStack('MyStage-ApiV2', 'MyStage/ApiV2')],
+    });
+    primeState('MyStage-ApiV2');
+
+    expect((await orphanedFrom('MyStage/ApiV2/Bucket')).stack).toBe('MyStage-ApiV2');
+  });
+
+  it('does not fall back to a stack that is only a STRING prefix of the path', async () => {
+    // Longest-prefix alone would still pick `MyStage/ApiV2` above; this is the
+    // case only the `/` boundary decides: with no `MyStage/ApiV2` stack at all,
+    // `MyStage/Api` must not claim the path.
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack('MyStage-Api', 'MyStage/Api')] });
+
+    await expect(runOrphan(['MyStage/ApiV2/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toContain(
+      "Construct path 'MyStage/ApiV2/Bucket' does not start with the path of any stack"
+    );
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a top-level stack by its display path', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('MyStage-Api', 'MyStage/Api'), stageStack('Top', 'Top')],
+    });
+    primeState('Top');
+
+    expect(await orphanedFrom('Top/Bucket')).toEqual({ stack: 'Top', bucketGone: true });
+  });
+
+  it('refuses paths spanning two Stage stacks', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('MyStage-Api', 'MyStage/Api'), stageStack('MyStage-Db', 'MyStage/Db')],
+    });
+
+    await expect(
+      runOrphan(['MyStage/Api/Bucket', 'MyStage/Db/Bucket', '--app', 'noop', '--yes'])
+    ).rejects.toThrow('process.exit-mock');
+    expect(reported()).toMatch(/All construct paths must reference the same stack/);
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  it('says a bare Stage stack path names a stack, not a resource', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack('MyStage-Api', 'MyStage/Api')] });
+
+    await expect(runOrphan(['MyStage/Api', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toContain(
+      "Invalid construct path 'MyStage/Api': it names a stack, not a resource inside one."
+    );
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+
+  it('says a nested stack path names a stack even when a shorter stack path prefixes it', async () => {
+    // A Stack nested in a Stack is its own artifact displayed `Parent/Child`
+    // beside `Parent`; the prefix lookup alone would pick `Parent` and report
+    // a template miss there.
+    mockSynthesize.mockResolvedValue({
+      stacks: [stageStack('Parent', 'Parent'), stageStack('ParentChild', 'Parent/Child')],
+    });
+
+    await expect(runOrphan(['Parent/Child', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toContain(
+      "Invalid construct path 'Parent/Child': it names a stack, not a resource inside one."
+    );
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+
+  it('refuses a trailing slash at any depth as malformed', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack('MyStage-Api', 'MyStage/Api')] });
+
+    await expect(runOrphan(['MyStage/Api/', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toContain(
+      "Invalid construct path 'MyStage/Api/'. Expected '<StackPath>/<Path/To/Resource>'."
+    );
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+
+  it("prefers a stack's display path over another stack's equal physical name", async () => {
+    // A (display `X`) and B (physical `X`, display `Y`) both prefix `X/Bucket`
+    // at the same length; the display path wins, as the old two-map lookup's
+    // precedence did.
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        { ...stageStack('A', 'X') },
+        { ...stageStack('X', 'Y'), template: templateWith({ Bucket: 'Y/Bucket/Resource' }) },
+      ],
+    });
+    primeState('A');
+
+    expect((await orphanedFrom('X/Bucket')).stack).toBe('A');
+  });
+
+  it("still routes a path headed by a stack's physical name to that stack", async () => {
+    // The physical-name arm: the path reaches the stack, whose template then
+    // has no such aws:cdk:path (those start with the display path).
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack('MyStage-Api', 'MyStage/Api')] });
+    primeState('MyStage-Api');
+
+    await expect(runOrphan(['MyStage-Api/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toContain(
+      "Construct path 'MyStage-Api/Bucket' not found in template for stack MyStage-Api."
+    );
+  });
+
+  it('names the available stack paths when no stack prefixes the path', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack('MyStage-Api', 'MyStage/Api')] });
+
+    await expect(runOrphan(['MyStage/Nope/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    expect(reported()).toBe(
+      "Error: Construct path 'MyStage/Nope/Bucket' does not start with the path of any stack " +
+        'in the synthesized app. Available: MyStage/Api'
+    );
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+});
