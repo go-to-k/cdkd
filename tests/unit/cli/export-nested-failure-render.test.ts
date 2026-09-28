@@ -1448,7 +1448,7 @@ describe('nested parameter values carry through a grandparent chain', () => {
  * own command, so the "do not fill" rule and the reason survive a list.
  */
 describe('the nested resume tail notes each withheld orphan command above it (go-to-k/cdkd#3436)', () => {
-  const WITHHELD = 'us-east-1​';
+  const WITHHELD = 'us-east-1\u200b';
   const NOTE_BODY =
     "The next line's command names neither value, because its record's region does NOT " +
     'render exactly (another record may render identically). List the records as stored with ' +
@@ -1692,19 +1692,21 @@ describe('the nested resume tail notes each withheld orphan command above it (go
 });
 
 describe('the single-root pre-delete and phase-2 tails note a withheld orphan command (go-to-k/cdkd#3436)', () => {
+  // The tail is identical for both kinds, so each arm pins the failure it reached.
   it.each([
-    ['pre-delete', () => iamSend.mockRejectedValue(new Error('denied'))],
+    ['pre-delete', 'pre-delete of HandlerPolicy', () => iamSend.mockRejectedValue(new Error('denied'))],
     [
       'phase 2',
+      'Phase 2 (UPDATE) failed',
       () => {
         iamSend.mockResolvedValue({});
         waitStackUpdate.mockRejectedValue(new Error('update failed'));
       },
     ],
-  ])('%s', async (_, arrange) => {
+  ])('%s', async (_, reached, arrange) => {
     arrange();
     const { tree, rootTemplate } = policyTree();
-    const withheldTree = { ...tree, region: 'us-east-1​' };
+    const withheldTree = { ...tree, region: 'us-east-1\u200b' };
     const err = await runPerStackImportLoop({
       lockRecovery: {},
       rootStackName: 'Root',
@@ -1723,6 +1725,7 @@ describe('the single-root pre-delete and phase-2 tails note a withheld orphan co
       },
       (e: unknown) => e as Error
     );
+    expect(err.message).toContain(reached);
     expect(err.message).toContain(
       'clean up its record the same way:\n  For the record targeting CloudFormation stack Root: ' +
         "The next line's command names neither value, because " +
