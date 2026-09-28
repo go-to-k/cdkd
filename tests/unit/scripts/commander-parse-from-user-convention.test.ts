@@ -338,9 +338,12 @@ function countOperands(root: Command, tokens: Token[]): Resolved | string {
   // commander's `maybeOption`: a bare `-` is a value, not an option.
   const isOption = (t: Token) => t.kind === 'lit' && t.text.length > 1 && t.text.startsWith('-');
   const done = (stoppedOn?: Token): Resolved | string => {
-    // Nothing read before an opaque token says nothing about arity: the
-    // token may expand to any number of operands.
-    if (stoppedOn && operands.length === 0) return `opaque ${stoppedOn.text}`;
+    // An opaque token may expand to any number of operands, so a count that
+    // stops on one is a usable lower bound only where the arity is unbounded
+    // and nothing it hides could be a surplus.
+    if (stoppedOn && (operands.length === 0 || Number.isFinite(maxOperands(cmd)))) {
+      return `opaque ${stoppedOn.text}`;
+    }
     return { path: chain.map((c) => c.name()).join(' '), max: maxOperands(cmd), operands };
   };
   for (let i = 0; i < tokens.length; i++) {
@@ -475,6 +478,13 @@ for (const entry of readdirSync(COMMANDS_DIR, { recursive: true, encoding: 'utf8
   }
 }
 
+/**
+ * Calls after a factory that return the SAME command. `.command('x')` returns
+ * a new child, so an open method list would resolve it as its parent.
+ */
+const SELF_CHAIN =
+  '(?:\\s*\\.\\s*(?:exitOverride|configureOutput|allowUnknownOption|allowExcessArguments|showHelpAfterError|hook|action)\\s*\\([^()]*\\))*';
+
 interface Receiver {
   readonly factory: string;
   readonly via: 'direct' | 'chained' | 'helper';
@@ -490,7 +500,7 @@ function resolveReceiver(
   before: string,
   headers: ArgFunction[]
 ): Receiver | undefined {
-  const chained = /\b(\w+)\s*\(\s*\)\s*(?:\.\s*\w+\s*\([^()]*\)\s*)*$/.exec(before);
+  const chained = new RegExp(`\\b(\\w+)\\s*\\(\\s*\\)${SELF_CHAIN}\\s*$`).exec(before);
   if (chained && FACTORIES.has(chained[1]!)) return { factory: chained[1]!, via: 'chained' };
   const recv = /(\w+)\s*$/.exec(before)?.[1];
   const at = before.length;
@@ -528,7 +538,7 @@ function factoryCalled(init: string | undefined): string | undefined {
   // Only the factory's own command, optionally through `this`-returning
   // calls: `createX().commands[0]` holds a CHILD, which must not be replayed
   // from the factory's root.
-  const call = /^(?:await\s+)?(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\([^()]*\))*\s*$/;
+  const call = new RegExp(`^(?:await\\s+)?(\\w+)\\s*\\(\\s*\\)${SELF_CHAIN}\\s*$`);
   return init === undefined ? undefined : call.exec(init)?.[1];
 }
 
@@ -691,11 +701,16 @@ const KNOWN_DARK: Record<string, number> = {
   'tests/unit/cli/import.test.ts': 1,
   // The subcommand is named by a loop variable.
   'tests/unit/cli/local-assume-role-negation.test.ts': 1,
-  // The receiver is built by `make()`, a factory passed in as a parameter.
-  'tests/unit/cli/local-invoke-assume-role-entry.test.ts': 1,
+  // `...(watch ? ['--watch'] : [])` after the target: a conditional spread.
+  'tests/unit/cli/local-invoke-agentcore-stdout-stream.test.ts': 1,
+  // A receiver built by `make()`, a factory passed in as a parameter, and
+  // `invoke(args)` called with a loop variable after the target operand.
+  'tests/unit/cli/local-invoke-assume-role-entry.test.ts': 2,
   // Three `shim()` receivers built with `new Command`, and one subcommand
   // named by a loop variable.
   'tests/unit/cli/local-shim-region-fold.test.ts': 4,
+  // `...(argv as string[])`: a cast parameter fed from `it.each` rows.
+  'tests/unit/cli/local-start-cloudfront.test.ts': 1,
   // A receiver built per case, and a spread of a loop variable.
   'tests/unit/cli/options.test.ts': 2,
   // Stack paths built as `${HOSTILE...}/A` templates, which may begin with `-`.
@@ -704,6 +719,8 @@ const KNOWN_DARK: Record<string, number> = {
   'tests/unit/cli/publish-assets.test.ts': 1,
   // A `forged` variable and `argv.slice(2)` as operands.
   'tests/unit/cli/state-orphan.test.ts': 1,
+  // `...flags` from `it.each` rows, after the stack operand.
+  'tests/unit/cli/state-record-shape.test.ts': 1,
   // Stack names read off fixture records (`ref.stackName`).
   'tests/unit/cli/state-ref-display-boundary.test.ts': 1,
   // A `forged` variable as the stack name.
@@ -955,6 +972,12 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     const val = (x: string): Token => ({ kind: 'val', text: x });
     const spread = (x: string): Token => ({ kind: 'spread', text: x });
     const runTask = () => FACTORIES.get('createLocalRunTaskCommand')!();
+    // A finite arity can be exceeded by whatever an opaque tail expands to.
+    expect(countOperands(runTask(), [lit('TD'), spread('extra')])).toBe('opaque extra');
+    // An unbounded one cannot, so the operands read are a usable lower bound.
+    expect(
+      countOperands(FACTORIES.get('createDestroyCommand')!(), [lit('A'), spread('extra')])
+    ).toMatchObject({ operands: ['A'] });
     // Opaque from the first token: nothing was read, so nothing is known.
     expect(countOperands(runTask(), [spread('argv')])).toBe('opaque argv');
     expect(countOperands(FACTORIES.get('createGcCommand')!(), [lit('--region'), lit('r'), spread('extra')])).toBe(
@@ -965,9 +988,9 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(countOperands(runTask(), [lit('--assume-task-role'), val('flag'), lit('A'), lit('B')])).toBe(
       'opaque flag'
     );
-    expect(countOperands(runTask(), [lit('TD'), lit('--assume-task-role'), val('flag'), lit('X')])).toMatchObject({
-      operands: ['TD'],
-    });
+    expect(countOperands(runTask(), [lit('TD'), lit('--assume-task-role'), val('flag'), lit('X')])).toBe(
+      'opaque flag'
+    );
     // A bare `-` is a value to commander, so an optional option takes it.
     expect(countOperands(runTask(), [lit('TD'), lit('--assume-task-role'), lit('-')])).toMatchObject({
       operands: ['TD'],
@@ -1021,6 +1044,9 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(
       resolveReceiver('createDiffCommand().exitOverride()', 'createDiffCommand().exitOverride()', [])
     ).toEqual({ factory: 'createDiffCommand', via: 'chained' });
+    // `.command('x')` returns a new child, not the factory's command.
+    expect(resolve("const cmd = createLocalCommand().command('x');\ncmd")).toBeUndefined();
+    expect(resolveReceiver("createLocalCommand().command('x')", "createLocalCommand().command('x')", [])).toBeUndefined();
     expect(resolve('const cmd = createDeployCommand().exitOverride();\ncmd')).toEqual({
       factory: 'createDeployCommand',
       via: 'direct',
