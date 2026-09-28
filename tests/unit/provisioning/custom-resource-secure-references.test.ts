@@ -6,9 +6,12 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
+  carriesResolvedSecret,
+  findResolvedSecretPaths,
   findSecureReferencePaths,
   isCustomResourceType,
 } from '../../../src/provisioning/custom-resource-secure-references.js';
+import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 
 const SM = '{{resolve:secretsmanager:my-secret:SecretString:password}}';
@@ -196,5 +199,77 @@ describe('ProviderRegistry.validateResourceProperties refuses a secure reference
         },
       ])
     ).not.toThrow();
+  });
+});
+
+describe('findResolvedSecretPaths (issue #4009, the resolve-time half)', () => {
+  const bag = (entries: Array<[string, string]>) => new Map<string, string>(entries);
+  const SECRET = 's3cr3t-value';
+
+  it('names a path whose resolved leaf IS a recorded secret plaintext', () => {
+    expect(
+      findResolvedSecretPaths(
+        { Password: SECRET, Other: 'plain' },
+        bag([[SECRET, '{{resolve:ssm:/app/pw}}']])
+      )
+    ).toEqual(['Password']);
+  });
+
+  it('matches a secret embedded in a longer leaf, nested and in arrays', () => {
+    expect(
+      findResolvedSecretPaths(
+        { Conn: `user:${SECRET}@host`, Nested: { Items: ['x', SECRET] } },
+        bag([[SECRET, '{{resolve:secretsmanager:s:SecretString:::}}']])
+      )
+    ).toEqual(['Conn', 'Nested.Items[1]']);
+  });
+
+  it('ignores a MASK-ONLY entry: a NoEcho value reaches a dependent in the clear', () => {
+    expect(
+      findResolvedSecretPaths({ Token: SECRET }, bag([[SECRET, SECRET_MASK]]))
+    ).toEqual([]);
+  });
+
+  it('matches a short plaintext only as a whole leaf, never as a substring', () => {
+    const secrets = bag([['abc', '{{resolve:ssm-secure:/p}}']]);
+    expect(findResolvedSecretPaths({ A: 'abc', B: 'xabcx' }, secrets)).toEqual(['A']);
+  });
+
+  it('is empty with no bag, an empty bag, or undefined properties', () => {
+    expect(findResolvedSecretPaths({ A: SECRET }, undefined)).toEqual([]);
+    expect(findResolvedSecretPaths({ A: SECRET }, new Map())).toEqual([]);
+    expect(findResolvedSecretPaths(undefined, bag([[SECRET, '{{resolve:ssm:/p}}']]))).toEqual([]);
+  });
+
+  it('names every path a shared object reaches, and each leaf once', () => {
+    const shared = { S: SECRET };
+    expect(
+      findResolvedSecretPaths(
+        { A: shared, B: shared, C: `${SECRET}-${SECRET}` },
+        bag([[SECRET, '{{resolve:ssm:/p}}']])
+      )
+    ).toEqual(['A.S', 'B.S', 'C']);
+  });
+});
+
+describe('carriesResolvedSecret (issue #4009): the refusal is decided by the bag', () => {
+  it('is true for any EXPRESSION entry, however the value reached the properties', () => {
+    // A base64-encoded secret: the resolver records the source pair AND a
+    // mask-only derived needle. No leaf matches, but the bag still says so.
+    const secrets = new Map<string, string>([
+      ['s3cr3t-value', '{{resolve:ssm:/app/pw}}'],
+      [Buffer.from('s3cr3t-value').toString('base64'), SECRET_MASK],
+    ]);
+    expect(carriesResolvedSecret(secrets)).toBe(true);
+    expect(
+      findResolvedSecretPaths({ V: Buffer.from('s3cr3t-value').toString('base64') }, secrets)
+    ).toEqual([]);
+  });
+
+  it('is false for mask-only entries alone (NoEcho), an empty plaintext, or no bag', () => {
+    expect(carriesResolvedSecret(new Map([['noecho-value', SECRET_MASK]]))).toBe(false);
+    expect(carriesResolvedSecret(new Map([['', '{{resolve:ssm:/p}}']]))).toBe(false);
+    expect(carriesResolvedSecret(new Map())).toBe(false);
+    expect(carriesResolvedSecret(undefined)).toBe(false);
   });
 });

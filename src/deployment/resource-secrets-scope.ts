@@ -56,13 +56,15 @@ export function withCurrentResourceSecrets<T>(secrets: RecordedSecretValues, fn:
  * The bag {@link withCurrentResourceSecrets} bound for the provider call
  * currently in flight, or `undefined` when no binder is on the stack.
  *
- * Two readers, each handing the map on as a redaction seed and nothing else:
- * `NestedStackProvider` (seeds the child engine) and
+ * Three readers: `NestedStackProvider` (seeds the child engine),
  * `SecretsManagerSecretProvider.asPersisted` (issue #2472 — rewrites a desired
  * bag into the spelling state persisted so it can be COMPARED against the
  * previous one; a masking function cannot substitute there, because `***`
- * never equals the persisted `{{resolve:...}}` expression). A provider reading
- * this MUST NOT enumerate or log its KEYS — they are secret plaintext.
+ * never equals the persisted `{{resolve:...}}` expression), and
+ * `CustomResourceProvider`'s refusal to send a handler a secret (issue #4009),
+ * which asks only WHETHER an expression entry exists and where its plaintext
+ * sits. A provider reading this MUST NOT enumerate or log its KEYS — they are
+ * secret plaintext.
  */
 export function getCurrentResourceSecrets(): RecordedSecretValues | undefined {
   return currentResourceSecretsStore.getStore();

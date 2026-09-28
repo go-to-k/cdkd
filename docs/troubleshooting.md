@@ -20,6 +20,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
+  - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Resource already exists" Error](#resource-already-exists-error)
   - [An unsupported resource type](#an-unsupported-resource-type)
@@ -611,7 +612,9 @@ secret's `Ref`. CloudFormation does not support secure dynamic references in cus
 resources ("Dynamic references can't be used for secure values ... in custom
 resources", User Guide, dynamic references). cdkd refuses it at pre-flight, before
 anything is resolved, so the reference is never resolved into the handler's
-event. A plain `{{resolve:ssm:...}}` is accepted.
+event. A plain `{{resolve:ssm:...}}` is accepted here; one that names a
+SecureString parameter is refused when the handler would be invoked instead
+(next entry).
 
 Like the checks above, this fires on every deploy, including one where the
 resource is unchanged, and there is no `--allow-*` escape hatch. `cdkd destroy`
@@ -622,6 +625,36 @@ does not run it, so a stack deployed before this check can still be torn down.
 - Pass the secret's name or ARN instead, and have the handler read the value
   itself (grant its role `secretsmanager:GetSecretValue` or `ssm:GetParameter`).
 - For a value that is not secret, use a plain `{{resolve:ssm:...}}` parameter.
+
+### "Custom resource X: Y resolved to the value of a secret"
+
+**Symptoms:**
+
+```
+Custom resource DbInit: Password resolved to the value of a secret (a Secrets Manager secret, or an SSM SecureString parameter -- including one read through a plain {{resolve:ssm:...}} reference or a nested stack parameter). ...
+```
+
+**Causes:**
+
+The same rule as the entry above, caught at the handler invoke rather than in
+the template. A property of the custom resource resolved to a secret's value by
+a route the template does not show: a plain `{{resolve:ssm:...}}` that names a
+SecureString parameter, a nested stack's child reading a parent parameter the
+parent filled from a secret, or a rollback re-resolving an older record --
+including `cdkd rollback --revert-failed`, which sends a failed update's
+attempted properties as the event's `OldResourceProperties` (named
+`OldResourceProperties.<path>`). The check is whether the resource's resolution
+recorded a secret at all, so a value derived from one (base64-encoded, a
+fragment) is refused too. cdkd refuses before the handler runs, so the value
+never reaches its event. A rollback replay is refused too rather than
+downgraded, since the downgrade would send the value.
+
+**Solutions:**
+
+- Pass the secret's or parameter's name or ARN instead, and have the handler
+  read the value itself.
+- For a nested stack, pass the name down as the parameter, not the resolved
+  value.
 
 ### "The following resources declare a nested property block without a member it requires"
 

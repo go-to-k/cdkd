@@ -58,6 +58,8 @@ import {
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { deleteSkipReason } from '../../../src/deployment/delete-outcome.js';
+import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const LAMBDA_ARN = 'arn:aws:lambda:us-east-1:111122223333:function:my-handler';
 
@@ -274,5 +276,127 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });
+  });
+});
+
+/**
+ * go-to-k/cdkd#4009: the handler is never sent a secret's plaintext. The bag is
+ * the one the deploy engine / rollback replay / nested child engine binds for
+ * the resource with `withCurrentResourceSecrets`.
+ */
+describe('CustomResourceProvider create / update refuse a resolved secret (issue #4009)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const PLAINTEXT = 'db-password-plaintext';
+  const secrets = () =>
+    new Map<string, string>([[PLAINTEXT, '{{resolve:ssm:/app/db-password}}']]);
+
+  it('create: refuses, non-retryable, naming the path and never the value, with no AWS call', async () => {
+    let caught: unknown;
+    try {
+      await withCurrentResourceSecrets(secrets(), () =>
+        new CustomResourceProvider().create('DbInit', 'Custom::DbInit', {
+          ServiceToken: LAMBDA_ARN,
+          Password: PLAINTEXT,
+        })
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain('Custom resource DbInit: Password resolved to the value of a secret');
+    expect(message).toContain('CloudFormation does not support secure dynamic references');
+    expect(message).not.toContain(PLAINTEXT);
+    expect(isMarkedNonRetryable(caught)).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('update: refuses on the NEW properties, non-retryable, carrying the physical id', async () => {
+    let caught: unknown;
+    try {
+      await withCurrentResourceSecrets(secrets(), () =>
+        new CustomResourceProvider().update(
+          'DbInit',
+          'phys-1',
+          'Custom::DbInit',
+          { ServiceToken: LAMBDA_ARN, Nested: { Conn: `user:${PLAINTEXT}@db` } },
+          { ServiceToken: LAMBDA_ARN, Nested: { Conn: '{{resolve:ssm:/app/db-password}}' } }
+        )
+      );
+    } catch (error) {
+      caught = error;
+    }
+    const message = (caught as Error).message;
+    expect(message).toMatch(/Custom resource DbInit: Nested\.Conn resolved to the value of a secret/);
+    expect(message).not.toContain(PLAINTEXT);
+    expect(isMarkedNonRetryable(caught)).toBe(true);
+    expect((caught as { physicalId?: string }).physicalId).toBe('phys-1');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('update: refuses a plaintext on the PREVIOUS side (sent as OldResourceProperties)', async () => {
+    // `cdkd rollback --revert-failed` re-resolves a failed op's attempted
+    // properties into exactly this side.
+    await expect(
+      withCurrentResourceSecrets(secrets(), () =>
+        new CustomResourceProvider().update(
+          'DbInit',
+          'phys-1',
+          'Custom::DbInit',
+          { ServiceToken: LAMBDA_ARN, Value: 'clean' },
+          { ServiceToken: LAMBDA_ARN, Value: PLAINTEXT }
+        )
+      )
+    ).rejects.toThrow(/Custom resource DbInit: OldResourceProperties\.Value resolved to the value/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('refuses a secret that reached the properties only in a derived form (base64)', async () => {
+    const encoded = Buffer.from(PLAINTEXT).toString('base64');
+    const bag = new Map<string, string>([
+      [PLAINTEXT, '{{resolve:ssm:/app/db-password}}'],
+      [encoded, SECRET_MASK],
+    ]);
+    await expect(
+      withCurrentResourceSecrets(bag, () =>
+        new CustomResourceProvider().create('DbInit', 'Custom::DbInit', {
+          ServiceToken: LAMBDA_ARN,
+          Blob: encoded,
+        })
+      )
+    ).rejects.toThrow(/a property \(in a form cdkd cannot point to, e\.g\. base64-encoded or a fragment\) resolved to/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  // The two negatives stop at the invoke itself: a provider whose invoke is
+  // stubbed to fail with a sentinel proves the guard let the call through.
+  const reachingInvoke = () => {
+    const provider = new CustomResourceProvider();
+    (provider as unknown as { invokeCustomResourceWithRetry: unknown }).invokeCustomResourceWithRetry =
+      vi.fn().mockRejectedValue(new Error('reached-invoke'));
+    return provider;
+  };
+
+  it('a NoEcho (mask-only) value in the bag does not block the invoke', async () => {
+    await expect(
+      withCurrentResourceSecrets(new Map([[PLAINTEXT, SECRET_MASK]]), () =>
+        reachingInvoke().create('Dependent', 'Custom::Dependent', {
+          ServiceToken: LAMBDA_ARN,
+          Upstream: PLAINTEXT,
+        })
+      )
+    ).rejects.toThrow(/reached-invoke/);
+  });
+
+  it('with no bound bag (a caller that binds none) the guard is inert', async () => {
+    await expect(
+      reachingInvoke().create('Plain', 'Custom::Plain', {
+        ServiceToken: LAMBDA_ARN,
+        Password: PLAINTEXT,
+      })
+    ).rejects.toThrow(/reached-invoke/);
   });
 });
