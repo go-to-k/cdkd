@@ -894,6 +894,20 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     // An initializer-less redeclaration shadows an earlier factory binding.
     expect(resolve('const cmd = createDeployCommand();\nlet cmd: Command;\ncmd')).toBeUndefined();
     // A child of the factory's command is not the factory's command.
+    expect(
+      resolve("const cmd = buildProgram().commands.find((c) => c.name() === 'deploy');\ncmd")
+    ).toBeUndefined();
+    expect(
+      resolve(
+        [
+          'function tree(): Command {',
+          '  return createLocalCommand().commands[0]!;',
+          '}',
+          'const cmd = tree();',
+          'cmd',
+        ].join('\n')
+      )
+    ).toBeUndefined();
     expect(resolve('const cmd = createLocalCommand().commands[0]!;\ncmd')).toBeUndefined();
     // A parameter shadows an earlier factory binding.
     expect(
