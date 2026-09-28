@@ -8171,7 +8171,10 @@ export async function runPerStackImportLoop(args: {
         (notYetImported
           ? `cdkd export cannot migrate them now; do it by hand with CloudFormation IMPORT, ` +
             `adopting their nested children per the AWS docs "Nest an existing stack" ` +
-            `procedure (as the Phase 1B adoption failure message describes).`
+            // In the Phase 1B failure that message is this one.
+            (failed === 'phase1b'
+              ? `procedure.`
+              : `procedure (as the Phase 1B adoption failure message describes).`)
           : '')
       );
     };

@@ -1173,6 +1173,89 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
     // Root is not given an orphan command: it is still cdkd's to migrate.
     expect(err.message).not.toMatch(/cdkd state orphan Root --stack-region/);
   });
+
+  it("a NON-ROOT parent's Phase 1B failure orphans the finished grandchild and names the root as not imported (go-to-k/cdkd#3967)", async () => {
+    // Grand's 1A (wait 1), Child's 1A (wait 2) and its flip succeed; Child's
+    // adoption of Grand (wait 3) fails. Root is not reached.
+    waitChangeSetCreate
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('adoption failed'));
+    writeFileSync(
+      join(tmp, 'Grand.template.json'),
+      JSON.stringify({ Resources: { GrandBucket: { Type: 'AWS::S3::Bucket', Properties: {} } } }),
+      'utf-8'
+    );
+    const t = childTree(
+      tmp,
+      {
+        Resources: {
+          ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          Grand: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://x/Grand.template.json' },
+            Metadata: { 'aws:asset:path': 'Grand.template.json' },
+          },
+        },
+      },
+      {
+        ChildBucket: bucket('b2'),
+        Grand: {
+          physicalId: 'arn:g',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      } as unknown as StackState['resources']
+    );
+    t.tree.nestedChildren.get('Child')!.nestedChildren.set('Grand', {
+      stackName: 'Root~Child~Grand',
+      region: 'us-east-1',
+      state: state('Root~Child~Grand', { GrandBucket: bucket('b3') }, {
+        stack: 'Root~Child',
+        logicalId: 'Grand',
+      }),
+      nestedChildren: new Map(),
+    });
+    const err = await runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: t.childPath },
+      rootTemplateFormat: 'json',
+      tree: t.tree,
+      rootTemplate: t.rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: deps(cfnClient()),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+    expect(waitChangeSetCreate).toHaveBeenCalledTimes(3);
+    const { message } = err;
+    expect(message).toContain(
+      "Phase 1B (nested-child adoption) IMPORT changeset failed for parent 'Root~Child'"
+    );
+    expect(message).toMatch(
+      /finished phase 2 but still have cdkd state[^\n]*:\n {2}cdkd state orphan 'Root~Child~Grand' --stack-region us-east-1\n/
+    );
+    expect(message).toContain(
+      "Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its record " +
+        "the same way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
+    );
+    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    // The by-hand IMPORT of the root is described, without pointing the
+    // reader at "the Phase 1B adoption failure message": this is that message.
+    expect(message).toContain('"Nest an existing stack" procedure.');
+    expect(message).not.toContain('as the Phase 1B adoption failure message describes');
+    expect(message).not.toMatch(/cdkd state orphan Root --stack-region/);
+    expect(message).not.toContain('<stack>');
+  });
 });
 
 /**
@@ -1661,7 +1744,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     });
   }, 120_000);
 
-  // Phase 1B (go-to-k/cdkd#3967): A and B import and finish, the root's 1A (the
+  // Phase 1B (go-to-k/cdkd#3967): A and B import and finish, the root's leaves-only 1A (the
   // third wait) succeeds, and its adoption of A and B (the fourth) fails.
   it('phase 1B: gives the gated, region-bearing tail, never a bare cdkd state orphan <stack>', async () => {
     const err = await runTree({ A: 'us-east-1', B: 'us-east-1' }, 4);
