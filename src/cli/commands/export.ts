@@ -8160,6 +8160,15 @@ export async function runPerStackImportLoop(args: {
           ? ['nested-child adoption']
           : []),
         ...(failed === 'phase2' || hasPhase2 ? ['phase 2'] : []),
+        // A non-root stack must leave IMPORT_COMPLETE before its parent can
+        // adopt it. A phase-2 UPDATE does that on its own; without one, every
+        // IMPORT (its own, or its adoption of its children) leaves it there,
+        // so the no-op tag update the loop would have run comes LAST.
+        ...(plan.cdkdName !== rootStackName && failed !== 'phase2' && !hasPhase2
+          ? [
+              'closing no-op tag update (which moves it out of IMPORT_COMPLETE, for the adoption by its parent)',
+            ]
+          : []),
       ];
       // Phase 2 re-CREATEs the IMPORT-unsupported resources, which only a
       // delete makes room for: the pre-delete failure prints these deletes in
@@ -8341,8 +8350,7 @@ export async function runPerStackImportLoop(args: {
               `nested member by its parent's Phase 1B...`
           );
           await afterImport(
-            'Moving its CloudFormation stack out of IMPORT_COMPLETE (a no-op tag update that the ' +
-              'adoption by its parent needs; repeat it by hand before that adoption)',
+            'The no-op tag update moving its CloudFormation stack out of IMPORT_COMPLETE',
             'imported',
             () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
           );
@@ -8536,9 +8544,8 @@ export async function runPerStackImportLoop(args: {
                 `Phase 1B can adopt it...`
             );
             await afterImport(
-              'Moving its CloudFormation stack back out of IMPORT_COMPLETE after the adoption (a ' +
-                'no-op tag update that the adoption by its parent needs; repeat it by hand before ' +
-                'that adoption)',
+              'The no-op tag update moving its CloudFormation stack back out of IMPORT_COMPLETE ' +
+                'after its nested-child adoption',
               'adopted',
               () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
             );
@@ -8554,7 +8561,10 @@ export async function runPerStackImportLoop(args: {
                 `No pre-delete handler registered for ${entry.resourceType} ` +
                   `(${entry.logicalId}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
-                  `PRE_DELETE_HANDLERS entry.`
+                  `PRE_DELETE_HANDLERS entry.\n` +
+                  // Its CloudFormation stack exists by now, so even a cdkd bug
+                  // gives the recovery (go-to-k/cdkd#3988); nothing is deleted yet.
+                  nestedResumeTail(i, 'adopted')
               );
             }
             logger.info(
