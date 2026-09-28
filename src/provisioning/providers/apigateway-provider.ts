@@ -50,6 +50,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
 const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
@@ -1193,7 +1194,9 @@ export class ApiGatewayProvider implements ResourceProvider {
               `Failed to clean up stage ${stageName} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
             );
           }
-          throw patchError;
+          // The stage itself was created: an "already exists" from the patch is
+          // not this stage's name collision (#3826).
+          throw markAuxiliaryFailure(patchError, logicalId);
         }
       }
 
@@ -1893,7 +1896,9 @@ export class ApiGatewayProvider implements ResourceProvider {
             `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(context?.maskSecrets)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
           );
         }
-        throw innerError;
+        // The method itself was created: an "already exists" from its wiring
+        // (a method or integration response) is not this method's (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created API Gateway Method ${logicalId}: ${physicalId}`);

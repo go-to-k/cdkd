@@ -49,6 +49,7 @@ import {
   type MaskedLogSinks,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -465,7 +466,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
             `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       log.debug(`Successfully created IAM user ${logicalId}: ${v(userName)}`);
@@ -1102,7 +1105,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
             `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       log.debug(`Successfully created IAM group ${logicalId}: ${v(groupName)}`);

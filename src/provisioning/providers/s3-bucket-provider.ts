@@ -89,6 +89,7 @@ import {
 import { generateResourceName } from '../resource-name.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -6620,7 +6621,9 @@ export class S3BucketProvider implements ResourceProvider {
             )
           );
         }
-        throw innerError;
+        // The bucket itself is in hand: an "already exists" from its wiring is
+        // an auxiliary object's, not this bucket's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       const attributes = await this.buildAttributes(bucketName);

@@ -35,6 +35,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -296,7 +297,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             `just-created repository ${createdName} to avoid an orphan`
         );
         await this.bestEffortDelete(createdName);
-        throw postCreateError;
+        // The repository itself was created: an "already exists" from here is
+        // an auxiliary object's, not this repository's name collision (#3826).
+        throw markAuxiliaryFailure(postCreateError, logicalId);
       }
 
       this.logger.debug(`Successfully created CodeCommit Repository ${logicalId}: ${createdName}`);

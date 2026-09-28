@@ -56,6 +56,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * SDK Provider for AWS EFS resources
@@ -520,6 +521,9 @@ export class EFSProvider implements ResourceProvider {
       // best-effort delete it here to avoid an orphan + a "CreationToken
       // already in use" failure on the next deploy attempt.
       if (fileSystemId !== undefined) {
+        // The file system itself was created: a later "already exists" is an
+        // auxiliary call's, not this file system's collision (#3826).
+        markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
           this.logger.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);

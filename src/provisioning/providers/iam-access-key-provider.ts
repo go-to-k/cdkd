@@ -17,6 +17,7 @@ import { replayWarn, requireConfigString } from '../config-shape.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 import type {
   ResourceProvider,
@@ -239,7 +240,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
               `Failed to clean up partially-created IAM access key ${logicalId} (${v(accessKeyId)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
-          throw innerError;
+          // The resource itself was created: an "already exists" from its wiring
+          // is an auxiliary object's, not this resource's name collision (#3826).
+          throw markAuxiliaryFailure(innerError, logicalId);
         }
       }
 
