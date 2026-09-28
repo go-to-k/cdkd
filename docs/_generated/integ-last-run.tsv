@@ -286,6 +286,7 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
 schema-v9-to-v10-migration	2026-09-27T17:59:06Z	PASS	170	verify.sh	PR #3893 merge-gate run; rc ok, orph clean
+scrub-nested-child	2026-09-28T12:28:25Z	PASS	155	verify.sh	rc ok, orph clean; seeded child plaintext scrubbed, versions swept
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secrets-array-nested	2026-09-27T14:43:09Z	PASS	386	verify.sh	rc ok, orph clean (#3866)

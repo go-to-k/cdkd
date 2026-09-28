@@ -4243,6 +4243,8 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       // Issue #2667 review: the required masker for any message naming an
       // export name (an outputs-bag KEY, which can hold plaintext).
       exportNameDisplay: expect.any(Function),
+      // The template declares no nested stack (go-to-k/cdkd#2252).
+      nestedChildren: [],
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(logLines.join('\n')).toContain('recorded no cdkd cross-stack read for it');
