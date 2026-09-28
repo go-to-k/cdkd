@@ -125,6 +125,14 @@ describe('the EC2::Route destination refusal renders recorded values with their 
       'declare DestinationCidrBlock=10.0.0.0/16, but the physical id\'s destination segment is 10.1.0.0/16.'
     );
   });
+
+  it('renders the route an ordinary id currently names bare', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-1|10.1.0.0/16', {
+        DestinationCidrBlock: '10.0.0.0/16',
+      })
+    ).toThrow('currently sits at 10.1.0.0/16 —');
+  });
 });
 
 /**
@@ -147,6 +155,13 @@ describe('refusals naming a value split out of a record render it with its own b
       splitCompositePhysicalId('AWS::EC2::VPCCidrBlock', `vpc-cidr-assoc-1|${QUOTE_FORGE}`)
     );
     expect(message).toContain(`${JSON.stringify(QUOTE_FORGE)} is not a VPC id`);
+  });
+
+  it('renders an ordinary VPC-side segment bare', () => {
+    // The bare polarity: an always-JSON regression would quote real ids.
+    expect(
+      thrown(() => splitCompositePhysicalId('AWS::EC2::VPCCidrBlock', 'vpc-cidr-assoc-1|vpc-cidr-assoc-2'))
+    ).toContain('vpc-cidr-assoc-2 is not a VPC id');
   });
 
   it('the VPCGatewayAttachment refusal (the gateway segment)', () => {
@@ -254,6 +269,44 @@ describe('the SecurityGroupIngress refusals render recorded values with their ow
     expect(message).toContain(`attributes.Id is recorded as ${JSON.stringify(QUOTE_FORGE)}`);
   });
 
+  function thrownBy(fn: () => unknown): string {
+    try {
+      fn();
+    } catch (e) {
+      return (e as Error).message;
+    }
+    throw new Error('expected a throw');
+  }
+
+  it('renders ordinary ids bare: the group, and an unusable but plain attributes.Id', async () => {
+    const paginating = await reasonFor(
+      state('sg-0abc|tcp|443|443'),
+      ec2(async () => ({ SecurityGroupRules: [], NextToken: 'more' }))
+    );
+    expect(paginating).toContain('lookup on sg-0abc was still paginating');
+    expect(
+      thrownBy(() =>
+        resolveCompositePhysicalIdIdentifier('AWS::EC2::SecurityGroupIngress', {
+          logicalId: 'SshIn',
+          physicalId: 'sg-1|tcp|443|443',
+          attributes: { Id: 'rule-1' },
+        })
+      )
+    ).toContain('attributes.Id is recorded as rule-1, which');
+  });
+
+  it('shows the recorded attributes.Id itself, padding included', () => {
+    expect(
+      thrownBy(() =>
+        resolveCompositePhysicalIdIdentifier('AWS::EC2::SecurityGroupIngress', {
+          logicalId: 'SshIn',
+          physicalId: 'sg-1|tcp|443|443',
+          attributes: { Id: 'rule-1 ' },
+        })
+      )
+    ).toContain('attributes.Id is recorded as "rule-1 ", which');
+  });
+
   it('the throttle retry names the group with its boundary', async () => {
     const debug = vi.fn();
     const child = vi
@@ -282,6 +335,34 @@ describe('the SecurityGroupIngress refusals render recorded values with their ow
     expect(lines.some((l) => l.includes(`DescribeSecurityGroupRules(${JSON.stringify(QUOTE_FORGE)})`))).toBe(
       true
     );
+  });
+
+  it('the throttle retry names an ordinary group bare', async () => {
+    const debug = vi.fn();
+    const child = vi
+      .spyOn(getLogger(), 'child')
+      .mockReturnValue({ debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never);
+    securityGroupRuleLookupRetryDelays.sleep = async () => undefined;
+    let calls = 0;
+    try {
+      await reasonFor(
+        state('sg-0abc|tcp|443|443'),
+        ec2(async () => {
+          calls += 1;
+          if (calls === 1) {
+            const err = new Error('Request limit exceeded.');
+            err.name = 'RequestLimitExceeded';
+            throw err;
+          }
+          return { SecurityGroupRules: [] };
+        })
+      );
+    } finally {
+      child.mockRestore();
+      delete securityGroupRuleLookupRetryDelays.sleep;
+    }
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('DescribeSecurityGroupRules(sg-0abc)'))).toBe(true);
   });
 });
 
@@ -384,6 +465,11 @@ describe('the nested-stack asset-path refusals render the logical id without cdk
 });
 
 describe('preDeletedLine renders the recorded physical id with its own boundary', () => {
+  it('escapes a quote and a backslash, the two characters that could close its boundary', () => {
+    expect(preDeletedLine('a"b\\c')).toBe(`✓ deleted ${JSON.stringify('a"b\\c')}`);
+    expect(preDeletedLine('a"b\\c')).toBe('✓ deleted "a\\"b\\\\c"');
+  });
+
   it('keeps a forging id on its one line, JSON-quoted', () => {
     const forged = '$default\n  ✓ deleted prod-stage';
     const line = preDeletedLine(forged);
