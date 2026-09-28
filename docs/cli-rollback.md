@@ -160,6 +160,18 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+cdkd deletes the new resource first only when its state record shows it holds
+the name the re-create collided on — the same name property (and the same
+parent, such as the event bus of a rule or the database of a Glue table), or,
+for a Route 53 record, the same DNS name in the same hosted zone. A collision
+with anything else (a resource an earlier failed attempt left behind, or one
+created outside the stack) fails the operation instead: nothing is deleted,
+the message names the colliding name, and the journal is kept. The same
+refusal applies when cdkd cannot tell — the re-create asked for no name, the
+name is redacted, or the type has no name property cdkd knows. Remove or
+rename whatever holds the name, then re-run `cdkd rollback`, or pass
+`--orphan <logicalId>` to leave that resource alone.
+
 When the replacing deploy left the old resource alive — it declared
 `UpdateReplacePolicy: Retain` at the time — the old resource is simply
 re-adopted instead of being re-created, a true clean revert. cdkd reads that

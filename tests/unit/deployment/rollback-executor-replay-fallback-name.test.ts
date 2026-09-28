@@ -164,13 +164,18 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
+    // The live new queue's URL names the generated `MyStack-Q` (its recorded
+    // bag holds no generated name), so it holds the name the replay asks for
+    // and the collision reaches delete-new-first (#3979).
+    const newUrl = `https://sqs.us-east-1.amazonaws.com/123456789012/${STACK}-Q`;
+    const state: Record<string, ResourceState> = { Q: res({ physicalId: newUrl }) };
 
     const result = await withStackName(STACK, () =>
-      replayRollback([reverseReplacementOp()], state, STACK, ctx)
+      replayRollback([{ ...reverseReplacementOp(), physicalId: newUrl }], state, STACK, ctx)
     );
 
     expect(result.failures).toBe(0);
+    expect(del).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(2);
     // BOTH creates carry it — the collision arm re-enters through the same
     // helper, so a fix applied to only one site reds exactly this line.

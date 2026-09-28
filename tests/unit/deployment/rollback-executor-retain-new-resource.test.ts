@@ -83,7 +83,9 @@ function replacementOp(oldResourceRetained?: boolean): CompletedOperation {
     changeType: 'UPDATE',
     resourceType: 'AWS::SQS::Queue',
     physicalId: 'phys-new',
-    previousState: res({ physicalId: 'phys-old', properties: { a: 1 } }),
+    // Both records name the queue `q`, so a collision is provably the NEW
+    // copy's (#3979) and reaches the Retain arm under test.
+    previousState: res({ physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
     ...(oldResourceRetained !== undefined && { oldResourceRetained }),
   };
 }
@@ -108,7 +110,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const del = vi.fn().mockResolvedValue(undefined);
       const { ctx, warns } = makeCtx({ create, delete: del });
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp()], state, 'S', ctx);
@@ -161,7 +163,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
       const lookups: Array<'create' | 'delete'> = [];
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
       const warns: string[] = [];
       const logger = {
@@ -245,7 +247,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         } as unknown as RollbackExecutorContext['providerRegistry'],
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
       const op = replacementOp();
       op.previousState = res({
@@ -347,7 +349,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         if (e.error?.message) refusals.push(e.error.message);
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp()], state, 'S', ctx, {
@@ -480,7 +482,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         const result = await replayRollback(
           [replacementOp(), unroutable],
           {
-            B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+            B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
             U: res({ physicalId: 'phys-new' }),
           },
           child,
@@ -543,7 +545,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
         U: res({ physicalId: 'phys-new' }),
       };
 
@@ -590,7 +592,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const state: Record<string, ResourceState> = Object.fromEntries(
         ids.map((id) => [
           id,
-          res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+          res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
         ])
       );
 
@@ -666,7 +668,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const create = vi.fn();
       const { ctx, warns } = makeCtx({ create, delete: del });
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       // `oldResourceRetained: true` is what selects the readopt arm (issue
@@ -714,7 +716,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         } as unknown as RollbackExecutorContext['providerRegistry'],
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp(true)], state, 'S', ctx);

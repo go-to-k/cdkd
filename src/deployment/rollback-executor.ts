@@ -66,6 +66,7 @@ import type {
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
+import { reverseReplacementNewHoldsName } from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -282,7 +283,7 @@ function safe(value: unknown): string {
 }
 
 /**
- * The two refusal OBJECTS this module creates that end on
+ * The three refusal OBJECTS this module creates that end on
  * {@link orphanRemedy}'s labelled LINE, registered at their throw sites by
  * {@link ownRemedyError}.
  *
@@ -312,7 +313,7 @@ function ownRemedyError<E extends Error>(error: E): E {
  * Free-form text takes `displaySafe` on the WHOLE, which folds a newline into
  * a space: a newline in an AWS message is the line forgery that render exists
  * to remove (issue #3092). The exception is an error in
- * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the two refusals this
+ * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the three refusals this
  * module builds are registered, and every value in them is sanitized at the
  * throw (`safe()` for identifiers, {@link collisionText} for the AWS text), so
  * their one line break is cdkd's own, and rendering them per LINE keeps the
@@ -371,7 +372,7 @@ function collisionText(msg: string): string {
 const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 
 /**
- * The `cdkd rollback --orphan` remedy the two reverse-replacement refusals
+ * The `cdkd rollback --orphan` remedy the three reverse-replacement refusals
  * end on: a labelled LAST line of its own (`line`), and the sentence the prose
  * carries when the id on it is a hole (`clause`, empty otherwise).
  *
@@ -1017,7 +1018,7 @@ export interface RollbackExecutorContext {
    * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
    * replay of the stack it is run on, and a direct rollback of the child is
    * refused while the parent's run is unsettled, so no command reaches this
-   * replay's ops: the two refusals print no `--orphan` line here
+   * replay's ops: the three refusals print no `--orphan` line here
    * (go-to-k/cdkd#3845).
    */
   nestedChildRevert?: boolean | undefined;
@@ -1027,7 +1028,7 @@ export interface RollbackExecutorContext {
    * segment stays in the child's journal, and only a rollback of the child
    * honours `--orphan` for its ops (the parent's replays it only through
    * `--revert-failed`, as a child revert `--orphan` does not reach), so the
-   * two refusals' `--orphan` command names the child stack
+   * three refusals' `--orphan` command names the child stack
    * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;
@@ -3160,32 +3161,18 @@ async function replaySingle(
         // collision retry (async deletes release the name late), mirroring the
         // deploy engine's --replace delete-first fallback.
         //
-        // The new resource survives untouched ONLY when the create-first
-        // attempt fails with something OTHER than a name collision. It is not
-        // unconditional, and issue #2032's inner retry widened the exception:
-        // a provider that leaves a NAMED orphan behind after a transient
-        // failure now collides with that orphan on an inner retry, which
-        // routes into the DESTRUCTIVE fallback below and deletes the live new
-        // resource — after which the re-create collides with the orphan again
-        // and the resource ends absent from both AWS and state. The deploy
-        // engine's --replace fallback accepts the same class (its own
-        // create-first collision detection is a message heuristic over an
-        // "already exists" that need not name THIS resource), so this is a
-        // stated property of the path rather than a defect being introduced
-        // here.
-        //
-        // Issue #3199 WIDENED which ops can reach that class, without changing
-        // the class itself. Before it, a `FALLBACK_NAME_RULES` type replayed
-        // from a nameless recorded bag asked for no name at all, so AWS minted
-        // a random one and a collision was impossible here. The replay now asks
-        // for the deterministic `<stack>-<logicalId>`, so it CAN collide — with
-        // the live new resource (the ordinary case for a replacement that did
-        // not change the name, where deleting it is exactly right and mirrors
-        // what the forward replacement did), or with a not-yet-released old
-        // name or a squatter on a predictable name (the accepted bad tail
-        // above). That is the deliberate trade: the pre-#3199 behaviour could
-        // not collide only because it was restoring the resource under the
-        // WRONG NAME.
+        // The new resource is deleted ONLY when the create-first attempt fails
+        // with a name collision AND its record proves it holds that name
+        // (issue #3979, `reverseReplacementNewHoldsName` in the catch below).
+        // The collision alone never sufficed: an orphan a failed attempt left
+        // (#1710, #3972), a replayed create (#3978) or a squatter on a
+        // predictable name collides identically, and deleting the new resource
+        // then destroys a live resource that never held the name. Issue #3199
+        // made the replay ask for the deterministic `<stack>-<logicalId>` of a
+        // `FALLBACK_NAME_RULES` type, so such a replay CAN collide — with the
+        // live new resource (the ordinary case for a replacement that kept the
+        // generated name, which the proof accepts through the new resource's
+        // physical id) or with anything else (refused).
         let deletedNewFirst = false;
         // Typed as the full provider contract (issue #1682): the narrower
         // local shape this used to declare hid `effectiveProperties`, so the
@@ -3232,6 +3219,70 @@ async function replaySingle(
           // deploy engine's --replace twin.
           const nameCollision = isNameCollisionErrorFrom(createError, op.logicalId);
           if (!nameCollision) throw createError;
+          // Issue #3979, ahead of every other arm: each of them — the delete
+          // below, and the Retain refusal's "held by the new one" — presumes
+          // the NEW resource holds the name the re-create collided on. The
+          // classifier cannot say WHO holds it: an orphan an earlier failed
+          // create left, a replayed create, or a resource made outside the
+          // stack collides identically, and deleting the new resource then
+          // destroys a live resource that never held the name and collides
+          // again. So prove the holder from the two records, and refuse when
+          // it is not proven. It subsumes the #3892 Glue guard (a table in
+          // another database is a different scope).
+          const holder = reverseReplacementNewHoldsName({
+            oldResourceType: oldType,
+            newResourceType: op.resourceType,
+            // The name the create asked for, generated names included: a
+            // Cloud Control route already filled one into `replayCreateProps`;
+            // an SDK provider mints the same one itself, which
+            // `applyDefaultNameForFallback` mirrors.
+            // The `typeof` gate: a non-string id (an in-process op the
+            // journal parser never saw) must reach the refusal, not throw in
+            // the name generator.
+            requested:
+              typeof op.logicalId === 'string'
+                ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
+                : resolvedPrevProps,
+            recorded: current.properties,
+            observed: current.observedProperties,
+            physicalId: current.physicalId,
+          });
+          if (!holder.holds) {
+            const remedy = orphanRemedy(op.logicalId, ctx);
+            throw ownRemedyError(
+              markNonRetryable(
+                new CdkdError(
+                  // Masked at construction, like the Retain refusal below:
+                  // the diagnosis quotes names from the PLAINTEXT replay bag.
+                  maskSecretsInText(
+                    `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                      `the re-create of the old resource (${safe(prev.physicalId)}) collided, but ` +
+                      `${holder.diagnosis} — so ` +
+                      (holder.known
+                        ? `another resource holds the colliding name`
+                        : `cdkd cannot show that the new resource holds the colliding name, and ` +
+                          `if another resource holds it`) +
+                      ` (an orphan of an earlier attempt, or one made outside this stack), ` +
+                      `deleting the new resource would destroy it and collide again. Nothing was ` +
+                      `deleted. Remove or rename whatever holds that name if it is yours, then re-run ` +
+                      `${rerunRollbackPhrase(ctx, 'cdkd rollback')} — the journal is kept, so ` +
+                      `the revert resumes from here.` +
+                      (remedy.offered
+                        ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                          `proceed, re-run with the command below.`
+                        : '') +
+                      `${remedy.clause} Underlying collision: ${collisionText(maskSecretsInText(msg, secrets))}${remedy.line}`,
+                    secrets
+                  ),
+                  'NAMED_REPLACEMENT_COLLISION',
+                  maskSecretsInError(
+                    createError instanceof Error ? createError : undefined,
+                    secrets
+                  )
+                )
+              )
+            );
+          }
           if (rollbackRetainsNewResource(current)) {
             // Issue #2598: the ONE arm where honouring `Retain` cannot also
             // complete the op. This delete exists solely to release the NAME
@@ -3316,43 +3367,14 @@ async function replaySingle(
               )
             );
           }
-          // Issue #3892: this delete exists to free the NAME the re-create
-          // collided on, which assumes the new resource holds it. A Glue table
-          // that shares the id but lives in ANOTHER database does not: the name
-          // the old table needs is held by something else, so deleting the new
-          // table frees nothing and destroys it. Fail the op, keep the journal.
-          if (
-            equalIdNamesDifferentResources({
-              resourceType: op.resourceType,
-              physicalId: current.physicalId,
-              oldProperties: prev.properties,
-              newProperties: current.properties,
-            })
-          ) {
-            throw markNonRetryable(
-              new CdkdError(
-                maskSecretsInText(
-                  `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-                    `the re-create of the old table collided, but the new table (${safe(current.physicalId)}) ` +
-                    `is in a different database and does not hold the old table's name, so deleting it ` +
-                    `would free nothing. Remove or rename whatever holds the old table's name, then ` +
-                    `re-run ${rerunRollbackPhrase(ctx, 'cdkd rollback')} — the journal is kept.`,
-                  secrets
-                ),
-                'NAMED_REPLACEMENT_COLLISION',
-                maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
-              )
-            );
-          }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
               `resource (${displaySafe(current.physicalId)}) first...` +
-              // Issue #2668: across a Type change the holder is the new
-              // resource only where the two types share a name space.
+              // Issue #2668: a Type change reaches here only between two types
+              // `reverseReplacementNewHoldsName` knows share a name space.
               (typeChanged
                 ? ` (this op changed the resource's Type, ${safe(op.resourceType)} -> ` +
-                  `${safe(oldType)}: if those types do not share a name space the name is held ` +
-                  `by an unrelated resource and the re-create will collide again)`
+                  `${safe(oldType)}, which share a name space)`
                 : '')
           );
           {

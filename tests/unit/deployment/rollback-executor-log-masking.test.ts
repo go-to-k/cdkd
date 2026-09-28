@@ -71,6 +71,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const IDP_TYPE = 'AWS::Cognito::UserPoolIdentityProvider';
+/** Both records name the one IdP, so a collision reaches the arm under test (#3979). */
+const IDP_NAME = { UserPoolId: 'us-east-1_pool', ProviderName: 'idp' };
 
 /**
  * The feared shape (#2038): an AWS error that QUOTES the offending value back,
@@ -382,7 +384,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
   } {
     const prev = res({
       physicalId: 'phys-OLD',
-      properties: { ProviderDetails: { password: SECRET_EXPR } },
+      properties: { ...IDP_NAME, ProviderDetails: { password: SECRET_EXPR } },
     });
     return {
       ops: [
@@ -397,7 +399,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
       state: {
         Idp: res({
           physicalId: 'phys-NEW',
-          properties: { ProviderDetails: { password: 'unrelated' } },
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
         }),
       },
     };
@@ -524,13 +526,13 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
       .mockRejectedValue(awsSdkError(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
-    const prev = res({ physicalId: 'phys-OLD', properties: { ProviderDetails: { password: SPACED_EXPR } } });
+    const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SPACED_EXPR } } });
     await replayRollback(
       [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
       {
         Idp: res({
           physicalId: 'phys-NEW',
-          properties: { ProviderDetails: { password: 'unrelated' } },
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
           updateReplacePolicy: 'Retain',
         }),
       },
@@ -560,13 +562,13 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     const create = vi.fn().mockRejectedValue(awsSdkError(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
-    const prev = res({ physicalId: 'phys-OLD', properties: { ProviderDetails: { password: SECRET_EXPR } } });
+    const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SECRET_EXPR } } });
     await replayRollback(
       [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
       {
         Idp: res({
           physicalId: 'phys-NEW',
-          properties: { ProviderDetails: { password: 'unrelated' } },
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
           updateReplacePolicy: 'Retain',
         }),
       },

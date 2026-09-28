@@ -35,6 +35,7 @@ const ELBV2_MESSAGE =
   "A target group with the same name 'CdkdX-Tg' exists, but with different settings";
 const ELBV2_NAME = 'DuplicateTargetGroupNameException';
 const TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+const TG_NAME = 'CdkdX-Tg';
 
 const silentLogger = {
   debug: vi.fn(),
@@ -62,7 +63,9 @@ function reverseReplacementOp(): CompletedOperation {
     changeType: 'UPDATE',
     resourceType: TYPE,
     physicalId: 'arn-new',
-    previousState: res({ physicalId: 'arn-old', resourceType: TYPE }),
+    // Both records name the target group `CdkdX-Tg`, the name the ELBv2
+    // message quotes: the new one holds it (#3979).
+    previousState: res({ physicalId: 'arn-old', resourceType: TYPE, properties: { Name: TG_NAME } }),
   };
 }
 
@@ -102,7 +105,9 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
       return undefined;
     });
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: 'arn-new', properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(0);
@@ -126,7 +131,9 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: 'arn-new', properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
@@ -145,7 +152,9 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: 'arn-new', properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
@@ -169,7 +178,9 @@ describe('a cdkd refusal quoting a template value does not reach delete-new-firs
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: 'arn-new', properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
