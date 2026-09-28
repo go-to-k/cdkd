@@ -529,10 +529,28 @@ interface AritySite {
   readonly callLine?: number;
 }
 
+/** `const NAME = [...];` declared exactly once in the file, as its elements. */
+function arrayConstants(source: string): Map<string, string[]> {
+  const seen = new Map<string, string[] | undefined>();
+  for (const m of source.matchAll(/\bconst\s+(\w+)\s*(?::[^=;]*)?=\s*\[/g)) {
+    const open = m.index + m[0].length - 1;
+    const close = closingIndex(source, open);
+    const whole = close >= 0 && /^\s*(?:as\s+const\s*)?;/.test(source.slice(close + 1));
+    const value = whole ? splitTopLevel(source.slice(open + 1, close)) : undefined;
+    seen.set(m[1]!, seen.has(m[1]!) ? undefined : value);
+  }
+  return new Map([...seen].flatMap(([k, v]) => (v === undefined ? [] : [[k, v] as [string, string[]]])));
+}
+
+/** Hops through enclosing functions' callers before a parameter stays opaque. */
+const MAX_HOPS = 3;
+
 /**
  * Expand one site's first argument into token lists. A parameter of the
  * enclosing function (bare, spread, or as an element) is substituted from each
- * same-file call of that function; anything else stays opaque.
+ * same-file call of that function, repeatedly while the substituted text is
+ * itself the caller's parameter, up to {@link MAX_HOPS}; a spread of a
+ * file-level array constant is inlined. Anything else stays opaque.
  */
 function expandSite(
   source: string,
@@ -541,32 +559,52 @@ function expandSite(
   headers: ArgFunction[]
 ): { tokens: Token[]; callLine?: number }[] {
   const constants = stringConstants(source);
-  const token = (e: string) => toToken(e, constants);
-  const elements = arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`];
-  const fn = headers.filter((h) => h.body && h.body[0] < at && at < h.body[1]).at(-1);
-  const usesParam = (e: string) => fn?.params.includes(e.replace(/^\.\.\./, '')) === true;
-  if (!fn || !elements.some(usesParam)) return [{ tokens: elements.map(token) }];
+  const arrays = arrayConstants(source);
+  const inline = (elements: string[]): string[] =>
+    elements.flatMap((e) => {
+      const spread = e.startsWith('...') ? arrays.get(e.slice(3).trim()) : undefined;
+      return spread ? inline(spread) : [e];
+    });
+  const start = arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`];
 
-  const variants: { tokens: Token[]; callLine: number }[] = [];
-  for (const call of source.matchAll(new RegExp(`(?<![.\\w])${fn.name}\\s*\\(`, 'g'))) {
-    if (source.slice(fn.headerAt, call.index).trim() === 'function') continue;
-    const open = call.index + call[0].length - 1;
-    const close = closingIndex(source, open);
-    if (close < 0) continue;
-    const callArgs = splitTopLevel(source.slice(open + 1, close));
-    const tokens: Token[] = [];
-    for (const e of elements) {
-      const index = usesParam(e) ? fn.params.indexOf(e.replace(/^\.\.\./, '')) : -1;
-      const given = index >= 0 ? callArgs[index] : undefined;
-      if (index < 0) tokens.push(token(e));
-      else if (given === undefined) continue;
-      else if (!e.startsWith('...')) tokens.push(token(given));
-      else if (given.startsWith('[')) tokens.push(...splitTopLevel(given.slice(1, -1)).map(token));
-      else tokens.push({ kind: 'spread', text: given });
+  const expand = (
+    elements: string[],
+    pos: number,
+    hops: number,
+    callLine: number | undefined
+  ): { elements: string[]; callLine?: number }[] => {
+    const fn = headers.filter((h) => h.body && h.body[0] < pos && pos < h.body[1]).at(-1);
+    const param = (e: string) => fn?.params.indexOf(e.replace(/^\.\.\./, '')) ?? -1;
+    if (!fn || hops === MAX_HOPS || !elements.some((e) => param(e) >= 0)) {
+      return [{ elements, callLine }];
     }
-    variants.push({ tokens, callLine: source.slice(0, call.index).split('\n').length });
-  }
-  return variants;
+    const out: { elements: string[]; callLine?: number }[] = [];
+    for (const call of source.matchAll(new RegExp(`(?<![.\\w])${fn.name}\\s*\\(`, 'g'))) {
+      if (source.slice(fn.headerAt, call.index).trim() === 'function') continue;
+      const open = call.index + call[0].length - 1;
+      const close = closingIndex(source, open);
+      if (close < 0) continue;
+      const callArgs = splitTopLevel(source.slice(open + 1, close));
+      const next = elements.flatMap((e) => {
+        const index = param(e);
+        const given = index >= 0 ? callArgs[index] : undefined;
+        if (index < 0) return [e];
+        // An omitted argument takes the parameter's default, `[]` in every
+        // wrapper this scan reaches.
+        if (given === undefined) return [];
+        if (!e.startsWith('...')) return [given];
+        return given.startsWith('[') ? splitTopLevel(given.slice(1, -1)) : [`...${given}`];
+      });
+      const line = source.slice(0, call.index).split('\n').length;
+      out.push(...expand(next, call.index, hops + 1, line));
+    }
+    return out;
+  };
+
+  return expand(start, at, 0, undefined).map(({ elements, callLine }) => ({
+    tokens: inline(elements).map((e) => toToken(e, constants)),
+    ...(callLine === undefined ? {} : { callLine }),
+  }));
 }
 
 function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: string[] } {
@@ -595,6 +633,41 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
   }
   return { sites, unresolved };
 }
+
+/**
+ * Sites the arity check cannot see, per file. Any dark site not listed here
+ * fails, and so does an entry that no longer matches: fix the shape or
+ * record it with its reason.
+ */
+const KNOWN_DARK: Record<string, number> = {
+  // `...baseArgs()` and `...nestedTree(...)`: spreads of a call's result.
+  'tests/unit/cli/export-non-interactive-confirm.test.ts': 1,
+  // `STACK` is a template literal, which may begin with `-`.
+  'tests/unit/cli/force-unlock-display.test.ts': 1,
+  // `realArgs`, a conditional slice of the wrapper's parameter.
+  'tests/unit/cli/import.test.ts': 1,
+  // The subcommand is named by a loop variable.
+  'tests/unit/cli/local-assume-role-negation.test.ts': 1,
+  // Three `shim()` receivers built with `new Command`, and one subcommand
+  // named by a loop variable.
+  'tests/unit/cli/local-shim-region-fold.test.ts': 4,
+  // A receiver built per case, and a spread of a loop variable.
+  'tests/unit/cli/options.test.ts': 2,
+  // Stack paths built as `${HOSTILE...}/A` templates, which may begin with `-`.
+  'tests/unit/cli/orphan-display-safe.test.ts': 1,
+  // The removed `--path` option, passed on purpose to assert its rejection.
+  'tests/unit/cli/publish-assets.test.ts': 1,
+  // A `forged` variable and `argv.slice(2)` as operands.
+  'tests/unit/cli/state-orphan.test.ts': 1,
+  // Stack names read off fixture records (`ref.stackName`).
+  'tests/unit/cli/state-ref-display-boundary.test.ts': 1,
+  // A `forged` variable as the stack name.
+  'tests/unit/cli/state-resources.test.ts': 1,
+  // `...(await argv(app))`: a spread of an awaited call.
+  'tests/unit/local/engine-docker-context.test.ts': 1,
+  // A bare `new Command()` receiver.
+  'tests/unit/state/lock-contention-message.test.ts': 1,
+};
 
 describe("commander parse(argv, { from: 'user' }) passes no more operands than its target accepts", () => {
   const program = buildProgram();
@@ -651,13 +724,19 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(sitesWhere((c) => read(c) && c.r.path.includes(' ')), 'group descent').toBeGreaterThan(5);
     expect(sitesWhere((c) => c.s.receiver.via === 'direct'), 'direct receiver').toBeGreaterThan(30);
     expect(sitesWhere((c) => c.s.receiver.via === 'helper'), 'helper receiver').toBeGreaterThan(5);
-    expect(sitesWhere((c) => c.s.receiver.via === 'chained'), 'chained receiver').toBeGreaterThan(1);
-    // A site counts against the budget when NO token list of it was counted;
-    // one opaque call among several counted ones is a lower bound, not a gap.
-    const dark = [...new Set(unresolved.map((u) => u.split(': ')[0]!))].filter(
-      (where) => !counted.some(({ s }) => s.where === where)
+    // A liveness floor, not a count: the synthetic case pins the shape itself.
+    expect(sitesWhere((c) => c.s.receiver.via === 'chained'), 'chained receiver').toBeGreaterThan(0);
+    // A site is dark when ANY of its token lists went uncounted: one trivially
+    // counted call (`run([])`) says nothing about the surplus behind another.
+    const dark = [...new Set(unresolved.map((u) => u.split(': ')[0]!))];
+    const darkPerFile: Record<string, number> = {};
+    for (const where of dark) {
+      const file = where.slice(0, where.lastIndexOf(':'));
+      darkPerFile[file] = (darkPerFile[file] ?? 0) + 1;
+    }
+    expect(darkPerFile, `dark sites:\n${dark.join('\n')}\nunresolved:\n${unresolved.join('\n')}`).toEqual(
+      KNOWN_DARK
     );
-    expect(dark.length, unresolved.join('\n')).toBeLessThan(sitesWhere(() => true) / 6);
   });
 
   it('counts a surplus operand, including one behind a non-node runtime prefix', () => {
@@ -739,6 +818,33 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(resolveReceiver(typed, typed, functionHeaders(typed))).toBeUndefined();
   });
 
+  it('traces a parameter through a second wrapper and inlines a file-level array', () => {
+    const source = [
+      "const ARGS = ['TestStack', '--region', 'us-east-1'];",
+      'async function inRegion(region: string, extra: string[] = []) {',
+      '  const cmd = createGcCommand();',
+      "  await cmd.parseAsync(['--region', region, ...extra], { from: 'user' });",
+      '}',
+      'async function run(extra: string[] = []) {',
+      "  await inRegion('r', extra);",
+      '}',
+      "await run(['--yes', 'Stray']);",
+      'await run([...ARGS]);',
+    ].join('\n');
+    const variants = expandSite(
+      source,
+      source.indexOf('.parseAsync'),
+      "['--region', region, ...extra]",
+      functionHeaders(source)
+    );
+    expect(variants.map((v) => [v.callLine, v.tokens.map((t) => t.text)])).toEqual([
+      [9, ['--region', 'r', '--yes', 'Stray']],
+      [10, ['--region', 'r', 'TestStack', '--region', 'us-east-1']],
+    ]);
+    const gc = () => FACTORIES.get('createGcCommand')!();
+    expect(countOperands(gc(), variants[0]!.tokens)).toMatchObject({ max: 0, operands: ['Stray'] });
+  });
+
   it('reports an opaque token instead of a clean count when it could hide operands', () => {
     const lit = (x: string) => toToken(`'${x}'`);
     const val = (x: string): Token => ({ kind: 'val', text: x });
@@ -793,6 +899,9 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(
       resolve('const cmd = createDeployCommand();\nfunction run(cmd: Command) {\ncmd\n}')
     ).toBeUndefined();
+    expect(
+      resolveReceiver('createDiffCommand().exitOverride()', 'createDiffCommand().exitOverride()', [])
+    ).toEqual({ factory: 'createDiffCommand', via: 'chained' });
     expect(resolve('const cmd = createDeployCommand().exitOverride();\ncmd')).toEqual({
       factory: 'createDeployCommand',
       via: 'direct',
