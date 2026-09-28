@@ -3,9 +3,10 @@
  * Cloud Control has no handlers for (`NON_PROVISIONABLE`) even when the
  * generated coverage table still calls it routable — the mid-transition window
  * where the Tier 3 regen has not run yet. No shipped type sits in that window
- * (every NON_PROVISIONABLE provider also declares `disableCcApiFallback`), so
- * the arm is reachable only by mocking the Tier 3 lookup, which is file-scoped
- * in Vitest and so lives in its own file.
+ * (every registered NON_PROVISIONABLE type is in
+ * `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`, #3871), so the arm is reachable only
+ * by mocking the lookup, which is file-scoped in Vitest and so lives in its own
+ * file.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
@@ -18,6 +19,10 @@ vi.mock('../../../src/provisioning/unsupported-types.js', async (importOriginal)
     ...actual,
     isNonProvisionable: (resourceType: string) =>
       resourceType === FLAGGED.type || actual.isNonProvisionable(resourceType),
+    // The predicate the route reads calls the module's own isNonProvisionable,
+    // which the override above cannot reach, so it is overridden alike.
+    hasNoCloudControlHandlers: (resourceType: string) =>
+      resourceType === FLAGGED.type || actual.hasNoCloudControlHandlers(resourceType),
   };
 });
 

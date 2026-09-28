@@ -1,10 +1,17 @@
 import { readFileSync } from 'node:fs';
-import { commandHole, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  type CommandArg,
+  type PasteableCommand,
+} from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
   STACK_REF_MAX_CODE_POINTS,
+  displayAwsMessage,
+  displayIdent,
   displaySafe,
   isPasteableIdent,
   truncateCodePoints,
@@ -20,8 +27,7 @@ import {
   isReadableResourceEntry,
   malformedResourcesWarning,
   displayLogicalId,
-  safeRegion,
-  safeStackName,
+  SHORT_NAME_MAX_CODE_POINTS,
 } from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
@@ -60,6 +66,7 @@ import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
+import { readRecordedPrincipals } from '../../provisioning/iam-policy-targets.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -374,7 +381,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = id.split('|');
     if (parts.length !== 3) {
       throw new Error(
-        `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: '${id}'`
+        `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: ${showRecordValue(id)}`
       );
     }
     const map = { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
@@ -412,13 +419,13 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length > 2) {
       throw new Error(
-        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: '${physicalId}'`
+        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     if (parts.length === 2) {
       const [restApiId, resourceId] = parts as [string, string];
       if (!restApiId || !resourceId) {
-        throw new Error(`empty part in 'restApiId|resourceId': '${physicalId}'`);
+        throw new Error(`empty part in 'restApiId|resourceId': ${showRecordValue(physicalId)}`);
       }
       return {
         resourceIdentifier: { RestApiId: restApiId, ResourceId: resourceId },
@@ -450,12 +457,12 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     if (parts.length !== 2) {
       throw new Error(
         `expected 2 parts ('<gatewayId>|<vpcId>' or '<AttachmentType>|<vpcId>'), ` +
-          `got ${parts.length}: '${physicalId}'`
+          `got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [first, vpcId] = parts as [string, string];
     if (!first || !vpcId) {
-      throw new Error(`empty part in composite physical id: '${physicalId}'`);
+      throw new Error(`empty part in composite physical id: ${showRecordValue(physicalId)}`);
     }
     return {
       resourceIdentifier: {
@@ -507,16 +514,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|').map((p) => p.trim());
     if (parts.length > 2) {
       throw new Error(
-        `expected a bare '<Id>' or '<Id>|<VpcId>', got ${parts.length} parts: '${physicalId}'`
+        `expected a bare '<Id>' or '<Id>|<VpcId>', got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     const id = parts[0]!;
     if (!id) {
-      throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+      throw new Error(`empty part in '<Id>|<VpcId>': ${showRecordValue(physicalId)}`);
     }
     if (!id.startsWith(VPC_CIDR_ASSOCIATION_ID_PREFIX)) {
       throw new Error(
-        `'${physicalId}' does not start with an association id: CloudFormation identifies an ` +
+        `${showRecordValue(physicalId)} does not start with an association id: CloudFormation identifies an ` +
           `AWS::EC2::VPCCidrBlock by [Id, VpcId], so the first segment must be a ` +
           `'${VPC_CIDR_ASSOCIATION_ID_PREFIX}…' id. State entry may be corrupt, or the segments ` +
           `may be reversed; re-deploy the resource to refresh state`
@@ -528,7 +535,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       // Only reachable on THIS branch — `readStringProperty` already refuses an
       // empty / non-string recorded value on the bare-id branch below.
       if (!vpcId) {
-        throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+        throw new Error(`empty part in '<Id>|<VpcId>': ${showRecordValue(physicalId)}`);
       }
     } else {
       vpcId = readStringProperty(properties, 'VpcId', 'AWS::EC2::VPCCidrBlock');
@@ -538,8 +545,8 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     // nothing. Checking one side only is not a discriminator.
     if (!VPC_ID_PATTERN.test(vpcId)) {
       throw new Error(
-        `'${vpcId}' is not a VPC id (expected 'vpc-…', not an association id): ` +
-          `'${physicalId}' may have its segments reversed`
+        `${showRecordValue(vpcId)} is not a VPC id (expected 'vpc-…', not an association id): ` +
+          `${showRecordValue(physicalId)} may have its segments reversed`
       );
     }
     return {
@@ -581,14 +588,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<routeTableId>|<destination>'), got ${parts.length}: '${physicalId}'`
+        `expected 2 parts ('<routeTableId>|<destination>'), got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [routeTableId, destination] = parts as [string, string];
     // `.trim()`, not truthiness: `'  |  '` is two non-empty segments by
     // truthiness and would ship `RouteTableId: '  '` into the changeset.
     if (!routeTableId.trim() || !destination.trim()) {
-      throw new Error(`empty part in '<routeTableId>|<destination>': '${physicalId}'`);
+      throw new Error(
+        `empty part in '<routeTableId>|<destination>': ${showRecordValue(physicalId)}`
+      );
     }
     return {
       resourceIdentifier: {
@@ -619,14 +628,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<publicIp>|<allocationId>'), got ${parts.length}: '${physicalId}'. ` +
+        `expected 2 parts ('<publicIp>|<allocationId>'), got ${parts.length}: ${showRecordValue(physicalId)}. ` +
           `CloudFormation identifies an AWS::EC2::EIP by BOTH fields, and neither can be ` +
           `recovered from the other; re-deploy the resource to refresh state`
       );
     }
     const [first, second] = parts as [string, string];
     if (!first.trim() || !second.trim()) {
-      throw new Error(`empty part in '<publicIp>|<allocationId>': '${physicalId}'`);
+      throw new Error(`empty part in '<publicIp>|<allocationId>': ${showRecordValue(physicalId)}`);
     }
     // Bind by SHAPE, not by position. `eipPhysicalId` writes publicIp first and
     // every writer goes through it, but that ordering is the ONE thing here
@@ -650,7 +659,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       !EIP_PUBLIC_IP_PATTERN.test(publicIp)
     ) {
       throw new Error(
-        `'${physicalId}' is not an '<publicIp>|<allocationId>' pair: CloudFormation identifies ` +
+        `${showRecordValue(physicalId)} is not an '<publicIp>|<allocationId>' pair: CloudFormation identifies ` +
           `an AWS::EC2::EIP by [PublicIp, AllocationId], so one segment must be an allocation ` +
           `id ('${EIP_ALLOCATION_ID_PREFIX}…') and the other a dotted-quad public IP. State ` +
           `entry may be corrupt or written by an older cdkd binary; re-deploy the resource to ` +
@@ -781,12 +790,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new Error(
-        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: '${physicalId}'`
+        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: ${showRecordValue(physicalId)}`
       );
     }
     const [tableBucketARN, namespace] = parts as [string, string];
     if (!tableBucketARN || !namespace) {
-      throw new Error(`empty part in '<tableBucketARN>|<namespaceName>': '${physicalId}'`);
+      throw new Error(
+        `empty part in '<tableBucketARN>|<namespaceName>': ${showRecordValue(physicalId)}`
+      );
     }
     return { resourceIdentifier: { TableBucketARN: tableBucketARN, Namespace: namespace } };
   },
@@ -842,7 +853,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     // splitters trim the WHOLE id only, not each segment — this is the stricter
     // per-segment check, matching `AWS::EC2::Route` / `AWS::EC2::EIP`.
     if (!functionName.trim() || !qualifier.trim()) {
-      throw new Error(`empty part in '<functionName>|<qualifier>': '${physicalId}'`);
+      throw new Error(`empty part in '<functionName>|<qualifier>': ${showRecordValue(physicalId)}`);
     }
     return { resourceIdentifier: { FunctionName: functionName, Qualifier: qualifier } };
   },
@@ -918,20 +929,20 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     }
     if (trimmed.startsWith('arn:')) {
       throw new Error(
-        `'${physicalId}' looks like an ARN but is not an AppSync API key ARN ` +
+        `${showRecordValue(physicalId)} looks like an ARN but is not an AppSync API key ARN ` +
           `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>)`
       );
     }
     const parts = trimmed.split('|');
     if (parts.length > 2) {
       throw new Error(
-        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: '${physicalId}'`
+        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: ${showRecordValue(physicalId)}`
       );
     }
     if (parts.length === 2) {
       const [apiId, apiKeyId] = parts as [string, string];
       if (!apiId.trim() || !apiKeyId.trim()) {
-        throw new Error(`empty part in 'apiId|apiKeyId': '${physicalId}'`);
+        throw new Error(`empty part in 'apiId|apiKeyId': ${showRecordValue(physicalId)}`);
       }
       return {
         resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },
@@ -1060,7 +1071,7 @@ function resolveGatewayAttachmentType(
   throw new Error(
     `cannot determine AttachmentType for AWS::EC2::VPCGatewayAttachment: cdkd state's ` +
       `properties carry neither 'InternetGatewayId' nor 'VpnGatewayId', and the physical id ` +
-      `segment '${firstSegment}' is not a recognized gateway id. State entry may be corrupt ` +
+      `segment ${showRecordValue(firstSegment)} is not a recognized gateway id. State entry may be corrupt ` +
       `or written by an older cdkd binary; re-deploy the resource to refresh state.`
   );
 }
@@ -1146,11 +1157,11 @@ function resolveRouteDestination(segment: string, properties: Record<string, unk
     return identifier;
   }
 
-  const recorded = declared.map((key) => `${key}='${String(properties[key])}'`).join(', ');
+  const recorded = declared.map((key) => `${key}=${showRecordValue(properties[key])}`).join(', ');
   const shared =
     `AWS::EC2::Route: cdkd state's recorded properties declare ${recorded}, but the physical ` +
-    `id's destination segment is '${segment}'. CloudFormation identifies the route by the ` +
-    `destination, so IMPORT would adopt whatever route currently sits at '${identifier}' — and ` +
+    `id's destination segment is ${showRecordValue(segment)}. CloudFormation identifies the route by the ` +
+    `destination, so IMPORT would adopt whatever route currently sits at ${showRecordValue(identifier)} — and ` +
     `if that is a DIFFERENT route than the template declares, phase 2 would then REPLACE ` +
     `(delete) it. The state entry is stale; re-deploy the resource to refresh it`;
 
@@ -1165,11 +1176,15 @@ function resolveRouteDestination(segment: string, properties: Record<string, unk
     throw new Error(`${shared}.`);
   }
 
+  // Bounded as a whole: each value is capped, but up to five of them share
+  // this one line (a throw of the same text is bounded by `groupBlockedReasons`).
   getLogger().warn(
-    `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
-      `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
-      `CIDR, whose AWS-side canonicalization cdkd does not model — so the difference may be ` +
-      `benign.`
+    displayAwsMessage(
+      `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
+        `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
+        `CIDR, whose AWS-side canonicalization cdkd does not model — so the difference may be ` +
+        `benign.`
+    )
   );
   return identifier;
 }
@@ -1236,7 +1251,7 @@ function restApiChildSplitter(options: {
     if (parts.length > 2) {
       throw new Error(
         `expected a bare ${childField} or '${compositeShape}', got ${parts.length} parts: ` +
-          `'${physicalId}'`
+          `${showRecordValue(physicalId)}`
       );
     }
 
@@ -1245,7 +1260,7 @@ function restApiChildSplitter(options: {
     if (parts.length === 2) {
       const [a, b] = parts as [string, string];
       if (!a || !b) {
-        throw new Error(`empty part in '${compositeShape}': '${physicalId}'`);
+        throw new Error(`empty part in '${compositeShape}': ${showRecordValue(physicalId)}`);
       }
       [restApiId, childValue] = childFirstInCompositeId ? [b, a] : [a, b];
     } else {
@@ -1637,7 +1652,7 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
       }
       const recordedNote =
         typeof recorded === 'string' && recorded.trim()
-          ? `attributes.Id is recorded as '${recorded.trim()}', which is not an 'sgr-…' ` +
+          ? `attributes.Id is recorded as ${showRecordValue(recorded)}, which is not an 'sgr-…' ` +
             `security-group rule id`
           : `attributes.Id is missing or empty`;
       throw new Error(
@@ -1866,7 +1881,7 @@ async function describeAllSecurityGroupRules(
               ...(nextToken && { NextToken: nextToken }),
             })
           ),
-        `DescribeSecurityGroupRules(${groupId})`,
+        `DescribeSecurityGroupRules(${showRecordValue(groupId)})`,
         {
           maxRetries: MAX_SG_RULE_THROTTLE_RETRIES,
           isRetryable: (_message, error) => isThrottlingError(error),
@@ -1994,7 +2009,7 @@ async function backfillSecurityGroupIngressRuleId(
   if (!tuple) {
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and its ` +
-        `physical id '${physicalId}' is not cdkd's ` +
+        `physical id ${showRecordValue(physicalId)} is not cdkd's ` +
         `'<groupId>|<ipProtocol>|<fromPort>|<toPort>' composite either, so cdkd cannot look the ` +
         `rule up in AWS to recover the id CloudFormation IMPORT needs. Repair the record's ` +
         `physicalId (or its attributes.Id, which may be the 'sgr-...' id verbatim) and re-run ` +
@@ -2004,14 +2019,14 @@ async function backfillSecurityGroupIngressRuleId(
 
   const portRange =
     tuple.fromPort === tuple.toPort ? `${tuple.fromPort}` : `${tuple.fromPort}-${tuple.toPort}`;
-  const tupleNote = `protocol '${tuple.ipProtocol}', ports ${portRange} on security group '${tuple.groupId}'`;
+  const tupleNote = `protocol ${showRecordValue(tuple.ipProtocol)}, ports ${portRange} on security group ${showRecordValue(tuple.groupId)}`;
 
   const lookup = await cachedSecurityGroupRules(tuple.groupId, deps);
   if (!lookup.ok) {
     if (lookup.kind === 'truncated') {
       throw new Error(
         `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and the ` +
-          `DescribeSecurityGroupRules lookup on '${tuple.groupId}' was still paginating after ` +
+          `DescribeSecurityGroupRules lookup on ${showRecordValue(tuple.groupId)} was still paginating after ` +
           `${MAX_SG_RULE_PAGES} pages — cdkd cannot prove a match is unique without seeing the ` +
           `whole group, and adopting an unproven id would name the wrong rule. ` +
           `${sgIngressExportEscapeHatch(logicalId)}`
@@ -2341,7 +2356,7 @@ function recordedArnIdentifier(options: {
       }
       const recordedNote =
         typeof recorded === 'string' && recorded.trim()
-          ? `attributes.${field} is recorded as '${recorded.trim()}', which is not a ` +
+          ? `attributes.${field} is recorded as ${showRecordValue(recorded)}, which is not a ` +
             `${arnServiceSegment} ARN`
           : `attributes.${field} is missing or empty`;
       // "composite" vs "bare": `AWS::AppSync::GraphQLApi` stores a single
@@ -2549,31 +2564,17 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       NoSuchEntityException,
     } = await import('@aws-sdk/client-iam');
 
-    // physicalId is either the bare policy name (SDK provider format) or
-    // legacy `policyName:roleName` (CC API pre-SDK-provider state). The
-    // SDK provider's own delete normalizes via the same split; mirror it
-    // so pre-v0.74-ish state still produces the correct policy name.
-    const policyName = entry.physicalId.includes(':')
-      ? entry.physicalId.split(':')[0]
-      : entry.physicalId;
-    if (!policyName) {
+    // The SAME verdict the plan printed before the confirmation
+    // (go-to-k/cdkd#3857): one predicate, so the plan cannot name principals
+    // this handler would not act on.
+    const targets = policyDetachTargets(entry);
+    if ('refusal' in targets) {
       throw new Error(
-        `cdkd state's physicalId for ${entry.logicalId} (${entry.resourceType}) is empty / invalid`
+        `cdkd state for ${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) ` +
+          `cannot be pre-deleted: ${targets.refusal}`
       );
     }
-
-    const roles = entry.properties['Roles'] as string[] | undefined;
-    const users = entry.properties['Users'] as string[] | undefined;
-    const groups = entry.properties['Groups'] as string[] | undefined;
-    const hasAttachment = (roles?.length ?? 0) + (users?.length ?? 0) + (groups?.length ?? 0) > 0;
-    if (!hasAttachment) {
-      throw new Error(
-        `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) has no ` +
-          `Roles/Users/Groups attachment recorded — cannot pre-delete the inline policy. ` +
-          `State may be from a pre-v0.74 cdkd binary; re-run \`cdkd state refresh-observed\` ` +
-          `before export.`
-      );
-    }
+    const { policyName, roles, users, groups } = targets;
 
     const client = new IAMClient({ ...awsClientDefaults() });
 
@@ -2591,17 +2592,17 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       }
     };
 
-    for (const roleName of roles ?? []) {
+    for (const roleName of roles) {
       await deleteSafely(() =>
         client.send(new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName }))
       );
     }
-    for (const userName of users ?? []) {
+    for (const userName of users) {
       await deleteSafely(() =>
         client.send(new DeleteUserPolicyCommand({ UserName: userName, PolicyName: policyName }))
       );
     }
-    for (const groupName of groups ?? []) {
+    for (const groupName of groups) {
       await deleteSafely(() =>
         client.send(new DeleteGroupPolicyCommand({ GroupName: groupName, PolicyName: policyName }))
       );
@@ -3057,7 +3058,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             `IMPORT-unsupported resource(s) after cdkd deletes the AWS-side resource:`
         );
         for (const r of recreateBeforePhase2) {
-          logger.info(`  ${r.logicalId} (${r.resourceType}) — physicalId: ${r.physicalId}`);
+          for (const line of preDeleteListingLines(r)) logger.info(`  ${line}`);
         }
         logger.info(
           '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
@@ -3275,12 +3276,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           );
           try {
             await handler(entry);
-            logger.info(`  ✓ deleted ${entry.physicalId}`);
+            logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
-                `(${entry.resourceType}, physicalId: ${entry.physicalId}) failed: ${msg}\n\n` +
+                `(${entry.resourceType}, physicalId: ${showRecordValue(entry.physicalId)}) failed: ` +
+                `${displayAwsMessage(msg)}\n\n` +
                 `The CloudFormation stack '${cfnStackName}' contains the phase-1 imports ` +
                 `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +
                 `still exist in AWS unmanaged. cdkd state is UNCHANGED. Re-running ` +
@@ -3667,6 +3669,199 @@ function safeDetail(value: unknown): string {
 }
 
 /**
+ * The longest legitimate value {@link showRecordValue} renders uncut: AWS's
+ * documented ARN ceiling. A physical id is a name, an id, a URL or an ARN, and
+ * the ARN is the longest of them; a record carrying more than this is not one
+ * of those.
+ *
+ * Counted in code points for a plain value and in ESCAPED characters for any
+ * other, so a value escaping heavily is cut sooner: every BMP character past
+ * ASCII costs six, an astral one twelve. A 255-character all-emoji name is
+ * therefore cut, with the cut marked; a flood stop, not a formatting rule.
+ */
+const RECORD_VALUE_MAX_CODE_POINTS = 2048;
+
+/**
+ * The shape of a record value that renders BARE: `displayIdent`'s plain set
+ * (`src/utils/display-safe.ts`) plus four characters real AWS identifiers carry
+ * and that printed bare here before go-to-k/cdkd#3375, so quoting them would
+ * change legitimate output (the `export` integ fixture greps
+ * `Qualifier=$LATEST`):
+ *
+ * - `$`: a Lambda qualifier (`$LATEST`), an API Gateway v2 stage or route key
+ *   (`$default`, `$connect`, `$disconnect`);
+ * - `|`: cdkd's own composite physical ids (`<restApiId>|<resourceId>`);
+ * - `#`: a CloudWatch Logs log-group name (`[.\-_/#A-Za-z0-9]+`);
+ * - `*`: a Route 53 wildcard record name (`*.example.com`).
+ *
+ * None of the four can plant what the boundary exists to stop: no space,
+ * quote, bracket or parenthesis, so a bare value cannot close a quote or spell
+ * a `(type)` / `-- reason` annotation, and every character is printable ASCII.
+ * Not `displayIdent`'s own set widened, because that set also decides what
+ * cdkd names bare beside a pasteable command, where `$` and `*` are shell
+ * syntax.
+ */
+const RECORD_VALUE_PLAIN = /^[A-Za-z0-9:_@./+=,~$|#*-]+$/;
+
+/**
+ * Render a value read out of a state record's BODY — a `physicalId`, a
+ * `properties` or `attributes` value, or a segment split out of one — into a
+ * message (go-to-k/cdkd#3375). Nothing validates these on read, so the value
+ * is anyone's who can write the record. The caller writes NO quotes of its own
+ * around the result, since a hand-written `'...'` is exactly what a planted
+ * `'` closes.
+ *
+ * A value in {@link RECORD_VALUE_PLAIN} within the cap renders bare, exactly
+ * as it always did. Anything else renders as a JSON string literal whose every character outside
+ * printable ASCII is a `\uXXXX` escape: the boundary is visible, no byte can
+ * move the cursor or reorder the line, and — unlike `displayIdent`'s
+ * allowlist, which maps non-ASCII to a space — the value stays RECOVERABLE. A
+ * legitimate id may be UTF-8 (a CloudWatch `AlarmName`, a Step Functions
+ * state-machine name), and this is the plan an operator confirms a migration
+ * from, so two distinct ids must never print as the same text. The cap bounds
+ * the ESCAPED payload; the cut counts withheld code points, in `displayIdent`'s
+ * marker shape.
+ */
+function showRecordValue(value: unknown): string {
+  const cap = { maxCodePoints: RECORD_VALUE_MAX_CODE_POINTS };
+  // A non-string was never written as an id; `displayIdent`'s total coercion
+  // is the right answer for it.
+  if (typeof value !== 'string') return displayIdent(value, cap);
+  if (value.length <= RECORD_VALUE_MAX_CODE_POINTS && RECORD_VALUE_PLAIN.test(value)) {
+    // ASCII by construction, so `.length` counts code points.
+    return value;
+  }
+  // The cap is on the ESCAPED text, so an escape cannot multiply it (a
+  // non-ASCII code point escapes to six characters, an astral one to twelve).
+  // Built one code point at a time, so the cut never splits an escape or a
+  // surrogate pair.
+  const codePoints = Array.from(value);
+  let body = '';
+  let kept = 0;
+  for (const cp of codePoints) {
+    const piece = JSON.stringify(cp)
+      .slice(1, -1)
+      .replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    if (body.length + piece.length > RECORD_VALUE_MAX_CODE_POINTS) break;
+    body += piece;
+    kept += 1;
+  }
+  const withheld = codePoints.length - kept;
+  return withheld === 0 ? `"${body}"` : `"${body}" [cut: ${withheld} more characters withheld]`;
+}
+
+/**
+ * The success line for one pre-deleted `recreateBeforePhase2` resource, shared
+ * by the single-stack and nested-stack paths so the two cannot render the
+ * recorded physical id differently. Exported for the unit cases.
+ */
+export function preDeletedLine(physicalId: unknown): string {
+  return `✓ deleted ${showRecordValue(physicalId)}`;
+}
+
+/** The most detach targets {@link preDeleteListingLines} names per kind. */
+const DETACH_TARGETS_SHOWN = 20;
+
+/** What {@link policyDetachTargets} returns for a policy it will act on. */
+interface PolicyDetachTargets {
+  policyName: string;
+  roles: string[];
+  users: string[];
+  groups: string[];
+}
+
+/**
+ * THE decision for an `AWS::IAM::Policy` pre-delete: which inline policy is
+ * removed from which principals, or why the pre-delete refuses. Shared by the
+ * handler that acts on it and by {@link preDeleteListingLines}, which prints
+ * it in the plan the operator confirms from, so the two cannot disagree
+ * (go-to-k/cdkd#3857).
+ *
+ * The physicalId is the bare policy name (SDK provider format) or the legacy
+ * `policyName:roleName` (Cloud Control, pre-SDK-provider state); the SDK
+ * provider's own delete takes the first segment, and so does this.
+ *
+ * Each of `Roles` / `Users` / `Groups` is read by `readRecordedPrincipals`
+ * (`src/provisioning/iam-policy-targets.ts`), the reader
+ * `IAMPolicyProvider.delete` shares: a `malformed` one refuses before any AWS
+ * call (go-to-k/cdkd#3878).
+ */
+function policyDetachTargets(
+  entry: RecreateBeforePhase2Entry
+): PolicyDetachTargets | { refusal: string } {
+  const physicalId = typeof entry.physicalId === 'string' ? entry.physicalId : '';
+  const policyName = physicalId.includes(':') ? physicalId.split(':')[0]! : physicalId;
+  if (!policyName) {
+    return { refusal: 'its physicalId names no policy' };
+  }
+  const read = (key: 'Roles' | 'Users' | 'Groups'): string[] | { refusal: string } => {
+    const recorded = readRecordedPrincipals(entry.properties[key]);
+    if (recorded.kind === 'absent') return [];
+    if (recorded.kind === 'malformed') {
+      return {
+        refusal:
+          `its recorded properties.${key} is not a list of ${key.slice(0, -1).toLowerCase()} names ` +
+          `(${recorded.detail})`,
+      };
+    }
+    return recorded.names;
+  };
+  const roles = read('Roles');
+  if ('refusal' in roles) return roles;
+  const users = read('Users');
+  if ('refusal' in users) return users;
+  const groups = read('Groups');
+  if ('refusal' in groups) return groups;
+  if (roles.length + users.length + groups.length === 0) {
+    return {
+      refusal:
+        // Not 'cdkd state refresh-observed': that command rewrites only
+        // `observedProperties`, never the `properties` this reads.
+        'no Roles/Users/Groups attachment is recorded. State may be from a pre-v0.74 cdkd ' +
+        "binary; record the policy's Roles, Users or Groups in its cdkd state record, then " +
+        're-run cdkd export',
+    };
+  }
+  return { policyName, roles, users, groups };
+}
+
+/**
+ * The plan lines for one `recreateBeforePhase2` entry: the resource, and for
+ * an `AWS::IAM::Policy` the inline policy and the roles, users and groups its
+ * pre-delete removes it from — or why that pre-delete will refuse — from
+ * {@link policyDetachTargets}, the handler's own decision (go-to-k/cdkd#3857).
+ * The confirmation printed after the plan says to "see plan above" for what
+ * cdkd deletes between phases, and these targets come from the state RECORD.
+ * Every recorded value goes through {@link showRecordValue}; each kind is
+ * capped at {@link DETACH_TARGETS_SHOWN} names with the rest counted. Shared
+ * by the single-stack plan and the nested-tree summary. Exported for the unit
+ * cases.
+ */
+export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[] {
+  const head =
+    `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) — physicalId: ` +
+    showRecordValue(entry.physicalId);
+  if (entry.resourceType !== 'AWS::IAM::Policy') return [head];
+  const targets = policyDetachTargets(entry);
+  if ('refusal' in targets) return [head, `  the pre-delete will refuse: ${targets.refusal}`];
+  const parts: string[] = [];
+  for (const [label, names] of [
+    ['roles', targets.roles],
+    ['users', targets.users],
+    ['groups', targets.groups],
+  ] as const) {
+    if (names.length === 0) continue;
+    const shown = names.slice(0, DETACH_TARGETS_SHOWN).map((v) => showRecordValue(v));
+    const more = names.length - shown.length;
+    parts.push(`${label}: ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`);
+  }
+  return [
+    head,
+    `  removes inline policy ${showRecordValue(targets.policyName)} from ${parts.join('; ')}`,
+  ];
+}
+
+/**
  * A `cdkd state orphan` line for a record-derived stack name — PASTEABLE only
  * when that name renders EXACTLY, and a template otherwise (issue
  * [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round 3).
@@ -3716,7 +3911,8 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
       `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
       `spelled out because this record's ` +
       `name or region does NOT render exactly, so another record may render identically; ` +
-      `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
+      `list them as stored with 'cdkd state list --json' and act on the one whose key matches, ` +
+      `replacing each quoted hole, quotes included, with the shell-quoted value`
     );
   }
   return `cdkd state orphan ${shellQuote(shownStack)} --stack-region ${shellQuote(safeSegment(region))}`;
@@ -4115,7 +4311,7 @@ export function indexNestedTemplatePaths(
     if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
     if (nodePath.isAbsolute(assetPath)) {
       throw new Error(
-        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+        `cdkd export: nested-stack ${displayIdent(logicalId)} has ` +
           `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} ` +
           `which is absolute. CDK emits relative asset paths for nested templates.`
       );
@@ -4128,7 +4324,7 @@ export function indexNestedTemplatePaths(
     const resolved = resolveAssemblyPath(templateDir, assetPath);
     if (!resolved.contained) {
       throw new Error(
-        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+        `cdkd export: nested-stack ${displayIdent(logicalId)} has ` +
           `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
           `${renderAssemblyPathEscape(resolved, templateDir)}`
       );
@@ -4461,12 +4657,27 @@ export async function buildImportPlan(
     // flag `--no-recreate-import-unsupported` blocks them instead.
     if (IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType)) {
       if (options.recreateImportUnsupported) {
-        recreateBeforePhase2.push({
+        const entry: RecreateBeforePhase2Entry = {
           logicalId,
           resourceType,
           physicalId: stateEntry.physicalId,
           properties: stateEntry.properties ?? {},
-        });
+        };
+        // A pre-delete that would refuse is refused HERE, before the lock and
+        // before phase 1: the handler's refusal would otherwise fire between
+        // phases, after the CloudFormation stack exists (go-to-k/cdkd#3857).
+        // The handler keeps the same check as its backstop.
+        const targets =
+          resourceType === 'AWS::IAM::Policy' ? policyDetachTargets(entry) : undefined;
+        if (targets && 'refusal' in targets) {
+          blocked.push({
+            logicalId,
+            resourceType,
+            reason: `the pre-delete of this inline policy would refuse: ${targets.refusal}`,
+          });
+          continue;
+        }
+        recreateBeforePhase2.push(entry);
       } else {
         blocked.push({
           logicalId,
@@ -4663,8 +4874,10 @@ export function groupBlockedReasons(blocked: readonly BlockedResource[]): string
     // state values (resolver messages echo physical ids and attributes), and
     // a newline in any of them would otherwise start a counterfeit labelled
     // row. The one labelled line a reason may carry is appended here, from
-    // the gated `repair` field (go-to-k/cdkd#3736).
-    const text = displaySafe(b.reason);
+    // the gated `repair` field (go-to-k/cdkd#3736). BOUNDED too: a reason can
+    // quote a record's values back, and a planted multi-kilobyte one would
+    // otherwise push the rest of the refusal off screen (go-to-k/cdkd#3375).
+    const text = displayAwsMessage(b.reason);
     entry.reasons.push(b.repair === undefined ? text : `${text}\nRepair with: ${b.repair}`);
     byResource.set(b.logicalId, entry);
   }
@@ -5322,8 +5535,9 @@ function overlayResourceIdentifierOnProperties(
         // template, and their next `cdk deploy` diffs against it — so say so
         // rather than truncating silently.
         getLogger().warn(
-          `${entry.logicalId} (${entry.resourceType}): rewriting the identifier property ` +
-            `'${field}' from ${describeOverlayValueShape(current)} to the scalar '${value}' ` +
+          `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}): rewriting ` +
+            `the identifier property ${displayIdent(field)} from ` +
+            `${describeOverlayValueShape(current)} to the scalar ${showRecordValue(value)} ` +
             `recorded in cdkd state. CloudFormation types this property as a string; the ` +
             `exported template will carry the scalar.`
         );
@@ -5371,10 +5585,12 @@ function unrepresentableOverlayMessage(
   value: string
 ): string {
   return (
-    `${entry.logicalId} (${entry.resourceType}): the identifier property '${field}' is ` +
+    `${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}): the identifier ` +
+    `property ${displayIdent(field)} is ` +
     `${describeOverlayValueShape(current)}, but CloudFormation types it as a string. ` +
     `${refusalReason(current)}. ` +
-    `Declare '${field}' as the scalar '${value}' (or drop the addPropertyOverride that ` +
+    `Declare ${displayIdent(field)} as the scalar ${showRecordValue(value)} (or drop the ` +
+    `addPropertyOverride that ` +
     `made it a list) and re-run 'cdkd export'.`
   );
 }
@@ -5613,6 +5829,58 @@ export function applyImportOverlayForPhase2(
 const NAMED_BASELINE_IDS = 10;
 
 /**
+ * The sentence `reportDriftBaselineGaps` prints in place of a withheld
+ * `cdkd state refresh-observed`, rendered from the gate's REASON so the prose
+ * and the hole cannot disagree (M3 of the go-to-k/cdkd#3764 review). Keyed on
+ * the FIRST value the gate refused — the stack name before the region, the
+ * gate's own order — and named as that value, and exhaustive over
+ * `WithholdReason` so a new reason is a compile error here rather than a
+ * silently borrowed sentence. Not `withheldTargetClause`: that sentence is
+ * about a record's NAME alone and points at `cdkd state list --long`, and this
+ * one has to speak of the region too.
+ */
+function refreshWithheldReason(built: PasteableCommand): string {
+  const first = built.withheld[0];
+  // `exact` is false with nothing refused only when a caller asked for a bare
+  // hole, which the report never does; the exactness sentence is the
+  // conservative one should a future caller do so.
+  const what = first?.hole === 'region' ? "this stack's region" : "this stack's name";
+  const reason = first?.reason;
+  switch (reason) {
+    case 'option-shaped':
+      return (
+        `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
+        `an option however it is quoted ('--all' would rewrite every record in the region ` +
+        `rather than this one).`
+      );
+    case 'not-plain':
+      return (
+        `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
+        `'_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
+        `can run as shell or read as a line of this message once the terminal wraps.`
+      );
+    case 'pattern-shaped':
+      // Unreachable — `refArgs` passes no `patternMatched`, since this
+      // command resolves by exact name — and answered on purpose, because the
+      // reason is the gate's and a caller passing that option would otherwise
+      // borrow a sentence that is false of it.
+      return `${what} carries a '*' or '/', which cdkd refuses as a pattern character.`;
+    case 'altered':
+    case 'empty':
+    case 'too-long':
+    case undefined:
+      return (
+        `${what} as cdkd loaded it cannot be rendered exactly, and a near-match could ` +
+        `rewrite a different stack's baseline.`
+      );
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`refreshWithheldReason: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/**
  * Pre-flight check for missing drift baselines (`observedProperties`)
  * in the exporting stack's state. cdkd state schema v3 captures
  * `observedProperties` on every successful create / update / import so
@@ -5691,56 +5959,76 @@ export function reportDriftBaselineGaps(
   // warning above is the exception to "last": its text comes from the shared
   // module, which appends a sentence after the command, and follows the same
   // no-region rule there.
-  const stackRef =
-    shellQuote(safeStackName(stackName)) +
-    (region !== undefined ? ` --stack-region ${shellQuote(safeRegion(region))}` : '');
+  // Built by the SHARED gate since go-to-k/cdkd#3436's fold-in, ONE argument
+  // list for the two commands rendered here, so they cannot disagree about a
+  // name. Both values are held to `plainIdent`: the `cdkd state show` line
+  // sits beside prose, the shape `.claude/rules/state-malformed-containers.md`
+  // governs, and exactness alone admits a name with interior padding that
+  // spells a labelled line once the terminal wraps (`Prod<60 spaces>Migrate
+  // with: cdkd destroy --all --force #`) — the wrap-forge the option exists
+  // for, closed here at its one-flag place (M2 of the go-to-k/cdkd#3764
+  // review). Real CDK names pass `isPasteableIdent`. The region keeps its own
+  // cap through `maxCodePoints`: a region is displayed at 128 (`safeRegion`)
+  // everywhere cdkd shows one, and the gate's default is the 1152 stack-name
+  // cap, so without it this report would NAME a 200-character region in full
+  // in a command while every display of it is cut (the rule file's "borrowing
+  // a gate UPWARD").
+  const refArgs: readonly CommandArg[] =
+    region === undefined
+      ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+      : [
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          {
+            flag: '--stack-region',
+            value: region,
+            hole: 'region',
+            opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+          },
+        ];
 
-  // The EXACTNESS GATE, for the one command here that WRITES. `cdkd state
-  // show` is printed with a sanitized name because it only reads: a near-miss
-  // either finds no state or DISPLAYS another stack's record, neither of which
-  // changes anything, and the reader can see which record came back. `cdkd state
-  // refresh-observed` locks a record and rewrites its `observedProperties`, so
-  // a name that sanitizing CHANGED — a non-breaking space where the real stack
-  // has an ordinary one, a control byte, a cut at the cap — can resolve to a
-  // DIFFERENT stack that exists and rewrite that stack's baseline. The same
-  // reasoning `buildForceUnlockCommand` applies to a lock it would delete: when
-  // rendering altered either value, the command is withheld and the advice
-  // names the command in prose instead.
+  // The one command here that WRITES prints ONLY when the gate named both
+  // values — keyed on the gate's own verdict, not on a local re-spelling of
+  // it (M3 of the go-to-k/cdkd#3764 review: a re-spelling let the region's
+  // `maxCodePoints` hole print as `--stack-region '<region>'` with no sentence
+  // saying why). `cdkd state show` only reads, so it is printed for every name
+  // the gate can render, with a hole where it could not: a near-miss there at
+  // worst DISPLAYS another stack's record, which the reader can see. `cdkd
+  // state refresh-observed` locks a record and rewrites its
+  // `observedProperties`, so a name that sanitizing CHANGED — a non-breaking
+  // space where the real stack has an ordinary one, a control byte, a cut at
+  // the cap — can resolve to a DIFFERENT stack that exists and rewrite that
+  // stack's baseline. The same reasoning `buildForceUnlockCommand` applies to
+  // a lock it would delete: when any value is withheld, the command is
+  // withheld and the advice names the command in prose instead, with the
+  // sentence rendered from the gate's REASON so the two cannot disagree.
   //
-  // A record with NO region is withheld too, for a different reason:
-  // `cdkd state refresh-observed` refuses a legacy region-less record outright,
-  // so a command for one could only fail. The advice says to migrate first.
-  const rendersExactly =
-    region !== undefined && safeStackName(stackName) === stackName && safeRegion(region) === region;
-  // Exact is not enough on its own, the second half of the rule the legacy
+  // The option-shaped reason is the second half of the rule the legacy
   // refusal in `state.ts` states: shell quoting does not stop Commander from
   // parsing `'--all'` as the `--all` FLAG, and on this command that flag targets
   // every record in the region — so a stack named `--all` would print a command
   // that rewrites every baseline instead of the one the sentence names. A name
   // a prebuilt cloud assembly supplies is unvalidated (`extractStackInfo` takes
-  // `props?.stackName || artifactId`), so this is reachable, not theoretical.
-  //
-  // Only the LEADING `-` half of that sibling's test applies here, and the
+  // `props?.stackName || artifactId`), so this is reachable, not theoretical;
+  // the region is read raw off the state body, so `--stack-region --all` is
+  // too. Only the LEADING `-` half of that sibling's test applies here, and the
   // difference is the command, not the caution: `cdkd deploy` reads its
   // argument as a PATTERN, while `cdkd state refresh-observed` resolves it by
   // exact name equality (`r.stackName === stackName`), so a `*` or `/` selects
   // at most the one record literally named that — it cannot widen the target
-  // the way a pattern does.
-  const readsAsAnOption = /^-/.test(stackName);
-  const refreshCommand =
-    rendersExactly && !readsAsAnOption ? `cdkd state refresh-observed ${stackRef}` : undefined;
+  // the way a pattern does, and `patternMatched` is deliberately NOT passed.
+  //
+  // A record with NO region is withheld too, for a different reason:
+  // `cdkd state refresh-observed` refuses a legacy region-less record outright,
+  // so a command for one could only fail. The advice says to migrate first.
+  const refresh = pasteableCommand('cdkd state refresh-observed', refArgs);
+  const refreshCommand = region !== undefined && refresh.exact ? refresh.command : undefined;
   const refreshWithheld =
     region === undefined
       ? `'cdkd state refresh-observed' for this stack once it is migrated: this record has ` +
         `no region, the legacy layout that command refuses, so migrate it first with any cdkd ` +
         `write, such as a deploy.`
-      : rendersExactly
-        ? `'cdkd state refresh-observed' for this stack. The command is not printed: this ` +
-          `stack's name starts with '-', which the CLI reads as an option however it is ` +
-          `quoted, and '--all' would rewrite every record in the region rather than this one.`
-        : `'cdkd state refresh-observed' for this stack. The command is not printed: the ` +
-          `stack name or region cdkd loaded cannot be rendered exactly, and a near-match could ` +
-          `rewrite a different stack's baseline.`;
+      : `'cdkd state refresh-observed' for this stack. The command is not printed: ` +
+        `${refreshWithheldReason(refresh)}`;
 
   // go-to-k/cdkd#3018. An ENTRY that is not a readable object is a different
   // shape from the unreadable BAG tested above, and `r.observedProperties` on
@@ -5777,6 +6065,7 @@ export function reportDriftBaselineGaps(
   );
   const unreadableCount = entries.length - readable.length;
   if (unreadableCount > 0) {
+    const inspect = pasteableCommand('cdkd state show', refArgs);
     const unreadable = entries
       .filter(([, r]) => !isReadableResourceEntry(r))
       .map(([logicalId]) => logicalId);
@@ -5784,12 +6073,21 @@ export function reportDriftBaselineGaps(
       `${unreadable.length} of ${entries.length} resource(s) in cdkd state have a record that is ` +
         `not readable as a resource — not an object, or carrying no resource type — so their ` +
         `drift baseline cannot be reported on. The state record is malformed or truncated. ` +
+        // A hole in a READ command still needs saying, and it is said BEFORE
+        // the command so the command stays last and pasteable: an operator
+        // handed `'<region>'` with no reason fills it from whatever is
+        // nearest, and prose after the command is what a paste picks up.
+        (inspect.exact
+          ? ''
+          : `A quoted '<...>' hole in the command at the end of this line stands for a value cdkd could not ` +
+            `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
+            `included, with the shell-quoted value. `) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
         // type, so that claim would contradict the plan printed beside it.
         `Inspect it with: ` +
-        `cdkd state show ${stackRef} --json`
+        `${inspect.command} --json`
     );
     for (const logicalId of unreadable.slice(0, NAMED_BASELINE_IDS)) {
       logger.warn(`  ${displayLogicalId(logicalId)}`);
@@ -5974,10 +6272,18 @@ function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   logger.info('');
   logger.info(`Import plan for CloudFormation stack '${cfnStackName}':`);
   for (const entry of plan) {
+    // Every value on this row is rendered with its own boundary: the plan is
+    // printed directly above the destructive confirmation, and each identifier
+    // VALUE is the state record's `physicalId` (or a segment of it), which
+    // nothing validates on read (go-to-k/cdkd#3375). The key and the row's
+    // logical id and type are template- or schema-supplied and plain in every
+    // real template, so they render unchanged there.
     const idStr = Object.entries(entry.resourceIdentifier)
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => `${displayIdent(k)}=${showRecordValue(v)}`)
       .join(', ');
-    logger.info(`  ${entry.logicalId} (${entry.resourceType}) ← ${idStr}`);
+    logger.info(
+      `  ${displayIdent(entry.logicalId)} (${displayIdent(entry.resourceType)}) ← ${idStr}`
+    );
   }
   logger.info('');
 }
@@ -6208,7 +6514,7 @@ export async function submitImportChangeSet(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to create IMPORT changeset: ${msg}`);
+      throw new Error(`Failed to create IMPORT changeset: ${displayAwsMessage(msg)}`);
     }
 
     try {
@@ -6232,7 +6538,9 @@ export async function submitImportChangeSet(
         await cfnClient
           .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
           .catch(() => {});
-        throw new Error(`IMPORT changeset FAILED: ${reason}`);
+        // CloudFormation's reason can QUOTE the submitted ResourceIdentifier,
+        // i.e. a state record's physical id, back verbatim.
+        throw new Error(`IMPORT changeset FAILED: ${displayAwsMessage(reason)}`);
       } catch (innerErr) {
         if (innerErr instanceof Error && innerErr.message.startsWith('IMPORT changeset FAILED')) {
           throw innerErr;
@@ -6318,7 +6626,14 @@ async function collectImportFailureSummary(
     if (failures.length >= 5) break;
   }
   if (failures.length === 0) return '';
-  return failures.map((f) => `  - ${f.logicalId} (${f.type}): ${f.reason}`).join('\n');
+  // One row per failure, so each field is kept to its row: a reason can quote a
+  // state record's physical id back verbatim.
+  return failures
+    .map(
+      (f) =>
+        `  - ${displayIdent(f.logicalId)} (${displayIdent(f.type)}): ${displayAwsMessage(f.reason)}`
+    )
+    .join('\n');
 }
 
 /**
@@ -6966,6 +7281,11 @@ export async function runPerStackImportLoop(args: {
           ? `, ${plan.recreateBeforePhase2.length} pre-delete + re-CREATE`
           : '')
     );
+    // Each pre-delete named, as the single-stack plan does: the tree-wide
+    // confirmation below DELETES these between phases (go-to-k/cdkd#3857).
+    for (const r of plan.recreateBeforePhase2) {
+      for (const line of preDeleteListingLines(r)) logger.info(`    ${line}`);
+    }
   }
   logger.info('');
 
@@ -7425,7 +7745,7 @@ export async function runPerStackImportLoop(args: {
                 `so CFn can re-CREATE in phase 2...`
             );
             await handler(entry);
-            logger.info(`    ✓ deleted ${entry.physicalId}`);
+            logger.info(`    ${preDeletedLine(entry.physicalId)}`);
           }
         }
 
@@ -7714,7 +8034,7 @@ export async function executeUpdateChangeSet(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to create UPDATE changeset: ${msg}`);
+      throw new Error(`Failed to create UPDATE changeset: ${displayAwsMessage(msg)}`);
     }
 
     try {
@@ -7733,7 +8053,8 @@ export async function executeUpdateChangeSet(
         await cfnClient
           .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
           .catch(() => {});
-        throw new Error(`UPDATE changeset FAILED: ${reason}`);
+        // As on the IMPORT side: the reason can quote a recorded value back.
+        throw new Error(`UPDATE changeset FAILED: ${displayAwsMessage(reason)}`);
       } catch (innerErr) {
         if (innerErr instanceof Error && innerErr.message.startsWith('UPDATE changeset FAILED')) {
           throw innerErr;

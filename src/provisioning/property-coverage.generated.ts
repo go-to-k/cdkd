@@ -56,7 +56,8 @@ export interface PropertyCoverage {
    */
   readonly readOnly: ReadonlySet<string>;
   /**
-   * Cloud Control cannot take an unrecognized key for this type — its SDK
+   * Cloud Control cannot take an unrecognized key for this type — AWS reports it
+   * NON_PROVISIONABLE (`SDK_PROVIDER_NON_PROVISIONABLE_TYPES`), its SDK
    * provider declares `disableCcApiFallback`, or it is a `'cc-broken'`
    * sticky-CC exemption. Such a key stays on the SDK route with a warn instead
    * of routing (issue #3713).
@@ -403,7 +404,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -498,7 +499,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['BrowserArn', 'BrowserId', 'Name', 'Status']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -508,7 +509,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['CodeInterpreterArn', 'CodeInterpreterId', 'Status']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -577,7 +578,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -670,7 +671,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -829,7 +830,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -959,7 +960,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceDBClusterIdentifier',
       ]),
       readOnly: new Set<string>(['ClusterResourceId', 'Endpoint', 'Id', 'ReadEndpoint']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -981,7 +982,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Endpoint', 'Id', 'Port']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -1247,7 +1248,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -1997,7 +1998,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -2102,7 +2103,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -2151,7 +2152,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -3177,7 +3178,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
@@ -3214,7 +3215,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [

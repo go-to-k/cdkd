@@ -120,6 +120,13 @@ describe('isRetryableTransientError', () => {
         'Failed to create Glue Crawler EventsCrawler: The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: UnrecognizedClientException; Request ID: abc; Proxy: null)',
         'Glue assumed-session token propagation',
       ],
+      // Lambda's wording of the same race on a stream-source ESM create
+      // (issue #3853, observed on the dynamodb-stream-filter integ): no
+      // `(Service:` trailer, anchored on Lambda's own prefix instead.
+      [
+        'Failed to create event source mapping ConsumerDynamoDBEventSource: Received Exception while reading from provided stream. The security token included in the request is invalid.',
+        'Lambda ESM stream-read token propagation',
+      ],
       // Step Functions same-stack role IAM-propagation race: CreateStateMachine
       // is issued before the just-created role's trust policy propagates to
       // Step Functions' assume layer (surfaced by a bug-hunt sweep on an
@@ -1183,6 +1190,32 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       false,
       'DynamoDB table being deleted — excluded for the delete-budget interaction',
     ],
+    // --- #2226: measured live, create issued while the old holder DELETING --
+    // Each string below is the verbatim refusal (account id elided) returned
+    // WHILE the previous holder was still deleting. It is byte-identical to the
+    // refusal for a LIVE holder, so the row asserts BOTH polarities at once:
+    // the cooldown spelling and its terminal twin are one string, and it stays
+    // terminal on the ordinary create path.
+    [
+      'An error occurred (ResourceInUseException) when calling the CreateStream operation: Stream cdkd-probe-2226-kin under account 111122223333 already exists.',
+      false,
+      false,
+      'Kinesis stream DELETING — excluded, identical to the live-stream refusal',
+    ],
+    [
+      'An error occurred (ResourceInUseException) when calling the CreateDeliveryStream operation: Firehose cdkd-probe-2226-fh under accountId 111122223333 already exists',
+      false,
+      false,
+      'Firehose delivery stream DELETING — excluded, identical to the live-stream refusal',
+    ],
+    [
+      // No cooldown exists (DeleteTargetGroup is synchronous); this is the only
+      // refusal the code carries, and it names a LIVE target group.
+      "An error occurred (DuplicateTargetGroupName) when calling the CreateTargetGroup operation: A target group with the same name 'cdkd-probe-2226-tg' exists, but with different settings",
+      false,
+      false,
+      'ELBv2 target group — excluded, no cooldown window exists',
+    ],
     [
       // Secrets Manager. The one-sided shape S3's entry was promoted for, and
       // deliberately NOT promoted: the same sentence covers a force-deleted
@@ -1277,6 +1310,29 @@ describe('isRecreateRetryableError', () => {
     expect(isRecreateRetryableError('QueueDeletedRecently')).toBe(true);
   });
 
+  // #2226: the Kinesis / Firehose DELETING-window refusals are excluded from
+  // the cooldown list, but they read "already exists", so the re-create sites
+  // still wait them out through the COLLISION arm. Pinned so that exclusion is
+  // not mistaken for "the re-create sites fail fast on these".
+  it.each([
+    [
+      'An error occurred (ResourceInUseException) when calling the CreateStream operation: Stream s under account 111122223333 already exists.',
+      true,
+    ],
+    [
+      'An error occurred (ResourceInUseException) when calling the CreateDeliveryStream operation: Firehose f under accountId 111122223333 already exists',
+      true,
+    ],
+    [
+      "An error occurred (DuplicateTargetGroupName) when calling the CreateTargetGroup operation: A target group with the same name 't' exists, but with different settings",
+      false,
+    ],
+  ])('re-create verdict for %j is %s, via the collision arm only', (message, expected) => {
+    expect(isNameCooldownError(message)).toBe(false);
+    expect(isNameCollisionError(message)).toBe(expected);
+    expect(isRecreateRetryableError(message)).toBe(expected);
+  });
+
   // The delete-then-re-create sites (the `--replace` delete-first fallback,
   // the recreate-via-* path, the rollback executor's delete-new-first) use
   // THIS as their retry filter, so the #1625 widening changed their behavior
@@ -1307,6 +1363,10 @@ describe('isIamPropagationError', () => {
     [
       'The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Error Code: UnrecognizedClientException)',
       'Glue assumed-session token',
+    ],
+    [
+      'Received Exception while reading from provided stream. The security token included in the request is invalid.',
+      'Lambda ESM stream-read token',
     ],
     ['User: arn:aws:iam::1:user/x is not authorized to perform: sts:AssumeRole', 'authz'],
     ['Invalid principal in policy', 'S3 bucket policy'],

@@ -26,6 +26,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["bucket is not empty" / "still contains images" on destroy](#bucket-is-not-empty-still-contains-images-on-destroy)
   - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
   - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
+  - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
   - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
   - ["cdkd stopped waiting for it" — a network outage during a Cloud Control operation](#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation)
 - [Asset Publishing Issues](#asset-publishing-issues)
@@ -115,7 +116,7 @@ LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts
 > **not** proceed while another process holds the lock:
 >
 > ```text
-> Could not acquire lock for stack 'MyStack' (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
+> Could not acquire lock for stack MyStack (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
 > ```
 >
 > **Read the holder before acting on the suggestion.** cdkd cleans up an
@@ -934,6 +935,33 @@ Glue writes the Iceberg metadata itself — the created table comes back with
 `Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
 See [Glue table Iceberg support](supported-resources.md#glue-table-iceberg-support-icebergtableinput-is-refused)
 for the full probe transcript and rationale.
+
+---
+
+### "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"
+
+**Symptoms:**
+
+```text
+AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
+cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, ...
+```
+
+**Cause:**
+
+The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
+self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
+through does not model it yet and drops it from the request. Lambda itself
+currently rejects the member through CloudFormation's own handler too
+(`Unsupported 'ConsumptionMode' parameter for given event source mapping type`),
+so switching the resource to Cloud Control does not help. Rather than deploy a
+mapping without the mode you asked for, cdkd refuses a create that declares it,
+and an update that adds or changes it, before calling Lambda. A `cdkd rollback` or
+`cdkd drift --revert` only warns, because those paths replay a recorded
+configuration you cannot edit from the template.
+
+**Solution:** remove `ConsumptionMode` from `SelfManagedKafkaEventSourceConfig`
+to deploy the mapping without it.
 
 ---
 

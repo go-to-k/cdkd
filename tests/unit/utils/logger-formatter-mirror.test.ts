@@ -79,9 +79,8 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
    * sliced off.
    *
    * The ANSI strip is asymmetric, deliberately: it removes escapes from the
-   * whole line, MESSAGE included, while `renderLikeLogger` sanitizes only the
-   * args and passes the message through. No case here carries an
-   * escape-bearing message; one would false-FAIL, which is the safe direction.
+   * whole line, MESSAGE included. The one escape-bearing message case uses a
+   * non-SGR sequence, which this strip leaves alone, so it compares the sink.
    */
   const realLine = (arm: (typeof ARMS)[number], call: readonly unknown[]): string => {
     const spy = spies[arm.emit];
@@ -102,6 +101,7 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
   };
 
   const CSI = String.fromCodePoint(0x9b);
+  const ESC = String.fromCodePoint(0x1b);
 
   /**
    * The shapes the mirror's two stale spellings disagreed with production
@@ -126,6 +126,8 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
     ['several args', ['m', 1, { a: 2 }, 'three']],
     // The reason the sanitiser is there at all.
     ['a control byte inside an arg', ['Lock info:', { x: `${CSI}31mFAKE` }]],
+    // The MESSAGE goes through the sink, not the args sanitiser.
+    ['a control sequence in the MESSAGE', [`a${ESC}[2Jb\nc`]],
     ['a benign non-ASCII value', ['Lock info:', { owner: 'José-café' }]],
   ];
 

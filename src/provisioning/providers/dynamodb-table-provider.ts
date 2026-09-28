@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
   CreateTableCommand,
@@ -103,6 +104,7 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep } from '../masked-retry-logger.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -875,24 +877,15 @@ function isSendableWarmThroughput(value: unknown): boolean {
  * block cdkd sends is a block drift compares, and a block cdkd refuses is one
  * drift ignores.
  *
- * PER MEMBER it does NOT hold, and the residual is real:
- * `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: {Ref: 'Unset'}}` sends only
- * `ReadUnitsPerSecond`, while `readCurrentState` emits AWS's computed value for
- * BOTH members and `getDriftUnknownPaths` leaves the path compared — so AWS's
- * `WriteUnitsPerSecond`, which cdkd never sent, is compared against the
- * template forever. It fails OPEN — the difference is REPORTED by `cdkd drift`,
- * never hidden — and {@link DynamoDBTableProvider.coerceWarmThroughputForSend}
- * names the dropped member when the value is APPLIED.
- *
- * How loud, precisely (measured, PR review round 7 — an earlier version of this
- * sentence said "on every deploy" and was falsified by the code two hundred
- * lines down): every warn in this provider sits behind a CHANGE gate, so the
- * drop is announced on the deploy that INTRODUCES it and is silent on every
- * repeat deploy of the same value, while the drift report persists. Loud once,
- * then a standing drift entry — not a per-deploy nag, and not silent either.
- * Closing the residual means emitting per-member, which is a `readCurrentState`
- * shape change with its own drift-baseline migration — deliberately not folded
- * into this issue.
+ * PER MEMBER the readback answers through {@link sentWarmThroughputMembers}
+ * (issue #3777): `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 'abc'}`
+ * sends only `ReadUnitsPerSecond`, so the readback emits only that member, and
+ * {@link DynamoDBTableProvider.canonicalizeDriftPair} trims, by the same
+ * declaration, a baseline that still carries the unsent one. {@link DynamoDBTableProvider.coerceWarmThroughputForSend}
+ * names the dropped member when the value is APPLIED. The drift side asks
+ * {@link wasSentWarmThroughput}, which also counts a member recorded as a
+ * `{{resolve:...}}` token (whole or embedded) or the state mask: `cdkd drift` reads the RECORDED
+ * bag, where a member the deploy resolved and sent is still a string.
  *
  * NOT a drift fix either way: state records what the TEMPLATE said, so a
  * `properties` baseline still holds `'12000'` against a numeric readback and
@@ -915,6 +908,98 @@ function coerceWarmThroughput(
   const { spec, droppedMembers } = coerceWarmThroughputSpec(value);
   if (spec === undefined) return undefined;
   return { spec, dropped: [...droppedMembers] };
+}
+
+/**
+ * Is this member value a RECORDED stand-in for a value cdkd resolved and sent:
+ * a string carrying a `{{resolve:...}}` token, whole or embedded
+ * (`'{{resolve:ssm:p}}000'`), or the state redaction mask? State keeps a
+ * dynamic reference unresolved, and `cdkd drift` hands `readCurrentState` that
+ * recorded bag, so a member the deploy SENT reads there as a string the send
+ * coercion refuses. Counting it as sent keeps it compared: whether the
+ * resolved value was a usable number is not knowable offline, and the failure
+ * to avoid is hiding a member cdkd did send. A resolved bag (deploy, import)
+ * carries neither.
+ */
+function isRecordedSentStandIn(value: unknown): boolean {
+  return (
+    typeof value === 'string' && (dynamicReferenceTokens(value).length > 0 || value === SECRET_MASK)
+  );
+}
+
+/**
+ * The `WarmThroughput` members cdkd put on the wire for this declared value
+ * (issue #3777): the members of {@link coerceWarmThroughput}'s spec, plus any
+ * member whose recorded value is a {@link isRecordedSentStandIn} (it was
+ * resolved and sent). The readback emits exactly these, table-level and per
+ * index, so a member that did not resolve is never compared against AWS's
+ * computed value for it, and a member that did is never hidden.
+ */
+function sentWarmThroughputMembers(value: unknown): ReadonlySet<string> {
+  const members = new Set<string>();
+  const coerced = coerceWarmThroughput(value);
+  for (const member of WARM_THROUGHPUT_MEMBERS) {
+    if (coerced?.spec[member] !== undefined) members.add(member);
+    else if (isPlainCapacityBlock(value) && isRecordedSentStandIn(value[member])) {
+      members.add(member);
+    }
+  }
+  return members;
+}
+
+/**
+ * The DRIFT-side "did cdkd send this block" question: {@link isSendableWarmThroughput}
+ * on a resolved bag, widened to a recorded bag whose sent members are
+ * dynamic-reference stand-ins. The write sites keep the send predicate; they
+ * only ever see resolved values, so the two answer alike on the same deploy.
+ */
+function wasSentWarmThroughput(value: unknown): boolean {
+  return sentWarmThroughputMembers(value).size > 0;
+}
+
+/**
+ * Read back a live `WarmThroughput` description as its CFn block: the two
+ * user-settable members only (`Status` is AWS-managed), and only those in
+ * `members` — every member when `members` is `undefined`, the uninformative-bag
+ * fallback. `undefined` when nothing is left, since the readback never emits
+ * an empty block.
+ */
+function readbackWarmThroughput(
+  live: WarmThroughputUnits,
+  members: ReadonlySet<string> | undefined
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const member of WARM_THROUGHPUT_MEMBERS) {
+    if (live[member] === undefined) continue;
+    if (members !== undefined && !members.has(member)) continue;
+    out[member] = live[member];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Trim a drift BASELINE's `WarmThroughput` block to the members cdkd SENT
+ * (issue #3777), for {@link DynamoDBTableProvider.canonicalizeDriftPair}.
+ *
+ * `sent` is {@link sentWarmThroughputMembers} of the recorded declaration, the
+ * same set the readback emits from. A member outside it is one cdkd never
+ * sent: a record captured before the per-member readback carries AWS's
+ * computed value for it, and a `properties` fallback baseline the template's
+ * unresolvable value. The trim is keyed on the DECLARATION, never on what the
+ * live block omitted, so a sent member AWS transiently fails to report stays
+ * in the baseline and is reported. An empty `sent` (nothing declared, or an
+ * uninformative bag) or a malformed baseline block is left alone, and a
+ * current-shape baseline comes back by identity.
+ */
+function trimUnsentWarmMembers(baselineBlock: unknown, sent: ReadonlySet<string>): unknown {
+  if (sent.size === 0 || !isPlainCapacityBlock(baselineBlock)) return baselineBlock;
+  const unsent = WARM_THROUGHPUT_MEMBERS.filter(
+    (member) => member in baselineBlock && !sent.has(member)
+  );
+  if (unsent.length === 0) return baselineBlock;
+  const trimmed = { ...baselineBlock };
+  for (const member of unsent) delete trimmed[member];
+  return trimmed;
 }
 
 /**
@@ -994,7 +1079,7 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
   // `getDriftUnknownPaths` / `readCurrentState` evidence from the checked-in
   // matrix. A property whose drift side no critic can see is a property whose
   // next regression nothing reports.
-  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);
+  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);
 }
 
 /**
@@ -1128,32 +1213,10 @@ function reverseMapSecondaryIndex(
   if (live.KeySchema !== undefined) {
     out['KeySchema'] = live.KeySchema.map((element) => ({ ...element }));
   }
-  // `Projection` is rebuilt member by member, fixing its key ORDER as
-  // [ProjectionType, NonKeyAttributes]. That matters because `applyGsiUpdates`
-  // compares this shape with `JSON.stringify`, which is key-order sensitive: a
-  // mismatched order reads as a CHANGED `Projection` and hits the "cannot
-  // modify in place" THROW instead of a no-op.
-  //
-  // Which order actually differs was measured, and the round-6 version of this
-  // note named the wrong one (PR review round 7). Two facts:
-  //  - a READBACK is always [ProjectionType, NonKeyAttributes] — the SDK
-  //    deserializer rebuilds each struct in schema order — so a stale
-  //    pre-#1767 `observedProperties` baseline, itself a readback, CANNOT
-  //    produce the flip. That was the path the earlier note named.
-  //  - a TEMPLATE is the other way round: `aws-cdk-lib`'s generated renderer
-  //    emits `{NonKeyAttributes, ProjectionType}` (verified in
-  //    `aws-dynamodb/lib/dynamodb.generated.js`,
-  //    `convertCfnTableProjectionPropertyToCloudFormation`, aws-cdk-lib
-  //    2.264.0 — and the `CfnGlobalTable` twin does the same).
-  //
-  // So the reachable shape is a TEMPLATE-ordered value meeting a
-  // READBACK-ordered one inside that compare — a `--revert` on a record with no
-  // `observedProperties`, where the desired side is built from the readback
-  // while the recorded previous is template-shaped. Pre-existing, and REDUCED
-  // by this issue (a readback used to carry the whole SDK description, so the
-  // two sides differed in far more than key order). Left as a note rather than
-  // a key-order-independent compare, which changes the WRITE path's equality
-  // rule and belongs with the canonicalization work in #1812.
+  // `Projection` is rebuilt member by member so no AWS-added member can join
+  // it. Its key order differs from a template's (`aws-cdk-lib` renders
+  // `{NonKeyAttributes, ProjectionType}`), which is why `applyGsiUpdates`
+  // compares it with {@link sameJsonValue} rather than `JSON.stringify`.
   if (live.Projection !== undefined) {
     const projection: Record<string, unknown> = {};
     if (live.Projection.ProjectionType !== undefined) {
@@ -1220,18 +1283,74 @@ function reverseMapSecondaryIndex(
     indexDeclares(desired, 'WarmThroughput', bagInformative) &&
     live.WarmThroughput
   ) {
-    const warm = live.WarmThroughput;
-    const wt: Record<string, unknown> = {};
-    // `Status` is AWS-managed, exactly as at the table level.
-    if (warm.ReadUnitsPerSecond !== undefined) {
-      wt['ReadUnitsPerSecond'] = warm.ReadUnitsPerSecond;
-    }
-    if (warm.WriteUnitsPerSecond !== undefined) {
-      wt['WriteUnitsPerSecond'] = warm.WriteUnitsPerSecond;
-    }
-    if (Object.keys(wt).length > 0) out['WarmThroughput'] = wt;
+    // Per member, as at the table level (issue #3777).
+    const wt = readbackWarmThroughput(
+      live.WarmThroughput,
+      bagInformative ? sentWarmThroughputMembers(desired?.['WarmThroughput']) : undefined
+    );
+    if (wt !== undefined) out['WarmThroughput'] = wt;
   }
   return out;
+}
+
+const SDK_ONLY_INDEX_MEMBERS = [
+  'IndexStatus',
+  'Backfilling',
+  'IndexSizeBytes',
+  'ItemCount',
+  'IndexArn',
+] as const;
+const SDK_ONLY_THROUGHPUT_MEMBERS = [
+  'NumberOfDecreasesToday',
+  'LastIncreaseDateTime',
+  'LastDecreaseDateTime',
+] as const;
+
+/**
+ * One index entry of {@link DynamoDBTableProvider.canonicalizeDriftProperties}:
+ * the input by identity unless it carries an SDK-only member.
+ */
+function canonicalizeStaleIndexDescription(element: unknown): unknown {
+  if (typeof element !== 'object' || element === null || Array.isArray(element)) return element;
+  const entry = element as Record<string, unknown>;
+  const copy = { ...entry };
+  let changed = false;
+  for (const member of SDK_ONLY_INDEX_MEMBERS) {
+    if (member in copy) {
+      delete copy[member];
+      changed = true;
+    }
+  }
+  const pt = copy['ProvisionedThroughput'];
+  if (isPlainCapacityBlock(pt) && SDK_ONLY_THROUGHPUT_MEMBERS.some((member) => member in pt)) {
+    changed = true;
+    const trimmed = { ...pt };
+    for (const member of SDK_ONLY_THROUGHPUT_MEMBERS) delete trimmed[member];
+    // The readback never emits an empty block, so a trim that leaves nothing
+    // must drop the key like the `{0, 0}` placeholder does.
+    const placeholder =
+      (trimmed['ReadCapacityUnits'] ?? 0) === 0 && (trimmed['WriteCapacityUnits'] ?? 0) === 0;
+    if (placeholder) delete copy['ProvisionedThroughput'];
+    else copy['ProvisionedThroughput'] = trimmed;
+  }
+  const warm = copy['WarmThroughput'];
+  if (isPlainCapacityBlock(warm) && 'Status' in warm) {
+    delete copy['WarmThroughput'];
+    changed = true;
+  }
+  return changed ? copy : element;
+}
+
+/**
+ * Structural equality that ignores object key order and prototype: a template
+ * renders `Projection` as `{NonKeyAttributes, ProjectionType}`, a readback as
+ * `{ProjectionType, NonKeyAttributes}`, and a redacted bag can be null-prototype.
+ * Array order stays significant (`KeySchema` is HASH before RANGE).
+ */
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  const toJson = (v: unknown): unknown =>
+    v === undefined ? undefined : (JSON.parse(JSON.stringify(v)) as unknown);
+  return isDeepStrictEqual(toJson(a), toJson(b));
 }
 
 /**
@@ -1299,7 +1418,7 @@ function indexDeclares(
 ): boolean {
   if (!bagInformative) return true;
   const value = desired?.[key];
-  return key === 'WarmThroughput' ? isSendableWarmThroughput(value) : Boolean(value);
+  return key === 'WarmThroughput' ? wasSentWarmThroughput(value) : Boolean(value);
 }
 
 /**
@@ -4992,8 +5111,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // applied. Fail loud instead (the no-silent-drop rule) so the user
         // renames the index (forcing remove + add) or accepts a table replace.
         if (
-          JSON.stringify(before.KeySchema) !== JSON.stringify(gsi.KeySchema) ||
-          JSON.stringify(before.Projection) !== JSON.stringify(gsi.Projection)
+          !sameJsonValue(before.KeySchema, gsi.KeySchema) ||
+          !sameJsonValue(before.Projection, gsi.Projection)
         ) {
           throw new ProvisioningError(
             `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} changed its ` +
@@ -6441,50 +6560,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * AWS-authored (created out of band, or by a sibling), which is the #1498
    * class.
    *
-   * Known residual, deliberately NOT covered, because covering it costs more
-   * than it buys: a table whose template DOES declare indexes keeps comparing,
-   * so its already-written observed baseline reports a one-sided
-   * `GlobalSecondaryIndexes` difference until the next deploy re-captures it
-   * (or `cdkd drift --accept` does). `cdkd drift --revert` is the third thing a
-   * user may reach for on that report, and for the shapes measured here it
-   * applies NOTHING to AWS — which is a property of three separate skips, not
-   * "by construction", and the distinction is load-bearing because this PR
-   * briefly broke it. The index names match, so no Create / Delete is derived;
-   * the stale blob's `{0, 0}` capacity is refused by
-   * {@link skipZeroCapacityIndexUpdate}; and its per-index `WarmThroughput` —
-   * which the same PR taught `applyGsiUpdates` to SEND (issue #1768), turning
-   * an earlier "by construction" wording false the moment it landed — is
-   * refused by {@link warmThroughputAlreadyMatches}, since a stale blob carries
-   * exactly what AWS holds. Remove any of the three and the residual stops
-   * being harmless: the revert starts issuing one redundant `UpdateTable` plus
-   * a full index-ACTIVE wait per GSI, or a doomed one.
-   *
-   * "Applies nothing" is NOT the same as "reaches those skips" (PR review round
-   * 5). `applyGsiUpdates` compares `KeySchema` / `Projection` between the
-   * recorded previous and the desired entry BEFORE any of them and THROWS on a
-   * difference, because DynamoDB cannot modify either in place. On this path
-   * that compare is a trimmed readback against a stale full description, and
-   * both members survive the #1767 reverse-map unchanged — `KeySchema`
-   * verbatim, `Projection` rebuilt member-for-member — so for every shape
-   * exercised here it matches and the throw does not fire. It is named because
-   * it is the outcome an enumeration of skips would otherwise hide: a stale
-   * blob whose `Projection` AWS has since re-normalized would fail the revert
-   * loudly rather than no-op it. Suppressing the residual instead would mean ignoring the
-   * whole array for the population that HAS indexes — i.e. never detecting an
-   * out-of-band index add / remove / capacity change again, permanently, to
-   * remove a one-time report. No PATH can express the middle ground:
+   * A table whose template DOES declare indexes keeps comparing the list, so
+   * an observed baseline an earlier binary wrote — the whole SDK description
+   * per index — is converged by {@link canonicalizeDriftProperties} instead of
+   * by a path here: no PATH can express a per-member suppression, because
    * `isIgnoredPath` is never asked about a path that crosses an array
-   * (`diffAt` compares arrays wholesale via `deepEqual`), so a per-MEMBER
-   * ignore path does not exist — the same wall issue #1742 records for the
-   * `AWS::DynamoDB::GlobalTable` twin. **A non-path seam now EXISTS**:
-   * `ResourceProvider.canonicalizeDriftProperties`, applied to BOTH comparison
-   * sides, landed in [#1799](https://github.com/go-to-k/cdkd/pull/1799) (which
-   * closed issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)) and can
-   * strip the AWS-managed member from each bag — converging an already-written
-   * record with a post-fix readback, with no ignore-path and no lost
-   * detection. It is deliberately NOT adopted here yet: doing so is its own
-   * change with its own real-AWS verification, tracked as issue
-   * [#1812](https://github.com/go-to-k/cdkd/issues/1812).
+   * (`diffAt` compares arrays wholesale), and ignoring the whole list would
+   * stop detecting an out-of-band index add / remove / capacity change.
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
@@ -6501,6 +6583,120 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
     return paths;
+  }
+
+  /**
+   * Converge a pre-#1767 `observedProperties` record with the reverse-mapped
+   * readback (issue #1812). Such a record holds each index's raw
+   * `DescribeTable` description, so a table whose template declares indexes
+   * reported a one-sided `GlobalSecondaryIndexes` difference on every
+   * `cdkd drift` until the next deploy re-captured it. Convergence needs a
+   * non-empty recorded bag: with an empty one the readback emits every
+   * throughput block (see {@link reverseMapSecondaryIndex}), so a stale
+   * baseline still reports.
+   *
+   * Keyed on members only an SDK description carries — never on the desired
+   * side, which this hook does not see — so a bag written by the current
+   * readback, or a template, comes back by identity and loses no detection:
+   *  - `IndexStatus` / `Backfilling` / `IndexSizeBytes` / `ItemCount` /
+   *    `IndexArn` are not CFn members and are dropped.
+   *  - A `ProvisionedThroughput` carrying `NumberOfDecreasesToday` (or the
+   *    two `Last*DateTime` members) is trimmed to its capacities, and dropped
+   *    when both are 0: that is AWS's on-demand placeholder, which no template
+   *    can declare (the minimum is 1) and the readback emits only when the
+   *    template declares the block.
+   *  - A `WarmThroughput` carrying `Status` is dropped WHOLE, not just its
+   *    `Status`. AWS reports a computed per-index value for every GSI, and the
+   *    readback emits it only when the template declares one, which is rare;
+   *    stripping `Status` alone would leave the common undeclared case
+   *    drifting. A stale record whose template DOES declare it reports once,
+   *    until the next deploy or `--accept`, as it did before.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::DynamoDB::Table') return properties;
+    let result = properties;
+    for (const listKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
+      const list = result[listKey];
+      if (!Array.isArray(list)) continue;
+      let changed = false;
+      const canonical = list.map((element) => {
+        const next = canonicalizeStaleIndexDescription(element);
+        if (next !== element) changed = true;
+        return next;
+      });
+      if (changed) result = { ...result, [listKey]: canonical };
+    }
+    return result;
+  }
+
+  /**
+   * Trim a baseline's `WarmThroughput` members that cdkd never sent (issue
+   * #3777), table-level and per GSI (matched by `IndexName`).
+   *
+   * The readback emits only the members {@link sentWarmThroughputMembers}
+   * names, so a `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 'abc'}`
+   * declaration reads back `ReadUnitsPerSecond` alone. A baseline captured
+   * before that change carries AWS's computed `WriteUnitsPerSecond`, and a
+   * `properties` fallback baseline carries the unresolvable `'abc'`; compared
+   * as is, either reports a member cdkd does not manage. The sent set comes
+   * from `properties`, the recorded declaration the readback was built from,
+   * which only this hook receives alongside the baseline: the per-side hook
+   * sees neither. See {@link trimUnsentWarmMembers} for why a current-shape
+   * baseline is compared in full and a member AWS omits is never trimmed.
+   *
+   * This DROPS from the baseline, where the contract prefers completing it,
+   * and `drift --revert` sends the result: a warm-throughput member missing
+   * from the desired side is not a removal, since every send site coerces the
+   * block to its usable members and AWS cannot lower or unset warm throughput.
+   * LSIs carry no `WarmThroughput`. The AWS side is returned by identity.
+   *
+   * Known narrow residual: the masked-baseline re-capture compares a fresh
+   * readback against the untrimmed record, so a legacy two-member capture under
+   * a one-member declaration persists until the next ordinary update
+   * re-captures it. Drift output is unaffected, since the compare trims here.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (resourceType !== 'AWS::DynamoDB::Table') return { baseline, aws };
+    // No recorded declaration to decide with: the readback emitted every
+    // member, so there is nothing to trim. An empty bag needs no guard of its
+    // own: it declares no block, so every sent set below is empty.
+    if (properties === undefined) return { baseline, aws };
+    let result = baseline;
+    const tableWarm = trimUnsentWarmMembers(
+      baseline['WarmThroughput'],
+      sentWarmThroughputMembers(properties['WarmThroughput'])
+    );
+    if (tableWarm !== baseline['WarmThroughput']) {
+      result = { ...result, WarmThroughput: tableWarm };
+    }
+    const key = 'GlobalSecondaryIndexes';
+    const baselineIndexes = baseline[key];
+    if (Array.isArray(baselineIndexes)) {
+      const desiredByName = desiredIndexEntriesByName(properties[key]);
+      let changed = false;
+      const trimmed = baselineIndexes.map((entry: unknown) => {
+        if (!isPlainCapacityBlock(entry) || typeof entry['IndexName'] !== 'string') return entry;
+        const desired = desiredByName.get(entry['IndexName']);
+        if (desired === undefined) return entry;
+        const warm = trimUnsentWarmMembers(
+          entry['WarmThroughput'],
+          sentWarmThroughputMembers(desired['WarmThroughput'])
+        );
+        if (warm === entry['WarmThroughput']) return entry;
+        changed = true;
+        return { ...entry, WarmThroughput: warm };
+      });
+      if (changed) result = { ...result, [key]: trimmed };
+    }
+    return { baseline: result, aws };
   }
 
   /**
@@ -6609,18 +6805,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // through update() as a spurious (and, once AWS has grown the value,
       // rejected) UpdateTable. An absent / empty bag keeps the pre-#1760
       // behavior, since the caller supplied nothing to decide with.
-      // Surface ONLY the user-settable sub-fields — Status is AWS-managed.
+      // Surface ONLY the user-settable sub-fields — Status is AWS-managed —
+      // and of those only the members cdkd SENT (issue #3777).
       if (table.WarmThroughput && declaresWarmThroughput(properties)) {
-        const wt: Record<string, unknown> = {};
-        if (table.WarmThroughput.ReadUnitsPerSecond !== undefined) {
-          wt['ReadUnitsPerSecond'] = table.WarmThroughput.ReadUnitsPerSecond;
-        }
-        if (table.WarmThroughput.WriteUnitsPerSecond !== undefined) {
-          wt['WriteUnitsPerSecond'] = table.WarmThroughput.WriteUnitsPerSecond;
-        }
-        if (Object.keys(wt).length > 0) {
-          result['WarmThroughput'] = wt;
-        }
+        const wt = readbackWarmThroughput(
+          table.WarmThroughput,
+          properties !== undefined && desiredBagIsInformative(properties)
+            ? sentWarmThroughputMembers(properties['WarmThroughput'])
+            : undefined
+        );
+        if (wt !== undefined) result['WarmThroughput'] = wt;
       }
       // Class 1 guard: StreamSpecification.StreamViewType is only valid when
       // a stream is enabled. AWS returns the StreamSpecification block on

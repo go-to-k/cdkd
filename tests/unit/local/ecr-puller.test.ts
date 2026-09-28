@@ -543,6 +543,23 @@ describe('pullEcrImage', () => {
     ).rejects.toThrow(/Failed to assume role .* for ECR pull.*AccessDenied/);
   });
 
+  it.each([
+    ['a malformed value', 'arn:aws:iam::999999999999:role/x\nforged'],
+    // `!== undefined`, not truthiness (issue #2348): an EMPTY flag value must
+    // refuse rather than silently pull as the caller.
+    ['an EMPTY value', ''],
+  ])('--ecr-role-arn with %s is refused before AssumeRole (issue #2348)', async (_label, arn) => {
+    stsSendMock.mockResolvedValueOnce({ Account: '111111111111' });
+    await expect(
+      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: arn,
+      })
+    ).rejects.toThrow(/AssumeRole refused.*Nothing was sent to STS/);
+    // Only the GetCallerIdentity primer was consumed: no AssumeRole was sent.
+    expect(stsSendMock).toHaveBeenCalledTimes(1);
+  });
+
   it('--ecr-role-arn AssumeRole returns no Credentials: clear error', async () => {
     stsSendMock
       .mockResolvedValueOnce({ Account: '111111111111' })

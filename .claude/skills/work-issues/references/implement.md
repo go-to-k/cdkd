@@ -11,8 +11,9 @@ Never edit in the main checkout — it is shared across parallel agents. Per
 lane:
 
 ```bash
-# MAIN-CHECKOUT only; IN-PLACE creates NO worktree and skips these two lines
-# (mode probe: references/launch-mode.md).
+# MAIN-CHECKOUT only; an IN-PLACE lane in the launch tree skips these two lines,
+# a CONCURRENT one runs them with absolute paths: launch-mode.md row 1's
+# `git -C <MAIN_CHECKOUT> worktree add ...`, then `cd <MAIN_CHECKOUT>/.claude/worktrees/<b>`.
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp will not resolve

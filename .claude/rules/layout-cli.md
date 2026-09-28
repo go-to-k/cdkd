@@ -41,8 +41,9 @@ Index of every area: [code-layout.md](code-layout.md).
   takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
   load is named rather than reported as "no stacks matching"
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a REQUIRED member,
-  so an ad-hoc `{}` is a compile error; `scrub` and `destroy` still word their
-  own. Each of the first four also throws it on a ZERO-stack assembly BEFORE
+  so an ad-hoc `{}` is a compile error; `scrub` still words its own, and
+  `destroy` words its own state-selection messages but appends
+  `failedStageNote` to them ([#3507](https://github.com/go-to-k/cdkd/issues/3507)). Each of the first four also throws it on a ZERO-stack assembly BEFORE
   its branch chain, which otherwise answers `Multiple stacks found: .`.
   **`synth` reaches the same message by a different route and has no branch
   chain to sit before** ([#3550](https://github.com/go-to-k/cdkd/issues/3550)):

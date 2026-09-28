@@ -686,13 +686,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // arm rebuilt the record from `prev.properties` and every provider's
       // replay-CREATE substitution was announced into a void.
       //
-      // Not live-tested per PROVIDER yet — issue #1706, and it is now CHEAP.
-      // `tests/integration/rollback-replay-effective-props` gained a
-      // rollback-failure-injection phase for the sibling `BillingMode` and GSI
-      // arms (issues #1724 / #1726), so covering this one means adding a
-      // malformed `StreamSpecification` to a table already in that fixture
-      // rather than building the phase. Do not read this note as "no such
-      // fixture exists" — that was true only before those two arms landed.
+      // Live-tested by `tests/integration/rollback-replay-effective-props`
+      // (`StreamTable`, issue #1706): it pins the recorded CFn shape
+      // `{ StreamViewType }` and a clean diff against the live table.
       let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older

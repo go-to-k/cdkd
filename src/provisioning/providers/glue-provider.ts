@@ -153,11 +153,13 @@ function decodeTableId(
  * Read a template-borne value that is about to be forwarded to a Glue read
  * API as a string.
  *
- * `import()` runs against the RAW template, where `substituteOverrideRefs`
- * has resolved only the `Ref`s whose target is in the overrides map — a
- * pseudo parameter is never in that map, so `CatalogId: {Ref: AWS::AccountId}`
- * (what `@aws-cdk/aws-glue-alpha` renders for an environment-agnostic stack)
- * survives as an OBJECT. A bare `as string` cast then hands that object to
+ * `import()` runs against the template, where `cdkd import` resolves only the
+ * `Ref`s in its overrides map and the intrinsics built from literals and the
+ * account / region pseudo-parameters (issue #1897). So
+ * `CatalogId: {Ref: AWS::AccountId}` (what `@aws-cdk/aws-glue-alpha` renders
+ * for an environment-agnostic stack) normally arrives as the account id — but
+ * survives as an OBJECT when the account is `fabricated` (STS failed and no
+ * `AWS_ACCOUNT_ID`). A bare `as string` cast then hands that object to
  * `GetTable` / `GetDatabase` as if it were an id. Dropping it instead matches
  * the API default (the caller's own account), which is what the intrinsic
  * would have resolved to anyway.
@@ -3286,12 +3288,13 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * must never call `this.create()` from inside its own `update()` the way ACM /
  * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
  * forward `update()`'s `properties` — a STATE record during a rollback replay —
- * and pass no `CreateContext`, so this refusal would fire on a replay with no
- * way to detect it. (`update()` DOES take a context — an `UpdateContext` since
+ * and forward no `replayingState` (IAM role / IAM managed policy pass a
+ * masker-only `CreateContext`, issue #2177), so this refusal would fire on a
+ * replay with no way to detect it. (`update()` DOES take a context — an `UpdateContext` since
  * issue #1732 — and since issue #3141 that context carries its own
  * `replayingState`, set by the rollback executor's two revert arms. So the
  * information now reaches `update()`; what is missing is a re-create that
- * builds a `CreateContext` from it, and none of those providers does. An
+ * forwards it into a `CreateContext`, and none of those providers does. An
  * earlier revision said `update()` had "no context parameter to carry the
  * flag" — issue #1999.) Were GlueProvider ever to re-create inside `update()`,
  * it would have to forward a replay signal into that `create()` —

@@ -89,7 +89,9 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // why the scan had to stop matching syntax and start parsing.
   { file: 'provisioning/providers/appsync-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/asg-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/docdb-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // The helper both DocDB providers share (issue #3866 split the subnet group
+  // out of docdb-provider.ts); it classifies only their own SDK rejections.
+  { file: 'provisioning/providers/docdb-shared.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/ec2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/ecs-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },

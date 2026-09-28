@@ -150,6 +150,73 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
 }
 
 /**
+ * The escape sequences cdkd itself emits (`src/utils/colors.ts` and the level
+ * prefixes in `logger.ts`). An ALLOWLIST: every other CSI is removed whole, so
+ * a value carrying cursor movement or a screen clear cannot drive the terminal.
+ * A value can still SPELL one of these colours — harmless, and the price of
+ * keeping cdkd's own colours on the same line.
+ *
+ * A foreign SGR becomes a full reset rather than nothing: a coloured CDK-app
+ * stderr line (`\x1b[33mwarn\x1b[39m`) would otherwise keep its allowlisted
+ * opener and lose its closer, colouring every line after it.
+ *
+ * An OSC is removed whole only inside ONE value ({@link safeMsg}). On a whole
+ * message two raw values can open and close one, deleting cdkd's own text
+ * between them, so the sink replaces only its ESC.
+ */
+// eslint-disable-next-line no-control-regex
+const OWN_SGR = /^\x1b\[(?:0|1|2|3[1-6]|90)m$/;
+const SGR_RESET = '\x1b[0m';
+const CSI = String.raw`\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]`;
+const OSC = String.raw`\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)`;
+const CONTROL_EXCEPT_NEWLINE_AND_TAB = String.raw`[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]`;
+const TERMINAL_UNSAFE = new RegExp(`${CSI}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}`, 'g');
+const TERMINAL_UNSAFE_OR_LINE_BREAK = new RegExp(
+  `${CSI}|${OSC}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}|[\\t\\n]`,
+  'g'
+);
+
+function replaceUnsafe(text: string, pattern: RegExp): string {
+  return text.replace(pattern, (match) => {
+    if (match.length === 1) return ' ';
+    if (OWN_SGR.test(match)) return match;
+    // Only a CSI ends in `m`; an OSC ends in its terminator.
+    return match.endsWith('m') ? SGR_RESET : '';
+  });
+}
+
+/**
+ * The SINK rule `ConsoleLogger` applies to every message it prints: the
+ * `displaySafe` denylist minus newline and tab, and minus cdkd's own colours.
+ *
+ * It cannot tell cdkd's newline from one a value carried in, so it stops the
+ * terminal-control class for every log line but not line forging; that half
+ * needs the value marked at the call site, which is what {@link safeMsg} is.
+ */
+export function terminalSafe(text: string): string {
+  return replaceUnsafe(text, TERMINAL_UNSAFE);
+}
+
+/**
+ * Tagged template for a log or error message: the literal parts are cdkd's
+ * own and render verbatim (newlines included), every interpolated value is
+ * flattened to one line. A value cannot then forge a row, however many
+ * newlines the template itself uses.
+ *
+ * No trim, unlike `displaySafe`: a message's spacing is the template's, and a
+ * value's own padding is visible text rather than a boundary question. A value
+ * whose BOUNDARY matters (an identifier beside cdkd's annotation) still goes
+ * through `displayIdent` first.
+ */
+export function safeMsg(strings: TemplateStringsArray, ...values: unknown[]): string {
+  let out = strings[0] ?? '';
+  values.forEach((value, i) => {
+    out += replaceUnsafe(toDisplayText(value), TERMINAL_UNSAFE_OR_LINE_BREAK) + strings[i + 1];
+  });
+  return out;
+}
+
+/**
  * Cut `text` to at most `maxCodePoints` CODE POINTS, never splitting a
  * surrogate pair.
  *

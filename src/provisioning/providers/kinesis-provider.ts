@@ -39,6 +39,7 @@ import type {
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -237,6 +238,14 @@ function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefine
   const read = readMaxRecordSize(value, mask);
   return read.kind === 'usable' ? read.size : undefined;
 }
+
+/**
+ * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
+ * DELETING window measured 4-7s (us-east-1), so the cap is generous headroom,
+ * not an estimate, and sits well under the 30-min per-resource deadline.
+ */
+const KINESIS_DELETE_POLL_INTERVAL_MS = 2_000;
+const KINESIS_DELETE_MAX_WAIT_MS = 5 * 60 * 1000;
 
 /**
  * AWS Kinesis Stream Provider
@@ -801,7 +810,6 @@ export class KinesisStreamProvider implements ResourceProvider {
           EnforceConsumerDeletion: true,
         })
       );
-      this.logger.debug(`Successfully deleted Kinesis stream ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.getClient().config.region();
@@ -823,6 +831,34 @@ export class KinesisStreamProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+
+    // Issue #3872: the stream keeps its NAME while it is DELETING, and a
+    // CreateStream of that name is refused with the same `already exists`
+    // text a live stream gets, so the delete is complete only once the stream
+    // is gone. Outside the try: with no `failedStatus` passed, the wait never
+    // throws.
+    await waitForGoneAfterDelete({
+      what: `Kinesis stream ${physicalId}`,
+      resourceType,
+      describe: () => this.readStreamStatusForDelete(physicalId),
+      logger: this.logger,
+      pollIntervalMs: KINESIS_DELETE_POLL_INTERVAL_MS,
+      maxWaitMs: KINESIS_DELETE_MAX_WAIT_MS,
+    });
+    this.logger.debug(`Successfully deleted Kinesis stream ${logicalId}`);
+  }
+
+  /** The stream's status, or `undefined` once `DescribeStreamSummary` reports it gone. */
+  private async readStreamStatusForDelete(streamName: string): Promise<string | undefined> {
+    try {
+      const response = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: streamName })
+      );
+      return response.StreamDescriptionSummary?.StreamStatus ?? 'UNKNOWN';
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
     }
   }
 

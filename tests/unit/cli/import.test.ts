@@ -1620,6 +1620,76 @@ describe('cdkd import', () => {
     );
   });
 
+  // Issue #1897: a name built from the account / region reaches the provider as
+  // the string it names, resolved for the STACK's region; a Join that also
+  // names a resource is left whole, even when that resource's Ref is known.
+  it('hands provider.import() pseudo-parameter names resolved for the stack region', async () => {
+    const zoneName = {
+      'Fn::Join': [
+        '',
+        ['cdkd-test-', { Ref: 'AWS::AccountId' }, '-', { Ref: 'AWS::Region' }, '.internal.'],
+      ],
+    };
+    const mixed = { 'Fn::Join': ['-', [{ Ref: 'AWS::Region' }, { Ref: 'Other' }]] };
+    const tmpl = template({
+      Zone: {
+        Type: 'AWS::Route53::HostedZone',
+        Properties: { Name: zoneName, Comment: mixed },
+        Metadata: { 'aws:cdk:path': 'S/Zone' },
+      },
+      Other: { Type: 'AWS::SQS::Queue', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Other' } },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl, 'eu-west-1')] });
+    mockHasProvider.mockReturnValue(true);
+    const importSpy = vi.fn(async (input: { logicalId: string }) => ({
+      physicalId: input.logicalId === 'Zone' ? 'Z123' : 'other-queue',
+      attributes: {},
+    }));
+    mockGetProvider.mockReturnValue({ import: importSpy });
+    mockTryGetCfnResourceMap.mockResolvedValue(new Map([['Other', 'other-queue']]));
+
+    await runImport(['import', '--app', 'x', '--dry-run']);
+
+    const zoneCall = importSpy.mock.calls.find(([input]) => input.logicalId === 'Zone');
+    expect(zoneCall?.[0]).toEqual(
+      expect.objectContaining({
+        region: 'eu-west-1',
+        properties: {
+          Name: 'cdkd-test-123456789012-eu-west-1.internal.',
+          // `Other` IS in the overrides (from CloudFormation), so its Ref is
+          // substituted — but the Join itself stays an intrinsic, because the
+          // pre-pass runs before that substitution and saw a resource Ref.
+          Comment: { 'Fn::Join': ['-', [{ Ref: 'AWS::Region' }, 'other-queue']] },
+        },
+      })
+    );
+  });
+
+  // A template `__proto__` key must reach the provider as an OWN key: rebuilt
+  // with `result[k] =`, it became the bag's prototype and `properties.Name`
+  // read `shadow`. Through the command, so both rebuilding passes are on the path.
+  it('hands provider.import() a __proto__ template key as an own key, never the prototype', async () => {
+    const tmpl = template({
+      Zone: {
+        Type: 'AWS::Route53::HostedZone',
+        Properties: JSON.parse('{"__proto__": {"Name": "shadow"}}') as Record<string, unknown>,
+        Metadata: { 'aws:cdk:path': 'S/Zone' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    const importSpy = vi.fn(async () => null);
+    mockGetProvider.mockReturnValue({ import: importSpy });
+
+    await runImport(['import', '--app', 'x', '--dry-run']);
+
+    const props = (importSpy.mock.calls[0] as unknown as [{ properties: Record<string, unknown> }])[0]
+      .properties;
+    expect(Object.getPrototypeOf(props)).toBe(Object.prototype);
+    expect(Object.hasOwn(props, '__proto__')).toBe(true);
+    expect(props['Name']).toBeUndefined();
+  });
+
   it('--dry-run skips state save and the confirmation prompt', async () => {
     const tmpl = template({
       MyBucket: {

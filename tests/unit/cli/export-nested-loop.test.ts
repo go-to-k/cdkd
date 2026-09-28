@@ -1112,7 +1112,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
             recreateImportUnsupported: true,
           },
         })
-      ).rejects.toThrow(/Could not acquire lock for nested-stack child 'Root~Child'/);
+      ).rejects.toThrow(/Could not acquire lock for nested-stack child Root~Child/);
 
       // No AWS write happened.
       expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);

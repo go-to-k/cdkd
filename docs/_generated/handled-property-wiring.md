@@ -14,11 +14,11 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 
 ## Summary
 
-- Provider classes classified: **84**
-- Declared properties: **1140** (**1138** with read evidence)
-- Fully wired classes: **82**
+- Provider classes classified: **85**
+- Declared properties: **1142** (**1140** with read evidence)
+- Fully wired classes: **83**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **23**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **25**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -45,6 +45,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in update()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
+| `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
@@ -54,6 +55,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()` |
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
+| `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
@@ -88,7 +90,8 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |
 | `CognitoUserPoolProvider` | cognito-provider.ts | wired | 30 | 30 |
 | `DLMLifecyclePolicyProvider` | dlm-lifecycle-policy-provider.ts | wired | 12 | 12 |
-| `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
+| `DocDBProvider` | docdb-provider.ts | wired | 19 | 19 |
+| `DocDBSubnetGroupProvider` | docdb-subnet-group-provider.ts | wired | 4 | 4 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
 | `EC2Provider` | ec2-provider.ts | wired | 70 | 70 |

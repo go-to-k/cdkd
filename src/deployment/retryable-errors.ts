@@ -74,6 +74,14 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // fails fast instead of burning the retry budget, which a bare
   // 'security token included in the request is invalid' pattern would break.
   'security token included in the request is invalid. (Service:',
+  // FOURTH wording, Lambda's (issue #3853): CreateEventSourceMapping on a
+  // DynamoDB stream (the only source observed) reads the stream with the
+  // function's just-created role, and relays the not-yet-valid session as
+  // "Received Exception while reading from provided stream. The security token
+  // included in the request is invalid." — no `(Service:` trailer, so the anchor above misses it. The
+  // Lambda prefix is what keeps cdkd's OWN expired credentials (the bare
+  // sentence) failing fast.
+  'Received Exception while reading from provided stream. The security token included in the request is invalid',
   'role defined for the function',
   'not authorized to perform',
   'execution role',
@@ -642,8 +650,8 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  * budget it cannot survive.
  *
  * **What must NOT go in this list.** Every entry below is specific to a delete
- * that is ALREADY in flight and clears within a budget. Three candidates the
- * sibling sweep turned up are recorded here as deliberate EXCLUSIONS rather
+ * that is ALREADY in flight and clears within a budget. The candidates the
+ * sibling sweeps turned up are recorded here as deliberate EXCLUSIONS rather
  * than left unmentioned, because "absent" and "considered and rejected" are
  * indistinguishable to the next person doing this sweep:
  *
@@ -669,6 +677,24 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  *    cannot converge on half its population is worse than failing fast, so the
  *    entry stays where it already was — in the generic table, retryable on an
  *    ordinary create and terminal at the re-create sites, unchanged by #2116.
+ *  - **Kinesis `CreateStream` and Firehose `CreateDeliveryStream`** — both
+ *    deletes are asynchronous and hold the name, but MEASURED live (#2226) the
+ *    create refused during `DELETING` is byte-for-byte the refusal for a LIVE
+ *    stream: `ResourceInUseException: Stream <name> under account <acct>
+ *    already exists.` and `ResourceInUseException: Firehose <name> under
+ *    accountId <acct> already exists`. No substring separates the two, so this
+ *    is the ELBv2 case again. The window is closed at its source instead — the
+ *    provider's `delete()` waiting for the name to be released (#3872).
+ *  - **ELBv2 `DuplicateTargetGroupName`** — no cooldown exists to match:
+ *    MEASURED live (#2226), `DeleteTargetGroup` is synchronous and an immediate
+ *    same-name create succeeds. The code only ever means a LIVE target group
+ *    with different settings (`A target group with the same name '<name>'
+ *    exists, but with different settings`), which is a terminal collision and
+ *    already classified as one by exception NAME
+ *    (`DuplicateTargetGroupNameException` in
+ *    {@link NAME_COLLISION_ERROR_NAMES}, read by
+ *    {@link isNameCollisionErrorFrom}) — not by message, so the message-only
+ *    {@link isRecreateRetryableError} does not retry it.
  */
 export const NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // SQS, error-CODE spelling: `AWS.SimpleQueueService.QueueDeletedRecently`.

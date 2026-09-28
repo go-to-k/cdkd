@@ -62,7 +62,8 @@
       "flag": "--app",
       "integs": [
         "intrinsics-torture-2",
-        "nested-stack-deep"
+        "nested-stack-deep",
+        "stage-assets"
       ]
     },
     {
@@ -205,6 +206,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -244,6 +246,7 @@
         "lambda-reserved-concurrency",
         "lambda-snapstart",
         "lambda-url-authtype-replay",
+        "list-parameters",
         "local-invoke-agentcore-from-state",
         "local-invoke-buildkit",
         "local-invoke-from-cfn-stack",
@@ -326,6 +329,7 @@
         "state-info-command",
         "stepfunctions",
         "stepfunctions-logging",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -345,6 +349,7 @@
         "elbv2-same-name-replacement",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
@@ -527,6 +532,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -570,6 +576,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -660,6 +667,7 @@
         "stepfunctions",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -681,6 +689,8 @@
       "flag": "--prefer-sdk-route",
       "integs": [
         "cc-api-fallback-transitions",
+        "codebuild-project",
+        "docdb-neptune",
         "nested-stack-replace-guard",
         "sdk-to-cc-autoroute",
         "unrecognized-key-autoroute"
@@ -696,6 +706,7 @@
       "flag": "--recreate-via-cc-api",
       "integs": [
         "cc-to-sdk-reroute",
+        "codebuild-project",
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -827,6 +838,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -869,6 +881,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -962,6 +975,7 @@
         "stepfunctions",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -1013,6 +1027,12 @@
       "flag": "--resource-warn-after",
       "integs": [
         "remove-protection"
+      ]
+    },
+    {
+      "flag": "--role-arn",
+      "integs": [
+        "local-invoke-from-state"
       ]
     },
     {
@@ -1154,6 +1174,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -1197,6 +1218,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
         "local-run-task-cdkd-assets",
@@ -1288,6 +1310,7 @@
         "stepfunctions",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -1474,6 +1497,7 @@
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "healthimaging-stateful-update-fallback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -1512,6 +1536,7 @@
         "lambda-reserved-concurrency",
         "lambda-snapstart",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "loggroup-class-guard",
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
@@ -1589,6 +1614,7 @@
         "stepfunctions",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "throttle-wide-dag",
         "unrecognized-key-autoroute",
@@ -1606,7 +1632,6 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--prefix-user-supplied-names",
-    "--role-arn",
     "--stack",
     "--strict"
   ],
@@ -1677,6 +1702,7 @@
     "--create-bucket-configuration",
     "--database-input",
     "--database-name",
+    "--datastore-id",
     "--db-cluster-identifier",
     "--db-instance-identifier",
     "--db-parameter-group-name",
@@ -1685,6 +1711,7 @@
     "--delete",
     "--delete-automated-backups",
     "--deletion-protection",
+    "--delivery-stream-name",
     "--deployment-configuration",
     "--deployment-group-name",
     "--deployment-strategy-id",
@@ -1694,6 +1721,7 @@
     "--directory-id",
     "--directory-ids",
     "--distribution-config",
+    "--duration-seconds",
     "--email-identity",
     "--enforce-consumer-deletion",
     "--entries",
@@ -1877,6 +1905,7 @@
     "--reverts",
     "--rm",
     "--role-name",
+    "--role-session-name",
     "--route-id",
     "--route-table-id",
     "--route-table-ids",

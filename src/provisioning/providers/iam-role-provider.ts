@@ -30,7 +30,15 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -48,6 +56,16 @@ import type {
 export class IAMRoleProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMRoleProvider');
+
+  /**
+   * The sinks the DELETE path hands the cleanup helpers it shares with
+   * `create()`: `DeleteContext` carries no masker (issue #2007), so these are
+   * identity. Spelled at the call site rather than as a parameter default, so a
+   * create-path caller that forgets its own sinks is a type error.
+   */
+  private unmaskedDeleteSinks(): MaskedLogSinks {
+    return createMaskedLogSinks(this.logger, undefined);
+  }
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::IAM::Role',
@@ -77,15 +95,28 @@ export class IAMRoleProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM role ${logicalId}`);
-
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), and every bag-derived value masked RAW as well -- the name, the
+    // attached ARNs and the inline policy names all come out of the resolved
+    // `properties` bag. Absent context means identity.
     const roleName = generateResourceNameWithFallback(
       properties['RoleName'] as string | undefined,
       logicalId,
       { maxLength: 64 }
     );
+    // The physical name is REWRITTEN from the template value (stack prefix,
+    // charset folding, truncation), so the masker cannot recognise it by
+    // itself: add it as a needle when the value it came from is a secret.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[properties['RoleName'], roleName]]
+    );
+    const { value: v } = log;
+    log.debug(`Creating IAM role ${logicalId}`);
     const assumeRolePolicyDocument = properties['AssumeRolePolicyDocument'];
 
     if (!assumeRolePolicyDocument) {
@@ -131,7 +162,7 @@ export class IAMRoleProvider implements ResourceProvider {
 
       const response = await this.iamClient.send(new CreateRoleCommand(createParams));
 
-      this.logger.debug(`Created IAM role: ${roleName}`);
+      log.debug(`Created IAM role: ${v(roleName)}`);
 
       // CreateRoleCommand has succeeded — AWS has now committed the Role.
       // Every subsequent call wires sub-resources onto it (managed-policy
@@ -156,7 +187,7 @@ export class IAMRoleProvider implements ResourceProvider {
                 PolicyArn: policyArn,
               })
             );
-            this.logger.debug(`Attached managed policy ${policyArn} to role ${roleName}`);
+            log.debug(`Attached managed policy ${v(policyArn)} to role ${v(roleName)}`);
           }
         }
 
@@ -178,7 +209,7 @@ export class IAMRoleProvider implements ResourceProvider {
                 PolicyDocument: policyDoc,
               })
             );
-            this.logger.debug(`Added inline policy ${policy.PolicyName} to role ${roleName}`);
+            log.debug(`Added inline policy ${v(policy.PolicyName)} to role ${v(roleName)}`);
           }
         }
 
@@ -191,33 +222,35 @@ export class IAMRoleProvider implements ResourceProvider {
               Tags: tags,
             })
           );
-          this.logger.debug(`Tagged role ${roleName}`);
+          log.debug(`Tagged role ${v(roleName)}`);
         }
       } catch (innerError) {
         try {
-          await this.detachAllManagedPolicies(roleName);
-          await this.deleteAllInlinePolicies(roleName);
+          await this.detachAllManagedPolicies(roleName, log);
+          await this.deleteAllInlinePolicies(roleName, log);
           await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
-          this.logger.debug(
-            `Cleaned up partially-created IAM role ${logicalId} (${roleName}) after wiring failure`
+          log.debug(
+            `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
           );
         } catch (cleanupError) {
-          // The name in the commands below is left BARE on purpose (issue
-          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // The name is `generateResourceNameWithFallback`'s output, whose
           // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // and trims leading and trailing `-`, so no template spelling reaches
-          // the shell as anything but one plain word. Pinned by this type's
-          // partial-create cleanup test.
+          // (issue #3136), so it renders BARE -- but it can still BE a resolved
+          // secret, so every command goes through `pasteableAwsCommand` with the
+          // masker (issue #2177): a masked name is WITHHELD rather than printed
+          // as `***`, which would act on a different role. Pinned by this
+          // type's partial-create cleanup test.
           // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
           // redirections.
-          this.logger.warn(
-            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'), then aws iam delete-role --role-name ${roleName}`
+          const aws = pasteableAwsCommand(log.mask);
+          log.warn(
+            `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
           );
         }
         throw innerError;
       }
 
-      this.logger.debug(`Successfully created IAM role ${logicalId}: ${roleName}`);
+      log.debug(`Successfully created IAM role ${logicalId}: ${v(roleName)}`);
 
       const attributes = {
         Arn: response.Role?.Arn,
@@ -231,7 +264,10 @@ export class IAMRoleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        // Issue #2177: the AWS message is masked RAW before interpolation, as
+        // in `ssm-parameter-provider.ts`; the `cause` stays unmasked so the
+        // retry classifiers still see the original error object.
+        `Failed to create IAM role ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         roleName,
@@ -248,15 +284,26 @@ export class IAMRoleProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM role ${logicalId}: ${physicalId}`);
-
     const newRoleName = generateResourceNameWithFallback(
       properties['RoleName'] as string | undefined,
       logicalId,
       { maxLength: 64 }
     );
+    // Issue #2177 -- see `create()`, including the derived-name needles. The
+    // recorded name is paired with the PREVIOUS value it was derived from.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        [properties['RoleName'], newRoleName],
+        [previousProperties['RoleName'], physicalId],
+      ]
+    );
+    const { value: v } = log;
+    log.debug(`Updating IAM role ${logicalId}: ${v(physicalId)}`);
 
     // Check if immutable properties changed (requires replacement)
     // RoleName and Path are immutable - cannot be changed after creation
@@ -266,12 +313,17 @@ export class IAMRoleProvider implements ResourceProvider {
 
     if (needsReplacement) {
       const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
-      this.logger.debug(
-        `${reason} changed, replacing role: ${physicalId} (${reason}: ${reason === 'RoleName' ? `${physicalId} -> ${newRoleName}` : `${oldPath} -> ${newPath}`})`
+      log.debug(
+        `${reason} changed, replacing role: ${v(physicalId)} (${reason}: ${reason === 'RoleName' ? `${v(physicalId)} -> ${v(newRoleName)}` : `${v(oldPath)} -> ${v(newPath)}`})`
       );
 
-      // Create new role
-      const createResult = await this.create(logicalId, resourceType, properties);
+      // Create new role. The masker is forwarded (issue #2177) and NOTHING
+      // else: this context never carries `replayingState`, so a create-side
+      // pre-flight refusal would still fire on a rollback replay (see
+      // `CreateContext`).
+      const createResult = await this.create(logicalId, resourceType, properties, {
+        maskSecrets: log.mask,
+      });
 
       // Delete old role with full cleanup (managed policies, inline policies, instance profiles)
       // What the inner delete left behind, if anything (issue #1819). The new
@@ -287,16 +339,20 @@ export class IAMRoleProvider implements ResourceProvider {
         // resource", so it sails straight past the catch below — the one path
         // that would have told the user the old role is still there.
         if (deleteResult?.outcome === 'skipped') {
-          orphanReason = `old role ${physicalId} was not deleted: ${deleteResult.reason}`;
-          this.logger.warn(
-            `Skipped deleting old role ${physicalId} during replacement: ${deleteResult.reason}. ` +
+          orphanReason = log.mask(
+            `old role ${v(physicalId)} was not deleted: ${deleteResult.reason}`
+          );
+          log.warn(
+            `Skipped deleting old role ${v(physicalId)} during replacement: ${deleteResult.reason}. ` +
               `The old role may be orphaned and require manual cleanup.`
           );
         }
       } catch (error) {
-        orphanReason = `old role ${physicalId} could not be deleted: ${safeStringify(error)}`;
-        this.logger.warn(
-          `Failed to delete old role ${physicalId} during replacement: ${safeStringify(error)}. ` +
+        orphanReason = log.mask(
+          `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
+        );
+        log.warn(
+          `Failed to delete old role ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
             `The old role may be orphaned and require manual cleanup.`
         );
       }
@@ -374,7 +430,7 @@ export class IAMRoleProvider implements ResourceProvider {
               PolicyDocument: newPolicyStr,
             })
           );
-          this.logger.debug(`Updated assume role policy for ${physicalId}`);
+          log.debug(`Updated assume role policy for ${v(physicalId)}`);
         }
       }
 
@@ -389,14 +445,14 @@ export class IAMRoleProvider implements ResourceProvider {
               PermissionsBoundary: newBoundary,
             })
           );
-          this.logger.debug(`Set permissions boundary for ${physicalId}: ${newBoundary}`);
+          log.debug(`Set permissions boundary for ${v(physicalId)}: ${v(newBoundary)}`);
         } else if (oldBoundary) {
           await this.iamClient.send(
             new DeleteRolePermissionsBoundaryCommand({
               RoleName: physicalId,
             })
           );
-          this.logger.debug(`Removed permissions boundary from ${physicalId}`);
+          log.debug(`Removed permissions boundary from ${v(physicalId)}`);
         }
       }
 
@@ -404,7 +460,8 @@ export class IAMRoleProvider implements ResourceProvider {
       await this.updateManagedPolicies(
         physicalId,
         properties['ManagedPolicyArns'] as string[] | undefined,
-        previousProperties['ManagedPolicyArns'] as string[] | undefined
+        previousProperties['ManagedPolicyArns'] as string[] | undefined,
+        log
       );
 
       // Update inline policies
@@ -415,17 +472,19 @@ export class IAMRoleProvider implements ResourceProvider {
           | undefined,
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined
+          | undefined,
+        log
       );
 
       // Update tags
       await this.updateTags(
         physicalId,
         properties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
-        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
+        log
       );
 
-      this.logger.debug(`Successfully updated IAM role ${logicalId}`);
+      log.debug(`Successfully updated IAM role ${logicalId}`);
 
       // Get updated role info
       const getRoleResponse = await this.iamClient.send(
@@ -445,7 +504,8 @@ export class IAMRoleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        // Issue #2177 -- masked RAW, as in `create()`.
+        `Failed to update IAM role ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -493,10 +553,10 @@ export class IAMRoleProvider implements ResourceProvider {
       }
 
       // Step 1: Detach all managed policies
-      await this.detachAllManagedPolicies(physicalId);
+      await this.detachAllManagedPolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 2: Delete all inline policies
-      await this.deleteAllInlinePolicies(physicalId);
+      await this.deleteAllInlinePolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 3: Remove role from all instance profiles
       await this.removeFromAllInstanceProfiles(physicalId);
@@ -520,8 +580,14 @@ export class IAMRoleProvider implements ResourceProvider {
   /**
    * Detach all managed policies from the role
    */
-  private async detachAllManagedPolicies(roleName: string): Promise<void> {
-    this.logger.debug(`Detaching all managed policies from role ${roleName}`);
+  private async detachAllManagedPolicies(
+    roleName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
+    log.debug(`Detaching all managed policies from role ${v(roleName)}`);
 
     try {
       const attachedPolicies = await this.iamClient.send(
@@ -530,7 +596,7 @@ export class IAMRoleProvider implements ResourceProvider {
 
       const policies = attachedPolicies.AttachedPolicies || [];
       if (policies.length === 0) {
-        this.logger.debug(`No managed policies attached to role ${roleName}`);
+        log.debug(`No managed policies attached to role ${v(roleName)}`);
         return;
       }
 
@@ -543,11 +609,11 @@ export class IAMRoleProvider implements ResourceProvider {
                 PolicyArn: policy.PolicyArn,
               })
             );
-            this.logger.debug(`Detached managed policy ${policy.PolicyArn} from role ${roleName}`);
+            log.debug(`Detached managed policy ${v(policy.PolicyArn)} from role ${v(roleName)}`);
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
-              this.logger.debug(
-                `Managed policy ${policy.PolicyArn} already detached from role ${roleName}`
+              log.debug(
+                `Managed policy ${v(policy.PolicyArn)} already detached from role ${v(roleName)}`
               );
             } else {
               throw error;
@@ -556,10 +622,10 @@ export class IAMRoleProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Detached ${policies.length} managed policies from role ${roleName}`);
+      log.debug(`Detached ${policies.length} managed policies from role ${v(roleName)}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
-        this.logger.debug(`Role ${roleName} not found when detaching managed policies`);
+        log.debug(`Role ${v(roleName)} not found when detaching managed policies`);
         return;
       }
       throw error;
@@ -569,8 +635,14 @@ export class IAMRoleProvider implements ResourceProvider {
   /**
    * Delete all inline policies from the role
    */
-  private async deleteAllInlinePolicies(roleName: string): Promise<void> {
-    this.logger.debug(`Deleting all inline policies from role ${roleName}`);
+  private async deleteAllInlinePolicies(
+    roleName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
+    log.debug(`Deleting all inline policies from role ${v(roleName)}`);
 
     try {
       const inlinePolicies = await this.iamClient.send(
@@ -579,7 +651,7 @@ export class IAMRoleProvider implements ResourceProvider {
 
       const policyNames = inlinePolicies.PolicyNames || [];
       if (policyNames.length === 0) {
-        this.logger.debug(`No inline policies on role ${roleName}`);
+        log.debug(`No inline policies on role ${v(roleName)}`);
         return;
       }
 
@@ -591,20 +663,20 @@ export class IAMRoleProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from role ${roleName}`);
+          log.debug(`Deleted inline policy ${v(policyName)} from role ${v(roleName)}`);
         } catch (error) {
           if (error instanceof NoSuchEntityException) {
-            this.logger.debug(`Inline policy ${policyName} already deleted from role ${roleName}`);
+            log.debug(`Inline policy ${v(policyName)} already deleted from role ${v(roleName)}`);
           } else {
             throw error;
           }
         }
       }
 
-      this.logger.debug(`Deleted ${policyNames.length} inline policies from role ${roleName}`);
+      log.debug(`Deleted ${policyNames.length} inline policies from role ${v(roleName)}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
-        this.logger.debug(`Role ${roleName} not found when deleting inline policies`);
+        log.debug(`Role ${v(roleName)} not found when deleting inline policies`);
         return;
       }
       throw error;
@@ -668,8 +740,10 @@ export class IAMRoleProvider implements ResourceProvider {
   private async updateManagedPolicies(
     roleName: string,
     newPolicies: string[] | undefined,
-    oldPolicies: string[] | undefined
+    oldPolicies: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newSet = new Set(newPolicies || []);
     const oldSet = new Set(oldPolicies || []);
 
@@ -682,7 +756,7 @@ export class IAMRoleProvider implements ResourceProvider {
             PolicyArn: policyArn,
           })
         );
-        this.logger.debug(`Attached managed policy ${policyArn}`);
+        log.debug(`Attached managed policy ${v(policyArn)}`);
       }
     }
 
@@ -695,7 +769,7 @@ export class IAMRoleProvider implements ResourceProvider {
             PolicyArn: policyArn,
           })
         );
-        this.logger.debug(`Detached managed policy ${policyArn}`);
+        log.debug(`Detached managed policy ${v(policyArn)}`);
       }
     }
   }
@@ -706,8 +780,10 @@ export class IAMRoleProvider implements ResourceProvider {
   private async updateInlinePolicies(
     roleName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined
+    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
     const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
 
@@ -722,7 +798,7 @@ export class IAMRoleProvider implements ResourceProvider {
           PolicyDocument: policyDocument,
         })
       );
-      this.logger.debug(`Updated inline policy ${policyName}`);
+      log.debug(`Updated inline policy ${v(policyName)}`);
     }
 
     // Delete removed policies
@@ -734,7 +810,7 @@ export class IAMRoleProvider implements ResourceProvider {
             PolicyName: policyName,
           })
         );
-        this.logger.debug(`Deleted inline policy ${policyName}`);
+        log.debug(`Deleted inline policy ${v(policyName)}`);
       }
     }
   }
@@ -745,8 +821,10 @@ export class IAMRoleProvider implements ResourceProvider {
   private async updateTags(
     roleName: string,
     newTags: Array<{ Key: string; Value: string }> | undefined,
-    oldTags: Array<{ Key: string; Value: string }> | undefined
+    oldTags: Array<{ Key: string; Value: string }> | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newTagMap = new Map((newTags || []).map((t) => [t.Key, t.Value]));
     const oldTagMap = new Map((oldTags || []).map((t) => [t.Key, t.Value]));
 
@@ -773,7 +851,7 @@ export class IAMRoleProvider implements ResourceProvider {
           TagKeys: tagsToRemove,
         })
       );
-      this.logger.debug(`Removed ${tagsToRemove.length} tags from role ${roleName}`);
+      log.debug(`Removed ${tagsToRemove.length} tags from role ${v(roleName)}`);
     }
 
     if (tagsToAdd.length > 0) {
@@ -783,7 +861,7 @@ export class IAMRoleProvider implements ResourceProvider {
           Tags: tagsToAdd,
         })
       );
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tags on role ${roleName}`);
+      log.debug(`Added/updated ${tagsToAdd.length} tags on role ${v(roleName)}`);
     }
   }
 

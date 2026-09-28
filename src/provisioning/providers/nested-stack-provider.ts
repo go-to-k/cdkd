@@ -53,7 +53,7 @@ import {
   ambientCredentialConfig,
   credentialFingerprint,
 } from '../../utils/ambient-client-defaults.js';
-import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import {
   describeFileReadFailure,
   displayAssemblyPath,
@@ -382,7 +382,7 @@ export class NestedStackProvider implements ResourceProvider {
       );
     }
     this.logger.info(
-      `Reverting nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}) from its rollback journal`
+      safeMsg`Reverting nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}) from its rollback journal`
     );
     const { warnings } = await revertNestedChildFromJournal({
       ctx,

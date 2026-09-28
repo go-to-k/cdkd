@@ -126,4 +126,22 @@ describe('substituteOverrideRefs', () => {
     const result = substituteOverrideRefs({ Ref: 'MyResource' }, overrides);
     expect(result).toBe('{Ref: SomethingElse}');
   });
+  // A template key named `__proto__` (an OWN key after `JSON.parse`) must stay
+  // an own key of the rebuilt bag. Assigned with `result[k] =`, it became the
+  // bag's PROTOTYPE, so `properties.Name` read the attacker-shaped `shadow`.
+  it('keeps a template key named __proto__ as an own key, never the prototype', () => {
+    const overrides = new Map([['MyQueue', 'https://sqs.example.com/MyQueue']]);
+    const input = JSON.parse(
+      '{"__proto__": {"Name": "shadow", "Q": {"Ref": "MyQueue"}}, "Other": 1}'
+    ) as Record<string, unknown>;
+    const result = substituteOverrideRefs(input, overrides) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(Object.hasOwn(result, '__proto__')).toBe(true);
+    expect(result['Name']).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(result, '__proto__')?.value).toEqual({
+      Name: 'shadow',
+      Q: 'https://sqs.example.com/MyQueue',
+    });
+    expect(result['Other']).toBe(1);
+  });
 });

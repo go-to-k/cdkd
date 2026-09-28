@@ -60,7 +60,11 @@ When the app defines a single stack, no name is needed.
 
 `--all` targets every stack in the current CDK app. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a
-consumer stack is destroyed before the producers it reads from.
+consumer stack is destroyed before the producers it reads from. When the app
+synthesizes but yields no stacks, for example because every stack sits under a
+Stage that failed to load, `--all` and any wildcard pattern (`'*'`, `'Cdkd*'`)
+are refused: neither falls back to every stack in the state bucket. An exact
+physical stack name still resolves from state.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
@@ -670,7 +674,10 @@ it withholds the target entirely when the stack name or region does not render
 exactly. Both are deliberate: `cdkd state orphan` deletes a record, the region
 in the message is read from the damaged record's own body, and a name that
 needed sanitizing can render identically to a healthy one. Identify the record
-with `cdkd state list --long`, which prints the keys as stored.
+with `cdkd state list --json`, which prints each stack name and region as
+stored — `--long` trims a padded name, so it would show the healthy one's
+spelling — and replace each quoted hole in the command, quotes included, with
+the shell-quoted value.
 
 To act on the resources instead, inspect the record with `cdkd state show
 '<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An

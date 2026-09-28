@@ -641,17 +641,11 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     // refuses. `Token.asAny` gets it past the generated L1 validator, which
     // skips any resolvable value.
     //
-    // Only the UPDATE arm is covered, and that is a SCOPE decision, not a
-    // reachability one. The create-path sibling (a replay create whose
-    // downgrade SUBSTITUTES the default) IS reachable: issue #1682 / PR #1696
-    // made the reverse-replacement create honour `effectiveProperties`.
-    // Covering it needs a rollback-failure-injection phase of its own — force
-    // a replacement of the table, fail the deploy after it lands, then
-    // `cdkd rollback` — which is its own verification story (and a GlobalTable
-    // replacement destroys the table's data, so it also needs
-    // `--force-stateful-recreation`). Tracked as issue #1706, together with
-    // the S3 create arm from #1660, which has the same gap. Do not read the
-    // absence here as "the arm does not work".
+    // Only the UPDATE arm is covered HERE. The create-path sibling (a replay
+    // create whose downgrade SUBSTITUTES the default) needs a reverse-
+    // replacement rollback, so it lives in
+    // `tests/integration/rollback-replay-effective-props` (`StreamTable`,
+    // issue #1706), together with the S3 create arm from #1660.
     //
     // KEYS_ONLY, not NEW_AND_OLD_IMAGES: the skip arm's failure mode is
     // "re-pointed at the default", and the default IS NEW_AND_OLD_IMAGES, so a

@@ -73,11 +73,11 @@ its target file first.
 
 The LAUNCH MODE decides how many lanes and the parent settles it before stage 0
 (`MODE` / `LANE_TREE` / `MAIN_CHECKOUT` ride the dispatch — if they did not, STOP
-and ask). `IN-PLACE` means ONE working tree, so **run lanes SERIALLY**: a second
-concurrent lane needs a nested worktree, which dies with the outer workspace.
-Batching through that tree in SEQUENCE is still the default — claim them all up
-front (§4), mark every lane after the first `QUEUED`, and stand down unreached
-ones with a four-field comment.
+and ask). In `IN-PLACE`, lanes in the launch tree run SERIALLY; a concurrent lane
+takes a SIBLING worktree under `<MAIN_CHECKOUT>/.claude/worktrees/`, never a
+nested one, which dies with the outer workspace (launch-mode.md row 1). Queued
+lanes are claimed up front (§4), every one after the first `QUEUED`, and
+unreached ones stood down with a four-field comment.
 
 - **Two lanes must edit DISJOINT files.** Same file, related class → bundle into
   ONE lane/PR; different files → parallel lanes; otherwise defer one.

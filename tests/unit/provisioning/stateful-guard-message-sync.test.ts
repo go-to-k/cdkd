@@ -1,6 +1,7 @@
 /**
  * Pins the `backup` integ fixture's needles against the strings cdkd actually
- * emits (issue #2553).
+ * emits (issue #2553). The last `describe` does the same for
+ * `healthimaging-stateful-update-fallback` (issue #2515).
  *
  * The fixture's Phase 1b measures the stateful guard by GREPPING the deploy's
  * output, which makes it a CONSUMER of wording this very repo changes. When the
@@ -24,6 +25,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
+import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
+import { hasNoCloudControlHandlers } from '../../../src/provisioning/unsupported-types.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const DEPLOY_ENGINE = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf8');
@@ -325,5 +330,133 @@ describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', (
           'MATCHES and has stopped DISCRIMINATING, so every phase stays green while it proves ' +
           'nothing. Re-anchor it on the full sentence for the reason it means.'
     ).toEqual([]);
+  });
+});
+
+/**
+ * The `healthimaging-stateful-update-fallback` fixture (issue #2515) greps
+ * cdkd's output for six strings, and it reaches the update-failure arm only
+ * while three facts about `AWS::HealthImaging::Datastore` hold. Both halves are
+ * pinned here, so a reword or a premise change reds at unit time instead of
+ * surfacing as a failed real-AWS run.
+ *
+ * The emitting templates are split across `+`-joined literals, so each is
+ * compared after JOINING its fragments, bounded by the throw or call it
+ * belongs to.
+ */
+describe('the healthimaging-stateful-update-fallback fixture greps strings cdkd still emits (#2515)', () => {
+  const FIXTURE = 'tests/integration/healthimaging-stateful-update-fallback/verify.sh';
+  const TYPE = 'AWS::HealthImaging::Datastore';
+  const verify = (): string => readFileSync(join(REPO_ROOT, FIXTURE), 'utf8');
+  const CREATE_ONLY_SRC = readFileSync(
+    join(REPO_ROOT, 'src/provisioning/create-only-properties.ts'),
+    'utf8'
+  );
+  /** `src.slice(from, to)` with every `` ` + ` `` seam between literals removed. */
+  const joined = (src: string, from: string, to: string): string => {
+    const start = src.indexOf(from);
+    expect(start, `"${from}" moved`).toBeGreaterThan(0);
+    const end = src.indexOf(to, start);
+    expect(end, `"${to}" no longer follows "${from}"`).toBeGreaterThan(start);
+    return src.slice(start, end).replace(/`\s*\+\s*`/g, '');
+  };
+
+  it('the update-failure refusal still carries ARM_MARKER and names the consent flag', () => {
+    const refusal = joined(
+      DEPLOY_ENGINE,
+      'cannot be updated in place by the ',
+      "'STATEFUL_REPLACE_BLOCKED'"
+    );
+    expect(
+      refusal,
+      `the update-failure stateful refusal was reworded — update ARM_MARKER in ${FIXTURE}`
+    ).toContain('cannot be updated in place by the provisioning layer it routes through');
+    expect(refusal).toContain('but it is a stateful resource');
+    expect(refusal).toContain('--force-stateful-recreation');
+    const text = verify();
+    expect(text).toContain(
+      "ARM_MARKER='cannot be updated in place by the provisioning layer it routes through'"
+    );
+    expect(text).toContain("SHARED_MARKER='but it is a stateful resource'");
+  });
+
+  it('the property-driven refusal still starts PROPERTY_MARKER with the changed property', () => {
+    const refusal = joined(
+      DEPLOY_ENGINE,
+      'requires replacement (immutable property changed: ',
+      "'STATEFUL_REPLACE_BLOCKED'"
+    );
+    expect(refusal).toContain('requires replacement (immutable property changed: ${immutableProps}');
+    expect(refusal).toContain('but it is a stateful resource');
+    expect(verify()).toContain(
+      "PROPERTY_MARKER='requires replacement (immutable property changed: Tags'"
+    );
+  });
+
+  it('a failed create-only lookup with no snapshot still logs LOOKUP_MARKER + REGISTRY_ONLY_MARKER', () => {
+    // The report() AFTER the snapshot arm's `return snapshot;` is the
+    // no-snapshot one, the only one this fixture can see.
+    const snapshotArm = CREATE_ONLY_SRC.indexOf('return snapshot;');
+    expect(snapshotArm, 'the snapshot arm moved').toBeGreaterThan(0);
+    const noSnapshot = CREATE_ONLY_SRC.indexOf('report(', snapshotArm);
+    expect(noSnapshot, 'the no-snapshot report() moved').toBeGreaterThan(snapshotArm);
+    const line = CREATE_ONLY_SRC.slice(noSnapshot, CREATE_ONLY_SRC.indexOf(');', noSnapshot)).replace(
+      /`\s*\+\s*`/g,
+      ''
+    );
+    expect(line).toContain(
+      'Failed to resolve create-only properties for ${resourceType} via cloudformation:DescribeType'
+    );
+    expect(line).toContain('Falling back to the registry-only replacement classification');
+    const text = verify();
+    expect(text).toContain(
+      'LOOKUP_MARKER="Failed to resolve create-only properties for ${TYPE} via cloudformation:DescribeType"'
+    );
+    expect(text).toContain(
+      "REGISTRY_ONLY_MARKER='Falling back to the registry-only replacement classification'"
+    );
+  });
+
+  it('the fallback replacement still logs REPLACING_MARKER', () => {
+    expect(DEPLOY_ENGINE).toContain(
+      '`UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`'
+    );
+    expect(verify()).toContain(
+      'REPLACING_MARKER="UPDATE not supported for Datastore (${TYPE}), replacing"'
+    );
+    // `Datastore` in the needle is the logical id, i.e. the stack's construct id.
+    expect(
+      readFileSync(
+        join(
+          REPO_ROOT,
+          'tests/integration/healthimaging-stateful-update-fallback/lib/healthimaging-stateful-update-fallback-stack.ts'
+        ),
+        'utf8'
+      )
+    ).toContain("new healthimaging.CfnDatastore(this, 'Datastore', {");
+  });
+
+  it('the subject still reaches the update-failure arm when DescribeType is denied', () => {
+    // No committed snapshot entry: with one, the denied lookup would still
+    // classify Tags as create-only and the fixture would retake the
+    // property-driven arm.
+    expect(CREATE_ONLY_PATHS_SNAPSHOT.has(TYPE)).toBe(false);
+    // No hand-authored rule for Tags, which would decide before the schema.
+    expect(new ReplacementRulesRegistry().isClassified(TYPE, 'Tags')).toBe(false);
+    // Routed to Cloud Control: no SDK provider, and Cloud Control has handlers.
+    expect(
+      readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+    ).not.toContain(`'${TYPE}'`);
+    expect(hasNoCloudControlHandlers(TYPE)).toBe(false);
+    // Stateful, so the arm refuses rather than replacing.
+    expect(STATEFUL_TYPES.has(TYPE)).toBe(true);
+    // And the live schema DOES list Tags as create-only, which the control
+    // phase relies on.
+    const report = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'docs/_generated/stateful-candidates.json'), 'utf8')
+    ) as { candidates: Array<{ typeName: string; createOnlyProperties: string[] }> };
+    expect(report.candidates.find((c) => c.typeName === TYPE)?.createOnlyProperties).toContain(
+      '/properties/Tags'
+    );
   });
 });

@@ -278,6 +278,73 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
     expect(findCalls(UpdateTableCommand)).toHaveLength(0);
   });
 
+  describe('Projection compare ignores key order (issue #1812)', () => {
+    // `aws-cdk-lib` renders `{NonKeyAttributes, ProjectionType}`; the readback
+    // `drift --revert` builds the desired side from is the other way round.
+    const templateOrdered = {
+      IndexName: 'gsi1',
+      KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+      Projection: { NonKeyAttributes: ['a', 'b'], ProjectionType: 'INCLUDE' },
+    };
+    const readbackOrdered = {
+      IndexName: 'gsi1',
+      KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['a', 'b'] },
+    };
+    const table = (gsi: Record<string, unknown>) => ({
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      AttributeDefinitions: ATTRS_WITH_GSI,
+      GlobalSecondaryIndexes: [gsi],
+    });
+
+    beforeEach(() => {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) =>
+        Promise.resolve(
+          cmd instanceof DescribeTableCommand
+            ? { Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } }
+            : {}
+        )
+      );
+    });
+
+    it('treats a key-order-only difference as unchanged', async () => {
+      await provider.update('L', TABLE_NAME, TYPE, table(readbackOrdered), table(templateOrdered));
+      expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+    });
+
+    it('still throws on a real Projection change', async () => {
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          TYPE,
+          table({ ...readbackOrdered, Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['a'] } }),
+          table(templateOrdered)
+        )
+      ).rejects.toThrow(/KeySchema or Projection/);
+    });
+
+    it('keeps KeySchema order significant', async () => {
+      const compound = {
+        ...readbackOrdered,
+        KeySchema: [
+          { AttributeName: 'gsipk', KeyType: 'HASH' },
+          { AttributeName: 'gsisk', KeyType: 'RANGE' },
+        ],
+      };
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          TYPE,
+          table({ ...compound, KeySchema: [...compound.KeySchema].reverse() }),
+          table(compound)
+        )
+      ).rejects.toThrow(/KeySchema or Projection/);
+    });
+  });
+
   it('waits through a BACKFILLING index before completing the GSI create', async () => {
     // DescribeTable(ARN) -> UpdateTable(create) -> wait poll #1 (index still
     // BACKFILLING / table ACTIVE -> keep waiting) -> wait poll #2 (index ACTIVE)

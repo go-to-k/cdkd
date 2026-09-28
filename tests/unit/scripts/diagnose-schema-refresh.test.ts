@@ -73,6 +73,8 @@ import {
   parseStickyCcMigrationExempt,
   parseCcFallbackOptOuts,
   parseNonProvisionableTypes,
+  parseSdkNonProvisionableTypes,
+  loadNoCloudControlHandlerTypes,
   renderChangelogFragment,
   PR_NUMBER_PLACEHOLDER,
   CYCLE_PLACEHOLDER,
@@ -3445,6 +3447,39 @@ describe('the unroutable-type sources', () => {
         'export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([\n]);\n'
       )
     ).toThrow(/parsed to zero types/);
+  });
+
+  it('reads SDK_PROVIDER_NON_PROVISIONABLE_TYPES exactly as the runtime holds it, and refuses an unreadable or empty set (#3871)', async () => {
+    const { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } = await import(
+      '../../../src/provisioning/unsupported-types.js'
+    );
+    const parsed = parseSdkNonProvisionableTypes(
+      readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.ts'), 'utf-8')
+    );
+    expect([...parsed].sort()).toEqual([...SDK_PROVIDER_NON_PROVISIONABLE_TYPES].sort());
+    expect(parsed.size).toBeGreaterThanOrEqual(19);
+    expect(() => parseSdkNonProvisionableTypes('export const OTHER = 1;\n')).toThrow(
+      /could not read SDK_PROVIDER_NON_PROVISIONABLE_TYPES/
+    );
+    expect(() =>
+      parseSdkNonProvisionableTypes(
+        'export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([\n]);\n'
+      )
+    ).toThrow(/parsed to zero types/);
+    // A type quoted in a comment inside the set is not a member.
+    expect([
+      ...parseSdkNonProvisionableTypes(
+        "export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([\n  'AWS::Example::One',\n  // not 'AWS::Example::Commented'\n]);\n"
+      ),
+    ]).toEqual(['AWS::Example::One']);
+  });
+
+  it('loadNoCloudControlHandlerTypes unions the Tier 3 set with the registered NON_PROVISIONABLE types (#3871)', () => {
+    const types = loadNoCloudControlHandlerTypes();
+    // One member from EACH half, so dropping either half fails.
+    expect(types.has('AWS::AppMesh::Mesh')).toBe(true);
+    expect(types.has('AWS::SQS::QueuePolicy')).toBe(true);
+    expect(types.has('AWS::DynamoDB::Table')).toBe(false);
   });
 });
 
