@@ -808,6 +808,15 @@ deploying the stack does not on its own heal a resource nothing changed. The
 direct remedy is to grant `cloudformation:DescribeType` and re-run
 `cdkd import`.
 
+A re-import of a resource already in state (same physical id) never replaces
+an unmasked attribute value that record holds with the mask: it keeps the
+recorded value and says so, naming each key, since that value is what the last
+deploy recorded and may be stale. Certified attributes still take the freshly
+read value. When a re-import produces no value for a key the record already
+masks — `GetResource` returned no readable model, the key is masked again, or
+the import omits it — the mask is kept rather than dropped, and the import
+warns, naming each key that stays masked.
+
 This does not make an imported record safe to treat as non-sensitive, for three
 reasons. A credential that is itself a read-only attribute is still recorded in
 the clear — the CloudFormation registry schema has no general sensitivity

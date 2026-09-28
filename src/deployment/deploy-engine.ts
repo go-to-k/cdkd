@@ -2154,10 +2154,10 @@ export class DeployEngine {
      *
      * TRACED, not assumed. `CustomResourceProvider.import` returns
      * `{ physicalId, attributes: {} }` unconditionally; `import.ts`'s
-     * `rowAttributes` normalises an empty bag to `undefined` and the coalesce
-     * behind it CARRIES FORWARD the prior record's attributes whenever the
-     * physical id matches — which it does, since the command is run with that
-     * very id. So the masked bag is copied back verbatim and the refusal
+     * `reimportedAttributes` CARRIES FORWARD the prior record's attributes
+     * for an empty bag whenever the physical id matches — which it does,
+     * since the command is run with that very id. So the masked bag is copied
+     * back verbatim (the import now warns that it was) and the refusal
      * repeats, forever.
      *
      * This is the NoEcho population — arm (1) of the refusal's own message —
@@ -2456,8 +2456,9 @@ export class DeployEngine {
     // `GetResource` again yields no usable model, `import()` returns
     // `attributes: {}`, and `buildStackState`'s same-physical-id carry-over
     // keeps the PREVIOUS masked bag rather than replacing it — so the refusal
-    // repeats. Tracked as issue
-    // [#2927](https://github.com/go-to-k/cdkd/issues/2927).
+    // repeats. Deliberately: dropping the mask would make the read resolve to
+    // the physical id instead. The import warns naming each kept key (issue
+    // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
     throw new ProvisioningError(
       `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
