@@ -15,11 +15,12 @@
 
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
-integ → marker. `git diff origin/main...HEAD --name-only` against that gate's
-`.markgate.yml` include list says what is outstanding. The gate's `hash: diff` stales
-on a rebase only when main changed a scoped file THIS branch changes too, so a
-set marker on a MERGEABLE PR needs no rebase (`markgate status`) — unless main
-changed code the fixture EXERCISES: re-run it on the rebased head (#3726).
+integ → marker. A lane REPORTS `markgate status integ-destroy --explain`'s
+line, never "integ not needed": comment-only edits count (#3873, #3933). The
+gate's `hash: diff` stales on a rebase only when main changed a scoped file
+THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
+(`markgate status`) — unless main changed code the fixture EXERCISES: re-run
+it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run, comment-only deltas included. Scope the
