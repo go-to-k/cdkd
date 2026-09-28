@@ -1552,8 +1552,10 @@ function partitionOps(operations: CompletedOperation[]): {
  * - UPDATE / DELETE first (reverse completion order), then CREATE deletions
  *   in reverse dependency order (dependents deleted before dependencies).
  * - `afterOp` is invoked after each op that MUTATED state (so the command can
- *   persist state incrementally, mirroring `saveStateAfterResource`). The
- *   in-process engine passes no `afterOp` and saves state once at the end.
+ *   persist state incrementally, mirroring `saveStateAfterResource`).
+ *   Standalone `cdkd rollback` and a nested child's journal replay
+ *   (`nested-child-journal.ts`) pass one; `DeployEngine.performRollback`
+ *   passes none, and its caller saves state once at the end.
  * - `isInterrupted` is polled between ops; when it flips true, replay stops
  *   (the pending op is left for a re-run).
  */
@@ -1685,26 +1687,29 @@ export async function replayRollback(
  *
  * A FOURTH thing since issue
  * [#2086](https://github.com/go-to-k/cdkd/issues/2086): the call is bound in
- * {@link withCurrentResourceSecrets}, the async-local channel
- * `NestedStackProvider` reads to seed a nested CHILD engine with the pairs the
- * parent already resolved (issue #1903). `resolveReplayProps` has just
- * re-resolved the journal's `{{resolve:...}}` expressions back to PLAINTEXT
- * into `secrets`, so the bag in hand here is exactly the one the deploy engine
- * would have bound — and without the binding a rollback that reverts a
- * nested-stack row calls `NestedStackProvider.update`, the child engine seeds
- * nothing, and the child's `state.json` is rewritten with the DECRYPTED secret.
- * A recovery path that restores the pre-fix behaviour re-opens the very
- * disclosure the fix closes, so "absent reads as undefined, the pre-#1903
- * baseline" is not an acceptable answer HERE, however it reads elsewhere.
+ * {@link withCurrentResourceSecrets} (`resource-secrets-scope.ts`).
+ * `resolveReplayProps` has just re-resolved the journal's `{{resolve:...}}`
+ * expressions back to PLAINTEXT into `secrets`, so the bag in hand here is
+ * exactly the one the deploy engine would have bound, and a reader of that
+ * channel sees the same pairs on a revert as on a deploy. The reader this path
+ * reaches is `SecretsManagerSecretProvider.asPersisted`.
  *
- * `NestedStackProvider` is reachable on this path by construction, not in
- * theory: it is one of the two `disableOuterRetry` providers named above that
- * also implement `update()`, and `cdkd deploy`'s in-process auto-rollback runs
- * inside a DEPLOY-mode `withNestedStackContext` (`deploy.ts` passes
- * `nestedTemplates` / `dagBuilder` / `diffCalculator`). Standalone `cdkd
- * rollback` is NOT affected — `rollback.ts` builds a destroy-mode context with
- * none of those three fields, so `requireDeployContext` throws loudly before
- * any child engine is built.
+ * KEEP THE BINDING even though the nested reader below is unreached today.
+ * What keeps it unreached is the `replayingState` short-circuit, not anything
+ * that makes the binding safe to drop: an update arm reaching
+ * `NestedStackProvider.update` WITHOUT `replayingState` would build a child
+ * engine, and unbound it seeds nothing and the child's `state.json` persists
+ * the DECRYPTED secret (issue #2086). "Absent reads as undefined, the
+ * pre-#1903 baseline" is not an acceptable answer HERE.
+ *
+ * The reader this binding was added for, `NestedStackProvider`, no longer
+ * reaches its child engine here: both revert arms pass
+ * `UpdateContext.replayingState`, and its `update()` returns through the
+ * journal-replay arm (issue #3754, `nested-child-journal.ts`) before
+ * `requireDeployContext`. That arm reads no template and deploys no child, so
+ * it serves the in-process auto-rollback (a DEPLOY-mode
+ * `withNestedStackContext`) and standalone `cdkd rollback` (a destroy-mode one)
+ * alike.
  *
  * Returns the provider's result so the caller can honour
  * `effectiveProperties` (issue #1644) — both revert arms used to write the
@@ -2279,12 +2284,14 @@ async function updateWithRollbackRetry(
  * ## The secrets scope, on both call sites (issue #2086)
  *
  * Each caller's `create` thunk binds {@link withCurrentResourceSecrets} around
- * `createProvider.create(...)`, for the same reason
- * {@link updateWithRollbackRetry} does around `update(...)`: a
+ * `createProvider.create(...)`, as {@link updateWithRollbackRetry} does around
+ * `update(...)`, but for a reason of its own that is live on this path: a
  * reverse-replacement replay of an `AWS::CloudFormation::Stack` row re-CREATES
- * the child, and an unbound store makes the child engine persist the parent's
- * plaintext. It sits INSIDE the thunk, so it is re-established on every
- * attempt of both loops rather than once around them.
+ * the child through `NestedStackProvider.create`, which has no journal-replay
+ * arm and reaches `runChildDeploy` in a deploy-mode context, and an unbound
+ * store makes the child engine persist the parent's plaintext. It sits INSIDE
+ * the thunk, so it is re-established on every attempt of both loops rather
+ * than once around them.
  */
 async function createWithRollbackRetry(
   provider: ResourceProvider,
@@ -3690,27 +3697,19 @@ async function replaySingle(
           ctx,
           op.logicalId
         );
-        // Issue #2291: a nested-stack row replayed here hands the CHILD engine
-        // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
-        // the provider call below, and `NestedStackProvider` seeds the child
-        // from it). The bag is keyed by PLAINTEXT, so two child `Parameters`
-        // resolving to one value have already collapsed in it -- and without
-        // the per-parameter table the child re-persists the SURVIVOR for both
-        // leaves, silently rewriting correct state back into the #2291 shape.
-        // A `cdkd drift --revert` inside that window then pushes the WRONG
-        // secret version to the live child resource (the
-        // GHSA-p5qg-v9gv-hc7w replay class). Waiting for the next deploy to
-        // heal it is not an answer: `--revert` is used precisely then.
+        // Issue #2291, the UPDATE twin of the reverse-replacement re-create
+        // arm's recording, whose note says why a CHILD engine seeded from this
+        // bag needs the per-parameter table. Since issue #3754 no child engine
+        // is built on THIS arm: the `update()` below passes `replayingState`,
+        // so a nested-stack row returns through `NestedStackProvider`'s
+        // journal-replay arm, which seeds nothing from this bag.
         //
-        // WHICH RECORD DRIFTS, precisely, because a review round proposed
-        // softening this on the grounds that `NestedStackProvider` declares no
-        // `readCurrentState`. That is true of the `AWS::CloudFormation::Stack`
-        // ROW only -- that row never drifts. The CHILD's own records do:
-        // `S3StateBackend.listStacks` has no filter excluding a
-        // `{parent}~{Child}` key (it is exactly `NEW_KEY_DEPTH`), so the child
-        // state is enumerated as an ordinary stack and `drift.ts` re-resolves
-        // its persisted expressions like any other. The claim stands as
-        // written.
+        // The call stays anyway, for two reasons. It still writes any carried
+        // framed value into `secrets` (the recorder's frame carry in
+        // `secret-redaction.ts`), which `redactRollbackRecord` reads for THIS
+        // row's own record. And it keeps the arm correct should an update ever
+        // reach `runChildDeploy` again without `replayingState`. The notes
+        // below describe what it records for a child engine that reads it.
         //
         // THE SOURCE IS THE JOURNAL, not the child's template. The journaled
         // record is the UNCOLLAPSED one -- since issue #1904 each of its leaves
@@ -4226,8 +4225,9 @@ export async function replayFailedOperations(
           );
           // Issue #2291, the `--revert-failed` twin of the two arms in
           // `replaySingle` — see the long note on the `revert` arm for why the
-          // journal is the source, why `STATE_DERIVED_RULES`, and why only the
-          // desired side is recorded.
+          // call stays although this `update()` builds no child engine either
+          // (`replayingState`, issue #3754), why the journal is the source, why
+          // `STATE_DERIVED_RULES`, and why only the desired side is recorded.
           recordNestedStackParameterExpressions(
             secrets,
             op.resourceType,
