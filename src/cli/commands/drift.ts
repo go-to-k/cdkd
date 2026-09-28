@@ -7147,11 +7147,12 @@ function reportResource(outcome: { logicalId: string; resourceType: string }): s
 const ALTERED_BY_SAFE_MSG = new RegExp(`${SAFE_MSG_ALTERED_CHAR.source}|[\\uD800-\\uDFFF]`, 'u');
 
 /**
- * JSON text with every character `ALTERED_BY_SAFE_MSG` names written as its
- * `\uXXXX` escape. `JSON.stringify` escapes only the C0 range; DEL, C1,
- * U+2028 / U+2029 and the bidi overrides it leaves literal, and `safeMsg`
- * would then replace each with a space — so `"a\u2028"` and `"a "` would
- * still print alike. Escaped, the text is still valid JSON for the same value.
+ * JSON text with every character `SAFE_MSG_ALTERED_CHAR` names written as its
+ * `\uXXXX` escape. `JSON.stringify` escapes only the C0 range (and an unpaired
+ * surrogate, the other half of `ALTERED_BY_SAFE_MSG`); DEL, C1, U+2028 /
+ * U+2029 and the bidi overrides it leaves literal, and `safeMsg` would then
+ * replace each with a space — so `"a\u2028"` and `"a "` would still print
+ * alike. Escaped, the text is still valid JSON for the same value.
  */
 function escapeJsonLiterals(json: string): string {
   return json.replace(
@@ -7220,7 +7221,21 @@ function reportPath(path: string): string {
  * misstates what the operator is about to confirm.
  */
 function reportPlanChangeLine(path: string, from: unknown, to: unknown): string {
-  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportValue(from)} -> ${reportValue(to)}\n`;
+  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportPlanValue(from)} -> ${reportPlanValue(to)}\n`;
+}
+
+/**
+ * `reportValue`, plus one more reason to quote a string: it contains the
+ * plan's own ` -> ` separator. Unquoted, a readback value `prod -> prod` would
+ * print `Env: prod -> prod -> staging`, and the reader could not tell which
+ * value the revert pushes. Quoted, it cannot be misread, since an unquoted
+ * value never starts with `"`.
+ */
+function reportPlanValue(value: unknown): string {
+  if (typeof value === 'string' && value.includes(' -> ') && reportValue(value) === value) {
+    return escapeJsonLiterals(JSON.stringify(value));
+  }
+  return reportValue(value);
 }
 
 /**

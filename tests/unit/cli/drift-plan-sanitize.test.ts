@@ -18,7 +18,10 @@ import {
   type DriftOutcome,
   type HumanTextSink,
 } from '../../../src/cli/commands/drift.js';
-import { IDENT_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import {
+  IDENT_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../../src/utils/display-safe.js';
 
 type Report = Parameters<typeof printAcceptPlan>[0][number];
 type Drifted = Extract<DriftOutcome, { kind: 'drifted' }>;
@@ -359,6 +362,24 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     expect(revert.lines).toContain('    Padded: " value " -> value');
   });
 
+  it("quotes a plan value containing the plan's own ' -> ' separator, on either side", () => {
+    // Unquoted, `Env: prod -> prod -> staging` would not say which value the
+    // revert pushes. Only on a plan line: the report's `-` / `+` rows carry no
+    // separator, so it stays unquoted there.
+    const changes: Change[] = [
+      { path: 'Env', stateValue: 'staging', awsValue: 'prod -> prod' },
+      { path: 'Rev', stateValue: 'a -> b', awsValue: 'c' },
+      { path: 'Plain', stateValue: 'a->b', awsValue: 'c' },
+    ];
+    const revert = render(printRevertPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
+    expect(revert.lines).toContain('    Env: "prod -> prod" -> staging');
+    expect(revert.lines).toContain('    Rev: c -> "a -> b"');
+    expect(revert.lines).toContain('    Plain: c -> a->b');
+    const accept = render(printAcceptPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
+    expect(accept.lines).toContain('    Env: staging -> "prod -> prod"');
+    expect(accept.lines).toContain('    Rev: "a -> b" -> c');
+  });
+
   it('caps a plan path, never a plan value', () => {
     const longPath = 'p'.repeat(IDENT_MAX_CODE_POINTS + 1);
     const longValue = 'v'.repeat(5000);
@@ -402,6 +423,124 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     );
     const cut = `Cfg.${longPath}`.slice(0, IDENT_MAX_CODE_POINTS);
     expect(listed.lines).toContain(`        ${cut}...`);
+  });
+
+  // The cap sits in `reportIdent`, reached through each row's own helper call,
+  // so a site rewritten as an uncapped `safeMsg` template keeps sanitizing and
+  // stops capping: one oversized case per (field, row).
+  const CAP_SITES: ReadonlyArray<
+    [name: string, print: typeof printAcceptPlan, cap: number, build: (v: string) => Report]
+  > = [
+    ['accept: stack name on the update heading', printAcceptPlan, STACK_REF_MAX_CODE_POINTS, (v) => report({ stackName: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['accept: region on the update heading', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ region: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['accept: stack name on the nothing-accepted heading', printAcceptPlan, STACK_REF_MAX_CODE_POINTS, (v) => report({ stackName: v, resources: REFUSED, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['accept: region on the nothing-accepted heading', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ region: v, resources: REFUSED, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['accept: logical id on a ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted(v, 'T', [CHANGE])] })],
+    ['accept: resource type on a ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted('R', v, [CHANGE])] })],
+    ['accept: resource type on a baseline-refused ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: REFUSED, outcomes: [drifted('R', v, [CHANGE])] })],
+    ['revert: stack name on the heading', printRevertPlan, STACK_REF_MAX_CODE_POINTS, (v) => report({ stackName: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['revert: region on the heading', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ region: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
+    ['revert: logical id on a provider.update row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted(v, 'T', [CHANGE])] })],
+    ['revert: resource type on a provider.update row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted('R', v, [CHANGE])] })],
+    ['revert: resource type on a NOT-reverted ! row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: REFUSED, outcomes: [drifted('R', v, [CHANGE])] })],
+  ];
+  for (const [name, print, cap, build] of CAP_SITES) {
+    it(`caps the ${name}`, () => {
+      const { lines } = render(print, build('x'.repeat(cap + 1)));
+      expect(lines.filter((l) => l.includes(`${'x'.repeat(cap)}...`))).toHaveLength(1);
+      expect(lines.filter((l) => l.includes('x'.repeat(cap + 1)))).toEqual([]);
+    });
+  }
+
+  it('renders the ordinary SKIPPED, ! and readback-list rows byte-for-byte as before', () => {
+    const accept = render(
+      printAcceptPlan,
+      report({
+        resources: REFUSED,
+        outcomes: [drifted('R', 'T', [CHANGE])],
+      })
+    );
+    expect(accept.joined).toBe(
+      '\nPlan (--accept): no accepted values will be written to cdkd state for Prod (us-east-1) ' +
+        '— every drifted change below is refused (the run still writes the positioned re-redaction):\n' +
+        '  ~ R (T)\n' +
+        "    SKIPPED — a 'cdkd import' run refused this resource's observed-properties baseline; " +
+        'accepting would write the AWS readback into properties it already found untrustworthy. ' +
+        'Deploy a change to this resource first.\n'
+    );
+    const skipped = render(
+      printAcceptPlan,
+      report({
+        outcomes: [
+          drifted('R', 'T', [{ path: 'Cfg.k', stateValue: 1, awsValue: undefined }], {
+            maskedPaths: new Set(['Cfg.k']) as unknown as Drifted['maskedPaths'],
+          }),
+        ],
+      })
+    );
+    expect(skipped.lines.filter((l) => l.startsWith('    Cfg.k: SKIPPED — AWS no longer reports it'))).toHaveLength(1);
+    const refused = render(printRevertPlan, report({ resources: REFUSED, outcomes: [drifted('R', 'T', [CHANGE])] }));
+    expect(refused.lines.filter((l) => l.startsWith("  ! R (T): NOT reverted — a 'cdkd import' run"))).toHaveLength(1);
+    const listed = render(
+      printRevertPlan,
+      report({
+        resources: {
+          R: {
+            properties: { Tags: [{ Key: 'Name', Value: 'x' }], Cfg: { a: 1 } },
+          },
+        },
+        outcomes: [
+          drifted(
+            'R',
+            'T',
+            [
+              { path: 'Cfg.a', stateValue: 1, awsValue: 2 },
+              { path: 'Tags', stateValue: 1, awsValue: 2 },
+            ],
+            {
+              awsProperties: {
+                Cfg: { a: 2, extra: 3 },
+                Tags: [
+                  { Key: 'Name', Value: 'x' },
+                  { Key: 'aws:cloudformation:stack-name', Value: 'y' },
+                ],
+              },
+            }
+          ),
+        ],
+      })
+    );
+    expect(listed.lines).toContain('        Tags.aws:cloudformation:stack-name');
+    expect(listed.lines).toContain('        Cfg.extra');
+  });
+
+  it('masks a preserved tag key BEFORE capping it, as the unbaselined list does', () => {
+    const secret = 'S3cr3tValueNeverPrinted';
+    const tagKey = 'aws:' + 'x'.repeat(IDENT_MAX_CODE_POINTS - 15) + secret;
+    const { joined, lines } = render(
+      printRevertPlan,
+      report({
+        resources: {
+          R: {
+            properties: { Tags: [{ Key: 'Name', Value: 'x' }] },
+            observedProperties: { Tags: [{ Key: 'Name', Value: 'x' }] },
+          },
+        },
+        outcomes: [
+          drifted('R', 'T', [{ path: 'Tags', stateValue: 1, awsValue: 2 }], {
+            awsProperties: {
+              Tags: [
+                { Key: 'Name', Value: 'x' },
+                { Key: tagKey, Value: 'y' },
+              ],
+            },
+            secrets: new Map([[secret, 'ref']]) as unknown as Drifted['secrets'],
+          }),
+        ],
+      })
+    );
+    expect(lines).toContain(`        Tags.aws:${'x'.repeat(IDENT_MAX_CODE_POINTS - 15)}***`);
+    expect(joined).not.toContain('S3cr');
   });
 
   it('masks a readback key BEFORE capping it, so the cut can never leave a secret prefix unmasked', () => {

@@ -219,10 +219,10 @@ views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
 - **A property value that carries a control character, has whitespace at
   either end, or starts with `"` is shown as its JSON string.** A control
   character here is any of C0 (newline, tab and ESC among them), DEL, C1,
-  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides, plus an
-  unpaired surrogate (which a terminal would show as the replacement
-  character `�`) — so a value carrying even one of cdkd's own colour codes is
-  quoted. It prints as
+  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides, so a value
+  carrying even one of cdkd's own colour codes is quoted. So is a value
+  carrying an unpaired surrogate, which the output's UTF-8 encoding would
+  otherwise turn into the replacement character `�`. It prints as
   `"abc\n"`, `"a\tb"`, `" value "`, `"x\u001b[2Jy"`: JSON escapes the C0
   range, and the characters it leaves literal are written as `\uXXXX` escapes
   too, so none of them is left between the quotes and a colour code prints as
@@ -251,7 +251,9 @@ heading's stack name and region, each resource's logical id and type, each
 change's path and both of its values, and the readback tag keys and paths the
 revert plan lists as preserved or left untouched. A readback key is masked for
 secrets first and only then cut and sanitized, so the cut can never leave part
-of a secret unmasked.
+of a secret unmasked. A plan line prints `<path>: <from> -> <to>`, so a string
+value that itself contains ` -> ` is quoted there too, and the line still says
+which value is which.
 
 `--json` is untouched — a consumer of that mode wants the stored value.
 
