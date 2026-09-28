@@ -135,6 +135,17 @@ rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of
 hand-editing the state file.
 
+**A list whose removals are the gap between the two sides is the exception**
+(issue [#3948](https://github.com/go-to-k/cdkd/issues/3948)): Auto Scaling
+group attachment and entry lists (tags, metrics, lifecycle hooks, traffic
+sources, notifications), Firehose tags. There, reading a malformed
+DESIRED side as empty detaches or deletes everything the record holds, so it
+is refused before any call on every path, a state replay included. A malformed
+RECORDED side only misses removals: read it from the live resource ADD-only
+where you can (keep the live entries the desired side names, warn about the
+rest), otherwise refuse it with a repair that never asks for a secret in
+state.json. `undefined` / `null` stays the empty list.
+
 A **top-level** read takes two further decisions, both per site (issue
 [#1513](https://github.com/go-to-k/cdkd/issues/1513)), expressed as options on
 `requireConfigString`:
@@ -238,7 +249,11 @@ implementation. Three details are worth copying:
     on the value having changed wherever an unchanged one sends nothing, and
     do NOT gate it where the value goes out on every update: Glue's
     `UpdateDatabase` replaces `DatabaseInput` wholesale, so its malformed
-    blocks are refused whether or not they changed (#3740).
+    blocks are refused whether or not they changed (#3740). A list whose
+    removals are the gap between the two sides refuses on a replay too (see
+    "A list whose removals are the gap between the two sides is the
+    exception" above, #3948): warning and reading it as empty would remove
+    everything the record holds.
     Separately, a create-only
     value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
     `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,

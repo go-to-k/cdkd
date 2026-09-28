@@ -49,6 +49,161 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+
+// ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
+//
+// Every sub-shape diff helper derives its REMOVALS (Detach*, Delete*,
+// Disable*) from the gap between the desired and the recorded list. Reading a
+// present-but-malformed value as an empty list therefore removes everything the
+// other side holds: on a rollback or `drift --revert`, where the desired side
+// is a recorded bag, `TargetGroupARNs: {}` detached every target group. So
+// `undefined` / `null` is ABSENT (an empty list), and anything else that is not
+// a list of well-formed entries is MALFORMED, refused on BOTH sides before any
+// call. A refusal names only the property and side, never record content.
+
+/** The two attachment lists: entries are bare names / ARNs. */
+type AttachmentKind = 'LoadBalancerNames' | 'TargetGroupARNs';
+/** The entry lists: each entry is an object keyed by one identity member. */
+type EntryKind =
+  | 'Tags'
+  | 'MetricsCollection'
+  | 'LifecycleHookSpecificationList'
+  | 'TrafficSources'
+  | 'NotificationConfigurations';
+type ListKind = AttachmentKind | EntryKind;
+
+/**
+ * API length caps (`XmlStringMaxLen255` / `XmlStringMaxLen511`). A classic load
+ * balancer name or a target-group ARN never holds whitespace.
+ */
+const ATTACHMENT_MAX_LENGTH: Record<AttachmentKind, number> = {
+  LoadBalancerNames: 255,
+  TargetGroupARNs: 511,
+};
+const ATTACHMENT_WHAT: Record<AttachmentKind, string> = {
+  LoadBalancerNames: 'load balancer names',
+  TargetGroupARNs: 'target group ARNs',
+};
+
+/** The member each diff helper keys an entry by, and any string-list member it forwards. */
+const ENTRY_SHAPE: Record<EntryKind, { identity: string; stringList?: string; what: string }> = {
+  Tags: { identity: 'Key', what: 'tags with a Key' },
+  MetricsCollection: {
+    identity: 'Granularity',
+    stringList: 'Metrics',
+    what: 'entries with a Granularity',
+  },
+  LifecycleHookSpecificationList: {
+    identity: 'LifecycleHookName',
+    what: 'entries with a LifecycleHookName',
+  },
+  TrafficSources: { identity: 'Identifier', what: 'entries with an Identifier' },
+  NotificationConfigurations: {
+    identity: 'TopicARN',
+    stringList: 'NotificationTypes',
+    what: 'entries with a TopicARN',
+  },
+};
+
+const LIST_KINDS: readonly ListKind[] = [
+  'Tags',
+  'LoadBalancerNames',
+  'TargetGroupARNs',
+  'MetricsCollection',
+  'LifecycleHookSpecificationList',
+  'TrafficSources',
+  'NotificationConfigurations',
+];
+
+type ListRead = { kind: 'list'; items: unknown[] } | { kind: 'malformed'; secretDerived: boolean };
+
+function isAttachmentKind(kind: ListKind): kind is AttachmentKind {
+  return kind === 'LoadBalancerNames' || kind === 'TargetGroupARNs';
+}
+
+/**
+ * `side` matters for an entry list's IDENTITY only. A desired identity holding a
+ * dynamic reference or its mask names nothing AWS holds, so it is malformed. A
+ * RECORDED one is what cdkd writes for a template whose identity came from a
+ * secret (cdkd keeps the reference in state), so refusing it would refuse every
+ * later update of that group: it is read, and `removableRecorded` then keeps it
+ * out of the removal set (go-to-k/cdkd#3948).
+ */
+type ListSide = 'desired' | 'recorded';
+
+function isWellFormedEntry(kind: ListKind, entry: unknown, side: ListSide): boolean {
+  if (isAttachmentKind(kind)) {
+    return (
+      typeof entry === 'string' &&
+      entry.length > 0 &&
+      entry.length <= ATTACHMENT_MAX_LENGTH[kind] &&
+      !/\s/.test(entry) &&
+      // A dynamic reference is a well-formed STRING but not a name AWS holds:
+      // sending it would Detach / Attach a literal `{{resolve:...}}`.
+      !holdsSecretDerivedEntry(entry)
+    );
+  }
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const { identity, stringList } = ENTRY_SHAPE[kind];
+  const record = entry as Record<string, unknown>;
+  const id = record[identity];
+  if (typeof id !== 'string' || id.length === 0) return false;
+  if (side === 'desired' && holdsSecretDerivedEntry(id)) return false;
+  if (stringList !== undefined) {
+    const list = record[stringList];
+    if (list != null && !(Array.isArray(list) && list.every((v) => typeof v === 'string'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
+function readList(kind: ListKind, value: unknown, side: ListSide): ListRead {
+  if (value === undefined || value === null) return { kind: 'list', items: [] };
+  if (Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side))) {
+    return { kind: 'list', items: value };
+  }
+  return { kind: 'malformed', secretDerived: holdsSecretDerivedEntry(value) };
+}
+
+function listWhat(kind: ListKind): string {
+  return isAttachmentKind(kind) ? ATTACHMENT_WHAT[kind] : ENTRY_SHAPE[kind].what;
+}
+
+/**
+ * Every list property of one bag, keyed by kind. The caller passes its own
+ * literal read of each property (`{ Tags: properties['Tags'], ... }`) so the
+ * handled-property wiring walk still sees which property feeds the calls.
+ */
+function readLists(values: Record<ListKind, unknown>, side: ListSide): Record<ListKind, ListRead> {
+  const out = {} as Record<ListKind, ListRead>;
+  for (const kind of LIST_KINDS) out[kind] = readList(kind, values[kind], side);
+  return out;
+}
+
+function malformedKinds(read: Record<ListKind, ListRead>): ListKind[] {
+  return LIST_KINDS.filter((k) => read[k].kind === 'malformed');
+}
+
+/**
+ * A recorded entry list minus every entry whose identity is secret-derived: the
+ * diff helpers would otherwise Delete / Detach a literal `{{resolve:...}}` key.
+ * Dropping it only misses that one removal, the safe direction; the desired
+ * side's plaintext identity is still upserted.
+ */
+function removableRecorded(kind: ListKind, items: unknown[]): unknown[] {
+  if (isAttachmentKind(kind)) return items;
+  const { identity } = ENTRY_SHAPE[kind];
+  return items.filter((e) => !holdsSecretDerivedEntry((e as Record<string, unknown>)[identity]));
+}
+
+function itemsOf(read: ListRead): unknown[] {
+  return read.kind === 'list' ? read.items : [];
+}
 
 /**
  * AWS Auto Scaling Provider
@@ -227,6 +382,32 @@ export class ASGProvider implements ResourceProvider {
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     debug(`Creating AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
 
+    // A malformed list would otherwise reach the SDK cast as `string[]`, whose
+    // serializer walks a string character by character (go-to-k/cdkd#3948).
+    const lists = readLists(
+      {
+        Tags: properties['Tags'],
+        LoadBalancerNames: properties['LoadBalancerNames'],
+        TargetGroupARNs: properties['TargetGroupARNs'],
+        MetricsCollection: properties['MetricsCollection'],
+        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
+        TrafficSources: properties['TrafficSources'],
+        NotificationConfigurations: properties['NotificationConfigurations'],
+      },
+      'desired'
+    );
+    const malformedOnCreate = malformedKinds(lists);
+    if (malformedOnCreate.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${malformedOnCreate.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
+            `${malformedOnCreate.map(listWhat).join(' / ')} — the group was not created`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+
     try {
       const launchTemplate = this.buildLaunchTemplate(properties);
       const tags = this.buildTags(groupName, properties);
@@ -280,11 +461,11 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['MaxInstanceLifetime'] != null && {
             MaxInstanceLifetime: Number(properties['MaxInstanceLifetime']),
           }),
-          ...(properties['LoadBalancerNames'] !== undefined && {
-            LoadBalancerNames: properties['LoadBalancerNames'] as string[],
+          ...(properties['LoadBalancerNames'] != null && {
+            LoadBalancerNames: itemsOf(lists.LoadBalancerNames) as string[],
           }),
-          ...(properties['TargetGroupARNs'] !== undefined && {
-            TargetGroupARNs: properties['TargetGroupARNs'] as string[],
+          ...(properties['TargetGroupARNs'] != null && {
+            TargetGroupARNs: itemsOf(lists.TargetGroupARNs) as string[],
           }),
           ...(properties['Context'] !== undefined && {
             Context: properties['Context'] as string,
@@ -295,10 +476,10 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['DefaultInstanceWarmup'] != null && {
             DefaultInstanceWarmup: Number(properties['DefaultInstanceWarmup']),
           }),
-          ...(properties['LifecycleHookSpecificationList'] !== undefined && {
+          ...(properties['LifecycleHookSpecificationList'] != null && {
             LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'] as never,
           }),
-          ...(properties['TrafficSources'] !== undefined && {
+          ...(properties['TrafficSources'] != null && {
             TrafficSources: properties['TrafficSources'] as never,
           }),
           ...(properties['AvailabilityZoneDistribution'] !== undefined && {
@@ -429,43 +610,66 @@ export class ASGProvider implements ResourceProvider {
           remedy
       );
     }
+    // BOTH sides before any call (go-to-k/cdkd#3948): a rollback replays this
+    // method with a recorded bag as the DESIRED side, and the previous side is
+    // always the state record.
+    const { next, prev, retained } = await this.readUpdateLists(
+      logicalId,
+      physicalId,
+      resourceType,
+      {
+        Tags: properties['Tags'],
+        LoadBalancerNames: properties['LoadBalancerNames'],
+        TargetGroupARNs: properties['TargetGroupARNs'],
+        MetricsCollection: properties['MetricsCollection'],
+        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
+        TrafficSources: properties['TrafficSources'],
+        NotificationConfigurations: properties['NotificationConfigurations'],
+      },
+      {
+        Tags: previousProperties['Tags'],
+        LoadBalancerNames: previousProperties['LoadBalancerNames'],
+        TargetGroupARNs: previousProperties['TargetGroupARNs'],
+        MetricsCollection: previousProperties['MetricsCollection'],
+        LifecycleHookSpecificationList: previousProperties['LifecycleHookSpecificationList'],
+        TrafficSources: previousProperties['TrafficSources'],
+        NotificationConfigurations: previousProperties['NotificationConfigurations'],
+      }
+    );
     try {
       // Sub-shape diffs are applied via separate per-shape SDK calls
       // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
       // fields on UpdateAutoScalingGroup, so each one rides its own
       // dedicated API. Each per-shape helper is a no-op when the
       // before/after JSON is identical.
-      await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
+      await this.applyTagsDiff(physicalId, next.Tags, prev.Tags);
       await this.applyLoadBalancerNamesDiff(
         physicalId,
-        properties['LoadBalancerNames'],
-        previousProperties['LoadBalancerNames']
+        next.LoadBalancerNames as string[],
+        prev.LoadBalancerNames as string[]
       );
       await this.applyTargetGroupArnsDiff(
         physicalId,
-        properties['TargetGroupARNs'],
-        previousProperties['TargetGroupARNs'],
-        context?.maskSecrets
+        next.TargetGroupARNs as string[],
+        prev.TargetGroupARNs as string[],
+        context?.maskSecrets,
+        retained.TargetGroupARNs
       );
       await this.applyMetricsCollectionDiff(
         physicalId,
-        properties['MetricsCollection'],
-        previousProperties['MetricsCollection']
+        next.MetricsCollection,
+        prev.MetricsCollection
       );
       await this.applyLifecycleHooksDiff(
         physicalId,
-        properties['LifecycleHookSpecificationList'],
-        previousProperties['LifecycleHookSpecificationList']
+        next.LifecycleHookSpecificationList,
+        prev.LifecycleHookSpecificationList
       );
-      await this.applyTrafficSourcesDiff(
-        physicalId,
-        properties['TrafficSources'],
-        previousProperties['TrafficSources']
-      );
+      await this.applyTrafficSourcesDiff(physicalId, next.TrafficSources, prev.TrafficSources);
       await this.applyNotificationConfigurationsDiff(
         physicalId,
-        properties['NotificationConfigurations'],
-        previousProperties['NotificationConfigurations']
+        next.NotificationConfigurations,
+        prev.NotificationConfigurations
       );
 
       const launchTemplate = this.buildLaunchTemplate(properties);
@@ -1202,6 +1406,141 @@ export class ASGProvider implements ResourceProvider {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * Read every list property of both sides, refusing a malformed one before
+   * any call (go-to-k/cdkd#3948). ABSENT reads as the empty list.
+   *
+   * One exception keeps a deploy moving: a malformed RECORDED
+   * `LoadBalancerNames` / `TargetGroupARNs` is read from the live group
+   * instead, once every desired list and every other recorded list is
+   * well-formed. That covers a dynamic reference or its mask (cdkd keeps
+   * `{{resolve:...}}` in state by design) and a record `cdkd import` left with
+   * an unresolved intrinsic (`[{ Ref: 'MyTG' }]`), which used to self-heal on
+   * the next deploy. Only the live entries the desired side also names are
+   * taken, so the read is ADD-only: nothing is detached on the strength of a
+   * record cdkd could not read, and a live entry the desired side omits stays
+   * attached, with a warning.
+   */
+  private async readUpdateLists(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: Record<ListKind, unknown>,
+    recorded: Record<ListKind, unknown>
+  ): Promise<{
+    next: Record<ListKind, unknown[]>;
+    prev: Record<ListKind, unknown[]>;
+    /** Live entries an unreadable record hid, left attached on purpose. */
+    retained: Record<AttachmentKind, string[]>;
+  }> {
+    const nextRead = readLists(desired, 'desired');
+    const prevRead = readLists(recorded, 'recorded');
+    const badNext = malformedKinds(nextRead);
+    let badPrev = malformedKinds(prevRead);
+    const retained: Record<AttachmentKind, string[]> = {
+      LoadBalancerNames: [],
+      TargetGroupARNs: [],
+    };
+    const readLive = (k: ListKind): boolean => {
+      const read = prevRead[k];
+      return isAttachmentKind(k) && read.kind === 'malformed';
+    };
+
+    if (badNext.length === 0 && badPrev.length > 0 && badPrev.every(readLive)) {
+      const kinds = badPrev.join(' / ');
+      let group: Awaited<ReturnType<ASGProvider['describeGroup']>>;
+      try {
+        group = await this.describeGroup(physicalId);
+      } catch (error) {
+        // Not marked non-retryable: a throttled read is worth the retry, which
+        // classifies through `cause`.
+        throw new ProvisioningError(
+          `the recorded ${kinds} of AutoScalingGroup ${logicalId} is not a list cdkd can read, ` +
+            `and the live group could not be read from Auto Scaling instead — nothing was ` +
+            `attached or detached`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+      for (const kind of badPrev as AttachmentKind[]) {
+        const live = (group?.[kind] ?? []).filter((v): v is string => typeof v === 'string');
+        const wanted = itemsOf(nextRead[kind]);
+        prevRead[kind] = { kind: 'list', items: live.filter((v) => wanted.includes(v)) };
+        retained[kind] = live.filter((v) => !wanted.includes(v));
+        if (retained[kind].length > 0) {
+          this.logger.warn(
+            safeMsg`The recorded ${kind} of AutoScalingGroup ${logicalId} is not a list cdkd can read, so cdkd read it from Auto Scaling; the group holds ${kind} entries the desired list does not name, and cdkd left them attached. Detach them yourself if they are no longer wanted.`
+          );
+        }
+      }
+      badPrev = [];
+    }
+
+    if (badNext.length > 0 || badPrev.length > 0) {
+      const which = [...badNext.map((k) => `desired ${k}`), ...badPrev.map((k) => `recorded ${k}`)];
+      const what = [...new Set([...badNext, ...badPrev].map(listWhat))];
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${which.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
+            `${what.join(' / ')} — nothing was attached, detached or removed` +
+            (badPrev.length > 0 ? `: ${this.recordedListRepair(badPrev, prevRead)}` : ''),
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+
+    const next = {} as Record<ListKind, unknown[]>;
+    const prev = {} as Record<ListKind, unknown[]>;
+    for (const kind of LIST_KINDS) {
+      next[kind] = itemsOf(nextRead[kind]);
+      prev[kind] = removableRecorded(kind, itemsOf(prevRead[kind]));
+    }
+    return { next, prev, retained };
+  }
+
+  /**
+   * The repair sentence for malformed RECORDED lists, echoing no record
+   * content. An attachment list needs no repair: it is read from the live group
+   * once the desired side is well-formed. A secret-derived entry list must never
+   * be answered with "write the value into state.json"; setting it to `[]` is
+   * always safe, since an empty recorded list removes nothing and re-applies
+   * what the desired side names.
+   */
+  private recordedListRepair(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
+    const live = kinds.filter(isAttachmentKind);
+    const entry = kinds.filter((k) => !isAttachmentKind(k));
+    const secret = entry.filter((k) => {
+      const r = read[k];
+      return r.kind === 'malformed' && r.secretDerived;
+    });
+    const plain = entry.filter((k) => !secret.includes(k));
+    const parts: string[] = [];
+    if (plain.length > 0) {
+      parts.push(
+        `repair the recorded ${plain.join(' / ')} in state.json to a list of ` +
+          `${[...new Set(plain.map(listWhat))].join(' / ')} and re-run`
+      );
+    }
+    if (secret.length > 0) {
+      parts.push(
+        `the recorded ${secret.join(' / ')} is secret-derived (cdkd keeps the dynamic reference ` +
+          `or its mask in state), so do not write the value into state.json; set it to [] in ` +
+          `state.json and re-run, which removes nothing`
+      );
+    }
+    if (live.length > 0) {
+      parts.push(
+        `the recorded ${live.join(' / ')} needs no repair: cdkd reads it from Auto Scaling ` +
+          `instead once every desired list and every other recorded list is well-formed`
+      );
+    }
+    return parts.join('; ');
+  }
+
   // ─── Sub-shape diff helpers ───────────────────────────────────────
   // Each helper is a no-op when before/after JSON is identical (the cheap
   // structural-equality check happens first; we only build SDK calls for
@@ -1225,11 +1564,11 @@ export class ASGProvider implements ResourceProvider {
    *
    * No-op when before/after JSON is identical.
    */
-  private async applyTagsDiff(physicalId: string, next: unknown, prev: unknown): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+  private async applyTagsDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
     type CfnTag = { Key?: string; Value?: string; PropagateAtLaunch?: boolean };
-    const nextEntries = (Array.isArray(next) ? next : []) as CfnTag[];
-    const prevEntries = (Array.isArray(prev) ? prev : []) as CfnTag[];
+    const nextEntries = next as CfnTag[];
+    const prevEntries = prev as CfnTag[];
     const nextByKey = new Map<string, CfnTag>();
     for (const t of nextEntries) {
       if (t.Key) nextByKey.set(t.Key, t);
@@ -1293,16 +1632,10 @@ export class ASGProvider implements ResourceProvider {
    */
   private async applyLoadBalancerNamesDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    nextNames: string[],
+    prevNames: string[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextNames = (Array.isArray(next) ? next : []).filter(
-      (n): n is string => typeof n === 'string'
-    );
-    const prevNames = (Array.isArray(prev) ? prev : []).filter(
-      (n): n is string => typeof n === 'string'
-    );
+    if (JSON.stringify(nextNames) === JSON.stringify(prevNames)) return;
     const nextSet = new Set(nextNames);
     const prevSet = new Set(prevNames);
     const toAttach = nextNames.filter((n) => !prevSet.has(n));
@@ -1335,17 +1668,14 @@ export class ASGProvider implements ResourceProvider {
    */
   private async applyTargetGroupArnsDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown,
-    maskSecrets?: SecretMasker
+    nextArns: string[],
+    prevArns: string[],
+    maskSecrets?: SecretMasker,
+    // Live target groups a secret-derived record hid, which this update leaves
+    // attached: the convergence poll must expect them too (go-to-k/cdkd#3948).
+    retainedArns: string[] = []
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextArns = (Array.isArray(next) ? next : []).filter(
-      (a): a is string => typeof a === 'string'
-    );
-    const prevArns = (Array.isArray(prev) ? prev : []).filter(
-      (a): a is string => typeof a === 'string'
-    );
+    if (JSON.stringify(nextArns) === JSON.stringify(prevArns)) return;
     const nextSet = new Set(nextArns);
     const prevSet = new Set(prevArns);
     const toAttach = nextArns.filter((a) => !prevSet.has(a));
@@ -1376,7 +1706,11 @@ export class ASGProvider implements ResourceProvider {
     // confirm the post-state matches the intent before returning so the
     // caller's next read is consistent.
     if (toDetach.length > 0 || toAttach.length > 0) {
-      await this.waitForTargetGroupArnsConvergence(physicalId, new Set(nextArns), maskSecrets);
+      await this.waitForTargetGroupArnsConvergence(
+        physicalId,
+        new Set([...nextArns, ...retainedArns]),
+        maskSecrets
+      );
     }
   }
 
@@ -1455,15 +1789,15 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyMetricsCollectionDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    const nextEntries = next as Array<{
       Granularity?: string;
       Metrics?: string[];
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       Granularity?: string;
       Metrics?: string[];
     }>;
@@ -1519,11 +1853,11 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyLifecycleHooksDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    const nextEntries = next as Array<{
       LifecycleHookName?: string;
       LifecycleTransition?: string;
       RoleARN?: string;
@@ -1532,7 +1866,7 @@ export class ASGProvider implements ResourceProvider {
       HeartbeatTimeout?: number;
       DefaultResult?: string;
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       LifecycleHookName?: string;
     }>;
     const nextNames = new Set(
@@ -1582,15 +1916,15 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyTrafficSourcesDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    const nextEntries = next as Array<{
       Identifier?: string;
       Type?: string;
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       Identifier?: string;
       Type?: string;
     }>;
@@ -1624,21 +1958,21 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyNotificationConfigurationsDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
     // CFn `NotificationConfigurations` is an array of `{TopicARN,
     // NotificationTypes[]}`; AWS `PutNotificationConfiguration` is keyed
     // by TopicARN — one call per topic. AWS reports each notification
     // type as a separate response entry (one row per `(asgName, topicArn,
     // notificationType)` triple), but cdkd state stores the CFn shape, so
     // both sides of the diff share the per-topic key.
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    const nextEntries = next as Array<{
       TopicARN?: string;
       NotificationTypes?: string[];
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       TopicARN?: string;
       NotificationTypes?: string[];
     }>;
