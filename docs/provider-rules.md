@@ -341,7 +341,12 @@ implementation. Three details are worth copying:
     `const mask = context?.maskSecrets ?? ((t: string) => t)` — since `create()`
     / `update()` are also called by `cdkd drift --revert`, by the import path,
     and by tests. It is per-CALL, so never cache it on `this`: providers are
-    registered as singletons and serve concurrent resources.
+    registered as singletons and serve concurrent resources. A provider whose
+    `create()` / `update()` reach many private helpers may instead re-enter
+    itself on a fresh per-call object whose prototype is the singleton and
+    whose logger is masked, so every helper's `this.logger` line is masked by
+    construction (`S3BucketProvider.maskedView`, issue
+    [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
     **Mask the VALUE before it is stringified or interpolated; the finished
     message is a FALLBACK, not an equivalent.** Two independent reasons:
     (1) *escaping* — a masker matches by literal occurrence, and

@@ -17095,6 +17095,8 @@
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",
         "S3BucketProvider.applyEffectiveOverrides(...) in update()",
         "S3BucketProvider.versioningOrLoggingRefusal(...) in update()",
+        "this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()",
+        "this.maskedView(sinks).update(...) in update()",
         "this.noWriteProbe().applySubConfigDiffs(...) in update()"
       ]
     },
