@@ -670,17 +670,20 @@ export class NestedStackProvider implements ResourceProvider {
     //
     // TWO binders, not one (issue
     // [#2086](https://github.com/go-to-k/cdkd/issues/2086)): the deploy engine
-    // around its six provider CREATE / UPDATE sites, and `rollback-executor.ts`
-    // around its four, where `resolveReplayProps` has just re-resolved the
-    // journal's `{{resolve:...}}` back to plaintext. The recovery path needed
-    // it too, or a rollback that reverted this row rewrote the child's
-    // `state.json` with the DECRYPTED secret.
+    // around its provider CREATE / UPDATE sites, and `rollback-executor.ts`
+    // around its own, where `resolveReplayProps` has just re-resolved the
+    // journal's `{{resolve:...}}` back to plaintext. A rollback reaches this
+    // method only through `create()` — a reverse-replacement replay re-creating
+    // this row — since a revert of the row passes `UpdateContext.replayingState`
+    // and `update()` returns through the journal-replay arm (issue #3754).
     //
     // `undefined` whenever no binder is on the stack (tests, and any future
     // non-deploy driver), which the child engine reads as "nothing to inherit"
-    // — the pre-#1903 behaviour. Standalone `cdkd rollback` never gets here at
-    // all: it builds a destroy-mode context, so `requireDeployContext` throws
-    // above.
+    // — the pre-#1903 behaviour. Of the rollback drivers, only the in-process
+    // auto-rollback's own rows get here, in its deploy-mode context. Standalone `cdkd rollback`
+    // and a nested child's journal replay (`nested-child-journal.ts`) never
+    // do: both contexts carry no templates, so a re-create throws at
+    // `requireDeployContext`.
     //
     // SCOPED PER RESOURCE, not per stack. What the child engine does with this
     // map is record a pair into a resource's own bag at the moment that
