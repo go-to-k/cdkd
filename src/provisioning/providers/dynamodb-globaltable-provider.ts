@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
   CreateTableCommand,
@@ -1768,7 +1769,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // its arm.
     if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
       const changed = (key: string): boolean =>
-        JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
+        !deepEqual(properties[key], previousProperties[key]);
       const refuse = (refusal: string, cause?: unknown): never => {
         throw new ProvisioningError(
           `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
@@ -2202,9 +2203,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // reports `ProvisionedThroughput: {0, 0}` for every index on a
       // PAY_PER_REQUEST table, so a desired side with no capacity read as
       // "modified" on every index and a flip re-sent `{0, 0}` (which AWS
-      // rejects); `deepEqual` is `JSON.stringify`, so AWS's member order
-      // versus the translator's manufactured differences on any index
-      // carrying both warm and provisioned throughput; and live capacity
+      // rejects); AWS's member order differs from the translator's, which a
+      // key-order-sensitive compare read as a change on any index carrying
+      // both warm and provisioned throughput; and live capacity
       // fights auto-scaling (live 10 vs the template's min 1 reads as a
       // scale-down nobody asked for).
       //
@@ -8540,12 +8541,8 @@ export function buildLiveRecoveryGsiBaseline(
     if (typeof desired.IndexName !== 'string') continue;
     const live = liveByName.get(desired.IndexName);
     if (!live) continue;
-    // Spread FIRST so every member keeps the desired side's key order:
-    // `deepEqual` is `JSON.stringify`, so an entry rebuilt member-by-member
-    // would differ from its own translated counterpart on ordering alone.
-    // Overwriting an existing key preserves its position; only a key the
-    // desired side lacks is appended, and in that case the two genuinely
-    // differ anyway.
+    // Spread FIRST so every member not overridden below is the desired
+    // side's own value, and so compares equal to its translated counterpart.
     const entry: GlobalSecondaryIndex = { ...desired };
     if (!options.carryLiveValues) {
       baseline.push(entry);
@@ -8911,18 +8908,18 @@ export function diffGlobalSecondaryIndexes(
 }
 
 /**
- * Structural equality via JSON.stringify. Both inputs are CFn-shape
- * POJOs (no functions, no symbols, no cycles), so JSON round-trip is
- * sufficient and free of the property-order pitfalls of deeper
- * comparators. Object property order from `Object.keys` is insertion
- * order in modern engines; AWS-SDK shapes are constructed by the SDK
- * in stable order, so this is safe in practice.
+ * Structural equality over the JSON form, ignoring object key order. Order is
+ * not stable across the two sides: `aws-cdk-lib` renders a GSI `Projection` as
+ * `{NonKeyAttributes, ProjectionType}` while an SDK readback is
+ * `{ProjectionType, NonKeyAttributes}`. The JSON round-trip drops `undefined`
+ * members and prototypes (`isDeepStrictEqual` checks both); array order stays
+ * significant.
  */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return isDeepStrictEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
   } catch {
     return false;
   }

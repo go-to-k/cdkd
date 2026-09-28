@@ -1563,6 +1563,35 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(d.removed.map((g) => g.IndexName)).toEqual(['b']);
       expect(d.modified.map((g) => g.IndexName)).toEqual(['a']);
     });
+
+    it('diffGlobalSecondaryIndexes ignores object key order but not array order (issue #3775)', () => {
+      const keySchema = [
+        { AttributeName: 'g', KeyType: 'HASH' },
+        { AttributeName: 's', KeyType: 'RANGE' },
+      ];
+      const oldGsi = [
+        {
+          IndexName: 'a',
+          KeySchema: keySchema,
+          Projection: { NonKeyAttributes: ['x'], ProjectionType: 'INCLUDE' },
+        },
+        { IndexName: 'b', KeySchema: keySchema, Projection: { ProjectionType: 'ALL' } },
+      ] as never;
+      const newGsi = [
+        {
+          Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['x'] },
+          KeySchema: keySchema.map(({ KeyType, AttributeName }) => ({ KeyType, AttributeName })),
+          IndexName: 'a',
+        },
+        {
+          IndexName: 'b',
+          KeySchema: [...keySchema].reverse(),
+          Projection: { ProjectionType: 'ALL' },
+        },
+      ] as never;
+      const d = diffGlobalSecondaryIndexes(oldGsi, newGsi);
+      expect(d.modified.map((g) => g.IndexName)).toEqual(['b']);
+    });
   });
 
   describe('delete', () => {

@@ -28,7 +28,7 @@ Take IDENTITY from the live read unconditionally; take VALUES only when:
 
 - it is not an AWS default for a mode the resource is not in (`ProvisionedThroughput: {0,0}` under PAY_PER_REQUEST) — gate on the live MODE; existence is mode-independent where values are not;
 - nothing else OWNS the number (an autoscaled capacity) — detect the owner from the TEMPLATE;
-- the comparator can tell them apart — `deepEqual` is `JSON.stringify` and readback order is not guaranteed, so SPREAD the desired entry and override only the members you vouch for.
+- the comparator can tell them apart — a `JSON.stringify` compare is key-order sensitive and readback order is not guaranteed, so SPREAD the desired entry and override only the members you vouch for.
 
 Fail OPEN on any unresolvable shape. The absent-field RESET derives from the PREVIOUS side, so an identity-only baseline disables every removal.
 
