@@ -478,11 +478,13 @@ describe('IAMManagedPolicyProvider (issue #2177)', () => {
       arn,
       TYPE,
       { ManagedPolicyName: SECRET, PolicyDocument: DOC, Groups: [SHORT], Users: [OLD_SECRET] },
+      // Principals are IAM NAMES: an ARN-shaped entry is refused before any
+      // call since go-to-k/cdkd#3906, so the recorded principal is a name.
       {
         ManagedPolicyName: SECRET,
         PolicyDocument: { Version: '2008-10-17', Statement: [] },
         Groups: [],
-        Roles: [SECRET_ARN],
+        Roles: [SECRET],
       },
       { maskSecrets }
     );

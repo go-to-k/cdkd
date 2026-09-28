@@ -88,6 +88,7 @@ import {
   IAMUserGroupProvider,
   MEMBERSHIP_NO_PROPERTIES_SKIP_REASON,
   MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
+  MEMBERSHIP_MALFORMED_USERS_SKIP_REASON,
 } from '../../../src/provisioning/providers/iam-user-group-provider.js';
 
 const LAMBDA_ARN = 'arn:aws:lambda:us-east-1:111122223333:function:my-handler';
@@ -388,6 +389,7 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       PERMISSION_STATEMENT_ID_SKIP_REASON,
       MEMBERSHIP_NO_PROPERTIES_SKIP_REASON,
       MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
+      MEMBERSHIP_MALFORMED_USERS_SKIP_REASON,
     ];
     for (const reason of reasons) {
       expect(reason.length).toBeLessThanOrEqual(64);

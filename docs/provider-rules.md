@@ -899,7 +899,9 @@ arms in `custom-resource-provider.ts`, the empty-policy-name arm in
 `iam-user-group-provider.ts`. Issue
 [#3878](https://github.com/go-to-k/cdkd/issues/3878) added the
 malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
-`Groups` / `Users` that is not a list of IAM names. Each exports its `reason` as
+`Groups` / `Users` that is not a list of IAM names. Issue
+[#3888](https://github.com/go-to-k/cdkd/issues/3888) added the same arm for an
+`AWS::IAM::UserToGroupAddition` record's `Users`. Each exports its `reason` as
 a named constant beside the provider, so the wording is pinned by a test instead
 of retyped.
 
