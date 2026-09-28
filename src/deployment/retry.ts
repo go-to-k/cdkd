@@ -351,8 +351,12 @@ export async function withRetry<T>(
   // which the name-collision classifier would credit to the resource and a
   // caller would answer by DELETING a live one (`--replace`'s old resource, the
   // rollback reverse-replacement's new one). So every error this call throws
-  // after the latch carries the auxiliary mark forward. Retry behaviour is
-  // unchanged: the latch changes only what the thrown error is anchored to.
+  // after the latch carries the auxiliary mark forward. The latch changes only
+  // what the thrown error is anchored to, never whether an attempt is retried.
+  // That includes the outer loops below, which retry "already exists" and so
+  // still spend their ~64s budget on a replayed collision: kept, because a
+  // provider that retires its resource in the catch can hit a late release of
+  // its OWN async delete there, which that retry rides out.
   //
   // It also covers the NESTED loops (the delete-then-re-create sites wrap a
   // default-schedule `withRetry` inside one retrying "already exists"): the
@@ -361,7 +365,7 @@ export async function withRetry<T>(
   // failure -- are marked by the outer one.
   let sawAuxiliary = false;
   const settle = (error: unknown): unknown =>
-    sawAuxiliary ? markAuxiliaryFailure(error, logicalId) : error;
+    sawAuxiliary ? markAuxiliaryFailure(error, shownId) : error;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {

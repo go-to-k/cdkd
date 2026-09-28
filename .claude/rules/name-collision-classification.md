@@ -52,7 +52,8 @@ the bounded `cause` chain for the error name and the Cloud Control
    (`src/provisioning/auxiliary-failure.ts`, #3826; the DynamoDB GlobalTable
    is residual #3877). `withRetry` carries the mark FORWARD: once an attempt
    failed auxiliary, every error that call throws is marked, since a replayed
-   create can collide with what that attempt left behind (#3972).
+   create can collide with what that attempt left behind (#3972). The #2902
+   orphan advice reads the same verdict, so it goes silent there by design.
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

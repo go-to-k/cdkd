@@ -200,8 +200,9 @@ describe('a replayed create colliding with its own earlier attempt (#3972)', () 
   });
 
   it('a replay that succeeds is returned as before', async () => {
-    // A provider that retires its resource in the catch replays cleanly; the
-    // fix must not turn the auxiliary failure into a give-up.
+    // Synthetic: the stub lets the second CreateStream succeed, the way a
+    // provider that retires its resource in the catch replays. The fix must
+    // not turn the auxiliary failure into a give-up.
     stubKinesis({ createStreamOutcomes: ['ok', 'ok'], tagThrottles: 1 });
     const provider = new KinesisStreamProvider();
     const result = await withRetry(
@@ -275,6 +276,23 @@ describe('isAuxiliaryFailure', () => {
     expect(isAuxiliaryFailure({ logicalId: auxiliaryLogicalId('A') })).toBe(true);
   });
 
+  it('reads an unreadable chain as unmarked, and marking it does not throw', () => {
+    const hostile = {
+      get cause(): unknown {
+        throw new Error('getter');
+      },
+    };
+    const owner = new ProvisioningError('x', TYPE, 'A');
+    Object.defineProperty(owner, 'cause', {
+      get(): unknown {
+        throw new Error('getter');
+      },
+    });
+    expect(isAuxiliaryFailure({ logicalId: 'A', cause: hostile })).toBe(false);
+    expect(isAuxiliaryFailure(owner)).toBe(false);
+    expect(() => markAuxiliaryFailure(owner, 'A')).not.toThrow();
+  });
+
   it('is false for an owner id, an unmarked chain, primitives and a mark past the walk', () => {
     expect(isAuxiliaryFailure(new ProvisioningError('x', TYPE, 'A'))).toBe(false);
     expect(isAuxiliaryFailure(new Error('x', { cause: new Error('y') }))).toBe(false);
@@ -282,6 +300,8 @@ describe('isAuxiliaryFailure', () => {
     expect(isAuxiliaryFailure(undefined)).toBe(false);
     // A non-string or inherited logicalId is not a mark.
     expect(isAuxiliaryFailure({ logicalId: 1 })).toBe(false);
+    // The suffix must END the id.
+    expect(isAuxiliaryFailure({ logicalId: 'A/auxiliary/x' })).toBe(false);
     expect(isAuxiliaryFailure(Object.create({ logicalId: auxiliaryLogicalId('A') }))).toBe(false);
     // Five links are walked, as `markAuxiliaryFailure` walks them.
     let chain: unknown = { logicalId: auxiliaryLogicalId('A') };
@@ -321,6 +341,8 @@ describe('the rollback reverse-replacement arm does not delete the live new stre
     // The third outcome is what a pre-fix run's re-create after its delete
     // meets, so that arm completes instead of retrying "already exists" for
     // minutes; a fixed run never sends it.
+    // `createWithRollbackRetry` takes no `sleep`, so the inner loop's 1s
+    // throttle backoff is real; the case's timeout is raised for it.
     const sent = stubKinesis({ createStreamOutcomes: ['ok', 'collide', 'ok'], tagThrottles: 1 });
     const provider = new KinesisStreamProvider();
     const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
@@ -351,5 +373,14 @@ describe('the rollback reverse-replacement arm does not delete the live new stre
     expect(sent.filter((c) => c === 'CreateStreamCommand')).toHaveLength(2);
     expect(result.failures).toBe(1);
     expect(state[LOGICAL_ID]?.physicalId).toBe('stream-new');
+    // It failed on the replayed collision itself, not on a later refusal arm
+    // (Retain, a Glue name) that a positive verdict would also have reached.
+    const failed = vi
+      .mocked(silentLogger.warn)
+      .mock.calls.map((c) => String(c[0]))
+      .filter((l) => l.includes('Rollback failed for'));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain(COLLISION);
+    expect(failed[0]).not.toContain('Cannot reverse the replacement');
   }, 15_000);
 });
