@@ -22,6 +22,8 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { isRedactedRecordedValue } from '../redacted-delete-address.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * Default polling budget for an instance fleet reaching RUNNING. Adding a
@@ -382,7 +384,16 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     const fleetType = properties?.['InstanceFleetType'] as string | undefined;
     const clusterId = properties?.['ClusterId'] as string | undefined;
 
-    if (fleetType === 'TASK' && clusterId) {
+    // go-to-k/cdkd#3952: a redacted ClusterId names no cluster. The scale-to-0
+    // is best-effort either way (there is no delete API; the instances go when
+    // the cluster terminates), so it is not attempted, and said so.
+    if (fleetType === 'TASK' && clusterId && isRedactedRecordedValue(clusterId)) {
+      this.logger.warn(
+        safeMsg`EMR instance fleet ${logicalId}: ClusterId is redacted in state, so the ` +
+          `best-effort scale-to-0 was not attempted — its instances are released when the ` +
+          `parent cluster terminates`
+      );
+    } else if (fleetType === 'TASK' && clusterId) {
       try {
         await this.getClient().send(
           new ModifyInstanceFleetCommand({

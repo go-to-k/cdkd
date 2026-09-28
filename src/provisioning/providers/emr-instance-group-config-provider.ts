@@ -23,6 +23,8 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { isRedactedRecordedValue } from '../redacted-delete-address.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * Default polling budget for an instance group reaching RUNNING. Adding a
@@ -392,7 +394,15 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     const role = properties?.['InstanceRole'] as string | undefined;
     const jobFlowId = properties?.['JobFlowId'] as string | undefined;
 
-    if (role === 'TASK' && jobFlowId) {
+    // go-to-k/cdkd#3952: see the instance-fleet provider -- a redacted
+    // JobFlowId names no cluster, so the best-effort scale-to-0 is skipped.
+    if (role === 'TASK' && jobFlowId && isRedactedRecordedValue(jobFlowId)) {
+      this.logger.warn(
+        safeMsg`EMR instance group ${logicalId}: JobFlowId is redacted in state, so the ` +
+          `best-effort scale-to-0 was not attempted — its instances are released when the ` +
+          `parent cluster terminates`
+      );
+    } else if (role === 'TASK' && jobFlowId) {
       try {
         await this.getClient().send(
           new ModifyInstanceGroupsCommand({

@@ -923,6 +923,16 @@ malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
 a named constant beside the provider, so the wording is pinned by a test instead
 of retyped.
 
+Issue [#3952](https://github.com/go-to-k/cdkd/issues/3952) added one shared
+arm, `redactedDeleteAddressSkip` (`src/provisioning/redacted-delete-address.ts`),
+for a delete whose recorded address property cdkd redacted (the `***` mask or a
+secret `{{resolve:...}}` expression): ApiGateway / ApiGatewayV2 children, ECS
+services, Glue catalog-scoped resources, Scheduler schedules, Route 53 record
+sets, security-group ingress rules, CloudWatch anomaly detectors, DB proxy
+target groups, and the
+fallback-less arms of the Lambda permission, IAM policy, UserToGroupAddition and
+ECS service deletes.
+
 Three lessons from that issue's code review are worth reusing before you add a
 skip arm of your own.
 

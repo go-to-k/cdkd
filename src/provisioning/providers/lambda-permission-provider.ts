@@ -19,6 +19,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the missing-`FunctionName` DELETE arm
@@ -275,8 +276,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
     // below then reports the statement DELETED, while `['my-fn']` coerces to a
     // bare name nothing validated and can succeed against the WRONG function.
     // Mirrors the same guard in iam-policy-provider.ts.
+    // go-to-k/cdkd#3952: a redacted FunctionName names no function, so it is
+    // treated as absent here and the physicalId below gets its turn.
+    const recordedFunctionName = properties?.['FunctionName'];
+    const functionNameRedacted = isRedactedRecordedValue(recordedFunctionName);
     const functionNameFromProperties =
-      typeof properties?.['FunctionName'] === 'string' ? properties['FunctionName'] : undefined;
+      typeof recordedFunctionName === 'string' && !functionNameRedacted
+        ? recordedFunctionName
+        : undefined;
 
     // Source 2: the composite physicalId's leading segment. Since "|" can only
     // be the separator (above), that segment IS the FunctionName half of the
@@ -330,6 +337,12 @@ export class LambdaPermissionProvider implements ResourceProvider {
     }
 
     const functionName = functionNameFromProperties || functionNameFromPhysicalId;
+    if (!functionName && functionNameRedacted) {
+      const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'Lambda permission', [
+        'FunctionName',
+      ]);
+      if (skip) return skip;
+    }
     if (!functionName) {
       this.logger.warn(
         safeMsg`FunctionName not available for Lambda permission ${logicalId} (neither the state ` +

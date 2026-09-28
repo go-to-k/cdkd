@@ -112,6 +112,10 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -1142,9 +1146,18 @@ export class GlueProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Glue Database ${logicalId}: ${physicalId}`);
 
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
     const target = deleteCatalogId(properties);
     if (target.declaredButUnusable) {
       this.logger.debug(
@@ -1553,6 +1566,15 @@ export class GlueProvider implements ResourceProvider {
     // account's DEFAULT Data Catalog — see {@link deleteCatalogId} for the leak
     // this closes (issue #1675). `createTable` and `importTable` both forward
     // it; this call omitted it.
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
     const target = deleteCatalogId(properties);
     if (target.declaredButUnusable) {
       this.logger.debug(
@@ -4942,12 +4964,21 @@ export class GlueConnectionProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Glue Connection ${logicalId}: ${physicalId}`);
     // Same catalog-scoping rule as the Table / Database deletes — see
     // {@link deleteCatalogId} (issue #1675). This call already forwarded
     // `CatalogId`, but through a bare cast that would have sent an unresolved
     // intrinsic OBJECT to the API.
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
     const target = deleteCatalogId(properties);
     if (target.declaredButUnusable) {
       this.logger.debug(

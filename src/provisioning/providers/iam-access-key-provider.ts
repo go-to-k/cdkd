@@ -26,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 
 /**
  * How far before an attempt's start a key's `CreateDate` may fall and still be
@@ -581,7 +582,13 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     this.logger.debug(`Deleting IAM access key ${logicalId}: ${physicalId}`);
 
     try {
-      let userName = properties?.['UserName'] as string | undefined;
+      // go-to-k/cdkd#3952: a redacted UserName names no user, so it takes the
+      // same GetAccessKeyLastUsed lookup an absent one does.
+      const recordedUserName = properties?.['UserName'];
+      let userName =
+        typeof recordedUserName === 'string' && !isRedactedRecordedValue(recordedUserName)
+          ? recordedUserName
+          : undefined;
       if (!userName) {
         const lastUsed = await this.iamClient.send(
           new GetAccessKeyLastUsedCommand({ AccessKeyId: physicalId })

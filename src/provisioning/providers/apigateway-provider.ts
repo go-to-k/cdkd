@@ -45,18 +45,32 @@ import type {
   CreateContext,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
 const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
   label: 'API Gateway Method',
   segments: ['restApiId', 'resourceId', 'httpMethod'],
 };
+
+/** The ApiGateway types whose delete addresses the child through `RestApiId`. */
+const REST_API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
+  'AWS::ApiGateway::Authorizer',
+  'AWS::ApiGateway::Resource',
+  'AWS::ApiGateway::Deployment',
+  'AWS::ApiGateway::Stage',
+]);
 
 /**
  * AWS API Gateway Provider
@@ -260,7 +274,19 @@ export class ApiGatewayProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#3952: these four address the child through the recorded
+    // RestApiId, and an unknown id answers NotFoundException, which their
+    // catches read as "already deleted" -- a redacted id would DROP the record.
+    if (REST_API_ID_ADDRESSED_TYPES.has(resourceType)) {
+      const skip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        resourceType,
+        redactedDeleteAddressFields({ RestApiId: properties?.['RestApiId'] })
+      );
+      if (skip) return skip;
+    }
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.deleteAccount(logicalId, physicalId, resourceType);
@@ -827,7 +853,20 @@ export class ApiGatewayProvider implements ResourceProvider {
       // points only at the new one.
       let orphanReason: string | undefined;
       try {
-        await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
+        // go-to-k/cdkd#3952: a redacted RestApiId would answer NotFound, which
+        // `deleteResource` reads as "already deleted" -- report the survivor.
+        if (
+          redactedDeleteAddressFields({ RestApiId: previousProperties['RestApiId'] }).length > 0
+        ) {
+          orphanReason = `old API Gateway Resource ${physicalId} was not deleted: its recorded RestApiId is redacted`;
+          this.logger.warn(
+            safeMsg`Old API Gateway Resource ${physicalId} was not deleted during replacement: its ` +
+              `recorded RestApiId is redacted in state, which names no API. The old resource ` +
+              `may be orphaned and require manual cleanup.`
+          );
+        } else {
+          await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
+        }
       } catch (error) {
         orphanReason = `old API Gateway Resource ${physicalId} could not be deleted: ${safeStringify(error)}`;
         this.logger.warn(
