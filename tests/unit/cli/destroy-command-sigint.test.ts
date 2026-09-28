@@ -147,7 +147,7 @@ vi.mock('../../../src/state/deployment-events-store.js', async (importOriginal) 
  * `forwardSigtermToSigint`'s own `listenerCount('SIGINT') === 0` fallback stop
  * firing for every command that runs after, in the same process.
  *
- * The rest of the module (`watchCommandInterrupt`, `isPromptAbortError`) stays
+ * The rest of the module (`watchCommandInterrupt`) stays
  * REAL — the whole file is about that watch's behaviour.
  */
 const forwardOverride = vi.hoisted(() => ({ fn: undefined as (() => () => void) | undefined }));

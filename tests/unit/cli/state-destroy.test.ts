@@ -75,7 +75,9 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: mockRunDestroyForStack,
 }));
 
-// Mock readline so the --all confirmation prompt is fully scriptable.
+// Mock readline so a prompt this command raised by itself would be observable.
+// It raises none since `--all` and its batch prompt were removed
+// (go-to-k/cdkd#3865); the per-stack prompt lives in the mocked runner.
 const readlineQuestion = vi.hoisted(() => vi.fn<(prompt: string) => Promise<string>>());
 const readlineClose = vi.hoisted(() => vi.fn());
 vi.mock('node:readline/promises', () => ({
@@ -136,11 +138,10 @@ async function runStateDestroy(args: string[]): Promise<string> {
 
 describe('cdkd state destroy', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
-  // Vitest's stdin is NOT a TTY, and the `--all` batch prompt now refuses a
-  // non-interactive run outright (`NON_INTERACTIVE_CONFIRM`, the same guard
-  // `gc.ts` and four sibling prompts use) rather than hanging on a `question`
-  // that can never settle. The cases below exercise the PROMPT, so they have
-  // to present as interactive. Same stub as `gc.test.ts` / `prefix-migration-check.test.ts`.
+  // Vitest's stdin is NOT a TTY. The cases present as INTERACTIVE so that a
+  // prompt this command raised itself would reach the mocked `question`
+  // rather than a non-interactive refusal, keeping the "no prompt" assertions
+  // meaningful. Same stub as `gc.test.ts` / `prefix-migration-check.test.ts`.
   let originalIsTTY: boolean | undefined;
 
   beforeEach(() => {
@@ -187,7 +188,7 @@ describe('cdkd state destroy', () => {
     vi.clearAllMocks();
   });
 
-  it('rejects when neither stack name nor --all is given', async () => {
+  it('rejects when no stack name is given', async () => {
     mockListStacks.mockResolvedValue([]);
 
     await expect(runStateDestroy(['destroy', '--yes'])).rejects.toThrow();
@@ -263,52 +264,85 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].removeProtection).toBe(false);
   });
 
-  it('--all prompts once for the batch and dispatches every stack', async () => {
-    mockListStacks.mockResolvedValue([
-      { stackName: 'B', region: 'us-east-1' },
-      { stackName: 'A', region: 'us-east-1' },
-    ]);
-    mockGetState.mockImplementation(async (name: string) => ({
-      state: makeStackState(name, 'us-east-1'),
-      etag: '"x"',
-    }));
-    readlineQuestion.mockResolvedValue('y');
+  /**
+   * `--all` is removed (go-to-k/cdkd#3865): it destroyed every stack in the
+   * state bucket, which every CDK app in the account shares. The option stays
+   * DECLARED (hidden) so passing it reaches cdkd's own refusal, which names
+   * the replacement, instead of commander's generic unknown-option error.
+   *
+   * Every shape is refused BEFORE the state bucket is read: stack names beside
+   * `--all` are not run either, since the operator typed `--all` expecting the
+   * old meaning. `-y` must not turn the refusal into a batch destroy.
+   */
+  describe('--all is removed (go-to-k/cdkd#3865)', () => {
+    // Each shape is its own literal call so the operand-count fence
+    // (`commander-parse-from-user-convention.test.ts`) can read every one.
+    const shapes: readonly (readonly [string, () => Promise<string>])[] = [
+      ['--all', () => runStateDestroy(['destroy', '--all'])],
+      ['--all -y', () => runStateDestroy(['destroy', '--all', '-y'])],
+      ['--all --yes', () => runStateDestroy(['destroy', '--all', '--yes'])],
+      ['A --all --yes', () => runStateDestroy(['destroy', 'A', '--all', '--yes'])],
+      ['--all A B', () => runStateDestroy(['destroy', '--all', 'A', 'B'])],
+      [
+        '--all --stack-region us-east-1 -y',
+        () => runStateDestroy(['destroy', '--all', '--stack-region', 'us-east-1', '-y']),
+      ],
+    ];
 
-    await runStateDestroy(['destroy', '--all']);
+    for (const [label, run] of shapes) {
+      it(`refuses \`state destroy ${label}\` before reading state, prompting or destroying`, async () => {
+        mockListStacks.mockResolvedValue([
+          { stackName: 'A', region: 'us-east-1' },
+          { stackName: 'B', region: 'us-east-1' },
+        ]);
+        mockGetState.mockImplementation(async (name: string) => ({
+          state: makeStackState(name, 'us-east-1'),
+          etag: '"x"',
+        }));
+        readlineQuestion.mockResolvedValue('y');
 
-    // Single batch prompt regardless of stack count.
-    expect(readlineQuestion).toHaveBeenCalledTimes(1);
-    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
-    // Listed in sorted order.
-    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('A');
-    expect(mockRunDestroyForStack.mock.calls[1]?.[0]).toBe('B');
-    // --all implies skipConfirmation downstream (the user already accepted
-    // the batch prompt).
-    expect(mockRunDestroyForStack.mock.calls[0]?.[2].skipConfirmation).toBe(true);
-  });
+        await expect(run()).rejects.toThrow('process.exit-mock');
+        expect(exitSpy).toHaveBeenCalledWith(1);
+        const message = errorSpy.mock.calls.flat().join(' ');
+        expect(message).toContain('cdkd state destroy no longer accepts --all');
+        expect(message).toContain("cdkd state destroy '<stacks...>'");
+        expect(message).toContain('cdkd destroy --all from the CDK app');
+        expect(message).not.toMatch(/unknown option/i);
 
-  it('--all renders a planted stack name in the batch prompt as one quoted row (go-to-k/cdkd#3374)', async () => {
-    mockListStacks.mockResolvedValue([{ stackName: 'Decoy\n  - ProdStack', region: 'us-east-1' }]);
-    readlineQuestion.mockResolvedValue('n');
+        expect(mockVerifyBucketExists).not.toHaveBeenCalled();
+        expect(mockListStacks).not.toHaveBeenCalled();
+        expect(mockGetState).not.toHaveBeenCalled();
+        expect(readlineQuestion).not.toHaveBeenCalled();
+        expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      });
+    }
 
-    const output = await runStateDestroy(['destroy', '--all']);
+    it('is not advertised in the help text', () => {
+      const destroyCmd = createStateCommand().commands.find((c) => c.name() === 'destroy');
+      expect(destroyCmd).toBeDefined();
+      const help = destroyCmd!.helpInformation();
+      expect(help).toContain('--remove-protection');
+      // `--allow-unsupported-types` is listed, so match the flag as a whole word.
+      expect(help).not.toMatch(/--all(?![-\w])/);
+    });
 
-    expect(output).toContain('  - "Decoy   - ProdStack"\n');
-    expect(output).not.toContain('\n  - ProdStack');
+    it('the "Stack name is required" usage no longer offers --all', async () => {
+      await expect(runStateDestroy(['destroy', '-y'])).rejects.toThrow('process.exit-mock');
+      const message = errorSpy.mock.calls.flat().join(' ');
+      expect(message).toContain("Usage: cdkd state destroy '<stacks...>'");
+      expect(message).not.toContain('--all');
+    });
   });
 
   /**
-   * A per-stack refusal ENDS the `--all` run (issue go-to-k/cdkd#3161): there
-   * is no per-stack catch around the dispatch, so the first stack whose record
-   * cannot be read stops the ones not yet reached.
-   *
-   * Fenced rather than merely true, because it is what a reader of the
-   * `--all` docs needs and because a later lane adding a per-stack catch would
-   * change it silently in either direction. The stacks not reached are
-   * UNTOUCHED, which is what makes the behaviour acceptable — a re-run after
-   * the repair proceeds — and that is the half this asserts.
+   * A per-stack refusal ENDS a multi-stack run (issue go-to-k/cdkd#3161):
+   * there is no per-stack catch around the dispatch, so the first stack whose
+   * record cannot be read stops the ones not yet reached. The stacks not
+   * reached are UNTOUCHED, which is what makes the behaviour acceptable — a
+   * re-run after the repair proceeds — and that is the half this asserts.
+   * (Pinned through `--all` until that option was removed, go-to-k/cdkd#3865.)
    */
-  it('--all stops at the first stack whose record is refused', async () => {
+  it('a multi-stack run stops at the first stack whose record is refused', async () => {
     mockListStacks.mockResolvedValue([
       { stackName: 'A', region: 'us-east-1' },
       { stackName: 'B', region: 'us-east-1' },
@@ -326,35 +360,34 @@ describe('cdkd state destroy', () => {
     // exit, which the suite's `process.exit` spy turns into this throw — so the
     // assertion is on the EXIT, and the refusal's own text is asserted through
     // the error channel rather than through the rejection.
-    await expect(runStateDestroy(['destroy', '--all', '-y'])).rejects.toThrow('process.exit-mock');
+    await expect(runStateDestroy(['destroy', 'A', 'B', '-y'])).rejects.toThrow('process.exit-mock');
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(errorSpy.mock.calls.flat().join(' ')).toContain('refused');
 
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     expect(
       mockRunDestroyForStack.mock.calls[0]?.[0],
-      'the sorted order changed; this case is no longer asserting that B went unreached'
+      'the dispatch order changed; this case is no longer asserting that B went unreached'
     ).toBe('A');
   });
 
-  it('--all + user declines the batch prompt: nothing dispatched', async () => {
-    mockListStacks.mockResolvedValue([{ stackName: 'A', region: 'us-east-1' }]);
-    readlineQuestion.mockResolvedValue('n');
+  it('without --yes, named stacks raise no batch prompt and leave the per-stack prompt to the runner', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name, 'us-east-1'),
+      etag: '"x"',
+    }));
 
-    await runStateDestroy(['destroy', '--all']);
-
-    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith('Destroy cancelled');
-  });
-
-  it('--all -y skips the batch prompt entirely', async () => {
-    mockListStacks.mockResolvedValue([{ stackName: 'A', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValue({ state: makeStackState('A', 'us-east-1'), etag: '"x"' });
-
-    await runStateDestroy(['destroy', '--all', '-y']);
+    await runStateDestroy(['destroy', 'A', 'B']);
 
     expect(readlineQuestion).not.toHaveBeenCalled();
-    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
+    for (const call of mockRunDestroyForStack.mock.calls) {
+      expect(call[2].skipConfirmation).toBe(false);
+    }
   });
 
   it('--stack-region filter skips a stack whose state.region disagrees', async () => {

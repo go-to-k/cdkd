@@ -1026,9 +1026,9 @@ export async function runDestroyForStack(
     // prompts already refuse -- `gc.ts`, `bootstrap-destroy.ts`,
     // `recreate-confirm-prompt.ts` and `prefix-migration-check.ts` all test
     // `isTTY` before creating the interface -- and issue #2247 chose the same
-    // refusal for `state destroy --all`'s BATCH
-    // prompt one layer up. This is the per-stack twin of that guard, so the
-    // two layers of the same command now agree.
+    // refusal for `state destroy --all`'s BATCH prompt one layer up (removed
+    // with that option, go-to-k/cdkd#3865). This was the per-stack twin of
+    // that guard.
     //
     // Only TWO of those four share the error SHAPE copied here: `gc.ts` and
     // `bootstrap-destroy.ts` throw `CdkdError` with `NON_INTERACTIVE_CONFIRM`.

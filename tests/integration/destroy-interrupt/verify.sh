@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh - cdkd destroy-interrupt integ.
 #
-# Exercises THREE behaviors that previously had ZERO integ coverage:
+# Exercises FOUR behaviors that previously had ZERO integ coverage:
 #
 #   #816 graceful SIGINT on destroy:
 #       A first Ctrl-C mid-destroy must STOP scheduling new deletes, let
@@ -14,6 +14,11 @@
 #       With an app that cannot be synthesized, `destroy --all` and a
 #       wildcard are refused (exit 1, synth error surfaced) and leave the
 #       deployed stack untouched; an exact name still reaches state.
+#
+#   #3865 `cdkd state destroy --all` is removed (Phase 1c):
+#       `--all`, alone or beside a stack name, exits 1 with cdkd's own
+#       refusal rather than commander's unknown-option error; an exact
+#       name alone still reaches the state listing.
 #
 #   #804 Custom-Resource replay fail-fast:
 #       On a re-run after a first interrupted/partial destroy, replaying
@@ -317,6 +322,60 @@ if printf '%s' "${EXACT_OUT}" | grep -qF "selects among the stacks this app synt
   exit 1
 fi
 echo "    OK: exact name reached the state fallback"
+
+# --- Phase 1c: `cdkd state destroy --all` is removed (go-to-k/cdkd#3865) ----
+#
+# `--all` destroyed every stack in the state bucket, which every CDK app in the
+# account shares. It must now exit 1 with cdkd's own refusal -- not commander's
+# unknown-option error -- before anything is read, also when a stack name is
+# given beside it. Both arms run under the EMPTY prefix proved above: before
+# the fix they listed nothing there and exited 0 ("No stacks found in state"),
+# so they discriminate, and a regressed `--all` can never reach the shared
+# prefix, where it would destroy every stack in the bucket.
+echo "==> Phase 1c: state destroy refuses --all"
+STATE_ALL_REFUSAL="no longer accepts --all: it destroyed every stack in the state bucket"
+for STATE_ALL_ARGS in "--all" "${STACK} --all"; do
+  set +e
+  # Word-split on purpose: the arm's arguments are two fixed shapes, and the
+  # stack name is a plain identifier.
+  # shellcheck disable=SC2086
+  STATE_ALL_OUT=$(node "${LOCAL_DIST}" state destroy ${STATE_ALL_ARGS} --yes \
+    --state-bucket "${STATE_BUCKET:-}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" 2>&1)
+  STATE_ALL_RC=$?
+  set -e
+  printf '%s\n' "${STATE_ALL_OUT}"
+  if [ "${STATE_ALL_RC}" -ne 1 ]; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} --yes exited ${STATE_ALL_RC}, expected 1" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${STATE_ALL_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} did not print the --all removal refusal" >&2
+    exit 1
+  fi
+  if printf '%s' "${STATE_ALL_OUT}" | grep -qiF "unknown option"; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} hit commander's unknown-option error instead of the refusal" >&2
+    exit 1
+  fi
+  echo "    OK: state destroy ${STATE_ALL_ARGS} refused (rc=1)"
+done
+
+# Control: an exact name alone is not refused -- it reaches the state listing,
+# which has no record under the empty prefix.
+set +e
+STATE_EXACT_OUT=$(node "${LOCAL_DIST}" state destroy "${STACK}" --yes \
+  --state-bucket "${STATE_BUCKET:-}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" 2>&1)
+STATE_EXACT_RC=$?
+set -e
+printf '%s\n' "${STATE_EXACT_OUT}"
+if [ "${STATE_EXACT_RC}" -ne 1 ] || ! printf '%s' "${STATE_EXACT_OUT}" | grep -qF "No state found for stack(s): ${STACK}"; then
+  echo "FAIL: state destroy of an exact name did not reach the state listing (rc=${STATE_EXACT_RC})" >&2
+  exit 1
+fi
+if printf '%s' "${STATE_EXACT_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+  echo "FAIL: an exact state destroy name was refused like --all" >&2
+  exit 1
+fi
+echo "    OK: exact name reached the state listing"
 
 # --- Phase 2: first Ctrl-C (graceful SIGINT, #816) --------------------
 #
