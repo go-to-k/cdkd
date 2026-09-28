@@ -98,6 +98,11 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 ECR_REPO=""
 IMAGE_TAG=""
 
+# Phase 2 invokes both Lambdas, so Lambda creates their
+# `/aws/lambda/CdkdStageAssets-Stack-*` log groups, which no stack owns and
+# destroy therefore leaves behind.
+. ../cr-log-groups.sh
+
 cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -125,6 +130,7 @@ cleanup() {
     aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
       --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
   exit "${rc}"
 }
@@ -473,5 +479,6 @@ trap - EXIT INT TERM
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
   --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
+sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
 
 echo "[verify] PASS"
