@@ -222,9 +222,15 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
 
       expect(error?.message).toContain('the bucket lives in us-west-2');
       expect(error?.message).toContain("this stack's state is for us-east-1");
+      // The update arm drops only this bucket's record: the stack's other
+      // resources are live, so a whole-stack orphan would re-create them all
+      // (go-to-k/cdkd#3996).
       expect(error?.message).toContain(
-        "(this stack's region, not the bucket's), which removes EVERY record the stack has in that region"
+        "drop this bucket's record with 'cdkd orphan <StackPath>/<Path/To/Bucket>', which removes " +
+          'only that record'
       );
+      expect(error?.message).toContain("creates the bucket the template declares, in this stack's region");
+      expect(error?.message).not.toContain('cdkd state orphan');
     });
 
     it('marks the refusal NON-RETRYABLE, and is not re-labelled as an AWS failure', async () => {
@@ -513,6 +519,7 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         "(this stack's region, not the bucket's), which removes EVERY record the stack has in that region"
       );
       expect(error?.message).toContain('delete it deliberately in us-west-2');
+      expect(error?.message).toContain("so run it once this is the stack's last record");
     });
   });
 

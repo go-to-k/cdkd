@@ -370,6 +370,28 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
     }
   );
 
+  it('AWS::Lambda::Permission: a line break planted in the record cannot forge a warning line (go-to-k/cdkd#3996)', async () => {
+    // Both skip arms interpolate the record's logicalId / physicalId, which
+    // `safeMsg` flattens to one line.
+    await new LambdaPermissionProvider().delete(
+      'My\nPerm',
+      'my-fn\n[forged] cdkd state orphan X|',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-fn' }
+    );
+    await new LambdaPermissionProvider().delete(
+      'My\nPerm',
+      '|AllowInvoke',
+      'AWS::Lambda::Permission',
+      {}
+    );
+    const text = warnText();
+    expect(text).toContain('has no StatementId in its physicalId');
+    expect(text).toContain('FunctionName not available for Lambda permission');
+    expect(text).not.toMatch(/\n\[forged\]/);
+    expect(text).not.toContain('My\nPerm');
+  });
+
   it('the arms with NO in-stack parent do NOT carry the qualifier', async () => {
     // A Lambda layer version and a Custom Resource's external side effects are
     // not removed by anything else in the destroy, so "LEFT IN PLACE" is
