@@ -461,6 +461,7 @@ still be billing. Four causes today:
   | `AWS::Lambda::Permission` with neither a `FunctionName` property nor a function ARN in its `physicalId` | The statement stays on the function's resource policy — an invoke grant outliving the stack. |
   | `AWS::Lambda::Permission` whose `physicalId` carries no StatementId | As above. |
   | A Custom Resource with no properties, or no `ServiceToken` | Its handler never receives a `Delete` request, so whatever it manages elsewhere is untouched. |
+  | A Custom Resource whose recorded `ServiceToken` is the redaction mask `***` — it read a `NoEcho` value equal to, or contained in, its own `ServiceToken` | As above. A re-deploy masks it again, so restore the ARN while the handler still exists, or tear the resource down by hand. |
   | `AWS::IAM::Policy` with neither a policy name in its `physicalId` nor a `PolicyName` property | The policy stays attached wherever it is. |
   | `AWS::IAM::Policy` naming no `Roles` / `Groups` / `Users` | An inline policy exists only as an attachment, so a record naming no principal cannot be deleted. |
   | `AWS::IAM::UserToGroupAddition` missing `GroupName` or `Users` | The users keep every permission the group grants. |

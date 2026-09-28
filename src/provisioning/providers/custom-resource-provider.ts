@@ -17,7 +17,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
@@ -56,6 +56,7 @@ import type {
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { carriesSecretMask, SECRET_MASK } from '../../deployment/secret-redaction.js';
 
 /**
  * The DELETE path threads NO masker (issue #2178).
@@ -97,6 +98,17 @@ export const CR_NO_PROPERTIES_SKIP_REASON = 'no properties in state — Delete h
  */
 export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
   'no ServiceToken in state — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_NO_SERVICE_TOKEN_SKIP_REASON} for a record whose
+ * `ServiceToken` is the redaction mask (go-to-k/cdkd#3938). A dependent custom
+ * resource reading a `NoEcho` value equal to, or contained in, its own
+ * ServiceToken persists `ServiceToken: "***"`, and that mask used to reach
+ * `GetFunction` and the Delete invoke as a function name. Distinct because
+ * the repair differs: the field is present, but what it held was redacted.
+ */
+export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
+  'masked ServiceToken in state — Delete handler not invoked';
 
 /**
  * Third sibling of the two above, for the arm where cdkd HAD everything it
@@ -1520,6 +1532,30 @@ export class CustomResourceProvider implements ResourceProvider {
         logicalId,
         physicalId
       );
+    }
+
+    // go-to-k/cdkd#3938: a SKIP, for the same reason as the no-ServiceToken arm
+    // above — what names the handler is not in the record. The mask must never
+    // reach Lambda: it names no function, so the issue-#804 pre-check and the
+    // invoke fail with an AWS error that says nothing about the mask, and a
+    // `ResourceNotFoundException` there would read as "backing Lambda gone"
+    // and DROP the record over a live resource. Re-deploying does not repair
+    // the record while the NoEcho attribute still carries that value: the
+    // same needle masks the same leaf again.
+    if (carriesSecretMask(serviceToken)) {
+      this.logger.warn(
+        safeMsg`ServiceToken for custom resource ${logicalId} is recorded in state as the redaction ` +
+          safeMsg`mask '${SECRET_MASK}' (a NoEcho value this resource reads equals, or is contained ` +
+          `in, its ServiceToken), so cdkd cannot address the handler; skipping deletion — ` +
+          `anything this custom resource manages is LEFT IN PLACE. Re-deploying does not repair ` +
+          `the record while that attribute still carries the value. Tear the resource down by ` +
+          `hand, then clear the stack's records with 'cdkd state orphan <stack>' — that command ` +
+          `drops EVERY record for the stack, not just this one. Restoring ServiceToken (the ` +
+          `provider's Lambda function or SNS topic ARN) in state.json and re-running helps only ` +
+          `while that handler still exists: a destroy goes on to delete its backing Lambda. ` +
+          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: CR_MASKED_SERVICE_TOKEN_SKIP_REASON };
     }
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /
