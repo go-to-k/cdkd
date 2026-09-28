@@ -75,7 +75,7 @@ import {
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
-  recordMaskOnlyValue,
+  recordDerivedMaskOnlyValue,
   recordFreshNoEchoValuesIn,
   embedsFreshNoEchoValue,
   carryFreshNoEchoMark,
@@ -5381,6 +5381,45 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Values state already holds in the clear that a `NoEcho` handler can echo
+   * back (go-to-k/cdkd#2453): the region, the stack name, and — for a named
+   * producer — its `ServiceToken` plus each `:`-separated segment of it (the
+   * account id, the function name) and every literal string of its template
+   * `Properties`. {@link recordFreshNoEchoValuesIn} keeps a
+   * value EQUAL to one of them out of the containment arm, so an echoed region
+   * or account id does not flatten every ARN of the reading resource.
+   */
+  private publicNoEchoTokens(context: ResolverContext, producer?: string): ReadonlySet<string> {
+    const tokens = new Set<string>([this.resolverRegion]);
+    if (context.stackName !== undefined) tokens.add(context.stackName);
+    const serviceToken =
+      producer === undefined || !Object.hasOwn(context.resources, producer)
+        ? undefined
+        : context.resources[producer]?.properties?.['ServiceToken'];
+    if (typeof serviceToken === 'string') {
+      tokens.add(serviceToken);
+      for (const segment of serviceToken.split(':')) tokens.add(segment);
+    }
+    // The producer's LITERAL template inputs: a handler echoing
+    // `event.ResourceProperties` returns them verbatim, and the template is
+    // public. A literal carrying a `{{resolve:` is skipped: what the handler
+    // saw was its resolved secret, not this text.
+    const resources = context.template.Resources ?? {};
+    if (producer !== undefined && Object.hasOwn(resources, producer)) {
+      const walk = (node: unknown): void => {
+        if (typeof node === 'string') {
+          if (!node.includes('{{resolve:')) tokens.add(node);
+          return;
+        }
+        if (node === null || typeof node !== 'object') return;
+        for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+      };
+      walk(resources[producer]?.Properties);
+    }
+    return tokens;
+  }
+
+  /**
    * Note what SECRECY the attribute just read carries, then hand it back
    * UNCHANGED (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
    *
@@ -5442,7 +5481,12 @@ export class IntrinsicFunctionResolver {
       declared === true || (declared !== undefined && declared.has(attributeName));
     if (attributeIsDeclared && context.recordedSecretValues) {
       // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
-      recordFreshNoEchoValuesIn(value, context.recordedSecretValues);
+      recordFreshNoEchoValuesIn(
+        value,
+        context.recordedSecretValues,
+        undefined,
+        this.publicNoEchoTokens(context, logicalId)
+      );
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
@@ -8838,7 +8882,19 @@ export class IntrinsicFunctionResolver {
       if (recovered !== undefined) {
         if (context.recordedSecretValues) {
           // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
-          recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues);
+          // No producer record here, so only the regions and the stack names:
+          // an echoed account id still flattens (fail-closed).
+          const publicTokens = new Set(this.publicNoEchoTokens(context));
+          if (producerOutput !== undefined) {
+            publicTokens.add(producerOutput.stackName);
+            publicTokens.add(producerOutput.region);
+          }
+          recordFreshNoEchoValuesIn(
+            recovered,
+            context.recordedSecretValues,
+            undefined,
+            publicTokens
+          );
         }
         return recovered;
       }
@@ -10900,7 +10956,9 @@ export class IntrinsicFunctionResolver {
       (inputLogText !== resolvedValue ||
         this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
-      recordMaskOnlyValue(context.recordedSecretValues, result);
+      // DERIVED, so a leaf EMBEDDING the encoding is masked whole too
+      // (go-to-k/cdkd#2453).
+      recordDerivedMaskOnlyValue(context.recordedSecretValues, result);
       // The encoding of a FRESH `NoEcho` value is fresh too (go-to-k/cdkd#3662),
       // or a Base64 consumer of a re-minted token would be skipped as
       // `***` == `***`. The encoding of an ordinary secret is NOT: its record

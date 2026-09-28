@@ -4,11 +4,14 @@ import {
   SECRET_MASK,
   carriesFreshNoEchoValue,
   carriesSecretMask,
+  carryFreshNoEchoMark,
   embedsFreshNoEchoValue,
   freshNoEchoLeafPositions,
   recordFreshNoEchoValuesIn,
   clearRecoverableMaskedOutputs,
   maskSecretsInText,
+  mergeResolvedPairs,
+  recordDerivedMaskOnlyValue,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
   recordRecoverableMaskedOutput,
@@ -85,12 +88,31 @@ describe('mask-only redaction channel (issue #2274)', () => {
   });
 
   describe('the persist path takes a mask-only leaf WHOLE and never as a substring', () => {
-    it('leaves an EMBEDDED occurrence alone in a persisted bag', () => {
-      // Invariant (B). An inline `***` cannot be told apart from a literal
-      // `***` a user wrote, so no consumer could recognise it and
-      // `drift --revert` / `resolveReplayProps` would push the corrupted
-      // string to AWS. The residual (an embedded NoEcho value keeps its
-      // plaintext in state) is documented and tracked separately.
+    it('masks the WHOLE leaf that EMBEDS a fresh NoEcho value in a persisted bag (go-to-k/cdkd#2453)', () => {
+      // Invariant (A) for the embedded shape, kept under invariant (B): an
+      // inline `***` cannot be told apart from a literal `***` a user wrote, so
+      // the leaf is replaced WHOLE, which `carriesSecretMask` recognises and
+      // `drift --revert` / `resolveReplayProps` refuse.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+
+      const redacted = redactSecretsForState(
+        { Url: `https://${NOECHO}/x`, Plain: 'https://example.invalid/x' },
+        secrets
+      );
+
+      expect(redacted).toEqual({ Url: SECRET_MASK, Plain: 'https://example.invalid/x' });
+      expect(JSON.stringify(redacted)).not.toContain(NOECHO);
+      expect(carriesSecretMask(redacted)).toBe(true);
+    });
+
+    it('leaves an EMBEDDED occurrence of a mask-only value outside the containment population alone', () => {
+      // The other polarity. Only the resolver's writers (a `NoEcho` value it
+      // substituted, a derived `Fn::Base64` needle) mark a value for
+      // containment; the custom resource's own `Data` and the drift write
+      // paths stay whole-leaf, so an ordinary leaf merely containing one of
+      // those values -- an account id inside the resource's own ServiceToken
+      // ARN -- is not flattened.
       const secrets: RecordedSecretValues = new Map();
       recordMaskOnlyValue(secrets, NOECHO);
 
@@ -99,9 +121,242 @@ describe('mask-only redaction channel (issue #2274)', () => {
       });
     });
 
+    it('masks the WHOLE leaf that embeds a DERIVED Fn::Base64 needle, which is not fresh', () => {
+      // `Fn::Join` around `Fn::Base64` of a secret persists a decodable
+      // encoding inside a longer leaf. Contained, it is masked whole; it is
+      // still not a FRESH value, so the no-change skip does not count it.
+      const encoded = Buffer.from('a-resolved-secret').toString('base64');
+      const secrets: RecordedSecretValues = new Map();
+      recordDerivedMaskOnlyValue(secrets, encoded);
+      const bag = { UserData: `#!/bin/bash\nTOKEN=${encoded}\n`, Whole: encoded };
+
+      expect(redactSecretsForState(bag, secrets)).toEqual({
+        UserData: SECRET_MASK,
+        Whole: SECRET_MASK,
+      });
+      expect(carriesFreshNoEchoValue(bag, secrets)).toBe(false);
+      // ...not even beside a fresh value of the same pass.
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      expect(carriesFreshNoEchoValue({ UserData: bag.UserData }, secrets)).toBe(false);
+      expect(freshNoEchoLeafPositions({ UserData: bag.UserData }, secrets)).toEqual([]);
+    });
+
+    it('keeps a fresh value EQUAL to a public token out of the containment arm, but not out of the whole-leaf arm', () => {
+      // A handler echoing the region or the account id under `NoEcho` would
+      // otherwise flatten every ARN of the dependent. The value is already in
+      // state in the clear (a segment of the producer's ServiceToken), so it
+      // costs no secrecy; a leaf EQUAL to it is still masked, as before.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(
+        { Account: '111122223333', Token: NOECHO },
+        secrets,
+        undefined,
+        new Set(['us-east-1', '111122223333', 'function', 'CrHandler'])
+      );
+      const bag = {
+        Arn: 'arn:aws:ssm:us-east-1:111122223333:parameter/app',
+        Account: '111122223333',
+        Url: `u:${NOECHO}@h`,
+      };
+
+      expect(redactSecretsForState(bag, secrets)).toEqual({
+        Arn: 'arn:aws:ssm:us-east-1:111122223333:parameter/app',
+        Account: SECRET_MASK,
+        Url: SECRET_MASK,
+      });
+      expect(carriesFreshNoEchoValue({ Arn: bag.Arn }, secrets)).toBe(false);
+      expect(carriesFreshNoEchoValue({ Account: bag.Account }, secrets)).toBe(true);
+    });
+
+    it('matches public tokens by EQUALITY: a value merely INSIDE one is still a containment needle', () => {
+      // A generated value that happens to occur inside the stack name is still
+      // a secret; excluding it would reopen the embedded leak for it.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn('prod', secrets, undefined, new Set(['myapp-prod-stack']));
+
+      expect(redactSecretsForState({ Url: 'postgres://u:prod@h' }, secrets)).toEqual({
+        Url: SECRET_MASK,
+      });
+    });
+
+    it('carries the containment mark with the fresh one into a nested child bag', () => {
+      const parent: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, parent);
+      const child: RecordedSecretValues = new Map();
+      recordMaskOnlyValue(child, NOECHO);
+      expect(redactSecretsForState({ V: `x-${NOECHO}` }, child)).toEqual({ V: `x-${NOECHO}` });
+
+      carryFreshNoEchoMark(parent, child, NOECHO);
+
+      expect(redactSecretsForState({ V: `x-${NOECHO}` }, child)).toEqual({ V: SECRET_MASK });
+    });
+
+    it('masks an embedding leaf on the SOURCE-bearing path too', () => {
+      // The persist choke point hands the template bag in as the position
+      // source; an `Fn::Join` around the `Fn::GetAtt` is the connection-string
+      // shape the issue names.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const source = {
+        Value: {
+          'Fn::Join': ['', ['postgres://u:', { 'Fn::GetAtt': ['Cr', 'Token'] }, '@db/app']],
+        },
+        Name: '/app/url',
+      };
+
+      expect(
+        redactSecretsForState({ Value: `postgres://u:${NOECHO}@db/app`, Name: '/app/url' }, secrets, source)
+      ).toEqual({ Value: SECRET_MASK, Name: '/app/url' });
+    });
+
+    it('KEEPS a leaf whose only occurrence lies strictly inside a resolvable reference span', () => {
+      // The reference guard: that occurrence is the reference's own public
+      // text, and flattening would destroy a re-resolvable expression for a
+      // coincidence. Every other placement flattens the leaf.
+      const inner = 'app-noecho-name';
+      const token = `{{resolve:secretsmanager:${inner}:SecretString:pw::}}`;
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(inner, secrets);
+
+      expect(redactSecretsForState({ Whole: token, Framed: `u:${token}@h` }, secrets)).toEqual({
+        Whole: token,
+        Framed: `u:${token}@h`,
+      });
+      // Beside the reference: the value is disclosed, so the leaf goes whole.
+      expect(redactSecretsForState({ Beside: `${token}:${inner}` }, secrets)).toEqual({
+        Beside: SECRET_MASK,
+      });
+      // Inside a token of a service cdkd does not resolve: not a reference.
+      expect(redactSecretsForState({ Other: `{{resolve:${inner}}}` }, secrets)).toEqual({
+        Other: SECRET_MASK,
+      });
+    });
+
+    it('flattens a leaf that carries a reference AND the value outside it, after the expression arm ran', () => {
+      // The leak-vs-destroy case: the alternatives are the plaintext or an
+      // unrecognisable inline mask. The reference could not be replayed from
+      // this record anyway, since the NoEcho half is not recoverable from it.
+      const secrets: RecordedSecretValues = new Map([[DYNREF_PLAINTEXT, DYNREF_EXPR]]);
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+
+      expect(
+        redactSecretsForState({ Url: `u:${DYNREF_PLAINTEXT}:${NOECHO}@h`, Other: `u:${DYNREF_PLAINTEXT}@h` }, secrets)
+      ).toEqual({ Url: SECRET_MASK, Other: `u:${DYNREF_EXPR}@h` });
+    });
+
+    it('returns the input by identity when no leaf embeds a fresh value', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const scrubbed = redactSecretsForState({ A: 'plain', B: ['x'] }, secrets);
+
+      expect(redactSecretsForState(scrubbed, new Map())).toBe(scrubbed);
+    });
+
+    it('keeps an own `__proto__` key as DATA when it rebuilds a container', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const bag = JSON.parse(`{"__proto__": {"polluted": "x-${NOECHO}"}, "Keep": "k"}`) as Record<
+        string,
+        unknown
+      >;
+
+      const redacted = redactSecretsForState(bag, secrets);
+
+      expect(Object.prototype.hasOwnProperty.call(redacted, '__proto__')).toBe(true);
+      expect(JSON.stringify(redacted)).not.toContain(NOECHO);
+      expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    });
+
+    it('carries the fresh mark through mergeResolvedPairs, so the OUTPUTS bag masks an embedding output', () => {
+      // The engine copies each outputs-pass map into its outputs bag entry by
+      // entry, then merges the pass's evidence with `mergeResolvedPairs`.
+      const pass: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, pass);
+      const outputs: RecordedSecretValues = new Map(pass);
+      expect(redactSecretsForState({ Out: `token=${NOECHO};` }, outputs)).toEqual({
+        Out: `token=${NOECHO};`,
+      });
+
+      mergeResolvedPairs(pass, outputs);
+
+      expect(redactSecretsForState({ Out: `token=${NOECHO};` }, outputs)).toEqual({
+        Out: SECRET_MASK,
+      });
+    });
+
+    it('does not carry a fresh mark onto an entry the destination holds with an EXPRESSION', () => {
+      const pass: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, pass);
+      const outputs: RecordedSecretValues = new Map([[NOECHO, DYNREF_EXPR]]);
+
+      mergeResolvedPairs(pass, outputs);
+
+      expect(carriesFreshNoEchoValue({ Out: `x-${NOECHO}` }, outputs)).toBe(false);
+      // The expression wins: the embedding leaf is rewritten onto it in place.
+      expect(redactSecretsForState({ Out: `x-${NOECHO}` }, outputs)).toEqual({
+        Out: `x-${DYNREF_EXPR}`,
+      });
+    });
+
+    it('masks an embedding leaf inside an ARRAY, at any nesting', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+
+      expect(
+        redactSecretsForState(
+          { L: ['ok', `x-${NOECHO}`], Env: [{ Name: 'URL', Value: `u:${NOECHO}@h` }] },
+          secrets
+        )
+      ).toEqual({ L: ['ok', SECRET_MASK], Env: [{ Name: 'URL', Value: SECRET_MASK }] });
+    });
+
+    it('masks a Date leaf whose persisted ISO string embeds a containment needle', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn('2026-01-02', secrets);
+      const kept = new Date('2025-05-05T00:00:00.000Z');
+
+      const redacted = redactSecretsForState(
+        { At: new Date('2026-01-02T03:04:05.000Z'), Kept: kept },
+        secrets
+      ) as Record<string, unknown>;
+
+      expect(redacted['At']).toBe(SECRET_MASK);
+      expect(redacted['Kept']).toBe(kept);
+    });
+
+    it('carries the containment mark of a DERIVED needle into a nested child bag, although it is not fresh', () => {
+      const encoded = Buffer.from('a-resolved-secret').toString('base64');
+      const parent: RecordedSecretValues = new Map();
+      recordDerivedMaskOnlyValue(parent, encoded);
+      const child: RecordedSecretValues = new Map();
+      recordMaskOnlyValue(child, encoded);
+
+      carryFreshNoEchoMark(parent, child, encoded);
+
+      expect(redactSecretsForState({ V: `x-${encoded}` }, child)).toEqual({ V: SECRET_MASK });
+      expect(carriesFreshNoEchoValue({ V: `x-${encoded}` }, child)).toBe(false);
+    });
+
+    it('masks the embedding leaf in every field scrubResourceRecord persists', () => {
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const record = {
+        properties: { Value: `postgres://u:${NOECHO}@db/app` },
+        attributes: { Echo: `echo:${NOECHO}` },
+        observedProperties: { Value: `postgres://u:${NOECHO}@db/app` },
+      };
+
+      const scrubbed = scrubResourceRecord(record, secrets);
+
+      expect(JSON.stringify(scrubbed)).not.toContain(NOECHO);
+      expect(scrubbed.properties).toEqual({ Value: SECRET_MASK });
+      expect(scrubbed.attributes).toEqual({ Echo: SECRET_MASK });
+    });
+
     it('still substring-scans an EXPRESSION-bearing needle in the same bag', () => {
       // The narrowing is scoped to the mask class alone: a bag holding both
-      // kinds must lose none of the dynamic-reference behaviour.
+      // kinds must lose none of the dynamic-reference behaviour. `NOECHO` is a
+      // NON-fresh mask-only value here, so its embedded occurrence stays.
       const secrets: RecordedSecretValues = new Map([[DYNREF_PLAINTEXT, DYNREF_EXPR]]);
       recordMaskOnlyValue(secrets, NOECHO);
 
@@ -209,10 +464,23 @@ describe('mask-only redaction channel (issue #2274)', () => {
       expect(carriesFreshNoEchoValue({ Value: SECRET_MASK }, secrets)).toBe(false);
     });
 
-    it('answers false for an EMBEDDED fresh value, which the persist path never masks', () => {
+    it('answers true for an EMBEDDED fresh value, which the persist path masks whole (go-to-k/cdkd#2453)', () => {
+      // Both sides of the no-change skip redact this leaf to `***`, so
+      // without this answer a handler returning a NEW value would compare
+      // equal and the update would be skipped.
       const secrets: RecordedSecretValues = new Map();
       recordFreshNoEchoValuesIn(NOECHO, secrets);
       const bag = { Value: `prefix-${NOECHO}` };
+
+      expect(carriesFreshNoEchoValue(bag, secrets)).toBe(true);
+      expect(redactSecretsForState(bag, secrets)).toEqual({ Value: SECRET_MASK });
+    });
+
+    it('answers false for a fresh value only inside a reference span, which the persist path keeps', () => {
+      const inner = 'app-noecho-name';
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(inner, secrets);
+      const bag = { Value: `u:{{resolve:secretsmanager:${inner}:SecretString:pw::}}@h` };
 
       expect(carriesFreshNoEchoValue(bag, secrets)).toBe(false);
       expect(redactSecretsForState(bag, secrets)).toEqual(bag);
@@ -286,7 +554,7 @@ describe('mask-only redaction channel (issue #2274)', () => {
         [{ Value: NOECHO }, derived],
         [{ Value: DYNREF_PLAINTEXT }, expression],
         [{ Value: SECRET_MASK }, fresh],
-        [{ Value: `prefix-${NOECHO}` }, fresh],
+        [{ Value: `prefix-${NOECHO}` }, derived],
         [{ Value: NOECHO }, excluded],
         [{ Value: NOECHO }, new Map(fresh)],
       ];
@@ -294,6 +562,18 @@ describe('mask-only redaction channel (issue #2274)', () => {
         expect(freshNoEchoLeafPositions(bag, secrets)).toEqual([]);
         expect(carriesFreshNoEchoValue(bag, secrets)).toBe(false);
       }
+    });
+
+    it('names a leaf EMBEDDING a fresh value, with the WHOLE leaf as its plaintext (go-to-k/cdkd#2453)', () => {
+      // The engine compares AWS's value at the position with `plaintext`, so it
+      // has to be the leaf AWS holds when the value is unchanged.
+      const secrets: RecordedSecretValues = new Map();
+      recordFreshNoEchoValuesIn(NOECHO, secrets);
+      const leaf = `postgres://u:${NOECHO}@db/app`;
+
+      expect(freshNoEchoLeafPositions({ Url: leaf, Plain: 'x' }, secrets)).toEqual([
+        { path: ['Url'], plaintext: leaf },
+      ]);
     });
 
     it('names every position of a container shared by two paths', () => {

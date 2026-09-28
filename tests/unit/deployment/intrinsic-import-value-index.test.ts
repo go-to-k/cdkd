@@ -476,6 +476,62 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       clearRecoverableMaskedOutputs();
     });
 
+    it('masks WHOLE a consumer leaf that EMBEDS the recovered value (go-to-k/cdkd#2453)', async () => {
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-west-2', 'Token', 'in-run-plaintext-2453');
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-west-2', outputs: { Token: '***' } },
+      ]);
+      const recordedSecretValues: RecordedSecretValues = new Map();
+
+      const result = await resolver.resolve(
+        { 'Fn::Join': ['', ['u:', { 'Fn::ImportValue': 'Token' }, '@h']] },
+        buildContext({
+          stateBackend: backend,
+          recordedImports: [],
+          redactedAttributeReads: [],
+          recordedSecretValues,
+        })
+      );
+
+      expect(result).toBe('u:in-run-plaintext-2453@h');
+      expect(
+        redactSecretsForState({ Value: result, Arn: 'arn:aws:sqs:us-west-2:1:Producer' }, recordedSecretValues)
+      ).toEqual({ Value: '***', Arn: 'arn:aws:sqs:us-west-2:1:Producer' });
+      clearRecoverableMaskedOutputs();
+    });
+
+    it("keeps a recovered value EQUAL to the producer's region out of the containment arm", async () => {
+      // An echoed region is public; matched inside a longer leaf it would
+      // flatten every ARN of the consumer. The producer's region, not only the
+      // resolver's, counts.
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput(AMBIENT_ID(), 'Producer', 'us-west-2', 'Token', 'us-west-2');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-west-2', outputs: { Token: '***' } },
+      ]);
+      const recordedSecretValues: RecordedSecretValues = new Map();
+
+      await new IntrinsicFunctionResolver('us-east-1').resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({
+          stateBackend: backend,
+          recordedImports: [],
+          redactedAttributeReads: [],
+          recordedSecretValues,
+        })
+      );
+
+      expect(
+        redactSecretsForState(
+          { Arn: 'arn:aws:sqs:us-west-2:1:q', Region: 'us-west-2' },
+          recordedSecretValues
+        )
+      ).toEqual({ Arn: 'arn:aws:sqs:us-west-2:1:q', Region: '***' });
+      clearRecoverableMaskedOutputs();
+    });
+
     it('does NOT recover a DIFFERENT producer output that happens to be masked', async () => {
       // The store is keyed by (identity, stack, region, output key), never by the bare
       // plaintext — the shape PR #2415 had to withdraw. A hit for one

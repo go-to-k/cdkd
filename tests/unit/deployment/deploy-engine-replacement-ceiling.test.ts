@@ -90,14 +90,17 @@ const TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:h';
  * `Reader.TopicName` (create-only for a topic, which is not a stateful type)
  * reads the CR's `Data`.
  */
-function template(description: string): CloudFormationTemplate {
+function template(
+  description: string,
+  topicName: unknown = { 'Fn::GetAtt': ['Cr', 'TopicName'] }
+): CloudFormationTemplate {
   return {
     Resources: {
       Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
       Reader: {
         Type: 'AWS::SNS::Topic',
         Properties: {
-          TopicName: { 'Fn::GetAtt': ['Cr', 'TopicName'] },
+          TopicName: topicName,
           DisplayName: description,
         },
       },
@@ -735,6 +738,38 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
         'Updating Reader (AWS::SNS::Topic)',
         'Replacing Reader (AWS::SNS::Topic)',
       ]);
+    });
+
+    describe('a create-only leaf EMBEDDING the value (go-to-k/cdkd#2453)', () => {
+      // The embedding leaf is persisted as `***` whole, so the readback compares
+      // the WHOLE resolved leaf with what AWS holds at that path.
+      const embedded = { 'Fn::Join': ['', ['t-', { 'Fn::GetAtt': ['Cr', 'TopicName'] }]] };
+      const deployEmbedded = (): Promise<unknown> =>
+        makeEngine({ captureObservedState: false }).deploy(STACK, template('d2', embedded));
+
+      it('updates the reader IN PLACE when AWS already holds the whole embedding leaf', async () => {
+        provider.readCurrentState.mockResolvedValue({ TopicName: `t-${SECRET}`, DisplayName: 'd1' });
+
+        await deployEmbedded();
+
+        const updates = callsFor(provider.update, 'Reader');
+        expect(updates).toHaveLength(1);
+        expect((updates[0]![3] as Record<string, unknown>)['TopicName']).toBe(`t-${SECRET}`);
+        expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
+        const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+        expect(saved.resources['Reader']?.properties['TopicName']).toBe('***');
+        expect(JSON.stringify(saved)).not.toContain(SECRET);
+      });
+
+      it('still REPLACES the reader when AWS holds a different string (the control)', async () => {
+        provider.readCurrentState.mockResolvedValue({ TopicName: 't-noecho-topic-old', DisplayName: 'd1' });
+
+        await deployEmbedded();
+
+        const creates = callsFor(provider.create, 'Reader');
+        expect(creates).toHaveLength(1);
+        expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(`t-${SECRET}`);
+      });
     });
 
     it('hands the provider the MASKED record, so an echoing readback can never confirm', async () => {

@@ -1136,7 +1136,8 @@ question.
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
   every string in its `Data` persisted as `***` — in the custom resource's own
   `attributes`, in the resolved `properties` of everything that consumed it via
-  `Fn::GetAtt`, and in `state.outputs` — while `Fn::GetAtt` keeps resolving to
+  `Fn::GetAtt`, and in `state.outputs` (a string EMBEDDING it is stored as `***`
+  whole, issue [#2453](https://github.com/go-to-k/cdkd/issues/2453)) — while `Fn::GetAtt` keeps resolving to
   the REAL value, which is what CloudFormation delivers to a dependent (issue
   [#2274](https://github.com/go-to-k/cdkd/issues/2274)). Because the value
   cannot be re-derived, a later deploy that has to WRITE a position holding the

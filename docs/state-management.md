@@ -1349,6 +1349,22 @@ in the custom resource's own `attributes`, in the resolved `properties` and
 `observedProperties` of every resource that consumed it through `Fn::GetAtt`,
 and in `state.outputs`.
 
+A consumer value that builds a LONGER string around the value
+(`postgres://user:${cr.getAttString('Password')}@db/app`) is stored as `***`
+whole, not with the value masked in place: an inline `***` could not be told
+from text you wrote, so nothing below could recognise and refuse it. The rest
+of that string is therefore not in state either. A longer string is kept as it
+is in two cases. The first is a value that occurs only inside the text of a
+`{{resolve:...}}` reference to a service cdkd resolves: the reference is kept
+so it can be resolved again, which means a reference NAME built from a
+`NoEcho` value stores that value in the clear. The second is a value that IS
+public text state already holds: the region, the stack name, one of the custom
+resource's literal template properties, its `ServiceToken` or one of that
+ARN's `:`-separated parts (its account id, for example). For a value read
+from another stack's output, only the regions and the stack names count. A
+string EQUAL to such a value is still stored as `***`. Any other string of the same consumer that happens to contain the value
+is stored as `***` too.
+
 ```js
 // in the handler
 return {
@@ -1441,20 +1457,15 @@ Giving the state file a durable per-attribute `NoEcho` flag — which would let 
 later deploy know WHY the mask is there rather than inferring it from the value
 — is a possible future schema bump, not yet implemented.
 
-**Known bound.** The mask replaces a WHOLE stored value. A template that
-EMBEDS the attribute inside a longer string (`Fn::Sub` / `Fn::Join` around the
-`Fn::GetAtt`) persists that string with the value still in it, because an
-inline `***` would be indistinguishable from a literal `***` and nothing
-downstream could recognise it.
-
-The same holds for a value used as a NAME. A resource's physical id is what
+**Known bound: a value used as a NAME.** A resource's physical id is what
 cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
 create-only name (`QueueName`, `TableName`, a parameter `Name`) is therefore
-stored in the clear as that resource's physical id. So is every attribute AWS
-builds around the name, such as a queue URL or an ARN (an attribute equal to
-the whole value is still masked), and so is any other resource's property or
-output that reads one of those, and any command output that shows a physical
-id. CloudFormation behaves the same way: `DescribeStackResources`
+stored in the clear as that resource's physical id. The attributes AWS builds
+around the name on that resource (a queue URL, an ARN) are stored as `***`,
+because they contain the value (so a later deploy that has to write one of
+them is refused, like any masked read), but any other resource's property or output
+that reads one of those holds it in the clear, and so does any command output
+that shows a physical id. CloudFormation behaves the same way: `DescribeStackResources`
 returns the physical id in the clear, whatever `NoEcho` said. Use `NoEcho`
 values as values, never as names.
 
