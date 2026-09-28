@@ -4241,8 +4241,12 @@ function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
   // different value. Never `String(x)` — that would make `123` exact and name
   // it.
   const built = pasteableCommand('cdkd state orphan', [
-    { value: stackName as string, hole: 'stack' },
-    { flag: '--stack-region', value: region as string, hole: 'region' },
+    // `plainIdent` (go-to-k/cdkd#3997): the command sits on a labelled line
+    // or in a list, the shape go-to-k/cdkd#3328 / #3696 gate that way, since
+    // a name that renders exactly can still spell a second line when a
+    // terminal wraps its padding.
+    { value: stackName as string, hole: 'stack', opts: { plainIdent: true } },
+    { flag: '--stack-region', value: region as string, hole: 'region', opts: { plainIdent: true } },
   ]);
   if (built.exact) return { command: built.command, note: '' };
   const reasons = [
@@ -4321,12 +4325,15 @@ export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): 
       return positional
         ? `begins with a '-', which 'cdkd state orphan' could parse as a flag`
         : `begins with a '-', which cdkd refuses to print as an argument`;
-    // Unreachable (both need a gate option this site does not pass), and
-    // answered with a TRUE sentence rather than a throw, as
-    // `refreshWithheldReason` does: a throw here would escape the
-    // state-deletion warn's `catch`.
-    case 'pattern-shaped':
     case 'not-plain':
+      return (
+        `is not a plain identifier (a letter or digit, then letters, digits and ~ _ . -), which cdkd does not ` +
+        `print on a command line`
+      );
+    // Unreachable (this site does not pass `patternMatched`), and answered
+    // with a TRUE sentence rather than a throw, as `refreshWithheldReason`
+    // does: a throw here would escape the state-deletion warn's `catch`.
+    case 'pattern-shaped':
       return `cannot be printed as an argument to 'cdkd state orphan'`;
     default: {
       const _exhaustive: never = reason;
