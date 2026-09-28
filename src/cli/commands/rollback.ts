@@ -63,6 +63,7 @@ import {
   isPasteableIdent,
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
+  safeMsg,
 } from '../../utils/display-safe.js';
 import {
   refuseMalformedOrphanRecords,
@@ -766,7 +767,7 @@ export async function rollbackCommand(
       logger.info(`\nRollback plan for '${safeStack(stackName)}' (${safe(region)}):`);
       if (orphanedPending > 0) {
         logger.info(
-          `\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
+          safeMsg`\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
             `has a journal to replay them (nothing else would ever replay them).`
         );
       }
@@ -849,7 +850,7 @@ export async function rollbackCommand(
           (s) => s.reason === NESTED_PENDING_PARENT_REASON
         );
         logger.info(
-          `Discarded ${discarded} record(s) of nested deploys whose parent run no longer has a ` +
+          safeMsg`Discarded ${discarded} record(s) of nested deploys whose parent run no longer has a ` +
             `journal to replay them.`
         );
       }
@@ -1065,7 +1066,7 @@ export async function rollbackCommand(
                         else segment.failedOperations = remaining;
                       } catch (stripError) {
                         logger.warn(
-                          `Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
+                          safeMsg`Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
                         );
                       }
                     }

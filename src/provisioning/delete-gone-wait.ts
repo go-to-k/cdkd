@@ -3,6 +3,7 @@ import { isThrottlingError, isTransientServerError } from '../deployment/retryab
 import { startInterruptWatch } from './interrupt-watch.js';
 import { resolvedResourceTimeoutMs } from './resource-timeout-registry.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
 type WaitLogger = { debug(message: string): void; warn(message: string): void };
@@ -83,13 +84,13 @@ export async function waitForGoneAfterDelete(opts: {
     let sawNonFailedStatus = false;
     for (;;) {
       if (watch.isInterrupted()) {
-        opts.logger.warn(`${stopped} (interrupted). ${consequence}`);
+        opts.logger.warn(safeMsg`${stopped} (interrupted). ${consequence}`);
         return;
       }
       try {
         const status = await opts.describe();
         if (status === undefined) {
-          opts.logger.debug(`${opts.what} is gone`);
+          opts.logger.debug(safeMsg`${opts.what} is gone`);
           return;
         }
         const failure = opts.failedStatus?.(status);
@@ -109,28 +110,29 @@ export async function waitForGoneAfterDelete(opts: {
           sawNonFailedStatus = true;
         }
         lastStatus = status;
-        opts.logger.debug(`${opts.what} status: ${status}, waiting for it to disappear`);
+        opts.logger.debug(safeMsg`${opts.what} status: ${status}, waiting for it to disappear`);
       } catch (error) {
         if (isWaitAbandonedError(error)) throw error;
         if (!isThrottlingError(error) && !isTransientServerError(error)) {
           // The warn carries the redacted summary; the AWS text it withholds
           // goes to debug, which is where `--verbose` points.
           opts.logger.debug(
-            `${opts.what}: status read failed: ${describeAwsFailure(error).detail}`
+            safeMsg`${opts.what}: status read failed: ${describeAwsFailure(error).detail}`
           );
           opts.logger.warn(
-            `${stopped}: its status could not be read (${describeAwsFailure(error).summary}). ` +
-              consequence
+            safeMsg`${stopped}: its status could not be read (${describeAwsFailure(error).summary}). ${consequence}`
           );
           return;
         }
-        opts.logger.debug(`${opts.what}: status read throttled or failed transiently, re-polling`);
+        opts.logger.debug(
+          safeMsg`${opts.what}: status read throttled or failed transiently, re-polling`
+        );
       }
       const remainingMs = maxWaitMs - (now() - startedAt);
       if (remainingMs <= 0) {
         opts.logger.warn(
-          `${stopped} after ${Math.round(maxWaitMs / 1000)}s` +
-            `${lastStatus !== undefined ? ` (last status: ${lastStatus})` : ''}. ${consequence}`
+          safeMsg`${stopped} after ${Math.round(maxWaitMs / 1000)}s` +
+            safeMsg`${lastStatus !== undefined ? ` (last status: ${lastStatus})` : ''}. ${consequence}`
         );
         return;
       }

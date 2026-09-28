@@ -50,6 +50,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -1309,7 +1310,7 @@ export class Route53Provider implements ResourceProvider {
         : undefined;
       if (identityChanged && !liveOldRecord) {
         this.logger.debug(
-          `Record set ${logicalId}: the previous record is not live in ${hostedZoneId}; writing the renamed record only`
+          safeMsg`Record set ${logicalId}: the previous record is not live in ${hostedZoneId}; writing the renamed record only`
         );
       }
       const changes: Change[] = liveOldRecord

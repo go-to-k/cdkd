@@ -13,6 +13,7 @@ import {
 import type { Logger } from '../../types/config.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 type CfnTag = { Key?: string; Value?: string };
 
@@ -59,11 +60,11 @@ export async function applyDocDBTagDiff(
     await client.send(
       new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
     );
-    logger.debug(`Removed ${tagsToRemove.length} tag(s) from DocDB resource ${arn}`);
+    logger.debug(safeMsg`Removed ${tagsToRemove.length} tag(s) from DocDB resource ${arn}`);
   }
   if (tagsToAdd.length > 0) {
     await client.send(new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd }));
-    logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DocDB resource ${arn}`);
+    logger.debug(safeMsg`Added/updated ${tagsToAdd.length} tag(s) on DocDB resource ${arn}`);
   }
 }
 
@@ -84,6 +85,8 @@ export async function attachDocDBTags(
     const tagsResp = await client.send(new ListTagsForResourceCommand({ ResourceName: arn }));
     result['Tags'] = normalizeAwsTagsToCfn(tagsResp.TagList);
   } catch (err) {
-    logger.debug(`DocDB ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`);
+    logger.debug(
+      safeMsg`DocDB ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
+    );
   }
 }

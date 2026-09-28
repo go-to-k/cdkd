@@ -21,6 +21,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * AWS DocumentDB DB subnet group provider (`AWS::DocDB::DBSubnetGroup`).
@@ -76,7 +77,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.assertType(resourceType, logicalId);
-    this.logger.debug(`Creating DocDB DBSubnetGroup ${logicalId}`);
+    this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
@@ -96,7 +97,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
       );
 
       this.logger.debug(
-        `Successfully created DocDB DBSubnetGroup ${logicalId}: ${dbSubnetGroupName}`
+        safeMsg`Successfully created DocDB DBSubnetGroup ${logicalId}: ${dbSubnetGroupName}`
       );
 
       return {
@@ -125,7 +126,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.assertType(resourceType, logicalId, physicalId);
-    this.logger.debug(`Updating DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
+    this.logger.debug(safeMsg`Updating DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
 
     try {
       // Class 2 — `SubnetIds: []` would be rejected by AWS as a structurally
@@ -166,7 +167,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
         );
       }
 
-      this.logger.debug(`Successfully updated DocDB DBSubnetGroup ${logicalId}`);
+      this.logger.debug(safeMsg`Successfully updated DocDB DBSubnetGroup ${logicalId}`);
 
       return {
         physicalId,
@@ -195,7 +196,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.assertType(resourceType, logicalId, physicalId);
-    this.logger.debug(`Deleting DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
+    this.logger.debug(safeMsg`Deleting DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(
@@ -203,7 +204,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
           DBSubnetGroupName: physicalId,
         })
       );
-      this.logger.debug(`Successfully deleted DocDB DBSubnetGroup ${logicalId}`);
+      this.logger.debug(safeMsg`Successfully deleted DocDB DBSubnetGroup ${logicalId}`);
     } catch (error) {
       if (isDocDBNotFoundError(error, 'DBSubnetGroupNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -214,7 +215,9 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DocDB DBSubnetGroup ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(
+          safeMsg`DocDB DBSubnetGroup ${physicalId} does not exist, skipping deletion`
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
