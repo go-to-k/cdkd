@@ -185,14 +185,17 @@ const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = {
 };
 
 /**
- * Types a create never collides on by NAME, so no name proves a holder: the
+ * Types no name proves a holder for, so a collision on one is refused: the
  * name is not unique (Route 53 hosted zones, ACM certificates, EMR clusters,
- * Cognito user pools), the write is an upsert (an inline IAM policy), or the
- * name-shaped create-only property names a PARENT, not the resource. A
- * collision on one of these is never the new resource's, and is refused.
+ * Cognito user pools), the write is an upsert (an inline IAM policy), the
+ * name-shaped create-only property names a PARENT, or — a nested stack — the
+ * child's `<parent>~<logicalId>` is a state key AWS never sees, so no AWS
+ * collision can be the stack's own (a child resource's collision reaches the
+ * parent only through the anchor residual in `retryable-errors.ts`).
  */
 const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
   'AWS::CertificateManager::Certificate',
+  'AWS::CloudFormation::Stack',
   'AWS::CloudWatch::AnomalyDetector',
   'AWS::Cognito::UserPool',
   'AWS::EC2::Instance',
@@ -209,6 +212,34 @@ const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Types whose NAME space ignores case (the service lower-cases the name, or
+ * refuses a second spelling), so a case-only difference is the same name.
+ * Every other type compares names EXACTLY: `Orders` and `orders` are two
+ * DynamoDB tables, and a folded match there would "prove" the wrong holder.
+ * A type missing here only refuses a case-only rename — the safe direction.
+ */
+const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
+  'AWS::DocDB::DBCluster',
+  'AWS::DocDB::DBInstance',
+  'AWS::DocDB::DBSubnetGroup',
+  'AWS::ElastiCache::CacheCluster',
+  'AWS::ElastiCache::SubnetGroup',
+  'AWS::IAM::Group',
+  'AWS::IAM::InstanceProfile',
+  'AWS::IAM::ManagedPolicy',
+  'AWS::IAM::Role',
+  'AWS::IAM::User',
+  'AWS::Neptune::DBCluster',
+  'AWS::Neptune::DBInstance',
+  'AWS::Neptune::DBSubnetGroup',
+  'AWS::RDS::DBCluster',
+  'AWS::RDS::DBInstance',
+  'AWS::RDS::DBProxy',
+  'AWS::RDS::DBProxyEndpoint',
+  'AWS::RDS::DBSubnetGroup',
+]);
+
+/**
  * Pairs of DIFFERENT types that share one name space, so across a `Type`
  * change the new resource can hold the old one's name.
  */
@@ -218,19 +249,11 @@ const SHARED_NAME_SPACES: ReadonlyArray<ReadonlySet<string>> = [
 
 const RECORD_SET = 'AWS::Route53::RecordSet';
 
-/**
- * A nested stack's child is named `<parent>~<logicalId>` whatever its
- * properties say (`NestedStackProvider`), so both halves of its replacement
- * carry the one name by construction.
- */
-const NESTED_STACK = 'AWS::CloudFormation::Stack';
-
 /** How {@link reverseReplacementNewHoldsName} reads a type's name. */
 export function reverseReplacementNameKeyKind(
   resourceType: string
-): 'keyed' | 'record-set' | 'logical-id' | 'not-name-keyed' | 'unknown' {
+): 'keyed' | 'record-set' | 'not-name-keyed' | 'unknown' {
   if (resourceType === RECORD_SET) return 'record-set';
-  if (resourceType === NESTED_STACK) return 'logical-id';
   if (NOT_NAME_KEYED_TYPES.has(resourceType)) return 'not-name-keyed';
   if (nameKeyFor(resourceType) !== undefined) return 'keyed';
   return 'unknown';
@@ -261,16 +284,7 @@ function valueAt(
   return nameValue(node as Record<string, unknown>, last);
 }
 
-/** A path's value in the recorded bag, else in the observed one. */
-function heldAt(
-  recorded: Record<string, unknown> | undefined,
-  observed: Record<string, unknown> | undefined,
-  path: readonly string[]
-): string | undefined {
-  return valueAt(recorded, path) ?? valueAt(observed, path);
-}
-
-/** Is `bag` carrying a secret mask or an unresolved reference at `path`? */
+/** Is `bag` carrying a secret mask, a reference or a non-string at `path`? */
 function unreadableAt(bag: Record<string, unknown> | undefined, path: readonly string[]): boolean {
   let node: unknown = bag;
   for (const segment of path) {
@@ -280,14 +294,30 @@ function unreadableAt(bag: Record<string, unknown> | undefined, path: readonly s
   return node !== undefined && node !== null && valueAt(bag, path) === undefined;
 }
 
-const fold = (value: string): string => value.toLowerCase();
+/**
+ * The NEW resource's value at `path`: recorded, else observed. `unreadable`
+ * when the side that would answer holds something that is not a name — an
+ * observed value is never allowed to stand behind a recorded mask, nor a
+ * scope default behind an observed one.
+ */
+function heldAt(
+  recorded: Record<string, unknown> | undefined,
+  observed: Record<string, unknown> | undefined,
+  path: readonly string[]
+): { value: string | undefined; unreadable: boolean } {
+  if (unreadableAt(recorded, path)) return { value: undefined, unreadable: true };
+  const value = valueAt(recorded, path) ?? valueAt(observed, path);
+  return { value, unreadable: value === undefined && unreadableAt(observed, path) };
+}
+
+const isArn = (value: string): boolean => value.startsWith('arn:');
 
 /**
- * Does `physicalId` name `name` (both lower-cased)? The deploy side's rule
+ * Does `physicalId` name `name`? The deploy side's rule
  * ({@link physicalIdNames}), plus the ELBv2 ARN, whose name segment is
  * followed by a generated id (`...:targetgroup/<name>/<id>`,
- * `...:loadbalancer/app/<name>/<id>`) — the one id a same-name replacement
- * CHANGES, so the only one a same-name reverse-replacement ever meets.
+ * `...:loadbalancer/<app|net|gwy>/<name>/<id>`) — the one id a same-name
+ * replacement CHANGES. Both arguments are already in the comparison's case.
  */
 function holderIdNames(physicalId: string, name: string): boolean {
   if (physicalIdNames(physicalId, name)) return true;
@@ -298,18 +328,18 @@ function holderIdNames(physicalId: string, name: string): boolean {
   return elbv2 !== null && elbv2[1] === name;
 }
 
-/** A Route 53 name or zone name, compared without its trailing dot. */
-const dnsFold = (value: string): string => fold(value).replace(/\.$/, '');
+/** A Route 53 name or zone name: DNS ignores case, and the trailing dot is optional. */
+const dnsFold = (value: string): string => value.toLowerCase().replace(/\.$/, '');
 
 /** A hosted zone id, with or without its `/hostedzone/` prefix. */
-const zoneIdFold = (value: string): string => fold(value).replace(/^\/hostedzone\//, '');
+const zoneIdFold = (value: string): string => value.replace(/^\/hostedzone\//i, '');
 
 /**
  * The verdict of {@link reverseReplacementNewHoldsName}. `holds: false`
- * carries a DISPLAY-SAFE `diagnosis` clause (every value through
- * `displayIdent`) naming the colliding name when it is known, and `known`:
- * `true` when the records show the new resource holds a DIFFERENT name (so
- * another resource holds the colliding one), `false` when they cannot decide.
+ * carries a DISPLAY-SAFE `diagnosis` clause naming the colliding name when it
+ * is known, and `known`: `true` when the records show the new resource holds a
+ * DIFFERENT name (so another resource holds the colliding one), `false` when
+ * they cannot decide.
  */
 export type ReverseReplacementHolderVerdict =
   | { readonly holds: true }
@@ -328,16 +358,27 @@ function unproven(diagnosis: string): ReverseReplacementHolderVerdict {
 }
 
 /**
- * An identifier as the refusal shows it: `displayIdent`, which quotes any
- * value that is not plain (padding, an invisible, a line break), since the
- * refusal ends on a pasteable `--orphan` line a forged value must not imitate.
+ * How the diagnosis shows a value: masked FIRST, while the value still has the
+ * spelling the masker matches (the replay bag is PLAINTEXT, and `displayIdent`
+ * escapes, strips and cuts), then `displayIdent`, which quotes any value that
+ * is not plain, since the refusal ends on a pasteable `--orphan` line a forged
+ * value must not imitate.
  */
-const shown = (value: string): string => displayIdent(value);
+interface Renderer {
+  shown(value: string): string;
+  quoted(value: string): string;
+}
 
-/** A name, in double quotes when `displayIdent` left it plain. */
-function quoted(value: string): string {
-  const rendered = displayIdent(value);
-  return rendered === value ? `"${value}"` : rendered;
+function renderer(mask: (value: string) => string): Renderer {
+  const shown = (value: string): string => displayIdent(mask(value));
+  return {
+    shown,
+    quoted(value) {
+      const masked = mask(value);
+      const rendered = displayIdent(masked);
+      return rendered === masked ? `"${masked}"` : rendered;
+    },
+  };
 }
 
 /** The Route 53 record-set rule: see {@link reverseReplacementNewHoldsName}. */
@@ -345,51 +386,67 @@ function recordSetHolds(
   requested: Record<string, unknown>,
   recorded: Record<string, unknown> | undefined,
   observed: Record<string, unknown> | undefined,
-  newPhysicalId: string
+  newPhysicalId: string,
+  r: Renderer
 ): ReverseReplacementHolderVerdict {
-  const newRecord = `the new record (${shown(newPhysicalId)})`;
+  const newRecord = `the new record (${r.shown(newPhysicalId)})`;
   const wantName = valueAt(requested, ['Name']);
   const wantType = valueAt(requested, ['Type']);
-  const haveName = heldAt(recorded, observed, ['Name']);
-  const haveType = heldAt(recorded, observed, ['Type']);
+  const haveName = heldAt(recorded, observed, ['Name']).value;
+  const haveType = heldAt(recorded, observed, ['Type']).value;
   if (wantName === undefined || wantType === undefined) {
     return unproven(`cdkd cannot read the Name and Type the re-created record asked for`);
   }
-  const wanted = `the re-create asked for Name ${quoted(wantName)}`;
+  const wanted = `the re-create asked for Name ${r.quoted(wantName)}`;
   if (haveName === undefined || haveType === undefined) {
     return unproven(`${wanted}, and cdkd cannot read the name ${newRecord} holds`);
   }
   if (dnsFold(wantName) !== dnsFold(haveName)) {
-    return elsewhere(`${wanted}, but ${newRecord} holds Name ${quoted(haveName)}`);
+    // A `\ddd` escape spells one name two ways; decoding it is the provider's
+    // business, so an escaped pair that differs is undecided, not different.
+    return /\\[0-9]{3}/.test(wantName + haveName)
+      ? unproven(`${wanted}, and cdkd cannot compare it with the escaped name ${newRecord} holds`)
+      : elsewhere(`${wanted}, while ${newRecord} holds Name ${r.quoted(haveName)}`);
   }
   const wantZoneId = valueAt(requested, ['HostedZoneId']);
-  const haveZoneId = heldAt(recorded, observed, ['HostedZoneId']);
+  const haveZoneId = heldAt(recorded, observed, ['HostedZoneId']).value;
   const wantZoneName = valueAt(requested, ['HostedZoneName']);
-  const haveZoneName = heldAt(recorded, observed, ['HostedZoneName']);
+  const haveZoneName = heldAt(recorded, observed, ['HostedZoneName']).value;
   const sameZone =
     wantZoneId !== undefined && haveZoneId !== undefined
       ? zoneIdFold(wantZoneId) === zoneIdFold(haveZoneId)
       : wantZoneName !== undefined && haveZoneName !== undefined
         ? dnsFold(wantZoneName) === dnsFold(haveZoneName)
         : undefined;
-  if (sameZone === false) return elsewhere(`${wanted}, but ${newRecord} is in another hosted zone`);
+  if (sameZone === false)
+    return elsewhere(`${wanted}, while ${newRecord} is in another hosted zone`);
   if (sameZone === undefined) {
     return unproven(
       `${wanted}, and cdkd cannot tell whether ${newRecord} is in the same hosted zone`
     );
   }
-  // A CNAME conflicts with every record of its name; any other record only
-  // with one of the same type and SetIdentifier.
-  if (fold(wantType) === 'cname' || fold(haveType) === 'cname') return HOLDS;
-  const sameIdentity =
-    fold(wantType) === fold(haveType) &&
-    (valueAt(requested, ['SetIdentifier']) ?? '') ===
-      (heldAt(recorded, observed, ['SetIdentifier']) ?? '');
-  return sameIdentity
+  const wantSet = valueAt(requested, ['SetIdentifier']);
+  const haveSet = heldAt(recorded, observed, ['SetIdentifier']).value;
+  const wantCname = wantType.toUpperCase() === 'CNAME';
+  const haveCname = haveType.toUpperCase() === 'CNAME';
+  // A CNAME conflicts with every record of its name that is NOT a CNAME; two
+  // CNAMEs of one name coexist under different SetIdentifiers.
+  if (wantCname !== haveCname) return HOLDS;
+  if (wantType.toUpperCase() !== haveType.toUpperCase()) {
+    return elsewhere(
+      `${wanted} of Type ${r.quoted(wantType)}, while ${newRecord} is a ${r.quoted(haveType)} ` +
+        `record of that name`
+    );
+  }
+  if ((wantSet === undefined) !== (haveSet === undefined)) {
+    return unproven(
+      `${wanted}, and only one of the two records carries a SetIdentifier, so cdkd cannot ` +
+        `tell whether ${newRecord} holds it`
+    );
+  }
+  return wantSet === haveSet
     ? HOLDS
-    : elsewhere(
-        `${wanted} of Type ${quoted(wantType)}, but ${newRecord} is a different record of that name`
-      );
+    : elsewhere(`${wanted}, while ${newRecord} is a different record set of that name`);
 }
 
 /**
@@ -408,24 +465,27 @@ function recordSetHolds(
  * answers only a KNOWN difference, because its positive answer refuses a
  * delete the user opted into; this one must PROVE the holder, because its
  * negative answer is what keeps an unasked delete from running. Anything it
- * cannot decide is `holds: false`.
+ * cannot decide is `holds: false`, so nothing here may fold two values that
+ * could name two resources (case, an ARN against a bare name).
  *
- * - The name the re-create asked for is read from the bag it sent
- *   (`requested`), by the OLD type's name key: the generic rule is
- *   {@link explicitNamePropertyFor}'s property, overridden per type in
- *   `REVERSE_REPLACEMENT_NAME_KEYS` for a nested name or a name placed by a
- *   parent (`scope`). A generated name counts when the caller filled it the
- *   way the provider generates it; a bag still nameless is undecidable.
+ * - The name the re-create asked for is read from `requested`, by the OLD
+ *   type's name key: the generic rule is {@link explicitNamePropertyFor}'s
+ *   property, overridden per type in `REVERSE_REPLACEMENT_NAME_KEYS` for a
+ *   nested name or a name placed by a parent (`scope`). With none there, the
+ *   `generated` bag's name counts — cdkd's own generation, which some SDK
+ *   providers do not mint verbatim (a prefix, or no rule at all), so a
+ *   mismatch on a generated name is undecided, never "elsewhere".
  * - The new resource holds it when its recorded (then observed) value of the
- *   same key equals it, or — for the name alone — when its physical id names
- *   it (the deploy side's rule: equal, a final segment after `|`, or after `:`
- *   / `/` in an ARN or URL; plus the ELBv2 ARN's name segment) — the proof for
- *   a generated name, which a recorded bag never holds. Every scope value must also be equal (absent on
- *   both sides counts as equal). Names compare case-insensitively.
- * - `AWS::Route53::RecordSet` compares the zone and the DNS name, then the
- *   type and SetIdentifier unless either record is a CNAME, which conflicts
- *   with every record of its name. A nested stack is named from its logical
- *   id, so the new one always holds it.
+ *   same key is the same name, or — for the name alone — when its physical id
+ *   names it (the deploy side's rule: equal, a final segment after `|`, or
+ *   after `:` / `/` in an ARN or URL; plus the ELBv2 ARN's name segment), the
+ *   proof for a generated name, which a recorded bag never holds. Names
+ *   compare exactly, except for `CASE_INSENSITIVE_NAME_TYPES`. Every scope
+ *   value must be exactly equal (absent on both sides counts as equal, and an
+ *   ARN against a bare value is undecided).
+ * - `AWS::Route53::RecordSet` compares the zone and the DNS name; then a CNAME
+ *   beside a non-CNAME holds, and two records of one kind need the same type
+ *   and SetIdentifier.
  * - A `Type` change holds only between types that share one name space
  *   (`SHARED_NAME_SPACES`). A type in `NOT_NAME_KEYED_TYPES`, or one with no
  *   name key at all, never holds.
@@ -434,88 +494,110 @@ function recordSetHolds(
 export function reverseReplacementNewHoldsName(input: {
   oldResourceType: string;
   newResourceType: string;
-  /**
-   * The bag the re-create of the OLD resource sent, with any name its provider
-   * generates filled in (`applyDefaultNameForFallback`, which mirrors the SDK
-   * providers' own generation).
-   */
+  /** The bag the re-create of the OLD resource was built from. */
   requested: Record<string, unknown>;
+  /** `requested` with the name cdkd generates filled in, for a nameless bag. */
+  generated?: Record<string, unknown> | undefined;
   /** The NEW resource's recorded properties. */
   recorded: Record<string, unknown> | undefined;
   /** The NEW resource's observed properties. */
   observed: Record<string, unknown> | undefined;
   /** The NEW resource's physical id. */
   physicalId: string;
+  /**
+   * Masks a value before it is rendered (the replay bag is plaintext). The
+   * caller still masks the whole message; this runs first, on the raw value.
+   */
+  mask?: ((value: string) => string) | undefined;
 }): ReverseReplacementHolderVerdict {
   const { oldResourceType, newResourceType, requested, recorded, observed, physicalId } = input;
-  const newResource = `the new resource (${shown(physicalId)})`;
+  const r = renderer(input.mask ?? ((value) => value));
+  const newResource = `the new resource (${r.shown(physicalId)})`;
   if (
     oldResourceType !== newResourceType &&
     !SHARED_NAME_SPACES.some((s) => s.has(oldResourceType) && s.has(newResourceType))
   ) {
     return elsewhere(
-      `${newResource} is a ${shown(newResourceType)}, which does not share a name space ` +
-        `with ${shown(oldResourceType)}`
+      `${newResource} is a ${r.shown(newResourceType)}, which does not share a name space ` +
+        `with ${r.shown(oldResourceType)}`
     );
   }
   if (oldResourceType === RECORD_SET) {
-    return recordSetHolds(requested, recorded, observed, physicalId);
+    return recordSetHolds(requested, recorded, observed, physicalId, r);
   }
-  if (oldResourceType === NESTED_STACK) return HOLDS;
   const oldKey = nameKeyFor(oldResourceType);
   const newKey = nameKeyFor(newResourceType);
   if (oldKey === undefined || newKey === undefined) {
     return unproven(
-      `cdkd does not know which property names a ${shown(oldResourceType)}, so it ` +
-        `cannot show that ${newResource} holds the colliding name`
+      `cdkd has no name property to compare for a ${r.shown(oldResourceType)}, so it cannot ` +
+        `show that ${newResource} holds the colliding name`
     );
   }
-  const namePath = oldKey.name.find((path) => valueAt(requested, path) !== undefined);
-  const wantName = namePath === undefined ? undefined : valueAt(requested, namePath);
+  const labels = oldKey.name.map((p) => r.shown(p.join('.'))).join(' / ');
+  if (oldKey.name.some((path) => unreadableAt(requested, path))) {
+    return unproven(
+      `the name the re-create asked for is redacted or unresolved, so cdkd cannot compare it ` +
+        `with ${newResource}`
+    );
+  }
+  let generatedName = false;
+  let namePath = oldKey.name.find((path) => valueAt(requested, path) !== undefined);
+  let wantName = namePath === undefined ? undefined : valueAt(requested, namePath);
+  if (namePath === undefined && input.generated !== undefined) {
+    namePath = oldKey.name.find((path) => valueAt(input.generated, path) !== undefined);
+    wantName = namePath === undefined ? undefined : valueAt(input.generated, namePath);
+    generatedName = wantName !== undefined;
+  }
   if (namePath === undefined || wantName === undefined) {
     return unproven(
-      oldKey.name.some((path) => unreadableAt(requested, path))
-        ? `the name the re-create asked for is redacted or unresolved, so cdkd cannot compare ` +
-            `it with ${newResource}`
-        : `the re-create asked for no ` +
-            `${oldKey.name.map((p) => shown(p.join('.'))).join(' / ')}, so its name was ` +
-            `generated, and cdkd cannot show that ${newResource} holds it`
+      `the re-create named no ${labels} (its provider picks one), so cdkd cannot show that ` +
+        `${newResource} holds it`
     );
   }
-  const wanted = `the re-create asked for ${shown(namePath.join('.'))} ${quoted(wantName)}`;
-  const haveName = newKey.name
-    .map((path) => heldAt(recorded, observed, path))
-    .find((v) => v !== undefined);
+  const wanted =
+    `the re-create asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}` +
+    (generatedName ? ' (the name cdkd generates)' : '');
+  const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
+    ? (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
+    : (a: string, b: string): boolean => a === b;
+  const inCase = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
+    ? (v: string): string => v.toLowerCase()
+    : (v: string): string => v;
+  const held = newKey.name.map((path) => heldAt(recorded, observed, path));
+  const haveName = held.find((h) => h.value !== undefined)?.value;
   const nameHeld =
-    (haveName !== undefined && fold(haveName) === fold(wantName)) ||
-    (physicalId !== '' && holderIdNames(fold(physicalId), fold(wantName)));
+    (haveName !== undefined && same(haveName, wantName)) ||
+    (physicalId !== '' && holderIdNames(inCase(physicalId), inCase(wantName)));
   if (!nameHeld) {
-    return haveName !== undefined
-      ? elsewhere(`${wanted}, but ${newResource} holds ${quoted(haveName)}`)
+    return haveName !== undefined && !generatedName
+      ? elsewhere(`${wanted}, while ${newResource} holds ${r.quoted(haveName)}`)
       : unproven(`${wanted}, and cdkd cannot show that ${newResource} holds that name`);
   }
   for (const [i, path] of (oldKey.scope ?? []).entries()) {
-    const label = shown(path.join('.'));
+    const label = r.shown(path.join('.'));
     const wantRaw = valueAt(requested, path);
-    const haveRaw = heldAt(recorded, observed, path);
-    if (
-      (wantRaw === undefined && unreadableAt(requested, path)) ||
-      (haveRaw === undefined && unreadableAt(recorded, path))
-    ) {
+    const have = heldAt(recorded, observed, path);
+    if ((wantRaw === undefined && unreadableAt(requested, path)) || have.unreadable) {
       return unproven(`${wanted}, and cdkd cannot read the ${label} that places it`);
     }
     const fallback = oldKey.scopeDefaults?.[i];
     const want = wantRaw ?? fallback;
-    const have = haveRaw ?? fallback;
-    if (want === undefined && have === undefined) continue;
-    if (want === undefined || have === undefined) {
+    const got = have.value ?? fallback;
+    if (want === undefined && got === undefined) continue;
+    if (want === undefined || got === undefined) {
       return unproven(`${wanted}, and cdkd cannot show that ${newResource} shares its ${label}`);
     }
-    if (fold(want) !== fold(have)) {
-      return elsewhere(
-        `${wanted}, but ${newResource} is under ${label} ${quoted(have)}, not ${quoted(want)}`
+    if (want === got) continue;
+    // One scope spelled as an ARN on one side and a bare name on the other
+    // may be the same parent: undecided rather than "elsewhere".
+    if (isArn(want) !== isArn(got)) {
+      return unproven(
+        `${wanted}, and cdkd cannot tell whether ${label} ${r.quoted(got)} is ${r.quoted(want)}`
       );
     }
+    return elsewhere(
+      `${wanted}, while ${newResource} is under ${label} ${r.quoted(got)}, not ${r.quoted(want)}`
+    );
   }
   return HOLDS;
 }

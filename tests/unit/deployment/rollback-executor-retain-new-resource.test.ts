@@ -252,13 +252,16 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const op = replacementOp();
       op.previousState = res({
         physicalId: 'phys-old',
-        properties: { a: 1 },
+        properties: { QueueName: 'q', a: 1 },
         provisionedBy: 'cc-api',
       });
 
       const result = await replayRollback([op], state, 'S', ctx, { isInterrupted: () => false });
 
-      // The refusal is what failed the op — NOT the delete-route lookup.
+      // The refusal is what failed the op — NOT the delete-route lookup. And
+      // it is the RETAIN refusal (the names agree, so the #3979 holder guard
+      // passes), or a re-hoisted lookup above it would go unseen.
+      expect(warns.join('\n')).toContain('UpdateReplacePolicy: Retain pins');
       expect(lookups).toEqual(['create']);
       expect(result.failures).toBe(1);
       expect(state.B!.physicalId).toBe('phys-new');

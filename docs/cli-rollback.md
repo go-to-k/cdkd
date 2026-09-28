@@ -161,9 +161,11 @@ create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
 cdkd deletes the new resource first only when its state record shows it holds
-the name the re-create collided on — the same name property (and the same
-parent, such as the event bus of a rule or the database of a Glue table), or,
-for a Route 53 record, the same DNS name in the same hosted zone. A collision
+the name the re-create collided on — the same name property, spelled exactly
+alike (case is ignored only where the service ignores it, such as IAM and RDS
+names), under the same parent (such as the event bus of a rule or the database
+of a Glue table), or, for a Route 53 record, the same DNS name in the same
+hosted zone. A collision
 with anything else (a resource an earlier failed attempt left behind, or one
 created outside the stack) fails the operation instead: nothing is deleted,
 the message names the colliding name, and the journal is kept. The same

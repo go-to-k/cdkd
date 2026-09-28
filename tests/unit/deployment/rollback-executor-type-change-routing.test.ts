@@ -468,6 +468,10 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
     expect(create).toHaveBeenCalledTimes(2);
     expect(create.mock.calls[1]![1]).toBe(oldType);
     expect(providerFor(newType).delete).toHaveBeenCalledTimes(1);
+    // The delete-first note names the pair as one name space.
+    expect(vi.mocked(silentLogger.info)).toHaveBeenCalledWith(
+      expect.stringContaining(`${newType} -> ${oldType}, which share a name space)`)
+    );
   });
 
   it('across types that do NOT share a name space, a collision deletes nothing (#3979)', async () => {

@@ -35,9 +35,51 @@ function refusal(verdict: ReturnType<typeof ask>): { known: boolean; diagnosis: 
 }
 
 describe('reverseReplacementNewHoldsName — the generic name property', () => {
-  it('holds when the recorded names agree, case-insensitively', () => {
+  it('holds when the recorded names agree', () => {
     expect(ask({})).toEqual({ holds: true });
-    expect(ask({ recorded: { QueueName: 'Q' } })).toEqual({ holds: true });
+  });
+
+  it('a case-only difference is a DIFFERENT name on a case-sensitive service', () => {
+    // `Orders` and `orders` are two tables: a folded match would prove the
+    // wrong holder and delete the live `orders` over an orphan `Orders`.
+    const TABLE = 'AWS::DynamoDB::Table';
+    const r = refusal(
+      ask({
+        oldResourceType: TABLE,
+        newResourceType: TABLE,
+        requested: { TableName: 'Orders' },
+        recorded: { TableName: 'orders' },
+        physicalId: 'orders',
+      })
+    );
+    expect(r.known).toBe(true);
+    // ...and the physical id is compared exactly too.
+    expect(ask({ requested: { QueueName: 'Jobs' }, recorded: {}, physicalId: 'https://x/jobs' }).holds).toBe(
+      false
+    );
+  });
+
+  it('a case-insensitive name space folds case (IAM, the RDS family)', () => {
+    const ROLE = 'AWS::IAM::Role';
+    expect(
+      ask({
+        oldResourceType: ROLE,
+        newResourceType: ROLE,
+        requested: { RoleName: 'MyRole' },
+        recorded: { RoleName: 'myrole' },
+        physicalId: 'myrole',
+      })
+    ).toEqual({ holds: true });
+    const DB = 'AWS::RDS::DBInstance';
+    expect(
+      ask({
+        oldResourceType: DB,
+        newResourceType: DB,
+        requested: { DBInstanceIdentifier: 'MyDb' },
+        recorded: {},
+        physicalId: 'mydb',
+      })
+    ).toEqual({ holds: true });
   });
 
   it('a different recorded name is KNOWN to be elsewhere, and named', () => {
@@ -45,6 +87,7 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
     expect(r.known).toBe(true);
     expect(r.diagnosis).toContain('QueueName "q"');
     expect(r.diagnosis).toContain('holds "q-new"');
+    expect(r.diagnosis).not.toContain(', but ');
   });
 
   it('the observed name stands in for an absent recorded one', () => {
@@ -70,15 +113,25 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
     expect(ask({ ...base, physicalId: arn('S-Tg') })).toEqual({ holds: true });
     expect(refusal(ask({ ...base, physicalId: arn('S-Other') })).known).toBe(false);
     const LB = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
-    expect(
-      ask({
-        oldResourceType: LB,
-        newResourceType: LB,
-        requested: { Name: 'S-Lb' },
-        recorded: {},
-        physicalId: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/S-Lb/50dc6c495c0c9188',
-      })
-    ).toEqual({ holds: true });
+    for (const kind of ['app', 'net', 'gwy']) {
+      expect(
+        ask({
+          oldResourceType: LB,
+          newResourceType: LB,
+          requested: { Name: 'S-Lb' },
+          recorded: {},
+          physicalId: `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/${kind}/S-Lb/50dc6c495c0c9188`,
+        })
+      ).toEqual({ holds: true });
+    }
+  });
+
+  it('a Secrets Manager ARN names the secret through its random suffix, in exact case', () => {
+    const SECRET = 'AWS::SecretsManager::Secret';
+    const base = { oldResourceType: SECRET, newResourceType: SECRET, recorded: {} };
+    const arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:My-Name-AbC123';
+    expect(ask({ ...base, requested: { Name: 'My-Name' }, physicalId: arn })).toEqual({ holds: true });
+    expect(ask({ ...base, requested: { Name: 'my-name' }, physicalId: arn }).holds).toBe(false);
   });
 
   it('with no recorded name and an id not naming it, it is UNPROVEN', () => {
@@ -87,10 +140,38 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
     expect(r.diagnosis).toContain('cannot show');
   });
 
-  it('a re-create that asked for NO name generated one: unproven', () => {
+  it('a re-create that named nothing is unproven', () => {
     const r = refusal(ask({ requested: {} }));
     expect(r.known).toBe(false);
-    expect(r.diagnosis).toContain('asked for no QueueName');
+    expect(r.diagnosis).toContain('named no QueueName');
+  });
+
+  it('a GENERATED name proves only through the new id, and a mismatch is undecided', () => {
+    // cdkd's generation rule is not every SDK provider's (a log group gets
+    // `/cdkd/<name>`), so a generated name the new record does not match says
+    // nothing about who holds the name.
+    const LG = 'AWS::Logs::LogGroup';
+    const base = { oldResourceType: LG, newResourceType: LG, requested: {} };
+    const r = refusal(
+      ask({
+        ...base,
+        generated: { LogGroupName: 'S-LG' },
+        recorded: { LogGroupName: '/cdkd/S-LG' },
+        physicalId: '/cdkd/S-LG',
+      })
+    );
+    expect(r.known).toBe(false);
+    expect(r.diagnosis).toContain('(the name cdkd generates)');
+    expect(ask({ generated: { QueueName: 'q' }, requested: {}, recorded: {} })).toEqual({ holds: true });
+    // An explicit name wins over the generated one.
+    expect(ask({ generated: { QueueName: 'other' } })).toEqual({ holds: true });
+  });
+
+  it('an observed value never stands behind a recorded mask', () => {
+    const r = refusal(
+      ask({ recorded: { QueueName: SECRET_MASK }, observed: { QueueName: 'q' }, physicalId: 'opaque' })
+    );
+    expect(r.known).toBe(false);
   });
 
   it.each([
@@ -119,11 +200,35 @@ describe('reverseReplacementNewHoldsName — scoped and nested names', () => {
     expect(other.diagnosis).toContain('is under EventBusName "c", not "b"');
   });
 
-  it('an absent scope reads as its default on either side', () => {
-    const base = { oldResourceType: RULE, newResourceType: RULE, physicalId: 'r' };
-    expect(
-      ask({ ...base, requested: { Name: 'r' }, recorded: { Name: 'r', EventBusName: 'default' } })
-    ).toEqual({ holds: true });
+  it.each([
+    ['AWS::Events::Rule', 'Name', 'EventBusName'],
+    ['AWS::ECS::Service', 'ServiceName', 'Cluster'],
+    ['AWS::Scheduler::Schedule', 'Name', 'GroupName'],
+  ])('%s: an absent %s scope reads as its default on either side', (type, name, scope) => {
+    const base = { oldResourceType: type, newResourceType: type, physicalId: 'r' };
+    expect(ask({ ...base, requested: { [name]: 'r' }, recorded: { [name]: 'r', [scope]: 'default' } })).toEqual({
+      holds: true,
+    });
+    expect(ask({ ...base, requested: { [name]: 'r', [scope]: 'default' }, recorded: { [name]: 'r' } })).toEqual({
+      holds: true,
+    });
+  });
+
+  it('a scope differing only in case, or spelled as an ARN against a name, is not proven', () => {
+    const ECS = 'AWS::ECS::Service';
+    const base = { oldResourceType: ECS, newResourceType: ECS, physicalId: 'svc' };
+    const cased = refusal(
+      ask({ ...base, requested: { ServiceName: 'svc', Cluster: 'Prod' }, recorded: { ServiceName: 'svc', Cluster: 'prod' } })
+    );
+    expect(cased.known).toBe(true);
+    const arn = refusal(
+      ask({
+        ...base,
+        requested: { ServiceName: 'svc', Cluster: 'prod' },
+        recorded: { ServiceName: 'svc', Cluster: 'arn:aws:ecs:us-east-1:123456789012:cluster/prod' },
+      })
+    );
+    expect(arn.known).toBe(false);
   });
 
   it('a scope with no default: absent on both sides agrees, on one side is unproven', () => {
@@ -138,13 +243,17 @@ describe('reverseReplacementNewHoldsName — scoped and nested names', () => {
     expect(r.known).toBe(false);
   });
 
-  it('a redacted scope is unproven, not read as the default', () => {
+  it('a redacted scope on either side is unproven, not read as the default', () => {
     const base = { oldResourceType: RULE, newResourceType: RULE, physicalId: 'r' };
-    const r = refusal(
-      ask({ ...base, requested: { Name: 'r', EventBusName: SECRET_MASK }, recorded: { Name: 'r' } })
-    );
-    expect(r.known).toBe(false);
-    expect(r.diagnosis).toContain('cannot read the EventBusName');
+    for (const [requested, recorded, observed] of [
+      [{ Name: 'r', EventBusName: SECRET_MASK }, { Name: 'r' }, undefined],
+      [{ Name: 'r' }, { Name: 'r', EventBusName: SECRET_MASK }, undefined],
+      [{ Name: 'r' }, { Name: 'r' }, { EventBusName: SECRET_MASK }],
+    ] as const) {
+      const r = refusal(ask({ ...base, requested, recorded, observed }));
+      expect(r.known).toBe(false);
+      expect(r.diagnosis).toContain('cannot read the EventBusName');
+    }
   });
 
   it('a Glue table in another database is elsewhere, even under a shared id (#3892)', () => {
@@ -206,6 +315,29 @@ describe('reverseReplacementNewHoldsName — Route 53 record sets', () => {
     expect(askRs(rec({ SetIdentifier: 's' }), rec({ SetIdentifier: 's' }))).toEqual({ holds: true });
     expect(refusal(askRs(rec({}), rec({ Type: 'AAAA' }))).known).toBe(true);
     expect(refusal(askRs(rec({ SetIdentifier: 's' }), rec({ SetIdentifier: 't' }))).known).toBe(true);
+    // Two CNAMEs of one name coexist under different SetIdentifiers.
+    expect(
+      refusal(askRs(rec({ Type: 'CNAME', SetIdentifier: 'a' }), rec({ Type: 'CNAME', SetIdentifier: 'b' })))
+        .known
+    ).toBe(true);
+    expect(askRs(rec({ Type: 'CNAME' }), rec({ Type: 'CNAME' }))).toEqual({ holds: true });
+    // A SetIdentifier on one side only is undecided.
+    expect(refusal(askRs(rec({}), rec({ SetIdentifier: 's' }))).known).toBe(false);
+  });
+
+  it('compares zone NAMES when neither side has a zone id', () => {
+    const byName = (zone: string) => ({ HostedZoneName: zone, Name: 'swap.example.com', Type: 'CNAME' });
+    expect(askRs(byName('example.com.'), { ...byName('EXAMPLE.com'), Type: 'A' })).toEqual({ holds: true });
+    expect(refusal(askRs(byName('example.com'), { ...byName('other.com'), Type: 'A' })).known).toBe(true);
+  });
+
+  it('an unreadable Name or Type is unproven, and an escaped name pair is undecided', () => {
+    const { Type: _t, ...noType } = rec({});
+    expect(refusal(askRs(noType, rec({}))).known).toBe(false);
+    expect(refusal(askRs(rec({ Type: 'CNAME' }), rec({ Name: SECRET_MASK }))).known).toBe(false);
+    expect(
+      refusal(askRs(rec({ Type: 'CNAME', Name: '\\052.example.com.' }), rec({ Name: '*.example.com' }))).known
+    ).toBe(false);
   });
 
   it('compares names without the trailing dot and case, zones without the path prefix', () => {
@@ -264,11 +396,29 @@ describe('reverseReplacementNewHoldsName — types', () => {
     }
   });
 
-  it('a nested stack is named from its logical id, so the new one holds it', () => {
+  it('a nested stack is never proven: its child name is a state key AWS never sees', () => {
     const NESTED = 'AWS::CloudFormation::Stack';
-    expect(ask({ oldResourceType: NESTED, newResourceType: NESTED, requested: {} })).toEqual({
-      holds: true,
-    });
+    const r = refusal(ask({ oldResourceType: NESTED, newResourceType: NESTED, requested: {} }));
+    expect(r.known).toBe(false);
+  });
+
+  it('masks a value BEFORE rendering it, so an escaped or cut secret cannot slip past', () => {
+    const secret = 'tok"en-SECRETVALUE';
+    const mask = (v: string) => v.split(secret).join('***');
+    const quotedSecret = refusal(
+      ask({ requested: { QueueName: `q-${secret}` }, recorded: { QueueName: 'q-new' }, physicalId: 'x', mask })
+    );
+    expect(quotedSecret.diagnosis).not.toContain('SECRETVALUE');
+    const long = 'L'.repeat(300);
+    const cut = refusal(
+      ask({
+        requested: { QueueName: long },
+        recorded: { QueueName: 'q-new' },
+        physicalId: 'x',
+        mask: (v) => v.split(long).join('***'),
+      })
+    );
+    expect(cut.diagnosis).not.toContain('LLLLLLLLLL');
   });
 
   it('the diagnosis quotes a forged id instead of printing its line break', () => {

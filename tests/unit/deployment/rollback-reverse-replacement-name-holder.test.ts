@@ -291,16 +291,19 @@ describe('the unproven-holder refusal (#3979)', () => {
     return { provider: { create, delete: del } as unknown as ResourceProvider, del };
   }
 
-  it('a nameless re-create is refused with the remedy line, nothing deleted', async () => {
+  it('a re-create that names nothing is refused with the remedy line, nothing deleted', async () => {
+    // An identity provider has no generation rule, so a bag without its
+    // ProviderName names nothing the records could compare.
+    const IDP = 'AWS::Cognito::UserPoolIdentityProvider';
     const { provider, del } = collidingProvider();
     const op: CompletedOperation = {
       logicalId: 'Q',
       changeType: 'UPDATE',
-      resourceType: 'AWS::SQS::Queue',
-      physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/other',
-      previousState: res('AWS::SQS::Queue', { physicalId: 'q-old', properties: { a: 1 } }),
+      resourceType: IDP,
+      physicalId: 'idp-new',
+      previousState: res(IDP, { physicalId: 'idp-old', properties: { a: 1 } }),
     };
-    const state = { Q: res('AWS::SQS::Queue', { physicalId: op.physicalId, properties: { a: 2 } }) };
+    const state = { Q: res(IDP, { physicalId: 'idp-new', properties: { a: 2 } }) };
 
     const result = await replayRollback([op], state, 'CdkdX', ctxFor(provider));
 
@@ -308,9 +311,92 @@ describe('the unproven-holder refusal (#3979)', () => {
     expect(result.failures).toBe(1);
     const failed = failureLines();
     expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('named no ProviderName');
     // Undecided, so it says so rather than claiming another holder.
     expect(failed[0]).toContain('cannot show that the new resource holds the colliding name');
     expect(failed[0]).toMatch(/\nTo orphan it: cdkd rollback --orphan Q$/);
+  });
+
+  it('runs AHEAD of the Retain refusal, whose text presumes the new resource holds the name', async () => {
+    const { provider, del } = collidingProvider();
+    const op: CompletedOperation = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'q-new',
+      previousState: res('AWS::SQS::Queue', { physicalId: 'q-old', properties: { QueueName: 'q' } }),
+    };
+    const state = {
+      Q: res('AWS::SQS::Queue', {
+        physicalId: 'q-new',
+        properties: { QueueName: 'q-new' },
+        updateReplacePolicy: 'Retain',
+      }),
+    };
+
+    await replayRollback([op], state, 'CdkdX', ctxFor(provider));
+
+    expect(del).not.toHaveBeenCalled();
+    const failed = failureLines();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('another resource holds the colliding name');
+    expect(failed[0]).not.toContain('UpdateReplacePolicy: Retain pins');
+  });
+
+  it('reads the new resource OBSERVED name when its record holds none', async () => {
+    // A generated name is never recorded; a readback that observed it proves
+    // the holder even where the physical id is opaque.
+    const calls: string[] = [];
+    let seen = 0;
+    const provider = {
+      create: vi.fn(async () => {
+        calls.push('create');
+        if (seen++ === 0) throw awsSdkError('Queue already exists');
+        return { physicalId: 'q-restored', attributes: {} };
+      }),
+      delete: vi.fn(async () => {
+        calls.push('delete');
+        return undefined;
+      }),
+    } as unknown as ResourceProvider;
+    const op: CompletedOperation = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'opaque-new',
+      previousState: res('AWS::SQS::Queue', { physicalId: 'q-old', properties: { QueueName: 'q' } }),
+    };
+    const state = {
+      Q: res('AWS::SQS::Queue', {
+        physicalId: 'opaque-new',
+        properties: {},
+        observedProperties: { QueueName: 'q' },
+      }),
+    };
+
+    const result = await replayRollback([op], state, 'CdkdX', ctxFor(provider));
+
+    expect(calls).toEqual(['create', 'delete', 'create']);
+    expect(result.failures).toBe(0);
+  });
+
+  it('a nested stack row is refused: its child name is a state key no AWS collision can hold', async () => {
+    const NESTED = 'AWS::CloudFormation::Stack';
+    const { provider, del } = collidingProvider();
+    const op: CompletedOperation = {
+      logicalId: 'Child',
+      changeType: 'UPDATE',
+      resourceType: NESTED,
+      physicalId: 'child-new',
+      previousState: res(NESTED, { physicalId: 'child-old', properties: { TemplateURL: 'a.json' } }),
+    };
+    const state = { Child: res(NESTED, { physicalId: 'child-new', properties: { TemplateURL: 'b.json' } }) };
+
+    const result = await replayRollback([op], state, 'CdkdX', ctxFor(provider));
+
+    expect(del).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    expect(failureLines()[0]).toContain('cdkd has no name property to compare');
   });
 
   it('a GENERATED name an SDK provider mints is proven through the new ELBv2 ARN', async () => {

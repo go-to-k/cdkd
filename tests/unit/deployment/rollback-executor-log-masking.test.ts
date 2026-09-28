@@ -54,6 +54,11 @@ const SIBLING_EXPR = '{{resolve:secretsmanager:other-secret:SecretString:passwor
 const SPACED_PLAINTEXT = 'spaced  secret  9f3a1c';
 const SPACED_EXPR = '{{resolve:secretsmanager:spaced-secret:SecretString:password::}}';
 
+// A secret carrying a double quote: `displayIdent` escapes it (`\"`), so a
+// mask applied AFTER the display rendering no longer finds it (#3979 review).
+const QUOTED_PLAINTEXT = 'tok"en-4d7e2b';
+const QUOTED_EXPR = '{{resolve:secretsmanager:quoted-secret:SecretString:password::}}';
+
 const mockSMSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => ({
   SecretString: JSON.stringify({
     password:
@@ -61,7 +66,9 @@ const mockSMSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => ({
         ? SIBLING_PLAINTEXT
         : cmd?.input?.SecretId === 'spaced-secret'
           ? SPACED_PLAINTEXT
-          : SECRET_PLAINTEXT,
+          : cmd?.input?.SecretId === 'quoted-secret'
+            ? QUOTED_PLAINTEXT
+            : SECRET_PLAINTEXT,
   }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -551,6 +558,34 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     for (const text of [warns.join('\n'), JSON.stringify(events)]) {
       expect(text).not.toContain(SPACED_PLAINTEXT);
       expect(text).not.toContain(collapsed);
+    }
+  });
+
+  it('the unproven-holder refusal masks a secret-derived NAME before rendering it (#3979)', async () => {
+    // The refusal quotes the name the re-create asked for, which comes from
+    // the PLAINTEXT replay bag. Rendered first, the quote in it is escaped and
+    // the outer mask finds nothing.
+    const create = vi.fn().mockRejectedValue(awsSdkError('Resource already exists.'));
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, warns, events } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'phys-OLD',
+      properties: { UserPoolId: 'us-east-1_pool', ProviderName: QUOTED_EXPR },
+    });
+    await replayRollback(
+      [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
+      { Idp: res({ physicalId: 'phys-NEW', properties: { ...IDP_NAME } }) },
+      'S',
+      ctx
+    );
+    // Non-vacuity: the secret reached create() resolved, and the refusal fired.
+    expect((create.mock.calls[0]![2] as Record<string, unknown>)['ProviderName']).toBe(QUOTED_PLAINTEXT);
+    expect(del).not.toHaveBeenCalled();
+    const refusal = warns.find((m) => m.includes('another resource holds the colliding name'));
+    expect(refusal).toBeDefined();
+    expect(refusal).toContain(SECRET_MASK);
+    for (const text of [warns.join('\n'), JSON.stringify(events)]) {
+      expect(text).not.toContain('4d7e2b');
     }
   });
 

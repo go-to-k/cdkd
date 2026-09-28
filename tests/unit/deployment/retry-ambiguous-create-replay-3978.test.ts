@@ -540,6 +540,10 @@ describe('the rollback reverse-replacement arm after an ambiguous 5xx (#3978)', 
       .filter((l) => l.includes('Rollback failed for'));
     expect(failed).toHaveLength(1);
     expect(failed[0]).toContain(COLLISION);
+    // Failed on the replayed collision itself, not on the #3979 holder guard,
+    // which refuses this op too (`stream` vs `stream-new`) and would keep the
+    // case green with the #3978 latch removed.
+    expect(failed[0]).not.toContain('Cannot reverse the replacement');
   }, 15_000);
 });
 

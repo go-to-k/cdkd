@@ -3232,17 +3232,19 @@ async function replaySingle(
           const holder = reverseReplacementNewHoldsName({
             oldResourceType: oldType,
             newResourceType: op.resourceType,
-            // The name the create asked for, generated names included: a
-            // Cloud Control route already filled one into `replayCreateProps`;
-            // an SDK provider mints the same one itself, which
-            // `applyDefaultNameForFallback` mirrors.
-            // The `typeof` gate: a non-string id (an in-process op the
-            // journal parser never saw) must reach the refusal, not throw in
-            // the name generator.
-            requested:
+            // What the create SENT: on a Cloud Control route that already
+            // carries the generated name (`replayCreateProps`). An SDK provider
+            // mints its own for a nameless bag; `generated` is cdkd's rule for
+            // it, which some providers do not follow verbatim, so the helper
+            // treats a mismatch there as undecided. The `typeof` gate: a
+            // non-string id (an in-process op the journal parser never saw)
+            // must reach the refusal, not throw in the name generator.
+            requested: replayCreateProps(),
+            generated:
               typeof op.logicalId === 'string'
                 ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
-                : resolvedPrevProps,
+                : undefined,
+            mask: (value) => maskSecretsInText(value, secrets),
             recorded: current.properties,
             observed: current.observedProperties,
             physicalId: current.physicalId,
@@ -3256,7 +3258,7 @@ async function replaySingle(
                   // the diagnosis quotes names from the PLAINTEXT replay bag.
                   maskSecretsInText(
                     `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-                      `the re-create of the old resource (${safe(prev.physicalId)}) collided, but ` +
+                      `the re-create of the old resource (${safe(prev.physicalId)}) collided: ` +
                       `${holder.diagnosis} — so ` +
                       (holder.known
                         ? `another resource holds the colliding name`
