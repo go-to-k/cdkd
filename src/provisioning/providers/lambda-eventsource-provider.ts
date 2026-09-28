@@ -24,6 +24,7 @@ import type {
   ResourceImportResult,
   UpdateContext,
 } from '../../types/resource.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * Classify an event source mapping by its `EventSourceArn` so that
@@ -423,7 +424,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         throw new ProvisioningError(message, resourceType, logicalId);
       }
       this.logger.warn(
-        `${message} Proceeding without it: this create replays a cdkd state record.`
+        safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`
       );
     }
 
@@ -603,7 +604,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         throw new ProvisioningError(message, resourceType, logicalId, physicalId);
       }
       this.logger.warn(
-        `${message} Proceeding without it: this update restores a recorded or read-back configuration.`
+        safeMsg`${message} Proceeding without it: this update restores a recorded or read-back configuration.`
       );
     }
     try {

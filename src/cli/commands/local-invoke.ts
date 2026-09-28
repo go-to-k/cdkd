@@ -13,7 +13,12 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
-import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  ROLE_ARN_MAX_CODE_POINTS,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -1893,12 +1898,12 @@ export function resolveBareAssumeRoleFromState(
   const arn = resolveExecutionRoleArnFromState(state, logicalId);
   if (arn) {
     logger.info(
-      `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+      safeMsg`--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
     );
     return arn;
   }
   logger.warn(
-    `--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(logicalId)}'. ` +
+    safeMsg`--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(logicalId)}'. ` +
       "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
   );
   return undefined;

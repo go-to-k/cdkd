@@ -3634,7 +3634,7 @@ async function refreshObservedForStack(
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
     throw new Error(
-      `No state found for stack '${stackName}' (${region}). ` +
+      safeMsg`No state found for stack '${stackName}' (${region}). ` +
         `Run 'cdkd state list' to see available stacks.`
     );
   }

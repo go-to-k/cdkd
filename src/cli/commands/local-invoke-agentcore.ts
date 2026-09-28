@@ -13,7 +13,12 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
-import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  ROLE_ARN_MAX_CODE_POINTS,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
@@ -1733,7 +1738,7 @@ export async function buildAgentCoreImageContext(
     accountId = await resolveStackAccountId(region, options.profile, options.fromState);
   } catch (err) {
     logger.warn(
-      `${stateProvider.label}: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      safeMsg`${stateProvider.label}: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
     );
   }
@@ -1971,15 +1976,15 @@ function resolveAssumeRoleArnUncached(
     if (resolved.roleArn !== undefined && isIamRoleArn(resolved.roleArn)) return resolved.roleArn;
     if (resolved.roleArn?.startsWith('arn:')) {
       getLogger().warn(
-        `--assume-role: the template RoleArn for '${displayIdent(resolved.logicalId)}' is not a well-formed IAM role ARN: ` +
-          `${displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
+        safeMsg`--assume-role: the template RoleArn for '${displayIdent(resolved.logicalId)}' is not a well-formed IAM role ARN: ` +
+          safeMsg`${displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
       );
     }
     if (loaded) {
       const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
       if (fromState) {
         getLogger().debug(
-          `--assume-role: resolved RoleArn from state: ${displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+          safeMsg`--assume-role: resolved RoleArn from state: ${displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
         );
         return fromState;
       }

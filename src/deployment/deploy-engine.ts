@@ -5175,10 +5175,9 @@ export class DeployEngine {
         );
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
         this.logger.warn(
-          'Partial state has been saved. ' +
-            this.recoveryHint(
-              "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
-            )
+          safeMsg`Partial state has been saved. ${this.recoveryHint(
+            "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+          )}`
         );
       } else {
         // Automatic in-process rollback. Write a journal segment FIRST so a
@@ -5746,7 +5745,7 @@ export class DeployEngine {
       await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
     } catch (err) {
       this.logger.warn(
-        `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
+        safeMsg`Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
           // No command named: a nested child's stack-less `cdkd rollback` would
           // resolve to the top-level stack (go-to-k/cdkd#3864).
           `The journal keeps the full segment; a later rollback replay is idempotent.`

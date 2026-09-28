@@ -34,18 +34,36 @@ describe('terminalSafe (go-to-k/cdkd#3479)', () => {
   it.each([
     ['a screen clear', `${ESC}[2J`],
     ['cursor movement', `${ESC}[1A${ESC}[2K`],
-    ['a non-allowlisted SGR (blink)', `${ESC}[5m`],
-    ['a foreign colour reset', `${ESC}[39m`],
     ['a C1 CSI', `${ch(0x9b)}2J`],
-    ['an OSC 8 link, BEL-terminated', `${ESC}]8;;http://x${ch(0x07)}`],
-    ['an OSC title, ST-terminated', `${ESC}]0;title${ESC}\\`],
   ])('removes %s whole', (_name, seq) => {
     expect(terminalSafe(`a${seq}b`)).toBe('ab');
   });
 
-  it("keeps the rest of the message after an unterminated OSC", () => {
-    expect(terminalSafe(`a${ESC}]8;;http://x still cdkd's text`)).toBe(
-      "a ]8;;http://x still cdkd's text"
+  it.each([
+    ['blink', `${ESC}[5m`],
+    ['a foreign colour reset', `${ESC}[39m`],
+    ['a bold reset', `${ESC}[22m`],
+  ])('turns a non-allowlisted SGR (%s) into a full reset', (_name, seq) => {
+    expect(terminalSafe(`a${seq}b`)).toBe(`a${ESC}[0mb`);
+  });
+
+  it('closes a coloured CDK-app stderr line whose opener is allowlisted', () => {
+    expect(terminalSafe(`${ESC}[33mwarn${ESC}[39m`)).toBe(`${ESC}[33mwarn${ESC}[0m`);
+  });
+
+  it('replaces a lone C1 CSI at the end of a message with a space', () => {
+    expect(terminalSafe(`a${ch(0x9b)}`)).toBe('a ');
+  });
+
+  it('replaces only the ESC of an OSC, even a terminated one', () => {
+    expect(terminalSafe(`a${ESC}]8;;http://x${ch(0x07)}b`)).toBe('a ]8;;http://x b');
+  });
+
+  it("cannot be made to delete cdkd's text between two raw values", () => {
+    const opened = `stackA${ESC}]0;`;
+    const closed = `${ch(0x07)}B`;
+    expect(terminalSafe(`Deleting ${opened} -- DATA WILL BE LOST -- ${closed}`)).toContain(
+      '-- DATA WILL BE LOST --'
     );
   });
 });
@@ -60,6 +78,21 @@ describe('safeMsg (go-to-k/cdkd#3479)', () => {
 
   it('keeps cdkd colours inside a value and renders an absent value empty', () => {
     expect(safeMsg`${green('ok')} ${undefined}|${null}|${0}`).toBe(`${green('ok')} ||0`);
+  });
+
+  it('flattens a TAB inside a value', () => {
+    expect(safeMsg`[${'a\tb'}]`).toBe('[a b]');
+  });
+
+  it.each([
+    ['BEL-terminated', `${ESC}]8;;http://x${ch(0x07)}`],
+    ['ST-terminated', `${ESC}]0;title${ESC}\\`],
+  ])('removes a %s OSC inside one value whole', (_name, osc) => {
+    expect(safeMsg`[${`a${osc}b`}]`).toBe('[ab]');
+  });
+
+  it("keeps the rest of a value after an unterminated OSC", () => {
+    expect(safeMsg`${`a${ESC}]8;;http://x rest`}`).toBe('a ]8;;http://x rest');
   });
 });
 

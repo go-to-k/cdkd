@@ -70,6 +70,11 @@ function isRawMessage(node: ts.Expression): boolean {
 
 export function countRawLogInterpolations(sourceText: string, fileName = 'x.ts'): number {
   const source = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  // A file that does not parse would otherwise count 0 and pass.
+  const { parseDiagnostics } = source as unknown as { parseDiagnostics: readonly ts.Diagnostic[] };
+  if (parseDiagnostics.length > 0) {
+    throw new Error(`${fileName} does not parse, so its raw logger calls cannot be counted`);
+  }
   let count = 0;
   const visit = (node: ts.Node): void => {
     if (

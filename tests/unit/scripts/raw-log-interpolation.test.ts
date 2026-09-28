@@ -28,6 +28,12 @@ describe('check-raw-log-interpolation (go-to-k/cdkd#3479)', () => {
     expect(countRawLogInterpolations(source)).toBe(expected);
   });
 
+  it('refuses a file that does not parse instead of counting it 0', () => {
+    expect(() => countRawLogInterpolations('function f( {\nlogger.info(`a ${x}`)')).toThrow(
+      /does not parse/
+    );
+  });
+
   it('fails a file that gained a raw site and only warns on one that lost some', () => {
     expect(compare({ a: 2, b: 1 }, { a: 2, b: 1 })).toEqual({ gained: [], stale: [] });
     expect(compare({ a: 3 }, { a: 2 }).gained).toEqual([expect.stringContaining('safeMsg')]);

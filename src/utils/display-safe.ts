@@ -151,30 +151,37 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
 
 /**
  * The escape sequences cdkd itself emits (`src/utils/colors.ts` and the level
- * prefixes in `logger.ts`). An ALLOWLIST: every other CSI / OSC sequence is
- * removed whole, so a value carrying cursor movement, a screen clear or an
- * OSC 8 link cannot drive the terminal, and a coloured CDK-app stderr line does
- * not leave ` [39m` behind. A value can still SPELL one of these colours —
- * harmless, and the price of keeping cdkd's own colours on the same line.
+ * prefixes in `logger.ts`). An ALLOWLIST: every other CSI is removed whole, so
+ * a value carrying cursor movement or a screen clear cannot drive the terminal.
+ * A value can still SPELL one of these colours — harmless, and the price of
+ * keeping cdkd's own colours on the same line.
  *
- * An OSC needs its terminator to match: an unterminated one would otherwise
- * swallow the rest of the message, cdkd's own text included, so its ESC falls
- * through to the single-character rule instead.
+ * A foreign SGR becomes a full reset rather than nothing: a coloured CDK-app
+ * stderr line (`\x1b[33mwarn\x1b[39m`) would otherwise keep its allowlisted
+ * opener and lose its closer, colouring every line after it.
+ *
+ * An OSC is removed whole only inside ONE value ({@link safeMsg}). On a whole
+ * message two raw values can open and close one, deleting cdkd's own text
+ * between them, so the sink replaces only its ESC.
  */
 // eslint-disable-next-line no-control-regex
 const OWN_SGR = /^\x1b\[(?:0|1|2|3[1-6]|90)m$/;
-const ESCAPE_SEQUENCE = String.raw`\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)`;
+const SGR_RESET = '\x1b[0m';
+const CSI = String.raw`\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]`;
+const OSC = String.raw`\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)`;
 const CONTROL_EXCEPT_NEWLINE_AND_TAB = String.raw`[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]`;
-const TERMINAL_UNSAFE = new RegExp(`${ESCAPE_SEQUENCE}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}`, 'g');
+const TERMINAL_UNSAFE = new RegExp(`${CSI}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}`, 'g');
 const TERMINAL_UNSAFE_OR_LINE_BREAK = new RegExp(
-  `${ESCAPE_SEQUENCE}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}|[\\t\\n]`,
+  `${CSI}|${OSC}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}|[\\t\\n]`,
   'g'
 );
 
 function replaceUnsafe(text: string, pattern: RegExp): string {
   return text.replace(pattern, (match) => {
+    if (match.length === 1) return ' ';
     if (OWN_SGR.test(match)) return match;
-    return match.length > 1 ? '' : ' ';
+    // Only a CSI ends in `m`; an OSC ends in its terminator.
+    return match.endsWith('m') ? SGR_RESET : '';
   });
 }
 
