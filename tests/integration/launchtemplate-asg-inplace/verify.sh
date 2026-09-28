@@ -86,6 +86,13 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # A planted #4013 state record goes back BEFORE anything else reads it.
+  if [ "${STATE_PLANTED:-0}" = 1 ] && [ -s "${STATE_ORIG:-}" ]; then
+    aws s3 cp "${STATE_ORIG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  for tmp in "${STATE_ORIG:-}" "${STATE_LEGACY:-}" "${DRIFT_JSON:-}" "${DRIFT_ERR:-}"; do
+    [ -n "${tmp}" ] && rm -f "${tmp}"
+  done
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -161,6 +168,51 @@ assert_nondefault_props() {
   echo "    OK: ${phase}: non-default ASG props live (grace=90, lifetime=604800, policies=OldestInstance)"
 }
 
+# The ASG's enabled metrics, sorted and space-joined (order-insensitive).
+enabled_metrics() {
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$1" --region "${REGION}" \
+    --query "join(' ', sort(AutoScalingGroups[0].EnabledMetrics[].Metric || \`[]\`))" --output text
+}
+
+# `cdkd drift --json` for this stack into ${DRIFT_JSON}, refusing a report that
+# would make the assertions below vacuous (no parseable JSON, no stack). The
+# exit status is not the assertion: drift exits 1 on ANY drifted resource, and
+# a "drift unknown" resource exits 0.
+run_drift_json() { # $1 = label
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json >"${DRIFT_JSON}" 2>"${DRIFT_ERR}" || true
+  if ! jq empty "${DRIFT_JSON}" >/dev/null 2>&1; then
+    echo "FAIL: cdkd drift --json ($1) produced no parseable JSON report:" >&2
+    cat "${DRIFT_JSON}" >&2
+    tail -20 "${DRIFT_ERR}" >&2
+    exit 1
+  fi
+  if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' "${DRIFT_JSON}")" != "yes" ]; then
+    echo "FAIL: cdkd drift --json ($1) reported no stacks — the assertions below would be vacuous:" >&2
+    cat "${DRIFT_JSON}" >&2
+    tail -20 "${DRIFT_ERR}" >&2
+    exit 1
+  fi
+}
+asg_drift_count() { # $1 = bucket (clean|drifted|notSupported)
+  jq --arg b "$1" '[.[][$b][] | select(.type == "AWS::AutoScaling::AutoScalingGroup")] | length' "${DRIFT_JSON}"
+}
+assert_asg_drift_clean() { # $1 = label
+  run_drift_json "$1"
+  if [ "$(asg_drift_count drifted)" != "0" ] || [ "$(asg_drift_count notSupported)" != "0" ]; then
+    echo "FAIL: $1: cdkd drift did not report the ASG clean:" >&2
+    jq '[.[].drifted[], .[].notSupported[] | select(.type == "AWS::AutoScaling::AutoScalingGroup")]' "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+  if [ "$(asg_drift_count clean)" != "1" ]; then
+    echo "FAIL: $1: the ASG appears in no drift outcome bucket — the assertion checked nothing" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+  echo "    OK: $1: cdkd drift reports the ASG clean"
+}
+
 # --- Phase 1: deploy (base) -------------------------------------------
 echo "==> Phase 1: deploy with the local binary (LT v1)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -208,14 +260,12 @@ assert_nondefault_props "Phase 1" "${ASG_NAME}"
 # CreateAutoScalingGroup members, so before the fix a FIRST deploy left both
 # unset (only a later update sent them). Assert both are live after Phase 1,
 # which is a pure create.
-ENABLED_METRICS=$(aws autoscaling describe-auto-scaling-groups \
-  --auto-scaling-group-names "${ASG_NAME}" --region "${REGION}" \
-  --query "join(' ', sort(AutoScalingGroups[0].EnabledMetrics[].Metric || \`[]\`))" --output text)
-if [ "${ENABLED_METRICS}" != "GroupMaxSize GroupMinSize" ]; then
-  echo "FAIL: Phase 1: expected EnabledMetrics 'GroupMaxSize GroupMinSize' after the first deploy, got '${ENABLED_METRICS}' (issue #3995)" >&2
+ENABLED_METRICS=$(enabled_metrics "${ASG_NAME}")
+if [ "${ENABLED_METRICS}" != "GroupDesiredCapacity GroupMaxSize GroupMinSize" ]; then
+  echo "FAIL: Phase 1: expected EnabledMetrics 'GroupDesiredCapacity GroupMaxSize GroupMinSize' (both GroupMetrics entries) after the first deploy, got '${ENABLED_METRICS}' (issue #3995)" >&2
   exit 1
 fi
-echo "    OK: Phase 1: EnabledMetrics == GroupMaxSize GroupMinSize (issue #3995)"
+echo "    OK: Phase 1: EnabledMetrics == GroupDesiredCapacity GroupMaxSize GroupMinSize (issue #3995)"
 NOTIFICATION_TYPES=$(aws autoscaling describe-notification-configurations \
   --auto-scaling-group-names "${ASG_NAME}" --region "${REGION}" \
   --query "join(' ', sort(NotificationConfigurations[].NotificationType || \`[]\`))" --output text)
@@ -289,6 +339,124 @@ if [ "${POLICIES_R}" != "Default" ]; then
 fi
 echo "    OK: TerminationPolicies reset to ['Default'] (issue #1160 fixed)"
 
+# Issue #4013: the removal phase dropped GroupMaxSize from the FIRST of two
+# 1Minute GroupMetrics entries. Pre-fix the update kept only the LAST entry per
+# granularity on each side ([GroupDesiredCapacity] both times), saw no change,
+# and left GroupMaxSize enabled.
+ENABLED_METRICS_R=$(enabled_metrics "${ASG_NAME}")
+if [ "${ENABLED_METRICS_R}" != "GroupDesiredCapacity GroupMinSize" ]; then
+  echo "FAIL: Phase 3: expected EnabledMetrics 'GroupDesiredCapacity GroupMinSize' after dropping GroupMaxSize from the first GroupMetrics entry, got '${ENABLED_METRICS_R}' (issue #4013)" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: EnabledMetrics == GroupDesiredCapacity GroupMinSize (issue #4013)"
+
+DRIFT_JSON="$(mktemp)"
+DRIFT_ERR="$(mktemp)"
+assert_asg_drift_clean "Phase 3 (observed baseline)"
+
+# The template-shaped baseline: a record deployed before observed-capture
+# compares the template's per-GroupMetrics entries against the readback's one
+# folded entry. Plant that shape as the ASG's observed MetricsCollection (the
+# same metrics, split as the template splits them) and require it to compare
+# clean; pre-fix the two shapes differed and drifted forever. The original
+# record is restored afterwards.
+STATE_ORIG="$(mktemp)"
+STATE_LEGACY="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_ORIG}" --region "${REGION}" >/dev/null
+jq '(.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .observedProperties.MetricsCollection) =
+      [{"Granularity":"1Minute","Metrics":["GroupMinSize"]},{"Granularity":"1Minute","Metrics":["GroupDesiredCapacity"]}]' \
+  "${STATE_ORIG}" > "${STATE_LEGACY}"
+# The plant must have landed, or the check below compares the real baseline and
+# passes vacuously on the pre-fix binary too. Compared by parsed value, not
+# bytes: cdkd writes state.json without a trailing newline and jq adds one.
+ASG_RECORDS=$(jq '[.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup")] | length' "${STATE_LEGACY}")
+PLANTED=$(jq -c '[.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .observedProperties.MetricsCollection] | first' "${STATE_LEGACY}")
+ORIGINAL=$(jq -c '[.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .observedProperties.MetricsCollection] | first' "${STATE_ORIG}")
+if [ "${ASG_RECORDS}" != "1" ] || [ "${PLANTED}" = "${ORIGINAL}" ]; then
+  echo "FAIL: Phase 3: the template-shaped MetricsCollection plant did not land (ASG records: ${ASG_RECORDS}; observed before '${ORIGINAL}', after '${PLANTED}')" >&2
+  exit 1
+fi
+# Set BEFORE the upload: the trap restores the original on every exit path.
+STATE_PLANTED=1
+aws s3 cp "${STATE_LEGACY}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+assert_asg_drift_clean "Phase 3 (template-shaped observed MetricsCollection baseline)"
+
+# drift --revert over the TWO-ENTRY MetricsCollection, still on the planted
+# template-shaped baseline (it touches nothing but MetricsCollection): disable
+# GroupMinSize out of band, require cdkd to SEE it (fail closed), revert, and
+# require the exact set back. Pre-fix the revert's two-entry desired side keyed
+# to its LAST entry ([GroupDesiredCapacity]), equal to the readback, so nothing
+# was sent and GroupMinSize stayed disabled.
+wait_enabled_metrics() { # $1 = expected sorted list, $2 = label
+  local got="" i
+  for i in $(seq 1 24); do
+    got="$(enabled_metrics "${ASG_NAME}")" || return 1
+    [ "${got}" = "$1" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: $2: EnabledMetrics never became '$1' (last '${got}')" >&2
+  return 1
+}
+aws autoscaling disable-metrics-collection --auto-scaling-group-name "${ASG_NAME}" \
+  --metrics GroupMinSize --region "${REGION}"
+wait_enabled_metrics "GroupDesiredCapacity" "Phase 3 (out-of-band disable)"
+run_drift_json "Phase 3 (after out-of-band disable)"
+OOB_CHANGES=$(jq '[.[].drifted[] | select(.type == "AWS::AutoScaling::AutoScalingGroup") | .changes[] | select(.path | startswith("MetricsCollection"))] | length' "${DRIFT_JSON}")
+if [ "${OOB_CHANGES}" = "0" ]; then
+  echo "FAIL: Phase 3: cdkd drift did not report the out-of-band GroupMinSize disable — the revert below would prove nothing" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: cdkd drift reports the out-of-band MetricsCollection change"
+if ! node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>"${DRIFT_ERR}"; then
+  echo "FAIL: Phase 3: cdkd drift --revert failed:" >&2
+  tail -30 "${DRIFT_ERR}" >&2
+  exit 1
+fi
+wait_enabled_metrics "GroupDesiredCapacity GroupMinSize" "Phase 3 (after drift --revert, issue #4013)"
+echo "    OK: Phase 3: drift --revert restored EnabledMetrics == GroupDesiredCapacity GroupMinSize (issue #4013)"
+aws s3 cp "${STATE_ORIG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+STATE_PLANTED=0
+assert_asg_drift_clean "Phase 3 (after drift --revert, original record)"
+
+# The REAL legacy path: a record with no observedProperties at all, so drift
+# compares against the template-shaped `properties` (two entries). Other
+# templated keys may differ from their readback on this path (e.g. Tags'
+# PropagateAtLaunch), so the assertion is scoped to MetricsCollection: the ASG
+# must be compared (not skipped) and no reported change may be on that path.
+jq '(.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup")) |=
+      (del(.observedProperties)
+       | .properties.MetricsCollection =
+           [{"Granularity":"1Minute","Metrics":["GroupMinSize"]},{"Granularity":"1Minute","Metrics":["GroupDesiredCapacity"]}])' \
+  "${STATE_ORIG}" > "${STATE_LEGACY}"
+LEGACY_OBSERVED=$(jq '[.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup") | has("observedProperties")] | first' "${STATE_LEGACY}")
+LEGACY_METRICS=$(jq -c '[.resources[] | select(.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .properties.MetricsCollection] | first' "${STATE_LEGACY}")
+if [ "${LEGACY_OBSERVED}" != "false" ] || [ "$(echo "${LEGACY_METRICS}" | jq 'length')" != "2" ]; then
+  echo "FAIL: Phase 3: the legacy-record plant did not land (observedProperties still present: ${LEGACY_OBSERVED}; properties.MetricsCollection: ${LEGACY_METRICS})" >&2
+  exit 1
+fi
+STATE_PLANTED=1
+aws s3 cp "${STATE_LEGACY}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+run_drift_json "Phase 3 (legacy record, properties baseline)"
+COMPARED=$(( $(asg_drift_count clean) + $(asg_drift_count drifted) ))
+if [ "${COMPARED}" != "1" ] || [ "$(asg_drift_count notSupported)" != "0" ]; then
+  echo "FAIL: Phase 3 (legacy record): the ASG was not compared — the MetricsCollection assertion would check nothing" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+METRICS_CHANGES=$(jq '[.[].drifted[] | select(.type == "AWS::AutoScaling::AutoScalingGroup") | .changes[] | select(.path | startswith("MetricsCollection"))] | length' "${DRIFT_JSON}")
+if [ "${METRICS_CHANGES}" != "0" ]; then
+  echo "FAIL: Phase 3 (legacy record): cdkd drift reported MetricsCollection drift for the same enabled set split two ways (issue #4013):" >&2
+  jq '[.[].drifted[] | select(.type == "AWS::AutoScaling::AutoScalingGroup") | .changes[] | select(.path | startswith("MetricsCollection"))]' "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    OK: Phase 3 (legacy record, properties baseline): no MetricsCollection drift"
+aws s3 cp "${STATE_ORIG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+STATE_PLANTED=0
+
+rm -f "${STATE_ORIG}" "${STATE_LEGACY}" "${DRIFT_JSON}" "${DRIFT_ERR}"
+
 # --- Phase 4: destroy -------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -315,4 +483,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults; issue #3995: group metrics and notifications live after the first deploy + clean destroy)"
+echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults; issue #3995: group metrics and notifications live after the first deploy; issue #4013: two GroupMetrics entries applied as one set on update, drift clean + clean destroy)"

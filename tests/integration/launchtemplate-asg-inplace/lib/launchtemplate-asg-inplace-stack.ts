@@ -68,9 +68,20 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
     // instances are ever launched.
     // Issue #3995 leg: `MetricsCollection` and `NotificationConfigurations` are
     // not CreateAutoScalingGroup members, so cdkd must send them itself on the
-    // FIRST deploy. Identical in every phase, so the #985 leg's ASG template
-    // stays unchanged across phases 1 and 2.
+    // FIRST deploy. Identical in phases 1 and 2, so the #985 leg's ASG template
+    // stays unchanged across them.
+    //
+    // Issue #4013 leg: TWO `GroupMetrics`, both rendered at `1Minute`. The
+    // removal phase drops GroupMaxSize from the FIRST entry and keeps the second
+    // as is: pre-fix the update keyed entries by granularity, kept only the
+    // LAST one on each side, saw no change, and left GroupMaxSize enabled.
     const topic = new sns.Topic(this, 'AsgNotifications');
+    const firstGroupMetrics = isRemoval
+      ? new autoscaling.GroupMetrics(autoscaling.GroupMetric.MIN_SIZE)
+      : new autoscaling.GroupMetrics(
+          autoscaling.GroupMetric.MIN_SIZE,
+          autoscaling.GroupMetric.MAX_SIZE
+        );
     const asg = new autoscaling.AutoScalingGroup(this, 'Asg', {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
@@ -79,10 +90,8 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
       maxCapacity: 0,
       desiredCapacity: 0,
       groupMetrics: [
-        new autoscaling.GroupMetrics(
-          autoscaling.GroupMetric.MIN_SIZE,
-          autoscaling.GroupMetric.MAX_SIZE
-        ),
+        firstGroupMetrics,
+        new autoscaling.GroupMetrics(autoscaling.GroupMetric.DESIRED_CAPACITY),
       ],
       notifications: [
         {
