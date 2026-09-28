@@ -84,12 +84,18 @@ pass() {
   echo "    $1 (✓)"
 }
 
+# Lambda creates `/aws/lambda/<producer>-CustomS3AutoDeleteObjects...` when the
+# producer bucket's auto-delete custom resource runs, and nothing in the stack
+# owns it, so destroy leaves it behind (#3885). Only the producer has one.
+. ../cr-log-groups.sh
+
 cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors during this block are tolerated)"
   CDKD_TEST_WITH_CONSUMER=true ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   CDKD_TEST_WITH_CONSUMER=true ${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
+  sweep_stack_lambda_log_groups "${PRODUCER}" "${AWS_REGION}"
   exit ${rc}
 }
 trap cleanup EXIT
@@ -320,3 +326,4 @@ pass "all state files removed"
 echo ""
 echo "==> All ${PASS_COUNT} outputs-only-export checks passed"
 trap - EXIT INT TERM
+sweep_stack_lambda_log_groups "${PRODUCER}" "${AWS_REGION}"
